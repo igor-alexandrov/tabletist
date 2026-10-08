@@ -11,7 +11,7 @@ use tabletist_db::Access;
 use tabletist_db::sql::TokenKind;
 
 use crate::app::App;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, ConnTabId, TabId};
 use crate::review::{Ink, Line, Review};
 use crate::theme::{Look, Palette};
@@ -51,7 +51,7 @@ pub const COPIED_SQL: &str = "Copied SQL";
 /// What a copied review opens with, after the comment's dashes: pasted
 /// elsewhere, nothing checks a row and nothing wraps a transaction.
 const COPIED: &str = "What Tabletist runs to save these changes, in one transaction. \
-                      Each statement runs only while its row is still as the comment \
+                      Each UPDATE runs only while its row is still as the comment \
                       above it says.";
 
 /// A comment line as it reads, its `--` included. `None` for a line of a
@@ -89,6 +89,31 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
             "-- {}",
             say("these changes cannot be sent: the table's key is not known")
         ),
+        Line::New => format!("-- {}", say("new row")),
+        Line::NewBlocked(columns) => format!(
+            "-- {} · {} {} {}",
+            say("new row"),
+            say("blocked: fix"),
+            columns.join(", "),
+            say("first")
+        ),
+        Line::NewRequired(columns) => {
+            let plural = u32::try_from(columns.len()).unwrap_or(u32::MAX);
+            format!(
+                "-- {} · {} {} {}",
+                say("new row"),
+                say("blocked:"),
+                columns.join(", "),
+                ngettext(locale, "is required", "are required", plural)
+            )
+        }
+        Line::NewRefused(reason) => {
+            format!(
+                "-- {} · {} {reason}",
+                say("new row"),
+                say("cannot be sent:")
+            )
+        }
         Line::Sql(_) => return None,
     })
 }
@@ -108,10 +133,13 @@ pub fn ink_color(ink: Ink, palette: &Palette) -> Color32 {
 /// danger colour for a row that has no statement.
 fn comment_color(line: &Line, palette: &Palette) -> Color32 {
     match line {
-        Line::Blocked { .. } | Line::Refused { .. } | Line::Unsendable => {
-            Tone::Danger.color(palette)
-        }
-        Line::Row(_) | Line::Check(_) | Line::Sql(_) => {
+        Line::Blocked { .. }
+        | Line::Refused { .. }
+        | Line::Unsendable
+        | Line::NewBlocked(_)
+        | Line::NewRequired(_)
+        | Line::NewRefused(_) => Tone::Danger.color(palette),
+        Line::Row(_) | Line::Check(_) | Line::New | Line::Sql(_) => {
             sql_text::color_of(TokenKind::Comment, palette)
         }
     }
@@ -306,7 +334,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             widgets::hline(ui, head.x_range(), head.top() + 0.5, palette.outline);
             widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.outline);
             if look.terminal {
-                let counts = (review.changes, review.rows);
+                let counts = (review.added, review.changes, review.rows);
                 terminal_head(ui, head, side, counts, typing, skin);
                 let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT), full.max);
                 asked = terminal_foot(ui, foot, side, read_only, skin);
@@ -439,7 +467,7 @@ fn terminal_head(
     ui: &egui::Ui,
     head: Rect,
     side: f32,
-    (changes, rows): (usize, usize),
+    (added, changes, rows): (usize, usize, usize),
     typing: bool,
     skin: Skin<'_>,
 ) {
@@ -449,12 +477,17 @@ fn terminal_head(
         locale,
     } = skin;
     let y = head.center().y;
-    let counts = format!(
-        "{} · {} · {}",
-        skin.say("pending"),
-        look.label(&counted(locale, changes, "change", "changes")),
-        look.label(&counted(locale, rows, "row", "rows"))
-    );
+    // The new rows, then the changes and their rows, each where there is
+    // any: "pending · 1 new row · 2 changes · 1 row".
+    let mut counts = vec![skin.say("pending")];
+    if added > 0 {
+        counts.push(look.label(&counted(locale, added, "new row", "new rows")));
+    }
+    if changes > 0 || added == 0 {
+        counts.push(look.label(&counted(locale, changes, "change", "changes")));
+        counts.push(look.label(&counted(locale, rows, "row", "rows")));
+    }
+    let counts = counts.join(" · ");
     let counts = Text::one(look, TextRole::OGroup, &counts, palette.text);
     let left = head.left() + side;
     let end = left + widgets::paint_label(ui, left, y, counts);
@@ -618,7 +651,7 @@ pub fn placed_now(ctx: &egui::Context) -> Option<Placed> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::{Values, of};
+    use crate::review::{Blocked, Values, of};
     use crate::testing::Harness;
     use tabletist_db::{CellChange, ChangeSet, Dialect, NewValue, ObjectRef, RowChange, Value};
 
@@ -703,11 +736,33 @@ mod tests {
     }
 
     #[test]
+    fn a_new_rows_comments_say_what_holds_it() {
+        let say = |line: &Line| comment(line, Locale::English).unwrap();
+        assert_eq!(say(&Line::New), "-- new row");
+        assert_eq!(
+            say(&Line::NewBlocked(vec!["kind".into()])),
+            "-- new row · blocked: fix kind first"
+        );
+        assert_eq!(
+            say(&Line::NewRequired(vec!["publisher_id".into()])),
+            "-- new row · blocked: publisher_id is required"
+        );
+        assert_eq!(
+            say(&Line::NewRequired(vec!["isbn".into(), "title".into()])),
+            "-- new row · blocked: isbn, title are required"
+        );
+        assert_eq!(
+            say(&Line::NewRefused("kind: TEXT expects text".into())),
+            "-- new row · cannot be sent: kind: TEXT expects text"
+        );
+    }
+
+    #[test]
     fn a_line_is_one_row_and_keeps_its_leading_spaces() {
         let review = of(
             Dialect::Sqlite,
             &changes(&[2], "bob@example.com"),
-            &[],
+            Blocked::default(),
             Values::Shown,
         );
         for look in Look::ALL {
@@ -753,7 +808,7 @@ mod tests {
         let review = of(
             Dialect::Sqlite,
             &changes(&[2, 4], "bob@example.com"),
-            &[],
+            Blocked::default(),
             Values::Shown,
         );
         // Comments and a statement's lines, the second row's first too.
@@ -827,7 +882,7 @@ mod tests {
         let review = of(
             Dialect::Sqlite,
             &changes(&[2, 4], "bob@example.com"),
-            &[],
+            Blocked::default(),
             Values::Shown,
         );
         let lines = &review.lines;
@@ -878,11 +933,16 @@ mod tests {
     #[test]
     fn the_clipboards_text_says_what_it_is_and_holds_the_whole_statements() {
         let long = "x".repeat(100);
-        let review = of(Dialect::Sqlite, &changes(&[2], &long), &[], Values::Whole);
+        let review = of(
+            Dialect::Sqlite,
+            &changes(&[2], &long),
+            Blocked::default(),
+            Values::Whole,
+        );
         let copied = text(&review, Locale::English);
         let expected = format!(
             "-- What Tabletist runs to save these changes, in one transaction. \
-             Each statement runs only while its row is still as the comment above it says.\n\
+             Each UPDATE runs only while its row is still as the comment above it says.\n\
              -- row id 2\n\
              -- only if email is still 'user2@example.com'\n\
              UPDATE \"main\".\"users\"\n   \

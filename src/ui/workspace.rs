@@ -1567,6 +1567,10 @@ struct Editing {
     walks: Option<&'static str>,
     /// How much is pending, while anything is: "3 pending · 2 rows".
     pending: Option<String>,
+    /// The rows to add, while there are any: "+1 new".
+    added: Option<String>,
+    /// `o` would add a row.
+    can_add: bool,
     /// The cells to fix and the ones a save failed on: "1 error".
     errors: Option<String>,
     /// Why the cell asked for is locked, what the last save came to, or
@@ -1643,21 +1647,42 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
             counted(locale, counts.rows, "row", "rows")
         )
     });
+    let added = (counts.added > 0).then(|| format!("+{} {}", counts.added, say("new")));
+    let can_add = data
+        && crate::edit::Table::of(workspace, object).is_some_and(|table| table.no_rows().is_none());
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
     // What a save came to stands a step back from the keys and the counts.
     let back = palette.secondary;
     // Why what is pending cannot be saved, as the other looks say it on
     // their disabled Save. A save that is running is said by its tab.
-    let blocked = (counts.changes > 0)
+    let blocked = edits
+        .pending()
         .then(|| app.save_blocked(tab, object.id))
         .flatten()
         .filter(|block| *block != crate::model::SaveBlock::Saving)
-        .map(|block| Said {
-            mark: None,
-            text: look.label(&block_text(block, counts.to_fix, locale)),
-            tail: None,
-            color: back,
+        .map(|block| match block {
+            // What a new row still needs, by its column: in the danger
+            // tone, as the row's own star is.
+            crate::model::SaveBlock::Required => {
+                let lacking = app.lacking(tab, object.id);
+                let text = match lacking.as_slice() {
+                    [one] => format!("{one} {}", look.label(&say("required"))),
+                    more => look.label(&format!("{} {}", more.len(), say("values required"))),
+                };
+                Said {
+                    mark: None,
+                    text,
+                    tail: None,
+                    color: states::Tone::Danger.color(palette),
+                }
+            }
+            block => Said {
+                mark: None,
+                text: look.label(&block_text(block, counts.to_fix, locale)),
+                tail: None,
+                color: back,
+            },
         });
     let said = if let Some(line) = &workspace.command_error {
         // What the `:` prompt was given, until the next key.
@@ -1668,7 +1693,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
             tail: None,
             color: states::Tone::Danger.color(palette),
         })
-    } else if workspace.review_refused && counts.changes == 0 {
+    } else if workspace.review_refused && !edits.pending() {
         // `:diff` found nothing to show. No mistake of the typing: it
         // reads as the keys do, until the next key. Never over a table
         // that has something pending: another tab's, shown by a click.
@@ -1742,6 +1767,8 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         insert,
         walks,
         pending,
+        added,
+        can_add,
         errors,
         said,
     }
@@ -1783,6 +1810,7 @@ fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             for (text, tone) in [
                 (&editing.errors, states::Tone::Danger),
                 (&editing.pending, states::Tone::Warning),
+                (&editing.added, states::Tone::Success),
             ] {
                 if let Some(text) = text {
                     let x = right - measure(text);
@@ -1920,6 +1948,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if editing.can_edit {
                 table_hints.push(("i", &*edit, true));
             }
+            // `o` opens a new row, where the table takes one.
+            let new_row = gettext(locale, "new row");
+            if editing.can_add {
+                table_hints.push(("o", &*new_row, true));
+            }
             table_hints.extend([
                 ("/", "filter", true),
                 ("ctrl+b", "tables", true),
@@ -1934,7 +1967,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // And the one that shows what a save would run, while there is
             // anything to show.
             let review = gettext(locale, "review");
-            if editing.pending.is_some() {
+            if editing.pending.is_some() || editing.added.is_some() {
                 table_hints.push((":diff", &*review, true));
             }
             // An editor's keys: a table's do nothing on it.
@@ -1999,9 +2032,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 |text: &Option<String>| text.as_ref().map_or(0.0, |text| measure(text) + gap);
             // What is pending is never dropped for width: everything else
             // on the line gives way to it.
-            let (pending_room, errors_room) = (room(&editing.pending), room(&editing.errors));
+            // The new rows stand with the pending changes, before them.
+            let pending_room = room(&editing.added) + room(&editing.pending);
+            let errors_room = room(&editing.errors);
             let counts = |ui: &egui::Ui, mut x: f32| {
                 for (text, tone) in [
+                    (&editing.added, states::Tone::Success),
                     (&editing.pending, states::Tone::Warning),
                     (&editing.errors, states::Tone::Danger),
                 ] {
@@ -2082,12 +2118,14 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             });
             let said_room = said.as_ref().map_or(0.0, |said| said.3 + gap);
             let limit = end - fixed - said_room;
-            // `e edit` was here until `i` came to edit, and `:w write`
-            // is here only on a connection that cannot write.
-            let disabled: &[&str] = if read_only {
-                &["o new row", "dd delete", ":w write"]
-            } else {
-                &["o new row", "dd delete"]
+            // `e edit` was here until `i` came to edit, `o new row` is
+            // here only where the table takes none, and `:w write` only on
+            // a connection that cannot write.
+            let disabled: &[&str] = match (editing.can_add, read_only) {
+                (true, true) => &["dd delete", ":w write"],
+                (true, false) => &["dd delete"],
+                (false, true) => &["o new row", "dd delete", ":w write"],
+                (false, false) => &["o new row", "dd delete"],
             };
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
                 + 14.0 * (disabled.len() - 1) as f32;

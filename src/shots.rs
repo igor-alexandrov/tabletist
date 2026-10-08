@@ -168,7 +168,8 @@ fn structure() -> Structure {
         // `kind` has a CHECK (kind IN ('cover', 'preview')).
         allowed_values: (name == "kind").then(|| vec!["cover".into(), "preview".into()]),
         generated: false,
-        identity: false,
+        // `id` is a bigserial: the database numbers it.
+        identity: name == "id",
     };
     Structure {
         columns: vec![
@@ -350,6 +351,7 @@ type Scene = fn(&mut Harness);
 const BOOK_ID: usize = 1;
 const KIND: usize = 2;
 const IMAGE_DATA: usize = 3;
+const CREATED_AT: usize = 4;
 const DELETED_AT: usize = 5;
 
 /// When the scenes' image was deleted.
@@ -359,7 +361,10 @@ const DELETED: &str = "2026-10-04 09:30:00";
 /// user reaches it, through the model, so it is the same state in every
 /// look: the bar, the tints and the dialogs on macOS and Windows; the mode
 /// line, the gutter and the error line on Omarchy.
-const EDITING: [(&str, Scene); 10] = [
+const EDITING: [(&str, Scene); 13] = [
+    ("edit-new-row", edit_new_row),
+    ("edit-new-row-filled", edit_new_row_filled),
+    ("edit-new-row-failed", edit_new_row_failed),
     ("edit-pending", edit_pending),
     ("edit-review", edit_review),
     ("edit-field", edit_field),
@@ -565,6 +570,68 @@ fn edit_saved(harness: &mut Harness) {
         rows: vec![row],
         elapsed: Duration::from_millis(14),
     }));
+}
+
+/// A new row, its first required cell open: the row's own fill and its
+/// marker, what the database will fill the other cells with, and the bar
+/// that waits for a value. Under the header in the desktop looks; in the
+/// terminal look below the row the cursor was on.
+fn edit_new_row(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    let place = if harness.app.look.terminal {
+        crate::edit::Place::Below(0)
+    } else {
+        crate::edit::Place::Top
+    };
+    harness.app.apply(Action::AddRow { tab, id, place });
+}
+
+/// The new row with its book given and the rest still to come, and a
+/// changed cell beside it: what the bar counts, with the selection away.
+fn edit_new_row_filled(harness: &mut Harness) {
+    edit_new_row(harness);
+    let (tab, id) = active(harness);
+    retype(
+        harness,
+        tab,
+        id,
+        (crate::edit::new_row(0), BOOK_ID),
+        "107233",
+    );
+    retype(harness, tab, id, (3, KIND), "cover");
+    step_aside(harness, tab, id);
+}
+
+/// A new row whose save the database refused: the row in red, saying the
+/// database's words, and the bar saying that nothing was saved.
+fn edit_new_row_failed(harness: &mut Harness) {
+    edit_new_row(harness);
+    let (tab, id) = active(harness);
+    let new = crate::edit::new_row(0);
+    retype(harness, tab, id, (new, BOOK_ID), "999");
+    retype(harness, tab, id, (new, CREATED_AT), "2026-10-07 10:42:09");
+    step_aside(harness, tab, id);
+    // Without the row panel, as the failed save of a changed row is shown.
+    harness.app.apply(Action::ToggleRowPanel(tab));
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedInsert {
+        insert: 0,
+        error: tabletist_db::Error::Query {
+            code: Some("23503".into()),
+            message: "insert or update on table \"book_images\" violates foreign key \
+                      constraint \"fk_rails_3b1d8f0c2e\""
+                .into(),
+            detail: Some("Key (book_id)=(999) is not present in table \"books\".".into()),
+            hint: None,
+        },
+    }));
+}
+
+/// The connection's tab and the table's that a scene's `editable` opened.
+fn active(harness: &Harness) -> (ConnTabId, TabId) {
+    let tab = harness.app.active_tab_id();
+    let id = harness.app.workspace(tab).and_then(|w| w.active_tab);
+    (tab, id.expect("the table's tab"))
 }
 
 /// A save the database refused: image 3 was given a book that is not

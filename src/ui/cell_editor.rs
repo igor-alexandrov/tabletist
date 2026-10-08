@@ -1135,6 +1135,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
         Lock::KeyInexact => say("This row's key holds text that was not read exactly"),
         Lock::UnknownColumn => say("This column cannot be told apart in the table"),
         Lock::Generated => say("Computed by the database"),
+        Lock::Assigned => say("Assigned by the database on save"),
         Lock::KeyColumn => say("Part of the row's key"),
         Lock::Binary => say("Binary values cannot be edited yet"),
         Lock::TooLarge => say("Values over 256 KiB cannot be edited yet"),
@@ -1334,6 +1335,7 @@ mod tests {
         assert_eq!(why(Lock::KeyIsNull), "This row's key is NULL");
         assert_eq!(why(Lock::Gone), "This row no longer exists on the server");
         assert_eq!(why(Lock::Generated), "Computed by the database");
+        assert_eq!(why(Lock::Assigned), "Assigned by the database on save");
         assert_eq!(why(Lock::KeyColumn), "Part of the row's key");
         // A cell that is not there has nothing to say; every other has.
         assert_eq!(why(Lock::NoSuchCell), "");
@@ -1350,6 +1352,7 @@ mod tests {
             Lock::KeyInexact,
             Lock::UnknownColumn,
             Lock::Generated,
+            Lock::Assigned,
             Lock::KeyColumn,
             Lock::Binary,
             Lock::TooLarge,

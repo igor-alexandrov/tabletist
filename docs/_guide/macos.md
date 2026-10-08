@@ -46,7 +46,7 @@ a Mac keyboard labels Delete.
 | Keys | Do |
 | --- | --- |
 | Cmd+O | Open the connection picker |
-| Cmd+N | New connection |
+| Cmd+N | New connection. With a table's rows in front, a new row |
 | Cmd+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
 | Cmd+Shift+W | Close the connection |
 | Cmd+P | Quick open |
@@ -114,6 +114,8 @@ a Mac keyboard labels Delete.
 | Keys | Do |
 | --- | --- |
 | Return, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
+| Cmd+N | Add a row, at the top of the grid |
+| Backspace, Forward Delete | Drop a new row that is not saved yet |
 | Cmd+I | Edit the row in the row panel |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |

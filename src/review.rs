@@ -5,9 +5,11 @@
 
 use std::collections::BTreeMap;
 
-use tabletist_db::{ChangeSet, Dialect, Error, ObjectRef, RowChange, RowUpdate, Value};
+use tabletist_db::{
+    ChangeSet, Dialect, Error, InsertStatement, ObjectRef, RowChange, RowUpdate, Value,
+};
 
-use crate::edit::{Pending, State, Table, change_set};
+use crate::edit::{NEW_ROWS, Pending, State, Table, change_set, new_row};
 use crate::ui::format;
 
 /// The most characters of a value that are shown: a longer one is cut, with
@@ -20,7 +22,8 @@ pub const VALUE_MAX_CHARS: usize = 60;
 pub enum Ink {
     /// Names, `=`, commas, the semicolon.
     Plain,
-    /// `UPDATE`, `SET`, `WHERE`, `AND`, and a `NULL`.
+    /// `UPDATE`, `SET`, `WHERE`, `AND`, `INSERT INTO`, `VALUES`,
+    /// `RETURNING`, and a `NULL`.
     Keyword,
     /// A quoted value.
     Text,
@@ -51,6 +54,14 @@ pub enum Line {
     Refused { row: String, reason: String },
     /// No statement can be made of the set: the table's key is not known.
     Unsendable,
+    /// `-- new row`: the row the `INSERT` under it adds.
+    New,
+    /// `-- new row · blocked: fix kind first`.
+    NewBlocked(Vec<String>),
+    /// `-- new row · blocked: publisher_id is required`.
+    NewRequired(Vec<String>),
+    /// The builder refuses a value of the new row, in its own words.
+    NewRefused(String),
     /// A line of a statement.
     Sql(Vec<Piece>),
 }
@@ -77,16 +88,42 @@ pub enum Values {
     Whole,
 }
 
+/// A part of a change set: a new row or a changed one, by its place among
+/// its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Insert(usize),
+    Row(usize),
+}
+
+/// What holds a new row's statement back, by its columns' names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Stuck {
+    pub to_fix: Vec<String>,
+    /// The required columns nothing is set in.
+    pub required: Vec<String>,
+}
+
+/// What holds statements back, for each part of a set in its order. A part
+/// with nothing listed has its statement.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Blocked<'a> {
+    pub inserts: &'a [Stuck],
+    /// The columns to fix of each changed row.
+    pub rows: &'a [Vec<String>],
+}
+
 /// What a save of a tab's pending changes would run.
 #[derive(Clone, PartialEq)]
 pub struct Review {
     /// How many cells the set changes, and in how many rows.
     pub changes: usize,
     pub rows: usize,
+    /// How many rows the set adds.
+    pub added: usize,
     pub lines: Vec<Line>,
-    /// The first row whose statement the builder refused, by its place in
-    /// the change set, and why.
-    pub refused: Option<(usize, Error)>,
+    /// The first part whose statement the builder refused, and why.
+    pub refused: Option<(Part, Error)>,
 }
 
 /// Without the lines: they hold what the user typed, which stays out of
@@ -95,65 +132,109 @@ impl std::fmt::Debug for Review {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Review {{ changes: {}, rows: {}, lines: {} }}",
+            "Review {{ changes: {}, rows: {}, added: {}, lines: {} }}",
             self.changes,
             self.rows,
+            self.added,
             self.lines.len()
         )
     }
 }
 
-/// The review of the pending `cells` of `table`. `None` when nothing is
-/// pending.
+/// The review of the table's new rows and the pending `cells`. `None`
+/// when nothing is pending.
 pub fn build(
     object: &ObjectRef,
     table: &Table<'_>,
     cells: &BTreeMap<(usize, usize), Pending>,
     values: Values,
 ) -> Option<Review> {
-    if cells.is_empty() {
+    if cells.is_empty() && table.added.is_empty() {
         return None;
     }
-    let Some((changes, places)) = change_set(object, table, cells) else {
-        // The map is ordered by row: each row's cells are together.
-        let mut rows: Vec<usize> = cells.keys().map(|&(row, _)| row).collect();
+    let Some((changes, sent)) = change_set(object, table, cells) else {
+        // The map is ordered by row: each row's cells are together. The
+        // changes are the page's rows', as everywhere they are counted.
+        let mut rows: Vec<usize> = cells
+            .range(..(NEW_ROWS, 0))
+            .map(|(&(row, _), _)| row)
+            .collect();
+        let changes = rows.len();
         rows.dedup();
         return Some(Review {
-            changes: cells.len(),
+            changes,
             rows: rows.len(),
+            added: table.added.len(),
             lines: vec![Line::Unsendable],
             refused: None,
         });
     };
-    // The columns to fix of each row of the set, in the set's order.
-    let blocked: Vec<Vec<String>> = places
+    let name = |col: usize| {
+        let column = table.page.columns.get(col)?;
+        Some(format::display_safe(&column.name).into_owned())
+    };
+    // The columns to fix of a row, a page's or a new one's.
+    let to_fix = |row: usize| -> Vec<String> {
+        cells
+            .range((row, 0)..=(row, usize::MAX))
+            .filter(|(_, cell)| matches!(cell.state, State::ToFix(_)))
+            .filter_map(|(&(_, col), _)| name(col))
+            .collect()
+    };
+    let inserts: Vec<Stuck> = sent
+        .inserts
         .iter()
-        .map(|&row| {
-            cells
-                .range((row, 0)..=(row, usize::MAX))
-                .filter(|(_, cell)| matches!(cell.state, State::ToFix(_)))
-                .filter_map(|(&(_, col), _)| table.page.columns.get(col))
-                .map(|column| format::display_safe(&column.name).into_owned())
-                .collect()
+        .map(|&id| Stuck {
+            to_fix: to_fix(new_row(id)),
+            required: table
+                .missing(id, cells)
+                .into_iter()
+                .filter_map(name)
+                .collect(),
         })
         .collect();
-    Some(of(table.dialect, &changes, &blocked, values))
+    let rows: Vec<Vec<String>> = sent.rows.iter().map(|&row| to_fix(row)).collect();
+    let blocked = Blocked {
+        inserts: &inserts,
+        rows: &rows,
+    };
+    Some(of(table.dialect, &changes, blocked, values))
 }
 
-/// The review of `changes`, as `dialect` writes them. `blocked` names, for
-/// each row of the set, its columns that are to fix: a row with any is a
+/// The review of `changes`, as `dialect` writes them: the new rows first,
+/// as a save writes them first. A part `blocked` lists something for is a
 /// comment only.
-pub fn of(
-    dialect: Dialect,
-    changes: &ChangeSet,
-    blocked: &[Vec<String>],
-    values: Values,
-) -> Review {
+pub fn of(dialect: Dialect, changes: &ChangeSet, blocked: Blocked<'_>, values: Values) -> Review {
     let mut lines = Vec::new();
     let mut refused = None;
+    for (index, insert) in changes.inserts.iter().enumerate() {
+        let stuck = blocked.inserts.get(index);
+        if let Some(stuck) = stuck.filter(|stuck| !stuck.to_fix.is_empty()) {
+            lines.push(Line::NewBlocked(stuck.to_fix.clone()));
+            continue;
+        }
+        if let Some(stuck) = stuck.filter(|stuck| !stuck.required.is_empty()) {
+            lines.push(Line::NewRequired(stuck.required.clone()));
+            continue;
+        }
+        match dialect.insert_row(&changes.object, insert) {
+            Ok(statement) => {
+                lines.push(Line::New);
+                lines.extend(new_statement(&statement, values));
+            }
+            Err(error) => {
+                let reason = format::capped(&error.to_string()).into_owned();
+                lines.push(Line::NewRefused(
+                    format::escape_hidden(&reason).into_owned(),
+                ));
+                refused.get_or_insert((Part::Insert(index), error));
+            }
+        }
+    }
     for (index, row) in changes.rows.iter().enumerate() {
         let name = row_name(row);
-        if let Some(columns) = blocked.get(index).filter(|columns| !columns.is_empty()) {
+        let stuck = blocked.rows.get(index);
+        if let Some(columns) = stuck.filter(|columns| !columns.is_empty()) {
             lines.push(Line::Blocked {
                 row: name,
                 columns: columns.clone(),
@@ -176,13 +257,14 @@ pub fn of(
                     row: name,
                     reason: format::escape_hidden(&reason).into_owned(),
                 });
-                refused.get_or_insert((index, error));
+                refused.get_or_insert((Part::Row(index), error));
             }
         }
     }
     Review {
         changes: changes.rows.iter().map(|row| row.set.len()).sum(),
         rows: changes.rows.len(),
+        added: changes.inserts.len(),
         lines,
         refused,
     }
@@ -289,6 +371,61 @@ fn lay(update: &RowUpdate, set: usize, values: Values) -> Option<Vec<Line>> {
         }
         lines.push(Line::Sql(pieces));
     }
+    Some(lines)
+}
+
+/// A new row's statement in lines, as the design lays one out: the table
+/// and its columns, the values, and what it hands back. Only white space
+/// between its clauses is changed.
+fn new_statement(statement: &InsertStatement, values: Values) -> Vec<Line> {
+    lay_new(statement, values).unwrap_or_else(|| {
+        // Not the parts this was written for: the statement on one line.
+        vec![Line::Sql(vec![
+            plain(&statement.shown, values),
+            fixed(Ink::Plain, ";"),
+        ])]
+    })
+}
+
+fn lay_new(statement: &InsertStatement, values: Values) -> Option<Vec<Line>> {
+    let InsertStatement { shown, parts, .. } = statement;
+    let into = shown.get(..parts.values)?.strip_prefix("INSERT INTO")?;
+    let mut lines = vec![Line::Sql(vec![
+        fixed(Ink::Keyword, "INSERT INTO"),
+        plain(into.trim_end(), values),
+    ])];
+    // The clause ends a space before `RETURNING`, or with the statement.
+    let end = match parts.back {
+        Some(back) => back.checked_sub(1)?,
+        None => shown.len(),
+    };
+    let clause = shown.get(parts.values..end)?;
+    let word = ["DEFAULT VALUES", "VALUES"]
+        .into_iter()
+        .find(|word| clause.starts_with(word))?;
+    let mut pieces = vec![fixed(Ink::Keyword, word)];
+    let mut at = parts.values + word.len();
+    for range in &parts.literals {
+        pieces.push(plain(shown.get(at..range.start)?, values));
+        pieces.push(value(shown.get(range.clone())?, values));
+        at = range.end;
+    }
+    let rest = shown.get(at..end)?;
+    if !rest.is_empty() {
+        pieces.push(plain(rest, values));
+    }
+    let Some(back) = parts.back else {
+        pieces.push(fixed(Ink::Plain, ";"));
+        lines.push(Line::Sql(pieces));
+        return Some(lines);
+    };
+    lines.push(Line::Sql(pieces));
+    let handed = shown.get(back..)?.strip_prefix("RETURNING")?;
+    lines.push(Line::Sql(vec![
+        fixed(Ink::Keyword, "RETURNING"),
+        plain(handed, values),
+        fixed(Ink::Plain, ";"),
+    ]));
     Some(lines)
 }
 
@@ -454,6 +591,7 @@ mod tests {
             refreshing: false,
             saving: false,
             gone: &NONE_GONE,
+            added: &[],
         }
     }
 
@@ -479,7 +617,7 @@ mod tests {
         let mut statements: Vec<String> = Vec::new();
         for line in sql(review) {
             match statements.last_mut() {
-                Some(statement) if !line.starts_with("UPDATE") => {
+                Some(statement) if !line.starts_with("UPDATE") && !line.starts_with("INSERT") => {
                     statement.push(' ');
                     statement.push_str(line.trim_start_matches(' '));
                 }
@@ -487,6 +625,176 @@ mod tests {
             }
         }
         statements
+    }
+
+    /// The Bookshop's covers with `count` new rows at the top, and their ids.
+    fn covers(count: usize) -> (Structure, RowPage, crate::edit::Edits, Vec<usize>) {
+        let mut edits = crate::edit::Edits::default();
+        let ids = (0..count)
+            .map(|_| edits.add_row(crate::edit::Place::Top, 3))
+            .collect();
+        (
+            crate::testing::book_covers_structure(),
+            crate::testing::book_covers_page(3),
+            edits,
+            ids,
+        )
+    }
+
+    fn covers_ref() -> ObjectRef {
+        ObjectRef::new("main", "book_covers")
+    }
+
+    #[test]
+    fn a_new_row_sends_only_what_was_set() {
+        let (structure, page, mut edits, ids) = covers(2);
+        edits.put((new_row(ids[0]), 1), ready("9100000000000000004"));
+        edits.put((new_row(ids[1]), 1), ready("9100000000000000007"));
+        edits.put((new_row(ids[1]), 2), ready("ebook"));
+        // And a changed row, to come after them.
+        edits.put((1, 2), ready("audio"));
+        let table = Table {
+            added: &edits.added,
+            ..table(&structure, &page)
+        };
+        let (changes, sent) = change_set(&covers_ref(), &table, &edits.cells).unwrap();
+        assert_eq!(sent.inserts, ids);
+        assert_eq!(sent.rows, [1]);
+        let named: Vec<Vec<&str>> = changes
+            .inserts
+            .iter()
+            .map(|insert| {
+                let set = insert.set.iter();
+                set.map(|value| value.column.as_str()).collect()
+            })
+            .collect();
+        assert_eq!(named, [vec!["publisher_id"], vec!["publisher_id", "kind"]]);
+        assert_eq!(changes.rows.len(), 1);
+        let review = build(&covers_ref(), &table, &edits.cells, Values::Shown).unwrap();
+        assert_eq!((review.added, review.changes, review.rows), (2, 1, 1));
+        assert_eq!(review.refused, None);
+        assert_eq!(review.lines[0], Line::New);
+        assert_eq!(
+            sql(&review)[..6],
+            [
+                r#"INSERT INTO "main"."book_covers" ("publisher_id")"#,
+                "VALUES (9100000000000000004)",
+                "RETURNING *;",
+                r#"INSERT INTO "main"."book_covers" ("publisher_id", "kind")"#,
+                "VALUES (9100000000000000007, 'ebook')",
+                "RETURNING *;",
+            ]
+        );
+        // The changed row's statement follows, as it reads today.
+        assert_eq!(sql(&review)[6], r#"UPDATE "main"."book_covers""#);
+        // Taken back out of its lines, each statement is the builder's own.
+        let first = Dialect::Sqlite
+            .insert_row(&covers_ref(), &changes.inserts[0])
+            .unwrap();
+        assert_eq!(unlaid(&review)[0], format!("{};", first.shown));
+        assert_eq!(unlaid(&review).len(), 3);
+    }
+
+    #[test]
+    fn a_new_row_with_nothing_set_takes_every_default() {
+        let (mut structure, page, edits, _) = covers(1);
+        // Nothing is required of this one.
+        structure.columns[1].nullable = true;
+        let table = Table {
+            added: &edits.added,
+            ..table(&structure, &page)
+        };
+        let review = build(&covers_ref(), &table, &edits.cells, Values::Shown).unwrap();
+        assert_eq!((review.added, review.changes, review.rows), (1, 0, 0));
+        assert_eq!(
+            sql(&review),
+            [
+                r#"INSERT INTO "main"."book_covers""#,
+                "DEFAULT VALUES",
+                "RETURNING *;"
+            ]
+        );
+        // MySQL has no such clause, and hands nothing back.
+        let (changes, _) = change_set(&covers_ref(), &table, &edits.cells).unwrap();
+        let mysql = of(Dialect::MySql, &changes, Blocked::default(), Values::Shown);
+        assert_eq!(
+            sql(&mysql),
+            ["INSERT INTO `main`.`book_covers` ()", "VALUES ();"]
+        );
+    }
+
+    #[test]
+    fn a_long_value_of_a_new_row_is_cut_where_it_is_shown() {
+        let (structure, page, mut edits, ids) = covers(1);
+        edits.put((new_row(ids[0]), 1), ready("9100000000000000004"));
+        let long = "x".repeat(VALUE_MAX_CHARS * 3);
+        edits.put((new_row(ids[0]), 4), ready(&long));
+        let table = Table {
+            added: &edits.added,
+            ..table(&structure, &page)
+        };
+        let shown = build(&covers_ref(), &table, &edits.cells, Values::Shown).unwrap();
+        let values = &sql(&shown)[1];
+        assert!(
+            values.starts_with("VALUES (9100000000000000004, '"),
+            "{values}"
+        );
+        assert!(!values.contains(&long) && values.contains('…'), "{values}");
+        // For the clipboard it is whole.
+        let whole = build(&covers_ref(), &table, &edits.cells, Values::Whole).unwrap();
+        assert!(sql(&whole)[1].contains(&long));
+    }
+
+    #[test]
+    fn a_new_row_that_cannot_be_sent_is_a_comment() {
+        let (structure, page, mut edits, ids) = covers(2);
+        // The first lacks its publisher; the second has a kind to fix.
+        edits.put((new_row(ids[1]), 1), ready("9100000000000000004"));
+        edits.put(
+            (new_row(ids[1]), 2),
+            Pending {
+                new: NewValue::Text("vinyl".into()),
+                state: State::ToFix(Problem::NotOneOf(vec!["print".into()])),
+            },
+        );
+        let table = Table {
+            added: &edits.added,
+            ..table(&structure, &page)
+        };
+        let review = build(&covers_ref(), &table, &edits.cells, Values::Shown).unwrap();
+        assert_eq!(
+            review.lines,
+            [
+                Line::NewRequired(vec!["publisher_id".into()]),
+                Line::NewBlocked(vec!["kind".into()]),
+            ]
+        );
+        assert!(sql(&review).is_empty());
+    }
+
+    #[test]
+    fn a_table_without_a_key_sends_its_new_rows_and_no_changed_one() {
+        let (mut structure, page, mut edits, ids) = covers(1);
+        structure.primary_key.clear();
+        edits.put((new_row(ids[0]), 1), ready("9100000000000000004"));
+        {
+            let table = Table {
+                added: &edits.added,
+                ..table(&structure, &page)
+            };
+            let (changes, _) = change_set(&covers_ref(), &table, &edits.cells).unwrap();
+            assert_eq!((changes.inserts.len(), changes.rows.len()), (1, 0));
+        }
+        // A changed cell there is found by no key: nothing can be sent.
+        edits.put((0, 2), ready("audio"));
+        let table = Table {
+            added: &edits.added,
+            ..table(&structure, &page)
+        };
+        assert!(change_set(&covers_ref(), &table, &edits.cells).is_none());
+        let review = build(&covers_ref(), &table, &edits.cells, Values::Shown).unwrap();
+        assert_eq!(review.lines, [Line::Unsendable]);
+        assert_eq!((review.added, review.changes, review.rows), (1, 1, 1));
     }
 
     #[test]
@@ -845,7 +1153,12 @@ mod tests {
             inserts: Vec::new(),
             rows: vec![row],
         };
-        let review = of(Dialect::Postgres, &changes, &[], Values::Shown);
+        let review = of(
+            Dialect::Postgres,
+            &changes,
+            Blocked::default(),
+            Values::Shown,
+        );
         assert_eq!(review.lines[0], Line::Row("id<U+000A> k 1".into()));
         assert_eq!(
             review.lines[1],
@@ -931,10 +1244,10 @@ mod tests {
                 .update_row(&changes.object, &changes.rows[0])
                 .unwrap();
             // Whole, the lines are the builder's text to the byte.
-            let whole = of(dialect, &changes, &[], Values::Whole);
+            let whole = of(dialect, &changes, Blocked::default(), Values::Whole);
             assert_eq!(unlaid(&whole), [format!("{};", built.shown)], "{dialect:?}");
             // Shown, they are the same lines, and each is one line.
-            let shown = of(dialect, &changes, &[], Values::Shown);
+            let shown = of(dialect, &changes, Blocked::default(), Values::Shown);
             assert_eq!(shown.lines.len(), whole.lines.len(), "{dialect:?}");
             assert!(
                 sql(&shown)
@@ -965,8 +1278,8 @@ mod tests {
             }
         );
         // The first of them, by its place in the set: a save fails there.
-        let (index, error) = review.refused.clone().unwrap();
-        assert_eq!(index, 0);
+        let (part, error) = review.refused.clone().unwrap();
+        assert_eq!(part, Part::Row(0));
         assert_eq!(error.to_string(), "email: INTEGER expects a whole number");
         // The row between them has its statement.
         assert_eq!(unlaid(&review).len(), 1);
@@ -1013,7 +1326,7 @@ mod tests {
                 rows: vec![row(text("a"), "fine"), refused],
             };
             for values in [Values::Shown, Values::Whole] {
-                let review = of(dialect, &changes, &[], values);
+                let review = of(dialect, &changes, Blocked::default(), values);
                 // The row before it has its statement, and this one a
                 // comment in the builder's words.
                 assert_eq!(unlaid(&review).len(), 1, "{dialect:?}");
@@ -1028,8 +1341,8 @@ mod tests {
                 assert_eq!(review.lines.len(), 6, "{dialect:?}");
                 // Noted, by its place in the set: a save to production
                 // asks nothing and fails the row.
-                let (index, error) = review.refused.clone().unwrap();
-                assert_eq!((index, error.to_string().as_str()), (1, reason));
+                let (part, error) = review.refused.clone().unwrap();
+                assert_eq!((part, error.to_string().as_str()), (Part::Row(1), reason));
             }
         }
     }
@@ -1079,7 +1392,12 @@ mod tests {
                 ],
             }],
         };
-        let review = of(Dialect::Postgres, &changes, &[], Values::Shown);
+        let review = of(
+            Dialect::Postgres,
+            &changes,
+            Blocked::default(),
+            Values::Shown,
+        );
         assert_eq!(review.lines[0], Line::Row("order_id 7, line 2".into()));
         // Numbers the page loaded are bare, as the grid shows them.
         assert_eq!(
@@ -1101,17 +1419,17 @@ mod tests {
             ]
         );
         // MySQL's names, and SQLite's numbers.
-        let review = of(Dialect::MySql, &changes, &[], Values::Shown);
+        let review = of(Dialect::MySql, &changes, Blocked::default(), Values::Shown);
         assert_eq!(sql(&review)[0], "UPDATE `shop`.`order_lines`");
         assert_eq!(sql(&review)[4], "   AND `line` = 2;");
-        let review = of(Dialect::Sqlite, &changes, &[], Values::Shown);
+        let review = of(Dialect::Sqlite, &changes, Blocked::default(), Values::Shown);
         assert_eq!(sql(&review)[1], r#"   SET "quantity" = 3,"#);
         // For every dialect the lines are the builder's statement.
         for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
             let built = dialect
                 .update_row(&changes.object, &changes.rows[0])
                 .unwrap();
-            let review = of(dialect, &changes, &[], Values::Whole);
+            let review = of(dialect, &changes, Blocked::default(), Values::Whole);
             assert_eq!(
                 unlaid(&review),
                 [format!("{};", built.shown)],
@@ -1120,6 +1438,9 @@ mod tests {
         }
         // The review prints without what it holds.
         let printed = format!("{review:?}");
-        assert_eq!(printed, "Review { changes: 2, rows: 1, lines: 7 }");
+        assert_eq!(
+            printed,
+            "Review { changes: 2, rows: 1, added: 0, lines: 7 }"
+        );
     }
 }

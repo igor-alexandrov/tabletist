@@ -44,14 +44,26 @@ pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static s
     format!("{count} {}", ngettext(locale, one, many, plural))
 }
 
-/// "3 changes in 2 rows".
-fn counts_text(changes: usize, rows: usize, locale: Locale) -> String {
-    format!(
-        "{} {} {}",
-        counted(locale, changes, "change", "changes"),
-        gettext(locale, "in"),
-        counted(locale, rows, "row", "rows")
-    )
+/// "1 new row · 3 changes in 2 rows", each part where there is any. Short,
+/// the changes go without their rows.
+fn counts_text(counts: crate::edit::Counts, short: bool, locale: Locale) -> String {
+    let mut parts = Vec::new();
+    if counts.added > 0 {
+        parts.push(counted(locale, counts.added, "new row", "new rows"));
+    }
+    if counts.changes > 0 {
+        let changes = counted(locale, counts.changes, "change", "changes");
+        parts.push(if short {
+            changes
+        } else {
+            format!(
+                "{changes} {} {}",
+                gettext(locale, "in"),
+                counted(locale, counts.rows, "row", "rows")
+            )
+        });
+    }
+    parts.join(" · ")
 }
 
 /// `text` as a sentence: with one full stop at its end.
@@ -92,6 +104,19 @@ pub fn note_line(
     note_said(note, object, locale, |words| look.label(words))
 }
 
+/// The database's own words about a statement that failed, after its code
+/// when it gave one.
+fn database_said(error: &Error) -> String {
+    match error {
+        Error::Query {
+            code: Some(code),
+            message,
+            ..
+        } => format!("{code} · {}", sentence(&format::capped(message))),
+        other => sentence(&format::capped(&other.to_string())),
+    }
+}
+
 /// What `note` says, the app's own words put through `own`: the values of
 /// a row's key and what the database said are theirs, and stay as they are.
 fn note_said(
@@ -117,18 +142,13 @@ fn note_said(
             }
             text
         }
-        // The database's own words, after its code when it gave one.
-        Note::Failed { error, .. } => match error {
-            Error::Query {
-                code: Some(code),
-                message,
-                ..
-            } => format!("{code} · {} {nothing}", sentence(&format::capped(message))),
-            other => format!(
-                "{} {nothing}",
-                sentence(&format::capped(&other.to_string()))
-            ),
-        },
+        Note::Failed { error, .. } => format!("{} {nothing}", database_said(error)),
+        // No row of the page to name: the new row says it is the one.
+        Note::FailedInsert { error } => format!(
+            "{} {}",
+            say("Nothing was saved. 1 new row failed, so the whole transaction rolled back."),
+            database_said(error)
+        ),
         Note::Lost => say("The connection was lost while saving. Reload to see what was written."),
         Note::NotSent => say("Not connected. Nothing was sent."),
         Note::Cancelled => format!("{} {nothing}", say("Save cancelled.")),
@@ -142,13 +162,17 @@ fn note_said(
 /// What a save that wrote says once it is done: `written 2 changes · 1 row
 /// · 14 ms`.
 pub fn written_text(saved: &Saved, locale: Locale) -> String {
-    format!(
-        "{} {} · {} · {}",
-        gettext(locale, "written"),
-        counted(locale, saved.changes, "change", "changes"),
-        counted(locale, saved.rows, "row", "rows"),
-        format::elapsed(saved.elapsed)
-    )
+    let mut parts = Vec::new();
+    if saved.added > 0 {
+        parts.push(counted(locale, saved.added, "new row", "new rows"));
+    }
+    // A save of new rows alone changed none.
+    if saved.changes > 0 || saved.added == 0 {
+        parts.push(counted(locale, saved.changes, "change", "changes"));
+        parts.push(counted(locale, saved.rows, "row", "rows"));
+    }
+    parts.push(format::elapsed(saved.elapsed));
+    format!("{} {}", gettext(locale, "written"), parts.join(" · "))
 }
 
 /// Why Save cannot be pressed, as its tooltip says it, and the terminal's
@@ -164,6 +188,7 @@ pub(crate) fn block_text(block: SaveBlock, to_fix: usize, locale: Locale) -> Str
                 ngettext(locale, "value to save", "values to save", plural)
             )
         }
+        SaveBlock::Required => gettext(locale, "Fill required fields to save").into_owned(),
         SaveBlock::Disconnected => gettext(locale, "Not connected").into_owned(),
         SaveBlock::ReadOnly => gettext(locale, "This connection opens read-only").into_owned(),
         SaveBlock::Unsendable => gettext(
@@ -198,7 +223,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         .and_then(|workspace| workspace.object_tab(id))
         .filter(|object| {
             let edits = &object.edits;
-            !edits.cells.is_empty() || edits.saving.is_some() || edits.note.is_some()
+            edits.pending() || edits.saving.is_some() || edits.note.is_some()
         });
     let Some(object) = object else {
         // A panel takes one of its parent's ids. Passed over while there is
@@ -210,7 +235,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     };
     let edits = &object.edits;
     let saving = edits.saving.is_some();
-    let pending = !edits.cells.is_empty();
+    let pending = edits.pending();
     let reviewing = edits.reviewing;
     let counts = edits.counts();
     let note = edits
@@ -220,6 +245,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let blocked = app
         .save_blocked(tab, id)
         .map(|block| block_text(block, counts.to_fix, locale));
+    // What the tab's new rows still need: the column, or how many.
+    let lacking = app.lacking(tab, id);
+    let needs = match lacking.as_slice() {
+        [] => None,
+        [one] => Some(format!("{one} {}", gettext(locale, "is required"))),
+        more => Some(format!(
+            "{} {}",
+            more.len(),
+            gettext(locale, "values are required")
+        )),
+    };
     let mut actions = Vec::new();
     egui::Panel::bottom(Id::new(("pending-bar", tab.0, id.0)))
         .exact_size(HEIGHT)
@@ -253,10 +289,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let width = move |role: TextRole, text: &str| role.width(&ctx, look.faces, text);
 
             // What the bar says, and the room each part of it asks for.
-            let whole = pending.then(|| counts_text(counts.changes, counts.rows, locale));
-            let short = pending.then(|| counted(locale, counts.changes, "change", "changes"));
+            let whole = pending.then(|| counts_text(counts, false, locale));
+            let short = pending.then(|| counts_text(counts, true, locale));
+            // What stands against a save, in one place: the values to fix,
+            // and what a new row still needs.
             let fix = (counts.to_fix > 0)
                 .then(|| format!("{} {}", counts.to_fix, gettext(locale, "to fix")));
+            let fix = match (fix, &needs) {
+                (Some(fix), Some(needs)) => Some(format!("{fix} · {needs}")),
+                (fix, needs) => fix.or_else(|| needs.clone()),
+            };
             let fix_width = fix.as_ref().map(|fix| MARK + 5.0 + width(body, fix));
             let busy_width = saving.then(|| RING + 6.0 + width(body, &busy));
             let note_width = note.as_ref().map(|note| width(body, note));

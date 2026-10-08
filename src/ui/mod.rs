@@ -10663,16 +10663,13 @@ mod tests {
                 reached = true;
                 // Why not, where a screen reader finds it and on screen.
                 let (_, node) = tree.nodes.iter().find(|(id, _)| *id == tree.focus).unwrap();
-                assert_eq!(
-                    node.description(),
-                    Some("Editing arrives in a later version")
-                );
+                assert_eq!(node.description(), Some("This connection opens read-only"));
                 assert!(node.is_disabled());
                 assert!(
                     harness
                         .painted
                         .iter()
-                        .any(|(text, _)| text == "Editing arrives in a later version"),
+                        .any(|(text, _)| text == "This connection opens read-only"),
                     "{:?}",
                     harness.painted
                 );
@@ -11216,6 +11213,386 @@ mod tests {
         focus_grid(&mut harness, tab);
         harness.settle();
         (harness, tab, id)
+    }
+
+    /// The Bookshop's covers, writable, the grid holding the keyboard.
+    fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let (tab, id) = harness.book_covers();
+        focus_grid(&mut harness, tab);
+        harness.settle();
+        (harness, tab, id)
+    }
+
+    /// Whether the connection dialog is up.
+    fn connecting(harness: &Harness) -> bool {
+        matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::Connection(_))
+        )
+    }
+
+    #[test]
+    fn mod_n_adds_a_row_to_the_table_in_front_and_delete_drops_it() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = covers_in(look);
+            // Held down, the chord adds one row, not a column of them: a
+            // key that goes down while it is down is a repeat.
+            for _ in 0..3 {
+                harness.frame(vec![crate::testing::key(Key::N, Modifiers::COMMAND)]);
+            }
+            harness.frame(vec![crate::testing::release(Key::N, Modifiers::COMMAND)]);
+            harness.settle();
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).added.len(), 1, "{}", look.name);
+            // The bar is there for it, with nothing set in it yet.
+            assert!(harness.has("1 new row"), "{}", look.name);
+            // Its first required cell is open and has the keyboard.
+            harness.settle();
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id).map(|at| at.1), Some(1));
+            // Esc leaves the row pending.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none());
+            assert_eq!(edits(&harness, tab, id).added.len(), 1, "{}", look.name);
+            // Delete drops the new row the selection is on, and no other.
+            harness.press(Key::Delete, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).added.is_empty(), "{}", look.name);
+            harness.press(Key::Delete, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab).unwrap();
+            let rows = workspace.object_tab(id).unwrap().page().unwrap().rows.len();
+            assert_eq!(rows, 3, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_n_is_a_new_connection_where_no_row_can_be_added() {
+        // A read-only connection's table.
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+        // The Structure view of a table that takes rows.
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        harness.app.apply(Action::SetView {
+            tab,
+            object_tab: id,
+            view: crate::model::ObjectView::Structure,
+        });
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+        assert!(edits(&harness, tab, id).added.is_empty());
+        // The terminal look, whose key for a row is `o`.
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+        assert!(edits(&harness, tab, id).added.is_empty());
+        // A SQL editor on a writable connection: a query's result takes
+        // no row, and the key is the connection's there.
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake_as(false);
+        harness.app.apply(Action::NewSqlTab(tab));
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+    }
+
+    #[test]
+    fn o_opens_a_row_below_the_cursor_and_capital_o_above_it() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        select(&mut harness, tab, id, (1, 2));
+        type_key(&mut harness, Key::O, "o");
+        let below = edits(&harness, tab, id).added[0].clone();
+        assert_eq!(below.before, 2);
+        assert!(edits(&harness, tab, id).editor.is_some(), "insert mode");
+        // Esc keeps the row.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        select(&mut harness, tab, id, (1, 2));
+        harness.frame(vec![
+            crate::testing::key(Key::O, Modifiers::SHIFT),
+            egui::Event::Text("O".into()),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::O, Modifiers::SHIFT)]);
+        harness.settle();
+        let added = &edits(&harness, tab, id).added;
+        assert_eq!(added.len(), 2);
+        assert_eq!((added[0].before, added[1].id), (1, below.id));
+        // `dd` drops the new row under the cursor; one `d` does not.
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 2);
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        assert_eq!(edits(&harness, tab, id).added[0].id, below.id);
+        // A chord's letter is no `o`, and with the arrows on the tree the
+        // letter adds nothing.
+        harness.frame(vec![
+            egui::Event::ModifiersChanged(Modifiers::ALT),
+            crate::testing::key(Key::O, Modifiers::ALT),
+            egui::Event::Text("o".into()),
+        ]);
+        harness.frame(vec![
+            crate::testing::release(Key::O, Modifiers::ALT),
+            egui::Event::ModifiersChanged(Modifiers::NONE),
+        ]);
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        type_key(&mut harness, Key::O, "o");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+    }
+
+    #[test]
+    fn a_first_d_from_the_structure_view_is_not_half_of_dd() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        select(&mut harness, tab, id, (0, 1));
+        type_key(&mut harness, Key::O, "o");
+        harness.press(Key::Escape, Modifiers::NONE);
+        // `s` shows the structure and `d` the rows again: that `d` brought
+        // the rows up, and the next one is a first.
+        type_key(&mut harness, Key::S, "s");
+        type_key(&mut harness, Key::D, "d");
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        type_key(&mut harness, Key::D, "d");
+        assert!(edits(&harness, tab, id).added.is_empty());
+    }
+
+    #[test]
+    fn the_add_row_button_adds_a_row_where_one_can_be_added() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        harness.click("Add row");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        // From the Structure view it shows the rows first.
+        harness.app.apply(Action::DiscardEdits { tab, id });
+        harness.app.apply(Action::SetView {
+            tab,
+            object_tab: id,
+            view: crate::model::ObjectView::Structure,
+        });
+        harness.click("Add row");
+        let workspace = harness.app.workspace(tab).unwrap();
+        let object = workspace.object_tab(id).unwrap();
+        assert_eq!(object.view, crate::model::ObjectView::Data);
+        assert_eq!(object.edits.added.len(), 1);
+    }
+
+    #[test]
+    fn a_new_rows_cells_say_what_the_database_will_do() {
+        use egui::accesskit::Role;
+        for look in Look::ALL {
+            let (mut harness, tab, id) = covers_in(look);
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            let place = crate::edit::Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            let tree = harness.settle();
+            // The row is one a screen reader finds, by what it is.
+            let new = crate::testing::node(&tree, "New row, not saved", Role::Button);
+            assert!(new.is_some(), "{}", look.name);
+            // And the page's rows keep their numbers under it.
+            assert!(crate::testing::node(&tree, "Row 1", Role::Button).is_some());
+            assert!(crate::testing::node(&tree, "Row 4", Role::Button).is_none());
+            let marker = if look.terminal { "new" } else { "+ new" };
+            assert!(
+                painted(&harness, marker),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            // `created_at`'s default, as the database writes it.
+            assert!(painted(&harness, "CURRENT_TIMESTAMP"), "{}", look.name);
+            // `publisher_id` is asked for: in words, or by the header's star.
+            assert_eq!(
+                painted(&harness, "required"),
+                !look.terminal,
+                "{}",
+                look.name
+            );
+            assert_eq!(painted(&harness, "*"), look.terminal, "{}", look.name);
+            // The count says it.
+            let summary = if look.terminal {
+                "3 rows + 1 new · 5 cols"
+            } else {
+                "3 rows + 1 new · 5 columns · main"
+            };
+            assert!(harness.has(summary), "{}", look.name);
+            // The footer says what is selected, and what it still needs.
+            if !look.terminal {
+                assert!(harness.has("New row · 1 required field"), "{}", look.name);
+            }
+            // Set, the cell shows its value and asks for nothing more.
+            let cell = (crate::edit::new_row(0), 1);
+            make_pending(&mut harness, tab, id, cell, "9100000000000000004");
+            harness.settle();
+            assert!(painted(&harness, "9100000000000000004"), "{}", look.name);
+            assert!(!painted(&harness, "required"), "{}", look.name);
+            assert!(!painted(&harness, "*"), "{}", look.name);
+            if !look.terminal {
+                assert!(harness.has("New row"), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_row_panel_says_a_new_row_is_edited_in_the_grid() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        assert!(harness.has("A new row is edited in the grid"));
+        // And Mod+I, which puts the keyboard on a row's fields, leaves it.
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        harness.press(Key::I, Modifiers::COMMAND);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(edits(&harness, tab, id).why.is_none());
+    }
+
+    #[test]
+    fn the_terminals_error_line_names_a_new_row_by_what_it_is() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        // A publisher that is no number, left to fix.
+        let cell = (crate::edit::new_row(0), 1);
+        leave_pending(&mut harness, tab, id, cell, "harbor");
+        harness.settle();
+        let (line, _) = error_line(&harness).expect("the error line");
+        assert!(line.starts_with("! new:publisher_id  "), "{line}");
+    }
+
+    #[test]
+    fn the_bar_counts_new_rows_and_says_what_one_still_needs() {
+        use egui::accesskit::Role;
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        harness.app.apply(Action::CancelEdit { tab, id });
+        assert!(harness.has("1 new row"));
+        assert!(harness.has("publisher_id is required"));
+        // Save is there and cannot be pressed, and says why.
+        let tree = harness.settle();
+        let save = crate::testing::node(&tree, "Save", Role::Button).expect("Save");
+        let (_, node) = tree.nodes.iter().find(|(id, _)| *id == save).unwrap();
+        assert!(node.is_disabled());
+        assert_eq!(node.description(), Some("Fill required fields to save"));
+        // Filled, and with a changed cell beside it.
+        let new = crate::edit::new_row(0);
+        make_pending(&mut harness, tab, id, (new, 1), "9100000000000000004");
+        make_pending(&mut harness, tab, id, (1, 2), "audio");
+        assert!(harness.has("1 new row · 1 change in 1 row"));
+        assert!(!harness.has("publisher_id is required"));
+        // Its statements are there to review, the INSERT first.
+        harness.click("Review SQL");
+        assert!(harness.has("-- new row"));
+        assert!(harness.has("VALUES (9100000000000000004)"));
+    }
+
+    #[test]
+    fn a_save_says_how_many_rows_it_added() {
+        use egui::accesskit::Role;
+        use tabletist_db::Value;
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        let cell = (crate::edit::new_row(0), 1);
+        make_pending(&mut harness, tab, id, cell, "9100000000000000004");
+        harness.click("Save");
+        let stored = vec![
+            Value::Int(15),
+            Value::Int(9_100_000_000_000_000_004),
+            Value::Text("print".into()),
+            Value::Null,
+            Value::Text("2026-10-07 10:42:09".into()),
+        ];
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+            inserted: vec![Some(stored)],
+            rows: Vec::new(),
+            elapsed: std::time::Duration::from_millis(5),
+        }));
+        assert!(harness.has("written 1 new row · 5 ms"));
+        // The row is the table's now, with the id the database gave it.
+        assert!(painted(&harness, "15"));
+        assert!(harness.has("4 rows · 5 columns · main"));
+        let tree = harness.settle();
+        let new = crate::testing::node(&tree, "New row, not saved", Role::Button);
+        assert!(new.is_none());
+    }
+
+    #[test]
+    fn a_failed_insert_says_that_nothing_was_saved() {
+        use egui::accesskit::Role;
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        let cell = (crate::edit::new_row(0), 1);
+        make_pending(&mut harness, tab, id, cell, "9100000000000000099");
+        harness.click("Save");
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedInsert {
+            insert: 0,
+            error: tabletist_db::Error::query("FOREIGN KEY constraint failed"),
+        }));
+        let said = "Nothing was saved. 1 new row failed, so the whole transaction rolled back. \
+                    FOREIGN KEY constraint failed.";
+        assert!(harness.has(said), "{:?}", harness.painted);
+        // The row is still there to fix, and still counted.
+        assert!(harness.has("1 new row"));
+        let tree = harness.settle();
+        let new = crate::testing::node(&tree, "New row, not saved", Role::Button);
+        assert!(new.is_some());
+    }
+
+    #[test]
+    fn the_terminals_line_counts_new_rows_and_says_what_one_needs() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        let palette = harness.app.palette;
+        select(&mut harness, tab, id, (0, 1));
+        type_key(&mut harness, Key::O, "o");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(
+            painted_in(&harness, "+1 new", palette.success),
+            "{:?}",
+            harness.painted
+        );
+        // Asked to write, the line says what the row still needs.
+        harness.app.apply(Action::OpenCommand(tab));
+        harness.app.workspace_mut(tab).unwrap().command = Some("w".into());
+        harness.app.apply(Action::RunCommand(tab));
+        harness.settle();
+        assert!(
+            painted_in(&harness, "publisher_id required", palette.danger),
+            "{:?}",
+            harness.painted
+        );
+        // `:diff` has something to show with nothing but a new row.
+        harness.app.apply(Action::ReviewEdits {
+            tab,
+            id,
+            show: true,
+        });
+        harness.settle();
+        assert!(
+            painted(&harness, "pending · 1 new row"),
+            "{:?}",
+            harness.painted
+        );
+    }
+
+    #[test]
+    fn the_confirmation_counts_new_rows() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        let cell = (crate::edit::new_row(0), 1);
+        make_pending(&mut harness, tab, id, cell, "9100000000000000004");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        assert!(harness.has("Save 1 new row to production?"));
+        harness.app.apply(Action::CancelWrite);
+        make_pending(&mut harness, tab, id, (1, 2), "audio");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        assert!(harness.has("Save 1 new row and 1 change to production?"));
     }
 
     /// The middle of the cell that shows `text`.
@@ -14554,12 +14931,28 @@ mod tests {
         // alone are looked at.
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         harness.settle();
-        for hint in ["o new row", "dd delete"] {
-            assert!(painted(&harness, hint), "{hint}: {:?}", harness.painted);
-        }
-        // `i edit` is live now, and the struck `e edit` is gone.
+        let palette = harness.app.palette;
+        // No row of the table is deleted yet.
+        assert!(painted(&harness, "dd delete"), "{:?}", harness.painted);
+        assert!(!painted_in(&harness, "dd delete", palette.text));
+        // `i edit` and `o new row` are live now, and the struck `e edit`
+        // is gone.
         assert!(!painted(&harness, "e edit"));
         assert!(painted(&harness, "i edit"));
+        assert!(
+            painted_in(&harness, "o new row", palette.text),
+            "{:?}",
+            harness.painted
+        );
+        // On a connection that only reads no row is added: the key is
+        // struck through still.
+        let mut harness = Harness::new();
+        harness.set_look(Look::omarchy());
+        let tab = with_page(&mut harness);
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.settle();
+        assert!(painted(&harness, "o new row"));
+        assert!(!painted_in(&harness, "o new row", palette.text));
     }
 
     #[test]
@@ -17527,7 +17920,7 @@ mod tests {
             harness.click("Copy SQL");
             let expected = format!(
                 "-- What Tabletist runs to save these changes, in one transaction. \
-                 Each statement runs only while its row is still as the comment above it says.\n\
+                 Each UPDATE runs only while its row is still as the comment above it says.\n\
                  -- row id 2\n\
                  -- only if email is still 'user2@example.com'\n\
                  UPDATE \"main\".\"users\"\n   \
@@ -18673,7 +19066,7 @@ mod tests {
         let copied = harness.copied.clone().expect("the SQL was copied");
         let whole = format!(
             "-- What Tabletist runs to save these changes, in one transaction. \
-             Each statement runs only while its row is still as the comment above it says.\n\
+             Each UPDATE runs only while its row is still as the comment above it says.\n\
              -- row id 2\n\
              -- only if email is still 'user2@example.com'\n\
              UPDATE \"main\".\"users\"\n   \
@@ -18740,7 +19133,7 @@ mod tests {
     fn copied_text(value: &str) -> String {
         format!(
             "-- What Tabletist runs to save these changes, in one transaction. \
-             Each statement runs only while its row is still as the comment above it says.\n\
+             Each UPDATE runs only while its row is still as the comment above it says.\n\
              -- row id 2\n\
              -- only if email is still 'user2@example.com'\n\
              UPDATE \"main\".\"users\"\n   \

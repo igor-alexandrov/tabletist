@@ -1651,6 +1651,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                 flexible: column.kind == ValueKind::Json,
                 // A result is in the order its statement gave it.
                 sortable: false,
+                required: false,
             }
         })
         .collect();
@@ -1673,14 +1674,16 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         id,
         &grid_columns,
         rows.len(),
-        0,
         sql.selection,
         keys,
         palette,
         look,
         // A result has nothing pending and is never edited: no row is
         // marked, and no cell has an editor.
-        &|_| crate::edit::RowMark::None,
+        &|row| grid::Row {
+            mark: crate::edit::RowMark::None,
+            number: Some(row as u64 + 1),
+        },
         None,
         None,
         |row, col| {

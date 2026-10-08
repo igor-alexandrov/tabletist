@@ -39,7 +39,7 @@ pub use catalog::{
 };
 pub use class::{ColumnClass, column_class};
 pub use dialect::{
-    Dialect, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
+    Dialect, InsertParts, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
 };
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};

@@ -1,6 +1,6 @@
 ---
 title: Editing Data
-description: Edit values in the grid, review the SQL before it runs, and what happens when someone else changed the same row.
+description: Edit values in the grid, add rows, review the SQL before it runs, and what happens when someone else changed the same row.
 nav_order: 4
 ---
 
@@ -8,8 +8,8 @@ Editing needs a writable connection. A connection with **Open read-only**
 ticked blocks every write, and that is the default for production.
 [Read about read-only connections]({% link _reference/connections.md %}#open-read-only).
 
-Today you can change values in existing rows. Adding, duplicating and
-deleting rows are not built yet.
+Today you can change values in existing rows and add rows. Duplicating,
+pasting and deleting rows are not built yet.
 
 ## Change a value
 
@@ -56,6 +56,44 @@ screen.
 
 {% include shot.html file="macos-edit-production" alt="The question before a save to production, with the statement it will run and a red Save to production button" %}
 
+## Add a row
+
+Press **Add row** in the table's header, or Cmd/Ctrl+N while the rows are
+in front. The new row appears at the top of the grid, with the cursor in
+its first value that has to be given. In the Omarchy look, `o` opens the
+row below the cursor's row and `O` above it.
+
+A new row is green until it is saved, and each of its cells says what the
+database will do if you leave it alone:
+
+- **required** (a red `*` after the column's name in the Omarchy look):
+  the column cannot be NULL and has no default. Save waits for a value.
+- A dimmed value or expression: the column's default.
+- **NULL**: the column takes NULL and has no default.
+- **+ new**, or an empty cell: the database assigns the value on save, as
+  it does for an identity column or a computed one. Such a cell cannot be
+  typed into.
+
+Fill it as you edit any row. Cmd/Ctrl+Z on a cell takes its value out
+again. Esc leaves the editor and keeps the row.
+
+The row is saved with everything else that is pending, in the same
+transaction. Only the columns you set are sent, and **Review SQL** shows
+the `INSERT`. After the save the row shows what the database stored: its
+id, its defaults. It stays where it was until the next reload or sort.
+
+- Delete drops a new row that is not saved yet (`dd` in the Omarchy
+  look). **Discard all** drops every new row with the other changes.
+- If the database refuses the row, nothing is written. The row stays, in
+  red, with the database's words on it.
+- On a table with a trigger, and on MySQL where the new row cannot be
+  found again by its key, the page is loaded again after the save and
+  the row goes where the sort puts it.
+- A table without a primary key takes new rows. They cannot be edited
+  afterwards, as no row of such a table can.
+
+The row panel does not show a new row yet: it is edited in the grid.
+
 ## When someone else changed the row
 
 A save does not overwrite a row that changed after you loaded it unless
@@ -83,4 +121,6 @@ A cell that cannot be edited says why when you try. The common reasons:
 - The table has no primary key or unique index, so a row cannot be
   targeted safely.
 - The column is part of the row's key, or is computed by the database.
+  In a new row a key's column can be given, unless the database numbers
+  it.
 - The value is binary, or larger than 256 KiB.

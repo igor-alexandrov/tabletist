@@ -51,7 +51,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 // and nothing else would say the tab holds it.
                 let typed = object.edits.editor.as_ref();
                 let typed = typed.is_some_and(|editor| editor.touched);
-                let unsaved = !object.edits.cells.is_empty() || typed;
+                let unsaved = object.edits.pending() || typed;
                 (object.id, name, object.pinned, false, unsaved)
             }
             model::Tab::Sql(sql) => (

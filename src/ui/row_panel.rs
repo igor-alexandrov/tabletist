@@ -379,11 +379,21 @@ fn draw(
             // Formatted by the app when the selection changed, never here.
             let texts = source.texts;
             let Some((cell, row)) = selected else {
+                // A new row is no row of the page: the panel has no form
+                // for it yet, and says where it is edited.
+                let on_new = source
+                    .selection
+                    .is_some_and(|cell| source.table && crate::edit::new_id(cell.row).is_some());
+                let says = if on_new {
+                    "A new row is edited in the grid"
+                } else {
+                    "Select a row to see its fields"
+                };
                 ui.centered_and_justified(|ui| {
                     Text::one(
                         &look,
                         widgets::body(&look),
-                        &gettext(locale, "Select a row to see its fields"),
+                        &gettext(locale, says),
                         palette.secondary,
                     )
                     .layout(ui.ctx())

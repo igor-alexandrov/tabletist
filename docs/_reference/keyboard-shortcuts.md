@@ -20,7 +20,7 @@ The same keys are written out for one system in
 | Keys | Do |
 | --- | --- |
 | Mod+O | Open the connection picker |
-| Mod+N | New connection |
+| Mod+N | New connection. With a table's rows in front, [a new row]({% link _guide/editing-data.md %}#add-a-row) |
 | Mod+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
 | Mod+Shift+W | Close the connection |
 | Esc | Cancel connecting |
@@ -78,6 +78,8 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Keys | Do |
 | --- | --- |
 | Enter, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
+| Mod+N | Add a row, at the top of the grid |
+| Delete | Drop a new row that is not saved yet |
 | Mod+I | Edit the row in the row panel |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
