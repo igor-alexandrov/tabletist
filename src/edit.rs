@@ -1122,6 +1122,26 @@ impl Edits {
         self.note = Some(Note::Failed { row, error });
     }
 
+    /// The `INSERT` of the new row `id` failed with `error`: what is set
+    /// in it says so until the next save sends it again, and the row
+    /// itself where nothing is set. With no such row the save is refused
+    /// with the error.
+    pub fn fail_insert(&mut self, id: Option<usize>, error: Error) {
+        let held = id.filter(|id| self.added.iter().any(|new| new.id == *id));
+        let Some(id) = held else {
+            self.note = Some(Note::Refused(error));
+            return;
+        };
+        let row = new_row(id);
+        for (_, cell) in self.cells.range_mut((row, 0)..=(row, usize::MAX)) {
+            cell.state = State::Failed(error.clone());
+        }
+        if let Some(new) = self.added.iter_mut().find(|new| new.id == id) {
+            new.failed = Some(error.clone());
+        }
+        self.note = Some(Note::FailedInsert { error });
+    }
+
     pub fn row_mark(&self, row: usize) -> RowMark {
         row_mark(&self.cells, row)
     }
@@ -1179,6 +1199,8 @@ pub struct Saving {
     /// The page's row of each row of the change set, in its order: the
     /// answer names rows by their place in the set.
     pub rows: Vec<usize>,
+    /// The id of the new row of each of the set's inserts, in its order.
+    pub inserts: Vec<usize>,
     pub started: Instant,
     /// What to do once everything is written.
     pub then: Option<crate::model::Held>,
@@ -1194,6 +1216,8 @@ pub struct Saved {
     pub cells: Vec<CellPos>,
     pub changes: usize,
     pub rows: usize,
+    /// How many rows it added.
+    pub added: usize,
     pub elapsed: Duration,
 }
 
@@ -1226,6 +1250,9 @@ pub enum Note {
     },
     /// The statement of the page's row `row` failed.
     Failed { row: usize, error: Error },
+    /// The `INSERT` of a new row failed. The row says so itself: it has no
+    /// place in the page to be named by.
+    FailedInsert { error: Error },
     /// What was written is not known: the connection was lost while
     /// saving, or the answer is about a row the save did not send.
     Lost,

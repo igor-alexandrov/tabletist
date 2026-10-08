@@ -7,9 +7,9 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Answer, Editor, EditorPlace, Lock, Note, Order, Pending, Place, Problem, Saved, Saving, State,
-    Table, change_set, check, conflicting, is_change, new_id, new_row, opens_large, same_changes,
-    settled, shown_lines, start_text,
+    Answer, Editor, EditorPlace, Lock, NEW_ROWS, Note, Order, Pending, Place, Problem, Saved,
+    Saving, Sent, State, Table, change_set, check, conflicting, is_change, new_id, new_row,
+    opens_large, same_changes, settled, shown_lines, start_text,
 };
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
@@ -331,15 +331,24 @@ impl App {
         if object.edits.counts().to_fix > 0 {
             return Some(SaveBlock::ToFix);
         }
+        // A new row that lacks a value a save needs.
+        let lacking = self.table(tab, id, |table, object| {
+            let cells = &object.edits.cells;
+            let mut added = object.edits.added.iter();
+            added.any(|new| !table.missing(new.id, cells).is_empty())
+        });
+        if lacking == Some(true) {
+            return Some(SaveBlock::Required);
+        }
         if !matches!(workspace.status, SessionStatus::Connected) {
             return Some(SaveBlock::Disconnected);
         }
         if workspace.access == Access::ReadOnly {
             return Some(SaveBlock::ReadOnly);
         }
-        // Cells are pending and no change set comes of them: a Save that
+        // Something is pending and no change set comes of it: a Save that
         // would do nothing is not offered.
-        let unsendable = !object.edits.cells.is_empty()
+        let unsendable = object.edits.pending()
             && self
                 .table(tab, id, |table, object| {
                     change_set(&object.object, table, &object.edits.cells)
@@ -363,7 +372,7 @@ impl App {
         let nothing = self
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
-            .is_some_and(|object| object.edits.cells.is_empty());
+            .is_some_and(|object| !object.edits.pending());
         if nothing {
             if let Some(held) = then {
                 self.perform(held);
@@ -386,7 +395,6 @@ impl App {
         let Some((changes, sent)) = built else {
             return;
         };
-        let rows = sent.rows;
         let confirm = self
             .workspace(tab)
             .is_some_and(|workspace| workspace.environment.confirms_writes());
@@ -409,13 +417,13 @@ impl App {
             if let Some((part, error)) = review.refused.clone() {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.saved = None;
-                    // No new row is sent yet: one that was refused is a
-                    // save the app refused.
-                    let row = match part {
-                        Part::Row(index) => rows.get(index).copied(),
-                        Part::Insert(_) => None,
-                    };
-                    object.edits.fail(row, error);
+                    match part {
+                        Part::Row(index) => object.edits.fail(sent.rows.get(index).copied(), error),
+                        Part::Insert(index) => {
+                            let new = sent.inserts.get(index).copied();
+                            object.edits.fail_insert(new, error);
+                        }
+                    }
                     // The row panel says what stands against a cell.
                     object.fields = None;
                 }
@@ -436,7 +444,8 @@ impl App {
                 id,
                 review,
                 changes: cells,
-                rows: rows.len(),
+                rows: sent.rows.len(),
+                added: changes.inserts.len(),
                 typed: String::new(),
                 focus: true,
                 changeset: changes,
@@ -445,7 +454,7 @@ impl App {
             })));
             return;
         }
-        self.send_write(tab, id, changes, rows, then);
+        self.send_write(tab, id, changes, sent, then);
     }
 
     /// Sends the save the production confirmation shows, if it is still
@@ -496,7 +505,7 @@ impl App {
         if let Some((changes, sent)) = now
             && same_changes(&changes, &changeset)
         {
-            self.send_write(tab, id, changes, sent.rows, then);
+            self.send_write(tab, id, changes, sent, then);
         }
     }
 
@@ -505,7 +514,7 @@ impl App {
         tab: ConnTabId,
         id: TabId,
         changes: ChangeSet,
-        rows: Vec<usize>,
+        sent: Sent,
         then: Option<Held>,
     ) {
         let request = RequestId(self.next_id());
@@ -520,7 +529,8 @@ impl App {
         object.edits.saved = None;
         object.edits.saving = Some(Saving {
             request,
-            rows,
+            rows: sent.rows,
+            inserts: sent.inserts,
             started: std::time::Instant::now(),
             then,
         });
@@ -966,7 +976,7 @@ impl App {
         // The table on screen, and whether anything is pending in it.
         let table = workspace
             .active_object_tab()
-            .map(|object| (object.id, !object.edits.cells.is_empty()));
+            .map(|object| (object.id, object.edits.pending()));
         let action = match (text.trim(), table) {
             ("", _) => return,
             ("w", Some((id, _))) => Action::WriteEdits { tab, id },
@@ -1002,7 +1012,7 @@ impl App {
             self.close_editor(tab, id, true);
         }
         if let Some(object) = self.object_tab_mut(tab, id) {
-            object.edits.reviewing = show && !object.edits.cells.is_empty();
+            object.edits.reviewing = show && object.edits.pending();
             if !object.edits.reviewing {
                 object.edits.review = None;
             }
@@ -1087,44 +1097,111 @@ impl App {
         // did not send: no row is named for want of it.
         let place = |index: usize| saving.rows.get(index).copied();
         match result {
-            // No save of the app carries a new row yet, so nothing comes
-            // back for one.
             Ok(WriteOutcome::Written {
-                inserted: _,
+                inserted,
                 rows,
                 elapsed,
             }) => {
                 let counts = object.edits.counts();
-                let cells = object
+                // The changed cells, by the page's rows they were of.
+                let changed: Vec<CellPos> = object
                     .edits
                     .cells
-                    .keys()
-                    .map(|&(row, col)| CellPos { row, col })
+                    .range(..(NEW_ROWS, 0))
+                    .map(|(&(row, col), _)| CellPos { row, col })
                     .collect();
+                // Where the new rows stood: the set is dropped next.
+                let added = std::mem::take(&mut object.edits.added);
                 // The rows an earlier save found gone are still gone.
                 object.edits.discard();
                 object.fields = None;
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
+                    let wide = |row: &Vec<tabletist_db::Value>| row.len() == page.columns.len();
                     rows.len() == saving.rows.len()
-                        && rows.iter().all(|row| row.len() == page.columns.len())
+                        && rows.iter().all(wide)
                         && saving.rows.iter().all(|&at| at < page.rows.len())
+                        // Every new row is known, and is one the set held.
+                        && inserted.len() == saving.inserts.len()
+                        && inserted.iter().all(|row| row.as_ref().is_some_and(wide))
+                        && saving.inserts.len() == added.len()
+                        && saving
+                            .inserts
+                            .iter()
+                            .all(|id| added.iter().any(|new| new.id == *id))
                 });
-                if fits {
-                    if let Some(page) = object.rows.value.as_mut() {
-                        for (row, &at) in rows.into_iter().zip(&saving.rows) {
-                            page.rows[at] = row;
+                let page = object.rows.value.as_mut().filter(|_| fits);
+                if let Some(page) = page {
+                    for (row, &at) in rows.into_iter().zip(&saving.rows) {
+                        page.rows[at] = row;
+                    }
+                    // Each new row takes its place in the page: the rows
+                    // are the page's from here on, in the order they were
+                    // shown, so a row's number is where it was shown.
+                    let order = Order::of(&added, page.rows.len());
+                    let stored = inserted.into_iter().flatten();
+                    let mut stored: std::collections::BTreeMap<usize, Vec<tabletist_db::Value>> =
+                        saving.inserts.iter().copied().zip(stored).collect();
+                    let mut loaded: Vec<Option<Vec<tabletist_db::Value>>> =
+                        std::mem::take(&mut page.rows)
+                            .into_iter()
+                            .map(Some)
+                            .collect();
+                    page.rows = (0..order.len())
+                        .filter_map(|place| {
+                            let row = order.row(place)?;
+                            match new_id(row) {
+                                Some(id) => stored.remove(&id),
+                                None => loaded.get_mut(row)?.take(),
+                            }
+                        })
+                        .collect();
+                    let width = page.columns.len();
+                    let now = |row: usize| order.place(row);
+                    // What the save wrote, where it is now: each changed
+                    // cell, and every cell of a new row.
+                    let mut cells: Vec<CellPos> = changed
+                        .into_iter()
+                        .filter_map(|cell| {
+                            let row = now(cell.row)?;
+                            Some(CellPos { row, col: cell.col })
+                        })
+                        .collect();
+                    for &id in &saving.inserts {
+                        if let Some(row) = now(new_row(id)) {
+                            cells.extend((0..width).map(|col| CellPos { row, col }));
                         }
+                    }
+                    // By row, then column: the grid finds a cell by halving.
+                    cells.sort_unstable_by_key(|cell| (cell.row, cell.col));
+                    let gone = std::mem::take(&mut object.edits.gone);
+                    object.edits.gone = gone.into_iter().filter_map(now).collect();
+                    object.selection = object.selection.and_then(|cell| {
+                        let row = now(cell.row)?;
+                        Some(CellPos { row, col: cell.col })
+                    });
+                    // The table has that many rows more, where it is known
+                    // how many it had.
+                    let more = saving.inserts.len() as u64;
+                    if let Some(count) = object.count.value.as_mut() {
+                        *count += more;
+                    }
+                    if let Some(estimate) = object.estimated_rows.as_mut() {
+                        *estimate += more;
                     }
                     object.edits.saved = Some(Saved {
                         at: std::time::Instant::now(),
                         cells,
                         changes: counts.changes,
                         rows: counts.rows,
+                        added: counts.added,
                         elapsed,
                     });
                 } else {
-                    // The table is not the one the page was read from:
-                    // read it again.
+                    // The table is not the one the page was read from, or a
+                    // new row came back unknown (a table with a trigger,
+                    // MySQL without a key to find it by): read it again. A
+                    // new row is nowhere until the page says where.
+                    object.off_new_rows();
                     self.fetch_rows(tab, id);
                 }
                 // Written either way, and the set is empty: what was held
@@ -1174,10 +1251,10 @@ impl App {
                 // The row panel says what stands against a cell.
                 object.fields = None;
             }
-            Ok(WriteOutcome::FailedInsert { error, .. }) => {
-                // As a save the database refused, until a tab holds new
-                // rows for the failure to be shown on.
-                object.edits.fail(None, error);
+            Ok(WriteOutcome::FailedInsert { insert, error }) => {
+                let new = saving.inserts.get(insert).copied();
+                object.edits.fail_insert(new, error);
+                // The row panel says what stands against a cell.
                 object.fields = None;
             }
             Err(error) => {
@@ -1297,7 +1374,7 @@ impl App {
         let pending = self
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
-            .is_some_and(|object| !object.edits.cells.is_empty());
+            .is_some_and(|object| object.edits.pending());
         if !pending {
             return;
         }

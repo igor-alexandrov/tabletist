@@ -10976,6 +10976,216 @@ mod tests {
             assert_eq!(object(&harness, tab, id).edits.added.len(), 1);
         }
 
+        /// A row of `book_covers` as the database stores one.
+        fn cover(id: i64, publisher: i64) -> Vec<Value> {
+            vec![
+                Value::Int(id),
+                Value::Int(publisher),
+                Value::Text("print".into()),
+                Value::Null,
+                Value::Text("2026-10-07 10:42:09".into()),
+            ]
+        }
+
+        const HARBOR: i64 = 9_100_000_000_000_000_004;
+
+        /// Sets the new row's publisher, the one value a save needs.
+        fn publish(harness: &mut Harness, tab: ConnTabId, id: TabId, new: usize) {
+            type_into(harness, tab, id, at(new_row(new), 1), &HARBOR.to_string());
+        }
+
+        #[test]
+        fn a_new_row_waits_for_its_required_values() {
+            let (mut harness, tab, id, new) = with_new_row();
+            harness.app.apply(Action::CancelEdit { tab, id });
+            assert_eq!(
+                harness.app.save_blocked(tab, id),
+                Some(crate::model::SaveBlock::Required)
+            );
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(write_since(&harness, before).is_none());
+            // Filled, the save goes out: one INSERT, naming what was set.
+            publish(&mut harness, tab, id, new);
+            assert_eq!(harness.app.save_blocked(tab, id), None);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let changes = write_since(&harness, before).expect("a Write");
+            assert!(changes.rows.is_empty(), "{:?}", changes.rows);
+            assert_eq!(changes.inserts.len(), 1);
+            let set = &changes.inserts[0].set;
+            assert_eq!(set.len(), 1, "{set:?}");
+            assert_eq!(set[0].column, "publisher_id");
+            let saving = object(&harness, tab, id).edits.saving.as_ref().unwrap();
+            assert_eq!(saving.inserts, [new]);
+            assert!(saving.rows.is_empty());
+        }
+
+        #[test]
+        fn a_saved_new_row_takes_what_the_database_stored() {
+            let (mut harness, tab, id, new) = with_new_row();
+            publish(&mut harness, tab, id, new);
+            // A changed row beside it, and a row an earlier save found gone.
+            type_into(&mut harness, tab, id, at(1, 2), "audio");
+            tab_mut(&mut harness, tab, id).edits.gone.insert(2);
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(new_row(new), 1),
+            });
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let mut changed = cover(2, 9_100_000_000_000_000_002);
+            changed[2] = Value::Text("audio".into());
+            harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: vec![Some(cover(15, HARBOR))],
+                rows: vec![changed],
+                elapsed: std::time::Duration::from_millis(5),
+            }));
+            let tab_now = object(&harness, tab, id);
+            assert!(!tab_now.edits.holds() && tab_now.edits.added.is_empty());
+            // The row is the page's first now, with the id the database
+            // gave it and the defaults it filled, and every row after it
+            // is one further down.
+            let page = tab_now.page().unwrap();
+            assert_eq!(page.rows.len(), 4);
+            assert_eq!(page.rows[0], cover(15, HARBOR));
+            assert_eq!(page.rows[1][0], Value::Int(1));
+            assert_eq!(page.rows[2][2], Value::Text("audio".into()));
+            assert_eq!(tab_now.selection, Some(at(0, 1)));
+            let gone: Vec<usize> = tab_now.edits.gone.iter().copied().collect();
+            assert_eq!(gone, [3]);
+            // The whole new row shows that it was written, and the changed
+            // cell where it is now.
+            let saved = tab_now.edits.saved.as_ref().unwrap();
+            assert_eq!((saved.added, saved.changes, saved.rows), (1, 1, 1));
+            let mut cells: Vec<CellPos> = (0..5).map(|col| at(0, col)).collect();
+            cells.push(at(2, 2));
+            assert_eq!(saved.cells, cells);
+        }
+
+        #[test]
+        fn rows_saved_in_place_keep_the_places_they_were_opened_at() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            // One below the page's row 1, one below its last.
+            for place in [Place::Below(1), Place::Below(2)] {
+                harness.app.apply(Action::AddRow { tab, id, place });
+                let new = object(&harness, tab, id).edits.added.last().unwrap().id;
+                publish(&mut harness, tab, id, new);
+            }
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: vec![Some(cover(15, HARBOR)), Some(cover(16, HARBOR))],
+                rows: Vec::new(),
+                elapsed: std::time::Duration::ZERO,
+            }));
+            let page = object(&harness, tab, id).page().unwrap();
+            let ids: Vec<&Value> = page.rows.iter().map(|row| &row[0]).collect();
+            let expected = [1, 2, 15, 3, 16].map(Value::Int);
+            assert_eq!(ids, expected.iter().collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn a_new_row_that_comes_back_unknown_reloads_the_page() {
+            let (mut harness, tab, id, new) = with_new_row();
+            publish(&mut harness, tab, id, new);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let before = harness.app.backend.sent.len();
+            harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: vec![None],
+                rows: Vec::new(),
+                elapsed: std::time::Duration::ZERO,
+            }));
+            let tab_now = object(&harness, tab, id);
+            assert!(tab_now.edits.added.is_empty() && tab_now.selection.is_none());
+            assert_eq!(tab_now.page().unwrap().rows.len(), 3, "not guessed at");
+            let fetched = harness.app.backend.sent[before..]
+                .iter()
+                .any(|command| matches!(command, Command::FetchRows { .. }));
+            assert!(fetched, "the page is read again");
+        }
+
+        #[test]
+        fn a_failed_insert_leaves_everything_pending() {
+            let (mut harness, tab, id, new) = with_new_row();
+            let row = new_row(new);
+            type_into(&mut harness, tab, id, at(row, 1), "9100000000000000099");
+            type_into(&mut harness, tab, id, at(1, 2), "audio");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let error = tabletist_db::Error::query("FOREIGN KEY constraint failed");
+            harness.answer_written(Ok(WriteOutcome::FailedInsert {
+                insert: 0,
+                error: error.clone(),
+            }));
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.saving.is_none());
+            // The row and its changed neighbour are both still pending; the
+            // new row says what the database said.
+            assert_eq!(edits.added.len(), 1);
+            assert_eq!(edits.added[0].failed, Some(error.clone()));
+            assert_eq!(edits.cells[&(row, 1)].state, State::Failed(error.clone()));
+            assert_eq!(edits.cells[&(1, 2)].state, State::Ready);
+            assert_eq!(edits.note, Some(crate::edit::Note::FailedInsert { error }));
+            // Typing into it again takes the failure off the row.
+            publish(&mut harness, tab, id, new);
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.added[0].failed, None);
+            assert_eq!(edits.cells[&(row, 1)].state, State::Ready);
+        }
+
+        #[test]
+        fn a_table_without_a_key_takes_a_row_it_then_locks() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            let structure = tab_mut(&mut harness, tab, id).structure.value.as_mut();
+            structure.unwrap().primary_key.clear();
+            let place = Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            let new = object(&harness, tab, id).edits.added[0].id;
+            publish(&mut harness, tab, id, new);
+            assert_eq!(harness.app.save_blocked(tab, id), None);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: vec![Some(cover(15, HARBOR))],
+                rows: Vec::new(),
+                elapsed: std::time::Duration::ZERO,
+            }));
+            let page = object(&harness, tab, id).page().unwrap();
+            assert_eq!(page.rows[0], cover(15, HARBOR));
+            // Saved, it is a row of a table without a key: not to be edited.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            let tab_now = object(&harness, tab, id);
+            assert!(tab_now.edits.editor.is_none());
+            assert_eq!(tab_now.edits.why, Some((at(0, 2), Lock::NoKey)));
+        }
+
+        #[test]
+        fn a_save_to_production_counts_its_new_rows() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            let place = Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            let new = object(&harness, tab, id).edits.added[0].id;
+            publish(&mut harness, tab, id, new);
+            type_into(&mut harness, tab, id, at(1, 2), "audio");
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(write_since(&harness, before).is_none(), "asked first");
+            let Some(Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+                panic!("the confirmation");
+            };
+            assert_eq!((prompt.added, prompt.changes, prompt.rows), (1, 1, 1));
+            harness.app.apply(Action::ConfirmWrite);
+            let changes = write_since(&harness, before).expect("a Write");
+            assert_eq!((changes.inserts.len(), changes.rows.len()), (1, 1));
+        }
+
         /// The newest `Write` sent, if any since `from`.
         fn write_since(harness: &Harness, from: usize) -> Option<&tabletist_db::ChangeSet> {
             harness.app.backend.sent[from..]
@@ -13487,6 +13697,7 @@ mod tests {
                     cells: vec![at(4, 1)],
                     changes: 1,
                     rows: 1,
+                    added: 0,
                     elapsed: std::time::Duration::ZERO,
                 });
             }

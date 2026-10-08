@@ -1300,6 +1300,8 @@ pub struct WritePrompt {
     pub review: crate::review::Review,
     pub changes: usize,
     pub rows: usize,
+    /// How many rows the save adds.
+    pub added: usize,
     /// What the Omarchy box's field holds: `write` confirms.
     pub typed: String,
     pub focus: bool,
@@ -1844,6 +1846,8 @@ pub enum SaveBlock {
     Saving,
     /// A cell fails its check.
     ToFix,
+    /// A new row lacks a value a save needs.
+    Required,
     /// The session is not connected.
     Disconnected,
     /// The session came back read-only.
@@ -3069,6 +3073,7 @@ impl std::fmt::Debug for WritePrompt {
             .field("id", &self.id)
             .field("changes", &self.changes)
             .field("rows", &self.rows)
+            .field("added", &self.added)
             .finish_non_exhaustive()
     }
 }
@@ -3880,6 +3885,7 @@ mod tests {
         tab.as_object_mut().unwrap().edits.saving = Some(crate::edit::Saving {
             request: RequestId(5),
             rows: vec![0],
+            inserts: Vec::new(),
             started: std::time::Instant::now(),
             then: None,
         });
