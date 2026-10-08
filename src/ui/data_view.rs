@@ -110,8 +110,7 @@ pub fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32
     width
 }
 
-/// The object's name and counts, the Data/Structure switch, and Add row
-/// (disabled until editing arrives).
+/// The object's name and counts, the Data/Structure switch, and Add row.
 pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
@@ -123,6 +122,15 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let view = object.view;
     let parts = subtitle(object, &look, locale);
     let summary = parts.join(" · ");
+    // Why Add row cannot be pressed, where it cannot: the table takes no
+    // row, or its page is not there yet.
+    let no_rows = app.workspace(tab).and_then(|workspace| {
+        let lock = match Table::of(workspace, object) {
+            Some(table) => table.no_rows(),
+            None => Some(crate::edit::Lock::Refreshing),
+        };
+        lock.map(|lock| cell_editor::lock_text(lock, &name, locale))
+    });
     let mut actions = Vec::new();
     // macOS: 14 above and 12 below the title and its line, 2 apart.
     // Terminal: 12 above and 10 below a line holding a 2 pt underline.
@@ -246,18 +254,21 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 .map(|(_, label, _)| width(TextRole::UiBodyStrong, label) + 28.0)
                 .collect();
             let switch = widths.iter().sum::<f32>() + 6.0;
-            // Add row, disabled until editing arrives, keeps 12 clear of the
-            // switch. When the room runs out the summary gives way first,
-            // then Add row drops its text, then it goes, and only then is
-            // the title cut.
+            // Add row keeps 12 clear of the switch. When the room runs out
+            // the summary gives way first, then Add row drops its text and
+            // its key, then it goes, and only then is the title cut.
             let label = gettext(locale, "Add row");
-            let reason = gettext(locale, "Editing arrives in a later version");
+            let keys = format!("{}N", look.command_key());
             let add_row = |short: bool| {
                 let button = widgets::ButtonSpec::new(if short { "" } else { &label })
                     .label(&label)
                     .icon(Icon::Plus)
-                    .role(TextRole::UiBodyStrong)
-                    .disabled(&reason);
+                    .role(TextRole::UiBodyStrong);
+                let button = match &no_rows {
+                    Some(reason) => button.disabled(reason),
+                    None if short => button,
+                    None => button.shortcut(&keys),
+                };
                 if short { button.gap(0.0) } else { button }
             };
             let stack = |button: Option<bool>| {
@@ -342,7 +353,21 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 let width = button.width(ui, &look);
                 let place =
                     Rect::from_min_size(pos2(right - width, center - 16.0), vec2(width, 32.0));
-                button.show_at(ui, place, &look, &palette);
+                if button.show_at(ui, place, &look, &palette).clicked() {
+                    // From the Structure view: the rows first, then the row.
+                    if view != ObjectView::Data {
+                        actions.push(Action::SetView {
+                            tab,
+                            object_tab,
+                            view: ObjectView::Data,
+                        });
+                    }
+                    actions.push(Action::AddRow {
+                        tab,
+                        id: object_tab,
+                        place: crate::edit::Place::Top,
+                    });
+                }
             }
         });
     app.actions.extend(actions);
@@ -1248,7 +1273,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             .map(|tags| tags.when(fit.value_tags))
             .collect();
         // Grouping is for amounts: a key reads as the name it is.
-        let shown: Vec<Shown> = page
+        let fits: Vec<Shown> = page
             .columns
             .iter()
             .map(|column| Shown {
@@ -1266,6 +1291,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             computed,
             &ctx,
         );
+        // The rows as the grid shows them: the page's, and the new ones
+        // among them. A place is the grid's; a row is the set's and the
+        // page's, and the reducer's.
+        let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
+        let placed = |cell: CellPos| {
+            let row = order.place(cell.row)?;
+            Some(CellPos { row, col: cell.col })
+        };
+        let held = |cell: CellPos| {
+            let row = order.row(cell.row)?;
+            Some(CellPos { row, col: cell.col })
+        };
         // Why the cell last asked for cannot be edited, at that cell. The
         // terminal says it in its mode line. Not under a dialog: the note
         // is drawn over everything, and would stand on it.
@@ -1308,18 +1345,34 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             ui,
             id,
             &columns,
-            page.rows.len(),
+            order.len(),
             object.query.offset,
-            object.selection,
+            object.selection.and_then(placed),
             keys,
             &palette,
             &look,
-            &|row| crate::edit::row_mark(changes.cells, row),
-            editing,
+            &|place| match order.row(place) {
+                Some(row) => crate::edit::row_mark(changes.cells, row),
+                None => crate::edit::RowMark::None,
+            },
+            editing.and_then(placed),
             if large { None } else { Some(&mut field) },
-            |row, col| {
-                let loaded = &page.rows[row][col];
+            |place, col| {
+                let Some(row) = order.row(place) else {
+                    return Cell::default();
+                };
                 let column = &page.columns[col];
+                if crate::edit::new_id(row).is_some() {
+                    // A new row: what was set in the cell, or nothing yet.
+                    return match changes.cells.get(&(row, col)) {
+                        Some(pending) => {
+                            let value = drawn(&pending.new);
+                            kept(cell(&ctx, &value, column, &tags[col], &look, fits[col]))
+                        }
+                        None => Cell::default(),
+                    };
+                }
+                let loaded = &page.rows[row][col];
                 // A pending cell shows its new value, drawn as any value.
                 // The value is made here, for a cell the grid asks for:
                 // a set can hold thousands of texts of a quarter of a
@@ -1327,9 +1380,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 let mut cell = match changes.cells.get(&(row, col)) {
                     Some(pending) => {
                         let value = drawn(&pending.new);
-                        kept(cell(&ctx, &value, column, &tags[col], &look, shown[col]))
+                        kept(cell(&ctx, &value, column, &tags[col], &look, fits[col]))
                     }
-                    None => cell(&ctx, loaded, column, &tags[col], &look, shown[col]),
+                    None => cell(&ctx, loaded, column, &tags[col], &look, fits[col]),
                 };
                 changes.mark(&mut cell, (row, col), loaded, column, &look, locale);
                 cell
@@ -1364,11 +1417,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 place,
             });
         }
-        if let Some(cell) = output.clicked {
+        if let Some(cell) = output.clicked.and_then(held) {
             actions.push(Action::SelectCell { tab, id, cell });
         }
         // A second click edits the cell.
-        if let Some(cell) = output.double_clicked {
+        if let Some(cell) = output.double_clicked.and_then(held) {
             let start = EditStart::Value;
             actions.push(Action::EditCell {
                 tab,
@@ -1390,7 +1443,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         }
         // Not while a fetch has lasted: its box would sit on the state's
         // title or its button, and says what is happening by itself.
-        if page.rows.is_empty() && !lasted {
+        if order.is_empty() && !lasted {
             // The headers stay: the columns are still worth reading.
             let under = Rect::from_min_max(
                 pos2(area.left(), area.top() + grid::header_height(&look)),

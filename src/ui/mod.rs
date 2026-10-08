@@ -10663,16 +10663,13 @@ mod tests {
                 reached = true;
                 // Why not, where a screen reader finds it and on screen.
                 let (_, node) = tree.nodes.iter().find(|(id, _)| *id == tree.focus).unwrap();
-                assert_eq!(
-                    node.description(),
-                    Some("Editing arrives in a later version")
-                );
+                assert_eq!(node.description(), Some("This connection opens read-only"));
                 assert!(node.is_disabled());
                 assert!(
                     harness
                         .painted
                         .iter()
-                        .any(|(text, _)| text == "Editing arrives in a later version"),
+                        .any(|(text, _)| text == "This connection opens read-only"),
                     "{:?}",
                     harness.painted
                 );
@@ -11216,6 +11213,168 @@ mod tests {
         focus_grid(&mut harness, tab);
         harness.settle();
         (harness, tab, id)
+    }
+
+    /// The Bookshop's covers, writable, the grid holding the keyboard.
+    fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let (tab, id) = harness.book_covers();
+        focus_grid(&mut harness, tab);
+        harness.settle();
+        (harness, tab, id)
+    }
+
+    /// Whether the connection dialog is up.
+    fn connecting(harness: &Harness) -> bool {
+        matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::Connection(_))
+        )
+    }
+
+    #[test]
+    fn mod_n_adds_a_row_to_the_table_in_front_and_delete_drops_it() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = covers_in(look);
+            // Held down, the chord adds one row, not a column of them: a
+            // key that goes down while it is down is a repeat.
+            for _ in 0..3 {
+                harness.frame(vec![crate::testing::key(Key::N, Modifiers::COMMAND)]);
+            }
+            harness.frame(vec![crate::testing::release(Key::N, Modifiers::COMMAND)]);
+            harness.settle();
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).added.len(), 1, "{}", look.name);
+            // The bar is there for it, with nothing set in it yet.
+            assert!(harness.has("1 new row"), "{}", look.name);
+            // Its first required cell is open and has the keyboard.
+            harness.settle();
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id).map(|at| at.1), Some(1));
+            // Esc leaves the row pending.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none());
+            assert_eq!(edits(&harness, tab, id).added.len(), 1, "{}", look.name);
+            // Delete drops the new row the selection is on, and no other.
+            harness.press(Key::Delete, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).added.is_empty(), "{}", look.name);
+            harness.press(Key::Delete, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab).unwrap();
+            let rows = workspace.object_tab(id).unwrap().page().unwrap().rows.len();
+            assert_eq!(rows, 3, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_n_is_a_new_connection_where_no_row_can_be_added() {
+        // A read-only connection's table.
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+        // The Structure view of a table that takes rows.
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        harness.app.apply(Action::SetView {
+            tab,
+            object_tab: id,
+            view: crate::model::ObjectView::Structure,
+        });
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+        assert!(edits(&harness, tab, id).added.is_empty());
+        // The terminal look, whose key for a row is `o`.
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+        assert!(edits(&harness, tab, id).added.is_empty());
+        // A SQL editor on a writable connection: a query's result takes
+        // no row, and the key is the connection's there.
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake_as(false);
+        harness.app.apply(Action::NewSqlTab(tab));
+        harness.press(Key::N, Modifiers::COMMAND);
+        assert!(connecting(&harness));
+    }
+
+    #[test]
+    fn o_opens_a_row_below_the_cursor_and_capital_o_above_it() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        select(&mut harness, tab, id, (1, 2));
+        type_key(&mut harness, Key::O, "o");
+        let below = edits(&harness, tab, id).added[0].clone();
+        assert_eq!(below.before, 2);
+        assert!(edits(&harness, tab, id).editor.is_some(), "insert mode");
+        // Esc keeps the row.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        select(&mut harness, tab, id, (1, 2));
+        harness.frame(vec![
+            crate::testing::key(Key::O, Modifiers::SHIFT),
+            egui::Event::Text("O".into()),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::O, Modifiers::SHIFT)]);
+        harness.settle();
+        let added = &edits(&harness, tab, id).added;
+        assert_eq!(added.len(), 2);
+        assert_eq!((added[0].before, added[1].id), (1, below.id));
+        // `dd` drops the new row under the cursor; one `d` does not.
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 2);
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        assert_eq!(edits(&harness, tab, id).added[0].id, below.id);
+        // A chord's letter is no `o`, and with the arrows on the tree the
+        // letter adds nothing.
+        harness.frame(vec![
+            egui::Event::ModifiersChanged(Modifiers::ALT),
+            crate::testing::key(Key::O, Modifiers::ALT),
+            egui::Event::Text("o".into()),
+        ]);
+        harness.frame(vec![
+            crate::testing::release(Key::O, Modifiers::ALT),
+            egui::Event::ModifiersChanged(Modifiers::NONE),
+        ]);
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        type_key(&mut harness, Key::O, "o");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+    }
+
+    #[test]
+    fn a_first_d_from_the_structure_view_is_not_half_of_dd() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        select(&mut harness, tab, id, (0, 1));
+        type_key(&mut harness, Key::O, "o");
+        harness.press(Key::Escape, Modifiers::NONE);
+        // `s` shows the structure and `d` the rows again: that `d` brought
+        // the rows up, and the next one is a first.
+        type_key(&mut harness, Key::S, "s");
+        type_key(&mut harness, Key::D, "d");
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        type_key(&mut harness, Key::D, "d");
+        assert!(edits(&harness, tab, id).added.is_empty());
+    }
+
+    #[test]
+    fn the_add_row_button_adds_a_row_where_one_can_be_added() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        harness.click("Add row");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        // From the Structure view it shows the rows first.
+        harness.app.apply(Action::DiscardEdits { tab, id });
+        harness.app.apply(Action::SetView {
+            tab,
+            object_tab: id,
+            view: crate::model::ObjectView::Structure,
+        });
+        harness.click("Add row");
+        let workspace = harness.app.workspace(tab).unwrap();
+        let object = workspace.object_tab(id).unwrap();
+        assert_eq!(object.view, crate::model::ObjectView::Data);
+        assert_eq!(object.edits.added.len(), 1);
     }
 
     /// The middle of the cell that shows `text`.

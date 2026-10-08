@@ -44,14 +44,26 @@ pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static s
     format!("{count} {}", ngettext(locale, one, many, plural))
 }
 
-/// "3 changes in 2 rows".
-fn counts_text(changes: usize, rows: usize, locale: Locale) -> String {
-    format!(
-        "{} {} {}",
-        counted(locale, changes, "change", "changes"),
-        gettext(locale, "in"),
-        counted(locale, rows, "row", "rows")
-    )
+/// "1 new row · 3 changes in 2 rows", each part where there is any. Short,
+/// the changes go without their rows.
+fn counts_text(counts: crate::edit::Counts, short: bool, locale: Locale) -> String {
+    let mut parts = Vec::new();
+    if counts.added > 0 {
+        parts.push(counted(locale, counts.added, "new row", "new rows"));
+    }
+    if counts.changes > 0 {
+        let changes = counted(locale, counts.changes, "change", "changes");
+        parts.push(if short {
+            changes
+        } else {
+            format!(
+                "{changes} {} {}",
+                gettext(locale, "in"),
+                counted(locale, counts.rows, "row", "rows")
+            )
+        });
+    }
+    parts.join(" · ")
 }
 
 /// `text` as a sentence: with one full stop at its end.
@@ -207,7 +219,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         .and_then(|workspace| workspace.object_tab(id))
         .filter(|object| {
             let edits = &object.edits;
-            !edits.cells.is_empty() || edits.saving.is_some() || edits.note.is_some()
+            edits.pending() || edits.saving.is_some() || edits.note.is_some()
         });
     let Some(object) = object else {
         // A panel takes one of its parent's ids. Passed over while there is
@@ -219,7 +231,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     };
     let edits = &object.edits;
     let saving = edits.saving.is_some();
-    let pending = !edits.cells.is_empty();
+    let pending = edits.pending();
     let reviewing = edits.reviewing;
     let counts = edits.counts();
     let note = edits
@@ -262,8 +274,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let width = move |role: TextRole, text: &str| role.width(&ctx, look.faces, text);
 
             // What the bar says, and the room each part of it asks for.
-            let whole = pending.then(|| counts_text(counts.changes, counts.rows, locale));
-            let short = pending.then(|| counted(locale, counts.changes, "change", "changes"));
+            let whole = pending.then(|| counts_text(counts, false, locale));
+            let short = pending.then(|| counts_text(counts, true, locale));
             let fix = (counts.to_fix > 0)
                 .then(|| format!("{} {}", counts.to_fix, gettext(locale, "to fix")));
             let fix_width = fix.as_ref().map(|fix| MARK + 5.0 + width(body, fix));

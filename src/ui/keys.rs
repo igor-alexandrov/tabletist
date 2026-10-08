@@ -85,6 +85,10 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     // Editing a table's cells: each look's own keys for the same things.
     ("Enter, F2", "Edit the cell", DESKTOP),
     ("i, Enter", "Edit the cell", TERMINAL),
+    ("Mod+N", "Add a row", DESKTOP),
+    ("o, O", "Add a row below or above the cursor", TERMINAL),
+    ("Delete", "Drop a new row", DESKTOP),
+    ("dd", "Drop a new row", TERMINAL),
     ("Mod+I", "Focus inspector fields", DESKTOP),
     ("Ctrl+L, Mod+I", "Focus inspector fields", TERMINAL),
     (
@@ -119,7 +123,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Esc", "Close the SQL of the pending changes", TERMINAL),
     ("Y", "Copy the SQL of the pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, o, O, dd, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -185,6 +189,17 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .is_some_and(|object| object.view == crate::model::ObjectView::Data)
     });
     let terminal = app.look.terminal;
+    // Mod+N adds a row where a table's rows are in front and the table
+    // takes one, as the design scopes the key to a table, in the looks
+    // whose key for it this is. Everywhere else it is a new connection.
+    let adds = object.filter(|_| grid && !terminal).filter(|&(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| {
+                let object = workspace.object_tab(id)?;
+                crate::edit::Table::of(workspace, object)
+            })
+            .is_some_and(|table| table.no_rows().is_none())
+    });
     // The row panel's field that has the keyboard, of the table on screen:
     // its keys are read here with the grid's, so one key is never both's.
     let field = object.filter(|_| grid).and_then(|(tab, id)| {
@@ -332,6 +347,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // repeats after the dialog is gone.
         if give_up && consume_press(input, Modifiers::NONE, Key::Escape) {
             actions.push(Action::Disconnect(active));
+        }
+        // A fresh press only: held down, it would add a row a frame. The
+        // press is taken, so the line below that reads the same chord for
+        // a new connection finds none.
+        if let Some((tab, id)) = adds
+            && consume_press(input, Modifiers::COMMAND, Key::N)
+        {
+            let place = crate::edit::Place::Top;
+            actions.push(Action::AddRow { tab, id, place });
         }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {
@@ -865,7 +889,7 @@ fn editing_keys(
     // is something to save, whatever has the keyboard (the grid, the tree,
     // a button, the filter's field) and in the Structure view as well. The
     // terminal's Ctrl+S is the same chord.
-    if (open || !object.edits.cells.is_empty()) && ctx.input_mut(save) {
+    if (open || object.edits.pending()) && ctx.input_mut(save) {
         // While the editor's field has the keyboard a save takes what is
         // being typed. Whether this frame changed the text is not known
         // yet: noting it as typed is harmless, since a text left as it was
@@ -881,7 +905,7 @@ fn editing_keys(
     let review = |input: &mut egui::InputState| {
         consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::D)
     };
-    if (open || !object.edits.cells.is_empty()) && ctx.input_mut(review) {
+    if (open || object.edits.pending()) && ctx.input_mut(review) {
         // Shown, the review takes what is being typed, as a save does:
         // noted as typed for the reason the save notes it.
         if typing {
@@ -960,6 +984,16 @@ fn editing_keys(
         let Some(selected) = object.selection else {
             return;
         };
+        // Delete (the key a Mac labels so too) drops a new row: nothing of
+        // it is in the table. On a row of the page neither key does
+        // anything yet.
+        let on_new = crate::edit::new_id(selected.row).is_some() && field.is_none();
+        let deletes = take_press(input, Modifiers::NONE, Key::Delete)
+            + take_press(input, Modifiers::NONE, Key::Backspace);
+        if on_new && deletes > 0 {
+            actions.push(Action::DropRow { tab, id });
+            return;
+        }
         let cell = crate::model::CellPos {
             row: selected.row,
             col: field.unwrap_or(selected.col),
@@ -1030,7 +1064,8 @@ fn editing_keys(
 
 /// The terminal look's normal mode on the grid of the table `id`: `i` and
 /// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
-/// the cell NULL, `u` puts back what was loaded, and `:` opens the prompt
+/// the cell NULL, `u` puts back what was loaded, `o` and `O` open a new row
+/// below the cursor's and above it, and `:` opens the prompt
 /// that writes, discards and shows the SQL. The letters are read as the
 /// text they type, in the order they came, and taken: a letter that opens
 /// an editor or the prompt is no part of its text, and what follows it in
@@ -1085,7 +1120,7 @@ fn editing_letters(
         }
     };
     let alone = actions.is_empty();
-    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":");
+    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":" | "o" | "O");
     let enter = |event: &egui::Event| is_press(event, Modifiers::NONE, Key::Enter);
     ctx.input_mut(|input| {
         // A chord types nothing, though some systems send its letter as
@@ -1161,6 +1196,17 @@ fn editing_letters(
                 ":" => {
                     opened = true;
                     actions.push(Action::OpenCommand(tab));
+                }
+                // A row below the cursor's, or above it with the capital.
+                // With no cursor, at the top.
+                "o" | "O" => {
+                    opened = true;
+                    let place = match (selection, text.as_str()) {
+                        (Some(cell), "o") => crate::edit::Place::Below(cell.row),
+                        (Some(cell), _) => crate::edit::Place::Above(cell.row),
+                        (None, _) => crate::edit::Place::Top,
+                    };
+                    actions.push(Action::AddRow { tab, id, place });
                 }
                 _ => {}
             }
@@ -1519,10 +1565,31 @@ fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &m
     if pressed(Key::G) {
         next_pending = Some('g');
     }
+    // Whether the grid's rows have the keys: where `dd` is read.
+    let on_rows = !tree
+        && field.is_none()
+        && app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(object_tab))
+            .is_some_and(|object| object.view == crate::model::ObjectView::Data);
     if pressed(Key::D) {
         if pending == Some('g') {
             actions.push(Action::FollowSelectedKey { tab, object_tab });
         } else {
+            // The second `d` of `dd` drops the row under the cursor where
+            // it is a new one. Each `d` is the Data view's key still,
+            // which changes nothing where the rows show already. Only
+            // there does a first `d` wait for a second: one that brought
+            // the rows up from the Structure view was that key and no more,
+            // and a dropped row is not brought back.
+            if on_rows && pending == Some('d') {
+                actions.push(Action::DropRow {
+                    tab,
+                    id: object_tab,
+                });
+            } else if on_rows {
+                next_pending = Some('d');
+            }
             actions.push(Action::SetView {
                 tab,
                 object_tab,
@@ -1691,6 +1758,28 @@ mod tests {
                 rows.position(|(row, said, _)| row == keys && said == what)
             });
             assert!(places.is_sorted(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_shortcut_table_names_the_keys_that_add_a_row() {
+        for look in crate::theme::Look::ALL {
+            let keys = |what: &str| {
+                let mut rows = shortcuts(&look).filter(|(_, listed)| *listed == what);
+                let found = rows.next().map(|(keys, _)| keys);
+                assert!(rows.next().is_none(), "{}: {what} twice", look.name);
+                found
+            };
+            if look.terminal {
+                assert_eq!(keys("Add a row below or above the cursor"), Some("o, O"));
+                assert_eq!(keys("Drop a new row"), Some("dd"));
+                assert_eq!(keys("Add a row"), None);
+            } else {
+                assert_eq!(keys("Add a row"), Some("Mod+N"));
+                assert_eq!(keys("Drop a new row"), Some("Delete"));
+            }
+            // A new connection is still Mod+N, where no table is in front.
+            assert_eq!(keys("New connection"), Some("Mod+N"));
         }
     }
 
