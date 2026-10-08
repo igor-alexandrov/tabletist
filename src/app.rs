@@ -925,6 +925,7 @@ impl App {
             Action::FormatEditor { tab, id } => self.format_editor(tab, id),
             Action::SetNull { tab, id } => self.set_null(tab, id),
             Action::SetDefault { tab, id } => self.set_default(tab, id),
+            Action::CycleBoolean { tab, id } => self.cycle_boolean(tab, id),
             Action::AddRow { tab, id, place } => self.add_row(tab, id, place),
             Action::DropRow { tab, id } => self.drop_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
@@ -10968,6 +10969,108 @@ mod tests {
             let place = Place::Top;
             harness.app.apply(Action::AddRow { tab, id, place });
             assert_eq!(object(&harness, tab, id).edits.added.len(), 1);
+        }
+
+        /// The covers with `kind` a flag: 1, 0 and NULL in its three rows,
+        /// as SQLite keeps a boolean.
+        fn with_a_flag(nullable: bool) -> (Harness, ConnTabId, TabId) {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            let object = tab_mut(&mut harness, tab, id);
+            let column = &mut object.structure.value.as_mut().unwrap().columns[2];
+            column.type_name = "BOOLEAN".into();
+            column.allowed_values = None;
+            column.default = None;
+            column.nullable = nullable;
+            let page = object.rows.value.as_mut().unwrap();
+            page.columns[2].type_name = "BOOLEAN".into();
+            for (row, flag) in [Value::Int(1), Value::Int(0), Value::Null]
+                .into_iter()
+                .enumerate()
+            {
+                page.rows[row][2] = flag;
+            }
+            (harness, tab, id)
+        }
+
+        /// Flips the cell, and says what is pending in it afterwards.
+        fn flip(harness: &mut Harness, tab: ConnTabId, id: TabId, cell: CellPos) -> Option<String> {
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::CycleBoolean { tab, id });
+            let pending = object(harness, tab, id)
+                .edits
+                .cells
+                .get(&(cell.row, cell.col))?;
+            Some(match &pending.new {
+                NewValue::Text(text) => text.clone(),
+                NewValue::Null => "NULL".into(),
+                other => format!("{other:?}"),
+            })
+        }
+
+        #[test]
+        fn a_boolean_cell_cycles_true_false_and_null() {
+            let (mut harness, tab, id) = with_a_flag(true);
+            let mut flips = |cell: CellPos, times: usize| -> Vec<Option<String>> {
+                (0..times)
+                    .map(|_| flip(&mut harness, tab, id, cell))
+                    .collect()
+            };
+            let said = |list: &[Option<&str>]| -> Vec<Option<String>> {
+                list.iter().map(|text| text.map(str::to_owned)).collect()
+            };
+            // From true: false, NULL, and back to what it loaded, which is
+            // no change.
+            assert_eq!(
+                flips(at(0, 2), 3),
+                said(&[Some("false"), Some("NULL"), None])
+            );
+            // From false: NULL, true, and back.
+            assert_eq!(
+                flips(at(1, 2), 3),
+                said(&[Some("NULL"), Some("true"), None])
+            );
+            // From NULL: true, false, and back.
+            assert_eq!(
+                flips(at(2, 2), 3),
+                said(&[Some("true"), Some("false"), None])
+            );
+            // A cell of another class, and a locked one: nothing.
+            assert_eq!(flips(at(0, 1), 1), said(&[None]));
+            assert_eq!(flips(at(0, 0), 1), said(&[None]));
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+            // A new row's cell is never unset by flipping.
+            let place = Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            let new = object(&harness, tab, id).edits.added[0].id;
+            let cell = at(new_row(new), 2);
+            let flipped: Vec<Option<String>> =
+                (0..4).map(|_| flip(&mut harness, tab, id, cell)).collect();
+            let cycle = [Some("true"), Some("false"), Some("NULL"), Some("true")];
+            assert_eq!(flipped, said(&cycle));
+            // With an editor open the key is the editor's.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            harness.app.apply(Action::CycleBoolean { tab, id });
+            assert!(!object(&harness, tab, id).edits.cells.contains_key(&(0, 2)));
+        }
+
+        #[test]
+        fn a_flag_that_cannot_be_null_goes_between_true_and_false() {
+            let (mut harness, tab, id) = with_a_flag(false);
+            let first = flip(&mut harness, tab, id, at(0, 2));
+            assert_eq!(first.as_deref(), Some("false"));
+            // Back to true, which it loaded: nothing is pending.
+            assert_eq!(flip(&mut harness, tab, id, at(0, 2)), None);
+            assert_eq!(
+                flip(&mut harness, tab, id, at(1, 2)).as_deref(),
+                Some("true")
+            );
         }
 
         #[test]

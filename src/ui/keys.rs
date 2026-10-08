@@ -74,6 +74,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Mod+.", "Cancel running query", ALL),
     ("Esc", "Cancel connecting", ALL),
     ("Space, Mod+Shift+R", "Toggle row panel", ALL),
+    ("Space", "Flip a boolean cell", ALL),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row", ALL),
     (
         "Arrows, Enter, Shift+Enter, Mod+E, Mod+D, Mod+Backspace",
@@ -305,6 +306,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             enter_breaks: list.enter_is_a_line_break(&sql.text),
         })
     });
+    // Space flips a boolean cell where the grid has the keys and the cell
+    // can be edited, as the design has it. Everywhere else it shows the
+    // row panel.
+    let flips = object
+        .filter(|_| grid && !editing && !tree_arrows && !focused)
+        .filter(|&(tab, id)| app.flips(tab, id));
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
         // The completion list's keys come first: the editor never sees
@@ -502,7 +509,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 // The row panel shows a table's row, or the selected row
                 // of a SQL result.
                 if grid || sql_row {
-                    key(Modifiers::NONE, Key::Space, Action::ToggleRowPanel(tab));
+                    let space = match flips {
+                        Some((tab, id)) => Action::CycleBoolean { tab, id },
+                        None => Action::ToggleRowPanel(tab),
+                    };
+                    key(Modifiers::NONE, Key::Space, space);
                 }
             }
         }

@@ -11595,6 +11595,34 @@ mod tests {
         assert!(harness.has("Save 1 new row and 1 change to production?"));
     }
 
+    #[test]
+    fn space_flips_a_boolean_cell_and_shows_the_row_panel_elsewhere() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = covers_in(look);
+            // `kind` as a flag that holds true.
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            let object = workspace.object_tab_mut(id).unwrap();
+            let column = &mut object.structure.value.as_mut().unwrap().columns[2];
+            column.type_name = "BOOLEAN".into();
+            column.allowed_values = None;
+            let page = object.rows.value.as_mut().unwrap();
+            page.columns[2].type_name = "BOOLEAN".into();
+            page.rows[0][2] = tabletist_db::Value::Int(1);
+            let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+            let shown = panel(&harness);
+            select(&mut harness, tab, id, (0, 2));
+            harness.press(Key::Space, Modifiers::NONE);
+            let pending = pending_text(&harness, tab, id, (0, 2));
+            assert_eq!(pending.as_deref(), Some("false"), "{}", look.name);
+            assert_eq!(panel(&harness), shown, "{}", look.name);
+            // On any other cell the key is the row panel's, as it was.
+            select(&mut harness, tab, id, (0, 1));
+            harness.press(Key::Space, Modifiers::NONE);
+            assert_eq!(panel(&harness), !shown, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+        }
+    }
+
     /// A capital letter typed on the grid: its key with Shift, and its text.
     fn type_capital(harness: &mut Harness, key: Key, text: &str) {
         harness.settle();

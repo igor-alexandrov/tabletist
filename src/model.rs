@@ -318,6 +318,12 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Flip the active cell where it is a boolean's: true, false, and NULL
+    /// where the column takes it.
+    CycleBoolean {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Give the active cell its column's default, where it has one.
     SetDefault {
         tab: ConnTabId,

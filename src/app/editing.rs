@@ -40,6 +40,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::CancelEdit { .. }
             | Action::SetNull { .. }
             | Action::SetDefault { .. }
+            | Action::CycleBoolean { .. }
             | Action::AddRow { .. }
             | Action::DropRow { .. }
             | Action::RevertCell { .. }
@@ -1016,6 +1017,72 @@ impl App {
                 object.pinned = true;
             }
             None => object.edits.revert(key),
+        }
+        object.fields = None;
+    }
+
+    /// Whether the tab's selected cell is a boolean's that can be edited
+    /// now: where Space flips the cell.
+    pub fn flips(&self, tab: ConnTabId, id: TabId) -> bool {
+        self.table(tab, id, |table, object| {
+            let Some(cell) = object.selection else {
+                return false;
+            };
+            object.view == ObjectView::Data
+                && object.edits.editor.is_none()
+                && table.class(cell.col) == Some(ColumnClass::Boolean)
+                && table.lock(cell).is_none()
+        })
+        .unwrap_or(false)
+    }
+
+    /// Flips the selected boolean cell: true, then false, then NULL where
+    /// the column takes it, then true again. A value that is what the cell
+    /// loaded is no change.
+    pub(super) fn cycle_boolean(&mut self, tab: ConnTabId, id: TabId) {
+        if !self.flips(tab, id) {
+            return;
+        }
+        let next = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            let column = table.column(cell.col)?;
+            let loaded = table.loaded(cell);
+            // What the cell holds now: what is pending in it, or what it
+            // loaded. Anything that is no flag is taken for none.
+            let flag = |text: &str| match text.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" => Some(true),
+                "false" | "0" => Some(false),
+                _ => None,
+            };
+            let class = ColumnClass::Boolean;
+            let now = match object.edits.cells.get(&(cell.row, cell.col)) {
+                Some(pending) => match &pending.new {
+                    NewValue::Text(text) => flag(text),
+                    NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
+                },
+                None => loaded.and_then(|loaded| flag(&start_text(loaded, class))),
+            };
+            let new = match now {
+                Some(true) => NewValue::Text("false".into()),
+                Some(false) if column.nullable => NewValue::Null,
+                Some(false) | None => NewValue::Text("true".into()),
+            };
+            let changed = loaded.is_none_or(|loaded| is_change(loaded, &new, class));
+            Some((cell, new, changed))
+        });
+        let Some(Some((cell, new, changed))) = next else {
+            return;
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let key = (cell.row, cell.col);
+        if changed {
+            let state = State::Ready;
+            object.edits.put(key, Pending { new, state });
+            object.pinned = true;
+        } else {
+            object.edits.revert(key);
         }
         object.fields = None;
     }
