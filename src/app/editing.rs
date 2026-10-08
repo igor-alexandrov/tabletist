@@ -88,10 +88,15 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
     if !editor.touched {
         return None;
     }
-    let new = NewValue::Text(editor.text.clone());
-    let changed = loaded.is_none_or(|loaded| is_change(loaded, &new, class));
+    // What was typed, as the column reads it: a keyword where it is one.
+    let new = crate::edit::typed_as(table.dialect, column, &editor.text);
+    let changed = match (&new, loaded) {
+        // A new row's unset cell is its default already.
+        (NewValue::Default { .. }, None) => false,
+        (new, loaded) => loaded.is_none_or(|loaded| is_change(loaded, new, class)),
+    };
     let problem = changed
-        .then(|| check(table.dialect, column, &editor.text))
+        .then(|| crate::edit::problem(table.dialect, column, &editor.text))
         .flatten();
     Some(Typed {
         cell,
@@ -569,7 +574,7 @@ impl App {
         self.table(tab, id, |table, object| {
             let editor = object.edits.editor.as_ref()?;
             let column = table.column(editor.cell.col)?;
-            check(table.dialect, column, &editor.text)
+            crate::edit::problem(table.dialect, column, &editor.text)
         })
         .flatten()
     }
@@ -685,7 +690,7 @@ impl App {
             let problem = table
                 .column(cell.col)
                 .filter(|_| kept || !text.is_empty())
-                .and_then(|column| check(table.dialect, column, &text));
+                .and_then(|column| crate::edit::problem(table.dialect, column, &text));
             Ok(Editor {
                 cell,
                 place,

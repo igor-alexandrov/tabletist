@@ -10969,6 +10969,89 @@ mod tests {
             assert_eq!(object(&harness, tab, id).edits.added.len(), 1);
         }
 
+        #[test]
+        fn a_keyword_typed_into_a_cell_is_pending_as_one() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            // `created_at` as a database that names its types would have it.
+            let structure = tab_mut(&mut harness, tab, id).structure.value.as_mut();
+            let structure = structure.unwrap();
+            structure.columns[4].type_name = "timestamp".into();
+            structure.columns[4].nullable = true;
+            type_into(&mut harness, tab, id, at(0, 4), "now()");
+            type_into(&mut harness, tab, id, at(1, 4), "null");
+            type_into(&mut harness, tab, id, at(2, 4), "default");
+            let default = NewValue::Default {
+                expression: Some("CURRENT_TIMESTAMP".into()),
+            };
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.cells[&(0, 4)].new, NewValue::Now);
+            assert_eq!(edits.cells[&(1, 4)].new, NewValue::Null);
+            assert_eq!(edits.cells[&(2, 4)].new, default);
+            assert!(edits.cells.values().all(|cell| cell.state == State::Ready));
+            assert!(edits.editor.is_none());
+            // `kind` is text: the same word is a value there, and one the
+            // column, which takes only three, refuses.
+            type_into(&mut harness, tab, id, at(0, 2), "null");
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_some(), "refused, and still open");
+            assert!(!edits.cells.contains_key(&(0, 2)));
+            // The save carries the three as they are.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let changes = write_since(&harness, before).expect("a Write");
+            let sent: Vec<&NewValue> = changes.rows.iter().map(|row| &row.set[0].new).collect();
+            assert_eq!(sent, [&NewValue::Now, &NewValue::Null, &default]);
+            // An editor opened on one of them starts from nothing, and
+            // closed untouched leaves it as it is.
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 4),
+                start: EditStart::Value,
+            });
+            let editor = object(&harness, tab, id).edits.editor.as_ref().unwrap();
+            assert_eq!((editor.text.as_str(), editor.touched), ("", false));
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: Advance::Stay,
+            });
+            assert_eq!(
+                object(&harness, tab, id).edits.cells[&(0, 4)].new,
+                NewValue::Now
+            );
+        }
+
+        #[test]
+        fn default_typed_into_a_new_row_unsets_the_cell() {
+            let (mut harness, tab, id, new) = with_new_row();
+            let row = new_row(new);
+            // `kind` is text, so the word is typed where words are read:
+            // `created_at` has a default, once it is a column of times.
+            let structure = tab_mut(&mut harness, tab, id).structure.value.as_mut();
+            structure.unwrap().columns[4].type_name = "timestamp".into();
+            type_into(&mut harness, tab, id, at(row, 4), "now()");
+            let set = &object(&harness, tab, id).edits.cells[&(row, 4)];
+            assert_eq!(set.new, NewValue::Now);
+            type_into(&mut harness, tab, id, at(row, 4), "DEFAULT");
+            let edits = &object(&harness, tab, id).edits;
+            assert!(!edits.cells.contains_key(&(row, 4)));
+            // The time of the save goes out in the row's INSERT.
+            type_into(&mut harness, tab, id, at(row, 4), "now");
+            type_into(&mut harness, tab, id, at(row, 1), "9100000000000000004");
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let changes = write_since(&harness, before).expect("a Write");
+            let made = changes.inserts[0]
+                .set
+                .iter()
+                .find(|value| value.column == "created_at");
+            assert_eq!(made.map(|value| &value.new), Some(&NewValue::Now));
+        }
+
         /// A row of `book_covers` as the database stores one.
         fn cover(id: i64, publisher: i64) -> Vec<Value> {
             vec![

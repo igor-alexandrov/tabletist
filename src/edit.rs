@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use tabletist_db::{
     Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, InsertValue,
     NewValue, ObjectKind, ObjectRef, RowChange, RowInsert, RowPage, Structure, Value, column_class,
+    temporal,
 };
 
 use crate::backend::RequestId;
@@ -666,6 +667,50 @@ pub fn is_change(loaded: &Value, new: &NewValue, class: ColumnClass) -> bool {
             laid_out(text.clone()) != start_text(loaded, class)
         }
         NewValue::Text(text) => *text != start_text(loaded, class),
+    }
+}
+
+/// What `text`, typed into a cell of `column`, is as the cell's new value.
+/// A word is a keyword only where the column is not text, and only where
+/// the column can take it: NULL where it may be NULL, DEFAULT where it has
+/// one, the time of the save where it keeps a date or a time. Everything
+/// else is the text, for the column's check and the database to judge.
+pub fn typed_as(dialect: Dialect, column: &ColumnInfo, text: &str) -> NewValue {
+    let typed = text.trim();
+    let class = column_class(dialect, &column.type_name);
+    let is = |word: &str| match class {
+        // What is typed into text is the text: the four letters of NULL
+        // are a value there. Nothing is typed into a binary column.
+        ColumnClass::Text { .. } | ColumnClass::Binary => false,
+        // A document `null` is JSON's own: only the capitals are SQL's.
+        ColumnClass::Json => typed == word.to_ascii_uppercase(),
+        ColumnClass::Integer { .. }
+        | ColumnClass::Decimal { .. }
+        | ColumnClass::Float
+        | ColumnClass::Boolean
+        | ColumnClass::Other => typed.eq_ignore_ascii_case(word),
+    };
+    if is("null") && column.nullable {
+        return NewValue::Null;
+    }
+    if is("default") && column.default.is_some() {
+        return NewValue::Default {
+            expression: column.default.clone(),
+        };
+    }
+    let now = ["now()", "now", "current_timestamp"];
+    if now.into_iter().any(is) && temporal(&column.type_name).is_some() {
+        return NewValue::Now;
+    }
+    NewValue::Text(text.to_owned())
+}
+
+/// What stands against `text` as a value typed into a cell of `column`.
+/// Only text has a check: a keyword is the database's own.
+pub fn problem(dialect: Dialect, column: &ColumnInfo, text: &str) -> Option<Problem> {
+    match typed_as(dialect, column, text) {
+        NewValue::Text(text) => check(dialect, column, &text),
+        NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
     }
 }
 
@@ -2021,6 +2066,87 @@ mod tests {
             },
         );
         assert!(missing(&edits).is_empty());
+    }
+
+    #[test]
+    fn a_typed_word_is_a_keyword_where_the_column_is_not_text() {
+        let pg = Dialect::Postgres;
+        let column = |type_name: &str, nullable: bool, default: Option<&str>| ColumnInfo {
+            name: "c".into(),
+            type_name: type_name.into(),
+            nullable,
+            default: default.map(Into::into),
+            ..ColumnInfo::default()
+        };
+        let typed = |text: &str| NewValue::Text(text.into());
+        let stamp = column("timestamp without time zone", true, Some("now()"));
+        // Whatever its case, and with spaces round it.
+        for word in ["NULL", "null", " Null "] {
+            assert_eq!(typed_as(pg, &stamp, word), NewValue::Null, "{word}");
+        }
+        for word in ["now()", "NOW()", "now", "current_timestamp"] {
+            assert_eq!(typed_as(pg, &stamp, word), NewValue::Now, "{word}");
+        }
+        let default = NewValue::Default {
+            expression: Some("now()".into()),
+        };
+        assert_eq!(typed_as(pg, &stamp, "default"), default);
+        // A value is a value, as it was typed.
+        let time = "2026-10-07 10:42:09";
+        assert_eq!(typed_as(pg, &stamp, time), typed(time));
+        assert_eq!(
+            typed_as(pg, &stamp, " null and void "),
+            typed(" null and void ")
+        );
+        // In a text column every word is text.
+        let name = column("text", true, Some("''"));
+        for word in ["NULL", "default", "now()"] {
+            assert_eq!(typed_as(pg, &name, word), typed(word), "{word}");
+        }
+        // A keyword the column cannot take is text too: NULL where it is
+        // NOT NULL, DEFAULT where there is none, now where it keeps no time.
+        let count = column("integer", false, None);
+        for word in ["NULL", "default", "now()"] {
+            assert_eq!(typed_as(pg, &count, word), typed(word), "{word}");
+            // And is checked as the text it is.
+            assert_eq!(
+                problem(pg, &count, word),
+                Some(Problem::WholeNumber),
+                "{word}"
+            );
+        }
+        assert_eq!(problem(pg, &stamp, "null"), None);
+        // JSON has a null of its own: only the capitals are SQL's.
+        let document = column("jsonb", true, Some("'{}'::jsonb"));
+        assert_eq!(typed_as(pg, &document, "null"), typed("null"));
+        assert_eq!(typed_as(pg, &document, "NULL"), NewValue::Null);
+        assert!(matches!(
+            typed_as(pg, &document, "DEFAULT"),
+            NewValue::Default { .. }
+        ));
+        assert_eq!(typed_as(pg, &document, "default"), typed("default"));
+        // A boolean's own words stay text the column converts.
+        let flag = column("boolean", true, None);
+        assert_eq!(typed_as(pg, &flag, "true"), typed("true"));
+        assert_eq!(typed_as(pg, &flag, "null"), NewValue::Null);
+    }
+
+    #[test]
+    fn default_and_now_are_always_a_change_and_have_a_word() {
+        let class = ColumnClass::Other;
+        let default = NewValue::Default { expression: None };
+        for loaded in [Value::Null, text("2026-10-07")] {
+            assert!(is_change(&loaded, &NewValue::Now, class));
+            assert!(is_change(&loaded, &default, class));
+        }
+        assert_eq!(word(&NewValue::Now), Some("now()"));
+        assert_eq!(word(&default), Some("DEFAULT"));
+        assert_eq!(word(&NewValue::Null), None);
+        assert_eq!(word(&NewValue::Text("now()".into())), None);
+        // Shown, each is its word; a NULL and a text are themselves.
+        assert_eq!(shown_value(&NewValue::Now), text("now()"));
+        assert_eq!(shown_value(&default), text("DEFAULT"));
+        assert_eq!(shown_value(&NewValue::Null), Value::Null);
     }
 
     #[test]
