@@ -318,6 +318,19 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Add a new row to the tab's table at `place`, and open the editor on
+    /// its first cell a save needs a value in.
+    AddRow {
+        tab: ConnTabId,
+        id: TabId,
+        place: crate::edit::Place,
+    },
+    /// Drop the selected row where it is a new one, with what was set in
+    /// it. A row of the page stays.
+    DropRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Put back a cell's loaded value: `cell`, or the active cell where
     /// none is named, as the keys ask.
     RevertCell {
@@ -1789,7 +1802,9 @@ pub enum ObjectView {
     Structure,
 }
 
-/// A cell in the current page: row index within the page, column index.
+/// A cell of an object tab's page or of a SQL result: its row there, and
+/// its column. In a table's tab the row can be a new row's own instead
+/// (`edit::new_row`), which no page holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellPos {
     pub row: usize,
@@ -2030,6 +2045,16 @@ impl ObjectTab {
         }
         self.selection = None;
         self.rows.value = None;
+    }
+
+    /// Takes the selection off a new row: the set that held it was dropped.
+    pub fn off_new_rows(&mut self) {
+        if self
+            .selection
+            .is_some_and(|cell| crate::edit::new_id(cell.row).is_some())
+        {
+            self.selection = None;
+        }
     }
 
     /// The row panel's text for the selected row, if it is up to date.
