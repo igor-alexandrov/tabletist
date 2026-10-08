@@ -318,6 +318,11 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Give the active cell its column's default, where it has one.
+    SetDefault {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Add a new row to the tab's table at `place`, and open the editor on
     /// its first cell a save needs a value in.
     AddRow {

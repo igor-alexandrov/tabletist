@@ -39,6 +39,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::LeaveEdit { .. }
             | Action::CancelEdit { .. }
             | Action::SetNull { .. }
+            | Action::SetDefault { .. }
             | Action::AddRow { .. }
             | Action::DropRow { .. }
             | Action::RevertCell { .. }
@@ -979,6 +980,42 @@ impl App {
             object.pinned = true;
         } else {
             object.edits.revert(key);
+        }
+        object.fields = None;
+    }
+
+    /// Gives the selected cell its column's default, where the column has
+    /// one. In a new row that is the cell with nothing set in it.
+    pub(super) fn set_default(&mut self, tab: ConnTabId, id: TabId) {
+        let verdict = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            if object.edits.editor.is_some() || table.lock(cell).is_some() {
+                return None;
+            }
+            let column = table.column(cell.col)?;
+            let expression = column.default.clone()?;
+            // A new row's unset cell is its default already.
+            let new = table.loaded(cell).map(|_| NewValue::Default {
+                expression: Some(expression),
+            });
+            Some((cell, new))
+        });
+        let Some(Some((cell, new))) = verdict else {
+            return;
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let key = (cell.row, cell.col);
+        match new {
+            Some(new) => {
+                let state = State::Ready;
+                object.edits.put(key, Pending { new, state });
+                // As opening an editor does: a tab with a pending cell is
+                // no preview for the next single click to replace.
+                object.pinned = true;
+            }
+            None => object.edits.revert(key),
         }
         object.fields = None;
     }

@@ -108,6 +108,8 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Ctrl+C", "Drop the edit", TERMINAL),
     ("Mod+Backspace", "Set NULL", DESKTOP),
     ("x", "Set NULL", TERMINAL),
+    ("Mod+'", "Set DEFAULT", DESKTOP),
+    ("D", "Set DEFAULT", TERMINAL),
     ("Mod+Z", "Revert the cell", DESKTOP),
     ("u", "Revert the cell", TERMINAL),
     ("Mod+S", "Save all pending changes", DESKTOP),
@@ -123,7 +125,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Esc", "Close the SQL of the pending changes", TERMINAL),
     ("Y", "Copy the SQL of the pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, o, O, dd, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, dd, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -973,6 +975,10 @@ fn editing_keys(
             on_cell(actions);
             actions.push(Action::SetNull { tab, id });
         }
+        if take_press(input, Modifiers::COMMAND, Key::Quote) > 0 {
+            on_cell(actions);
+            actions.push(Action::SetDefault { tab, id });
+        }
         if take_press(input, Modifiers::COMMAND, Key::Z) > 0 {
             on_cell(actions);
             actions.push(Action::RevertCell {
@@ -1064,7 +1070,8 @@ fn editing_keys(
 
 /// The terminal look's normal mode on the grid of the table `id`: `i` and
 /// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
-/// the cell NULL, `u` puts back what was loaded, `o` and `O` open a new row
+/// the cell NULL, `D` gives it its column's default, `u` puts back what was
+/// loaded, `o` and `O` open a new row
 /// below the cursor's and above it, and `:` opens the prompt
 /// that writes, discards and shows the SQL. The letters are read as the
 /// text they type, in the order they came, and taken: a letter that opens
@@ -1120,7 +1127,7 @@ fn editing_letters(
         }
     };
     let alone = actions.is_empty();
-    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":" | "o" | "O");
+    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":" | "o" | "O" | "D");
     let enter = |event: &egui::Event| is_press(event, Modifiers::NONE, Key::Enter);
     ctx.input_mut(|input| {
         // A chord types nothing, though some systems send its letter as
@@ -1184,6 +1191,10 @@ fn editing_letters(
                 "x" => {
                     on_cell(actions);
                     actions.push(Action::SetNull { tab, id });
+                }
+                "D" => {
+                    on_cell(actions);
+                    actions.push(Action::SetDefault { tab, id });
                 }
                 "u" => {
                     on_cell(actions);
@@ -1572,7 +1583,12 @@ fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &m
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(object_tab))
             .is_some_and(|object| object.view == crate::model::ObjectView::Data);
-    if pressed(Key::D) {
+    // The capital is Set DEFAULT's, read with the letters that edit: only
+    // a plain `d` is the Data view's key and half of `dd`. By the key's
+    // own modifiers, which a press carries whatever else is known of the
+    // keyboard.
+    let plain_d = ctx.input_mut(|input| take_press(input, Modifiers::NONE, Key::D)) > 0;
+    if plain_d {
         if pending == Some('g') {
             actions.push(Action::FollowSelectedKey { tab, object_tab });
         } else {
@@ -1701,6 +1717,7 @@ mod tests {
             );
             assert_eq!(keys("Cancel the edit"), Some("Esc"));
             assert_eq!(keys("Set NULL"), Some("Mod+Backspace"));
+            assert_eq!(keys("Set DEFAULT"), Some("Mod+'"));
             assert_eq!(keys("Revert the cell"), Some("Mod+Z"));
             assert_eq!(keys("Save all pending changes"), Some("Mod+S"));
             assert_eq!(
@@ -1729,6 +1746,7 @@ mod tests {
         assert_eq!(keys("Drop the edit"), Some("Ctrl+C"));
         assert_eq!(keys("Cancel the edit"), None);
         assert_eq!(keys("Set NULL"), Some("x"));
+        assert_eq!(keys("Set DEFAULT"), Some("D"));
         assert_eq!(keys("Revert the cell"), Some("u"));
         assert_eq!(keys("Save all pending changes"), Some(":w, Mod+S"));
         assert_eq!(keys("Discard all pending changes"), Some(":e!"));

@@ -924,6 +924,7 @@ impl App {
             }
             Action::FormatEditor { tab, id } => self.format_editor(tab, id),
             Action::SetNull { tab, id } => self.set_null(tab, id),
+            Action::SetDefault { tab, id } => self.set_default(tab, id),
             Action::AddRow { tab, id, place } => self.add_row(tab, id, place),
             Action::DropRow { tab, id } => self.drop_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
@@ -10967,6 +10968,54 @@ mod tests {
             let place = Place::Top;
             harness.app.apply(Action::AddRow { tab, id, place });
             assert_eq!(object(&harness, tab, id).edits.added.len(), 1);
+        }
+
+        #[test]
+        fn set_default_gives_a_cell_its_columns_default() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            // `kind` has one: text or not, the key sets it.
+            let cell = at(1, 2);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::SetDefault { tab, id });
+            let default = NewValue::Default {
+                expression: Some("'print'".into()),
+            };
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.cells[&(1, 2)].new, default);
+            assert_eq!(edits.cells[&(1, 2)].state, State::Ready);
+            // `publisher_id` has none, and `id` is locked: nothing happens.
+            for col in [1, 0] {
+                let cell = at(1, col);
+                harness.app.apply(Action::SelectCell { tab, id, cell });
+                harness.app.apply(Action::SetDefault { tab, id });
+            }
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            // In a new row it unsets the cell: unset is its default.
+            let place = Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            let new = object(&harness, tab, id).edits.added[0].id;
+            let cell = at(new_row(new), 2);
+            type_into(&mut harness, tab, id, cell, "ebook");
+            assert!(
+                object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .contains_key(&(cell.row, 2))
+            );
+            harness.app.apply(Action::SetDefault { tab, id });
+            assert!(
+                !object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .contains_key(&(cell.row, 2))
+            );
+            // Not under a question about the changes.
+            harness.app.apply(Action::CloseTab { tab, id });
+            let cell = at(0, 2);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::SetDefault { tab, id });
+            assert!(!object(&harness, tab, id).edits.cells.contains_key(&(0, 2)));
         }
 
         #[test]

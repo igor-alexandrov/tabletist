@@ -11595,6 +11595,45 @@ mod tests {
         assert!(harness.has("Save 1 new row and 1 change to production?"));
     }
 
+    /// A capital letter typed on the grid: its key with Shift, and its text.
+    fn type_capital(harness: &mut Harness, key: Key, text: &str) {
+        harness.settle();
+        harness.frame(vec![
+            crate::testing::key(key, Modifiers::SHIFT),
+            egui::Event::Text(text.into()),
+        ]);
+        harness.frame(vec![crate::testing::release(key, Modifiers::SHIFT)]);
+        harness.settle();
+    }
+
+    #[test]
+    fn mod_quote_and_capital_d_set_default() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = covers_in(look);
+            // `kind` has a default.
+            select(&mut harness, tab, id, (1, 2));
+            if look.terminal {
+                type_capital(&mut harness, Key::D, "D");
+            } else {
+                harness.press(Key::Quote, Modifiers::COMMAND);
+            }
+            let pending = pending_text(&harness, tab, id, (1, 2));
+            assert_eq!(pending.as_deref(), Some("DEFAULT"), "{}", look.name);
+            // The rows still show: the capital is not the Data view's key.
+            let workspace = harness.app.workspace(tab).unwrap();
+            let view = workspace.object_tab(id).unwrap().view;
+            assert_eq!(view, crate::model::ObjectView::Data, "{}", look.name);
+        }
+        // Nor is it the first `d` of `dd`.
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        select(&mut harness, tab, id, (0, 2));
+        type_key(&mut harness, Key::O, "o");
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_capital(&mut harness, Key::D, "D");
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+    }
+
     #[test]
     fn a_pending_default_and_now_are_shown_as_words_until_saved() {
         for look in Look::ALL {
