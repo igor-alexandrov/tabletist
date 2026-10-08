@@ -11148,6 +11148,10 @@ mod tests {
             // `kind` has one: text or not, the key sets it.
             let cell = at(1, 2);
             harness.app.apply(Action::SelectCell { tab, id, cell });
+            // It takes no NULL, and the reason for that goes with the default.
+            harness.app.apply(Action::SetNull { tab, id });
+            let why = Some((cell, Lock::NotNull));
+            assert_eq!(object(&harness, tab, id).edits.why, why);
             harness.app.apply(Action::SetDefault { tab, id });
             let default = NewValue::Default {
                 expression: Some("'print'".into()),
@@ -11155,6 +11159,7 @@ mod tests {
             let edits = &object(&harness, tab, id).edits;
             assert_eq!(edits.cells[&(1, 2)].new, default);
             assert_eq!(edits.cells[&(1, 2)].state, State::Ready);
+            assert_eq!(edits.why, None);
             // `publisher_id` has none, and `id` is locked: nothing happens.
             for col in [1, 0] {
                 let cell = at(1, col);

@@ -1030,6 +1030,7 @@ impl App {
             }
             None => object.edits.revert(key),
         }
+        object.edits.why = None;
         object.fields = None;
     }
 
