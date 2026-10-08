@@ -11595,6 +11595,38 @@ mod tests {
         assert!(harness.has("Save 1 new row and 1 change to production?"));
     }
 
+    #[test]
+    fn a_pending_default_and_now_are_shown_as_words_until_saved() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = covers_in(look);
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.row_panel = false;
+            let object = workspace.object_tab_mut(id).unwrap();
+            let structure = object.structure.value.as_mut().unwrap();
+            structure.columns[4].type_name = "timestamp".into();
+            make_pending(&mut harness, tab, id, (0, 4), "now()");
+            make_pending(&mut harness, tab, id, (1, 4), "default");
+            harness.settle();
+            let palette = harness.app.palette;
+            // The words, and not in a value's colour: they stand for what
+            // the database will make.
+            for word in ["now()", "DEFAULT"] {
+                assert!(painted(&harness, word), "{}: {word}", look.name);
+                assert!(
+                    !painted_in(&harness, word, palette.text),
+                    "{}: {word}",
+                    look.name
+                );
+            }
+            // The cells are pending like any other.
+            assert_eq!(edits(&harness, tab, id).counts().changes, 2);
+            assert_eq!(
+                pending_text(&harness, tab, id, (0, 4)).as_deref(),
+                Some("now()")
+            );
+        }
+    }
+
     /// The middle of the cell that shows `text`.
     fn cell_of(harness: &Harness, text: &str) -> egui::Pos2 {
         harness

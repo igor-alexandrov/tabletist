@@ -1435,10 +1435,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 // a set can hold thousands of texts of a quarter of a
                 // megabyte each, and a frame draws the rows in view.
                 let mut cell = match changes.cells.get(&(row, col)) {
-                    Some(pending) => {
-                        let value = drawn(&pending.new);
-                        kept(cell(&ctx, &value, column, &tags[col], &look, fits[col]))
-                    }
+                    Some(pending) => pending_cell(&pending.new, |value| {
+                        kept(cell(&ctx, value, column, &tags[col], &look, fits[col]))
+                    }),
                     None => cell(&ctx, loaded, column, &tags[col], &look, fits[col]),
                 };
                 changes.mark(&mut cell, (row, col), loaded, column, &look, locale);
@@ -1652,6 +1651,20 @@ fn drawn(new: &NewValue) -> Value {
     crate::edit::shown_value(new)
 }
 
+/// A pending value's cell: the value as `value` draws it, or, for what the
+/// database will make at the save, its word in the style of what stands
+/// for a value.
+fn pending_cell<'c>(new: &NewValue, value: impl Fn(&Value) -> Cell<'c>) -> Cell<'c> {
+    match crate::edit::word(new) {
+        Some(word) => Cell {
+            text: word.into(),
+            style: Style::Quiet,
+            ..Cell::default()
+        },
+        None => value(&drawn(new)),
+    }
+}
+
 /// `cell` with its text its own: what is drawn of a value that does not
 /// outlive the call that asked for the cell.
 fn kept<'a>(cell: Cell<'_>) -> Cell<'a> {
@@ -1769,7 +1782,12 @@ impl<'a> Changes<'a> {
                 Some(loaded) => {
                     cell.mark = if saving { Mark::Saving } else { Mark::Pending };
                     let was = format::cell_text(loaded);
-                    cell.hint = Some(format!("{} {was}", gettext(locale, "was")));
+                    let was = format!("{} {was}", gettext(locale, "was"));
+                    // A pending DEFAULT says what it will come to.
+                    cell.hint = Some(match default_hint(&pending.new, locale) {
+                        Some(default) => format!("{was}\n{default}"),
+                        None => was,
+                    });
                 }
                 None => cell.mark = if saving { Mark::Saving } else { Mark::None },
             },
@@ -1818,7 +1836,7 @@ impl Changes<'_> {
         let say = |text: &'static str| gettext(locale, text).into_owned();
         let mut cell = match self.cells.get(&at) {
             Some(pending) => {
-                let mut cell = value(&drawn(&pending.new));
+                let mut cell = pending_cell(&pending.new, &value);
                 self.mark_state(&mut cell, pending, None, column, look, locale);
                 cell
             }
@@ -1866,6 +1884,22 @@ impl Changes<'_> {
         self.say_why(&mut cell, at);
         cell
     }
+}
+
+/// What a pending DEFAULT will come to, where the column's default is
+/// known: "print from DEFAULT", as a new row's unset cell says it.
+fn default_hint(new: &NewValue, locale: crate::i18n::Locale) -> Option<String> {
+    let NewValue::Default {
+        expression: Some(expression),
+    } = new
+    else {
+        return None;
+    };
+    Some(format!(
+        "{} {}",
+        format::capped(expression),
+        gettext(locale, "from DEFAULT")
+    ))
 }
 
 /// What the database said of a statement that failed, with its code: a
