@@ -34,7 +34,7 @@ jobs:
       || (github.event_name == 'issue_comment'
         && github.event.issue.pull_request
         && github.event.comment.user.login == github.repository_owner
-        && startsWith(github.event.comment.body, '@claude review'))
+        && contains(github.event.comment.body, '@claude review'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -42,13 +42,15 @@ jobs:
       pull-requests: write
     # A newer review of a pull request replaces the one still running. The
     # group repeats the condition above, so that a comment which starts no
-    # review gets a group of its own and cancels nothing.
+    # review gets a group of its own and cancels nothing. An expression
+    # cannot trim, so both only ask that the comment holds the words: the
+    # first step asks that it begins with them.
     concurrency:
       group: >-
         claude-review-${{
           github.event.pull_request.number
           || (github.event.comment.user.login == github.repository_owner
-            && startsWith(github.event.comment.body, '@claude review')
+            && contains(github.event.comment.body, '@claude review')
             && github.event.issue.number)
           || github.run_id }}
       cancel-in-progress: true
@@ -72,6 +74,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
           COMMENT: ${{ github.event.comment.body }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           set -euo pipefail
           refuse() {
@@ -84,8 +87,23 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             want=$EVENT_SHA
           else
-            named=$(printf '%s\n' "$COMMENT" | tr -d '\r' | tr '[:upper:]' '[:lower:]' \
-              | sed -nE '1s/^@claude review[[:space:]]+([0-9a-f]{7,40})[[:space:]]*$/\1/p')
+            # The comment's first line with something on it. A comment box
+            # easily leaves a blank one above it.
+            line=$(printf '%s\n' "$COMMENT" | tr -d '\r' | tr '[:upper:]' '[:lower:]' \
+              | awk 'NF && !seen { sub(/^[[:space:]]+/, ""); print; seen = 1 }')
+            case "$line" in
+              '@claude review'*) ;;
+              *)
+                echo "::notice::The comment mentions @claude review but does not begin with it; nothing was reviewed."
+                exit 0
+                ;;
+            esac
+            # Eyes on the comment: it was taken as a request. The summary is
+            # the answer, so a reaction that fails is not worth failing for.
+            gh api --silent -X POST "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes \
+              || echo "::warning::The comment could not be given a reaction."
+            named=$(printf '%s\n' "$line" \
+              | sed -nE 's/^@claude review[[:space:]]+([0-9a-f]{7,40})[[:space:]]*$/\1/p')
             if [ -z "$named" ] && [ "$(jq -r .isCrossRepository <<<"$pr")" = true ]; then
               refuse "Not reviewed. A fork is reviewed at the commit you name, after you have read it: \`@claude review <sha>\`. The head is \`$head\`."
             fi

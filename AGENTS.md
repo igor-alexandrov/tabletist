@@ -71,7 +71,8 @@ for it.
 - A branch of this repository is reviewed when its pull request opens and on
   each push, drafts excepted. A fork is reviewed only when the owner comments
   `@claude review <sha>`, naming the commit they read. `@claude review` alone
-  reviews a branch of this repository again.
+  reviews a branch of this repository again. The words begin the comment, and
+  the comment gets an eyes reaction when it is taken as a request.
 - The review posts inline comments and one summary comment, which each later
   review rewrites. It reads `AGENTS.md` from the base branch, so a rule the
   review should hold a change to belongs here. `Cargo.lock` and
