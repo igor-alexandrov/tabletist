@@ -48,6 +48,9 @@ pub enum Lock {
     UnknownColumn,
     /// Computed by the database.
     Generated,
+    /// The database numbers the column itself: a new row's cell of it is
+    /// given its value by the save.
+    Assigned,
     /// One of the columns a save finds the row by.
     KeyColumn,
     Binary,
@@ -68,6 +71,8 @@ pub struct Table<'a> {
     pub saving: bool,
     /// The page's rows a save found gone from the server.
     pub gone: &'a BTreeSet<usize>,
+    /// The rows to add (`Edits::added`).
+    pub added: &'a [NewRow],
 }
 
 impl<'a> Table<'a> {
@@ -85,6 +90,7 @@ impl<'a> Table<'a> {
             refreshing: object.rows.is_loading() || object.structure.is_loading(),
             saving: object.edits.saving.is_some(),
             gone: &object.edits.gone,
+            added: &object.edits.added,
         })
     }
 }
@@ -134,6 +140,14 @@ impl Table<'_> {
     /// table, what holds for a while, and what the row's own key says. The
     /// row panel says such a reason once, for the row.
     pub fn row_lock(&self, row: usize) -> Option<Lock> {
+        if let Some(id) = new_id(row) {
+            // Before the key is asked for: a new row is found by nothing
+            // yet, and a table without a key takes one.
+            return self.no_rows().or_else(|| {
+                let held = self.added.iter().any(|new| new.id == id);
+                (!held).then_some(Lock::NoSuchCell)
+            });
+        }
         if let Some(lock) = self.never() {
             return Some(lock);
         }
@@ -188,6 +202,9 @@ impl Table<'_> {
     /// who asks for every cell of a row finds the row's lock and the key
     /// once, and asks this for each cell.
     pub fn own_lock(&self, cell: CellPos, key: &[usize]) -> Option<Lock> {
+        if new_id(cell.row).is_some() {
+            return self.new_lock(cell.col);
+        }
         let row = self.page.rows.get(cell.row);
         let Some(value) = row.and_then(|row| row.get(cell.col)) else {
             return Some(Lock::NoSuchCell);
@@ -232,6 +249,71 @@ impl Table<'_> {
             return Some(Lock::KeyType);
         }
         None
+    }
+
+    /// Why no row can be added to the table, or `None` when one can. A
+    /// table without a key takes a row: only a changed row is found by
+    /// its key.
+    pub fn no_rows(&self) -> Option<Lock> {
+        if self.access == Access::ReadOnly {
+            return Some(Lock::ReadOnly);
+        }
+        if self.kind != ObjectKind::Table {
+            return Some(Lock::NotATable);
+        }
+        if self.structure.is_none() {
+            return Some(Lock::StructureLoading);
+        }
+        if self.saving {
+            return Some(Lock::Saving);
+        }
+        if self.refreshing {
+            return Some(Lock::Refreshing);
+        }
+        None
+    }
+
+    /// Why the column `col` takes no value in a new row, or `None` when it
+    /// takes one. A key's column takes one like any other: a new row has
+    /// no key to keep.
+    fn new_lock(&self, col: usize) -> Option<Lock> {
+        if col >= self.page.columns.len() {
+            return Some(Lock::NoSuchCell);
+        }
+        let Some(column) = self.column(col) else {
+            return Some(Lock::UnknownColumn);
+        };
+        // Its counter first: an identity column that is always generated
+        // is both, and what a user reads is that the save numbers it.
+        if column.identity {
+            return Some(Lock::Assigned);
+        }
+        if column.generated {
+            return Some(Lock::Generated);
+        }
+        if column_class(self.dialect, &column.type_name) == ColumnClass::Binary {
+            return Some(Lock::Binary);
+        }
+        None
+    }
+
+    /// What `cell` loaded as. `None` for a cell of a new row, which loaded
+    /// nothing, and for a cell the page does not hold.
+    pub fn loaded(&self, cell: CellPos) -> Option<&Value> {
+        self.page.rows.get(cell.row)?.get(cell.col)
+    }
+
+    /// The columns the new row `id` still needs a value in, by their place
+    /// in the page: the required ones nothing is set in.
+    pub fn missing(&self, id: usize, cells: &BTreeMap<(usize, usize), Pending>) -> Vec<usize> {
+        let row = new_row(id);
+        (0..self.page.columns.len())
+            .filter(|&col| !cells.contains_key(&(row, col)))
+            .filter(|&col| {
+                self.column(col)
+                    .is_some_and(|column| unset(self.dialect, column) == Unset::Required)
+            })
+            .collect()
     }
 
     /// Whether a save could not match a key column of this type exactly.
@@ -700,6 +782,86 @@ impl<'a> Order<'a> {
                 .then(|| row + self.added.partition_point(|new| new.before <= row)),
         }
     }
+}
+
+/// What a cell of a new row holds while nothing is set in it: what the
+/// database does with a column an `INSERT` does not name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unset {
+    /// The database gives the value: its counter's, or a computed one.
+    Assigned,
+    /// The column's default as it reads: a literal's value, or the
+    /// expression as the database writes it.
+    Default(String),
+    Null,
+    /// Nothing fills it and it cannot be NULL: a save waits for a value.
+    Required,
+}
+
+/// What `column` holds in a new row that sets nothing in it.
+pub fn unset(dialect: Dialect, column: &ColumnInfo) -> Unset {
+    if column.identity || column.generated {
+        return Unset::Assigned;
+    }
+    let default = column
+        .default
+        .as_deref()
+        .and_then(|default| default_shown(dialect, default));
+    match default {
+        Some(text) => Unset::Default(text),
+        None if column.nullable => Unset::Null,
+        None => Unset::Required,
+    }
+}
+
+/// A column's default as a new row shows it: a string literal's value,
+/// without its quotes and its cast, and anything else (a number, an
+/// expression) as the database writes it. `None` for a default of NULL,
+/// which is no default.
+pub fn default_shown(dialect: Dialect, default: &str) -> Option<String> {
+    let text = default.trim();
+    let Some(rest) = text.strip_prefix('\'') else {
+        // PostgreSQL writes a NULL with its type.
+        let bare = match dialect {
+            Dialect::Postgres => text.split("::").next().unwrap_or(text),
+            Dialect::MySql | Dialect::Sqlite => text,
+        };
+        return (!bare.eq_ignore_ascii_case("null")).then(|| text.to_owned());
+    };
+    // To the literal's closing quote: a doubled quote is one of its text.
+    let mut value = String::new();
+    let mut after = None;
+    let mut letters = rest.char_indices().peekable();
+    while let Some((at, letter)) = letters.next() {
+        if letter != '\'' {
+            value.push(letter);
+        } else if letters.next_if(|(_, next)| *next == '\'').is_some() {
+            value.push('\'');
+        } else {
+            after = Some(&rest[at + 1..]);
+            break;
+        }
+    }
+    // No closing quote: not a literal this reads.
+    let Some(after) = after else {
+        return Some(text.to_owned());
+    };
+    // `'print'::character varying`: a cast to a type's name and nothing
+    // more. Anything else after the quote makes an expression of it.
+    let cast = match dialect {
+        Dialect::Postgres => after.strip_prefix("::").is_some_and(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|letter| letter.is_ascii_alphanumeric() || " _.\"(),[]".contains(letter))
+        }),
+        Dialect::MySql | Dialect::Sqlite => false,
+    };
+    Some(if after.is_empty() || cast {
+        value
+    } else {
+        text.to_owned()
+    })
 }
 
 /// One cell's new value, not yet written.
@@ -1602,6 +1764,176 @@ mod tests {
     }
 
     #[test]
+    fn an_assigned_cell_of_a_new_row_is_locked() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let mut edits = Edits::default();
+        let id = edits.add_row(Place::Top, 3);
+        let table = Table {
+            added: &edits.added,
+            ..table(Some(&structure), &page)
+        };
+        let cell = |col| at(new_row(id), col);
+        assert_eq!(table.row_lock(new_row(id)), None);
+        // `id` is the database's to number.
+        assert_eq!(table.lock(cell(0)), Some(Lock::Assigned));
+        for col in 1..5 {
+            assert_eq!(table.lock(cell(col)), None, "{col}");
+        }
+        assert_eq!(table.lock(cell(5)), Some(Lock::NoSuchCell));
+        // A new row the set does not hold is no row.
+        assert_eq!(table.lock(at(new_row(id + 1), 1)), Some(Lock::NoSuchCell));
+        // It loaded nothing.
+        assert_eq!(table.loaded(cell(1)), None);
+        assert_eq!(table.loaded(at(0, 0)), Some(&Value::Int(1)));
+        // A column the database computes is locked as it is in any row.
+        let mut computed = structure.clone();
+        computed.columns[4].generated = true;
+        let table = Table {
+            added: &edits.added,
+            ..self::table(Some(&computed), &page)
+        };
+        assert_eq!(table.lock(cell(4)), Some(Lock::Generated));
+    }
+
+    #[test]
+    fn no_row_is_added_where_none_can_be() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let ok = || table(Some(&structure), &page);
+        assert_eq!(ok().no_rows(), None);
+        let read_only = Table {
+            access: Access::ReadOnly,
+            ..ok()
+        };
+        assert_eq!(read_only.no_rows(), Some(Lock::ReadOnly));
+        let view = Table {
+            kind: ObjectKind::View,
+            ..ok()
+        };
+        assert_eq!(view.no_rows(), Some(Lock::NotATable));
+        let loading = Table {
+            structure: None,
+            ..ok()
+        };
+        assert_eq!(loading.no_rows(), Some(Lock::StructureLoading));
+        let saving = Table {
+            saving: true,
+            ..ok()
+        };
+        assert_eq!(saving.no_rows(), Some(Lock::Saving));
+        let refreshing = Table {
+            refreshing: true,
+            ..ok()
+        };
+        assert_eq!(refreshing.no_rows(), Some(Lock::Refreshing));
+        // A table without a key takes a row, though no row of its page can
+        // be edited: only a changed row is found by its key.
+        let mut keyless = structure.clone();
+        keyless.primary_key.clear();
+        let mut edits = Edits::default();
+        let id = edits.add_row(Place::Top, 3);
+        let table = Table {
+            added: &edits.added,
+            ..table(Some(&keyless), &page)
+        };
+        assert_eq!(table.no_rows(), None);
+        assert_eq!(table.lock(at(0, 1)), Some(Lock::NoKey));
+        assert_eq!(table.lock(at(new_row(id), 1)), None);
+        // A new row is locked with the table while a save runs.
+        let saving = Table {
+            saving: true,
+            ..table
+        };
+        assert_eq!(saving.lock(at(new_row(id), 1)), Some(Lock::Saving));
+    }
+
+    #[test]
+    fn an_unset_cell_says_what_the_database_will_do() {
+        let structure = crate::testing::book_covers_structure();
+        let unsets: Vec<Unset> = structure
+            .columns
+            .iter()
+            .map(|column| unset(Dialect::Sqlite, column))
+            .collect();
+        assert_eq!(
+            unsets,
+            [
+                Unset::Assigned,
+                Unset::Required,
+                Unset::Default("print".into()),
+                Unset::Null,
+                Unset::Default("CURRENT_TIMESTAMP".into()),
+            ]
+        );
+        // A default of NULL is no default: NULL where the column takes
+        // it, and a value to give where it does not.
+        let odd = ColumnInfo {
+            default: Some("NULL".into()),
+            ..column("note", "TEXT")
+        };
+        assert_eq!(unset(Dialect::Sqlite, &odd), Unset::Null);
+        let odd = ColumnInfo {
+            nullable: false,
+            ..odd
+        };
+        assert_eq!(unset(Dialect::Sqlite, &odd), Unset::Required);
+    }
+
+    #[test]
+    fn a_default_reads_as_its_value_or_as_its_expression() {
+        let shown = |dialect, text: &str| default_shown(dialect, text);
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            assert_eq!(shown(dialect, "'print'").as_deref(), Some("print"));
+            assert_eq!(shown(dialect, "'it''s'").as_deref(), Some("it's"));
+            assert_eq!(shown(dialect, "0").as_deref(), Some("0"));
+            assert_eq!(shown(dialect, "now()").as_deref(), Some("now()"));
+            assert_eq!(shown(dialect, " NULL ").as_deref(), None);
+            // No closing quote: as it is written.
+            assert_eq!(shown(dialect, "'open").as_deref(), Some("'open"));
+        }
+        // PostgreSQL writes a literal with its type.
+        let pg = Dialect::Postgres;
+        assert_eq!(
+            shown(pg, "'print'::character varying").as_deref(),
+            Some("print")
+        );
+        assert_eq!(shown(pg, "'{}'::jsonb").as_deref(), Some("{}"));
+        assert_eq!(shown(pg, "NULL::character varying").as_deref(), None);
+        // Two strings joined are an expression, shown whole.
+        let joined = "'a'::text || 'b'::text";
+        assert_eq!(shown(pg, joined).as_deref(), Some(joined));
+        // And a cast is no part of a literal elsewhere.
+        let cast = "'x'::text";
+        assert_eq!(shown(Dialect::Sqlite, cast).as_deref(), Some(cast));
+    }
+
+    #[test]
+    fn a_new_row_misses_its_required_columns_until_they_are_set() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let mut edits = Edits::default();
+        let id = edits.add_row(Place::Top, 3);
+        let missing = |edits: &Edits| {
+            let table = Table {
+                added: &edits.added,
+                ..table(Some(&structure), &page)
+            };
+            table.missing(id, &edits.cells)
+        };
+        // `publisher_id`, and nothing else: the others are filled.
+        assert_eq!(missing(&edits), [1]);
+        edits.put(
+            (new_row(id), 1),
+            Pending {
+                new: NewValue::Text("9100000000000000004".into()),
+                state: State::Ready,
+            },
+        );
+        assert!(missing(&edits).is_empty());
+    }
+
+    #[test]
     fn a_new_row_has_a_row_of_its_own_that_no_page_holds() {
         assert_eq!(new_id(new_row(3)), Some(3));
         assert_eq!(new_id(0), None);
@@ -1847,6 +2179,7 @@ mod tests {
             refreshing: false,
             saving: false,
             gone: &NONE_GONE,
+            added: &[],
         }
     }
 

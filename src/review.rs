@@ -454,6 +454,7 @@ mod tests {
             refreshing: false,
             saving: false,
             gone: &NONE_GONE,
+            added: &[],
         }
     }
 
