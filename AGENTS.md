@@ -62,16 +62,27 @@ saying why the rule does not apply.
 ## Pull requests
 
 `ci.yml`, and `packaging.yml` when packaging paths changed, start on the pull
-request themselves. No workflow reviews the change: Copilot's review comes
-from the repository ruleset "Copilot review for default branch", and nothing
-waits for it.
+request themselves. `claude-review.yml` has Claude review the change. The
+review is advice: it never approves or requests changes, and nothing waits
+for it.
 
 - The paths that start `packaging.yml` are listed twice: in its `pull_request`
   trigger and in its `push` trigger. Change them together.
-- The ruleset asks for the review in the author's name, so it skips an author
-  without a Copilot plan. `copilot-review.yml` asks in the owner's name for
-  every pull request the owner did not open. It files the request and nothing
-  else, and needs the `COPILOT_REVIEW_TOKEN` secret.
+- A branch of this repository is reviewed when its pull request opens and on
+  each push, drafts excepted. A fork is reviewed only when the owner comments
+  `@claude review <sha>`, naming the commit they read. `@claude review` alone
+  reviews a branch of this repository again.
+- The review posts inline comments and one summary comment, which each later
+  review rewrites. It reads `AGENTS.md` from the base branch, so a rule the
+  review should hold a change to belongs here. `Cargo.lock` and
+  `docs/superpowers/` are not reviewed.
+- Claude has no shell there and reads nothing outside the workspace. The
+  pull request's code is never run. Keep it so: do not give the job another
+  secret, a tool that runs commands, or a permission beyond
+  `pull-requests: write`.
+- It needs the `CLAUDE_CODE_OAUTH_TOKEN` secret (`claude setup-token`), and
+  skips with a notice without it. The comment trigger runs the workflow of
+  the default branch, so a change to it can be tried only after it is merged.
 
 ## Website
 
