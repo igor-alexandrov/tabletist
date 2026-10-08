@@ -66,7 +66,7 @@ In the connection dialog:
 | Mod+F | Filter bar |
 | Mod+R | Refresh |
 | Mod+. | Cancel the running query |
-| Space, Mod+Shift+R | Show or hide the row panel |
+| Space, Mod+Shift+R | Show or hide the row panel. On a boolean cell that can be edited, Space flips the cell instead |
 | Mod+C | Copy the cell |
 | Mod+Shift+C | Copy the row |
 
@@ -85,6 +85,8 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |
 | Mod+Backspace | Set NULL |
+| Mod+' | Set DEFAULT, where the column has a default |
+| Space | Flip a boolean cell: true, false, NULL |
 | Mod+Z | Revert the cell |
 | Mod+S | Save all pending changes |
 | Mod+Alt+Backspace | Discard all pending changes |

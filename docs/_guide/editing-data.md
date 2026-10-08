@@ -22,6 +22,8 @@ double-click the value there.
 | To | Press |
 | --- | --- |
 | Set the value to NULL | Cmd/Ctrl+Backspace |
+| Set the value to the column's DEFAULT | Cmd/Ctrl+' |
+| Flip a boolean: true, false, NULL | Space |
 | Put the cell back as it was | Cmd/Ctrl+Z |
 | Leave the editor without the change | Esc |
 
@@ -31,6 +33,32 @@ The Omarchy look uses vim keys for these. They are in
 What you type is checked against the column's type before anything is
 sent: numbers and their ranges, booleans, enum values, the maximum length,
 and the syntax of JSON.
+
+### Words that are not text
+
+In a column that is not text, three words typed into a cell are what they
+say, not their letters. They are read in any case.
+
+| Typed | Is |
+| --- | --- |
+| `NULL` | NULL, where the column takes it |
+| `DEFAULT` | The column's default, where it has one |
+| `now()`, `now`, `current_timestamp` | The moment of the save by the database's own clock, in a date or time column |
+
+The cell shows the word until you save, and what the database stored
+after. Review SQL shows the keyword as it is sent.
+
+- In a text column these are text: `NULL` there is four letters. Use
+  Cmd/Ctrl+Backspace for NULL and Cmd/Ctrl+' for DEFAULT.
+- In a JSON column `null` is a JSON document. `NULL` and `DEFAULT` in
+  capitals are the database's.
+- A word the column cannot take stays text, and is checked like any other:
+  `NULL` in a column that cannot be NULL, `DEFAULT` where there is no
+  default, `now()` outside date and time columns.
+- A date column gets the date and a time column the time of day. On
+  SQLite the time is UTC, to the second.
+- In a new row, a cell you leave alone is its default already, so
+  `DEFAULT` there takes the value out again.
 
 {% include shot.html file="macos-edit-pending" alt="The grid with three changed cells, one of them red because its column does not take the text, and the bar of pending changes under it" %}
 
