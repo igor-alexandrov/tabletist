@@ -123,6 +123,8 @@ back.
 | --- | --- |
 | `i`, Enter | Edit the cell |
 | `cc` | Edit the cell from nothing |
+| `o`, `O` | Add a row below the cursor's row, or above it |
+| `dd` | Drop a new row that is not saved yet |
 | `e`, Ctrl+I | Edit the row in the row panel |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
