@@ -29,7 +29,10 @@ pub(crate) const PLEX_MONO: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMo
 pub(crate) const PLEX_MONO_MEDIUM: &[u8] =
     include_bytes!("../../assets/fonts/IBMPlexMono-Medium.ttf");
 /// Noto Sans Symbols 2 cut down to the keyboard symbols Plex lacks (⌘ ⌥ ⇧
-/// ⌫ ⌦ ⏎), for the macOS shortcuts (SIL OFL 1.1).
+/// ⌫ ⌦ ⏎), with ⌃ from Noto Sans Symbols beside them, for the macOS
+/// shortcuts (both SIL OFL 1.1, of the same authors). It keeps the line of
+/// the first cut, which the symbols' place on the baseline is tuned to.
+/// Neither has ⇥: the keymap writes that key as a word.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) const KEYS: &[u8] = include_bytes!("../../assets/fonts/NotoSansSymbols2-Keys.ttf");
 /// JetBrains Mono, variable in weight (SIL OFL 1.1): Omarchy's default, for
@@ -276,6 +279,32 @@ mod tests {
                 "{}: a replacement box instead of a key",
                 role.id()
             );
+        }
+    }
+
+    /// Every character the keymap writes for the Mac is one its faces
+    /// have: a key added to the keymap cannot come out as a box.
+    #[test]
+    fn the_mac_has_a_glyph_for_every_key_the_keymap_writes() {
+        let mut harness = crate::testing::Harness::new();
+        harness.set_look(Look::macos());
+        harness.settle();
+        let keymap = crate::keymap::Keymap::default();
+        for role in [
+            crate::typography::TextRole::Secondary,
+            crate::typography::TextRole::Shortcut,
+        ] {
+            let font = role.font_id(Faces::Plex);
+            for command in crate::keymap::Command::ALL {
+                let label = keymap.label(crate::keymap::Layout::Mac, *command);
+                assert!(
+                    harness
+                        .ctx
+                        .fonts_mut(|fonts| fonts.has_glyphs(&font, &label)),
+                    "{}: {command:?} is written {label}, with a box in it",
+                    role.id()
+                );
+            }
         }
     }
 
