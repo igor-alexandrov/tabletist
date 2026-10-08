@@ -43,6 +43,22 @@ pub struct InsertStatement {
     /// What the driver sends: for PostgreSQL the shown text, for MySQL and
     /// SQLite the same statement with the values bound.
     pub sql: Sql,
+    /// Where the parts of `shown` stand.
+    pub parts: InsertParts,
+}
+
+/// Where the parts of a shown `INSERT` stand, as byte offsets into its
+/// text, noted as the builder writes it: as [`UpdateParts`], so a name or
+/// a value that holds ` VALUES (` cannot move them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InsertParts {
+    /// Where the clause that gives the values begins: `VALUES`, or
+    /// `DEFAULT VALUES`. The table and its columns end a space before it.
+    pub values: usize,
+    /// Each value's place, in the order its columns are named.
+    pub literals: Vec<std::ops::Range<usize>>,
+    /// Where `RETURNING` begins, where the statement hands its row back.
+    pub back: Option<usize>,
 }
 
 /// Where the parts of a shown `UPDATE` stand, as byte offsets into its
@@ -684,19 +700,26 @@ impl Dialect {
             Self::Postgres | Self::Sqlite => " RETURNING *",
             Self::MySql => "",
         };
+        let lead = format!("INSERT INTO {table}");
         if row.set.is_empty() {
-            let text = match self {
-                Self::Postgres | Self::Sqlite => {
-                    format!("INSERT INTO {table} DEFAULT VALUES{back}")
-                }
-                Self::MySql => format!("INSERT INTO {table} () VALUES (){back}"),
+            let (text, values) = match self {
+                Self::Postgres | Self::Sqlite => (format!("{lead} DEFAULT VALUES"), lead.len() + 1),
+                Self::MySql => (format!("{lead} () VALUES ()"), lead.len() + 4),
             };
+            let parts = InsertParts {
+                values,
+                literals: Vec::new(),
+                // `back` begins with the space before its word.
+                back: (!back.is_empty()).then_some(text.len() + 1),
+            };
+            let text = format!("{text}{back}");
             return Ok(InsertStatement {
                 shown: text.clone(),
                 sql: Sql {
                     text,
                     params: Vec::new(),
                 },
+                parts,
             });
         }
         let mut params = Vec::new();
@@ -709,9 +732,25 @@ impl Dialect {
             shown.push(self.shown(&operand));
             sent.push(self.sent(&operand, &mut params));
         }
-        let head = format!("INSERT INTO {table} ({}) VALUES (", names.join(", "));
-        let shown = format!("{head}{}){back}", shown.join(", "));
+        let head = format!("{lead} ({}) VALUES (", names.join(", "));
+        let mut parts = InsertParts {
+            values: head.len() - "VALUES (".len(),
+            ..InsertParts::default()
+        };
         let text = format!("{head}{}){back}", sent.join(", "));
+        // The shown statement, each value's place noted as it is written.
+        let mut written = head;
+        for (index, literal) in shown.iter().enumerate() {
+            if index > 0 {
+                written.push_str(", ");
+            }
+            let start = written.len();
+            written.push_str(literal);
+            parts.literals.push(start..written.len());
+        }
+        written.push(')');
+        parts.back = (!back.is_empty()).then_some(written.len() + 1);
+        written.push_str(back);
         // PostgreSQL text cannot hold a NUL, and the driver cannot put one
         // in a message: see `update_row`.
         let refused = match self {
@@ -722,8 +761,9 @@ impl Dialect {
             return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
         }
         Ok(InsertStatement {
-            shown,
+            shown: written,
             sql: Sql { text, params },
+            parts,
         })
     }
 
@@ -1360,6 +1400,68 @@ mod tests {
 
     /// The canvas' new row: a cover of the publisher Harbor Press.
     const PUBLISHER: &str = "9100000000000000004";
+
+    #[test]
+    fn a_new_rows_parts_are_where_its_statement_has_them() {
+        let object = covers("public");
+        // A value that reads like the statement's own words moves nothing.
+        let wordy = ") VALUES ('x') RETURNING *";
+        let row = RowInsert {
+            set: vec![
+                sets("kind", "text", NewValue::Text("print".into())),
+                sets("note", "text", NewValue::Text(wordy.into())),
+            ],
+        };
+        let nothing = RowInsert { set: Vec::new() };
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            let InsertStatement { shown, parts, .. } = dialect.insert_row(&object, &row).unwrap();
+            assert!(shown[parts.values..].starts_with("VALUES ("), "{shown}");
+            assert!(shown[..parts.values].ends_with(") "), "{shown}");
+            let literals: Vec<&str> = parts
+                .literals
+                .iter()
+                .map(|range| &shown[range.clone()])
+                .collect();
+            // Each is the whole literal, quotes and all, and nothing else.
+            assert_eq!(literals.len(), 2, "{shown}");
+            assert_eq!(literals[0], "'print'", "{shown}");
+            let long = literals[1];
+            assert!(long.starts_with('\'') && long.ends_with('\''), "{long}");
+            assert!(
+                long.contains("VALUES (") && long.contains("RETURNING"),
+                "{long}"
+            );
+            assert_eq!(&shown[parts.literals[0].end..parts.literals[1].start], ", ");
+            let after = &shown[parts.literals[1].end..];
+            let back = parts.back.map(|at| &shown[at..]);
+            match dialect {
+                Dialect::Postgres | Dialect::Sqlite => {
+                    assert_eq!(after, ") RETURNING *");
+                    assert_eq!(back, Some("RETURNING *"));
+                }
+                Dialect::MySql => {
+                    assert_eq!(after, ")");
+                    assert_eq!(back, None);
+                }
+            }
+            // With nothing set: the clause that takes every default.
+            let InsertStatement { shown, parts, .. } =
+                dialect.insert_row(&object, &nothing).unwrap();
+            assert!(parts.literals.is_empty());
+            let clause = &shown[parts.values..];
+            assert!(shown[..parts.values].ends_with(' '), "{shown}");
+            match dialect {
+                Dialect::Postgres | Dialect::Sqlite => {
+                    assert_eq!(clause, "DEFAULT VALUES RETURNING *");
+                    assert_eq!(parts.back.map(|at| &shown[at..]), Some("RETURNING *"));
+                }
+                Dialect::MySql => {
+                    assert_eq!(clause, "VALUES ()");
+                    assert_eq!(parts.back, None);
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_same_new_row_on_each_engine() {
