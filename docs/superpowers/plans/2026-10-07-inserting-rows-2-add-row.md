@@ -64,7 +64,7 @@ Where the app cannot yet do what the canvas and the spec ask, or where they leav
 | n | Hidden when the user has no INSERT privilege, or for a view without INSERT rules | Add row is disabled, with its reason, for a read-only connection, a view, and while the structure loads. A missing privilege is the server's error on save | The app reads no privileges and edits no view. Disabled and saying why, not hidden: a button that comes and goes moves the header |
 | o | "Already used by row id 101 · Open row", "No publisher with id …", each on its cell | The server's message on the new row: its set cells turn red and say it under the pointer, and the bar says "Nothing was saved." with it | Run 5 |
 | p | "Save 1 insert and 1 update to bookshop_production?" | "Save 1 new row and 1 change to production?", the connection on the line under it | The prompt says "Save 2 changes to production?" today, and the app's word is "change" |
-| q | The inspector is the "New row" form | While a new row is selected the row panel says "New row, not saved" and that its values are edited in the grid. `Mod+I` does nothing on a new row | Run 2b. The panel reads a row of the page, and a new row is none |
+| q | The inspector is the "New row" form | While a new row is selected the row panel says "A new row is edited in the grid". `Mod+I` does nothing on a new row | Run 2b. The panel reads a row of the page, and a new row is none |
 | r | "Discard new row" in the inspector; `⌫` / `dd` drops a new row | `Delete` and `Backspace` on a selected new row drop it in the desktop looks, `dd` in the terminal's. The inspector's button is run 2b | The keys are the spec's (6): "Deleting a new row (⌫ / dd) drops it from the store with no SQL" |
 | s | Omarchy's header shows `+1` at its right end | The header's count reads `13 rows + 1 new` in every look, and the terminal's status line says `+1 new` in green | One place for the count in each look. The line is where the terminal says what is pending |
 | t | Review SQL groups by kind: `-- 1 new row`, then `-- 1 changed row` | Each new row's `INSERT` under a comment `-- new row`, before the changed rows' statements with the comments they have today | A changed row's comment says what a save compares before it writes. One comment for each statement keeps that |
@@ -3151,7 +3151,7 @@ Read the two boards again before this task: "macOS – Inserting a row" and "Oma
         let (mut harness, tab, id) = covers_in(Look::macos());
         let place = crate::edit::Place::Top;
         harness.app.apply(Action::AddRow { tab, id, place });
-        assert!(harness.has("New row, not saved. Its values are edited in the grid."));
+        assert!(harness.has("A new row is edited in the grid"));
         // And Mod+I, which puts the keyboard on a row's fields, leaves it.
         harness.app.apply(Action::CancelEdit { tab, id });
         harness.press(Key::I, Modifiers::COMMAND);
@@ -3392,7 +3392,7 @@ fn unset_columns(workspace: &crate::model::Workspace, object: &ObjectTab) -> Vec
     }
 ```
 
-  In `draw` of `src/ui/row_panel.rs`, the branch that says "Select a row to see its fields" says of a new row what it can: when `source.selection` is on a new row (`crate::edit::new_id(cell.row).is_some()`), the text is `gettext(locale, "New row, not saved. Its values are edited in the grid.")`. Nothing else of the panel changes in this run.
+  In `draw` of `src/ui/row_panel.rs`, the branch that says "Select a row to see its fields" says of a new row what it can: when `source.selection` is on a new row (`crate::edit::new_id(cell.row).is_some()`), the text is `gettext(locale, "A new row is edited in the grid")`. Nothing else of the panel changes in this run.
 
 - [ ] **Step 6: Run the tests, then the four checks.** `the_header_gives_way_instead_of_overlapping_in_a_narrow_view` runs at 1000 pt in all three looks: the button is wider by its key, and gives its text and key up sooner. If it overlaps, the fault is in `add_row(short).width`, not in the test.
 
@@ -3793,3 +3793,19 @@ git add src/shots.rs docs/superpowers && git commit -m "Show a new row in the sc
   6. On MySQL and on a PostgreSQL table with a trigger: the page loads again after the save and the row is where the sort puts it.
   7. A read-only connection and a view: Add row is disabled with its reason, and `Mod+N` opens a new connection.
 - Stop here. Run 2b (the row panel as the "New row" form) gets its own plan, written from the tree as this run leaves it.
+
+## As built
+
+The run followed the plan. Where the code that was built differs from a block above, this is how, and the code is right:
+
+- **Task 2.** `Edits::put` and `Edits::revert` share one `Edits::mended` for taking a failure off a new row, where the plan repeats the lines in each. A test of it was added.
+- **Task 4.** The test asserts the shape of the long literal (its quotes, that it holds the statement's own words) and what stands around it, not one spelling of it for the three engines.
+- **Task 5.** One more test: a long value of a new row is cut where it is shown and whole for the clipboard.
+- **Task 7.** The words of `Note::FailedInsert` were written here, with `database_said` lifted out for it and `Note::Failed`, not left to task 10. One more test: rows opened below two different rows keep those places once saved.
+- **Task 8.** A held `Mod+N` is tested as egui reports one: a key that goes down while it is down. An event built with `repeat: true` is read as a fresh press once the key was released. One more test: a first `d` that brought the rows up from the Structure view is not half of `dd`.
+- **Task 9.** The star after a required column's name is given room of its own, so it shows where the header stands at the right (a numeric column): seen in the scenes. The row panel's line is "A new row is edited in the grid": the longer sentence ran out of the panel in the terminal look. The footer's note is `selection_note`. A grid test reads a new row and the page's rows by their names.
+- **Task 10.** What a new row needs stands in the bar where "1 to fix" stands, as one text with it ("1 to fix · publisher_id is required"), so it gives way and is named as that note is. The terminal's "publisher_id required" is said when a save is asked for and refused, as every reason a save waits is said there.
+- **Task 12.** Three scenes: the new row with its editor open, the row with a value given beside a changed cell, and the failed save. The terminal look opens its row below the first, as `o` does. `book_images` has two required columns (`book_id`, `created_at`), so the failed scene gives both.
+- **Not sent round the reviewer a second time.** The plan's two faults were corrected after one review.
+
+What the scenes showed that the plan's table does not list: in a window too narrow for the bar's words (the scenes' 1000 pt with the row panel open), what a new row needs gives way before the counts do, and with a changed cell beside it the counts give way to the bar's dot, whose name still says them. That is how the bar treats "1 to fix" today.

@@ -1,11 +1,13 @@
 # Inserting rows
 
-Date: 2026-10-07. Status: built in runs, listed in
-`docs/superpowers/plans/2026-10-07-inserting-rows-1-save.md`. Run 1 is
-built: a save carries new rows and the three drivers write them. Nothing in
-the app adds a row yet; that is run 2. The plan's "What the design asks, and
-what gets built" says what of the text below the app can do, and in which
-run.
+Date: 2026-10-07. Status: built in runs. Run 1
+(`docs/superpowers/plans/2026-10-07-inserting-rows-1-save.md`) is built: a
+save carries new rows and the three drivers write them. Run 2
+(`docs/superpowers/plans/2026-10-07-inserting-rows-2-add-row.md`) is
+built: a row is added from the grid, filled, reviewed and saved. The row
+panel as the "New row" form is run 2b. Each plan's "What the design asks,
+and what gets built" says what of the text below the app can do, and in
+which run.
 
 This is slice 5 of `2026-10-03-value-editing-core-design.md` ("Rows: add,
 duplicate, delete"), without delete. The text below is the user's spec as
