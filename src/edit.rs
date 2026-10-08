@@ -593,6 +593,115 @@ pub fn opens_large(text: &str, class: ColumnClass) -> bool {
         || text.chars().count() > crate::ui::format::CELL_MAX_CHARS
 }
 
+/// The first row that is no row of a page. A new row has no place in the
+/// page, so its cells are kept in the pending set under a row of its own,
+/// from here up: `page.rows.get(row)` finds nothing there, and whatever
+/// reads a page's row by its number takes a new row for no row at all.
+pub const NEW_ROWS: usize = usize::MAX / 2;
+
+/// The row the cells of the new row `id` are kept under.
+pub fn new_row(id: usize) -> usize {
+    NEW_ROWS + id
+}
+
+/// The new row whose cells are kept under `row`, by its id. `None` for a
+/// row of the page.
+pub fn new_id(row: usize) -> Option<usize> {
+    row.checked_sub(NEW_ROWS)
+}
+
+/// A row the table does not hold yet. What was set in it is among the
+/// pending cells, under `new_row(id)`: a new row with nothing set has none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewRow {
+    /// Its own among the tab's new rows while the tab holds any.
+    pub id: usize,
+    /// The page's row it stands before: as many as the page has rows, for
+    /// one after the last.
+    pub before: usize,
+    /// What its `INSERT` failed with in the last save. It is sent again by
+    /// the next.
+    pub failed: Option<Error>,
+}
+
+/// Where a new row is put.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// Under the header, below the new rows already there: the desktop
+    /// looks' Add row.
+    Top,
+    /// Right below this row, a page's or a new one: the terminal's `o`.
+    Below(usize),
+    /// Right above it: `O`.
+    Above(usize),
+}
+
+/// The rows a table's grid shows, in its order: the page's, and the new
+/// ones among them. A place counts those rows from 0; a row is a page's
+/// row, or a new row's own (`new_row`).
+#[derive(Clone, Copy)]
+pub struct Order<'a> {
+    added: &'a [NewRow],
+    /// How many rows the page has.
+    height: usize,
+}
+
+impl<'a> Order<'a> {
+    pub fn of(added: &'a [NewRow], height: usize) -> Self {
+        Self { added, height }
+    }
+
+    pub fn len(&self) -> usize {
+        self.height + self.added.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The place of the `index`th new row: under the page's rows before
+    /// it and the new rows before it. The new rows are in the order they
+    /// stand, so this only grows along them.
+    fn place_of(&self, index: usize) -> usize {
+        self.added[index].before.min(self.height) + index
+    }
+
+    /// The row shown at `place`.
+    pub fn row(&self, place: usize) -> Option<usize> {
+        if place >= self.len() {
+            return None;
+        }
+        // How many new rows stand above `place`: found by halving, since a
+        // grid asks for every cell it draws and a paste can add a thousand.
+        let (mut low, mut high) = (0, self.added.len());
+        while low < high {
+            let middle = (low + high) / 2;
+            if self.place_of(middle) < place {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        match self.added.get(low) {
+            Some(new) if self.place_of(low) == place => Some(new_row(new.id)),
+            _ => Some(place - low),
+        }
+    }
+
+    /// Where `row` is shown. `None` for a row that is neither the page's
+    /// nor a new one's.
+    pub fn place(&self, row: usize) -> Option<usize> {
+        match new_id(row) {
+            Some(id) => {
+                let index = self.added.iter().position(|new| new.id == id)?;
+                Some(self.place_of(index))
+            }
+            None => (row < self.height)
+                .then(|| row + self.added.partition_point(|new| new.before <= row)),
+        }
+    }
+}
+
 /// One cell's new value, not yet written.
 #[derive(Clone, PartialEq)]
 pub struct Pending {
@@ -646,8 +755,14 @@ pub struct Editor {
 /// What a table's tab holds while its values are edited.
 #[derive(Default)]
 pub struct Edits {
-    /// By row and column of the loaded page.
+    /// By row and column of the loaded page. A new row's are under a row
+    /// of its own (`new_row`).
     pub cells: BTreeMap<(usize, usize), Pending>,
+    /// The rows to add, in the order they stand in the grid among
+    /// themselves: `before` never decreases along them.
+    pub added: Vec<NewRow>,
+    /// The id the next new row takes.
+    pub next_new: usize,
     pub editor: Option<Editor>,
     /// Why the cell last asked for could not be edited.
     pub why: Option<(CellPos, Lock)>,
@@ -679,6 +794,8 @@ pub struct Counts {
     pub rows: usize,
     pub to_fix: usize,
     pub failed: usize,
+    /// The new rows.
+    pub added: usize,
 }
 
 /// What a row's cells come to, for its mark.
@@ -695,7 +812,16 @@ impl Edits {
     /// Whether the tab's page must stay: something is pending, an editor
     /// is open, or a save is running.
     pub fn holds(&self) -> bool {
-        !self.cells.is_empty() || self.editor.is_some() || self.saving.is_some()
+        !self.cells.is_empty()
+            || !self.added.is_empty()
+            || self.editor.is_some()
+            || self.saving.is_some()
+    }
+
+    /// Whether anything waits for a save: a changed cell, or a new row.
+    /// An open editor alone is not that yet.
+    pub fn pending(&self) -> bool {
+        !self.cells.is_empty() || !self.added.is_empty()
     }
 
     /// Drops what is pending, the open editor and what the last save left.
@@ -709,14 +835,18 @@ impl Edits {
 
     pub fn counts(&self) -> Counts {
         let mut counts = Counts {
-            changes: self.cells.len(),
+            added: self.added.len(),
             ..Counts::default()
         };
         let mut last = None;
         for (&(row, _), cell) in &self.cells {
-            if last != Some(row) {
-                counts.rows += 1;
-                last = Some(row);
+            // What is set in a new row is the row, not a change of one.
+            if new_id(row).is_none() {
+                counts.changes += 1;
+                if last != Some(row) {
+                    counts.rows += 1;
+                    last = Some(row);
+                }
             }
             match cell.state {
                 State::Ready => {}
@@ -724,7 +854,95 @@ impl Edits {
                 State::Failed(_) => counts.failed += 1,
             }
         }
+        // A new row with nothing set has no cell to say that it failed.
+        counts.failed += self
+            .added
+            .iter()
+            .filter(|new| new.failed.is_some() && self.unset_all(new.id))
+            .count();
         counts
+    }
+
+    /// Whether nothing is set in the new row `id`.
+    fn unset_all(&self, id: usize) -> bool {
+        let row = new_row(id);
+        let mut set = self.cells.range((row, 0)..=(row, usize::MAX));
+        set.next().is_none()
+    }
+
+    /// Adds a new row at `place` of a page `height` rows long, and says
+    /// its id. What was made of the set, its review, is stale.
+    pub fn add_row(&mut self, place: Place, height: usize) -> usize {
+        // The new row a place names, by where it stands among the new ones.
+        let beside = |row: usize| {
+            let id = new_id(row)?;
+            self.added.iter().position(|new| new.id == id)
+        };
+        let (at, before) = match place {
+            Place::Top => (self.added.partition_point(|new| new.before == 0), 0),
+            Place::Below(row) => match beside(row) {
+                Some(at) => (at + 1, self.added[at].before),
+                None => {
+                    let before = row.saturating_add(1).min(height);
+                    (
+                        self.added.partition_point(|new| new.before < before),
+                        before,
+                    )
+                }
+            },
+            Place::Above(row) => match beside(row) {
+                Some(at) => (at, self.added[at].before),
+                None => {
+                    let before = row.min(height);
+                    (
+                        self.added.partition_point(|new| new.before <= before),
+                        before,
+                    )
+                }
+            },
+        };
+        let id = self.next_new;
+        self.next_new += 1;
+        self.added.insert(
+            at,
+            NewRow {
+                id,
+                before,
+                failed: None,
+            },
+        );
+        self.review = None;
+        id
+    }
+
+    /// Takes the new row `id` out of the set, with what was set in it and
+    /// an editor open on it. Says whether there was such a row.
+    pub fn drop_row(&mut self, id: usize) -> bool {
+        let Some(at) = self.added.iter().position(|new| new.id == id) else {
+            return false;
+        };
+        self.added.remove(at);
+        let row = new_row(id);
+        self.cells.retain(|&(of, _), _| of != row);
+        let edited = self.editor.as_ref().map(|editor| editor.cell.row);
+        if edited == Some(row) {
+            self.editor = None;
+        }
+        if self.why.is_some_and(|(cell, _)| cell.row == row) {
+            self.why = None;
+        }
+        self.review = None;
+        true
+    }
+
+    /// A value of the new row whose cells are under `row` changed: it is
+    /// no longer the row the last save failed on.
+    fn mended(&mut self, row: usize) {
+        if let Some(id) = new_id(row)
+            && let Some(new) = self.added.iter_mut().find(|new| new.id == id)
+        {
+            new.failed = None;
+        }
     }
 
     /// The statement of the page's row `row` failed with `error`: its
@@ -750,12 +968,14 @@ impl Edits {
     /// What was made of the set, its review, is stale.
     pub fn put(&mut self, at: (usize, usize), pending: Pending) {
         self.cells.insert(at, pending);
+        self.mended(at.0);
         self.review = None;
     }
 
     /// Takes the cell at `at` out of the set: it is as it loaded again.
     pub fn revert(&mut self, at: (usize, usize)) {
         self.cells.remove(&at);
+        self.mended(at.0);
         self.review = None;
     }
 }
@@ -779,8 +999,9 @@ impl std::fmt::Debug for Edits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Edits {{ cells: {}, editor: {:?}, why: {:?}, saving: {}, gone: {:?} }}",
+            "Edits {{ cells: {}, added: {}, editor: {:?}, why: {:?}, saving: {}, gone: {:?} }}",
             self.cells.len(),
+            self.added.len(),
             self.editor.as_ref().map(|editor| editor.cell),
             self.why,
             self.saving.is_some(),
@@ -1378,6 +1599,182 @@ mod tests {
         assert_eq!(names, listed);
         assert!(page.rows.iter().all(|row| row.len() == names.len()));
         assert_eq!(structure.row_key(), Some(vec!["id".to_owned()]));
+    }
+
+    #[test]
+    fn a_new_row_has_a_row_of_its_own_that_no_page_holds() {
+        assert_eq!(new_id(new_row(3)), Some(3));
+        assert_eq!(new_id(0), None);
+        assert_eq!(new_id(NEW_ROWS - 1), None);
+        assert!(page(rows()).rows.get(new_row(0)).is_none());
+    }
+
+    /// The ids of the new rows, as they stand.
+    fn ids(edits: &Edits) -> Vec<usize> {
+        edits.added.iter().map(|new| new.id).collect()
+    }
+
+    #[test]
+    fn new_rows_stand_where_they_were_put() {
+        // The desktop looks: under the header, the newest last.
+        let mut edits = Edits::default();
+        let first = edits.add_row(Place::Top, 5);
+        let second = edits.add_row(Place::Top, 5);
+        assert_eq!(ids(&edits), [first, second]);
+        assert!(edits.added.iter().all(|new| new.before == 0));
+        // The terminal's `o` on the page's row 1: right below it, above a
+        // new row that was there already.
+        let mut edits = Edits::default();
+        let old = edits.add_row(Place::Below(1), 5);
+        let new = edits.add_row(Place::Below(1), 5);
+        assert_eq!(ids(&edits), [new, old]);
+        assert!(edits.added.iter().all(|row| row.before == 2));
+        // `O` on the page's row 2: right above it, below those two.
+        let above = edits.add_row(Place::Above(2), 5);
+        assert_eq!(ids(&edits), [new, old, above]);
+        // On a new row: beside it, wherever it stands.
+        let under = edits.add_row(Place::Below(new_row(new)), 5);
+        assert_eq!(ids(&edits), [new, under, old, above]);
+        let over = edits.add_row(Place::Above(new_row(new)), 5);
+        assert_eq!(ids(&edits), [over, new, under, old, above]);
+        // Below the page's last row is after it, and never past it.
+        let last = edits.add_row(Place::Below(4), 5);
+        assert_eq!(
+            edits.added.last().map(|row| (row.id, row.before)),
+            Some((last, 5))
+        );
+        // The order never goes back up the page.
+        assert!(
+            edits
+                .added
+                .windows(2)
+                .all(|pair| pair[0].before <= pair[1].before)
+        );
+        // No id is given twice.
+        let mut seen = ids(&edits);
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), edits.added.len());
+    }
+
+    #[test]
+    fn the_grid_shows_new_rows_among_the_pages() {
+        let mut edits = Edits::default();
+        let top = edits.add_row(Place::Top, 3);
+        let mid = edits.add_row(Place::Below(1), 3);
+        let end = edits.add_row(Place::Below(2), 3);
+        let order = Order::of(&edits.added, 3);
+        assert_eq!(order.len(), 6);
+        let shown: Vec<usize> = (0..order.len())
+            .filter_map(|place| order.row(place))
+            .collect();
+        assert_eq!(shown, [new_row(top), 0, 1, new_row(mid), 2, new_row(end)]);
+        // And back: every row is found where it is shown.
+        for (place, row) in shown.iter().enumerate() {
+            assert_eq!(order.place(*row), Some(place), "{row}");
+        }
+        assert_eq!(order.row(6), None);
+        assert_eq!(order.place(3), None, "no such row of the page");
+        assert_eq!(order.place(new_row(99)), None, "no such new row");
+        // With no new row the grid's rows are the page's.
+        let plain = Order::of(&[], 3);
+        assert_eq!(plain.len(), 3);
+        assert_eq!((plain.row(2), plain.place(2)), (Some(2), Some(2)));
+        assert!(Order::of(&[], 0).is_empty() && !plain.is_empty());
+    }
+
+    #[test]
+    fn a_dropped_new_row_takes_its_cells_and_its_editor() {
+        let mut edits = Edits::default();
+        let kept = edits.add_row(Place::Top, 2);
+        let dropped = edits.add_row(Place::Top, 2);
+        let set = |text: &str| Pending {
+            new: NewValue::Text(text.into()),
+            state: State::Ready,
+        };
+        edits.put((new_row(kept), 1), set("a"));
+        edits.put((new_row(dropped), 1), set("b"));
+        edits.put((0, 1), set("c"));
+        edits.editor = Some(Editor {
+            cell: at(new_row(dropped), 1),
+            place: EditorPlace::Grid,
+            text: String::new(),
+            large: false,
+            focus: false,
+            top: false,
+            touched: false,
+            problem: None,
+        });
+        assert!(edits.drop_row(dropped));
+        assert_eq!(ids(&edits), [kept]);
+        assert!(edits.editor.is_none());
+        let left: Vec<(usize, usize)> = edits.cells.keys().copied().collect();
+        assert_eq!(left, [(0, 1), (new_row(kept), 1)]);
+        // Not twice, and not a row of the page.
+        assert!(!edits.drop_row(dropped));
+        assert_eq!(ids(&edits), [kept]);
+    }
+
+    #[test]
+    fn new_rows_are_counted_apart_from_changed_cells() {
+        let mut edits = Edits::default();
+        assert!(!edits.holds() && !edits.pending());
+        let id = edits.add_row(Place::Top, 2);
+        // A new row with nothing set is still something to keep the page
+        // for.
+        assert!(edits.holds() && edits.pending());
+        assert_eq!(
+            edits.counts(),
+            Counts {
+                added: 1,
+                ..Counts::default()
+            }
+        );
+        let pending = |state: State| Pending {
+            new: NewValue::Text("x".into()),
+            state,
+        };
+        edits.put((new_row(id), 1), pending(State::ToFix(Problem::Number)));
+        edits.put((new_row(id), 2), pending(State::Ready));
+        edits.put((1, 1), pending(State::Ready));
+        edits.put((1, 2), pending(State::Ready));
+        // The changes are the loaded rows': what is set in a new row is the
+        // row. What is to fix is to fix wherever it is.
+        assert_eq!(
+            edits.counts(),
+            Counts {
+                changes: 2,
+                rows: 1,
+                to_fix: 1,
+                failed: 0,
+                added: 1,
+            }
+        );
+        // The set says how many rows it adds, and none of their values.
+        assert!(format!("{edits:?}").contains("added: 1"));
+        edits.discard();
+        assert!(edits.added.is_empty() && !edits.holds());
+    }
+
+    #[test]
+    fn a_new_row_that_failed_is_mended_by_a_value_set_in_it() {
+        let mut edits = Edits::default();
+        let id = edits.add_row(Place::Top, 2);
+        edits.added[0].failed = Some(Error::query("violates check"));
+        // With nothing set the row itself is what failed.
+        assert_eq!(edits.counts().failed, 1);
+        edits.put(
+            (new_row(id), 1),
+            Pending {
+                new: NewValue::Text("x".into()),
+                state: State::Ready,
+            },
+        );
+        assert_eq!(edits.added[0].failed, None);
+        assert_eq!(edits.counts().failed, 0);
+        edits.added[0].failed = Some(Error::query("violates check"));
+        edits.revert((new_row(id), 1));
+        assert_eq!(edits.added[0].failed, None);
     }
 
     fn column(name: &str, type_name: &str) -> ColumnInfo {
