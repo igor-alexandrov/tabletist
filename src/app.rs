@@ -70,6 +70,8 @@ pub struct App {
     pub locale: Locale,
     pub palette: Palette,
     pub look: crate::theme::Look,
+    /// The keys in force: what the handler answers and what a label names.
+    pub keymap: crate::keymap::Keymap,
     pub themes: Catalog,
     pub tabs: Vec<ConnTab>,
     /// Index into `tabs`. Always valid: `tabs` is never empty.
@@ -131,6 +133,7 @@ impl App {
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
+            keymap: crate::keymap::Keymap::default(),
             themes: Catalog::default(),
             tabs: Vec::new(),
             active: 0,
@@ -253,6 +256,11 @@ impl App {
 
     pub fn active_tab(&self) -> &ConnTab {
         &self.tabs[self.active]
+    }
+
+    /// How the look in use binds and writes its keys.
+    pub fn layout(&self) -> crate::keymap::Layout {
+        crate::keymap::Layout::of(&self.look)
     }
 
     pub fn active_tab_id(&self) -> ConnTabId {

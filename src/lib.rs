@@ -8,6 +8,7 @@ pub mod edit;
 pub mod entrypoint;
 pub mod env;
 pub mod i18n;
+pub mod keymap;
 pub mod known_hosts;
 #[cfg(target_os = "macos")]
 pub mod macos;
