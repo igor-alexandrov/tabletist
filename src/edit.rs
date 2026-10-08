@@ -1369,6 +1369,17 @@ mod tests {
         assert!(same_changes(&base, &base.clone()));
     }
 
+    #[test]
+    fn the_bookshops_covers_have_a_column_of_each_kind() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        let listed: Vec<&str> = structure.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, listed);
+        assert!(page.rows.iter().all(|row| row.len() == names.len()));
+        assert_eq!(structure.row_key(), Some(vec!["id".to_owned()]));
+    }
+
     fn column(name: &str, type_name: &str) -> ColumnInfo {
         ColumnInfo {
             name: name.into(),

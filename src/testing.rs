@@ -649,6 +649,75 @@ pub fn fixture_structure() -> tabletist_db::Structure {
     }
 }
 
+/// The structure of the Bookshop's `book_covers`: the database numbers
+/// `id`, `publisher_id` must be given, `kind` is one of three and has a
+/// default, `image_data` may be NULL, and `created_at` has an expression
+/// for a default.
+pub fn book_covers_structure() -> tabletist_db::Structure {
+    use tabletist_db::ColumnInfo;
+    let column = |name: &str, type_name: &str| ColumnInfo {
+        name: name.into(),
+        type_name: type_name.into(),
+        ..ColumnInfo::default()
+    };
+    tabletist_db::Structure {
+        columns: vec![
+            ColumnInfo {
+                identity: true,
+                ..column("id", "INTEGER")
+            },
+            column("publisher_id", "INTEGER"),
+            ColumnInfo {
+                default: Some("'print'".into()),
+                allowed_values: Some(vec!["print".into(), "ebook".into(), "audio".into()]),
+                ..column("kind", "TEXT")
+            },
+            ColumnInfo {
+                nullable: true,
+                ..column("image_data", "JSON")
+            },
+            ColumnInfo {
+                default: Some("CURRENT_TIMESTAMP".into()),
+                ..column("created_at", "TEXT")
+            },
+        ],
+        primary_key: vec!["id".into()],
+        ..tabletist_db::Structure::default()
+    }
+}
+
+/// A page of `book_covers`, `rows` long.
+pub fn book_covers_page(rows: usize) -> RowPage {
+    let meta = |name: &str, type_name: &str, kind: ValueKind| ColumnMeta {
+        name: name.into(),
+        type_name: type_name.into(),
+        kind,
+    };
+    RowPage {
+        columns: vec![
+            meta("id", "INTEGER", ValueKind::Numeric),
+            meta("publisher_id", "INTEGER", ValueKind::Numeric),
+            meta("kind", "TEXT", ValueKind::Text),
+            meta("image_data", "JSON", ValueKind::Json),
+            meta("created_at", "TEXT", ValueKind::Text),
+        ],
+        rows: (0..rows)
+            .map(|index| {
+                vec![
+                    Value::Int(index as i64 + 1),
+                    Value::Int(9_100_000_000_000_000_001 + (index as i64 % 3)),
+                    Value::Text(if index % 2 == 0 { "print" } else { "ebook" }.into()),
+                    Value::Null,
+                    Value::Text("2026-01-12 09:14:03".into()),
+                ]
+            })
+            .collect(),
+        has_more: false,
+        ordered_by_key: true,
+        elapsed: std::time::Duration::from_millis(2),
+    }
+}
+
 impl Harness {
     /// A writable connection with `users` open and pinned, its structure
     /// and a page of five rows loaded: a table whose cells can be edited.
@@ -665,6 +734,26 @@ impl Harness {
         // The describe was sent before the rows were asked for.
         self.answer_structure(fixture_structure());
         self.answer_rows(page(5, false));
+        let id = self
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_tab)
+            .expect("the table's tab is open");
+        (tab, id)
+    }
+
+    /// As [`Self::editable`], with the Bookshop's `book_covers` and three of
+    /// its rows: a table a row can be added to.
+    pub fn book_covers(&mut self) -> (ConnTabId, TabId) {
+        let tab = self.connect_fake_as(false);
+        self.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "book_covers"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        self.answer_structure(book_covers_structure());
+        self.answer_rows(book_covers_page(3));
         let id = self
             .app
             .workspace(tab)
