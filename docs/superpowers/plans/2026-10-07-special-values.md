@@ -955,3 +955,14 @@ git add src && git commit -m "Offer now beside a date or time cell's editor"
   4. Space on a boolean cell three times, then on any other cell.
   5. Review SQL with one of each: the keywords, not quoted.
 - Stop here. The other editors by type (the enum's list, the foreign key's search, the calendar, the array's chips) are slice 2's own plan.
+
+## As built
+
+Tasks 1 to 6 are built. Task 7, the now button, is not: it is a follow-up of its own.
+
+- **Names.** The reader of typed text is `edit::typed_as`, not `read`: `edit.rs` has a `read` already. `edit::problem` is the check of typed text that knows a keyword has none, and `edit::shown_value` is a pending value as a value to show; the editor, the grid, the row panel and the clipboard go through them.
+- **Task 1 and the app.** `NewValue`'s two variants leave every `match` over it in `src/` without arms, so the commit of task 1 gives the app's readers theirs (the word, as text). The refusal of now in a column that keeps no time reads "… expects a value, not the time of the save".
+- **Task 1's tests.** The SQLite suite ran here. The PostgreSQL and MySQL tests were compiled, not run: Docker could not be reached in the session, and CI runs them.
+- **Task 4.** The terminal's plain `d` is read by its own modifiers (`take_press`), not by the keyboard's state: a test's key event carries Shift without a change of modifiers before it, and a real one may too.
+- **Task 3.** A pending keyword is written in the grid's faint colour in the desktop looks; the terminal writes every pending cell in its tone, this one too.
+- **Seen in a scene.** `now()` and `DEFAULT` on the pending tint, and `SET "created_at" = now()` in Review SQL with the keyword's ink. A `NULL` typed into a NOT NULL timestamp stays the text `NULL` and is the database's to refuse, as row d has it.
