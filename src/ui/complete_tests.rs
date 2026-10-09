@@ -557,11 +557,12 @@ fn ctrl_n_and_ctrl_p_move_the_highlight_only_in_the_terminal_look() {
     harness.press(Key::P, ctrl());
     assert_eq!(selected(&harness, tab), Some(0));
 
-    // The other looks: not the list's keys. Ctrl+N is New connection
-    // where Mod is Ctrl (it reports `command` too), and no shortcut on
-    // macOS. There egui's text field reads Ctrl+N and Ctrl+P itself, as
-    // cursor down and up: the cursor may leave the word, which closes the
-    // list. Nowhere do the keys move the highlight.
+    // The other looks: not the list's keys. Ctrl+P is quick open where
+    // Mod is Ctrl (it reports `command` too); Ctrl+N is nothing from an
+    // editor, a new connection being the picker's key. On macOS neither is
+    // a shortcut, and egui's text field reads them itself, as cursor down
+    // and up: the cursor may leave the word, which closes the list.
+    // Nowhere do the keys move the highlight.
     let cursor_keys = cfg!(target_os = "macos");
     let unmoved = |harness: &Harness, tab, what: &str| {
         let highlight = selected(harness, tab);
@@ -571,10 +572,7 @@ fn ctrl_n_and_ctrl_p_move_the_highlight_only_in_the_terminal_look() {
             assert_eq!(highlight, Some(0), "{what}");
         }
     };
-    for (ctrl, opens) in [
-        (Modifiers::CTRL, false),
-        (Modifiers::CTRL | Modifiers::COMMAND, true),
-    ] {
+    for ctrl in [Modifiers::CTRL, Modifiers::CTRL | Modifiers::COMMAND] {
         for pressed in [Key::N, Key::P] {
             let what = format!("{pressed:?} {ctrl:?}");
             let (mut harness, tab) = editor();
@@ -584,6 +582,7 @@ fn ctrl_n_and_ctrl_p_move_the_highlight_only_in_the_terminal_look() {
             unmoved(&harness, tab, &what);
             harness.frame(vec![release(pressed, ctrl)]);
             harness.settle();
+            let opens = pressed == Key::P && ctrl.command;
             assert_eq!(harness.app.dialog.is_some(), opens, "{what}");
             if opens {
                 // The dialog took the keyboard, and the list went.
@@ -897,7 +896,8 @@ fn ctrl_is_ctrl_as_every_platform_reports_it_and_cmd_is_not() {
         assert_eq!(selected(&harness, tab), Some(0), "{ctrl:?}");
         assert!(harness.app.dialog.is_none(), "{ctrl:?}");
     }
-    // Cmd on macOS, alone and with Ctrl: New connection, as ever.
+    // Cmd on macOS, alone and with Ctrl: not the list's key, and no
+    // shortcut's from an editor (a new connection is the picker's key).
     let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
     for held in [cmd, cmd | Modifiers::CTRL] {
         let (mut harness, tab) = editor();
@@ -908,9 +908,8 @@ fn ctrl_is_ctrl_as_every_platform_reports_it_and_cmd_is_not() {
         assert_eq!(selected(&harness, tab), Some(0), "{held:?}");
         harness.frame(vec![release(Key::N, held)]);
         harness.settle();
-        assert!(harness.app.dialog.is_some(), "{held:?}");
-        // The dialog took the keyboard, and the list went.
-        assert!(list(&harness, tab).is_none(), "{held:?}");
+        assert!(harness.app.dialog.is_none(), "{held:?}");
+        assert_eq!(selected(&harness, tab), Some(0), "{held:?}");
     }
 }
 

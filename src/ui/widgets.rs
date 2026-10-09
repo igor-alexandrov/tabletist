@@ -112,6 +112,20 @@ pub fn icon_button(
     look: &Look,
     palette: &Palette,
 ) -> Response {
+    icon_button_tipped(ui, icon, (label, label), look, palette)
+}
+
+/// [`icon_button`] whose tooltip is not its accessible name: `label` is
+/// the name, which must tell it from the other buttons on screen, and
+/// `tip` what a pointer over it reads (a command's name, shared with the
+/// key that does the same).
+pub fn icon_button_tipped(
+    ui: &mut Ui,
+    icon: Icon,
+    (label, tip): (&str, &str),
+    look: &Look,
+    palette: &Palette,
+) -> Response {
     let size = vec2(24.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
@@ -133,7 +147,7 @@ pub fn icon_button(
             egui::Rect::from_center_size(rect.center(), vec2(16.0, 16.0)),
         );
     }
-    response.on_hover_text(label)
+    response.on_hover_text(tip)
 }
 
 /// [`icon_button`] at `size`, its icon `icon_size` points.

@@ -41,6 +41,7 @@ struct Env<'a> {
     look: &'a Look,
     palette: &'a Palette,
     locale: Locale,
+    keymap: &'a crate::keymap::Keymap,
 }
 
 /// Our own words as a look writes them: lower case in the terminal's. What
@@ -200,6 +201,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         look: &look,
         palette: &palette,
         locale: app.locale,
+        keymap: &app.keymap,
     };
     let Some(workspace) = app.workspace(tab) else {
         return;
@@ -404,6 +406,7 @@ fn pane_tabs(
         look,
         palette,
         locale,
+        ..
     } = *env;
     let (strong, plain) = tab_roles(look);
     let width = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
@@ -525,6 +528,7 @@ fn run_state(ui: &mut Ui, spot: &Spot, running: Duration, env: &Env<'_>) -> bool
         look,
         palette,
         locale,
+        ..
     } = *env;
     let Spot {
         start,
@@ -536,7 +540,7 @@ fn run_state(ui: &mut Ui, spot: &Spot, running: Duration, env: &Env<'_>) -> bool
         env.said(|words| format!("{} · {:.1} s", words.say("Running"), running.as_secs_f64()));
     let label = gettext(locale, "Cancel query");
     let cancel = look.label(&gettext(locale, "Cancel"));
-    let keys = format!("{}.", look.label(look.command_key()));
+    let keys = super::data_view::cancel_keys(env.keymap, look);
     let button = |with_keys: bool| {
         let button = ButtonSpec::new(&cancel).label(&label);
         let button = if look.terminal {
@@ -1148,6 +1152,7 @@ fn messages(
         look,
         palette,
         locale,
+        ..
     } = *env;
     let role = widgets::code(look);
     // 3 above and below each line; 8 above the first.
@@ -1467,6 +1472,7 @@ fn blocked_card(
         look,
         palette,
         locale,
+        ..
     } = *env;
     let pad = side(look) as i8;
     egui::Frame::new()
@@ -1561,6 +1567,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         look,
         palette,
         locale,
+        ..
     } = *env;
     let rect = ui.max_rect();
     let Place {

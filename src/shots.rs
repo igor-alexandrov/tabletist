@@ -1362,9 +1362,10 @@ fn sidebar_width_over_time() {
     for frame in 0..300 {
         let tree = harness.frame(Vec::new());
         if frame % 50 == 0 {
-            let refresh = crate::testing::node(&tree, "Refresh", egui::accesskit::Role::Button)
-                .and_then(|id| tree.nodes.iter().find(|(n, _)| *n == id))
-                .and_then(|(_, node)| node.bounds());
+            let refresh =
+                crate::testing::node(&tree, "Reload objects", egui::accesskit::Role::Button)
+                    .and_then(|id| tree.nodes.iter().find(|(n, _)| *n == id))
+                    .and_then(|(_, node)| node.bounds());
             eprintln!("frame {frame}: refresh button {refresh:?}");
         }
     }

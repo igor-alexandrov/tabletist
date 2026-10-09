@@ -33,6 +33,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    let sql_key = app
+        .keymap
+        .key(app.layout(), crate::keymap::Command::NewSqlTab);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -183,7 +186,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 }
                             }
                             if look.terminal {
-                                new_sql(ui, bar, tab, locale, &look, &palette, &mut actions);
+                                let skin = (locale, &look, &palette);
+                                new_sql(ui, bar, tab, &sql_key, skin, &mut actions);
                             } else {
                                 // Room to scroll the last tab clear of the
                                 // row panel's toggle.
@@ -242,9 +246,8 @@ fn new_sql(
     ui: &mut egui::Ui,
     bar: Rect,
     tab: ConnTabId,
-    locale: crate::i18n::Locale,
-    look: &Look,
-    palette: &Palette,
+    keys: &crate::keymap::Written,
+    (locale, look, palette): (crate::i18n::Locale, &Look, &Palette),
     actions: &mut Vec<Action>,
 ) {
     let text = format!("+ {}", gettext(locale, "sql"));
@@ -253,7 +256,7 @@ fn new_sql(
         .label(&label)
         .primary()
         .role(TextRole::OGroup)
-        .shortcut("ctrl+t")
+        .shortcut(keys)
         .shortcut_role(TextRole::OBody)
         .padding(11.0)
         .gap(8.0);

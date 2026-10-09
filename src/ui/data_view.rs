@@ -918,6 +918,9 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    let filter_key = app
+        .keymap
+        .key(app.layout(), crate::keymap::Command::FilterBar);
     let Some(object) = app.workspace(tab).and_then(|w| w.object_tab(object_tab)) else {
         return;
     };
@@ -1052,7 +1055,10 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     }
                     if filtered {
                         note(ui, &gettext(locale, "Filtered"), palette.accent, &look)
-                            .on_hover_text(gettext(locale, "Cmd/Ctrl+F edits the filter"));
+                            .on_hover_text(
+                                gettext(locale, "{key} edits the filter")
+                                    .replace("{key}", &filter_key),
+                            );
                     }
                     if counting {
                         note(ui, &gettext(locale, "Counting…"), palette.secondary, &look);
@@ -1549,7 +1555,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             let (text, name, keys) = (
                 look.label(&gettext(locale, "Running query…")),
                 look.label(&gettext(locale, "Cancel")),
-                cancel_keys(&look),
+                cancel_keys(&app.keymap, &look),
             );
             let cancel = states::key_button(&name, &keys, &look).label("Cancel query");
             if states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
@@ -1959,10 +1965,10 @@ pub(crate) fn failure_text(error: &tabletist_db::Error) -> String {
     }
 }
 
-/// The keys that cancel a query, as the look writes them: `⌘.`, `Ctrl+.`
-/// or the terminal's `ctrl+.`.
-pub fn cancel_keys(look: &Look) -> String {
-    format!("{}.", look.label(look.command_key()))
+/// The key that cancels a query, as the look writes it.
+pub fn cancel_keys(keymap: &crate::keymap::Keymap, look: &Look) -> crate::keymap::Written {
+    let layout = crate::keymap::Layout::of(look);
+    keymap.key(layout, crate::keymap::Command::CancelQuery)
 }
 
 /// What a page with no rows says under its column headers: that the table

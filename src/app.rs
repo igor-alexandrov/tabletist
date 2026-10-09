@@ -258,6 +258,29 @@ impl App {
         &self.tabs[self.active]
     }
 
+    /// What a cancel of `tab` would cancel, which is what it shows a
+    /// spinner for: the active tab's loads or run, or the tree's when no
+    /// tab is open.
+    fn cancellable(&self, tab: ConnTabId) -> Vec<RequestId> {
+        let Some(workspace) = self.workspace(tab) else {
+            return Vec::new();
+        };
+        let active = workspace.active_tab.and_then(|id| workspace.tab(id));
+        match active {
+            Some(active) => active.pending(),
+            None => std::iter::once(workspace.tree.schemas.pending)
+                .chain(workspace.tree.nodes.values().map(|n| n.objects.pending))
+                .chain(std::iter::once(workspace.databases.pending))
+                .flatten()
+                .collect(),
+        }
+    }
+
+    /// Whether a cancel of `tab` has anything to cancel.
+    pub fn is_busy(&self, tab: ConnTabId) -> bool {
+        !self.cancellable(tab).is_empty()
+    }
+
     /// How the look in use binds and writes its keys.
     pub fn layout(&self) -> crate::keymap::Layout {
         crate::keymap::Layout::of(&self.look)
@@ -1138,19 +1161,9 @@ impl App {
                 }
             }
             Action::CancelQuery(tab) => {
-                // What the tab shows a spinner for: the active tab's loads
-                // or run, or the tree's when no tab is open.
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    let active = workspace.active_tab.and_then(|id| workspace.tab(id));
-                    let pending: Vec<RequestId> = match active {
-                        Some(active) => active.pending(),
-                        None => std::iter::once(workspace.tree.schemas.pending)
-                            .chain(workspace.tree.nodes.values().map(|n| n.objects.pending))
-                            .chain(std::iter::once(workspace.databases.pending))
-                            .flatten()
-                            .collect(),
-                    };
+                    let pending = self.cancellable(tab);
                     self.cancel(session, pending);
                 }
             }
