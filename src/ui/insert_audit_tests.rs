@@ -634,21 +634,36 @@ fn new_rows_with_the_same_columns_are_one_statement() {
 
 /// INS-29b. Spec 8: "On Omarchy the save is confirmed by typing the
 /// database's name, and anything else is refused." The app asks for the
-/// word `write`, which the spec replaces.
+/// word `write`, which the spec replaces. The name is the one the prompt
+/// shows for the connection: for SQLite, the file's.
 #[test]
 #[ignore = "INS-29b: the terminal's production prompt is confirmed by the word write"]
-fn the_terminal_refuses_a_production_save_until_the_database_is_named() {
+fn the_terminal_confirms_a_production_save_by_the_databases_name_alone() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
     let new = add(&mut harness, tab, id);
     set(&mut harness, tab, id, (new_row(new), 1), HARBOR_PRESS);
-    harness.app.apply(Action::WriteEdits { tab, id });
-    harness.settle();
-    assert!(harness.app.dialog.is_some());
-    harness.frame(vec![egui::Event::Text("write".into())]);
-    harness.settle();
-    harness.press(Key::Enter, Modifiers::NONE);
-    assert_eq!(writes(&harness), 0);
+    let name = crate::ui::workspace::target(harness.app.workspace(tab).unwrap());
+    assert_eq!(name, "fixture.db");
+    // Typed into the prompt's field, then Enter.
+    let answer = |harness: &mut Harness, typed: &str| {
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.settle();
+        assert!(harness.app.dialog.is_some(), "{typed}: the prompt is up");
+        harness.frame(vec![egui::Event::Text(typed.into())]);
+        harness.settle();
+        harness.press(Key::Enter, Modifiers::NONE);
+    };
+    // Anything else is refused: the old word, and a name that is not it.
+    for other in ["write", "fixture"] {
+        answer(&mut harness, other);
+        assert_eq!(writes(&harness), 0, "{other}");
+        assert!(harness.app.dialog.is_some(), "{other}: still asked");
+        harness.app.apply(Action::CancelWrite);
+    }
+    // The name sends the save.
+    answer(&mut harness, &name);
+    assert_eq!(writes(&harness), 1);
 }
 
 // H. What a save says back.
