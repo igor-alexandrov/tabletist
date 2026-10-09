@@ -125,6 +125,127 @@ fn introduces(rest: &str) -> bool {
     name.is_some_and(|after| after.starts_with('\''))
 }
 
+/// The condition of each `CHECK (...)` in a `CREATE TABLE` statement, with
+/// its parentheses, in the order they stand. SQLite keeps no list of them:
+/// the statement, as it was written, is all there is. A `CHECK` inside a
+/// string, a quoted name or a comment is none.
+pub(crate) fn in_create_table(sql: &str) -> Vec<&str> {
+    let mut checks = Vec::new();
+    let mut at = 0;
+    // Whether the letters before `at` are part of the same word.
+    let mut in_word = false;
+    while at < sql.len() {
+        let rest = &sql[at..];
+        if let Some(skipped) = skip(rest) {
+            at += skipped;
+            in_word = false;
+            continue;
+        }
+        let head = rest
+            .get(..5)
+            .filter(|head| head.eq_ignore_ascii_case("check"));
+        if let Some(head) = head.filter(|_| !in_word) {
+            let after = rest[head.len()..].trim_start();
+            if after.starts_with('(') {
+                let open = sql.len() - after.len();
+                let Some(length) = closed(after) else {
+                    return checks;
+                };
+                checks.push(&sql[open..open + length]);
+                at = open + length;
+                in_word = false;
+                continue;
+            }
+        }
+        let character = rest.chars().next().unwrap_or(' ');
+        in_word = is_ident_char(character);
+        at += character.len_utf8();
+    }
+    checks
+}
+
+/// Whether a `CREATE TABLE` statement names a collation for anything, as
+/// code and not in a string, a quoted name or a comment.
+pub(crate) fn names_a_collation(sql: &str) -> bool {
+    let mut at = 0;
+    let mut in_word = false;
+    while at < sql.len() {
+        let rest = &sql[at..];
+        if let Some(skipped) = skip(rest) {
+            at += skipped;
+            in_word = false;
+            continue;
+        }
+        let word = rest
+            .get(..7)
+            .filter(|head| head.eq_ignore_ascii_case("collate"));
+        if word.is_some() && !in_word && !rest[7..].starts_with(is_ident_char) {
+            return true;
+        }
+        let character = rest.chars().next().unwrap_or(' ');
+        in_word = is_ident_char(character);
+        at += character.len_utf8();
+    }
+    false
+}
+
+/// How long the string, the quoted name or the comment that `rest` begins
+/// with is. `None` where it begins with none.
+fn skip(rest: &str) -> Option<usize> {
+    let quote = match rest.chars().next()? {
+        '\'' => '\'',
+        '"' => '"',
+        '`' => '`',
+        '[' => ']',
+        '-' if rest.starts_with("--") => {
+            return Some(rest.find('\n').map_or(rest.len(), |end| end + 1));
+        }
+        '/' if rest.starts_with("/*") => {
+            return Some(rest[2..].find("*/").map_or(rest.len(), |end| end + 4));
+        }
+        _ => return None,
+    };
+    // To the closing quote: a doubled one is the quote itself, but in a
+    // bracketed name, which has no way to hold its bracket.
+    let mut body = rest[1..].char_indices().peekable();
+    while let Some((index, character)) = body.next() {
+        if character != quote {
+            continue;
+        }
+        if quote != ']' && body.next_if(|(_, next)| *next == quote).is_some() {
+            continue;
+        }
+        return Some(index + 1 + quote.len_utf8());
+    }
+    Some(rest.len())
+}
+
+/// How long the parenthesised text that `rest` begins with is, its closing
+/// parenthesis counted. `None` where it never closes.
+fn closed(rest: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut at = 0;
+    while at < rest.len() {
+        if let Some(skipped) = skip(&rest[at..]) {
+            at += skipped;
+            continue;
+        }
+        let character = rest[at..].chars().next()?;
+        at += character.len_utf8();
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[derive(Clone, Copy)]
 struct Parser<'a> {
     rest: &'a str,
@@ -440,6 +561,54 @@ mod tests {
             values("`kind` in ('print','ebook')", "kind"),
             list(&["print", "ebook"])
         );
+    }
+
+    #[test]
+    fn the_checks_of_a_create_table_are_found_where_they_are_code() {
+        use super::in_create_table as checks;
+        let sql = "CREATE TABLE book_covers (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL DEFAULT 'print'
+                CONSTRAINT book_covers_kind_check CHECK (kind IN ('print', 'ebook')),
+            note TEXT DEFAULT 'CHECK (note IN (''a''))', -- CHECK (id IN ('x'))
+            /* CHECK (id IN ('y')) */
+            \"check\" TEXT,
+            n INTEGER check(n > (1 + 1)),
+            CHECK ((kind) IN ('print', 'ebook'))
+        )";
+        assert_eq!(
+            checks(sql),
+            [
+                "(kind IN ('print', 'ebook'))",
+                "(n > (1 + 1))",
+                "((kind) IN ('print', 'ebook'))",
+            ]
+        );
+        // What each gives the parser.
+        let lists: Vec<_> = checks(sql)
+            .iter()
+            .map(|check| values(check, "kind"))
+            .collect();
+        assert_eq!(
+            lists,
+            [list(&["print", "ebook"]), None, list(&["print", "ebook"])]
+        );
+        // A table with none, and a text that ends inside one.
+        assert!(checks("CREATE TABLE t (a TEXT)").is_empty());
+        assert!(checks("CREATE TABLE t (a TEXT CHECK (a IN ('x'").is_empty());
+        // Whether the statement names a collation, where that is code.
+        use super::names_a_collation as collates;
+        assert!(!collates(sql));
+        assert!(collates(
+            "CREATE TABLE t (a TEXT COLLATE NOCASE CHECK (a IN ('x')))"
+        ));
+        assert!(collates("CREATE TABLE t (a TEXT collate nocase)"));
+        assert!(!collates(
+            "CREATE TABLE t (a TEXT DEFAULT 'COLLATE', \"collate\" TEXT)"
+        ));
+        assert!(!collates(
+            "CREATE TABLE collated (a TEXT) -- COLLATE NOCASE"
+        ));
     }
 
     #[test]

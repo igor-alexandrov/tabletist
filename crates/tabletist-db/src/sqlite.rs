@@ -15,10 +15,10 @@ use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 use crate::adapter::Adapter;
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error,
-    ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
+    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
     RowPage, RowQuery, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult,
-    StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    StopFlag, Structure, Value, ValueKind, WriteOutcome, column_class,
 };
 
 mod fence;
@@ -1007,15 +1007,15 @@ impl Adapter for Conn {
 
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
     // A table WITHOUT ROWID has no rowid for a column to be the alias of.
-    let rowid = connection
+    let listed = connection
         .query_row(
             "SELECT wr = 0 FROM pragma_table_list(?1) WHERE schema = ?2",
             [&object.name, &object.schema],
             |row| row.get::<_, bool>(0),
         )
         .optional()
-        .map_err(map_error)?
-        .unwrap_or(false);
+        .map_err(map_error)?;
+    let rowid = listed.unwrap_or(false);
     // The alias has no index: the rowid is the key. `INTEGER PRIMARY KEY
     // DESC` reads the same in the column list and is no alias (an old
     // exception SQLite keeps): its key has an index of its own, and an
@@ -1028,6 +1028,43 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         )
         .map_err(map_error)?
         > 0;
+    // The table's CHECK conditions, from the statement it was made with:
+    // SQLite keeps them nowhere else. A table with no statement (a virtual
+    // one's shadow, an internal one) has none, and a table that is not
+    // there is not asked for: its schema may not be there either.
+    let made: Option<String> = match listed {
+        Some(_) => connection
+            .query_row(
+                &format!(
+                    "SELECT sql FROM {}.sqlite_master WHERE type = 'table' AND name = ?1",
+                    Dialect::Sqlite.quote_ident(&object.schema)
+                ),
+                [&object.name],
+                // Lossy, as every name of this file is read: a statement
+                // can hold bytes that are no UTF-8, and a table with such
+                // a name is still described.
+                |row| optional_text(row, 0),
+            )
+            .optional()
+            .map_err(map_error)?
+            .flatten(),
+        None => None,
+    };
+    // A list is the app's to hold a typed value to, letter for letter. A
+    // column that compares otherwise (`COLLATE NOCASE`) takes what the
+    // list would refuse, and SQLite does not say which column that is: a
+    // table whose statement names a collation anywhere has no lists.
+    let made = made.filter(|sql| !crate::check::names_a_collation(sql));
+    let checks = made.as_deref().map(crate::check::in_create_table);
+    let checks = checks.unwrap_or_default();
+    // SQLite matches a name without regard to its case. The parser folds
+    // a bare one to lower case and keeps a quoted one as written.
+    let allowed = |name: &str| {
+        checks.iter().find_map(|check| {
+            crate::check::allowed_values(check, name)
+                .or_else(|| crate::check::allowed_values(check, &name.to_lowercase()))
+        })
+    };
     let mut statement = connection
         .prepare(
             "SELECT name, type, \"notnull\", dflt_value, hidden, pk \
@@ -1038,13 +1075,17 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .query_map([&object.name, &object.schema], |row| {
             let type_name = optional_text(row, 1)?.unwrap_or_default();
             let keyed = row.get::<_, i64>(5)? > 0;
+            let name = text(row, 0)?;
+            // A text column's alone, as on PostgreSQL.
+            let class = column_class(Dialect::Sqlite, &type_name);
+            let texts = matches!(class, ColumnClass::Text { .. });
             Ok((
                 ColumnInfo {
-                    name: text(row, 0)?,
+                    allowed_values: texts.then(|| allowed(&name)).flatten(),
+                    name,
                     nullable: row.get::<_, i64>(2)? == 0,
                     default: optional_text(row, 3)?,
                     comment: None,
-                    allowed_values: None,
                     // 2 is a virtual generated column, 3 a stored one.
                     generated: matches!(row.get::<_, i64>(4)?, 2 | 3),
                     // Decided below, once the key's columns are counted.

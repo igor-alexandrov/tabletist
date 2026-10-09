@@ -779,11 +779,16 @@ mod sqlite {
             (9100000000000000001, 'ebook')";
 
     async fn bookshop() -> (Connection, tempfile::TempDir) {
+        made_with(CREATE).await
+    }
+
+    /// A database of its own, made with `sql`.
+    async fn made_with(sql: &str) -> (Connection, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bookshop.db");
         rusqlite::Connection::open(&path)
             .unwrap()
-            .execute_batch(CREATE)
+            .execute_batch(sql)
             .unwrap();
         let connection = Connection::connect_with(
             &ConnectSpec::sqlite(&path),
@@ -850,16 +855,52 @@ mod sqlite {
         assert_eq!(count(&connection, "main", "book_covers").await, 2);
     }
 
-    /// INS-25a. Spec 5: a paste is checked against a CHECK's list of
-    /// values before anything is sent. The structure says what `kind` may
-    /// hold, as it does on PostgreSQL.
+    /// Spec 5: a paste is checked against a CHECK's list of values before
+    /// anything is sent. The structure says what `kind` may hold, as it
+    /// does on PostgreSQL.
     #[tokio::test]
-    #[ignore = "INS-25a: the values a SQLite CHECK allows are not read"]
     async fn sqlite_reads_the_values_a_check_allows() {
         let (connection, _dir) = bookshop().await;
         let cases = cases();
         let covers = ObjectRef::new(cases.schema, cases.covers);
         assert_eq!(allowed_kinds(&connection, &covers).await, kinds());
+    }
+
+    /// Spec 3: a list is read where the database would agree with it,
+    /// letter for letter. A table whose statement names a collation has
+    /// none (SQLite takes `Print` for `print` under `NOCASE`, and does not
+    /// say which column that is), nor has a column that is not text. A
+    /// column's name is matched as SQLite matches it, whatever its case.
+    #[tokio::test]
+    async fn sqlite_reads_a_list_only_where_a_value_compares_exactly() {
+        let (connection, _dir) = made_with(
+            "CREATE TABLE loose (
+                 kind TEXT COLLATE NOCASE CHECK (kind IN ('print', 'ebook')),
+                 format TEXT CHECK (format IN ('hardcover', 'paperback'))
+             );
+             CREATE TABLE exact (
+                 Kind TEXT CHECK (kind IN ('print', 'ebook')),
+                 pages INTEGER CHECK (pages IN ('1', '2'))
+             )",
+        )
+        .await;
+        let allowed =
+            |structure: &Structure, name: &str| column(structure, name).allowed_values.clone();
+        let loose = connection
+            .describe(&ObjectRef::new("main", "loose"))
+            .await
+            .unwrap();
+        assert_eq!(allowed(&loose, "kind"), None);
+        assert_eq!(allowed(&loose, "format"), None);
+        let exact = connection
+            .describe(&ObjectRef::new("main", "exact"))
+            .await
+            .unwrap();
+        assert_eq!(
+            allowed(&exact, "Kind"),
+            Some(vec!["print".into(), "ebook".into()])
+        );
+        assert_eq!(allowed(&exact, "pages"), None);
     }
 
     /// Spec 8: "SQLite uses `RETURNING *`. The app ships its own SQLite,
