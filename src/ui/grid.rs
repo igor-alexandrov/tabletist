@@ -1021,11 +1021,16 @@ pub fn show<'a>(
                             Stroke::new(2.0, palette.accent),
                             StrokeKind::Inside,
                         );
-                    } else if here && col > 0 {
+                    } else if here && (col > 0 || (new && !look.terminal)) {
                         // The row is selected; a cell past the first is
                         // marked too, for the keys that act on one cell.
+                        // A new row's first is as well: the row keeps its
+                        // own fill and bar, and nothing else would say it
+                        // is selected. The line stands clear of that bar.
+                        let clear = if col == 0 { 3.0 } else { 0.0 };
+                        let marked = cell_rect.with_min_x(cell_rect.left() + clear);
                         painter.rect_stroke(
-                            cell_rect.shrink(1.0),
+                            marked.shrink(1.0),
                             CornerRadius::same(look.radius.min(3)),
                             Stroke::new(1.5, palette.accent),
                             StrokeKind::Inside,
@@ -2185,6 +2190,30 @@ mod tests {
                     .any(|rect| rect.fill == palette.selection && rect.rect.width() < 400.0);
                 assert!(cell, "{said}: the selection is the cell's");
             }
+        }
+    }
+
+    #[test]
+    fn a_selected_new_rows_first_cell_is_marked_while_no_cell_is_lit() {
+        for look in Look::ALL.into_iter().filter(|look| !look.terminal) {
+            let palette = Palette::light();
+            let said = look.name;
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+            // No key: the selection is the pointer's, and no cell is lit.
+            let here = Some(CellPos { row: 1, col: 0 });
+            let outlined = |row: RowMark| {
+                let (rects, _) =
+                    marked_with(&ctx, &look, &palette, (Mark::None, row), here, vec![]);
+                let line = Stroke::new(1.5, palette.accent);
+                rects.iter().any(|rect| rect.stroke == line)
+            };
+            // A new row keeps its fill and its bar, so its cell says it.
+            assert!(outlined(RowMark::New), "{said}: the new row's cell");
+            // A row of the page says it with its fill and its bar.
+            assert!(!outlined(RowMark::None), "{said}: a row of the page");
         }
     }
 
