@@ -582,15 +582,20 @@ fn a_failed_row_stays_pending_and_says_the_databases_code_and_message() {
     );
     assert_eq!(edits(&harness, tab, id).counts().added, 1);
     assert_eq!(edits(&harness, tab, id).counts().failed, 1);
-    // The terminal's error line names the row and the column, then says
-    // the code and the message, cut where the line ends.
-    let lines = harness.painted.iter().map(|(piece, _)| piece.as_str());
-    let lines: Vec<&str> = lines
-        .filter(|piece| piece.starts_with("! new:publisher_id"))
-        .collect();
+    // The terminal's error line names the new row and the column, then
+    // says the code and the message, cut where the line ends.
+    let lines = error_lines(&harness);
     assert_eq!(lines.len(), 1, "{:?}", harness.painted);
-    let says = "! new:publisher_id  23503 insert or update on table \"book_covers\" violates";
-    assert!(lines[0].starts_with(says), "{lines:?}");
+    let line = lines[0];
+    assert!(line.contains("publisher_id"), "{line}");
+    let says = "23503 insert or update on table \"book_covers\" violates";
+    assert!(line.contains(says), "{line}");
+}
+
+/// The terminal's error lines of the last frame that are a new row's.
+fn error_lines(harness: &Harness) -> Vec<&str> {
+    let pieces = harness.painted.iter().map(|(piece, _)| piece.as_str());
+    pieces.filter(|piece| piece.starts_with("! new")).collect()
 }
 
 /// INS-31b, INS-31c. Spec 9: a foreign key that fails says "No publisher
@@ -705,6 +710,18 @@ fn two_rows_to_fix(look: Look) -> (Harness, ConnTabId, TabId) {
     assert_eq!(edits(&harness, tab, id).counts().to_fix, 2);
     select(&mut harness, tab, id, (0, 0));
     (harness, tab, id)
+}
+
+/// INS-15b. Spec 6: new rows are keyed `new:1`, `new:2`, and so on. With
+/// two of them to fix, the terminal's error line says which one it is of.
+#[test]
+#[ignore = "INS-15b: the terminal's error line names every new row new"]
+fn the_terminals_error_line_says_which_new_row_it_is_of() {
+    let (mut harness, _, _) = two_rows_to_fix(Look::omarchy());
+    harness.settle();
+    let lines = error_lines(&harness);
+    assert_eq!(lines.len(), 1, "{:?}", harness.painted);
+    assert!(lines[0].contains("new:1"), "{lines:?}");
 }
 
 /// INS-33a. The audit's item 33: Alt+Mod+Down and Alt+Mod+Up move between
