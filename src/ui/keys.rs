@@ -1527,7 +1527,16 @@ fn pending_id() -> egui::Id {
 /// no longer than the keys stay the grid's: not past a click, a field that
 /// has the keyboard, the `:` prompt or a dialog.
 pub(crate) fn forget_pending(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.insert_temp(pending_id(), None::<char>));
+    ctx.data_mut(|data| {
+        data.insert_temp(pending_id(), None::<char>);
+        data.insert_temp(typed_id(), String::new());
+    });
+}
+
+/// The characters typed so far of a key of several (`yy p`), as the
+/// keymap reads them, kept between frames.
+fn typed_id() -> egui::Id {
+    egui::Id::new("typed-keys")
 }
 
 /// Whether a text field had the keyboard when the last frame ended.
@@ -1634,62 +1643,103 @@ fn letters(
     // A press of its own: not the repeats of a key held since it did
     // something else (the Esc that left insert mode).
     let fresh = |key: Key| ctx.input_mut(|input| consume_press(input, Modifiers::NONE, key));
-    let command = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
     if let crate::model::ConnTabContent::Picker(picker) = &app.active_tab().content {
         let selected = picker.selected.clone();
-        if pressed(Key::ArrowDown) || (terminal && pressed(Key::J)) {
-            actions.push(Action::MovePickerSelection { tab, step: 1 });
+        let scope = Scope::Connections;
+        // No text field has the keyboard here: these are normal mode's.
+        let on = |command: Command| {
+            ctx.input_mut(|input| asked(input, &app.keymap, layout, command, scope, true))
+        };
+        // The list's arrows. Its letters are read with the letters, below.
+        for keys in app
+            .keymap
+            .chords_now(layout, Command::MoveInConnections, scope, true)
+        {
+            let step = match keys {
+                "up" => -1,
+                "down" => 1,
+                _ => continue,
+            };
+            if ctx.input_mut(|input| presses(input, layout, keys)).count > 0 {
+                actions.push(Action::MovePickerSelection { tab, step });
+            }
         }
-        if pressed(Key::ArrowUp) || (terminal && pressed(Key::K)) {
-            actions.push(Action::MovePickerSelection { tab, step: -1 });
-        }
-        if let Some(conn) = selected {
+        // Enter shows a connection that is open already; with Shift it
+        // opens once more.
+        let connect = |conn: &crate::connections::ConnectionId, again: bool| match app
+            .tab_showing(conn)
+            .filter(|_| !again)
+        {
+            Some(open) => Action::ActivateConnTab(open),
+            None => Action::Connect {
+                tab,
+                conn: conn.clone(),
+            },
+        };
+        if let Some(conn) = &selected {
             if !crate::ui::focus::on_control(ctx) {
-                // Shift first: egui ignores an extra Shift when matching.
-                let again = ctx.input_mut(|input| input.consume_key(Modifiers::SHIFT, Key::Enter));
-                if again || pressed(Key::Enter) {
-                    // Enter shows a connection that is open already; with
-                    // Shift it opens once more.
-                    actions.push(match app.tab_showing(&conn).filter(|_| !again) {
-                        Some(open) => Action::ActivateConnTab(open),
-                        None => Action::Connect {
-                            tab,
-                            conn: conn.clone(),
-                        },
-                    });
+                let again = on(Command::ConnectAgain).count > 0;
+                if again || on(Command::Connect).count > 0 {
+                    actions.push(connect(conn, again));
                 }
             }
-            if command(Key::E) || (terminal && pressed(Key::E)) {
+            if on(Command::EditConnection).count > 0 {
                 actions.push(Action::EditConnection(conn.clone()));
             }
-            if command(Key::D) {
+            if on(Command::DuplicateConnection).count > 0 {
                 actions.push(Action::DuplicateConnection(conn.clone()));
             }
-            if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Backspace)) {
+            if on(Command::DeleteConnection).count > 0 {
                 actions.push(Action::DeleteConnection(conn.clone()));
             }
-            if terminal && pressed(Key::Y) {
-                if pending == Some('y') {
+        }
+        // The letters, with the wait the keymap needs for a key of
+        // several (`yy p`): the characters so far, kept between frames.
+        let typed = typed_chars(ctx);
+        let mut waiting: String = ctx
+            .data(|data| data.get_temp(typed_id()))
+            .unwrap_or_default();
+        // A key that types nothing (an arrow, Esc) ends a wait.
+        if typed.is_empty() {
+            waiting.clear();
+        }
+        let nothing = |_: crate::keymap::When| false;
+        for char in typed {
+            waiting.push(char);
+            let read = app.keymap.typed(layout, scope, &nothing, &waiting);
+            // No text field is under these keys: the character is taken
+            // whatever it came to.
+            take_char(ctx, char);
+            let command = match read {
+                Typed::Waiting => continue,
+                Typed::Command(command) => Some(command),
+                // Nobody's, or the key of something not built yet. A
+                // character that ends a wait is not read again as a first.
+                Typed::Claimed | Typed::Nothing => None,
+            };
+            let step = if char == 'k' { -1 } else { 1 };
+            match (command, &selected) {
+                (Some(Command::NewConnection), _) => actions.push(Action::NewConnection),
+                (Some(Command::FilterConnections), _) => {
+                    actions.push(Action::FocusPickerSearch(tab));
+                }
+                (Some(Command::MoveInConnections), _) => {
+                    actions.push(Action::MovePickerSelection { tab, step });
+                }
+                (Some(Command::EditConnection), Some(conn)) => {
+                    actions.push(Action::EditConnection(conn.clone()));
+                }
+                (Some(Command::DuplicateConnection), Some(conn)) => {
                     actions.push(Action::DuplicateConnection(conn.clone()));
-                } else {
-                    next_pending = Some('y');
                 }
-            }
-            if terminal && pressed(Key::D) {
-                if pending == Some('d') {
-                    actions.push(Action::DeleteConnection(conn));
-                } else {
-                    next_pending = Some('d');
+                (Some(Command::DeleteConnection), Some(conn)) => {
+                    actions.push(Action::DeleteConnection(conn.clone()));
                 }
+                _ => {}
             }
+            waiting.clear();
         }
-        if terminal && pressed(Key::N) {
-            actions.push(Action::NewConnection);
-        }
-        if terminal && typed(ctx, "/") {
-            actions.push(Action::FocusPickerSearch(tab));
-        }
-        ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
+        ctx.data_mut(|data| data.insert_temp(typed_id(), waiting));
         return;
     }
     if !terminal {

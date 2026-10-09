@@ -2489,6 +2489,105 @@ mod tests {
         assert_eq!(tabs(&harness), open - 1);
     }
 
+    /// A picker in `look` with one saved connection, selected.
+    fn picker_with_one(look: Look) -> Harness {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let conn = add_saved(&mut harness, "Bookshop");
+        let tab = harness.app.active_tab_id();
+        let conn = Some(conn);
+        harness.app.apply(Action::SelectConnection { tab, conn });
+        harness.settle();
+        harness
+    }
+
+    fn saved(harness: &Harness) -> usize {
+        harness.app.connections.search("").len()
+    }
+
+    #[test]
+    fn omarchy_duplicates_a_connection_with_yy_p_and_not_with_yy() {
+        let mut harness = picker_with_one(Look::omarchy());
+        type_key(&mut harness, Key::Y, "y");
+        type_key(&mut harness, Key::Y, "y");
+        assert_eq!(saved(&harness), 1, "yy only yanks");
+        type_key(&mut harness, Key::P, "p");
+        assert_eq!(saved(&harness), 2);
+        // A key that types nothing ends a wait, and so does a letter that
+        // is no part of the key.
+        type_key(&mut harness, Key::Y, "y");
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::Y, "y");
+        type_key(&mut harness, Key::P, "p");
+        assert_eq!(saved(&harness), 2, "y, esc, y, p is no yy p");
+        type_key(&mut harness, Key::X, "x");
+        type_key(&mut harness, Key::P, "p");
+        assert_eq!(saved(&harness), 2);
+        // The chords of the other looks are not this look's.
+        harness.press(Key::D, CTRL);
+        assert_eq!(saved(&harness), 2);
+        harness.press(Key::Backspace, CTRL);
+        assert_eq!(saved(&harness), 2);
+        // A bare key press, as a test may send a letter, is read too.
+        harness.press(Key::D, Modifiers::NONE);
+        assert_eq!(saved(&harness), 2, "one d waits");
+        harness.press(Key::D, Modifiers::NONE);
+        assert_eq!(saved(&harness), 1);
+    }
+
+    #[test]
+    fn the_other_looks_delete_a_connection_with_backspace_alone() {
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert_eq!(saved(&harness), 1, "{}: not with the chord", look.name);
+            harness.press(Key::D, Modifiers::COMMAND);
+            assert_eq!(saved(&harness), 2, "{}: duplicated", look.name);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            assert_eq!(saved(&harness), 1, "{}", look.name);
+            // The letters are Omarchy's.
+            for (key, text) in [(Key::D, "d"), (Key::D, "d"), (Key::N, "n")] {
+                type_key(&mut harness, key, text);
+            }
+            assert_eq!(saved(&harness), 1, "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_pickers_footer_names_the_keys_the_keymap_has() {
+        let painted = |look: Look| {
+            let mut harness = picker_with_one(look);
+            harness.settle();
+            let painted = harness.painted.iter();
+            painted.map(|(text, _)| text.clone()).collect::<Vec<_>>()
+        };
+        let omarchy = painted(Look::omarchy());
+        for hint in [
+            "j/k move",
+            "yy p duplicate",
+            "dd delete",
+            "/ filter",
+            "n new",
+        ] {
+            assert!(
+                omarchy.iter().any(|text| text == hint),
+                "{hint}: {omarchy:?}"
+            );
+        }
+        let mac = painted(Look::macos());
+        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌫ delete"] {
+            assert!(mac.iter().any(|text| text == hint), "{hint}: {mac:?}");
+        }
+        let standard = painted(Look::standard());
+        for hint in ["Enter connect", "Ctrl+E edit", "Backspace delete"] {
+            assert!(
+                standard.iter().any(|text| text == hint),
+                "{hint}: {standard:?}"
+            );
+        }
+    }
+
     #[test]
     fn ctrl_shift_w_closes_the_connection_tab() {
         let mut harness = Harness::new();
