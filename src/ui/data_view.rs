@@ -1684,6 +1684,7 @@ fn kept<'a>(cell: Cell<'_>) -> Cell<'a> {
         null: cell.null,
         style: cell.style,
         mark: cell.mark,
+        slanted: cell.slanted,
         hint: cell.hint,
         note: cell.note,
     }
@@ -1889,6 +1890,15 @@ impl Changes<'_> {
                         ..cell
                     }
                 }
+                Some(Unset::Expression(text)) => Cell {
+                    text: format::cell_line(text, format::Marks::PLAIN)
+                        .into_owned()
+                        .into(),
+                    mark: Mark::Unset,
+                    slanted: true,
+                    hint: Some(say("from DEFAULT")),
+                    ..Cell::default()
+                },
                 Some(Unset::Null) => Cell {
                     mark: Mark::Unset,
                     ..value(&Value::Null)

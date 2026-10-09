@@ -873,6 +873,9 @@ pub enum Unset {
     /// The column's default as it reads: a literal's value, or the
     /// expression as the database writes it.
     Default(String),
+    /// The column's default where the database works it out for each row
+    /// (`now()`, `CURRENT_TIMESTAMP`): the expression as it is written.
+    Expression(String),
     Null,
     /// Nothing fills it and it cannot be NULL: a save waits for a value.
     Required,
@@ -883,14 +886,15 @@ pub fn unset(dialect: Dialect, column: &ColumnInfo) -> Unset {
     if column.identity || column.generated {
         return Unset::Assigned;
     }
-    let default = column
-        .default
-        .as_deref()
-        .and_then(|default| default_shown(dialect, default));
-    match default {
-        Some(text) => Unset::Default(text),
-        None if column.nullable => Unset::Null,
-        None => Unset::Required,
+    let written = column.default.as_deref();
+    let shown = written.and_then(|default| default_shown(dialect, default));
+    match (shown, written) {
+        (Some(text), Some(written)) if default_is_expression(dialect, written) => {
+            Unset::Expression(text)
+        }
+        (Some(text), _) => Unset::Default(text),
+        (None, _) if column.nullable => Unset::Null,
+        (None, _) => Unset::Required,
     }
 }
 
@@ -942,6 +946,30 @@ pub fn default_shown(dialect: Dialect, default: &str) -> Option<String> {
     } else {
         text.to_owned()
     })
+}
+
+/// Whether `default`, a column's default as the database writes it, is
+/// worked out by the database for each row and is no value it holds.
+/// PostgreSQL and SQLite write a string in its quotes: there a default is
+/// a value where [`default_shown`] reads a string out of it, or where it
+/// is a number or a truth value, and an expression otherwise. MySQL writes
+/// a string without its quotes: only what reads as a call or as the moment
+/// is taken for one.
+pub fn default_is_expression(dialect: Dialect, default: &str) -> bool {
+    let text = default.trim();
+    let value = |text: &str| {
+        text.parse::<f64>().is_ok()
+            || ["true", "false", "null"]
+                .iter()
+                .any(|word| text.eq_ignore_ascii_case(word))
+    };
+    match dialect {
+        // Shown as it is written: no string was read out of it.
+        Dialect::Postgres | Dialect::Sqlite => {
+            default_shown(dialect, text).is_some_and(|shown| shown == text) && !value(text)
+        }
+        Dialect::MySql => text.contains('(') || text.to_ascii_uppercase().starts_with("CURRENT_"),
+    }
 }
 
 /// One cell's new value, not yet written.
@@ -2007,7 +2035,7 @@ mod tests {
                 Unset::Required,
                 Unset::Default("print".into()),
                 Unset::Null,
-                Unset::Default("CURRENT_TIMESTAMP".into()),
+                Unset::Expression("CURRENT_TIMESTAMP".into()),
             ]
         );
         // A default of NULL is no default: NULL where the column takes
@@ -2050,6 +2078,39 @@ mod tests {
         // And a cast is no part of a literal elsewhere.
         let cast = "'x'::text";
         assert_eq!(shown(Dialect::Sqlite, cast).as_deref(), Some(cast));
+    }
+
+    #[test]
+    fn a_default_is_a_value_or_what_the_database_works_out() {
+        let works_out = default_is_expression;
+        // PostgreSQL and SQLite write a string in its quotes.
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            for value in ["'print'", "0", "-1", "3.5", "true", "FALSE"] {
+                assert!(!works_out(dialect, value), "{dialect:?} {value}");
+            }
+            for expression in ["CURRENT_TIMESTAMP", "(1 + 1)", "now()"] {
+                assert!(works_out(dialect, expression), "{dialect:?} {expression}");
+            }
+        }
+        assert!(!works_out(Dialect::Postgres, "'print'::character varying"));
+        // More than a string and its cast: shown whole, and worked out.
+        assert!(works_out(Dialect::Postgres, "'a'::text || 'b'::text"));
+        assert!(works_out(
+            Dialect::Postgres,
+            "nextval('covers_id_seq'::regclass)"
+        ));
+        // MySQL writes a string without them: only a call, or the moment.
+        for value in ["print", "0", "current"] {
+            assert!(!works_out(Dialect::MySql, value), "{value}");
+        }
+        for expression in [
+            "CURRENT_TIMESTAMP",
+            "CURRENT_TIMESTAMP(6)",
+            "uuid()",
+            "(now())",
+        ] {
+            assert!(works_out(Dialect::MySql, expression), "{expression}");
+        }
     }
 
     #[test]

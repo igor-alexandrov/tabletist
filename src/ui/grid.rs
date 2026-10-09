@@ -126,6 +126,9 @@ pub struct Cell<'a> {
     pub null: bool,
     pub style: Style,
     pub mark: Mark,
+    /// Written slanted: text that stands for what the database will work
+    /// out (a new row's `now()`), and is no value yet.
+    pub slanted: bool,
     /// What the cell says under the pointer: what a pending cell was, why
     /// a failed one failed. Never why a cell is locked, which is said only
     /// when asked.
@@ -280,6 +283,33 @@ fn paint(
     look: &Look,
 ) {
     let laid = Text::one(look, role, text, color).layout(ui.ctx());
+    if right {
+        laid.paint_right(painter, x, y);
+    } else {
+        laid.paint_left(painter, x, y);
+    }
+}
+
+/// [`paint`], slanted. The same face leaned over, as the design's own
+/// page draws it: it loads no italic one.
+#[allow(clippy::too_many_arguments)] // the text, its place, and its look
+fn paint_slanted(
+    painter: &egui::Painter,
+    ui: &Ui,
+    role: TextRole,
+    text: &str,
+    color: egui::Color32,
+    x: f32,
+    y: f32,
+    right: bool,
+    look: &Look,
+) {
+    let laid = Text::new(look)
+        .add_with(role, text, 0.0, |format| {
+            format.color = color;
+            format.italics = true;
+        })
+        .layout(ui.ctx());
     if right {
         laid.paint_right(painter, x, y);
     } else {
@@ -1748,7 +1778,11 @@ fn draw_cell(
                 (true, false) => palette.secondary,
                 _ => palette.text,
             };
-            paint(&clip, ui, role, &shown, color, x, center, numeric, look);
+            if content.slanted {
+                paint_slanted(&clip, ui, role, &shown, color, x, center, numeric, look);
+            } else {
+                paint(&clip, ui, role, &shown, color, x, center, numeric, look);
+            }
         }
     }
 }
