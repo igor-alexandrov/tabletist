@@ -307,13 +307,7 @@ impl Adapter for Conn {
                     // apart has one here.
                     let class = column_class(Dialect::MySql, &type_name);
                     let text = matches!(class, ColumnClass::Text { .. });
-                    // By its end: `_cs` inside a name is a language's
-                    // tag (`utf8mb4_cs_0900_ai_ci` is Czech, and takes
-                    // either case).
-                    let exact = ["_bin", "_cs", "_cs_ks"]
-                        .iter()
-                        .any(|end| collation.ends_with(end));
-                    let allowed_values = (text && exact)
+                    let allowed_values = (text && compares_exactly(&collation))
                         .then(|| {
                             checks
                                 .iter()
@@ -585,6 +579,19 @@ fn driver_parameter(text: &str) -> Result<()> {
 /// What to do about a `:name` the driver should not have read as one.
 const MISREAD: &str = "If it stands in a quote or a comment right after a - or a /, put a space \
                        after the - or the /.";
+
+/// Whether a column of this collation holds two values apart that differ
+/// in a letter's case or its accent: what the app's list of a CHECK's
+/// values does. By the name's end, since `_cs` inside it is a language's
+/// tag (`utf8mb4_cs_0900_ai_ci` is Czech, and takes either case). MariaDB
+/// has collations that tell case apart and not accents
+/// (`utf8mb4_uca1400_ai_cs`): those are not exact.
+fn compares_exactly(collation: &str) -> bool {
+    ["_bin", "_cs", "_cs_ks"]
+        .iter()
+        .any(|end| collation.ends_with(end))
+        && !collation.contains("_ai_")
+}
 
 /// A raw WHERE's parameter, as a query error: there is no value for it.
 fn parameter(spelled: &str, hint: Option<&str>) -> Error {
@@ -1043,6 +1050,35 @@ fn params(values: &[Value]) -> Params {
 mod tests {
     use super::*;
     use mysql_async::Value as My;
+
+    #[test]
+    fn a_collation_compares_exactly_where_it_tells_case_and_accents_apart() {
+        for exact in [
+            "utf8mb4_bin",
+            "utf8mb4_0900_bin",
+            "latin1_bin",
+            "latin1_general_cs",
+            "utf8mb4_0900_as_cs",
+            "utf8mb4_ja_0900_as_cs_ks",
+        ] {
+            assert!(compares_exactly(exact), "{exact}");
+        }
+        for loose in [
+            "utf8mb4_0900_ai_ci",
+            "utf8mb4_general_ci",
+            "utf8mb4_0900_as_ci",
+            // Czech, which takes either case: `_cs` is its language here.
+            "utf8mb4_cs_0900_ai_ci",
+            // MariaDB's: they tell case apart and take `resume` for
+            // `résumé`.
+            "utf8mb4_uca1400_ai_cs",
+            "utf8mb4_uca1400_czech_ai_cs",
+            // A column that is not text has none.
+            "",
+        ] {
+            assert!(!compares_exactly(loose), "{loose}");
+        }
+    }
 
     #[test]
     fn a_failure_is_named_from_its_number_and_what_the_message_quotes() {
