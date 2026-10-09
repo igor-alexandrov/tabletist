@@ -22,6 +22,109 @@ pub(crate) fn allowed_values(expr: &str, column: &str) -> Option<Vec<String>> {
     Some(unique)
 }
 
+/// As [`allowed_values`], of a CHECK's condition as MySQL keeps it in
+/// `information_schema.check_constraints`: escaped once more than it was
+/// written, with its names in backticks and each string behind its
+/// character set. It is written over into what the parser reads.
+pub(crate) fn mysql_allowed_values(clause: &str, column: &str) -> Option<Vec<String>> {
+    // MySQL's own escaping leaves no quote without a backslash before it.
+    // A clause with a bare one is not in that form (MariaDB keeps it as
+    // written) and is read as it stands.
+    let mut before = ' ';
+    let escaped = clause.chars().all(|character| {
+        let bare = character == '\'' && before != '\\';
+        before = character;
+        !bare
+    });
+    let clause = if escaped {
+        let mut plain = String::with_capacity(clause.len());
+        let mut characters = clause.chars();
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => plain.push(characters.next()?),
+                other => plain.push(other),
+            }
+        }
+        plain
+    } else {
+        clause.to_owned()
+    };
+    // The clause has the column's name as the constraint wrote it, and
+    // MySQL matches it without regard to its case: both in lower case.
+    allowed_values(&from_mysql(&clause)?, &column.to_lowercase())
+}
+
+/// A MySQL condition in the parser's own writing: a name in double quotes
+/// and in lower case, a string with its quotes doubled and nothing before
+/// it. `None` for a string with an escape that stands for another character
+/// (`\n`), which is no plain value.
+fn from_mysql(clause: &str) -> Option<String> {
+    let mut written = String::with_capacity(clause.len());
+    let mut rest = clause;
+    while let Some(character) = rest.chars().next() {
+        if character == '`' {
+            // A name: a doubled backtick is one of its own.
+            let mut name = String::new();
+            let mut body = rest[1..].char_indices().peekable();
+            let mut end = None;
+            while let Some((at, letter)) = body.next() {
+                if letter != '`' {
+                    name.push(letter);
+                } else if body.next_if(|(_, next)| *next == '`').is_some() {
+                    name.push('`');
+                } else {
+                    end = Some(at + 2);
+                    break;
+                }
+            }
+            written.push('"');
+            written.push_str(&name.to_lowercase().replace('"', "\"\""));
+            written.push('"');
+            rest = &rest[end?..];
+        } else if character == '\'' {
+            // A string: `\'` and `\\` are the quote and the backslash.
+            let mut value = String::new();
+            let mut body = rest[1..].char_indices().peekable();
+            let mut end = None;
+            while let Some((at, letter)) = body.next() {
+                match letter {
+                    '\\' => match body.next()?.1 {
+                        escaped @ ('\'' | '\\') => value.push(escaped),
+                        _ => return None,
+                    },
+                    '\'' if body.next_if(|(_, next)| *next == '\'').is_some() => value.push('\''),
+                    '\'' => {
+                        end = Some(at + 2);
+                        break;
+                    }
+                    other => value.push(other),
+                }
+            }
+            written.push('\'');
+            written.push_str(&value.replace('\'', "''"));
+            written.push('\'');
+            rest = &rest[end?..];
+        } else if character == '_' && introduces(rest) {
+            // A string's character set (`_utf8mb4'...'`): not part of it.
+            rest = &rest[rest.find('\'')?..];
+        } else {
+            written.push(character);
+            rest = &rest[character.len_utf8()..];
+        }
+    }
+    Some(written)
+}
+
+/// Whether `rest` begins with a character set's name right before a
+/// string: `_utf8mb4'`. MySQL writes a column's name in backticks, so a
+/// bare `_word'` can only be one.
+fn introduces(rest: &str) -> bool {
+    let name = rest[1..]
+        .find(|character: char| !character.is_ascii_alphanumeric())
+        .map(|end| &rest[1..][end..]);
+    name.is_some_and(|after| after.starts_with('\''))
+}
+
 #[derive(Clone, Copy)]
 struct Parser<'a> {
     rest: &'a str,
@@ -294,6 +397,49 @@ mod tests {
         );
         assert_eq!(values("STATUS IN ('x')", "status"), list(&["x"]));
         assert_eq!(values("(s IN ('x', 'y', 'x'))", "s"), list(&["x", "y"]));
+    }
+
+    #[test]
+    fn a_list_parses_as_mysql_keeps_it() {
+        use super::mysql_allowed_values as values;
+        // As `information_schema.check_constraints` holds it (MySQL 8.4).
+        let kept = r"(`kind` in (_utf8mb4\'print\',_utf8mb4\'e\\\'book\',_utf8mb4\'au\\\\dio\'))";
+        assert_eq!(values(kept, "kind"), list(&["print", "e'book", r"au\dio"]));
+        // Another column's list is not this one's.
+        assert_eq!(values(kept, "format"), None);
+        // A name with a space, as it was declared.
+        assert_eq!(
+            values(r"(`odd name` in (_utf8mb4\'x\',_utf8mb4\'y\'))", "odd name"),
+            list(&["x", "y"])
+        );
+        // The name is kept as the constraint wrote it, and MySQL matches a
+        // column's without regard to its case.
+        assert_eq!(
+            values(r"(`FORMAT` in (_utf8mb4\'a\',_utf8mb4\'b\'))", "Format"),
+            list(&["a", "b"])
+        );
+        // A list of one is kept as an equality.
+        assert_eq!(
+            values(r"(`kind` = _utf8mb4\'print\')", "kind"),
+            list(&["print"])
+        );
+        // Anything more than a plain list is not one.
+        assert_eq!(values("(`n` > 0)", "n"), None);
+        assert_eq!(values("(`n` in (1,2))", "n"), None);
+        assert_eq!(
+            values(
+                r"((`kind` = _utf8mb4\'print\') or (`kind` = _utf8mb4\'ebook\'))",
+                "kind"
+            ),
+            None
+        );
+        // An escape that stands for another character is no plain value.
+        assert_eq!(values(r"(`kind` in (_utf8mb4\'a\\nb\'))", "kind"), None);
+        // A clause that is not escaped (MariaDB's) is read as it stands.
+        assert_eq!(
+            values("`kind` in ('print','ebook')", "kind"),
+            list(&["print", "ebook"])
+        );
     }
 
     #[test]

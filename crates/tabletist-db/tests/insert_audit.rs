@@ -563,7 +563,7 @@ mod mysql {
         "CREATE TABLE audit_book_covers (
              id BIGINT AUTO_INCREMENT PRIMARY KEY,
              publisher_id BIGINT NOT NULL,
-             kind VARCHAR(64) NOT NULL DEFAULT 'print',
+             kind VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT 'print',
              image_data JSON,
              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -702,21 +702,35 @@ mod mysql {
         }
     }
 
-    /// INS-25a. Spec 5: a paste is checked against a CHECK's list of
-    /// values before anything is sent. The structure says what `kind` may
-    /// hold, as it does on PostgreSQL.
+    /// Spec 5: a paste is checked against a CHECK's list of values before
+    /// anything is sent. The structure says what `kind` may hold, as it
+    /// does on PostgreSQL: `kind` compares exactly (`utf8mb4_bin`), so the
+    /// list is what the database holds a value to.
     #[tokio::test]
-    #[ignore = "INS-25a: the values a MySQL CHECK allows are not read"]
     async fn mysql_reads_the_values_a_check_allows() {
         let Some((mut admin, connection)) = bookshop("audit_check").await else {
             return;
         };
         let cases = cases("audit_check");
+        // `format` of the books has the server's default collation, which
+        // takes `Hardcover` for `hardcover`: no list is read for it.
+        let altered = admin
+            .query_drop(named(
+                "ALTER TABLE audit_books ADD CONSTRAINT audit_books_format_check \
+                 CHECK (format IN ('hardcover', 'paperback'))",
+                "audit_check",
+            ))
+            .await;
+        let books = ObjectRef::new(cases.schema, cases.books.clone());
+        let books = connection.describe(&books).await;
         let covers = ObjectRef::new(cases.schema, cases.covers);
-        let allowed = allowed_kinds(&connection, &covers).await;
-        // Before it is asked for: a test that fails leaves no tables behind.
+        let covers = connection.describe(&covers).await;
+        // Before anything is asked of them: a test that fails leaves no
+        // tables behind.
         admin.query_drop(named(DROP, "audit_check")).await.unwrap();
-        assert_eq!(allowed, kinds());
+        altered.unwrap();
+        assert_eq!(column(&covers.unwrap(), "kind").allowed_values, kinds());
+        assert_eq!(column(&books.unwrap(), "format").allowed_values, None);
     }
 }
 

@@ -22,11 +22,24 @@ use mysql_common::named_params::ParsedNamedParams;
 use crate::adapter::Adapter;
 use crate::script::retry_cancelled;
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
-    RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure, TlsMode, Value,
-    ValueKind, WriteOutcome,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
+    Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind,
+    ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure,
+    TlsMode, Value, ValueKind, WriteOutcome, column_class,
 };
+
+/// A column as `describe` reads it from `information_schema.columns`: its
+/// name, its type, whether it takes NULL, its default, its comment, its
+/// `extra` and its collation.
+type ColumnRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+);
 
 /// MySQL's `binary` character set: bytes, not text.
 const BINARY_CHARSET: u16 = 63;
@@ -233,10 +246,10 @@ impl Adapter for Conn {
 
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let at = (&object.schema, &object.name);
-        let columns: Vec<(String, String, String, Option<String>, String, String)> = self
+        let columns: Vec<ColumnRow> = self
             .catalog(
                 "SELECT column_name, column_type, is_nullable, column_default, column_comment, \
-                        COALESCE(extra, '') \
+                        COALESCE(extra, ''), COALESCE(collation_name, '') \
                  FROM information_schema.columns \
                  WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
                 at,
@@ -248,23 +261,80 @@ impl Adapter for Conn {
                 object.name
             )));
         }
+        // The conditions of the table's CHECK constraints that hold.
+        // MariaDB is asked first, by the table's name: its constraint
+        // names are a table's own, so MySQL's question below could answer
+        // with another table's. MySQL has no such column there and
+        // refuses, and is asked its own way. A server with no list at all
+        // (MySQL before 8.0.16) has no CHECK that holds either.
+        let of_table = self
+            .catalog::<String>(
+                "SELECT check_clause FROM information_schema.check_constraints \
+                 WHERE constraint_schema = ? AND table_name = ? \
+                 ORDER BY constraint_name",
+                at,
+            )
+            .await;
+        let checks: Vec<String> = match of_table {
+            Ok(checks) => checks,
+            Err(Error::Query { .. }) => match self
+                .catalog(
+                    "SELECT cc.check_clause \
+                     FROM information_schema.table_constraints tc \
+                     JOIN information_schema.check_constraints cc \
+                       ON cc.constraint_schema = tc.constraint_schema \
+                      AND cc.constraint_name = tc.constraint_name \
+                     WHERE tc.table_schema = ? AND tc.table_name = ? \
+                       AND tc.constraint_type = 'CHECK' AND tc.enforced = 'YES' \
+                     ORDER BY cc.constraint_name",
+                    at,
+                )
+                .await
+            {
+                Ok(checks) => checks,
+                Err(Error::Query { .. }) => Vec::new(),
+                Err(other) => return Err(other),
+            },
+            Err(other) => return Err(other),
+        };
         let columns = columns
             .into_iter()
             .map(
-                |(name, type_name, nullable, default, comment, extra)| ColumnInfo {
-                    name,
-                    type_name,
-                    nullable: nullable == "YES",
-                    default,
-                    comment: (!comment.is_empty()).then_some(comment),
-                    allowed_values: None,
-                    // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
-                    // MariaDB `VIRTUAL` or `PERSISTENT`. Not `DEFAULT_GENERATED`,
-                    // which MySQL 8 says of a default that is an expression.
-                    generated: ["VIRTUAL", "STORED", "PERSISTENT"]
+                |(name, type_name, nullable, default, comment, extra, collation)| {
+                    // A list is the app's to hold a typed value to, letter
+                    // for letter. MySQL's default collations take `Print`
+                    // for `print`, so only a text column that tells them
+                    // apart has one here.
+                    let class = column_class(Dialect::MySql, &type_name);
+                    let text = matches!(class, ColumnClass::Text { .. });
+                    // By its end: `_cs` inside a name is a language's
+                    // tag (`utf8mb4_cs_0900_ai_ci` is Czech, and takes
+                    // either case).
+                    let exact = ["_bin", "_cs", "_cs_ks"]
                         .iter()
-                        .any(|word| extra.to_ascii_uppercase().contains(word)),
-                    identity: extra.to_ascii_lowercase().contains("auto_increment"),
+                        .any(|end| collation.ends_with(end));
+                    let allowed_values = (text && exact)
+                        .then(|| {
+                            checks
+                                .iter()
+                                .find_map(|check| crate::check::mysql_allowed_values(check, &name))
+                        })
+                        .flatten();
+                    ColumnInfo {
+                        name,
+                        type_name,
+                        nullable: nullable == "YES",
+                        default,
+                        comment: (!comment.is_empty()).then_some(comment),
+                        allowed_values,
+                        // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
+                        // MariaDB `VIRTUAL` or `PERSISTENT`. Not `DEFAULT_GENERATED`,
+                        // which MySQL 8 says of a default that is an expression.
+                        generated: ["VIRTUAL", "STORED", "PERSISTENT"]
+                            .iter()
+                            .any(|word| extra.to_ascii_uppercase().contains(word)),
+                        identity: extra.to_ascii_lowercase().contains("auto_increment"),
+                    }
                 },
             )
             .collect();
