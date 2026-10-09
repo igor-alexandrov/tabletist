@@ -61,7 +61,7 @@ sub-projects, each with its own spec, plan and pull request:
 | Stale rows | Inside the transaction each edited row is locked and read by its key, and the changed columns are compared with what the page loaded. A difference writes nothing. |
 | Row identity | The primary key, else a unique index whose columns are all NOT NULL. No such key: the table is view-only. |
 | Editors | Text only: on the cell, or in a popover for long, multi-line and JSON values. |
-| Confirmation | Only on a production connection: the statements are shown and the save is confirmed (Omarchy: by typing `write`). |
+| Confirmation | Only on a production connection: the statements are shown and the save is confirmed (Omarchy: by typing `write`). Decided on 2026-10-08 and not built yet: Omarchy confirms by typing the database's name instead (`2026-10-07-inserting-rows-design.md`, decision B1). |
 | Omarchy keys | `i` and Enter edit the cell. The row panel keeps Space and `Mod+Shift+R`. |
 
 Rejected: sessions that stay read-only with one read-write transaction for
