@@ -884,6 +884,10 @@ mod sqlite {
                  É TEXT,
                  é TEXT CHECK (é IN ('x'))
              );
+             CREATE TABLE mirrored (
+                 É TEXT CHECK (É IN ('x')),
+                 é TEXT
+             );
              -- A file can keep a statement as bytes: it is read all the same.
              PRAGMA writable_schema = ON;
              UPDATE sqlite_master SET sql = CAST(sql AS BLOB) WHERE name = 'exact';
@@ -911,6 +915,13 @@ mod sqlite {
         // the second's.
         assert_eq!(allowed(&exact, "É"), None);
         assert_eq!(allowed(&exact, "é"), Some(vec!["x".into()]));
+        // And the other way round, the list is the first's.
+        let mirrored = connection
+            .describe(&ObjectRef::new("main", "mirrored"))
+            .await
+            .unwrap();
+        assert_eq!(allowed(&mirrored, "É"), Some(vec!["x".into()]));
+        assert_eq!(allowed(&mirrored, "é"), None);
     }
 
     /// Spec 8: "SQLite uses `RETURNING *`. The app ships its own SQLite,

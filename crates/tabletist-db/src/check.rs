@@ -402,8 +402,9 @@ impl<'a> Parser<'a> {
         None
     }
 
-    /// An identifier: `"quoted ""name"""` as written, or a bare one folded
-    /// to lower case.
+    /// An identifier: `"quoted ""name"""` as written, or a bare one with
+    /// its ASCII letters folded to lower case. No other letter: SQLite folds
+    /// none, and PostgreSQL prints a name that has one in quotes.
     fn ident(&mut self) -> Option<String> {
         self.space();
         if let Some(body) = self.rest.strip_prefix('"') {
@@ -431,7 +432,7 @@ impl<'a> Parser<'a> {
             return None;
         }
         self.rest = &self.rest[end..];
-        Some(name.to_lowercase())
+        Some(name.to_ascii_lowercase())
     }
 
     /// Any number of `::type` casts: `::text`, `::character varying(20)`,
@@ -531,6 +532,10 @@ mod tests {
             list(&["it's", r"a\b"])
         );
         assert_eq!(values("STATUS IN ('x')", "status"), list(&["x"]));
+        // A bare name is folded for its ASCII letters alone, as the
+        // engines fold it: SQLite's `É` and `é` are two columns.
+        assert_eq!(values("É IN ('x')", "É"), list(&["x"]));
+        assert_eq!(values("É IN ('x')", "é"), None);
         assert_eq!(values("(s IN ('x', 'y', 'x'))", "s"), list(&["x", "y"]));
     }
 

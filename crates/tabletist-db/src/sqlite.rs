@@ -1061,7 +1061,7 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
     let checks = checks.unwrap_or_default();
     // SQLite matches a name without regard to the case of its ASCII
     // letters, and no others: `É` and `é` are two columns. The parser folds
-    // a bare name to lower case and keeps a quoted one as written.
+    // a bare name the same way and keeps a quoted one as written.
     let allowed = |name: &str| {
         checks.iter().find_map(|check| {
             crate::check::allowed_values(check, name)

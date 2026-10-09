@@ -586,6 +586,10 @@ const MISREAD: &str = "If it stands in a quote or a comment right after a - or a
 /// tag (`utf8mb4_cs_0900_ai_ci` is Czech, and takes either case). MariaDB
 /// has collations that tell case apart and not accents
 /// (`utf8mb4_uca1400_ai_cs`): those are not exact.
+///
+/// One gap is left, and accepted: most of these collations pad
+/// (`utf8mb4_bin` is `PAD SPACE`), so the server takes `'print '` with a
+/// space after it for `print`, and the app's list refuses it.
 fn compares_exactly(collation: &str) -> bool {
     ["_bin", "_cs", "_cs_ks"]
         .iter()
