@@ -54,6 +54,17 @@ keyboard. A view never paints a control's focus ring: a widget that needs
 another form than the default says so with `focus::hint`. Only a pane (the
 tree, a grid) marks where its arrows are by itself: its cursor, its cell.
 
+A key is spelled in `src/keymap.rs` and nowhere else: each command with
+the scopes it holds in and its keys for macOS and for Omarchy (Windows has
+the Mac's, with Ctrl for Cmd). `src/ui/keys.rs` and the dialogs ask the
+keymap whether a command's key went down, and name no key themselves. What
+paints a key beside a word (a hint, a button's shortcut) takes a
+`keymap::Written`, which only the keymap makes; `tests/keys.rs` finds a key
+spelled by hand anywhere else. A command that is not built yet is in the
+keymap with its keys and `built: false`: nothing answers it, and nothing
+else can have its keys. The keymap's own tests are generated from its data:
+no two commands share a key where both could be read.
+
 Add a focused regression test for every behaviour change. UI behaviour is
 tested headlessly through `src/testing.rs` (AccessKit tree + events). Do not
 weaken a lint, delete a test, or add an `allow` to make CI green without
@@ -97,11 +108,11 @@ GitHub Pages from `main`. `docs/superpowers/` is not part of the site:
     bundle exec jekyll serve --livereload     # http://localhost:4000/tabletist/
 
 - Update the pages when user-visible behaviour, settings, files or keys
-  change. `_reference/keyboard-shortcuts.md` follows `SHORTCUTS` in
-  `src/ui/keys.rs`, and `_guide/macos.md` writes the same keys with Cmd.
-  `_guide/omarchy.md` lists the keys of the Omarchy look,
-  the ones `SHORTCUTS` leaves out too: the letters in `keys.rs` and the key
-  hints its dialogs draw. `_reference/settings-and-files.md` follows
+  change. The keys are `BINDINGS` in `src/keymap.rs`:
+  `_reference/keyboard-shortcuts.md` follows its macOS column, written for
+  macOS and Windows together, `_guide/macos.md` writes that column with
+  Cmd, and `_guide/omarchy.md` writes the Omarchy column, the keys of its
+  dialogs too. `_reference/settings-and-files.md` follows
   `src/settings.rs` and `src/paths.rs`.
 - The site is served under `/tabletist`. Link to a page with
   `{% link _guide/name.md %}` and to a file with the `relative_url` filter,

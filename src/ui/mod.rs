@@ -133,6 +133,14 @@ mod tests {
     use crate::testing::Harness;
     use egui::{Key, Modifiers};
 
+    /// The first key of `command` as `look` writes it, by the keymap.
+    fn key_of(look: &Look, command: crate::keymap::Command) -> String {
+        let layout = crate::keymap::Layout::of(look);
+        crate::keymap::Keymap::default()
+            .key(layout, command)
+            .to_string()
+    }
+
     /// Asks for a new connection as the look does from its picker: with
     /// the chord, or with Omarchy's `n`.
     fn new_connection(harness: &mut Harness) {
@@ -984,29 +992,40 @@ mod tests {
 
     #[test]
     fn the_shortcuts_dialog_lists_each_looks_own_editing_keys() {
-        use crate::ui::keys::keys_label;
-        // The keys, and what is said of a key that does another thing in
-        // the other looks (Esc drops an edit there, and keeps it here).
-        let desktop = [
-            "Enter, F2".to_owned(),
-            keys_label("Mod+Backspace"),
-            keys_label("Mod+Z"),
-            keys_label("Mod+S"),
-            keys_label("Mod+Alt+Backspace"),
-            "Cancel the edit".to_owned(),
+        // The keys, each beside what it does, as the look writes them.
+        let mac = [
+            ("↩, F2", "Edit cell"),
+            ("⌘⌫", "Set NULL"),
+            ("⌘Z", "Undo one cell"),
+            ("⌘S", "Save changes"),
+            ("⌥⌘⌫", "Discard all pending"),
+            ("esc", "Cancel cell edit"),
+            ("⇧⌘R", "Show or hide the inspector"),
         ];
-        let terminal = [
-            "i, Enter".to_owned(),
-            "cc".to_owned(),
-            "x".to_owned(),
-            "u".to_owned(),
-            "Ctrl+C".to_owned(),
-            keys_label(":w, Mod+S"),
-            ":e!".to_owned(),
-            "Leave the editor and keep the edit".to_owned(),
-            "Drop the edit".to_owned(),
+        let windows = [
+            ("Enter, F2", "Edit cell"),
+            ("Ctrl+Backspace", "Set NULL"),
+            ("Ctrl+Z", "Undo one cell"),
+            ("Ctrl+S", "Save changes"),
+            ("Ctrl+Alt+Backspace", "Discard all pending"),
+            ("Esc", "Cancel cell edit"),
         ];
-        for look in crate::theme::Look::ALL {
+        let omarchy = [
+            ("i, enter", "Edit cell"),
+            ("cc, s", "Edit cell from nothing"),
+            ("x", "Set NULL"),
+            ("u", "Undo one cell"),
+            ("ctrl+c", "Cancel cell edit"),
+            (":w, ctrl+s", "Save changes"),
+            (":e!", "Discard all pending"),
+            ("esc", "Leave the editor and keep the edit"),
+            ("v y", "Copy cell values"),
+        ];
+        for (look, own) in [
+            (Look::macos(), &mac[..]),
+            (Look::standard(), &windows[..]),
+            (Look::omarchy(), &omarchy[..]),
+        ] {
             let mut harness = Harness::new();
             harness.set_look(look);
             harness.app.apply(crate::model::Action::ShowHelp);
@@ -1014,28 +1033,59 @@ mod tests {
             // out of view are not painted.
             let names = crate::testing::labels(&harness.finish_animations());
             let shown = |text: &str| names.iter().any(|name| name == text);
-            let (own, others) = if look.terminal {
-                (&terminal[..], &desktop[..])
+            for (keys, what) in own {
+                assert!(shown(keys), "{}: {keys} is missing", look.name);
+                assert!(shown(what), "{}: {what} is missing", look.name);
+            }
+            // What only another look has, and what is not built, is not
+            // listed.
+            let others: &[&str] = if look.terminal {
+                &["⌘⌫", "Ctrl+Backspace", "Copy row"]
             } else {
-                (&desktop[..], &terminal[..])
+                &["cc, s", ":e!", "Leave the editor and keep the edit"]
             };
-            for text in own {
-                assert!(shown(text), "{}: {text} is missing", look.name);
+            for text in others
+                .iter()
+                .chain(&["Rollback", "Duplicate row", "Ask AI"])
+            {
+                assert!(!shown(text), "{}: {text} is listed", look.name);
             }
-            for text in others {
-                assert!(!shown(text), "{}: {text} is another look's", look.name);
+        }
+    }
+
+    /// The list is the keymap: every command that is built and has a key
+    /// in the look, by its own name, and no other.
+    #[test]
+    fn the_list_of_keys_is_the_keymap() {
+        use crate::keymap::{Command, Keymap, Layout};
+        let keymap = Keymap::default();
+        for look in Look::ALL {
+            let layout = Layout::of(&look);
+            let rows = crate::ui::help::rows(&keymap, layout);
+            for command in Command::ALL {
+                let listed = rows.iter().filter(|(_, of, _)| of == command).count();
+                let key = keymap.label(layout, *command);
+                let expected = usize::from(command.info().built && !key.is_empty());
+                assert_eq!(listed, expected, "{}: {command:?}", look.name);
             }
-            // What holds in every look is listed in every look.
-            for text in [
-                "Tab, Shift+Tab".to_owned(),
-                keys_label("Space, Mod+Shift+R"),
-                "Edit the cell".to_owned(),
-                "Set NULL".to_owned(),
-                "Revert the cell".to_owned(),
-                "Save all pending changes".to_owned(),
-                "Discard all pending changes".to_owned(),
-            ] {
-                assert!(shown(&text), "{}: {text} is missing", look.name);
+            // Each row says the keys the keymap has, and is on screen.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            type_key(&mut harness, Key::Questionmark, "?");
+            let names = crate::testing::labels(&harness.finish_animations());
+            for (_, command, keys) in &rows {
+                assert_eq!(*keys, keymap.label(layout, *command));
+                let name = command.info().name;
+                assert!(
+                    names.iter().any(|shown| shown == name),
+                    "{}: {name} is not in the list",
+                    look.name
+                );
+                assert!(
+                    names.iter().any(|shown| shown == keys.as_str()),
+                    "{}: {keys} is not in the list",
+                    look.name
+                );
             }
         }
     }
@@ -9566,8 +9616,8 @@ mod tests {
         let mut harness = Harness::new();
         harness.frame(vec![egui::Event::Text("?".into())]);
         assert!(harness.has("Keyboard shortcuts"));
-        assert!(harness.has("Quick open"));
-        assert!(harness.has("Format SQL"));
+        assert!(harness.has("Find any object"));
+        assert!(harness.has("Format SQL or JSON"));
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
     }
@@ -13459,7 +13509,7 @@ mod tests {
                 let (mut harness, tab, id) = editable_in(look);
                 make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
                 harness.settle();
-                let keys = format!("{}S", look.command_key());
+                let keys = key_of(&look, crate::keymap::Command::SaveChanges);
                 assert!(painted(&harness, &keys), "{}", look.name);
                 (harness, tab, id)
             };
@@ -16931,7 +16981,7 @@ mod tests {
             make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
             assert!(harness.has("2 changes in 2 rows"), "{}", look.name);
             // The key beside Save, as the look writes it.
-            let keys = format!("{}S", look.command_key());
+            let keys = key_of(&look, crate::keymap::Command::SaveChanges);
             assert!(painted(&harness, &keys), "{}", look.name);
             assert_eq!(writes(&harness), 0);
             harness.click("Save");
@@ -17139,7 +17189,7 @@ mod tests {
         make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
         leave_pending(&mut harness, tab, id, (1, 2), "{oops");
         harness.settle();
-        let keys = format!("{}S", Look::standard().command_key());
+        let keys = key_of(&Look::standard(), crate::keymap::Command::SaveChanges);
         for whole in [
             "2 changes in 1 row",
             "1 to fix",
@@ -17158,7 +17208,7 @@ mod tests {
     #[test]
     fn saves_key_goes_before_what_the_last_save_came_to_is_cut() {
         let look = Look::standard();
-        let keys = format!("{}S", look.command_key());
+        let keys = key_of(&look, crate::keymap::Command::SaveChanges);
         // A window wide enough for the whole of a short line.
         let mut harness = Harness::with_size(egui::vec2(1600.0, 800.0));
         harness.set_look(look);
@@ -23424,7 +23474,8 @@ mod tests {
             // head names its keys.
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (1, 1));
-            let how = format!("Click a value or press {}I to edit", look.command_key());
+            let inspector = key_of(&look, crate::keymap::Command::OpenInspector);
+            let how = format!("Click a value or press {inspector} to edit");
             assert_eq!(times_painted(&harness, "e edit"), 0, "{}", look.name);
             if look.terminal {
                 assert!(painted(&harness, "[ ] prev/next"));

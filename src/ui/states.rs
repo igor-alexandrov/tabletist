@@ -56,7 +56,11 @@ pub fn button<'a>(text: &'a str, look: &Look) -> ButtonSpec<'a> {
 
 /// A button of a state that shows its key: `keys` after its text, and in
 /// the terminal look a hint (the text muted, the key in the text colour).
-pub fn key_button<'a>(text: &'a str, keys: &'a str, look: &Look) -> ButtonSpec<'a> {
+pub fn key_button<'a>(
+    text: &'a str,
+    keys: &'a crate::keymap::Written,
+    look: &Look,
+) -> ButtonSpec<'a> {
     let button = button(text, look).shortcut(keys);
     if look.terminal {
         button.hint().shortcut_role(TextRole::OBody)

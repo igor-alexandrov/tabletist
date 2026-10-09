@@ -673,7 +673,7 @@ fn footer(
     let mut left = rect.left() + 12.0;
     for (command, what, button) in keys {
         let key = key(ui, look, command);
-        let hint = [(&*key, what.as_str(), true)];
+        let hint = [(&key, what.as_str(), true)];
         let width = widgets::key_hints(ui, (left, y), &hint, 0.0, look, palette);
         // In from the window's edge by a focus ring's reach, or the ring
         // would be cut there.

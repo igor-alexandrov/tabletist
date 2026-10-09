@@ -534,7 +534,7 @@ fn terminal_foot(
         key(crate::keymap::Command::CopyReviewSql),
     );
     let save_key = key(crate::keymap::Command::SaveChanges);
-    for (index, hint) in [(&*close_key, &*close, true), (&*copy_key, &*copy, true)]
+    for (index, hint) in [(&close_key, &*close, true), (&copy_key, &*copy, true)]
         .into_iter()
         .enumerate()
     {
@@ -547,7 +547,7 @@ fn terminal_foot(
     }
     // Left out on a connection that cannot write, as the status line
     // strikes it out there; and where the foot is too narrow for it.
-    let hint = [(&*save_key, &*write, true)];
+    let hint = [(&save_key, &*write, true)];
     let start = foot.right() - side - widgets::key_hints_width(ui, &hint, GAP, look, palette);
     if !read_only && x <= start {
         widgets::key_hints(ui, (start, y), &hint, GAP, look, palette);

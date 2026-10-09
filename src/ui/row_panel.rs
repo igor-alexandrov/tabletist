@@ -527,14 +527,14 @@ fn draw(
                 // edited offers, then the words of its own keys, when the
                 // whole name does not fit before them. The name is cut
                 // where the hint begins, 10 before it.
-                let steps: widgets::Hint<'_> = (&*rows_key, "prev/next", true);
-                let focus: widgets::Hint<'_> = (&*focus_key, "focus", true);
+                let steps: widgets::Hint<'_> = (&rows_key, "prev/next", true);
+                let focus: widgets::Hint<'_> = (&focus_key, "focus", true);
                 let editable = source.table && locked.is_none();
                 let hints: [&[widgets::Hint<'_>]; 4] = [
-                    &[steps, focus, (&*edit_key, "edit field", true)],
+                    &[steps, focus, (&edit_key, "edit field", true)],
                     &[steps, focus],
                     &[steps],
-                    &[(&*rows_key, "", true)],
+                    &[(&rows_key, "", true)],
                 ];
                 let fit = |hint: &[widgets::Hint<'_>]| {
                     let width = widgets::key_hints_width(ui, hint, HINT_GAP, &look, &palette);
@@ -2423,7 +2423,7 @@ fn editing_footer(
         // dashed, at 55%.
         let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
         let (duplicate, delete) = (key(Command::DuplicateRow), key(Command::DeleteRow));
-        let keys = [(&*duplicate, "duplicate"), (&*delete, "delete")];
+        let keys = [(&duplicate, "duplicate"), (&delete, "delete")];
         let width = (inner.width() - gap) / 2.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
         for (index, (key, label)) in keys.iter().enumerate() {

@@ -28,7 +28,7 @@ pub(super) fn terminal_header(ui: &mut Ui, form: &mut ConnectionForm, skin: &Ski
     let y = terminal_dialog::head_line(rect);
     let label = skin.say("Paste URL");
     let key = crate::ui::keys::written(ui.ctx(), look, Command::FormPasteUrl);
-    let hint = [(&*key, label.as_str(), true)];
+    let hint = [(&key, label.as_str(), true)];
     let width = widgets::key_hints_width(ui, &hint, 0.0, look, palette);
     let place = Rect::from_min_size(
         pos2(rect.right() - 14.0 - width, rect.top()),

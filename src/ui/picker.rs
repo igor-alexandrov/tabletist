@@ -334,13 +334,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let small = widgets::secondary(&look);
     if look.terminal {
         let hints = [
-            (&*moves, "move", true),
-            (&*connect, "connect / show", true),
-            (&*edit, "edit", true),
-            (&*new_key, "new", true),
-            (&*duplicate, "duplicate", true),
-            (&*delete, "delete", true),
-            (&*filter, "filter", true),
+            (&moves, "move", true),
+            (&connect, "connect / show", true),
+            (&edit, "edit", true),
+            (&new_key, "new", true),
+            (&duplicate, "duplicate", true),
+            (&delete, "delete", true),
+            (&filter, "filter", true),
         ];
         widgets::key_hints(
             ui,

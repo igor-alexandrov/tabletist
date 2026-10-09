@@ -1425,11 +1425,12 @@ mod tests {
                 look.name
             );
         }
-        // The help lists it.
-        let listed = crate::ui::keys::SHORTCUTS.iter().any(|(keys, what, _)| {
-            *keys == "Mod+Shift+M" && *what == "Read-only or read-write runs in the SQL editor"
-        });
-        assert!(listed);
+        // The keymap has it for those looks, and none for Omarchy.
+        let keymap = crate::keymap::Keymap::default();
+        let key = |layout| keymap.label(layout, Command::ToggleSqlMode);
+        assert_eq!(key(crate::keymap::Layout::Mac), "⇧⌘M");
+        assert_eq!(key(crate::keymap::Layout::Windows), "Ctrl+Shift+M");
+        assert_eq!(key(crate::keymap::Layout::Omarchy), "");
     }
 
     #[test]

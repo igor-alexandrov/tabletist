@@ -431,7 +431,7 @@ fn conflict_box(
             if asked.lines.len() as f32 * height > MOST {
                 let scrolls = Command::ScrollStatements;
                 let key = crate::ui::keys::written(ui.ctx(), look, scrolls);
-                keys.push((None, key.to_string(), skin.say("scroll"), None));
+                keys.push((None, key, skin.say("scroll"), None));
             }
             // The answers this row has, by the names the sheet's buttons
             // have.
@@ -442,7 +442,7 @@ fn conflict_box(
                     let letter = crate::ui::keys::written(ui.ctx(), look, command);
                     keys.push((
                         Some(answer),
-                        format!("[{letter}]"),
+                        letter.bracketed(),
                         skin.say(words),
                         Some(name),
                     ));

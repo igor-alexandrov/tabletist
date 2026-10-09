@@ -1765,6 +1765,12 @@ impl Written {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The key in the brackets a prompt draws round the letter that
+    /// answers it: `[w]`.
+    pub fn bracketed(&self) -> Written {
+        Written(format!("[{}]", self.0))
+    }
 }
 
 impl std::ops::Deref for Written {

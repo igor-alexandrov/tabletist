@@ -409,10 +409,7 @@ fn leave_box(
             };
             // Each answer's key as the keymap writes it, in the box's
             // brackets.
-            let bracketed = |command| {
-                let key = crate::ui::keys::written(ui.ctx(), look, command);
-                format!("[{key}]")
-            };
+            let bracketed = |command| crate::ui::keys::written(ui.ctx(), look, command).bracketed();
             let (write_key, discard_key, stay_key) = (
                 bracketed(Command::LeaveWrite),
                 bracketed(Command::LeaveDiscard),

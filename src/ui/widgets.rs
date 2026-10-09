@@ -5,6 +5,7 @@ use egui::{
     vec2,
 };
 
+use crate::keymap::Written;
 use crate::theme::{DialogStyle, Icon, Look, Palette, Selection, TabStyle};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
@@ -800,7 +801,8 @@ pub fn section_label(text: &str, look: &Look, palette: &Palette) -> Text {
 }
 
 /// One keyboard hint: its key, what it does, and whether it is possible.
-pub type Hint<'a> = (&'a str, &'a str, bool);
+/// The key is one the keymap wrote: a hint takes nothing spelled by hand.
+pub type Hint<'a> = (&'a Written, &'a str, bool);
 
 /// Keyboard hints: each key in the text colour, then what it does in the
 /// muted one. Disabled hints are struck through. Returns their width.
@@ -1326,8 +1328,9 @@ impl<'a> ButtonSpec<'a> {
         response
     }
 
-    pub fn shortcut(mut self, shortcut: &'a str) -> Self {
-        self.shortcut = Some(shortcut);
+    /// The key that does what the button does, as the keymap wrote it.
+    pub fn shortcut(mut self, shortcut: &'a Written) -> Self {
+        self.shortcut = Some(shortcut.as_str());
         self
     }
 

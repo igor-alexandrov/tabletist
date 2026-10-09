@@ -61,8 +61,8 @@ pub fn foot_line(foot: Rect) -> f32 {
 
 /// One key of a foot.
 pub struct Key<'a> {
-    /// The key as it is written: `ctrl+s`, `[w]`.
-    pub key: &'a str,
+    /// The key as the keymap wrote it: `ctrl+s`, `[w]`.
+    pub key: &'a crate::keymap::Written,
     /// What it does.
     pub label: &'a str,
     /// The name of the button the hint stands for, when it has one: a

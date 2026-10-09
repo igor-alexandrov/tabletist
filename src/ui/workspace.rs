@@ -1975,33 +1975,33 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // it can be.
             let edit = gettext(locale, "edit");
             let mut table_hints: Vec<widgets::Hint<'_>> = vec![
-                (&*rows_key, "row", true),
-                (&*cols_key, "col", true),
-                (&*inspect_key, "inspect", true),
+                (&rows_key, "row", true),
+                (&cols_key, "col", true),
+                (&inspect_key, "inspect", true),
             ];
             if editing.can_edit {
-                table_hints.push((&*edit_key, &*edit, true));
+                table_hints.push((&edit_key, &*edit, true));
             }
             // A new row is opened, where the table takes one.
             let new_row = gettext(locale, "new row");
             if editing.can_add {
-                table_hints.push((&*add_key, &*new_row, true));
+                table_hints.push((&add_key, &*new_row, true));
             }
             table_hints.extend([
-                (&*filter_key, "filter", true),
-                (&*sidebar_key, "tables", true),
-                (&*copy_key, "copy", true),
+                (&filter_key, "filter", true),
+                (&sidebar_key, "tables", true),
+                (&copy_key, "copy", true),
             ]);
             // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
             if !read_only {
-                table_hints.push((&*save_key, &*write, true));
+                table_hints.push((&save_key, &*write, true));
             }
             // And the one that shows what a save would run, while there is
             // anything to show.
             let review = gettext(locale, "review");
             if editing.pending.is_some() || editing.added.is_some() {
-                table_hints.push((&*review_key, &*review, true));
+                table_hints.push((&review_key, &*review, true));
             }
             // An editor's keys: a table's do nothing on it.
             let words = [
@@ -2014,15 +2014,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ]
             .map(|word| gettext(locale, word));
             let mut editor_hints: Vec<widgets::Hint<'_>> = vec![
-                (&*run_key, &*words[0], true),
-                (&*run_all_key, &*words[1], true),
-                (&*cancel_key, &*words[2], true),
-                (&*leave_key, &*words[3], true),
-                (&*sidebar_key, &*words[4], true),
+                (&run_key, &*words[0], true),
+                (&run_all_key, &*words[1], true),
+                (&cancel_key, &*words[2], true),
+                (&leave_key, &*words[3], true),
+                (&sidebar_key, &*words[4], true),
             ];
             // An open completion list: its key leads.
             if completing {
-                editor_hints.insert(0, (&*complete_key, &*words[5], true));
+                editor_hints.insert(0, (&complete_key, &*words[5], true));
             }
             let hints: &[widgets::Hint<'_>] = if on_editor {
                 &editor_hints
