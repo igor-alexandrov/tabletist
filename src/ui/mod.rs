@@ -11611,6 +11611,38 @@ mod tests {
     }
 
     #[test]
+    fn the_bars_dot_is_a_new_rows_green_while_only_rows_are_pending() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let palette = harness.app.palette;
+        let look = harness.app.look;
+        let green = crate::env::new_row_colors(crate::env::Platform::of(&look), &palette).bar;
+        let amber = Tone::Warning.color(&palette);
+        // A circle of the dot's size in `color`, in the bar: the tab above
+        // has an amber dot of its own for anything unsaved.
+        let dot = |harness: &Harness, color: egui::Color32| {
+            let low = harness.size.y - 90.0;
+            harness.fills.iter().any(|(rect, fill)| {
+                *fill == color
+                    && rect.width() == rect.height()
+                    && rect.width() <= 10.0
+                    && rect.top() > low
+            })
+        };
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        assert!(dot(&harness, green) && !dot(&harness, amber));
+        // What the row needs is said after a dot of its own, and no mark.
+        assert!(painted_in(&harness, "·", palette.danger));
+        assert!(harness.has("publisher_id is required"));
+        // A changed value of a loaded row makes the bar a bar of changes.
+        make_pending(&mut harness, tab, id, (1, 2), "audio");
+        harness.settle();
+        assert!(dot(&harness, amber) && !dot(&harness, green));
+    }
+
+    #[test]
     fn a_save_says_how_many_rows_it_added() {
         use egui::accesskit::Role;
         use tabletist_db::Value;

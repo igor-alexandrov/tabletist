@@ -285,7 +285,9 @@ fn pointer_over(ui: &egui::Ui, response: &egui::Response) -> bool {
     response.hovered() || ui.rect_contains_pointer(response.rect)
 }
 
-/// The unsaved mark's size: the dot the pending bar leads with.
+/// The unsaved mark's size: as large as the dot the pending bar leads
+/// with. Amber whatever is unsaved: the bar's own turns green for new rows
+/// alone.
 const MARK: f32 = 8.0;
 
 /// One tab to draw.
