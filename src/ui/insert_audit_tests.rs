@@ -1,10 +1,11 @@
 //! Row inserting, checked against its spec
 //! (`docs/superpowers/specs/2026-10-07-inserting-rows-design.md`, as
 //! amended on 2026-10-08: "spec N" below is a section of it) for the audit
-//! of that day. Each test names the audit's finding it shows
-//! (INS-...). One that passes holds what the app does today. One that is
-//! ignored holds what the spec asks and the app does not do yet: it fails
-//! until its finding is fixed, and its `ignore` says which that is.
+//! of that day. One that passes holds what the spec keeps, so it goes on
+//! passing once a finding is fixed: a fix that breaks one has broken
+//! something. One that is ignored holds what the spec asks and the app
+//! does not do yet. It names the audit's finding it shows (INS-...), fails
+//! until that is fixed, and its `ignore` says which it is.
 //!
 //! Only behaviour, names and words are checked here, on the Bookshop's
 //! `book_covers`. No colour, size or picture of the design is.
