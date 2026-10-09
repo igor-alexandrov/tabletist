@@ -3298,7 +3298,7 @@ mod tests {
         // answers at once.
         harness.app.apply(Action::WriteEdits { tab, id });
         harness.finish_animations();
-        harness.frame(vec![egui::Event::Text("write".into())]);
+        harness.frame(vec![egui::Event::Text("fixture.db".into())]);
         harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(writes(&harness), 1);
         // The row changed. The confirmation opened the tab's panel, and
@@ -3355,7 +3355,7 @@ mod tests {
             });
         };
         opened(&mut harness, false);
-        harness.frame(vec![egui::Event::Text("write".into())]);
+        harness.frame(vec![egui::Event::Text("fixture.db".into())]);
         harness.press(Key::Enter, Modifiers::NONE);
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_))));

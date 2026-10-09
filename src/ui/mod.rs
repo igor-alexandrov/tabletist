@@ -17931,7 +17931,7 @@ mod tests {
             let (mut harness, tab, id, _) = confirming(look);
             if look.terminal {
                 // The word is typed: Enter would confirm from the field.
-                type_text(&mut harness, "write");
+                type_text(&mut harness, "fixture.db");
             }
             focus_dialog(&mut harness, "Cancel");
             harness.press(Key::Enter, Modifiers::NONE);
@@ -17943,7 +17943,7 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_confirmations_button_cannot_be_pressed_before_the_word() {
+    fn the_terminal_confirmations_button_cannot_be_pressed_before_the_name() {
         use egui::accesskit::Role;
         let (mut harness, _tab, _id, _) = confirming(Look::omarchy());
         // What a screen reader is told of the button that sends.
@@ -17956,11 +17956,11 @@ mod tests {
         };
         assert_eq!(
             button(&mut harness),
-            (true, Some("type write to confirm".into()))
+            (true, Some("type fixture.db to confirm".into()))
         );
-        type_text(&mut harness, "wri");
+        type_text(&mut harness, "fixture");
         assert!(button(&mut harness).0);
-        type_text(&mut harness, "te");
+        type_text(&mut harness, ".db");
         assert_eq!(button(&mut harness), (false, None));
         click_dialog(&mut harness, "Save to production");
         assert!(harness.app.dialog.is_none());
@@ -17996,6 +17996,71 @@ mod tests {
         harness.finish_animations();
         let lines = confirmed_lines(&harness);
         (harness, tab, id, lines)
+    }
+
+    /// The brief's test 8.
+    #[test]
+    fn the_terminal_confirmation_takes_only_its_own_databases_name() {
+        let production = |harness: &mut Harness, tab, database: &str| {
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.environment = crate::env::Environment::Production;
+            workspace.spec.sqlite_path = None;
+            workspace.spec.database = database.into();
+        };
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        production(&mut harness, tab, "bookshop_production");
+        // Another production connection is open beside it.
+        let other = connect_another(&mut harness, "Archive");
+        production(&mut harness, other, "bookshop_archive");
+        harness.app.apply(Action::ActivateConnTab(tab));
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        // The box names its own database, and no other.
+        assert!(harness.has("type bookshop_production to confirm"));
+        assert!(!harness.has("type bookshop_archive to confirm"));
+        let attempt = |harness: &mut Harness, text: &str| {
+            if let Some(crate::model::Dialog::ConfirmWrite(prompt)) = &mut harness.app.dialog {
+                prompt.typed.clear();
+            }
+            type_text(harness, text);
+            harness.press(Key::Enter, Modifiers::NONE);
+        };
+        for wrong in [
+            "write",
+            "bookshop_archive",
+            "Bookshop_Production",
+            "bookshop_production ",
+            " bookshop_production",
+            "bookshop",
+            "Fixture",
+        ] {
+            attempt(&mut harness, wrong);
+            assert_eq!(writes(&harness), 0, "{wrong:?} confirmed");
+            assert!(
+                matches!(
+                    harness.app.dialog,
+                    Some(crate::model::Dialog::ConfirmWrite(_))
+                ),
+                "{wrong:?}"
+            );
+        }
+        attempt(&mut harness, "bookshop_production");
+        assert_eq!(writes(&harness), 1);
+        assert!(harness.app.dialog.is_none());
+        // Esc goes back, with nothing sent.
+        let (mut harness, _tab, _id, _) = confirming(Look::omarchy());
+        type_text(&mut harness, "fixture.db");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 0);
+        // Where the connection names no database, its own name is asked.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        production(&mut harness, tab, "");
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(harness.has("type Fixture to confirm"));
     }
 
     #[test]
@@ -18035,14 +18100,14 @@ mod tests {
             assert_eq!(writes(&harness), 0, "{}", look.name);
             if look.terminal {
                 assert!(harness.has("Fixture · fixture.db"));
-                assert!(painted(&harness, "type write to confirm"));
-                // The field has the keyboard: the word is typed into it.
-                type_text(&mut harness, "wri");
+                assert!(painted(&harness, "type fixture.db to confirm"));
+                // The field has the keyboard: the name is typed into it.
+                type_text(&mut harness, "fixture");
                 harness.press(Key::Enter, Modifiers::NONE);
                 assert!(harness.app.dialog.is_some());
                 assert_eq!(writes(&harness), 0);
                 // Nor does its button, to the pointer or a screen reader:
-                // it cannot be pressed before the word is typed.
+                // it cannot be pressed before the name is typed.
                 assert!(pressable(&mut harness, "Save to production").is_empty());
                 let hint = harness.painted_rect("enter confirm").expect("the hint");
                 click_at(&mut harness, hint.center());
@@ -18055,7 +18120,7 @@ mod tests {
                 assert_eq!(writes(&harness), 0);
                 harness.app.apply(Action::WriteEdits { tab, id });
                 harness.finish_animations();
-                type_text(&mut harness, "write");
+                type_text(&mut harness, "fixture.db");
                 harness.press(Key::Enter, Modifiers::NONE);
                 assert!(harness.app.dialog.is_none());
                 assert_eq!(writes(&harness), 1);
@@ -20278,7 +20343,7 @@ mod tests {
             assert!(!harness.painted.iter().any(whole), "{}", look.name);
             // What is sent is the whole value.
             if look.terminal {
-                type_text(&mut harness, "write");
+                type_text(&mut harness, "fixture.db");
                 harness.press(Key::Enter, Modifiers::NONE);
             } else {
                 click_dialog(&mut harness, "Save to production");
@@ -20496,7 +20561,7 @@ mod tests {
             );
         }
         assert!(dimmed(harness), "the box has its backdrop");
-        assert!(painted(harness, "type write to confirm"));
+        assert!(painted(harness, "type fixture.db to confirm"));
     }
 
     #[test]
@@ -20542,7 +20607,7 @@ mod tests {
         assert!(outer.height() <= room - 48.0, "{}", outer.height());
         assert!(placed.rect.top() >= room);
         // It asks as before, and the field has the keyboard.
-        assert!(painted(&harness, "type write to confirm"));
+        assert!(painted(&harness, "type fixture.db to confirm"));
         assert!(harness.ctx.text_edit_focused());
         assert!(harness.has("2 rows in users · email"));
         // The foot says how the statements under it are scrolled, after
@@ -20556,11 +20621,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{hint} is not in the box"))
         });
         assert!(foot[0].right() < foot[1].left() && foot[1].right() < foot[2].left());
-        // Its keys answer as they did: the word, then Enter.
-        type_text(&mut harness, "wri");
+        // Its keys answer as they did: the name, then Enter.
+        type_text(&mut harness, "fixture");
         harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(writes(&harness), 0);
-        type_text(&mut harness, "te");
+        type_text(&mut harness, ".db");
         harness.press(Key::Enter, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
         assert_eq!(writes(&harness), 1);
@@ -20580,7 +20645,7 @@ mod tests {
             assert_eq!(painted_at(&harness, line).len(), 1, "{line}");
         }
         // And the save it shows is the one it sends.
-        type_text(&mut harness, "write");
+        type_text(&mut harness, "fixture.db");
         harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(writes(&harness), 1);
         assert_eq!(
@@ -20707,7 +20772,7 @@ mod tests {
         // The answer to the question brought it up: its first moment is
         // waited out before it is answered.
         confirmation_waited(&mut harness);
-        type_text(&mut harness, "write");
+        type_text(&mut harness, "fixture.db");
         harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(writes(&harness), 1);
     }
@@ -20737,7 +20802,7 @@ mod tests {
             );
         }
         assert!(harness.ctx.text_edit_focused());
-        type_text(&mut harness, "write");
+        type_text(&mut harness, "fixture.db");
         harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(writes(&harness), 1);
         // In a window that has the room, the same set is pointed at.
@@ -20849,7 +20914,7 @@ mod tests {
                 places.iter().any(|rect| outer.intersects(*rect)),
                 "{wide}: {places:?}"
             );
-            type_text(&mut harness, "write");
+            type_text(&mut harness, "fixture.db");
             harness.press(Key::Enter, Modifiers::NONE);
             assert_eq!(writes(&harness), 1, "{wide}");
         }
@@ -20924,7 +20989,7 @@ mod tests {
             let at = egui::pos2(600.0 + step as f32 * 10.0, 300.0);
             harness.frame(vec![egui::Event::PointerMoved(at)]);
         }
-        type_text(&mut harness, "wri");
+        type_text(&mut harness, "fixture");
         assert_eq!(measured() - before, 2500);
         // Another review is measured, once: the box is cancelled, a row
         // reverted, and the save asked for again.
@@ -21249,7 +21314,7 @@ mod tests {
         }
         // Reading is no answer: the word is typed and stays typed, and the
         // keys move the statements.
-        harness.frame(vec![egui::Event::Text("write".into())]);
+        harness.frame(vec![egui::Event::Text("fixture.db".into())]);
         harness.press(Key::PageDown, Modifiers::NONE);
         harness.finish_animations();
         let after = rows_painted(&harness, listing);
@@ -21257,7 +21322,9 @@ mod tests {
         // Enter on the word is one, and is not taken yet.
         harness.press(Key::Enter, Modifiers::NONE);
         match &harness.app.dialog {
-            Some(crate::model::Dialog::ConfirmWrite(prompt)) => assert_eq!(prompt.typed, "write"),
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => {
+                assert_eq!(prompt.typed, "fixture.db")
+            }
             other => panic!("expected the confirmation, got {other:?}"),
         }
         assert_eq!(writes(&harness), 0);
@@ -21446,11 +21513,11 @@ mod tests {
         assert!(edits(&harness, tab, id).editor.is_none());
         // A click outside takes the keyboard from the field, and the box
         // gives it back: what is typed next is still the word.
-        type_text(&mut harness, "wri");
+        type_text(&mut harness, "fixture");
         let Some(crate::model::Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
             panic!("the box is gone");
         };
-        assert_eq!(prompt.typed, "wri");
+        assert_eq!(prompt.typed, "fixture");
         // And Esc still cancels it, with nothing sent.
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
@@ -21505,7 +21572,7 @@ mod tests {
         harness.finish_animations();
         assert!(painted(&harness, POINTS));
         assert!(painted_from(&harness, PANEL));
-        type_text(&mut harness, "write");
+        type_text(&mut harness, "fixture.db");
         harness.press(Key::Enter, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
         assert_eq!(writes(&harness), 1);
