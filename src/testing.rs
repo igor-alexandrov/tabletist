@@ -26,6 +26,8 @@ pub struct Harness {
     pub painted: Vec<(String, egui::Color32)>,
     /// Where the last frame painted each piece of text, in points.
     pub text_rects: Vec<(String, egui::Rect)>,
+    /// Every piece of text the last frame painted slanted.
+    pub slanted: Vec<String>,
     /// Every rectangle, circle and outline the last frame filled, and where.
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
@@ -161,11 +163,13 @@ impl Harness {
     fn collect(&mut self, output: &egui::FullOutput) {
         self.painted.clear();
         self.text_rects.clear();
+        self.slanted.clear();
         self.fills.clear();
         self.strokes.clear();
         self.outlines.clear();
         for clipped in &output.shapes {
             collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
+            collect_slanted(&clipped.shape, &mut self.slanted);
             collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
             collect_outlines(&clipped.shape, &mut self.outlines);
         }
@@ -290,6 +294,20 @@ fn collect_text(
                 text.galley.text().to_owned(),
                 egui::Rect::from_min_size(text.pos, text.galley.size()),
             ));
+        }
+        _ => {}
+    }
+}
+
+/// The texts of `shape` that are written slanted, every piece of them.
+fn collect_slanted(shape: &egui::Shape, into: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_slanted(shape, into)),
+        egui::Shape::Text(text) => {
+            let sections = &text.galley.job.sections;
+            if !sections.is_empty() && sections.iter().all(|section| section.format.italics) {
+                into.push(text.galley.text().to_owned());
+            }
         }
         _ => {}
     }
@@ -981,6 +999,7 @@ impl Harness {
             close_requested: false,
             painted: Vec::new(),
             text_rects: Vec::new(),
+            slanted: Vec::new(),
             fills: Vec::new(),
             strokes: Vec::new(),
             outlines: Vec::new(),

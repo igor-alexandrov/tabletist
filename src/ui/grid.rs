@@ -2218,6 +2218,58 @@ mod tests {
     }
 
     #[test]
+    fn a_slanted_cell_is_written_leaned_over() {
+        for look in Look::ALL {
+            let palette = Palette::dark();
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 400.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                show(
+                    ui,
+                    egui::Id::new("grid"),
+                    &columns(),
+                    3,
+                    None,
+                    false,
+                    &palette,
+                    &look,
+                    &|at| numbered(RowMark::None, at),
+                    None,
+                    None,
+                    |row, col| Cell {
+                        text: format!("r{row}c{col}").into(),
+                        slanted: (row, col) == (1, 1),
+                        ..Default::default()
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            // Whether the cell that shows `text` is written slanted.
+            let slanted = |text: &str| {
+                let found = output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::Shape::Text(shape) if shape.galley.text() == text => Some(shape),
+                        _ => None,
+                    });
+                let sections = &found.expect("the cell's text").galley.job.sections;
+                sections.iter().all(|section| section.format.italics)
+            };
+            assert!(slanted("r1c1"), "{}", look.name);
+            assert!(!slanted("r0c1") && !slanted("r1c0"), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn a_new_row_is_read_as_one_and_the_others_by_their_numbers() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();

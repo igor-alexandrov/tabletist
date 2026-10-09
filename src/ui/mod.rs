@@ -11557,6 +11557,24 @@ mod tests {
     }
 
     #[test]
+    fn a_new_rows_default_the_database_works_out_is_slanted() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = covers_in(look);
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            let place = crate::edit::Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.settle();
+            // `created_at` is worked out for each row: `kind` is a value
+            // the column holds, and the marker is the row's own.
+            let slanted = |text: &str| harness.slanted.iter().any(|piece| piece == text);
+            assert!(slanted("CURRENT_TIMESTAMP"), "{}", look.name);
+            assert!(painted(&harness, "print") && !slanted("print"));
+            assert_eq!(harness.slanted.len(), 1, "{:?}", harness.slanted);
+        }
+    }
+
+    #[test]
     fn the_row_panel_says_a_new_row_is_edited_in_the_grid() {
         let (mut harness, tab, id) = covers_in(Look::macos());
         let place = crate::edit::Place::Top;
