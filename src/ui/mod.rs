@@ -16,6 +16,8 @@ pub mod format;
 pub mod grid;
 pub mod help;
 pub mod host_key_prompt;
+#[cfg(test)]
+mod insert_audit_tests;
 pub mod json_text;
 pub mod json_view;
 pub mod keys;
