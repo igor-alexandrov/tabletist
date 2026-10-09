@@ -870,8 +870,8 @@ impl<'a> Order<'a> {
 pub enum Unset {
     /// The database gives the value: its counter's, or a computed one.
     Assigned,
-    /// The column's default as it reads: a literal's value, or the
-    /// expression as the database writes it.
+    /// The column's default where it is a value the column holds: the
+    /// literal's value as it reads.
     Default(String),
     /// The column's default where the database works it out for each row
     /// (`now()`, `CURRENT_TIMESTAMP`): the expression as it is written.
