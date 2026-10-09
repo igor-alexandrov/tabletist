@@ -1600,6 +1600,16 @@ fn draw_cell(
         }
         Style::Tag(_) => {
             let (color, fill) = crate::ui::value_tags::style_colors(content.style, look, palette);
+            // A value the row does not hold yet (a new row's default): its
+            // tag at six tenths, as the design fades it. The terminal has
+            // no tag to fade and writes it dimmed.
+            let (color, fill) = match fill {
+                Some(fill) if content.mark == Mark::Unset => {
+                    (color.gamma_multiply(0.6), Some(fill.gamma_multiply(0.6)))
+                }
+                None if content.mark == Mark::Unset => (palette.dim, None),
+                fill => (color, fill),
+            };
             // macOS and Windows: a chip in the value-tag face, 2 above and
             // below, 6 at the sides. Terminal: the text alone, in the
             // tag's colour.

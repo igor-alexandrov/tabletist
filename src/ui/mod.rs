@@ -11531,6 +11531,32 @@ mod tests {
     }
 
     #[test]
+    fn a_new_rows_default_is_its_tag_at_six_tenths() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = covers_in(look);
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            let place = crate::edit::Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.settle();
+            // `kind` is `print` in the page's first and third rows, and in
+            // the new row as its default: the same tag, fainter.
+            let prints: Vec<egui::Color32> = harness
+                .painted
+                .iter()
+                .filter(|(text, _)| text == "print")
+                .map(|(_, color)| *color)
+                .collect();
+            let faded = prints.iter().any(|faded| {
+                prints
+                    .iter()
+                    .any(|full| faded != full && *faded == full.gamma_multiply(0.6))
+            });
+            assert!(faded, "{}: {prints:?}", look.name);
+        }
+    }
+
+    #[test]
     fn the_row_panel_says_a_new_row_is_edited_in_the_grid() {
         let (mut harness, tab, id) = covers_in(Look::macos());
         let place = crate::edit::Place::Top;

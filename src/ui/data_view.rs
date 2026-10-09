@@ -1870,14 +1870,25 @@ impl Changes<'_> {
                     hint: Some(say("Assigned by the database on save")),
                     ..Cell::default()
                 },
-                Some(Unset::Default(text)) => Cell {
-                    text: format::cell_line(text, format::Marks::PLAIN)
-                        .into_owned()
-                        .into(),
-                    mark: Mark::Unset,
-                    hint: Some(say("from DEFAULT")),
-                    ..Cell::default()
-                },
+                Some(Unset::Default(text)) => {
+                    // Drawn as the value would be where its column lists
+                    // it (a tag), and as plain text everywhere else.
+                    let as_value = value(&Value::Text(text.as_str().into()));
+                    let cell = match as_value.style {
+                        Style::Tag(_) => as_value,
+                        _ => Cell {
+                            text: format::cell_line(text, format::Marks::PLAIN)
+                                .into_owned()
+                                .into(),
+                            ..Cell::default()
+                        },
+                    };
+                    Cell {
+                        mark: Mark::Unset,
+                        hint: Some(say("from DEFAULT")),
+                        ..cell
+                    }
+                }
                 Some(Unset::Null) => Cell {
                     mark: Mark::Unset,
                     ..value(&Value::Null)
