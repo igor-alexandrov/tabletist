@@ -6,9 +6,11 @@
 //!
 //! These were written for the audit of row inserting against its spec
 //! (`docs/superpowers/specs/2026-10-07-inserting-rows-design.md`). Each
-//! names the finding of that audit it shows (INS-...). They hold what the
-//! drivers do today, so they pass: where the spec asks for something else,
-//! the test says so.
+//! names the finding of that audit it shows (INS-...). One that passes
+//! holds what the spec keeps, so it goes on passing once a finding is
+//! fixed. One that is ignored holds what the spec asks and a driver does
+//! not do yet: it fails until its finding is fixed, and its `ignore` says
+//! which that is.
 //!
 //! PostgreSQL and MySQL need their servers (see compose.yaml). Without the
 //! variables those tests print "skipped" and pass.
@@ -20,8 +22,8 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use tabletist_db::{
-    Access, ChangeSet, ConnectSpec, Connection, Dialect, Error, HostKeys, InsertValue, NewValue,
-    ObjectRef, RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value, WriteOutcome,
+    Access, ChangeSet, ConnectSpec, Connection, Error, HostKeys, InsertValue, NewValue, ObjectRef,
+    RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value, WriteOutcome,
 };
 
 /// Harbor Press, as the design's picker finds it.
@@ -91,6 +93,25 @@ fn failed(outcome: WriteOutcome) -> (usize, Option<String>, String, Option<Strin
     }
 }
 
+/// The error a new row's `INSERT` failed with.
+fn failure(outcome: WriteOutcome) -> Error {
+    match outcome {
+        WriteOutcome::FailedInsert { error, .. } => error,
+        other => panic!("the save was to fail on a new row: {other:?}"),
+    }
+}
+
+/// The values the structure says `kind` may hold.
+async fn allowed_kinds(connection: &Connection, covers: &ObjectRef) -> Option<Vec<String>> {
+    let structure = connection.describe(covers).await.unwrap();
+    column(&structure, "kind").allowed_values.clone()
+}
+
+/// What `kind`'s CHECK allows, in the order it lists them.
+fn kinds() -> Option<Vec<String>> {
+    Some(vec!["print".into(), "ebook".into(), "audio".into()])
+}
+
 fn column<'a>(structure: &'a Structure, name: &str) -> &'a tabletist_db::ColumnInfo {
     let found = structure.columns.iter().find(|column| column.name == name);
     found.unwrap_or_else(|| panic!("no column {name}"))
@@ -101,8 +122,8 @@ fn column<'a>(structure: &'a Structure, name: &str) -> &'a tabletist_db::ColumnI
 /// `kind` that is not allowed in `book_covers`.
 struct Cases {
     schema: &'static str,
-    books: &'static str,
-    covers: &'static str,
+    books: String,
+    covers: String,
     id: &'static str,
     text: &'static str,
 }
@@ -111,7 +132,7 @@ impl Cases {
     fn taken_isbn(&self) -> ChangeSet {
         adding(
             self.schema,
-            self.books,
+            &self.books,
             vec![vec![
                 sets("isbn", self.text, TAKEN_ISBN),
                 sets("title", self.text, "The Lighthouse Keeper's Daughter"),
@@ -125,7 +146,7 @@ impl Cases {
     fn no_publisher(&self) -> ChangeSet {
         adding(
             self.schema,
-            self.covers,
+            &self.covers,
             vec![
                 vec![sets("publisher_id", self.id, HARBOR_PRESS)],
                 vec![sets("publisher_id", self.id, NO_PUBLISHER)],
@@ -136,7 +157,7 @@ impl Cases {
     fn null_publisher(&self) -> ChangeSet {
         adding(
             self.schema,
-            self.covers,
+            &self.covers,
             vec![vec![null("publisher_id", self.id)]],
         )
     }
@@ -144,7 +165,7 @@ impl Cases {
     fn vinyl(&self) -> ChangeSet {
         adding(
             self.schema,
-            self.covers,
+            &self.covers,
             vec![vec![
                 sets("publisher_id", self.id, HARBOR_PRESS),
                 sets("kind", self.text, "vinyl"),
@@ -156,13 +177,15 @@ impl Cases {
 mod postgres {
     use super::*;
 
-    const CASES: Cases = Cases {
-        schema: "public",
-        books: "audit_books",
-        covers: "audit_book_covers",
-        id: "bigint",
-        text: "text",
-    };
+    fn cases() -> Cases {
+        Cases {
+            schema: "public",
+            books: "audit_books".into(),
+            covers: "audit_book_covers".into(),
+            id: "bigint",
+            text: "text",
+        }
+    }
 
     const DROP: &str = "DROP TABLE IF EXISTS audit_book_covers, audit_books, audit_publishers";
 
@@ -231,16 +254,17 @@ mod postgres {
         Some((admin, connect(&url).await))
     }
 
-    /// INS-31: PostgreSQL says which rule a new row broke by its SQLSTATE,
-    /// and names the column and the value in the error's detail. The
-    /// app's `Error` has no column or constraint of its own, so a failed
-    /// cell can be worded only from this text.
+    /// Spec 9, with INS-31: PostgreSQL says which rule a new row broke by
+    /// its SQLSTATE, and names the column and the value in the error's
+    /// detail. The app's `Error` has no column or constraint of its own, so
+    /// a failed cell can be worded only from this text.
     #[tokio::test]
     async fn the_bookshops_failures_as_postgres_hands_them_over() {
         let Some((admin, connection)) = bookshop().await else {
             return;
         };
-        let (insert, code, message, detail) = failed(save(&connection, &CASES.taken_isbn()).await);
+        let cases = cases();
+        let (insert, code, message, detail) = failed(save(&connection, &cases.taken_isbn()).await);
         assert_eq!((insert, code.as_deref()), (0, Some("23505")));
         assert_eq!(
             message,
@@ -253,7 +277,7 @@ mod postgres {
 
         // The second new row fails, and the first is undone with it.
         let (insert, code, message, detail) =
-            failed(save(&connection, &CASES.no_publisher()).await);
+            failed(save(&connection, &cases.no_publisher()).await);
         assert_eq!((insert, code.as_deref()), (1, Some("23503")));
         assert!(
             message.ends_with(r#"foreign key constraint "audit_book_covers_publisher_id_fkey""#),
@@ -266,11 +290,11 @@ mod postgres {
             )
         );
 
-        let (_, code, message, _) = failed(save(&connection, &CASES.null_publisher()).await);
+        let (_, code, message, _) = failed(save(&connection, &cases.null_publisher()).await);
         assert_eq!(code.as_deref(), Some("23502"));
         assert!(message.contains(r#"column "publisher_id""#), "{message}");
 
-        let (_, code, message, _) = failed(save(&connection, &CASES.vinyl()).await);
+        let (_, code, message, _) = failed(save(&connection, &cases.vinyl()).await);
         assert_eq!(code.as_deref(), Some("23514"));
         assert!(
             message.ends_with(r#"check constraint "audit_book_covers_kind_check""#),
@@ -281,90 +305,114 @@ mod postgres {
         assert_eq!(count(&connection, "public", "audit_books").await, 1);
         assert_eq!(count(&connection, "public", "audit_book_covers").await, 2);
         // The list a paste would check `kind` against is read here.
-        let structure = connection.describe(&covers()).await.unwrap();
-        let allowed = column(&structure, "kind").allowed_values.clone();
-        assert_eq!(
-            allowed,
-            Some(vec!["print".into(), "ebook".into(), "audio".into()])
-        );
+        let covers = ObjectRef::new(cases.schema, cases.covers);
+        assert_eq!(allowed_kinds(&connection, &covers).await, kinds());
         admin.batch_execute(DROP).await.unwrap();
     }
 
-    /// INS-28a, INS-28b: the spec has every value a bound parameter and up
-    /// to 100 rows in one statement. PostgreSQL is sent each new row as a
-    /// statement of its own, with its values written into the text: what
-    /// the server ran is what Review SQL shows, letter for letter.
-    #[tokio::test]
-    async fn postgres_is_sent_each_new_row_with_its_values_in_the_text() {
-        if url().is_none() {
+    /// The statements PostgreSQL ran for `inserts` into covers of the
+    /// test's own, in the order it ran them, as a trigger kept them: one
+    /// for each row a statement added. `name` tells the test's tables from
+    /// another's. `None` without a server.
+    async fn sent_for(name: &str, inserts: Vec<Vec<InsertValue>>) -> Option<Vec<String>> {
+        let Some(url) = url() else {
             eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
-            return;
-        }
+            return None;
+        };
         let admin = admin().await;
-        let drop = "DROP TABLE IF EXISTS audit_sent_covers, audit_sent;
-                    DROP FUNCTION IF EXISTS audit_sent_log";
-        admin.batch_execute(drop).await.unwrap();
+        let covers = format!("audit_sent_covers_{name}");
+        let drop = format!(
+            "DROP TABLE IF EXISTS {covers}, audit_sent_{name};
+             DROP FUNCTION IF EXISTS audit_sent_log_{name}"
+        );
+        admin.batch_execute(&drop).await.unwrap();
         // A trigger that keeps the statement the server is running. With
         // one the save hands its new rows back as unknown, which is not
         // what is looked at here.
         admin
-            .batch_execute(
-                "CREATE TABLE audit_sent (at serial, query text);
-                 CREATE TABLE audit_sent_covers (
+            .batch_execute(&format!(
+                "CREATE TABLE audit_sent_{name} (at serial, query text);
+                 CREATE TABLE {covers} (
                      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                      publisher_id bigint NOT NULL DEFAULT 9100000000000000001,
                      kind varchar NOT NULL DEFAULT 'print'
                  );
-                 CREATE FUNCTION audit_sent_log() RETURNS trigger LANGUAGE plpgsql AS $$
+                 CREATE FUNCTION audit_sent_log_{name}() RETURNS trigger LANGUAGE plpgsql AS $$
                  BEGIN
-                     INSERT INTO audit_sent (query) VALUES (current_query());
+                     INSERT INTO audit_sent_{name} (query) VALUES (current_query());
                      RETURN NEW;
                  END $$;
-                 CREATE TRIGGER audit_sent_log BEFORE INSERT ON audit_sent_covers
-                     FOR EACH ROW EXECUTE FUNCTION audit_sent_log()",
-            )
+                 CREATE TRIGGER audit_sent_log BEFORE INSERT ON {covers}
+                     FOR EACH ROW EXECUTE FUNCTION audit_sent_log_{name}()"
+            ))
             .await
             .unwrap();
-        let connection = connect(&url().unwrap()).await;
-        let changes = adding(
-            "public",
-            "audit_sent_covers",
-            vec![
-                vec![sets("publisher_id", "bigint", HARBOR_PRESS)],
-                vec![sets("publisher_id", "bigint", "9100000000000000007")],
-                Vec::new(),
-            ],
-        );
-        let outcome = save(&connection, &changes).await;
+        let connection = connect(&url).await;
+        let outcome = save(&connection, &adding("public", &covers, inserts)).await;
         assert!(
             matches!(outcome, WriteOutcome::Written { .. }),
             "{outcome:?}"
         );
-        let sent: Vec<String> = admin
-            .query("SELECT query FROM audit_sent ORDER BY at", &[])
+        let sent = admin
+            .query(
+                &format!("SELECT query FROM audit_sent_{name} ORDER BY at"),
+                &[],
+            )
             .await
             .unwrap()
             .iter()
             .map(|row| row.get(0))
             .collect();
-        let shown: Vec<String> = changes
-            .inserts
-            .iter()
-            .map(|row| {
-                let built = Dialect::Postgres.insert_row(&changes.object, row);
-                built.unwrap().shown
-            })
-            .collect();
-        assert_eq!(sent, shown);
-        assert_eq!(
-            sent,
-            [
-                r#"INSERT INTO "public"."audit_sent_covers" ("publisher_id") VALUES ('9100000000000000004') RETURNING *"#,
-                r#"INSERT INTO "public"."audit_sent_covers" ("publisher_id") VALUES ('9100000000000000007') RETURNING *"#,
-                r#"INSERT INTO "public"."audit_sent_covers" DEFAULT VALUES RETURNING *"#,
-            ]
-        );
-        admin.batch_execute(drop).await.unwrap();
+        admin.batch_execute(&drop).await.unwrap();
+        Some(sent)
+    }
+
+    /// Spec 8: an `INSERT` names only the columns that were set, hands its
+    /// row back, and a row with nothing set takes every default. Held on
+    /// the statements the server ran, however many they are and however
+    /// their values travel.
+    #[tokio::test]
+    async fn postgres_is_sent_only_the_columns_a_new_row_sets() {
+        let rows = vec![
+            vec![sets("publisher_id", "bigint", HARBOR_PRESS)],
+            vec![sets("publisher_id", "bigint", "9100000000000000007")],
+            Vec::new(),
+        ];
+        let Some(sent) = sent_for("set", rows).await else {
+            return;
+        };
+        assert!(!sent.is_empty());
+        for statement in &sent {
+            let into = r#"INSERT INTO "public"."audit_sent_covers_set" "#;
+            assert!(statement.starts_with(into), "{statement}");
+            assert!(statement.ends_with(" RETURNING *"), "{statement}");
+            // Not `kind` or `id`: the database fills those.
+            assert!(!statement.contains("kind"), "{statement}");
+            assert!(!statement.contains(r#""id""#), "{statement}");
+        }
+        let names = |what: &str| sent.iter().any(|statement| statement.contains(what));
+        assert!(names(r#"("publisher_id") VALUES"#), "{sent:?}");
+        assert!(names("DEFAULT VALUES"), "{sent:?}");
+    }
+
+    /// INS-28a, INS-28b. Spec 8: "Values are always bound parameters", and
+    /// up to 100 rows with the same columns go in one statement. Two new
+    /// rows that set the same column are then one statement, and their
+    /// values are not in its text.
+    #[tokio::test]
+    #[ignore = "INS-28a, INS-28b: PostgreSQL is sent a statement for each row, its values in the text"]
+    async fn postgres_is_sent_bound_values_in_one_statement() {
+        let rows = vec![
+            vec![sets("publisher_id", "bigint", HARBOR_PRESS)],
+            vec![sets("publisher_id", "bigint", "9100000000000000007")],
+        ];
+        let Some(mut sent) = sent_for("bound", rows).await else {
+            return;
+        };
+        // The trigger kept a statement once for each row it added.
+        sent.dedup();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert!(!sent[0].contains(HARBOR_PRESS), "{sent:?}");
     }
 
     /// INS-04c: a role that may read a table and not add to it. Nothing
@@ -417,10 +465,6 @@ mod postgres {
         admin.batch_execute(drop).await.unwrap();
     }
 
-    fn covers() -> ObjectRef {
-        ObjectRef::new(CASES.schema, CASES.covers)
-    }
-
     /// Ends `connection`'s session before its role is dropped.
     async fn drop_connection(connection: Connection) {
         connection.close().await.unwrap();
@@ -430,13 +474,22 @@ mod postgres {
 mod mysql {
     use super::*;
 
-    const CASES: Cases = Cases {
-        schema: "tabletist",
-        books: "audit_books",
-        covers: "audit_book_covers",
-        id: "bigint",
-        text: "varchar(64)",
-    };
+    /// The cases on the Bookshop whose tables begin with `prefix`.
+    fn cases(prefix: &str) -> Cases {
+        Cases {
+            schema: "tabletist",
+            books: format!("{prefix}_books"),
+            covers: format!("{prefix}_book_covers"),
+            id: "bigint",
+            text: "varchar(64)",
+        }
+    }
+
+    /// `sql`, written for the tables that begin with `audit`, for those
+    /// that begin with `prefix`: each test has a Bookshop of its own.
+    fn named(sql: &str, prefix: &str) -> String {
+        sql.replace("audit_", &format!("{prefix}_"))
+    }
 
     const DROP: &str = "DROP TABLE IF EXISTS audit_book_covers, audit_books, audit_publishers";
 
@@ -479,18 +532,19 @@ mod mysql {
         url.filter(|url| !url.trim().is_empty())
     }
 
-    /// The Bookshop's three tables, made anew, with a session of the test's
-    /// own to drop them with. `None` without a server.
-    async fn bookshop() -> Option<(mysql_async::Conn, Connection)> {
+    /// The Bookshop's three tables, their names beginning with `prefix`,
+    /// made anew, with a session of the test's own to drop them with.
+    /// `None` without a server.
+    async fn bookshop(prefix: &str) -> Option<(mysql_async::Conn, Connection)> {
         let Some(url) = url() else {
             eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
             return None;
         };
         let opts = mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
         let mut admin = mysql_async::Conn::new(opts).await.unwrap();
-        admin.query_drop(DROP).await.unwrap();
+        admin.query_drop(named(DROP, prefix)).await.unwrap();
         for statement in CREATE {
-            admin.query_drop(statement).await.unwrap();
+            admin.query_drop(named(statement, prefix)).await.unwrap();
         }
         let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
         spec.tls = TlsMode::Disable;
@@ -501,26 +555,24 @@ mod mysql {
         Some((admin, connection))
     }
 
-    /// INS-32a: the spec words a failed cell by MySQL's error number
-    /// (1062, 1452, 1048, 3819). The driver keeps the SQLSTATE and drops
-    /// the number, and a taken value, a missing parent and a NULL all have
-    /// the state 23000: only the message tells them apart.
+    /// Spec 9: each of the four cases fails its own new row, in MySQL's
+    /// words, and nothing of the save stays.
     #[tokio::test]
     async fn the_bookshops_failures_as_mysql_hands_them_over() {
-        let Some((mut admin, connection)) = bookshop().await else {
+        let Some((mut admin, connection)) = bookshop("audit").await else {
             return;
         };
-        let (insert, code, message, detail) = failed(save(&connection, &CASES.taken_isbn()).await);
-        assert_eq!((insert, code.as_deref()), (0, Some("23000")));
+        let cases = cases("audit");
+        let (insert, _, message, _) = failed(save(&connection, &cases.taken_isbn()).await);
+        assert_eq!(insert, 0);
         assert_eq!(
             message,
             "Duplicate entry '978-1-4028-9462-6' for key 'audit_books.isbn'"
         );
-        assert_eq!(detail, None);
 
         // The second new row fails, and the first is undone with it.
-        let (insert, code, message, _) = failed(save(&connection, &CASES.no_publisher()).await);
-        assert_eq!((insert, code.as_deref()), (1, Some("23000")));
+        let (insert, _, message, _) = failed(save(&connection, &cases.no_publisher()).await);
+        assert_eq!(insert, 1);
         assert!(
             message.starts_with("Cannot add or update a child row: a foreign key constraint fails"),
             "{message}"
@@ -528,12 +580,10 @@ mod mysql {
         // The value that has no publisher is not in what MySQL says.
         assert!(!message.contains(NO_PUBLISHER), "{message}");
 
-        let (_, code, message, _) = failed(save(&connection, &CASES.null_publisher()).await);
-        assert_eq!(code.as_deref(), Some("23000"));
+        let (_, _, message, _) = failed(save(&connection, &cases.null_publisher()).await);
         assert_eq!(message, "Column 'publisher_id' cannot be null");
 
-        let (_, code, message, _) = failed(save(&connection, &CASES.vinyl()).await);
-        assert_eq!(code.as_deref(), Some("HY000"));
+        let (_, _, message, _) = failed(save(&connection, &cases.vinyl()).await);
         assert_eq!(
             message,
             "Check constraint 'audit_book_covers_kind_check' is violated."
@@ -544,25 +594,69 @@ mod mysql {
             count(&connection, "tabletist", "audit_book_covers").await,
             2
         );
-        // INS-25a: the list a paste would check `kind` against is not read
-        // from a MySQL CHECK.
-        let object = ObjectRef::new(CASES.schema, CASES.covers);
-        let structure = connection.describe(&object).await.unwrap();
-        assert_eq!(column(&structure, "kind").allowed_values, None);
         admin.query_drop(DROP).await.unwrap();
+    }
+
+    /// INS-32a. Spec 9: MySQL's failures are worded by their error number
+    /// (1062, 1452, 1048, 3819). A taken value, a missing parent and a NULL
+    /// share the SQLSTATE 23000, so the number is what tells them apart: it
+    /// is somewhere in the error the app is handed.
+    #[tokio::test]
+    #[ignore = "INS-32a: the driver drops MySQL's error number for its SQLSTATE"]
+    async fn a_mysql_failure_keeps_its_error_number() {
+        let Some((mut admin, connection)) = bookshop("audit_number").await else {
+            return;
+        };
+        let cases = cases("audit_number");
+        let numbered = [
+            (cases.taken_isbn(), "1062"),
+            (cases.no_publisher(), "1452"),
+            (cases.null_publisher(), "1048"),
+            (cases.vinyl(), "3819"),
+        ];
+        let mut said = Vec::new();
+        for (changes, number) in numbered {
+            let error = failure(save(&connection, &changes).await);
+            said.push((number, format!("{error:?}")));
+        }
+        // Before anything is asked of them: a test that fails leaves no
+        // tables behind.
+        admin.query_drop(named(DROP, "audit_number")).await.unwrap();
+        for (number, error) in said {
+            assert!(error.contains(number), "{number}: {error}");
+        }
+    }
+
+    /// INS-25a. Spec 5: a paste is checked against a CHECK's list of
+    /// values before anything is sent. The structure says what `kind` may
+    /// hold, as it does on PostgreSQL.
+    #[tokio::test]
+    #[ignore = "INS-25a: the values a MySQL CHECK allows are not read"]
+    async fn mysql_reads_the_values_a_check_allows() {
+        let Some((mut admin, connection)) = bookshop("audit_check").await else {
+            return;
+        };
+        let cases = cases("audit_check");
+        let covers = ObjectRef::new(cases.schema, cases.covers);
+        let allowed = allowed_kinds(&connection, &covers).await;
+        // Before it is asked for: a test that fails leaves no tables behind.
+        admin.query_drop(named(DROP, "audit_check")).await.unwrap();
+        assert_eq!(allowed, kinds());
     }
 }
 
 mod sqlite {
     use super::*;
 
-    const CASES: Cases = Cases {
-        schema: "main",
-        books: "books",
-        covers: "book_covers",
-        id: "INTEGER",
-        text: "TEXT",
-    };
+    fn cases() -> Cases {
+        Cases {
+            schema: "main",
+            books: "books".into(),
+            covers: "book_covers".into(),
+            id: "INTEGER",
+            text: "TEXT",
+        }
+    }
 
     const CREATE: &str = "
         CREATE TABLE publishers (
@@ -613,26 +707,27 @@ mod sqlite {
         (connection, dir)
     }
 
-    /// INS-32b: SQLite says which rule a new row broke by its extended
-    /// result code, as the spec's SQLITE_CONSTRAINT_* has it. Its foreign
-    /// key failure names neither the column nor the value.
+    /// Spec 9, with INS-32b: SQLite says which rule a new row broke by its
+    /// extended result code, as the spec's SQLITE_CONSTRAINT_* has it. Its
+    /// foreign key failure names neither the column nor the value.
     #[tokio::test]
     async fn the_bookshops_failures_as_sqlite_hands_them_over() {
         let (connection, _dir) = bookshop().await;
+        let cases = cases();
         // SQLITE_CONSTRAINT_UNIQUE.
-        let (insert, code, message, detail) = failed(save(&connection, &CASES.taken_isbn()).await);
+        let (insert, code, message, detail) = failed(save(&connection, &cases.taken_isbn()).await);
         assert_eq!((insert, code.as_deref()), (0, Some("2067")));
         assert_eq!(message, "UNIQUE constraint failed: books.isbn");
         assert_eq!(detail, None);
 
         // SQLITE_CONSTRAINT_FOREIGNKEY: the second new row fails, and the
         // first is undone with it.
-        let (insert, code, message, _) = failed(save(&connection, &CASES.no_publisher()).await);
+        let (insert, code, message, _) = failed(save(&connection, &cases.no_publisher()).await);
         assert_eq!((insert, code.as_deref()), (1, Some("787")));
         assert_eq!(message, "FOREIGN KEY constraint failed");
 
         // SQLITE_CONSTRAINT_NOTNULL.
-        let (_, code, message, _) = failed(save(&connection, &CASES.null_publisher()).await);
+        let (_, code, message, _) = failed(save(&connection, &cases.null_publisher()).await);
         assert_eq!(code.as_deref(), Some("1299"));
         assert_eq!(
             message,
@@ -640,17 +735,24 @@ mod sqlite {
         );
 
         // SQLITE_CONSTRAINT_CHECK.
-        let (_, code, message, _) = failed(save(&connection, &CASES.vinyl()).await);
+        let (_, code, message, _) = failed(save(&connection, &cases.vinyl()).await);
         assert_eq!(code.as_deref(), Some("275"));
         assert_eq!(message, "CHECK constraint failed: book_covers_kind_check");
 
         assert_eq!(count(&connection, "main", "books").await, 1);
         assert_eq!(count(&connection, "main", "book_covers").await, 2);
-        // INS-25a: the list a paste would check `kind` against is not read
-        // from a SQLite CHECK.
-        let object = ObjectRef::new(CASES.schema, CASES.covers);
-        let structure = connection.describe(&object).await.unwrap();
-        assert_eq!(column(&structure, "kind").allowed_values, None);
+    }
+
+    /// INS-25a. Spec 5: a paste is checked against a CHECK's list of
+    /// values before anything is sent. The structure says what `kind` may
+    /// hold, as it does on PostgreSQL.
+    #[tokio::test]
+    #[ignore = "INS-25a: the values a SQLite CHECK allows are not read"]
+    async fn sqlite_reads_the_values_a_check_allows() {
+        let (connection, _dir) = bookshop().await;
+        let cases = cases();
+        let covers = ObjectRef::new(cases.schema, cases.covers);
+        assert_eq!(allowed_kinds(&connection, &covers).await, kinds());
     }
 
     /// INS-27c: the spec has `last_insert_rowid()` for a SQLite older than
