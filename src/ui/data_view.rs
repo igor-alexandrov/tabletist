@@ -77,15 +77,21 @@ fn selection_note(
 fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec<String> {
     let mut parts = Vec::new();
     let page = object.page();
-    let rows = object.count.value.or_else(|| {
-        let filtered = !object.query.filters.is_empty() || object.query.raw_where.is_some();
+    let filtered = !object.query.filters.is_empty() || object.query.raw_where.is_some();
+    let exact = object.count.value.or_else(|| {
         page.filter(|page| !page.has_more && object.query.offset == 0)
             .map(|page| page.rows.len() as u64)
-            .or(object.estimated_rows.filter(|_| !filtered))
     });
-    let rows = rows.map(|rows| {
+    // The table's estimate is marked as one, as the footer marks it.
+    let estimate = object.estimated_rows.filter(|_| !filtered);
+    let rows = exact.or(estimate).map(|rows| {
         let noun = if rows == 1 { "row" } else { "rows" };
-        format!("{} {}", format::group_digits(rows), gettext(locale, noun))
+        format!(
+            "{}{} {}",
+            if exact.is_some() { "" } else { "~" },
+            format::group_digits(rows),
+            gettext(locale, noun)
+        )
     });
     // The rows to add, beside the table's own: "13 rows + 1 new".
     let added = object.edits.added.len();

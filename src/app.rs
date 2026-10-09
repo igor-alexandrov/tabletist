@@ -2571,7 +2571,14 @@ impl App {
                         .object_tabs_mut()
                         .find(|o| o.count.pending == Some(request))
                 {
-                    object.count.finish(request, result);
+                    // The table's own total, counted: a closer estimate than
+                    // the catalog's once the count is forgotten.
+                    let filtered =
+                        !object.query.filters.is_empty() || object.query.raw_where.is_some();
+                    let total = result.as_ref().ok().copied().filter(|_| !filtered);
+                    if object.count.finish(request, result) && total.is_some() {
+                        object.estimated_rows = total;
+                    }
                 }
             }
             Event::ServerVersion {
@@ -9786,6 +9793,32 @@ mod tests {
             }));
             let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
             assert_eq!(object.count.value, Some(42));
+            // Counted without a filter, it is the table's total: what is
+            // left to say once the count is forgotten.
+            assert_eq!(object.estimated_rows, Some(42));
+        }
+
+        #[test]
+        fn a_filtered_count_is_not_the_tables_estimate() {
+            let mut harness = Harness::new();
+            let (tab, id) = open_users(&mut harness);
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            let object = workspace.object_tab_mut(id).unwrap();
+            object.estimated_rows = Some(1_000);
+            object.query.raw_where = Some("id < 10".into());
+            harness.app.apply(Action::CountRows {
+                tab,
+                object_tab: id,
+            });
+            let (session, request) = last_count(&harness);
+            harness.app.apply(Action::Backend(Event::Count {
+                session,
+                request,
+                result: Ok(9),
+            }));
+            let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+            assert_eq!(object.count.value, Some(9));
+            assert_eq!(object.estimated_rows, Some(1_000));
         }
 
         #[test]
