@@ -2600,6 +2600,41 @@ mod tests {
     }
 
     #[test]
+    fn the_key_that_deletes_a_connection_is_a_controls_while_one_has_the_keyboard() {
+        for look in Look::ALL {
+            // On a button of the picker the key is the button's, which
+            // does nothing with it.
+            let mut harness = picker_with_one(look);
+            focus_button(&mut harness, "New connection");
+            assert!(
+                button_focused(&mut harness, "New connection"),
+                "{}",
+                look.name
+            );
+            if look.terminal {
+                type_key(&mut harness, Key::D, "d");
+                type_key(&mut harness, Key::D, "d");
+            } else {
+                harness.press(Key::Backspace, Modifiers::NONE);
+            }
+            assert_eq!(saved(&harness), 1, "{}: from a button", look.name);
+            // In the search field it is the text's.
+            let mut harness = picker_with_one(look);
+            let tab = harness.app.active_tab_id();
+            harness.app.apply(Action::FocusPickerSearch(tab));
+            harness.settle();
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            harness.frame(vec![egui::Event::Text("boo".into())]);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            if look.terminal {
+                harness.frame(vec![egui::Event::Text("dd".into())]);
+            }
+            harness.settle();
+            assert_eq!(saved(&harness), 1, "{}: from the search", look.name);
+        }
+    }
+
+    #[test]
     fn the_pickers_footer_names_the_keys_the_keymap_has() {
         let painted = |look: Look| {
             let mut harness = picker_with_one(look);

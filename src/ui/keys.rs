@@ -1421,8 +1421,14 @@ fn letters(
                 conn: conn.clone(),
             },
         };
+        // With the keyboard on a control of the picker (a button, its
+        // search field) the keys that connect are the control's, and so is
+        // the one that deletes: a connection goes at once, with its
+        // secrets, and a Backspace meant for something else must not be
+        // the one that takes it.
+        let on_list = !crate::ui::focus::on_control(ctx);
         if let Some(conn) = &selected {
-            if !crate::ui::focus::on_control(ctx) {
+            if on_list {
                 let again = on(Command::ConnectAgain).count > 0;
                 if again || on(Command::Connect).count > 0 {
                     actions.push(connect(conn, again));
@@ -1434,7 +1440,7 @@ fn letters(
             if on(Command::DuplicateConnection).count > 0 {
                 actions.push(Action::DuplicateConnection(conn.clone()));
             }
-            if on(Command::DeleteConnection).count > 0 {
+            if on_list && on(Command::DeleteConnection).count > 0 {
                 actions.push(Action::DeleteConnection(conn.clone()));
             }
         }
@@ -1477,7 +1483,7 @@ fn letters(
                 (Some(Command::DuplicateConnection), Some(conn)) => {
                     actions.push(Action::DuplicateConnection(conn.clone()));
                 }
-                (Some(Command::DeleteConnection), Some(conn)) => {
+                (Some(Command::DeleteConnection), Some(conn)) if on_list => {
                     actions.push(Action::DeleteConnection(conn.clone()));
                 }
                 _ => {}
