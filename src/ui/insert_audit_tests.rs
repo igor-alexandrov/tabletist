@@ -1,8 +1,7 @@
-//! Row inserting, checked against its spec for the audit of 2026-10-08:
-//! "Spec: inserting rows", of which
-//! `docs/superpowers/specs/2026-10-07-inserting-rows-design.md` is an
-//! older copy (it differs in the keys for pasting rows and for moving
-//! between errors). Each test names the audit's finding it shows
+//! Row inserting, checked against its spec
+//! (`docs/superpowers/specs/2026-10-07-inserting-rows-design.md`, as
+//! amended on 2026-10-08: "spec N" below is a section of it) for the audit
+//! of that day. Each test names the audit's finding it shows
 //! (INS-...). One that passes holds what the app does today. One that is
 //! ignored holds what the spec asks and the app does not do yet: it fails
 //! until its finding is fixed, and its `ignore` says which that is.
@@ -633,13 +632,11 @@ fn new_rows_with_the_same_columns_are_one_statement() {
     assert_eq!(statements.len(), 1, "{statements:?}");
 }
 
-/// INS-29b. The audit's item 29: the terminal look confirms a save to
-/// production by the database's name, and "anything else is refused".
-/// The spec gives only the macOS sentence, and the boards disagree (the
-/// audit's DG-4): this holds the audit's reading until that is decided.
-/// The app asks for the word `write`.
+/// INS-29b. Spec 8: "On Omarchy the save is confirmed by typing the
+/// database's name, and anything else is refused." The app asks for the
+/// word `write`, which the spec replaces.
 #[test]
-#[ignore = "INS-29b (undecided, DG-4): the terminal's production prompt asks for the word write"]
+#[ignore = "INS-29b: the terminal's production prompt is confirmed by the word write"]
 fn the_terminal_refuses_a_production_save_until_the_database_is_named() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
@@ -802,6 +799,68 @@ fn a_taken_value_offers_the_row_that_has_it() {
     assert!(harness.has("Already used by row id 1 · Open row"));
 }
 
+/// INS-30f. Spec 9: where a new row cannot be known for sure "the page
+/// is loaded again instead and a line says so". The page is loaded again;
+/// nothing says that it was.
+#[test]
+#[ignore = "INS-30f: a page loaded again after a save does not say so"]
+fn a_page_loaded_again_after_a_save_says_so() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let new = add(&mut harness, tab, id);
+    set(&mut harness, tab, id, (new_row(new), 1), HARBOR_PRESS);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    let fetches = |harness: &Harness| {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| matches!(command, Command::FetchRows { .. }))
+            .count()
+    };
+    let before = fetches(&harness);
+    // Written, and the new row not handed back: a table with a trigger.
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        inserted: vec![None],
+        rows: Vec::new(),
+        elapsed: std::time::Duration::from_millis(5),
+    }));
+    assert_eq!(fetches(&harness), before + 1, "the page is asked for again");
+    harness.answer_rows(crate::testing::book_covers_page(4));
+    harness.settle();
+    assert!(harness.has("Reloaded: the new row is where the sort puts it"));
+}
+
+/// INS-31f. Spec 9: "where the save held several new rows it says which:
+/// row 2 of 5". Here the second of two fails.
+#[test]
+#[ignore = "INS-31f: a failed save does not say which of its new rows failed"]
+fn a_failed_save_says_which_new_row_failed() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    let first = add(&mut harness, tab, id);
+    set(&mut harness, tab, id, (new_row(first), 1), HARBOR_PRESS);
+    let second = add(&mut harness, tab, id);
+    set(&mut harness, tab, id, (new_row(second), 1), NO_PUBLISHER);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedInsert {
+        insert: 1,
+        error: tabletist_db::Error::Query {
+            code: Some("23503".into()),
+            message: NO_PUBLISHER_MESSAGE.into(),
+            detail: Some(NO_PUBLISHER_DETAIL.into()),
+            hint: None,
+        },
+    }));
+    let tree = harness.settle();
+    let labels = crate::testing::labels(&tree);
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.contains("Nothing was saved."))
+    );
+    assert!(
+        labels.iter().any(|label| label.contains("row 2 of 2")),
+        "{labels:?}"
+    );
+}
+
 /// INS-30c. Spec 9: after a save the row stays where it was, and "Show in
 /// sorted position" puts it where the sort has it.
 #[test]
@@ -840,8 +899,10 @@ fn two_rows_to_fix(look: Look) -> (Harness, ConnTabId, TabId) {
     (harness, tab, id)
 }
 
-/// INS-15b. Spec 6: new rows are keyed `new:1`, `new:2`, and so on. With
-/// two of them to fix, the terminal's error line says which one it is of.
+/// INS-15b. Spec 6: "Where several new rows stand, a line that names one
+/// says which, counted from the top: the Omarchy error line reads
+/// `! new 2:publisher_id ...`." With two rows to fix the line is of the
+/// first.
 #[test]
 #[ignore = "INS-15b: the terminal's error line names every new row new"]
 fn the_terminals_error_line_says_which_new_row_it_is_of() {
@@ -849,7 +910,7 @@ fn the_terminals_error_line_says_which_new_row_it_is_of() {
     harness.settle();
     let lines = error_lines(&harness);
     assert_eq!(lines.len(), 1, "{:?}", harness.painted);
-    assert!(lines[0].contains("new:1"), "{lines:?}");
+    assert!(lines[0].starts_with("! new 1:publisher_id"), "{lines:?}");
 }
 
 /// INS-33a. The audit's item 33: Alt+Mod+Down and Alt+Mod+Up move between

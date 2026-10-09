@@ -5,7 +5,8 @@
 //! failed cell from, and what a save sends for a new row.
 //!
 //! These were written for the audit of row inserting against its spec
-//! (`docs/superpowers/specs/2026-10-07-inserting-rows-design.md`). Each
+//! (`docs/superpowers/specs/2026-10-07-inserting-rows-design.md`, as
+//! amended on 2026-10-08: "spec N" below is a section of it). Each
 //! names the finding of that audit it shows (INS-...). One that passes
 //! holds what the spec keeps, so it goes on passing once a finding is
 //! fixed. One that is ignored holds what the spec asks and a driver does
@@ -22,8 +23,8 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use tabletist_db::{
-    Access, ChangeSet, ConnectSpec, Connection, Error, HostKeys, InsertValue, NewValue, ObjectRef,
-    RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value, WriteOutcome,
+    Access, ChangeSet, ConnectSpec, Connection, Dialect, Error, HostKeys, InsertValue, NewValue,
+    ObjectRef, RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value, WriteOutcome,
 };
 
 /// Harbor Press, as the design's picker finds it.
@@ -367,102 +368,56 @@ mod postgres {
         Some(sent)
     }
 
-    /// Spec 8: an `INSERT` names only the columns that were set, hands its
-    /// row back, and a row with nothing set takes every default. Held on
-    /// the statements the server ran, however many they are and however
-    /// their values travel.
+    /// Spec 8: an `INSERT` names only the columns that were set and hands
+    /// its row back, a row with nothing set takes every default, and on
+    /// PostgreSQL the values are literals in the statement's text: what the
+    /// server ran is the statement Review SQL shows. The two rows set
+    /// different columns, so they are two statements however rows that set
+    /// the same ones come to be sent.
     #[tokio::test]
-    async fn postgres_is_sent_only_the_columns_a_new_row_sets() {
+    async fn postgres_is_sent_the_statements_review_shows() {
         let rows = vec![
             vec![sets("publisher_id", "bigint", HARBOR_PRESS)],
-            vec![sets("publisher_id", "bigint", "9100000000000000007")],
             Vec::new(),
         ];
-        let Some(sent) = sent_for("set", rows).await else {
+        let Some(sent) = sent_for("set", rows.clone()).await else {
             return;
         };
-        assert!(!sent.is_empty());
-        for statement in &sent {
-            let into = r#"INSERT INTO "public"."audit_sent_covers_set" "#;
-            assert!(statement.starts_with(into), "{statement}");
-            assert!(statement.ends_with(" RETURNING *"), "{statement}");
-            // Not `kind` or `id`: the database fills those.
-            assert!(!statement.contains("kind"), "{statement}");
-            assert!(!statement.contains(r#""id""#), "{statement}");
-        }
-        let names = |what: &str| sent.iter().any(|statement| statement.contains(what));
-        assert!(names(r#"("publisher_id") VALUES"#), "{sent:?}");
-        assert!(names("DEFAULT VALUES"), "{sent:?}");
+        let object = ObjectRef::new("public", "audit_sent_covers_set");
+        let shown: Vec<String> = rows
+            .into_iter()
+            .map(|set| {
+                let built = Dialect::Postgres.insert_row(&object, &RowInsert { set });
+                built.unwrap().shown
+            })
+            .collect();
+        assert_eq!(sent, shown);
+        // Not `kind` or `id`: the database fills those.
+        assert_eq!(
+            sent,
+            [
+                r#"INSERT INTO "public"."audit_sent_covers_set" ("publisher_id") VALUES ('9100000000000000004') RETURNING *"#,
+                r#"INSERT INTO "public"."audit_sent_covers_set" DEFAULT VALUES RETURNING *"#,
+            ]
+        );
     }
 
-    /// INS-28a, INS-28b. Spec 8: "Values are always bound parameters", and
-    /// up to 100 rows with the same columns go in one statement. Two new
-    /// rows that set the same column are then one statement, and their
-    /// values are not in its text.
+    /// INS-28b. Spec 8: "Rows that set the same columns are sent together,
+    /// up to 100" in one statement. Two new rows that set the same column
+    /// are then one statement.
     #[tokio::test]
-    #[ignore = "INS-28a, INS-28b: PostgreSQL is sent a statement for each row, its values in the text"]
-    async fn postgres_is_sent_bound_values_in_one_statement() {
+    #[ignore = "INS-28b: PostgreSQL is sent a statement for each new row"]
+    async fn postgres_is_sent_rows_that_set_the_same_columns_together() {
         let rows = vec![
             vec![sets("publisher_id", "bigint", HARBOR_PRESS)],
             vec![sets("publisher_id", "bigint", "9100000000000000007")],
         ];
-        let Some(mut sent) = sent_for("bound", rows).await else {
+        let Some(mut sent) = sent_for("together", rows).await else {
             return;
         };
         // The trigger kept a statement once for each row it added.
         sent.dedup();
         assert_eq!(sent.len(), 1, "{sent:?}");
-        assert!(!sent[0].contains(HARBOR_PRESS), "{sent:?}");
-    }
-
-    /// INS-30f. Spec 9: a new row "takes the values from RETURNING (real
-    /// id, defaults, triggers' changes)" and stays in place. Here a trigger
-    /// makes every new cover an audio one: the save hands the row back, as
-    /// the trigger left it.
-    #[tokio::test]
-    #[ignore = "INS-30f: a new row of a table with a trigger comes back unknown, and the page is loaded again"]
-    async fn postgres_hands_back_a_new_row_a_trigger_changed() {
-        let Some(url) = url() else {
-            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
-            return;
-        };
-        let admin = admin().await;
-        let drop = "DROP TABLE IF EXISTS audit_trigger_covers;
-                    DROP FUNCTION IF EXISTS audit_trigger_kind";
-        admin.batch_execute(drop).await.unwrap();
-        admin
-            .batch_execute(
-                "CREATE TABLE audit_trigger_covers (
-                     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                     publisher_id bigint NOT NULL,
-                     kind varchar NOT NULL DEFAULT 'print'
-                 );
-                 CREATE FUNCTION audit_trigger_kind() RETURNS trigger LANGUAGE plpgsql AS $$
-                 BEGIN
-                     NEW.kind := 'audio';
-                     RETURN NEW;
-                 END $$;
-                 CREATE TRIGGER audit_trigger_kind BEFORE INSERT ON audit_trigger_covers
-                     FOR EACH ROW EXECUTE FUNCTION audit_trigger_kind()",
-            )
-            .await
-            .unwrap();
-        let connection = connect(&url).await;
-        let changes = adding(
-            "public",
-            "audit_trigger_covers",
-            vec![vec![sets("publisher_id", "bigint", HARBOR_PRESS)]],
-        );
-        let outcome = save(&connection, &changes).await;
-        // Before anything is asked of it: a test that fails leaves no
-        // table behind.
-        admin.batch_execute(drop).await.unwrap();
-        let WriteOutcome::Written { inserted, .. } = outcome else {
-            panic!("the save wrote: {outcome:?}");
-        };
-        let row = inserted[0].as_ref().expect("the new row, as it was stored");
-        assert_eq!(row[0], Value::Int(1));
-        assert_eq!(row[2], Value::Text("audio".into()));
     }
 
     /// INS-04c: a role that may read a table and not add to it. Nothing
@@ -805,9 +760,9 @@ mod sqlite {
         assert_eq!(allowed_kinds(&connection, &covers).await, kinds());
     }
 
-    /// INS-27c: the spec has `last_insert_rowid()` for a SQLite older than
-    /// 3.35. The app's SQLite is its own, and it has `RETURNING`: a new
-    /// row comes back with the id and the defaults the database gave it.
+    /// Spec 8: "SQLite uses `RETURNING *`. The app ships its own SQLite,
+    /// which has it." A new row comes back with the id and the defaults
+    /// the database gave it.
     #[tokio::test]
     async fn the_apps_own_sqlite_hands_a_new_row_back() {
         let version: Vec<u32> = rusqlite::version()
