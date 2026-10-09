@@ -11702,6 +11702,29 @@ mod tests {
     }
 
     #[test]
+    fn the_terminals_header_counts_the_rows_to_add() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        let palette = harness.app.palette;
+        harness.settle();
+        assert!(!painted(&harness, "+1"));
+        for count in ["+1", "+2"] {
+            select(&mut harness, tab, id, (0, 1));
+            type_key(&mut harness, Key::O, "o");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(
+                painted_in(&harness, count, palette.success),
+                "{count}: {:?}",
+                harness.painted
+            );
+        }
+        // Gone with the rows.
+        harness.app.apply(Action::DiscardEdits { tab, id });
+        harness.settle();
+        assert!(!painted(&harness, "+2"));
+    }
+
+    #[test]
     fn the_confirmation_counts_new_rows() {
         let (mut harness, tab, id) = covers_in(Look::macos());
         harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;

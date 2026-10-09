@@ -150,6 +150,8 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     };
     let name = format::display_safe(&object.object.name).into_owned();
     let view = object.view;
+    // The rows to add: the terminal's header counts them at its right.
+    let added = object.edits.added.len();
     let parts = subtitle(object, &look, locale);
     let summary = parts.join(" · ");
     // Why Add row cannot be pressed, where it cannot: the table takes no
@@ -205,10 +207,14 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 // The views keep their place at the right, 16 clear of
                 // their 4 pt hit margin; the summary gives way, then the
                 // title is cut.
+                // `+1`, before the views: the summary gives way to it too.
+                let added = (added > 0).then(|| format!("+{added}"));
+                let added_room = added.as_ref().map_or(0.0, |text| width(role, text) + 14.0);
                 let room = right
                     - (widths.iter().sum::<f32>() + 14.0 * (widths.len() - 1) as f32)
                     - 4.0
                     - 16.0
+                    - added_room
                     - left;
                 let shown =
                     grid::ellipsize(&name, room.max(0.0), false, |text| width(title_role, text));
@@ -271,6 +277,12 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         });
                     }
                     x -= width + 14.0;
+                }
+                // In the green of a new row, 14 before the first view:
+                // the loop left `x` there.
+                if let Some(text) = &added {
+                    let text = Text::one(&look, role, text, palette.success);
+                    widgets::paint_text_right(ui, x, center, text);
                 }
                 return;
             }
