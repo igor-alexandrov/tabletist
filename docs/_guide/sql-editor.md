@@ -12,7 +12,7 @@ opened on.
 
 - **Run** (Cmd/Ctrl+Return) runs the statement the cursor is in.
 - **Run all** (Cmd/Ctrl+Shift+Return) runs the whole script.
-- Cmd/Ctrl+. cancels a run.
+- Cmd/Ctrl+. cancels a run. In the Omarchy look the key is Ctrl+C.
 
 {% include shot.html file="macos-sql" alt="A SQL editor with two statements, the result of the one at the cursor under it" %}
 
@@ -27,7 +27,8 @@ Your choice is remembered for new tabs.
 
 ## Read-only and read-write
 
-The toolbar's switch (Cmd/Ctrl+Shift+M) sets what a run may do.
+The toolbar's switch (Cmd/Ctrl+Shift+M; `:ro` and `:rw` in the Omarchy
+look) sets what a run may do.
 
 - **Read-only.** The run happens in a read-only transaction that is
   rolled back. Nothing is changed.
@@ -53,7 +54,8 @@ which lines were written.
 ## Results and messages
 
 **Results** shows the rows of the statement you ran. Select a row and
-press Space to read every field of it in the row panel. When the limit cut a
+press Cmd/Ctrl+Shift+R (Enter in the Omarchy look) to read every field of
+it in the row panel. When the limit cut a
 result short, the result says so.
 
 **Messages** has a line for every statement: how many rows it returned or
@@ -63,7 +65,8 @@ back.
 
 ## Format
 
-**Format** (Cmd/Ctrl+Shift+F) lays queries out in river style and
+**Format** (Cmd/Ctrl+Shift+F; in the Omarchy look Esc, then `=`) lays
+queries out in river style and
 uppercases reserved words. It formats the statements in the selection, or
 the whole script when nothing is selected. Only whitespace and the case of
 keywords change.
@@ -71,8 +74,8 @@ keywords change.
 ## Completion
 
 Keywords, schemas, tables, views and the columns of the tables in your
-statement are offered while you type. Ctrl+Space or Cmd/Ctrl+I asks for
-the list anywhere.
+statement are offered while you type. Ctrl+Space asks for the list
+anywhere, and so does Cmd/Ctrl+I on macOS and Windows.
 
 {% include shot.html file="macos-sql-complete" alt="The completion list under a table name being typed, offering the tables that match" %}
 
