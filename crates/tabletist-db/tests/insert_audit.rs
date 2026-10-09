@@ -814,6 +814,24 @@ mod sqlite {
         assert_eq!(code.as_deref(), Some("275"));
         assert_eq!(message, "CHECK constraint failed: book_covers_kind_check");
 
+        // What each failure is of. The foreign key's names nothing.
+        assert_eq!(
+            names(&connection, &cases.taken_isbn()).await,
+            of_column("isbn")
+        );
+        assert_eq!(
+            names(&connection, &cases.no_publisher()).await,
+            Named::default()
+        );
+        assert_eq!(
+            names(&connection, &cases.null_publisher()).await,
+            of_column("publisher_id")
+        );
+        assert_eq!(
+            names(&connection, &cases.vinyl()).await,
+            of_constraint("book_covers_kind_check")
+        );
+
         assert_eq!(count(&connection, "main", "books").await, 1);
         assert_eq!(count(&connection, "main", "book_covers").await, 2);
     }
