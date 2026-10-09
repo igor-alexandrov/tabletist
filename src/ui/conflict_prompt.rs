@@ -13,6 +13,7 @@ use egui::{
 use crate::app::App;
 use crate::edit::{Answer, LEAD, Shown, ShownLine};
 use crate::i18n::{Locale, gettext};
+use crate::keymap::{Command, Keymap, Layout};
 use crate::model::{Action, Dialog, ObjectTab, Workspace};
 use crate::theme::Look;
 use crate::typography::{Text, TextRole};
@@ -82,19 +83,29 @@ impl Form {
 }
 
 /// The keys of the terminal's box in the order its foot has them, as the
-/// design writes them: the answer, the letter that gives it, and what its
-/// hint says.
-const KEYS: [(Answer, &str, &str); 4] = [
-    (Answer::Overwrite, "o", "overwrite"),
-    (Answer::UseServer, "s", "use server"),
-    (Answer::KeepMine, "k", "keep mine, reload"),
-    (Answer::Discard, "d", "discard my changes"),
+/// design writes them: the answer, the command whose letter gives it (the
+/// keymap has the letter), and what its hint says.
+const KEYS: [(Answer, Command, &str); 4] = [
+    (Answer::Overwrite, Command::ConflictOverwrite, "overwrite"),
+    (Answer::UseServer, Command::ConflictUseServer, "use server"),
+    (
+        Answer::KeepMine,
+        Command::ConflictKeepMine,
+        "keep mine, reload",
+    ),
+    (
+        Answer::Discard,
+        Command::ConflictDiscard,
+        "discard my changes",
+    ),
 ];
 
 /// The answer a letter typed in the terminal's box stands for.
-fn lettered(typed: &str) -> Option<Answer> {
+fn lettered(keymap: &Keymap, layout: Layout, typed: &str) -> Option<Answer> {
+    let conflict = crate::keymap::When::Conflict;
+    let command = crate::ui::keys::prompt_letter(keymap, layout, conflict, typed)?;
     let mut keys = KEYS.iter();
-    keys.find(|(_, letter, _)| *letter == typed)
+    keys.find(|(_, of, _)| *of == command)
         .map(|(answer, ..)| *answer)
 }
 
@@ -369,6 +380,8 @@ fn conflict_box(
     // behind the box keeps it for the frame the box opens in, and what is
     // typed then went into its text.
     let typing = ctx.text_edit_focused();
+    let (keymap, layout) = (crate::ui::keys::published(ctx), Layout::of(look));
+    let lettered = |text: &str| lettered(&keymap, layout, text);
     let typed = ctx.input_mut(|input| {
         let held = input.events.iter().any(|event| {
             matches!(
@@ -416,14 +429,17 @@ fn conflict_box(
             // first, so a narrow foot gives it up before a key that
             // answers, and no button: the keys themselves do it.
             if asked.lines.len() as f32 * height > MOST {
-                keys.push((None, "pgup/pgdn".to_owned(), skin.say("scroll"), None));
+                let scrolls = Command::ScrollStatements;
+                let key = crate::ui::keys::written(ui.ctx(), look, scrolls);
+                keys.push((None, key.to_string(), skin.say("scroll"), None));
             }
             // The answers this row has, by the names the sheet's buttons
             // have.
             let offered = self::answers(asked.gone);
-            for (answer, letter, words) in KEYS {
+            for (answer, command, words) in KEYS {
                 if let Some((name, _)) = offered.iter().find(|(_, of)| *of == answer) {
                     let name = gettext(locale, name);
+                    let letter = crate::ui::keys::written(ui.ctx(), look, command);
                     keys.push((
                         Some(answer),
                         format!("[{letter}]"),

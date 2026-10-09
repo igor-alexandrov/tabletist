@@ -10,6 +10,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    let (keymap, layout) = (app.keymap.clone(), app.layout());
     let (tab, query) = match &app.dialog {
         Some(Dialog::QuickOpen(open)) => (open.tab, open.query.clone()),
         _ => return,
@@ -128,17 +129,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             open.scroll_offset = output.state.offset.y;
         });
     if modal.is_top_modal {
+        use crate::keymap::{Command, Scope};
         ctx.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                actions.push(Action::QuickOpenMove(1));
+            let moves = keymap.chords_now(layout, Command::QuickOpenMove, Scope::Prompt, true);
+            for keys in moves {
+                let step = if keys == "up" { -1 } else { 1 };
+                if crate::ui::keys::presses(input, layout, keys).count > 0 {
+                    actions.push(Action::QuickOpenMove(step));
+                }
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
-                actions.push(Action::QuickOpenMove(-1));
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+            let on = |input: &mut egui::InputState, command| {
+                let scope = Scope::Prompt;
+                crate::ui::keys::asked(input, &keymap, layout, command, scope, true).count > 0
+            };
+            if on(input, Command::QuickOpenPick) {
                 actions.push(Action::QuickOpenPick);
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            if on(input, Command::QuickOpenClose) {
                 actions.push(Action::CloseDialog);
             }
         });

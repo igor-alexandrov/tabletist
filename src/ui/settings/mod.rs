@@ -12,6 +12,7 @@ use std::borrow::Cow;
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
+use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, Dialog};
 use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
 
@@ -115,32 +116,68 @@ enum Asked {
     Flip,
 }
 
-/// What `key` held with `modifiers` asks of the screen, if it is one of
-/// its keys. A button of the screen that has the keyboard (`free` is then
-/// false) keeps Space, which presses it, and the arrows, which move focus
-/// from it, as in the workspace. The letters, `R`, `ctrl+e` and Escape are
-/// the screen's wherever the keyboard is.
-fn asked(key: egui::Key, modifiers: egui::Modifiers, free: bool) -> Option<Asked> {
-    use egui::{Key, Modifiers};
-    // As egui matches a key: an extra Shift or Alt is passed over.
-    let plain = modifiers.matches_logically(Modifiers::NONE);
-    match key {
-        Key::E if modifiers.matches_logically(Modifiers::CTRL) => Some(Asked::Edit),
-        // Shift, which a plain key's match would pass over.
-        Key::R if modifiers.matches_logically(Modifiers::SHIFT) => Some(Asked::Reset),
-        _ if !plain => None,
-        Key::Escape => Some(Asked::Close),
-        Key::J => Some(Asked::Move(1)),
-        Key::K => Some(Asked::Move(-1)),
-        Key::L => Some(Asked::Step { forward: true }),
-        Key::H => Some(Asked::Step { forward: false }),
-        Key::ArrowDown if free => Some(Asked::Move(1)),
-        Key::ArrowUp if free => Some(Asked::Move(-1)),
-        Key::ArrowRight if free => Some(Asked::Step { forward: true }),
-        Key::ArrowLeft if free => Some(Asked::Step { forward: false }),
-        Key::Space if free => Some(Asked::Flip),
+/// What `event` asks of the screen, if it is a press of one of its keys,
+/// as the keymap has them (`held` is what the frame holds). A button of
+/// the screen that has the keyboard (`free` is then false) keeps Space,
+/// which presses it, and the arrows, which move focus from it, as in the
+/// workspace: the screen's plain keys but its close. Its letters, the
+/// chord that opens the file and the key that closes are the screen's
+/// wherever the keyboard is.
+fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool) -> Option<Asked> {
+    // The screen is Omarchy's.
+    let layout = Layout::Omarchy;
+    let commands = [
+        Command::SettingsOpenFile,
+        Command::SettingsReset,
+        Command::SettingsClose,
+        Command::SettingsMove,
+        Command::SettingsChange,
+        Command::SettingsToggle,
+    ];
+    // A letter is read as the key that types it, with Shift for its
+    // capital and nothing else held.
+    let typed = match event {
+        egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } if !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd || modifiers.alt) => {
+            crate::keymap::char_of(*key, modifiers.shift)
+        }
         _ => None,
+    };
+    for command in commands {
+        for keys in keymap.chords_now(layout, command, Scope::Prompt, true) {
+            let pressed = match crate::keymap::spell(keys) {
+                Ok(Spelled::Strokes(strokes)) => match strokes.as_slice() {
+                    [Stroke::Text(letter)] => typed == Some(*letter),
+                    [Stroke::Key { mods, .. }] => {
+                        let plain = mods.none() && command != Command::SettingsClose;
+                        (free || !plain)
+                            && crate::ui::keys::press_of(layout, held, event, keys).is_some()
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !pressed {
+                continue;
+            }
+            return Some(match command {
+                Command::SettingsOpenFile => Asked::Edit,
+                Command::SettingsReset => Asked::Reset,
+                Command::SettingsClose => Asked::Close,
+                Command::SettingsMove if matches!(keys, "k" | "up") => Asked::Move(-1),
+                Command::SettingsMove => Asked::Move(1),
+                Command::SettingsChange => Asked::Step {
+                    forward: matches!(keys, "l" | "right"),
+                },
+                _ => Asked::Flip,
+            });
+        }
     }
+    None
 }
 
 /// The screen's keys. Nothing under the screen has them first: the app
@@ -157,21 +194,14 @@ fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
     // As `App::apply` will have them once it has run the actions so far.
     let mut cursor = row;
     let mut settings = app.settings.clone();
+    let keymap = app.keymap.clone();
     ctx.input_mut(|input| {
+        let held = input.modifiers;
         input.events.retain(|event| {
-            let egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                repeat,
-                ..
-            } = event
-            else {
+            let Some(asked) = asked(&keymap, event, held, free) else {
                 return true;
             };
-            let Some(asked) = asked(*key, *modifiers, free) else {
-                return true;
-            };
+            let repeat = matches!(event, egui::Event::Key { repeat: true, .. });
             match asked {
                 // A fresh press only: every repeat of a key held down
                 // would start another editor.

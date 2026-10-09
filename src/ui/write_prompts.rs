@@ -14,6 +14,7 @@ use egui::{
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
+use crate::keymap::{Command, Layout};
 use crate::model::{Action, Dialog, Held, LeavePrompt};
 use crate::review::{Line, Review, Values};
 use crate::theme::{Look, Palette};
@@ -317,6 +318,13 @@ fn leave_box(
     // it for the frame the box opens in, and what is typed then went into
     // its text.
     let typing = ctx.text_edit_focused();
+    // Which letter answers what is the keymap's to say.
+    let (keymap, layout) = (crate::ui::keys::published(ctx), Layout::of(look));
+    let letter = |text: &str| {
+        let leaving = crate::keymap::When::Leaving;
+        crate::ui::keys::prompt_letter(&keymap, layout, leaving, text)
+            .filter(|command| matches!(command, Command::LeaveWrite | Command::LeaveDiscard))
+    };
     let typed = ctx.input_mut(|input| {
         let held = input.events.iter().any(|event| {
             matches!(
@@ -330,17 +338,17 @@ fn leave_box(
         });
         let mut typed = None;
         input.events.retain(|event| match event {
-            egui::Event::Text(text) if matches!(text.as_str(), "w" | "d") => {
-                typed = typed.take().or_else(|| Some(text.clone()));
+            egui::Event::Text(text) if letter(text).is_some() => {
+                typed = typed.or(letter(text));
                 false
             }
             _ => true,
         });
         typed.filter(|_| !held && !typing)
     });
-    match typed.as_deref() {
-        Some("w") if prompt.can_save => actions.push(Action::LeaveSave),
-        Some("d") => actions.push(Action::LeaveDiscard),
+    match typed {
+        Some(Command::LeaveWrite) if prompt.can_save => actions.push(Action::LeaveSave),
+        Some(Command::LeaveDiscard) => actions.push(Action::LeaveDiscard),
         _ => {}
     }
     let mut line = format!(
@@ -399,19 +407,30 @@ fn leave_box(
                 lead,
                 disabled: None,
             };
+            // Each answer's key as the keymap writes it, in the box's
+            // brackets.
+            let bracketed = |command| {
+                let key = crate::ui::keys::written(ui.ctx(), look, command);
+                format!("[{key}]")
+            };
+            let (write_key, discard_key, stay_key) = (
+                bracketed(Command::LeaveWrite),
+                bracketed(Command::LeaveDiscard),
+                bracketed(Command::LeaveStay),
+            );
             let mut keys = vec![
                 (
-                    key("[d]", discard.as_str(), &*names[1], false),
+                    key(&discard_key, discard.as_str(), &*names[1], false),
                     Action::LeaveDiscard,
                 ),
                 (
-                    key("[esc]", stay.as_str(), &*names[2], false),
+                    key(&stay_key, stay.as_str(), &*names[2], false),
                     Action::LeaveStay,
                 ),
             ];
             // Saving is offered only where a save can run.
             if prompt.can_save {
-                let write = key("[w]", write.as_str(), &*names[0], true);
+                let write = key(&write_key, write.as_str(), &*names[0], true);
                 keys.insert(0, (write, Action::LeaveSave));
             }
             let (hints, mut answers): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
@@ -982,9 +1001,16 @@ fn confirm_box(
             gettext(locale, "Save to production"),
             gettext(locale, "Cancel"),
         ];
+        // The box's keys, as the keymap writes them. The one that confirms
+        // by its own key: the keymap also says what is typed before it.
+        let prompt_scope = crate::keymap::Scope::Prompt;
+        let confirms = Command::ConfirmProductionWrite;
+        let confirm_key = crate::ui::keys::written_in(ui.ctx(), look, confirms, prompt_scope);
+        let cancel_key = crate::ui::keys::written(ui.ctx(), look, Command::CancelProductionWrite);
+        let scroll_key = crate::ui::keys::written(ui.ctx(), look, Command::ScrollStatements);
         let mut keys = vec![
             terminal_dialog::Key {
-                key: "enter",
+                key: &confirm_key,
                 label: &confirm,
                 button: Some(&names[0]),
                 // Its key answers once the name is typed, and so does
@@ -993,7 +1019,7 @@ fn confirm_box(
                 disabled: (!armed).then_some(ask.as_str()),
             },
             terminal_dialog::Key {
-                key: "esc",
+                key: &cancel_key,
                 label: &cancel,
                 button: Some(&names[1]),
                 lead: false,
@@ -1004,7 +1030,7 @@ fn confirm_box(
         // Last, and no button: the two before it are told by their place.
         if panel.is_some() {
             keys.push(terminal_dialog::Key {
-                key: "pgup/pgdn",
+                key: &scroll_key,
                 label: &scroll,
                 button: None,
                 lead: false,

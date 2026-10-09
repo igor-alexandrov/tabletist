@@ -172,10 +172,26 @@ pub fn publish(ctx: &egui::Context, keymap: &std::sync::Arc<Keymap>) {
 }
 
 /// The keymap in force, or the defaults where none was published (a
-/// widget drawn on its own, in a test).
-fn published(ctx: &egui::Context) -> std::sync::Arc<Keymap> {
+/// widget drawn on its own, in a test). For what reads its own keys: a
+/// dialog, which the workspace's handler does not run under. Asked for
+/// before the input is borrowed: both sit behind the context's lock.
+pub(crate) fn published(ctx: &egui::Context) -> std::sync::Arc<Keymap> {
     ctx.data(|data| data.get_temp(keymap_id()))
         .unwrap_or_default()
+}
+
+/// The command a letter typed in a prompt stands for there: `when` says
+/// which prompt, whose letters are its own and nobody else's.
+pub(crate) fn prompt_letter(
+    keymap: &Keymap,
+    layout: Layout,
+    when: crate::keymap::When,
+    typed: &str,
+) -> Option<Command> {
+    match keymap.typed(layout, Scope::Prompt, &|holds| holds == when, typed) {
+        Typed::Command(command) => Some(command),
+        Typed::Claimed | Typed::Waiting | Typed::Nothing => None,
+    }
 }
 
 /// The first key of `command`, as `look` writes it.
