@@ -3150,6 +3150,7 @@ mod tests {
             message: long.clone(),
             detail: Some(long.clone()),
             hint: Some(long.clone()),
+            named: Box::default(),
         };
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
@@ -11058,6 +11059,7 @@ mod tests {
             message: "database \"nosuchdb\" does not exist".into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         };
         assert_eq!(
             crate::ui::format::describe_error(crate::i18n::Locale::English, &error),
@@ -14651,6 +14653,7 @@ mod tests {
                 message: "new row violates check constraint \"users_email_check\"".into(),
                 detail: None,
                 hint: None,
+                named: Box::default(),
             },
         }));
         harness.settle();
@@ -14801,6 +14804,7 @@ mod tests {
                 message: "check users_email_check".into(),
                 detail: None,
                 hint: None,
+                named: Box::default(),
             },
         }));
         harness.settle();
@@ -14922,6 +14926,7 @@ mod tests {
                 message: "New row violates CHECK \"Users_Meta_Check\"".into(),
                 detail: None,
                 hint: None,
+                named: Box::default(),
             },
         }));
         harness.settle();
@@ -16513,6 +16518,7 @@ mod tests {
                 message,
                 detail: None,
                 hint: None,
+                named: Box::default(),
             },
         }));
         harness.settle();
@@ -16704,6 +16710,7 @@ mod tests {
                     message: "new row violates check constraint \"users_email_check\"".into(),
                     detail: None,
                     hint: None,
+                    named: Box::default(),
                 },
             }));
             assert!(
@@ -22444,6 +22451,7 @@ mod tests {
                     message: "new row violates check constraint".into(),
                     detail: None,
                     hint: None,
+                    named: Box::default(),
                 },
             }));
             harness.settle();

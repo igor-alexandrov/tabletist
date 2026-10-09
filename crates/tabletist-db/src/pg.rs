@@ -156,6 +156,7 @@ pub(crate) fn connect_error(error: tokio_postgres::Error) -> Error {
             message: db.message().to_owned(),
             detail: db.detail().map(str::to_owned),
             hint: db.hint().map(str::to_owned),
+            named: Box::default(),
         };
     }
     if crate::tls::is_tls_error(&error) {
@@ -194,6 +195,7 @@ pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
             message: db.message().to_owned(),
             detail: db.detail().map(str::to_owned),
             hint: db.hint().map(str::to_owned),
+            named: Box::default(),
         };
     }
     Error::ConnectionLost(describe(&error))

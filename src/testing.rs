@@ -878,6 +878,7 @@ pub fn refused_write() -> tabletist_db::StatementOutcome {
             message: "cannot execute UPDATE in a read-only transaction".into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         },
         position: None,
     }

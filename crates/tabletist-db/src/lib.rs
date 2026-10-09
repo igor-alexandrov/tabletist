@@ -41,7 +41,7 @@ pub use class::{ColumnClass, Temporal, column_class, temporal};
 pub use dialect::{
     Dialect, InsertParts, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
 };
-pub use error::{Error, Result, SshStage};
+pub use error::{Error, Named, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
 pub use script::{
     ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,

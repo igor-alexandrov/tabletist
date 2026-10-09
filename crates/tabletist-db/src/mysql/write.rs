@@ -656,6 +656,7 @@ async fn warning(conn: &mut mysql_async::Conn) -> Result<Error> {
         message,
         detail: None,
         hint: None,
+        named: Box::default(),
     })
 }
 

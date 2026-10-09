@@ -623,6 +623,7 @@ fn edit_new_row_failed(harness: &mut Harness) {
                 .into(),
             detail: Some("Key (book_id)=(999) is not present in table \"books\".".into()),
             hint: None,
+            named: Box::default(),
         },
     }));
 }
@@ -655,6 +656,7 @@ fn edit_failed(harness: &mut Harness) {
                 .into(),
             detail: Some("Key (book_id)=(999) is not present in table \"books\".".into()),
             hint: None,
+            named: Box::default(),
         },
     }));
 }
@@ -916,6 +918,7 @@ fn shots() {
                 message: "cannot execute setval() in a read-only transaction".into(),
                 detail: None,
                 hint: None,
+                named: Box::default(),
             },
             position: None,
         };
@@ -984,6 +987,7 @@ fn shots() {
                     .into(),
                 detail: Some("Key (id)=(7) is still referenced from table \"book_covers\".".into()),
                 hint: None,
+                named: Box::default(),
             },
             committed: 0,
         };
@@ -1042,6 +1046,7 @@ fn shots() {
                     message: "column \"kindd\" does not exist".into(),
                     detail: None,
                     hint: Some("Perhaps you meant to reference the column \"kind\".".into()),
+                    named: Box::default(),
                 }),
             }));
     });
@@ -1170,6 +1175,7 @@ fn shots() {
                 message: "column \"kindd\" does not exist".into(),
                 detail: None,
                 hint: Some("Perhaps you meant to reference the column \"kind\".".into()),
+                named: Box::default(),
             },
             position: Some(31),
         };

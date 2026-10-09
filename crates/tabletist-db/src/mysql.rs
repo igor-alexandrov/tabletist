@@ -523,6 +523,7 @@ fn parameter(spelled: &str, hint: Option<&str>) -> Error {
         message: format!("The WHERE text has a parameter ({spelled}), which has no value."),
         detail: None,
         hint: hint.map(str::to_owned),
+        named: Box::default(),
     }
 }
 
@@ -827,6 +828,7 @@ pub(crate) fn connect_error(error: mysql_async::Error) -> Error {
             message: server.message,
             detail: None,
             hint: None,
+            named: Box::default(),
         },
         mysql_async::Error::Io(IoError::Tls(tls)) => Error::Tls(tls.to_string()),
         mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer) => {
@@ -844,6 +846,7 @@ pub(crate) fn query_error(error: mysql_async::Error) -> Error {
             message: server.message,
             detail: None,
             hint: None,
+            named: Box::default(),
         },
         mysql_async::Error::Io(_) | mysql_async::Error::Driver(DriverError::ConnectionClosed) => {
             Error::ConnectionLost(error.to_string())

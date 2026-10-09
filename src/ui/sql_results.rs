@@ -2016,6 +2016,7 @@ mod tests {
                 message: "column \"kindd\" does not exist".into(),
                 detail: None,
                 hint: Some("Perhaps you meant to reference the column \"kind\".".into()),
+                named: Box::default(),
             },
             position: None,
         };
@@ -2842,6 +2843,7 @@ mod tests {
                     message: message.clone(),
                     detail: None,
                     hint: None,
+                    named: Box::default(),
                 },
                 position: None,
             };
@@ -3223,6 +3225,7 @@ mod tests {
             message: "insert or update on table \"notes\" violates foreign key constraint".into(),
             detail: Some("Key (owner)=(9) is not present in table \"users\".".into()),
             hint: None,
+            named: Box::default(),
         }
     }
 
@@ -3823,6 +3826,7 @@ mod tests {
                 message: huge.clone(),
                 detail: Some(huge.clone()),
                 hint: Some(huge.clone()),
+                named: Box::default(),
             },
             position: Some(8),
         };

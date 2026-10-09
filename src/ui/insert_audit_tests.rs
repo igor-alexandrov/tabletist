@@ -157,6 +157,7 @@ fn fails(harness: &mut Harness, code: &str, message: &str, detail: &str) {
             message: message.into(),
             detail: Some(detail.into()),
             hint: None,
+            named: Box::default(),
         },
     }));
     harness.settle();
@@ -863,6 +864,7 @@ fn a_failed_save_says_which_new_row_failed() {
             message: NO_PUBLISHER_MESSAGE.into(),
             detail: Some(NO_PUBLISHER_DETAIL.into()),
             hint: None,
+            named: Box::default(),
         },
     }));
     let tree = harness.settle();

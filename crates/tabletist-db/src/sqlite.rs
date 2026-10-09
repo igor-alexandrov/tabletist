@@ -49,6 +49,7 @@ pub(crate) fn map_error(error: rusqlite::Error) -> Error {
                     message,
                     detail: None,
                     hint: None,
+                    named: Box::default(),
                 },
             }
         }
@@ -601,6 +602,7 @@ fn filter_denied(error: Error) -> Error {
                 .into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         },
         other => other,
     }
@@ -1819,6 +1821,7 @@ mod tests {
             message: message.into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         };
         // The second is what SQLite says when the refusal comes from inside
         // a running statement.
