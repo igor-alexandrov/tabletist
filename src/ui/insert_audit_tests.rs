@@ -576,10 +576,11 @@ fn reviewed(harness: &Harness, tab: ConnTabId, id: TabId) -> (Vec<String>, usize
     (statements, new)
 }
 
-/// Spec 8, with INS-28a: Review SQL shows the new row's `INSERT` before
-/// the changed row's `UPDATE`, naming only the column that was set, and
-/// the save sends that statement: built from the set it sends, it reads as
-/// the review does.
+/// Spec 8: Review SQL shows the new row's `INSERT` before the changed
+/// row's `UPDATE`, naming only the column that was set, and the save sends
+/// that statement: built from the set it sends, it reads as the review
+/// does. (The fake backend is SQLite, which binds the value. PostgreSQL
+/// writes it into the text, which the spec keeps: its decision A1.)
 #[test]
 fn review_shows_the_insert_first_and_it_is_what_the_save_sends() {
     let (mut harness, tab, id) = covers_in(Look::macos());
@@ -686,7 +687,8 @@ const NO_PUBLISHER_DETAIL: &str =
 /// Spec 9: after a failed save the new row stays pending, its set cell is
 /// the one that failed, and the row says the database's code and message.
 /// (INS-31c: PostgreSQL names the value only in the error's detail, which
-/// is shown nowhere yet. The test under this one asks for it.)
+/// is shown nowhere yet.
+/// `a_publisher_that_is_not_there_is_said_in_the_specs_words` asks for it.)
 #[test]
 fn a_failed_row_stays_pending_and_says_the_databases_code_and_message() {
     let (mut harness, tab, id) = saving_a_cover_without_its_publisher(Look::omarchy());
