@@ -1,6 +1,8 @@
-//! Row inserting, checked against its spec
-//! (`docs/superpowers/specs/2026-10-07-inserting-rows-design.md`) for the
-//! audit of 2026-10-08. Each test names the audit's finding it shows
+//! Row inserting, checked against its spec for the audit of 2026-10-08:
+//! "Spec: inserting rows", of which
+//! `docs/superpowers/specs/2026-10-07-inserting-rows-design.md` is an
+//! older copy (it differs in the keys for pasting rows and for moving
+//! between errors). Each test names the audit's finding it shows
 //! (INS-...). One that passes holds what the app does today. One that is
 //! ignored holds what the spec asks and the app does not do yet: it fails
 //! until its finding is fixed, and its `ignore` says which that is.
@@ -261,6 +263,24 @@ fn a_paste_on_the_grid_goes_over_its_cells() {
     assert!(edits(&harness, tab, id).added.is_empty());
 }
 
+/// INS-03c. Spec 1: in the terminal look "cell values are copied with
+/// `v` ... `y` / `p`": the value under the cursor is yanked, and `p` puts it
+/// over the cell the cursor has moved to.
+#[test]
+#[ignore = "INS-03c: v, y and p do not copy a value over another cell"]
+fn v_y_and_p_put_a_value_over_another_cell() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    // `kind` of the first cover is `print`, of the second `ebook`.
+    select(&mut harness, tab, id, (0, 2));
+    type_key(&mut harness, Key::V, "v");
+    type_key(&mut harness, Key::Y, "y");
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::P, "p");
+    let pending: Vec<(usize, usize)> = edits(&harness, tab, id).cells.keys().copied().collect();
+    assert_eq!(pending, [(1, 2)]);
+    assert!(edits(&harness, tab, id).added.is_empty());
+}
+
 /// Spec 1: where no row can be added the button cannot be pressed, and
 /// says why: on a connection that opens read-only, and on a view.
 #[test]
@@ -348,6 +368,55 @@ fn a_new_row_stays_under_the_header_when_the_grid_scrolls() {
     assert!(new_row_drawn(&mut harness));
 }
 
+/// Spec 3: what a new row's cells say comes from the structure the tab has
+/// loaded. "Don't run a new query per row."
+#[test]
+fn adding_a_row_asks_the_database_nothing() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, id) = covers_in(look);
+        let sent = harness.app.backend.sent.len();
+        let place = Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        harness.settle();
+        assert_eq!(edits(&harness, tab, id).added.len(), 1, "{}", look.name);
+        assert_eq!(harness.app.backend.sent.len(), sent, "{}", look.name);
+    }
+}
+
+/// Spec 2: a new row "never jumps while still pending". What would move
+/// it (another sort, a filter, another page) loads the page again: with a
+/// new row pending it is held and asked about, nothing is fetched, and the
+/// row stands where it was put.
+#[test]
+fn a_pending_row_is_not_moved_by_a_sort_a_filter_or_a_page() {
+    type Asked = fn(ConnTabId, TabId) -> Action;
+    let asked: [(&str, Asked); 3] = [
+        ("sort", |tab, object_tab| Action::SortBy {
+            tab,
+            object_tab,
+            column: "kind".into(),
+        }),
+        ("filters", |tab, object_tab| Action::ApplyFilters {
+            tab,
+            object_tab,
+        }),
+        ("refresh", |tab, _| Action::Refresh(tab)),
+    ];
+    for (name, action) in asked {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        let place = Place::Below(1);
+        harness.app.apply(Action::AddRow { tab, id, place });
+        harness.app.apply(Action::CancelEdit { tab, id });
+        let stood = edits(&harness, tab, id).added.clone();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(action(tab, id));
+        harness.settle();
+        assert!(harness.app.dialog.is_some(), "{name}: asked about");
+        assert_eq!(harness.app.backend.sent.len(), sent, "{name}: nothing ran");
+        assert_eq!(edits(&harness, tab, id).added, stood, "{name}");
+    }
+}
+
 /// INS-07b. The Omarchy board's status line says `publisher_id required`
 /// in insert mode, while the row's first value is being typed.
 #[test]
@@ -392,6 +461,24 @@ fn the_inspector_is_the_new_rows_form() {
     assert!(harness.has("Add another"));
 }
 
+/// INS-11b. Spec 7: the inspector lists the new row's fields, the ones the
+/// user set among them with their values, and each is edited in place. A
+/// publisher set in the grid is then shown twice: in its cell, and in the
+/// inspector's field for `publisher_id`.
+#[test]
+#[ignore = "INS-11b: the inspector shows none of a new row's fields or values"]
+fn the_inspector_holds_what_was_set_in_a_new_row() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let new = add(&mut harness, tab, id);
+    set(&mut harness, tab, id, (new_row(new), 1), HARBOR_PRESS);
+    select(&mut harness, tab, id, (new_row(new), 2));
+    // The field's line, as the inspector writes a column and its type.
+    assert!(harness.has("publisher_id · INTEGER"));
+    let shown = harness.painted.iter();
+    let shown = shown.filter(|(piece, _)| piece == HARBOR_PRESS).count();
+    assert_eq!(shown, 2, "{:?}", harness.painted);
+}
+
 /// INS-14. Spec 7: what the inspector says of a table without a key.
 #[test]
 #[ignore = "INS-14: the inspector does not warn of a table without a primary key"]
@@ -428,6 +515,21 @@ fn undo_brings_a_dropped_row_back() {
     harness.press(Key::Z, Modifiers::COMMAND);
     assert_eq!(edits(&harness, tab, id).added.len(), 1);
     assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+}
+
+/// INS-16d. Spec 6: undo covers creating a new row too, and what is
+/// undone can be done again.
+#[test]
+#[ignore = "INS-16d: undo does not take back a row that was added, and nothing is redone"]
+fn undo_takes_back_a_new_row_and_redo_brings_it_again() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.press(Key::N, Modifiers::COMMAND);
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert_eq!(edits(&harness, tab, id).added.len(), 1);
+    harness.press(Key::Z, Modifiers::COMMAND);
+    assert!(edits(&harness, tab, id).added.is_empty());
+    harness.press(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(edits(&harness, tab, id).added.len(), 1);
 }
 
 /// Spec 6: `:e!` drops new rows along with the other pending changes.
@@ -533,9 +635,11 @@ fn new_rows_with_the_same_columns_are_one_statement() {
 
 /// INS-29b. The audit's item 29: the terminal look confirms a save to
 /// production by the database's name, and "anything else is refused".
+/// The spec gives only the macOS sentence, and the boards disagree (the
+/// audit's DG-4): this holds the audit's reading until that is decided.
 /// The app asks for the word `write`.
 #[test]
-#[ignore = "INS-29b: the terminal's production prompt asks for the word write, not the database"]
+#[ignore = "INS-29b (undecided, DG-4): the terminal's production prompt asks for the word write"]
 fn the_terminal_refuses_a_production_save_until_the_database_is_named() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
@@ -596,6 +700,30 @@ fn a_failed_row_stays_pending_and_says_the_databases_code_and_message() {
 fn error_lines(harness: &Harness) -> Vec<&str> {
     let pieces = harness.painted.iter().map(|(piece, _)| piece.as_str());
     pieces.filter(|piece| piece.starts_with("! new")).collect()
+}
+
+/// INS-31e. Spec 9 and its test 8: "the failing cells show messages", "the
+/// error on the right cell". Of a new row with a publisher that is not
+/// there and a kind that is fine, the publisher's cell failed and the
+/// kind's did not.
+#[test]
+#[ignore = "INS-31e: every cell set in a failed new row is marked, not the one that failed"]
+fn a_failed_rows_error_is_on_the_cell_that_failed() {
+    use crate::edit::State;
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let new = add(&mut harness, tab, id);
+    set(&mut harness, tab, id, (new_row(new), 1), NO_PUBLISHER);
+    set(&mut harness, tab, id, (new_row(new), 2), "audio");
+    harness.app.apply(Action::WriteEdits { tab, id });
+    fails(
+        &mut harness,
+        "23503",
+        NO_PUBLISHER_MESSAGE,
+        NO_PUBLISHER_DETAIL,
+    );
+    let state = |col: usize| &edits(&harness, tab, id).cells[&(new_row(new), col)].state;
+    assert!(matches!(state(1), State::Failed(_)), "publisher_id");
+    assert_eq!(*state(2), State::Ready, "kind");
 }
 
 /// INS-31b, INS-31c. Spec 9: a foreign key that fails says "No publisher

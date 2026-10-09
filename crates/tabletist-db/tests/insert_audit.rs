@@ -415,6 +415,56 @@ mod postgres {
         assert!(!sent[0].contains(HARBOR_PRESS), "{sent:?}");
     }
 
+    /// INS-30f. Spec 9: a new row "takes the values from RETURNING (real
+    /// id, defaults, triggers' changes)" and stays in place. Here a trigger
+    /// makes every new cover an audio one: the save hands the row back, as
+    /// the trigger left it.
+    #[tokio::test]
+    #[ignore = "INS-30f: a new row of a table with a trigger comes back unknown, and the page is loaded again"]
+    async fn postgres_hands_back_a_new_row_a_trigger_changed() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return;
+        };
+        let admin = admin().await;
+        let drop = "DROP TABLE IF EXISTS audit_trigger_covers;
+                    DROP FUNCTION IF EXISTS audit_trigger_kind";
+        admin.batch_execute(drop).await.unwrap();
+        admin
+            .batch_execute(
+                "CREATE TABLE audit_trigger_covers (
+                     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                     publisher_id bigint NOT NULL,
+                     kind varchar NOT NULL DEFAULT 'print'
+                 );
+                 CREATE FUNCTION audit_trigger_kind() RETURNS trigger LANGUAGE plpgsql AS $$
+                 BEGIN
+                     NEW.kind := 'audio';
+                     RETURN NEW;
+                 END $$;
+                 CREATE TRIGGER audit_trigger_kind BEFORE INSERT ON audit_trigger_covers
+                     FOR EACH ROW EXECUTE FUNCTION audit_trigger_kind()",
+            )
+            .await
+            .unwrap();
+        let connection = connect(&url).await;
+        let changes = adding(
+            "public",
+            "audit_trigger_covers",
+            vec![vec![sets("publisher_id", "bigint", HARBOR_PRESS)]],
+        );
+        let outcome = save(&connection, &changes).await;
+        // Before anything is asked of it: a test that fails leaves no
+        // table behind.
+        admin.batch_execute(drop).await.unwrap();
+        let WriteOutcome::Written { inserted, .. } = outcome else {
+            panic!("the save wrote: {outcome:?}");
+        };
+        let row = inserted[0].as_ref().expect("the new row, as it was stored");
+        assert_eq!(row[0], Value::Int(1));
+        assert_eq!(row[2], Value::Text("audio".into()));
+    }
+
     /// INS-04c: a role that may read a table and not add to it. Nothing
     /// the app reads of the table says so, so no entry point is disabled
     /// for it: the save is where the user learns it.
