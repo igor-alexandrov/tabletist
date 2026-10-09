@@ -194,6 +194,48 @@ pub fn success_tint(platform: Platform, palette: &Palette) -> (Color32, Color32)
     tint(palette.success, platform, palette)
 }
 
+/// A new row's colours in the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewRow {
+    /// Behind the row, for as long as it is not saved.
+    pub fill: Color32,
+    /// The bar at its left, and the dot of a bar that counts new rows.
+    pub bar: Color32,
+    /// What its marker (`+ new`) is written in.
+    pub marker: Color32,
+    /// Behind a cell a save just wrote, for as long as it shows it.
+    pub saved: Color32,
+}
+
+/// The colours of a new row on `platform` with `palette`. macOS and
+/// Windows take the design's fixed greens, the dev environment's, in the
+/// light; in the dark, and in the terminal look, the palette's green is
+/// mixed into what the rows stand on, so a theme's change is followed.
+pub fn new_row_colors(platform: Platform, palette: &Palette) -> NewRow {
+    let (base, badge, text) = native_table(Environment::Dev);
+    match platform {
+        Platform::Native if !palette.dark => NewRow {
+            fill: Color32::from_rgb(0xee, 0xf7, 0xf0),
+            bar: base,
+            marker: text,
+            saved: badge,
+        },
+        Platform::Native => NewRow {
+            fill: mix(palette.window, palette.success, 0.10),
+            bar: palette.success,
+            marker: palette.success,
+            saved: success_tint(platform, palette).0,
+        },
+        // 14% of the theme's green: the terminal look's mark of what is new.
+        Platform::Omarchy => NewRow {
+            fill: mix(palette.panel, palette.success, 0.14),
+            bar: palette.success,
+            marker: palette.dim,
+            saved: success_tint(platform, palette).0,
+        },
+    }
+}
+
 /// The design's fixed colours: base, badge fill, badge text.
 fn native_table(env: Environment) -> (Color32, Color32, Color32) {
     let rgb = Color32::from_rgb;
