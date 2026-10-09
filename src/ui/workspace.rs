@@ -1573,6 +1573,9 @@ struct Editing {
     can_add: bool,
     /// The cells to fix and the ones a save failed on: "1 error".
     errors: Option<String>,
+    /// What the tab's new rows still need, for insert mode, which has no
+    /// room for why a save waits: "publisher_id required".
+    needs: Option<String>,
     /// Why the cell asked for is locked, what the last save came to, or
     /// why what is pending cannot be saved.
     said: Option<Said>,
@@ -1652,6 +1655,16 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         && crate::edit::Table::of(workspace, object).is_some_and(|table| table.no_rows().is_none());
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
+    // What a new row still needs, by its column: said while a value is
+    // typed too.
+    let needs = {
+        let lacking = app.lacking(tab, object.id);
+        match lacking.as_slice() {
+            [] => None,
+            [one] => Some(format!("{one} {}", look.label(&say("required")))),
+            more => Some(look.label(&format!("{} {}", more.len(), say("values required")))),
+        }
+    };
     // What a save came to stands a step back from the keys and the counts.
     let back = palette.secondary;
     // Why what is pending cannot be saved, as the other looks say it on
@@ -1662,21 +1675,14 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         .flatten()
         .filter(|block| *block != crate::model::SaveBlock::Saving)
         .map(|block| match block {
-            // What a new row still needs, by its column: in the danger
-            // tone, as the row's own star is.
-            crate::model::SaveBlock::Required => {
-                let lacking = app.lacking(tab, object.id);
-                let text = match lacking.as_slice() {
-                    [one] => format!("{one} {}", look.label(&say("required"))),
-                    more => look.label(&format!("{} {}", more.len(), say("values required"))),
-                };
-                Said {
-                    mark: None,
-                    text,
-                    tail: None,
-                    color: states::Tone::Danger.color(palette),
-                }
-            }
+            // What a new row still needs: in the danger tone, as the
+            // row's own star is.
+            crate::model::SaveBlock::Required => Said {
+                mark: None,
+                text: needs.clone().unwrap_or_default(),
+                tail: None,
+                color: states::Tone::Danger.color(palette),
+            },
             block => Said {
                 mark: None,
                 text: look.label(&block_text(block, counts.to_fix, locale)),
@@ -1770,6 +1776,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         added,
         can_add,
         errors,
+        needs,
         said,
     }
 }
@@ -2080,6 +2087,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     x += widgets::paint_label(ui, x, y, text) + gap;
                 }
                 x = counts(ui, x);
+                if let Some(needs) = &editing.needs {
+                    // In the danger tone, as the header's star is, where
+                    // there is room before the keys.
+                    let danger = states::Tone::Danger.color(&palette);
+                    let said = || Text::one(&look, role, needs, danger);
+                    if x + widgets::measure(ui, said()) <= right {
+                        x += widgets::paint_label(ui, x, y, said()) + gap;
+                    }
+                }
                 if named && x + keys_width <= right {
                     widgets::paint_text_right(ui, right, y, keys());
                 }
