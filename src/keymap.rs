@@ -566,7 +566,7 @@ impl Command {
                 info("Open value in $EDITOR", "Open value in $EDITOR", Editing).reserved()
             }
             C::SetNull => info("Set NULL", "Set NULL", Editing),
-            C::SetDefault => info("Set DEFAULT", "Set DEFAULT", Editing).reserved(),
+            C::SetDefault => info("Set DEFAULT", "Set DEFAULT", Editing),
             C::UndoCell => info("Undo one cell", UNDO, Editing),
             C::RedoCell => info("Redo one cell", UNDO, Editing).reserved(),
             C::CopyCells => info("Copy cell values", COPY, Editing),
@@ -597,7 +597,7 @@ impl Command {
             C::DiscardChanges => info("Discard all pending", "Discard all pending", Editing),
             C::NextError => info("Next error", ERRORS, Editing).reserved(),
             C::PreviousError => info("Previous error", ERRORS, Editing).reserved(),
-            C::BooleanCycle => info("Boolean cycle", "Boolean cycle", Editing).reserved(),
+            C::BooleanCycle => info("Boolean cycle", "Boolean cycle", Editing),
             C::StepUp => info("Step up", STEP, Editing).reserved(),
             C::StepDown => info("Step down", STEP, Editing).reserved(),
             C::Format => info("Format SQL or JSON", "Format SQL or JSON", Sql),
@@ -1001,6 +1001,13 @@ pub const BINDINGS: &[Binding] = {
             control("↑↓ in header"),
             keys(&[k("]")]),
         ),
+        // From the rows too, while the inspector shows: its header offers
+        // the brackets, and `j` and `k` are the rows' there. A bracket
+        // also begins the keys of the errors and the changes (`]e`, `]c`),
+        // which nothing answers yet; with the inspector open the bracket
+        // is its own, at once.
+        bind(C::PreviousRow, ROWS, NONE, keys(&[k("[")])).when(When::InspectorOpen),
+        bind(C::NextRow, ROWS, NONE, keys(&[k("]")])).when(When::InspectorOpen),
         bind(
             C::FoldDocuments,
             &[Scope::Grid, Scope::Inspector, Scope::Results],
@@ -2009,6 +2016,22 @@ impl Keymap {
         Written(first.to_owned())
     }
 
+    /// The first key `command` has in `scope`, as `layout` writes it: for a
+    /// hint drawn where that scope has the keys, of a command whose keys
+    /// differ by where it is read (a format is `=` in a SQL tab and a
+    /// chord in the large editor). A key that is only claimed is not
+    /// offered. Empty where it has none there.
+    pub fn key_in(&self, layout: Layout, command: Command, scope: Scope) -> Written {
+        let built = command.info().built;
+        self.of(command)
+            .filter(|binding| binding.scopes.contains(&scope))
+            .flat_map(|binding| binding.bound(layout).chords.iter())
+            .find(|chord| chord.kind != Kind::Claimed || !built)
+            .map_or_else(Written::default, |chord| {
+                Written(written(layout, chord.keys))
+            })
+    }
+
     /// The first keys of `commands` written as one hint: `[ ]` for the
     /// previous row and the next, `ctrl+n/p` where they are held alike.
     pub fn together(&self, layout: Layout, commands: &[Command]) -> Written {
@@ -2439,6 +2462,13 @@ mod tests {
         // None on purpose.
         assert_eq!(label(Layout::Mac, Command::SwitchTab), "");
         assert_eq!(keymap.key(Layout::Omarchy, Command::SaveChanges), ":w");
+        // A format has its key by where it is read: the large editor has
+        // no normal mode for Omarchy's `=`.
+        let format = |layout, scope| keymap.key_in(layout, Command::Format, scope);
+        assert_eq!(format(Layout::Omarchy, Scope::SqlEditor), "=");
+        assert_eq!(format(Layout::Omarchy, Scope::CellEditor), "ctrl+shift+f");
+        assert_eq!(format(Layout::Mac, Scope::CellEditor), "⇧⌘F");
+        assert_eq!(format(Layout::Mac, Scope::Grid), "");
     }
 
     #[test]
@@ -2543,7 +2573,7 @@ mod tests {
         assert_eq!(omarchy(Scope::Grid, "vy"), command(Command::CopyCells));
         assert_eq!(omarchy(Scope::Grid, "vp"), Claimed);
         assert_eq!(omarchy(Scope::Grid, "\"+p"), Claimed);
-        assert_eq!(omarchy(Scope::Grid, "D"), Claimed);
+        assert_eq!(omarchy(Scope::Grid, "D"), command(Command::SetDefault));
         assert_eq!(omarchy(Scope::Grid, "R"), command(Command::Reload));
         assert_eq!(omarchy(Scope::Sidebar, "R"), command(Command::Reload));
         // The slash is the sidebar's filter there and the WHERE line here.
@@ -2552,11 +2582,22 @@ mod tests {
         // A global letter is read in every scope but a prompt's.
         assert_eq!(omarchy(Scope::Grid, "?"), command(Command::Help));
         assert_eq!(omarchy(Scope::Prompt, "?"), Nothing);
-        // The brackets step rows from the inspector, and begin other keys
-        // on the grid.
+        // The brackets step rows from the inspector, and from the rows
+        // while it shows. Without it they begin other keys on the grid.
         assert_eq!(omarchy(Scope::Inspector, "]"), command(Command::NextRow));
         assert_eq!(omarchy(Scope::Grid, "]"), Waiting);
         assert_eq!(omarchy(Scope::Grid, "]e"), Claimed);
+        let inspector = |when: When| when == When::InspectorOpen;
+        for scope in [Scope::Grid, Scope::Results] {
+            assert_eq!(
+                keymap.typed(Layout::Omarchy, scope, &inspector, "]"),
+                command(Command::NextRow)
+            );
+            assert_eq!(
+                keymap.typed(Layout::Omarchy, scope, &inspector, "["),
+                command(Command::PreviousRow)
+            );
+        }
         assert_eq!(omarchy(Scope::Grid, "q"), Nothing);
         // The letters of the booleans are nobody's.
         assert_eq!(omarchy(Scope::Grid, "f"), Nothing);

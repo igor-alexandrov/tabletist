@@ -235,8 +235,12 @@ fn a_paste_in_an_open_editor_is_its_text() {
     for look in [Look::macos(), Look::omarchy()] {
         let (mut harness, tab, id) = covers_in(look);
         select(&mut harness, tab, id, (0, 2));
-        // The cell's editor, with `print` in it.
-        harness.press(Key::Enter, Modifiers::NONE);
+        // The cell's editor, with `print` in it: by the look's own key.
+        if look.terminal {
+            type_key(&mut harness, Key::I, "i");
+        } else {
+            harness.press(Key::Enter, Modifiers::NONE);
+        }
         assert!(harness.ctx.text_edit_focused(), "{}", look.name);
         harness.frame(vec![egui::Event::Paste("ed".into())]);
         harness.settle();

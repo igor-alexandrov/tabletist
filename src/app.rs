@@ -71,7 +71,8 @@ pub struct App {
     pub palette: Palette,
     pub look: crate::theme::Look,
     /// The keys in force: what the handler answers and what a label names.
-    pub keymap: crate::keymap::Keymap,
+    /// Shared with what is drawn, which reads a key's spelling from it.
+    pub keymap: std::sync::Arc<crate::keymap::Keymap>,
     pub themes: Catalog,
     pub tabs: Vec<ConnTab>,
     /// Index into `tabs`. Always valid: `tabs` is never empty.
@@ -133,7 +134,7 @@ impl App {
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
-            keymap: crate::keymap::Keymap::default(),
+            keymap: std::sync::Arc::default(),
             themes: Catalog::default(),
             tabs: Vec::new(),
             active: 0,
@@ -3878,6 +3879,8 @@ impl App {
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());
+        // Before anything names a key: the keymap its labels are read from.
+        crate::ui::keys::publish(ui.ctx(), &self.keymap);
         // Before the shortcuts take their keys: what the user works with.
         crate::ui::focus::begin_frame(ui.ctx());
         // Before the keys and the view, which read the list: it is the one
@@ -12590,14 +12593,16 @@ mod tests {
             run(&mut harness, tab, "nope");
             harness.app.apply(Action::CloseCommand(tab));
             assert_eq!(prompt(&harness, tab), (None, None));
-            // With a SQL editor in front there is no table to write.
+            // With a SQL editor in front there is no table to write: the
+            // lines are a table's, and no command there.
             type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
             harness.app.apply(Action::NewSqlTab(tab));
-            run(&mut harness, tab, "w");
-            run(&mut harness, tab, "e!");
-            assert_eq!(writes(&harness), 1);
-            assert_eq!(pending(&harness), 1);
-            assert_eq!(prompt(&harness, tab), (None, None));
+            for line in ["w", "e!"] {
+                run(&mut harness, tab, line);
+                assert_eq!(writes(&harness), 1);
+                assert_eq!(pending(&harness), 1);
+                assert_eq!(prompt(&harness, tab), (None, Some(line.to_owned())));
+            }
         }
 
         /// The statements of the tab's Review SQL, as the end of a frame
@@ -12997,7 +13002,8 @@ mod tests {
             run(&mut harness, tab, "diff");
             assert!(!object(&harness, tab, id).edits.reviewing);
             assert!(!refused(&harness));
-            assert_eq!(prompt(&harness, tab), (None, None));
+            // The line is a table's, and no command of an editor's.
+            assert_eq!(prompt(&harness, tab), (None, Some("diff".to_owned())));
         }
 
         #[test]

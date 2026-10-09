@@ -1892,9 +1892,18 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let palette = app.palette;
     let look = app.look;
     let locale = app.locale;
-    // The key that cancels, which moved with the keymap: the line's other
-    // keys are still written here.
-    let cancel_key = app.keymap.key(app.layout(), Command::CancelQuery);
+    // The line's keys, as the keymap writes them for the look.
+    let key = |command: Command| app.keymap.key(app.layout(), command);
+    let cancel_key = key(Command::CancelQuery);
+    let (rows_key, cols_key) = (key(Command::MoveRow), key(Command::MoveColumn));
+    let (inspect_key, edit_key) = (key(Command::OpenInspector), key(Command::EditCell));
+    let (add_key, delete_key) = (key(Command::AddRow), key(Command::DeleteRow));
+    let (filter_key, sidebar_key) = (key(Command::WhereFilter), key(Command::ToggleSidebar));
+    let (copy_key, save_key) = (key(Command::CopyCells), key(Command::SaveChanges));
+    let review_key = key(Command::ReviewSql);
+    let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
+    let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
+    let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -1961,37 +1970,37 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let rect = ui.max_rect();
             widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
             let y = rect.top() + 1.0 + 15.0;
-            // Space shows the row; `i` edits the cell, where it can be.
+            // The row is shown in the inspector; the cell is edited, where
+            // it can be.
             let edit = gettext(locale, "edit");
             let mut table_hints: Vec<widgets::Hint<'_>> = vec![
-                ("j/k", "row", true),
-                ("h/l", "col", true),
-                ("space", "inspect", true),
+                (&*rows_key, "row", true),
+                (&*cols_key, "col", true),
+                (&*inspect_key, "inspect", true),
             ];
             if editing.can_edit {
-                table_hints.push(("i", &*edit, true));
+                table_hints.push((&*edit_key, &*edit, true));
             }
-            // `o` opens a new row, where the table takes one.
+            // A new row is opened, where the table takes one.
             let new_row = gettext(locale, "new row");
             if editing.can_add {
-                table_hints.push(("o", &*new_row, true));
+                table_hints.push((&*add_key, &*new_row, true));
             }
             table_hints.extend([
-                ("/", "filter", true),
-                ("ctrl+b", "tables", true),
-                ("y", "copy", true),
-                ("s", "structure", true),
+                (&*filter_key, "filter", true),
+                (&*sidebar_key, "tables", true),
+                (&*copy_key, "copy", true),
             ]);
-            // The prompt's key that saves, where a save can be made.
+            // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
             if !read_only {
-                table_hints.push((":w", &*write, true));
+                table_hints.push((&*save_key, &*write, true));
             }
             // And the one that shows what a save would run, while there is
             // anything to show.
             let review = gettext(locale, "review");
             if editing.pending.is_some() || editing.added.is_some() {
-                table_hints.push((":diff", &*review, true));
+                table_hints.push((&*review_key, &*review, true));
             }
             // An editor's keys: a table's do nothing on it.
             let words = [
@@ -2004,15 +2013,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ]
             .map(|word| gettext(locale, word));
             let mut editor_hints: Vec<widgets::Hint<'_>> = vec![
-                ("ctrl+enter", &*words[0], true),
-                ("ctrl+shift+enter", &*words[1], true),
+                (&*run_key, &*words[0], true),
+                (&*run_all_key, &*words[1], true),
                 (&*cancel_key, &*words[2], true),
-                ("esc", &*words[3], true),
-                ("ctrl+b", &*words[4], true),
+                (&*leave_key, &*words[3], true),
+                (&*sidebar_key, &*words[4], true),
             ];
             // An open completion list: its key leads.
             if completing {
-                editor_hints.insert(0, ("tab", &*words[5], true));
+                editor_hints.insert(0, (&*complete_key, &*words[5], true));
             }
             let hints: &[widgets::Hint<'_>] = if on_editor {
                 &editor_hints
@@ -2080,7 +2089,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 let next = editing.walks.map(|next| gettext(locale, next));
                 let keys = || {
                     let leave = Text::new(&look)
-                        .add(role, "esc", palette.text)
+                        .add(role, &keep_key, palette.text)
                         .space(role, " ")
                         .add(role, &normal, palette.dim);
                     let Some(next) = &next else {
@@ -2088,7 +2097,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     };
                     leave
                         .add(role, " · ", palette.dim)
-                        .add(role, "tab", palette.text)
+                        .add(role, &next_key, palette.text)
                         .space(role, " ")
                         .add(role, next, palette.dim)
                 };
@@ -2150,15 +2159,17 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             });
             let said_room = said.as_ref().map_or(0.0, |said| said.3 + gap);
             let limit = end - fixed - said_room;
-            // `e edit` was here until `i` came to edit, `o new row` is
-            // here only where the table takes none, and `:w write` only on
-            // a connection that cannot write.
-            let disabled: &[&str] = match (editing.can_add, read_only) {
-                (true, true) => &["dd delete", ":w write"],
-                (true, false) => &["dd delete"],
-                (false, true) => &["o new row", "dd delete", ":w write"],
-                (false, false) => &["o new row", "dd delete"],
-            };
+            // The key that adds a row is here only where the table takes
+            // none, and the line that saves only on a connection that
+            // cannot write.
+            let mut disabled: Vec<String> = Vec::new();
+            if !editing.can_add {
+                disabled.push(format!("{add_key} new row"));
+            }
+            disabled.push(format!("{delete_key} delete"));
+            if read_only {
+                disabled.push(format!("{save_key} write"));
+            }
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
                 + 14.0 * (disabled.len() - 1) as f32;
             let mut x = left;

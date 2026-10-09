@@ -283,7 +283,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             // Told apart from a dialog's Cancel by a screen reader.
             let cancel_save = gettext(locale, "Cancel save");
             let more = gettext(locale, "More actions");
-            let keys = format!("{}S", look.command_key());
+            let saves = crate::keymap::Command::SaveChanges;
+            let keys = crate::ui::keys::written(ui.ctx(), &look, saves);
             let body = widgets::body(&look);
             let ctx = ui.ctx().clone();
             let width = move |role: TextRole, text: &str| role.width(&ctx, look.faces, text);

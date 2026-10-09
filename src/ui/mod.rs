@@ -2204,24 +2204,19 @@ mod tests {
             selection(&harness, tab),
             Some(crate::model::CellPos { row: 1, col: 1 })
         );
-        harness.press(Key::S, Modifiers::NONE);
-        let view = harness
-            .app
-            .workspace(tab)
-            .unwrap()
-            .active_object_tab()
-            .unwrap()
-            .view;
-        assert_eq!(view, crate::model::ObjectView::Structure);
-        harness.press(Key::D, Modifiers::NONE);
-        let view = harness
-            .app
-            .workspace(tab)
-            .unwrap()
-            .active_object_tab()
-            .unwrap()
-            .view;
-        assert_eq!(view, crate::model::ObjectView::Data);
+        // `s` and `d` showed the Structure and the Data view. They are
+        // letters of the cell and the row now, and the views are clicked.
+        for key in [Key::S, Key::D] {
+            harness.press(key, Modifiers::NONE);
+            let view = harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .active_object_tab()
+                .unwrap()
+                .view;
+            assert_eq!(view, crate::model::ObjectView::Data, "{key:?}");
+        }
     }
 
     #[test]
@@ -2698,6 +2693,28 @@ mod tests {
 
     /// Opens another connection beside the open ones, named `name`: the
     /// picker (Mod+O), then a connect in it. Returns its tab, which shows.
+    /// Shows `view` of the object tab `id`, as a click on its name does:
+    /// the views have no key.
+    fn set_view(harness: &mut Harness, tab: ConnTabId, id: TabId, view: crate::model::ObjectView) {
+        let object_tab = id;
+        harness.app.apply(Action::SetView {
+            tab,
+            object_tab,
+            view,
+        });
+        harness.settle();
+    }
+
+    /// Puts the keyboard on the row's fields with the look's key: the
+    /// inspector's chord, or Omarchy's Enter on the rows.
+    fn open_inspector(harness: &mut Harness) {
+        if harness.app.look.terminal {
+            harness.press(Key::Enter, Modifiers::NONE);
+        } else {
+            harness.press(Key::I, Modifiers::COMMAND);
+        }
+    }
+
     /// Shows the connections with the look's key. Omarchy's is
     /// Ctrl+Shift+C, which the window sends as a copy with Shift held.
     fn show_connections(harness: &mut Harness) {
@@ -5379,7 +5396,7 @@ mod tests {
         let tab = with_page(&mut harness);
         harness.click("Row 1");
         harness.settle();
-        assert_eq!(hints(&harness), ["za fold · y copy"]);
+        assert_eq!(hints(&harness), ["za fold · v y copy"]);
         // `y` copies from a table's grid only: a result's row does not
         // offer it.
         with_sql_result(&mut harness, tab, 3);
@@ -5654,7 +5671,7 @@ mod tests {
     }
 
     #[test]
-    fn space_and_ctrl_shift_r_toggle_a_result_rows_panel() {
+    fn ctrl_shift_r_toggles_a_result_rows_panel_and_space_does_not() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         let id = with_sql_result(&mut harness, tab, 3);
@@ -5663,7 +5680,10 @@ mod tests {
         harness.press(Key::Escape, Modifiers::NONE);
         harness.press(Key::ArrowDown, Modifiers::NONE);
         assert!(panel_shows(&mut harness));
+        // Space was the panel's key. It is kept for the booleans now.
         harness.press(Key::Space, Modifiers::NONE);
+        assert!(open(&harness));
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
         assert!(!open(&harness));
         assert!(!panel_shows(&mut harness));
         harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
@@ -5709,7 +5729,7 @@ mod tests {
             harness.press(key, Modifiers::NONE);
             assert!(open(&harness), "{key:?} with no row");
         }
-        // Nor with the panel closed, where Enter and `i` would open it.
+        // Nor with the panel closed, where Enter would open it.
         harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
         for key in [Key::Enter, Key::I] {
             harness.press(key, Modifiers::NONE);
@@ -5724,7 +5744,7 @@ mod tests {
         assert_eq!(sql_selection(&harness, tab, id), at(1, 0));
         type_key(&mut harness, Key::OpenBracket, "[");
         assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
-        // Esc closes the panel, Enter opens it, `i` does either.
+        // Esc closes the panel, and Enter opens it.
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!open(&harness));
         assert!(!panel_shows(&mut harness));
@@ -5738,8 +5758,8 @@ mod tests {
         assert!(open(&harness));
         harness.press(Key::Enter, Modifiers::NONE);
         assert!(open(&harness), "Enter only opens");
-        harness.press(Key::I, Modifiers::NONE);
-        assert!(!open(&harness));
+        // `i` was the panel's key too. It is the cell's, and a result has
+        // no cell to edit.
         harness.press(Key::I, Modifiers::NONE);
         assert!(open(&harness));
         assert!(panel_shows(&mut harness));
@@ -5770,7 +5790,7 @@ mod tests {
         assert_eq!(selection(&harness, tab), at(1, 0));
         type_key(&mut harness, Key::OpenBracket, "[");
         assert_eq!(selection(&harness, tab), at(0, 0));
-        // Esc closes the panel, and Space opens and closes it.
+        // Esc closes the panel, and its chord opens and closes it.
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!open(&harness));
         assert!(!panel_shows(&mut harness));
@@ -5780,20 +5800,24 @@ mod tests {
         assert!(harness.app.workspace(tab).unwrap().fold_documents.is_none());
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!open(&harness), "Esc only closes");
-        // Enter and `i` are a table's keys for editing the cell, and the
-        // panel's no more: on this read-only table they say why not.
-        harness.press(Key::Enter, Modifiers::NONE);
-        assert!(!open(&harness), "Enter edits");
+        // `i` is a table's key for editing the cell, and the panel's no
+        // more: on this read-only table it says why not.
         type_key(&mut harness, Key::I, "i");
         assert!(!open(&harness), "`i` edits");
         let object = harness.app.workspace(tab).unwrap().active_object_tab();
         assert!(object.unwrap().edits.why.is_some());
-        type_key(&mut harness, Key::Space, " ");
-        assert!(open(&harness));
+        // Space was the panel's key. It is kept for the booleans now, and
+        // the panel has its chord.
         type_key(&mut harness, Key::Space, " ");
         assert!(!open(&harness));
-        type_key(&mut harness, Key::Space, " ");
+        let toggle = Modifiers::COMMAND | Modifiers::SHIFT;
+        harness.press(Key::R, toggle);
         assert!(open(&harness));
+        harness.press(Key::R, toggle);
+        assert!(!open(&harness));
+        // Enter opens it, on the row's fields.
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness), "Enter opens the inspector");
         type_key(&mut harness, Key::I, "i");
         assert!(open(&harness), "nor does `i` close it");
         assert!(panel_shows(&mut harness));
@@ -6751,7 +6775,7 @@ mod tests {
             assert!(painted(&harness, hint), "{hint}: {:?}", harness.painted);
         }
         // A table's keys do nothing here, so the line does not offer them.
-        for hint in ["j/k row", "/ filter", "s structure", "e edit"] {
+        for hint in ["j/k row", "/ filter", "enter inspect", "i edit"] {
             assert!(!painted(&harness, hint), "{hint}");
         }
         let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
@@ -6866,11 +6890,14 @@ mod tests {
     }
 
     #[test]
-    fn space_and_ctrl_shift_r_toggle_the_row_panel() {
+    fn ctrl_shift_r_toggles_the_row_panel_and_space_does_not() {
         let mut harness = Harness::new();
         let tab = with_page(&mut harness);
         focus_grid(&mut harness, tab);
+        // Space was the panel's key. It is kept for the booleans now.
         harness.press(Key::Space, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).unwrap().row_panel);
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
         assert!(!harness.app.workspace(tab).unwrap().row_panel);
         harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
         assert!(harness.app.workspace(tab).unwrap().row_panel);
@@ -11798,15 +11825,18 @@ mod tests {
     }
 
     #[test]
-    fn a_first_d_from_the_structure_view_is_not_half_of_dd() {
+    fn dd_drops_no_row_from_the_structure_view() {
         let (mut harness, tab, id) = covers_in(Look::omarchy());
         select(&mut harness, tab, id, (0, 1));
         type_key(&mut harness, Key::O, "o");
         harness.press(Key::Escape, Modifiers::NONE);
-        // `s` shows the structure and `d` the rows again: that `d` brought
-        // the rows up, and the next one is a first.
-        type_key(&mut harness, Key::S, "s");
+        // Where the rows do not show, `dd` is no key of theirs.
+        set_view(&mut harness, tab, id, crate::model::ObjectView::Structure);
         type_key(&mut harness, Key::D, "d");
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1);
+        // With the rows up again one `d` waits, and the second drops.
+        set_view(&mut harness, tab, id, crate::model::ObjectView::Data);
         type_key(&mut harness, Key::D, "d");
         assert_eq!(edits(&harness, tab, id).added.len(), 1);
         type_key(&mut harness, Key::D, "d");
@@ -12150,7 +12180,7 @@ mod tests {
     }
 
     #[test]
-    fn space_flips_a_boolean_cell_and_shows_the_row_panel_elsewhere() {
+    fn space_flips_a_boolean_cell_and_is_no_key_elsewhere() {
         for look in Look::ALL {
             let (mut harness, tab, id) = covers_in(look);
             // `kind` as a flag that holds true.
@@ -12169,10 +12199,10 @@ mod tests {
             let pending = pending_text(&harness, tab, id, (0, 2));
             assert_eq!(pending.as_deref(), Some("false"), "{}", look.name);
             assert_eq!(panel(&harness), shown, "{}", look.name);
-            // On any other cell the key is the row panel's, as it was.
+            // On any other cell it is no key: the panel stays as it is.
             select(&mut harness, tab, id, (0, 1));
             harness.press(Key::Space, Modifiers::NONE);
-            assert_eq!(panel(&harness), !shown, "{}", look.name);
+            assert_eq!(panel(&harness), shown, "{}", look.name);
             assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
         }
     }
@@ -12237,37 +12267,23 @@ mod tests {
                 look.name
             );
         }
-        // The terminal look has a key for it, and no button.
+        // The terminal look has no button, and no key of the editor's
+        // for it: there the word is typed. Ctrl+T is a new SQL editor's
+        // in an editor as anywhere else. (As the keyboard sends it where
+        // Ctrl is the command key: both are held.)
         let (mut harness, tab, id) = stamped_in(Look::omarchy());
         open_editor(&mut harness, tab, id, (1, 4));
         let tree = harness.settle();
         assert!(crate::testing::node(&tree, "now", Role::Button).is_none());
-        // As the keyboard sends Ctrl+T where Ctrl is the command key: both
-        // are held.
         let ctrl_t = Modifiers::CTRL | Modifiers::COMMAND;
-        harness.press(Key::T, ctrl_t);
-        assert!(edits(&harness, tab, id).editor.is_none());
-        let pending = pending_text(&harness, tab, id, (1, 4));
-        assert_eq!(pending.as_deref(), Some("now()"));
-        assert!(
-            harness
-                .app
-                .workspace(tab)
-                .unwrap()
-                .active_sql_tab()
-                .is_none()
-        );
-        // Anywhere else the chord opens a SQL editor, as it did: in an
-        // editor of another column too.
-        open_editor(&mut harness, tab, id, (1, 2));
         harness.press(Key::T, ctrl_t);
         let workspace = harness.app.workspace(tab).unwrap();
         assert!(workspace.active_sql_tab().is_some());
-        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        assert_eq!(pending_text(&harness, tab, id, (1, 4)), None);
     }
 
     #[test]
-    fn t_and_f_set_a_boolean_and_are_no_key_of_the_rows_elsewhere() {
+    fn t_and_f_are_no_keys_of_a_boolean_cell() {
         let (mut harness, tab, id) = covers_in(Look::omarchy());
         let workspace = harness.app.workspace_mut(tab).unwrap();
         let object = workspace.object_tab_mut(id).unwrap();
@@ -12279,22 +12295,16 @@ mod tests {
         page.rows[0][2] = tabletist_db::Value::Int(1);
         let flat = |harness: &Harness| harness.app.workspace(tab).unwrap().tree.flat;
         let was = flat(&harness);
+        // A boolean changes with Space only: `f` is no key of the rows,
+        // and `t` is the tree's with the keys on the tree.
         select(&mut harness, tab, id, (0, 2));
         type_key(&mut harness, Key::F, "f");
+        type_key(&mut harness, Key::T, "t");
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert_eq!(flat(&harness), was);
+        harness.press(Key::Space, Modifiers::NONE);
         let pending = pending_text(&harness, tab, id, (0, 2));
         assert_eq!(pending.as_deref(), Some("false"));
-        type_key(&mut harness, Key::T, "t");
-        // True is what it loaded: nothing is pending, and the tree is as
-        // it was.
-        assert!(edits(&harness, tab, id).cells.is_empty());
-        assert_eq!(flat(&harness), was);
-        // On any other cell neither is a key of the rows: `t` is the
-        // tree's with the keys on the tree.
-        select(&mut harness, tab, id, (0, 1));
-        type_key(&mut harness, Key::F, "f");
-        type_key(&mut harness, Key::T, "t");
-        assert!(edits(&harness, tab, id).cells.is_empty());
-        assert_eq!(flat(&harness), was);
     }
 
     #[test]
@@ -13080,12 +13090,12 @@ mod tests {
                 look.name
             );
             harness.press(Key::Escape, Modifiers::NONE);
-            // Space is the row panel's and `?` the shortcuts': neither
-            // edits.
+            // Space is kept for the booleans and `?` is the list of keys':
+            // neither edits, and Space shows and hides no panel any more.
             let panel = harness.app.workspace(tab).unwrap().row_panel;
             type_key(&mut harness, Key::Space, " ");
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
-            assert_ne!(harness.app.workspace(tab).unwrap().row_panel, panel);
+            assert_eq!(harness.app.workspace(tab).unwrap().row_panel, panel);
             type_text(&mut harness, "?");
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert!(matches!(
@@ -13782,7 +13792,7 @@ mod tests {
     }
 
     #[test]
-    fn i_and_enter_edit_the_cell_and_escape_keeps_the_change() {
+    fn i_edits_the_cell_and_escape_keeps_the_change() {
         let (mut harness, tab, id) = normal_mode((1, 1));
         let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
         assert!(panel(&harness));
@@ -13814,8 +13824,8 @@ mod tests {
         // The next Esc is normal mode's, and closes the panel.
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!panel(&harness));
-        // Enter edits too, from the pending value, and opens no panel.
-        harness.press(Key::Enter, Modifiers::NONE);
+        // `i` edits again, from the pending value, and opens no panel.
+        type_key(&mut harness, Key::I, "i");
         assert_eq!(
             editor_text(&harness, tab, id).as_deref(),
             Some("user2@example.comx")
@@ -13836,8 +13846,9 @@ mod tests {
         let now = edits(&harness, tab, id);
         assert!(now.editor.is_none());
         assert_eq!(now.cells.len(), 1);
-        // A held Enter is one press: it opens the editor and no more, and
-        // one that commits does not go on to open the cell below.
+        // A held Enter is one press. On the rows it puts the keyboard on
+        // the row's fields and no more: its repeats do not go on to edit
+        // the field it landed on.
         let held = egui::Event::Key {
             key: Key::Enter,
             physical_key: None,
@@ -13854,11 +13865,230 @@ mod tests {
             harness.settle();
         };
         hold(&mut harness);
-        assert!(edits(&harness, tab, id).editor.is_some());
+        assert!(panel(&harness), "Enter opens the inspector");
+        assert!(edits(&harness, tab, id).editor.is_none());
         assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+        // From the field a held Enter opens its editor, and one that
+        // commits does not go on to open the field below.
+        hold(&mut harness);
+        assert!(edits(&harness, tab, id).editor.is_some());
         hold(&mut harness);
         assert!(edits(&harness, tab, id).editor.is_none());
-        assert_eq!(selected(&harness, tab, id), Some((3, 1)));
+    }
+
+    /// The brief's test 4.
+    #[test]
+    fn enter_on_a_grid_row_opens_the_inspector_and_i_edits_the_cell() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        harness.app.apply(Action::ToggleRowPanel(tab));
+        harness.settle();
+        assert!(!panel(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(
+            edits(&harness, tab, id).editor.is_none(),
+            "Enter edits nothing"
+        );
+        assert!(panel(&harness));
+        assert!(
+            field_focused(&harness, tab, id, 1),
+            "the keyboard is on a field"
+        );
+        // Esc gives the keys back to the grid, and the panel stays. The
+        // next one is the grid's, and closes it.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!field_focused(&harness, tab, id, 1));
+        assert!(panel(&harness), "Esc left the fields and no more");
+        // On the rows, `i` is insert mode on the cell.
+        type_key(&mut harness, Key::I, "i");
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some("user2@example.com")
+        );
+        assert!(harness.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn enter_and_i_in_the_inspector_edit_the_focused_field() {
+        for (key, text) in [(Key::Enter, None), (Key::I, Some("i"))] {
+            let (mut harness, tab, id) = normal_mode((1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(field_focused(&harness, tab, id, 1), "{key:?}");
+            match text {
+                Some(text) => type_key(&mut harness, key, text),
+                None => harness.press(key, Modifiers::NONE),
+            }
+            assert!(edits(&harness, tab, id).editor.is_some(), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn the_brackets_step_rows_while_the_inspector_shows() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        // From the rows, with the panel open.
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+        type_key(&mut harness, Key::OpenBracket, "[");
+        assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+        // From a field of it, where `j` and `k` step the fields.
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(field_focused(&harness, tab, id, 1));
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selected(&harness, tab, id).map(|at| at.0), Some(2));
+        // With the panel closed a bracket begins another key, and steps
+        // nothing.
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        let before = selected(&harness, tab, id);
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selected(&harness, tab, id), before);
+    }
+
+    #[test]
+    fn enter_in_a_field_under_the_keys_is_the_fields_own() {
+        // The prompt's Enter runs its line, and opens no inspector.
+        let (mut harness, tab, _id) = normal_mode((1, 1));
+        harness.app.apply(Action::ToggleRowPanel(tab));
+        harness.settle();
+        type_key(&mut harness, Key::Colon, ":");
+        type_key(&mut harness, Key::W, "w");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        // Nor does the WHERE line's.
+        type_key(&mut harness, Key::Slash, "/");
+        assert!(harness.ctx.text_edit_focused(), "the WHERE line");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+    }
+
+    #[test]
+    fn s_replaces_the_cell_as_cc_does_and_shows_no_structure() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::S, "s");
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.object_tab(id).unwrap().view,
+            crate::model::ObjectView::Data
+        );
+        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn v_y_copies_the_cell_and_y_alone_copies_nothing() {
+        let (mut harness, _tab, _id) = normal_mode((1, 1));
+        harness.copied = None;
+        type_key(&mut harness, Key::Y, "y");
+        assert_eq!(harness.copied, None, "y begins yy p");
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::V, "v");
+        assert_eq!(harness.copied, None, "v waits");
+        type_key(&mut harness, Key::Y, "y");
+        assert_eq!(harness.copied.as_deref(), Some("user2@example.com"));
+    }
+
+    /// The brief's test 5, as far as it can go: the keys are claimed, and
+    /// nothing answers them until pasting and duplicating are built.
+    #[test]
+    fn the_keys_that_paste_and_duplicate_are_claimed_and_change_nothing() {
+        use crate::keymap::{Command, Layout};
+        let keymap = crate::keymap::Keymap::default();
+        assert_eq!(keymap.label(Layout::Mac, Command::PasteCells), "⌘V");
+        assert_eq!(keymap.label(Layout::Mac, Command::PasteNewRows), "⇧⌘V");
+        assert_eq!(keymap.label(Layout::Omarchy, Command::DuplicateRow), "yy p");
+        assert_eq!(keymap.label(Layout::Omarchy, Command::CopyCells), "v y");
+        assert_eq!(keymap.label(Layout::Omarchy, Command::PasteCells), "v p");
+        for command in [
+            Command::PasteCells,
+            Command::PasteNewRows,
+            Command::DuplicateRow,
+        ] {
+            assert!(
+                !command.info().built,
+                "{command:?} is built: test what it does"
+            );
+        }
+        // The Mac: a paste over a selected cell, as the window sends it,
+        // without Shift and with.
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        select(&mut harness, tab, id, (1, 1));
+        for held in [Modifiers::COMMAND, Modifiers::COMMAND | Modifiers::SHIFT] {
+            harness.frame(vec![
+                egui::Event::ModifiersChanged(held),
+                egui::Event::Paste("a\tb".into()),
+            ]);
+            harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+            harness.settle();
+        }
+        let now = edits(&harness, tab, id);
+        assert!(now.cells.is_empty() && now.added.is_empty() && now.editor.is_none());
+        assert!(harness.app.dialog.is_none(), "no preview yet");
+        // Omarchy: yy p adds no row, yy P neither, and v p changes none.
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        for keys in [["y", "y", "p"], ["y", "y", "P"], ["v", "p", ""]] {
+            for text in keys.into_iter().filter(|text| !text.is_empty()) {
+                let key = Key::from_name(&text.to_uppercase()).expect("a letter");
+                type_key(&mut harness, key, text);
+            }
+            let now = edits(&harness, tab, id);
+            assert!(
+                now.cells.is_empty() && now.added.is_empty() && now.editor.is_none(),
+                "{keys:?}"
+            );
+        }
+    }
+
+    /// The brief's test 6.
+    #[test]
+    fn mod_backspace_in_an_open_editor_sets_no_null() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            // A cell that holds a value, in a column that takes NULL.
+            select(&mut harness, tab, id, (0, 2));
+            harness.press(Key::F2, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            // The editor is open still, and nothing is pending: no NULL.
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_some(), "{}", look.name);
+            assert!(now.cells.is_empty(), "{}", look.name);
+            // With it closed the same chord sets the cell NULL.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.settle();
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert_eq!(
+                pending_text(&harness, tab, id, (0, 2)).as_deref(),
+                Some("NULL"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn space_on_the_grid_is_kept_for_the_booleans_and_toggles_no_panel() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            let shown = harness.app.workspace(tab).unwrap().row_panel;
+            type_key(&mut harness, Key::Space, " ");
+            assert_eq!(
+                harness.app.workspace(tab).unwrap().row_panel,
+                shown,
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_large_editors_band_names_each_looks_keys() {
+        assert_eq!(band_keys(&Look::macos()), "⌘↩ apply · esc cancel");
+        assert_eq!(
+            band_keys(&Look::standard()),
+            "Ctrl+Enter apply · Esc cancel"
+        );
     }
 
     #[test]
@@ -14251,7 +14481,7 @@ mod tests {
         assert_eq!(pending_text(&harness, tab, id, (0, 2)), Some(kept.clone()));
         assert!(harness.app.workspace(tab).unwrap().row_panel);
         // Ctrl+C drops what was typed since: the pending value stays.
-        harness.press(Key::Enter, Modifiers::NONE);
+        type_key(&mut harness, Key::I, "i");
         assert!(is_large(&harness, tab, id));
         type_text(&mut harness, "junk");
         harness.copied = None;
@@ -14266,7 +14496,7 @@ mod tests {
         assert_eq!(harness.copied, None);
         // Mod+Enter applies, as in the other looks: the `x` goes, and a
         // member comes.
-        harness.press(Key::Enter, Modifiers::NONE);
+        type_key(&mut harness, Key::I, "i");
         to_text_end(&mut harness);
         harness.press(Key::Backspace, Modifiers::NONE);
         add_a_member(&mut harness);
@@ -14374,23 +14604,6 @@ mod tests {
         // It waits in its turn: `cc` is as it was.
         type_key(&mut harness, Key::C, "c");
         assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
-        // So with the first key of `gd`: after a click, `d` is the Data
-        // view's key again.
-        let (mut harness, tab, id) = normal_mode((1, 1));
-        let view = |harness: &Harness| {
-            let workspace = harness.app.workspace(tab).unwrap();
-            workspace.object_tab(id).unwrap().view
-        };
-        type_key(&mut harness, Key::S, "s");
-        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
-        type_key(&mut harness, Key::G, "g");
-        type_key(&mut harness, Key::D, "d");
-        assert_eq!(view(&harness), crate::model::ObjectView::Structure, "gd");
-        type_key(&mut harness, Key::G, "g");
-        let middle = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size).center();
-        click_at(&mut harness, middle);
-        type_key(&mut harness, Key::D, "d");
-        assert_eq!(view(&harness), crate::model::ObjectView::Data);
     }
 
     #[test]
@@ -14569,7 +14782,7 @@ mod tests {
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!panel(&harness));
         assert!(painted(&harness, said));
-        type_key(&mut harness, Key::Space, " ");
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
         assert!(panel(&harness));
         // `u` empties the set, and the line still says it.
         type_key(&mut harness, Key::U, "u");
@@ -14698,24 +14911,24 @@ mod tests {
             changes.rows[0].set[0].new,
             tabletist_db::NewValue::Text("bob@example.comx".into())
         );
-        // `s` alone stays the Structure view's key.
+        // `s` alone is the cell's letter: it saves nothing, and shows no
+        // other view.
         harness.answer_written(Ok(written_row("bob@example.comx")));
         type_key(&mut harness, Key::S, "s");
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(
             workspace.object_tab(id).unwrap().view,
-            crate::model::ObjectView::Structure
+            crate::model::ObjectView::Data
         );
         assert_eq!(writes(&harness), 2);
     }
 
     #[test]
-    fn space_still_opens_the_row_panel_and_a_sql_result_keeps_its_keys() {
+    fn the_row_panel_keeps_its_chord_and_a_sql_result_its_keys() {
         let (mut harness, tab, id) = normal_mode((1, 1));
         let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
         assert!(panel(&harness));
-        type_key(&mut harness, Key::Space, " ");
-        assert!(!panel(&harness));
+        // Space was the panel's key. It is kept for the booleans now.
         type_key(&mut harness, Key::Space, " ");
         assert!(panel(&harness));
         harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
@@ -14724,15 +14937,17 @@ mod tests {
         assert!(panel(&harness));
         let now = edits(&harness, tab, id);
         assert!(now.editor.is_none() && now.cells.is_empty());
-        // `y` copies and `gd` and `/` are as they were.
+        // The cell is copied with `v y`, and `gd` and `/` are as they
+        // were.
+        type_key(&mut harness, Key::V, "v");
         type_key(&mut harness, Key::Y, "y");
         assert_eq!(harness.copied.as_deref(), Some("user2@example.com"));
         type_key(&mut harness, Key::Slash, "/");
         assert!(harness.ctx.text_edit_focused(), "the WHERE line");
         harness.press(Key::Escape, Modifiers::NONE);
 
-        // A SQL editor's result: `i` and Enter are its row panel's still,
-        // and the letters that edit do nothing there.
+        // A SQL editor's result: Enter is its row panel's still, and the
+        // letters that edit do nothing there.
         let mut harness = Harness::new();
         harness.set_look(Look::omarchy());
         let tab = harness.connect_fake_as(false);
@@ -14747,9 +14962,7 @@ mod tests {
         );
         assert!(panel(&harness));
         type_key(&mut harness, Key::I, "i");
-        assert!(!panel(&harness), "`i` closes the panel");
-        type_key(&mut harness, Key::I, "i");
-        assert!(panel(&harness), "and opens it");
+        assert!(panel(&harness), "`i` is the cell's, and a result has none");
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!panel(&harness));
         harness.press(Key::Enter, Modifiers::NONE);
@@ -14760,7 +14973,8 @@ mod tests {
             (Key::U, "u"),
             (Key::C, "c"),
             (Key::C, "c"),
-            (Key::Semicolon, ":"),
+            (Key::I, "i"),
+            (Key::O, "o"),
         ] {
             type_key(&mut harness, key, text);
         }
@@ -14848,16 +15062,19 @@ mod tests {
     fn the_status_line_offers_the_keys_that_edit_and_counts_what_is_pending() {
         let (mut harness, tab, id) = normal_mode((1, 1));
         let palette = harness.app.palette;
-        // Space is the row panel's key now, and `i` edits a cell that can
-        // be edited.
-        assert!(painted(&harness, "space inspect"), "{:?}", harness.painted);
+        // Enter is the inspector's key, and `i` edits a cell that can be
+        // edited. The cell is copied with `v y`, and the views have no
+        // letters any more.
+        assert!(painted(&harness, "enter inspect"), "{:?}", harness.painted);
         assert!(painted(&harness, "i edit"));
-        assert!(!painted(&harness, "enter inspect"));
-        assert!(!painted(&harness, "i inspector"));
+        assert!(painted(&harness, "v y copy"));
+        for gone in ["space inspect", "i inspector", "y copy", "s structure"] {
+            assert!(!painted(&harness, gone), "{gone}");
+        }
         // Not on the row's key, which cannot.
         select(&mut harness, tab, id, (1, 0));
         assert!(!painted(&harness, "i edit"));
-        assert!(painted(&harness, "space inspect"));
+        assert!(painted(&harness, "enter inspect"));
         // Nothing is counted while nothing is pending.
         let counted = |harness: &Harness| {
             let mut pieces = harness.painted.iter();
@@ -14879,7 +15096,7 @@ mod tests {
         let tab = with_page(&mut harness);
         focus_grid(&mut harness, tab);
         type_key(&mut harness, Key::J, "j");
-        assert!(painted(&harness, "space inspect"));
+        assert!(painted(&harness, "enter inspect"));
         assert!(!painted(&harness, "i edit"));
     }
 
@@ -15048,8 +15265,8 @@ mod tests {
         // Until the selection moves.
         type_key(&mut harness, Key::J, "j");
         assert!(!painted(&harness, why));
-        // Enter and `cc` ask as `i` does.
-        harness.press(Key::Enter, Modifiers::NONE);
+        // `s` and `cc` ask as `i` does.
+        type_key(&mut harness, Key::S, "s");
         assert!(painted(&harness, why));
         type_key(&mut harness, Key::K, "k");
         type_key(&mut harness, Key::C, "c");
@@ -15587,11 +15804,16 @@ mod tests {
         assert_eq!(command(&harness, tab), None);
         harness.app.apply(Action::CancelEdit { tab, id });
         harness.settle();
-        // No prompt on a SQL editor, whose line offers none.
+        // A SQL editor has the prompt too, once the keyboard is out of
+        // its text: in the text a colon is typed.
         harness.app.apply(Action::NewSqlTab(tab));
         harness.settle();
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab), None, "typed, in the text");
         harness.press(Key::Escape, Modifiers::NONE);
         type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab).as_deref(), Some(""));
+        harness.press(Key::Escape, Modifiers::NONE);
         assert_eq!(command(&harness, tab), None);
         assert_eq!(edits(&harness, tab, id).cells.len(), 1);
     }
@@ -15626,7 +15848,7 @@ mod tests {
         // In the Structure view too, where `:e!` drops what is pending.
         focus_grid(&mut harness, tab);
         make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
-        type_key(&mut harness, Key::S, "s");
+        set_view(&mut harness, tab, id, crate::model::ObjectView::Structure);
         let view = |harness: &Harness| {
             let workspace = harness.app.workspace(tab).unwrap();
             workspace.object_tab(id).unwrap().view
@@ -15637,7 +15859,7 @@ mod tests {
         assert_eq!(command(&harness, tab).as_deref(), Some(""));
         type_key(&mut harness, Key::E, "e");
         type_key(&mut harness, Key::Num1, "!");
-        // `d` there is the prompt's text, not the Data view's key.
+        // `d` there is the prompt's text, and no key of the rows'.
         type_key(&mut harness, Key::D, "d");
         assert_eq!(command(&harness, tab).as_deref(), Some("e!d"));
         assert_eq!(view(&harness), crate::model::ObjectView::Structure);
@@ -16223,8 +16445,18 @@ mod tests {
     }
 
     /// What the large editor's band says of the keys, in `look`.
+    /// The keys the large editor's band names, in the looks whose Esc
+    /// drops the edit: `⌘↩ apply · esc cancel`, `Ctrl+Enter apply · Esc
+    /// cancel`.
     fn band_keys(look: &Look) -> String {
-        format!("{}↩ apply · esc cancel", look.command_key())
+        let keymap = crate::keymap::Keymap::default();
+        let layout = crate::keymap::Layout::of(look);
+        let key = |command| keymap.key(layout, command);
+        format!(
+            "{} apply · {} cancel",
+            key(crate::keymap::Command::ApplyLargeEditor),
+            key(crate::keymap::Command::CancelLargeEditor)
+        )
     }
 
     /// The fixture's document as its editor opens it: laid out, a member
@@ -19422,8 +19654,13 @@ mod tests {
     const REVIEW_CHORD: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 
     #[test]
-    fn mod_shift_d_shows_and_hides_the_review_in_every_look() {
-        for look in Look::ALL {
+    fn mod_shift_d_shows_and_hides_the_review_in_the_looks_that_have_the_chord() {
+        // Omarchy's chord is the database's, and its review is `:diff`.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.press(Key::D, REVIEW_CHORD);
+        assert!(!edits(&harness, tab, id).reviewing);
+        for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
             let view = |harness: &Harness| {
                 let workspace = harness.app.workspace(tab).unwrap();
@@ -19594,7 +19831,7 @@ mod tests {
 
     #[test]
     fn a_held_chord_shows_the_review_once() {
-        for look in Look::ALL {
+        for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
             harness.settle();
@@ -19855,14 +20092,14 @@ mod tests {
     }
 
     #[test]
-    fn capital_y_copies_the_sql_and_y_still_copies_the_cell() {
+    fn capital_y_copies_the_sql_and_v_y_still_copies_the_cell() {
         let (mut harness, tab, id) = normal_mode((1, 1));
         let long = "x".repeat(100);
         make_pending(&mut harness, tab, id, (1, 1), &long);
-        // With the panel closed `Y` is the cell's key, as `y` is.
+        // With the panel closed `Y` is nobody's key.
         harness.copied = None;
         type_key(&mut harness, Key::Y, "Y");
-        assert_eq!(harness.copied.as_deref(), Some(long.as_str()));
+        assert_eq!(harness.copied, None);
         review(&mut harness, tab, id);
         // What is shown is cut.
         let cut = format!("   SET \"email\" = '{}…'", "x".repeat(57));
@@ -19894,16 +20131,17 @@ mod tests {
         assert!(edits(&harness, tab, id).reviewing);
         assert_eq!(edits(&harness, tab, id).cells.len(), 1);
         assert_eq!(writes(&harness), 0);
-        // `y` is the cell's still, with the panel open.
+        // `v y` is the cell's still, with the panel open.
         harness.copied = None;
+        type_key(&mut harness, Key::V, "v");
         type_key(&mut harness, Key::Y, "y");
         assert_eq!(harness.copied.as_deref(), Some(long.as_str()));
-        // Closed again, `Y` is the cell's again.
+        // Closed again, `Y` is nobody's again.
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!edits(&harness, tab, id).reviewing);
         harness.copied = None;
         type_key(&mut harness, Key::Y, "Y");
-        assert_eq!(harness.copied.as_deref(), Some(long.as_str()));
+        assert_eq!(harness.copied, None);
     }
 
     /// The save that was sent last: its rows, since a set prints its
@@ -22530,7 +22768,9 @@ mod tests {
 
     #[test]
     fn mod_i_shows_the_panel_and_focuses_the_first_field_that_can_be_edited() {
-        for look in Look::ALL {
+        // The looks that have the chord. Omarchy's key for it is Enter on
+        // the rows (`enter_on_a_grid_row_opens_the_inspector...`).
+        for look in desktop_looks() {
             let (mut harness, tab, id) = form_row(look, 1);
             let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
             let owed = |harness: &Harness| {
@@ -22625,7 +22865,7 @@ mod tests {
     }
 
     #[test]
-    fn mod_i_on_a_row_that_cannot_be_edited_shows_the_panel_and_its_reason() {
+    fn the_inspectors_key_on_a_row_that_cannot_be_edited_shows_the_panel_and_its_reason() {
         for look in Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
@@ -22637,7 +22877,7 @@ mod tests {
             let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             focus_grid(&mut harness, tab);
             harness.app.apply(Action::ToggleRowPanel(tab));
-            harness.press(Key::I, Modifiers::COMMAND);
+            open_inspector(&mut harness);
             assert!(harness.app.workspace(tab).unwrap().row_panel);
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             // The panel's first line is the reason, and no field has the
