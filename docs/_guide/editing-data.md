@@ -105,14 +105,20 @@ database will do if you leave it alone:
 
 - **required** (a red `*` after the column's name in the Omarchy look):
   the column cannot be NULL and has no default. Save waits for a value.
-- A dimmed value or expression: the column's default.
+  The Omarchy look's status line names the column, while you type too.
+- A fainter value: the column's default. Where the column lists its
+  values it is the value's tag, faded (dimmed text in the Omarchy look).
+  Slanted, it is a default the database works out for each row, like
+  `CURRENT_TIMESTAMP`.
 - **NULL**: the column takes NULL and has no default.
 - **+ new**, or an empty cell: the database assigns the value on save, as
   it does for an identity column or a computed one. Such a cell cannot be
   typed into.
 
 Fill it as you edit any row. Cmd/Ctrl+Z on a cell takes its value out
-again. Esc leaves the editor and keeps the row.
+again. Esc leaves the editor and keeps the row. While new rows wait to be
+saved, the Omarchy look counts them at the right of the table's header:
+`+1`.
 
 The row is saved with everything else that is pending, in the same
 transaction. Only the columns you set are sent, and **Review SQL** shows
