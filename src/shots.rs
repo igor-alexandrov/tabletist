@@ -776,7 +776,8 @@ fn shots() {
         edit_production(harness);
     });
     both("dialog-new", |harness| {
-        harness.press(egui::Key::N, egui::Modifiers::COMMAND);
+        // As the picker's button asks: its key is each look's own.
+        harness.app.apply(Action::NewConnection);
         let postgres = harness.app.look.label("PostgreSQL");
         harness.click(&postgres);
     });
