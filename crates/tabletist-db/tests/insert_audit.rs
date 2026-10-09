@@ -637,6 +637,34 @@ mod mysql {
             "Check constraint 'audit_book_covers_kind_check' is violated."
         );
 
+        // What each failure is of, read from its number and its message.
+        let numbered = |number: u32, named: Named| Named {
+            number: Some(number),
+            ..named
+        };
+        assert_eq!(
+            names(&connection, &cases.taken_isbn()).await,
+            numbered(1062, of_constraint("isbn"))
+        );
+        assert_eq!(
+            names(&connection, &cases.no_publisher()).await,
+            numbered(
+                1452,
+                Named {
+                    columns: vec!["publisher_id".into()],
+                    ..of_constraint("audit_book_covers_ibfk_1")
+                }
+            )
+        );
+        assert_eq!(
+            names(&connection, &cases.null_publisher()).await,
+            numbered(1048, of_column("publisher_id"))
+        );
+        assert_eq!(
+            names(&connection, &cases.vinyl()).await,
+            numbered(3819, of_constraint("audit_book_covers_kind_check"))
+        );
+
         assert_eq!(count(&connection, "tabletist", "audit_books").await, 1);
         assert_eq!(
             count(&connection, "tabletist", "audit_book_covers").await,
@@ -645,12 +673,11 @@ mod mysql {
         admin.query_drop(DROP).await.unwrap();
     }
 
-    /// INS-32a. Spec 9: MySQL's failures are worded by their error number
+    /// Spec 9: MySQL's failures are worded by their error number
     /// (1062, 1452, 1048, 3819). A taken value, a missing parent and a NULL
     /// share the SQLSTATE 23000, so the number is what tells them apart: it
     /// is somewhere in the error the app is handed.
     #[tokio::test]
-    #[ignore = "INS-32a: the driver drops MySQL's error number for its SQLSTATE"]
     async fn a_mysql_failure_keeps_its_error_number() {
         let Some((mut admin, connection)) = bookshop("audit_number").await else {
             return;

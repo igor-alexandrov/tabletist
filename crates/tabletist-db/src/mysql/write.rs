@@ -653,10 +653,10 @@ async fn warning(conn: &mut mysql_async::Conn) -> Result<Error> {
     let (_level, code, message): (String, u32, String) = from_row(row)?;
     Ok(Error::Query {
         code: Some(code.to_string()),
+        named: Box::new(super::named(code, &message)),
         message,
         detail: None,
         hint: None,
-        named: Box::default(),
     })
 }
 
