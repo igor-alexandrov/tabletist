@@ -805,9 +805,13 @@ pub fn show<'a>(
                         }
                         if look.terminal {
                             if new {
-                                // The terminal's bar: 2 wide, where the
-                                // row begins.
-                                let bar = Rect::from_min_size(lead.min, vec2(2.0, row_height));
+                                // The terminal's bar: 2 wide, and as far
+                                // in as the pane's focus ring is wide. The
+                                // ring is drawn over the row's start while
+                                // the grid has the keyboard, and the bar
+                                // stands beside it, as the design has them.
+                                let at = lead.min + vec2(focus::WIDTH, 0.0);
+                                let bar = Rect::from_min_size(at, vec2(2.0, row_height));
                                 painter.rect_filled(bar, CornerRadius::ZERO, fresh.bar);
                             }
                             let line = rect.center().y;
@@ -2110,12 +2114,18 @@ mod tests {
                 assert!(filled, "{said}: the row's fill");
                 // The bar at the row's left: 3 wide, and 2 in the terminal.
                 let wide = if look.terminal { 2.0 } else { 3.0 };
-                let bar = rects.iter().any(|rect| {
+                let bar = rects.iter().find(|rect| {
                     rect.fill == colors.bar
                         && rect.rect.width() == wide
                         && rect.rect.height() == look.grid_row
                 });
-                assert!(bar, "{said}: the row's bar");
+                let bar = bar.unwrap_or_else(|| panic!("{said}: the row's bar"));
+                // The terminal's stands clear of the pane's focus ring,
+                // which is drawn over the row's start.
+                let row = rects.iter().find(|rect| rect.fill == colors.fill);
+                let from_start = bar.rect.left() - row.expect("the fill").rect.left();
+                let ring = if look.terminal { focus::WIDTH } else { 0.0 };
+                assert_eq!(from_start, ring, "{said}: where the bar is");
                 let signed = texts
                     .iter()
                     .any(|(text, painted, _)| text == "+" && *painted == palette.success);

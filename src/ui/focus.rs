@@ -8,9 +8,10 @@ use egui::{StrokeKind, Ui};
 
 use crate::theme::{Look, Palette};
 
-/// How far off a control its ring starts, and how wide a ring is.
+/// How far off a control its ring starts.
 const GAP: f32 = 2.0;
-const WIDTH: f32 = 2.0;
+/// How wide a ring is: what a pane keeps clear at its edge for its own.
+pub(super) const WIDTH: f32 = 2.0;
 /// A field's halo: this wide, the accent at a quarter.
 const HALO: f32 = 3.0;
 /// A field's border.
