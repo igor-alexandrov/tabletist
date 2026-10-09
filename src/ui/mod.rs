@@ -4621,13 +4621,85 @@ mod tests {
             assert_eq!(active_sql(&harness, tab).text, "SELECT 1", "{}", look.name);
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
         }
-        // The terminal has the key alone.
+        // The terminal has the key alone: `=`, once the keyboard is out of
+        // the text. Formatting gives it back.
         let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
         harness.settle();
         type_text(&mut harness, "select 1");
         assert!(!harness.has("Format"));
-        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::Equals, "=");
         assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+        assert!(harness.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn omarchy_formats_with_the_equals_sign_once_the_keyboard_is_out_of_the_text() {
+        let (mut harness, tab) = sql_harness(Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, "select 1");
+        type_text(&mut harness, "=");
+        assert_eq!(active_sql(&harness, tab).text, "select 1=", "typed");
+        // The chord of the other looks formats nothing here.
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, "select 1=");
+        harness.press(Key::Backspace, Modifiers::NONE);
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::Equals, "=");
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+        // The other looks type it wherever they are.
+        let (mut harness, tab) = sql_harness(Look::macos());
+        harness.settle();
+        type_text(&mut harness, "select 1");
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::Equals, "=");
+        assert_eq!(active_sql(&harness, tab).text, "select 1");
+    }
+
+    /// The brief's test 7. Rollback is not built: its chord is claimed,
+    /// and what the test can hold is that it reaches nothing else.
+    #[test]
+    fn rollbacks_chord_cancels_no_query_and_the_cancel_chord_throws_nothing_away() {
+        use crate::keymap::{Command as Key_, Layout};
+        let keymap = crate::keymap::Keymap::default();
+        assert_eq!(keymap.label(Layout::Mac, Key_::Rollback), "⌥⌘⌫");
+        assert_eq!(keymap.label(Layout::Mac, Key_::DiscardChanges), "⌥⌘⌫");
+        assert_eq!(keymap.label(Layout::Mac, Key_::CancelQuery), "⌘.");
+        assert!(
+            !Key_::Rollback.info().built,
+            "Rollback is built: test what it does"
+        );
+        let discard = Modifiers::COMMAND | Modifiers::ALT;
+        for look in desktop_looks() {
+            // A run in flight in a SQL editor.
+            let (mut harness, tab) = sql_harness(look);
+            set_sql(&mut harness, tab, "SELECT 1", 0);
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            let before = cancels(&harness);
+            // Until Rollback is built nothing answers its chord, which is
+            // then whatever the text makes of it. It cancels nothing.
+            harness.press(Key::Backspace, discard);
+            assert_eq!(cancels(&harness), before, "{}: no cancel", look.name);
+            harness.press(Key::Period, Modifiers::COMMAND);
+            assert_eq!(cancels(&harness), before + 1, "{}", look.name);
+            // A table's load: the cancel chord cancels it, and the discard
+            // chord does not.
+            let (mut harness, _tab, _id) = editable_in(look);
+            reload(&mut harness);
+            let before = cancels(&harness);
+            harness.press(Key::Backspace, discard);
+            assert_eq!(cancels(&harness), before, "{}", look.name);
+            harness.press(Key::Period, Modifiers::COMMAND);
+            assert!(cancels(&harness) > before, "{}", look.name);
+            // A table with a change pending: the cancel chord keeps it,
+            // and the discard chord drops it.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.press(Key::Period, Modifiers::COMMAND);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            harness.press(Key::Backspace, discard);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+        }
     }
 
     #[test]

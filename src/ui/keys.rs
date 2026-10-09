@@ -183,6 +183,11 @@ pub fn written(ctx: &egui::Context, look: &crate::theme::Look, command: Command)
     published(ctx).key(Layout::of(look), command)
 }
 
+/// Every key of `command`, as `look` writes them.
+pub fn written_all(ctx: &egui::Context, look: &crate::theme::Look, command: Command) -> Written {
+    published(ctx).label(Layout::of(look), command)
+}
+
 /// The first key `command` has in `scope`, as `look` writes it.
 pub fn written_in(
     ctx: &egui::Context,
@@ -629,51 +634,46 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // The place of the tab asked for with its digit.
     let mut tab_asked = None;
     ctx.input_mut(|input| {
-        // The completion list's keys come first: the editor never sees
-        // them, nor do the shortcuts below (Ctrl+N, Ctrl+P).
-        if let Some(editor) = in_editor {
-            completion_keys(input, editor, completing, terminal, &mut actions);
-        }
-        // Running works while typing: the editor never sees these. A held
-        // chord runs once, or each repeat would cancel the run before it.
-        // Shift variants first: egui ignores an extra Shift when matching.
-        if let Some((tab, sql_tab)) = sql {
-            for (modifiers, all) in [
-                (Modifiers::COMMAND | Modifiers::SHIFT, true),
-                (Modifiers::COMMAND, false),
-            ] {
-                if consume_press(input, modifiers, Key::Enter) {
-                    actions.push(Action::RunSql { tab, sql_tab, all });
-                }
-            }
-        }
-        // Format is a SQL editor's, and a table's while a document is
-        // edited in its large editor. The press is taken on every tab, or
-        // Mod+F, below, would take it for its own.
-        let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
-        if format && let Some((tab, sql_tab)) = sql {
-            actions.push(Action::FormatSql { tab, sql_tab });
-        }
-        if format
-            && open
-            && let Some((tab, id)) = object
-        {
-            actions.push(Action::FormatEditor { tab, id });
-        }
-        // The other mode of the editor's runs. Not Mod+W, as its design
-        // has it: that closes the tab.
-        if let Some((tab, sql_tab)) = sql
-            && consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::M)
-        {
-            actions.push(Action::ToggleSqlMode { tab, sql_tab });
-        }
-        // From here the keymap says which key: each line asks whether its
-        // command's chord went down, in the scope it is read in. The
-        // guards say when the command makes sense, as they did.
+        // The keymap says which key: each line asks whether its command's
+        // chord went down, in the scope it is read in. The guards say when
+        // the command makes sense, as they did.
         let keymap = &app.keymap;
         let on = |input: &mut egui::InputState, command: Command, scope: Scope| {
             asked(input, keymap, layout, command, scope, normal)
         };
+        // The completion list's keys come first: the editor never sees
+        // them, nor do the chords below.
+        if let Some(editor) = in_editor {
+            completion_keys(input, editor, completing, (keymap, layout), &mut actions);
+        }
+        if let Some((tab, sql_tab)) = sql {
+            // Running works while typing: the editor never sees these. A
+            // held chord runs once, or each repeat would cancel the run
+            // before it.
+            for (command, all) in [(Command::RunAll, true), (Command::RunStatement, false)] {
+                if on(input, command, Scope::SqlEditor).fresh {
+                    actions.push(Action::RunSql { tab, sql_tab, all });
+                }
+            }
+            // The chord that formats the script, in the looks that have
+            // one: Omarchy's key is a letter, read with the letters.
+            if on(input, Command::Format, Scope::SqlEditor).fresh {
+                actions.push(Action::FormatSql { tab, sql_tab });
+            }
+            // The other mode of the editor's runs, in the looks that have
+            // a chord for it: Omarchy sets the mode from its prompt.
+            if on(input, Command::ToggleSqlMode, Scope::SqlEditor).fresh {
+                actions.push(Action::ToggleSqlMode { tab, sql_tab });
+            }
+        }
+        // A document being edited in a table's large editor is formatted
+        // by the editor's own chord.
+        if open
+            && let Some((tab, id)) = object
+            && on(input, Command::Format, Scope::CellEditor).fresh
+        {
+            actions.push(Action::FormatEditor { tab, id });
+        }
         // A fresh press only: an Esc held to close a dialog over the tab
         // repeats after the dialog is gone.
         if give_up && on(input, Command::CancelConnecting, Scope::Global).fresh {
@@ -1061,38 +1061,48 @@ struct Completing {
 }
 
 /// The keys of the completion list of `editor`, which has the keyboard:
-/// `Ctrl+Space` asks for a list, and an open one (`completing`) takes the
-/// keys that move in it, insert from it and close it.
+/// one asks for a list, and an open one (`completing`) takes the keys that
+/// move in it, insert from it and close it. Which keys is the keymap's to
+/// say; they are read with the keyboard in the text.
 fn completion_keys(
     input: &mut egui::InputState,
     (tab, sql_tab): (ConnTabId, TabId),
     completing: Option<Completing>,
-    terminal: bool,
+    (keymap, layout): (&Keymap, Layout),
     actions: &mut Vec<Action>,
 ) {
-    // Two chords ask for a list: some systems take Ctrl+Space before the
-    // app sees it (macOS switches input sources with it, and an input
-    // method may be woken by it).
-    let asked = take_press(input, Modifiers::CTRL, Key::Space)
-        + take_press(input, Modifiers::COMMAND, Key::I);
-    if asked > 0 {
+    let scope = Scope::SqlEditor;
+    let chords = |command: Command| -> Vec<&'static str> {
+        keymap.chords_now(layout, command, scope, false).collect()
+    };
+    // Every time any of `chords` went down, repeats too. All are taken.
+    let take = |input: &mut egui::InputState, chords: &[&'static str]| -> usize {
+        let pressed = chords.iter().map(|keys| presses(input, layout, keys).count);
+        pressed.sum()
+    };
+    // The Mac has two chords that ask for a list: some systems take
+    // Ctrl+Space before the app sees it (macOS switches input sources with
+    // it, and an input method may be woken by it).
+    if take(input, &chords(Command::Complete)) > 0 {
         actions.push(Action::OpenCompletion { tab, sql_tab });
     }
     let Some(list) = completing else {
         return;
     };
-    // The arrows are the list's once it has a row to move to. The
-    // terminal's Ctrl+N and Ctrl+P are its own as long as it is open, rows
-    // or not: they never reach New connection and Quick open.
-    for (modifiers, key, step, taken) in [
-        (Modifiers::NONE, Key::ArrowDown, 1, list.has_row),
-        (Modifiers::NONE, Key::ArrowUp, -1, list.has_row),
-        (Modifiers::CTRL, Key::N, 1, terminal),
-        (Modifiers::CTRL, Key::P, -1, terminal),
+    // The arrows are the list's once it has a row to move to. Its other
+    // keys (Omarchy's Ctrl+N and Ctrl+P) are its own as long as it is
+    // open, rows or not.
+    for (command, step) in [
+        (Command::NextCompletion, 1),
+        (Command::PreviousCompletion, -1),
     ] {
-        if taken {
+        for keys in chords(command) {
+            let arrow = matches!(keys, "up" | "down");
+            if arrow && !list.has_row {
+                continue;
+            }
             // One row for each press: a frame may hold several.
-            let presses = take_press(input, modifiers, key);
+            let presses = presses(input, layout, keys).count;
             actions.extend((0..presses).map(|_| Action::MoveCompletion { tab, sql_tab, step }));
         }
     }
@@ -1102,9 +1112,18 @@ fn completion_keys(
         row: None,
     };
     let close = Action::CloseCompletion { tab, sql_tab };
-    let pressed = |input: &egui::InputState, key: Key| {
-        let is_it = |event: &egui::Event| is_press(event, Modifiers::NONE, key);
-        input.events.iter().any(is_it)
+    // The keys that insert: Enter, which is also the editor's line break,
+    // and the others (Tab), which are the list's alone.
+    let inserts = chords(Command::InsertCompletion);
+    let (enters, others): (Vec<_>, Vec<_>) = inserts.into_iter().partition(|keys| *keys == "enter");
+    // Whether one of `chords` went down, left in the frame for the editor.
+    let pressed = |input: &egui::InputState, chords: &[&'static str]| {
+        let held = input.modifiers;
+        input.events.iter().any(|event| {
+            chords
+                .iter()
+                .any(|keys| press_of(layout, held, event, keys).is_some())
+        })
     };
     if list.has_row {
         if input.events.iter().any(inserts_text) {
@@ -1114,22 +1133,22 @@ fn completion_keys(
             // list goes on is the refresh's to say, for the word as it
             // reads after this frame. Enter stays the editor's line break,
             // and the list is done.
-            take_press(input, Modifiers::NONE, Key::Tab);
-            if pressed(input, Key::Enter) {
+            take(input, &others);
+            if pressed(input, &enters) {
                 actions.push(close);
             }
-        } else if take_press(input, Modifiers::NONE, Key::Tab) > 0 {
+        } else if take(input, &others) > 0 {
             actions.push(accept);
         } else if list.enter_breaks {
             // The editor gets its line break; the list is done.
-            if pressed(input, Key::Enter) {
+            if pressed(input, &enters) {
                 actions.push(close);
             }
-        } else if take_press(input, Modifiers::NONE, Key::Enter) > 0 {
+        } else if take(input, &enters) > 0 {
             actions.push(accept);
         }
     }
-    if take_press(input, Modifiers::NONE, Key::Escape) > 0 {
+    if take(input, &chords(Command::CloseCompletion)) > 0 {
         actions.push(Action::CloseCompletion { tab, sql_tab });
     }
 }
@@ -1139,41 +1158,6 @@ fn completion_keys(
 fn inserts_text(event: &egui::Event) -> bool {
     crate::ui::sql_text::is_typed(event)
         || matches!(event, egui::Event::Paste(text) if !text.is_empty())
-}
-
-/// Whether `event` is `key` going down with exactly `modifiers`: Shift and
-/// Alt as named (`consume_key` and `matches_logically` let an extra Shift
-/// through), and no Ctrl or Cmd that is not named.
-///
-/// Ctrl is named by `CTRL` and matches as every platform reports it: alone
-/// on macOS, with `command` set elsewhere. Ctrl held with Cmd on macOS is
-/// not Ctrl. Mod is named by `COMMAND`: Cmd on macOS, where an extra Ctrl
-/// changes nothing (as for the other Mod shortcuts), and Ctrl elsewhere.
-pub(crate) fn is_press(event: &egui::Event, modifiers: Modifiers, key: Key) -> bool {
-    matches!(
-        event,
-        egui::Event::Key {
-            key: pressed,
-            modifiers: held,
-            pressed: true,
-            ..
-        } if *pressed == key
-            && held.matches_exact(modifiers)
-            // egui lets the pattern's Ctrl match Ctrl+Cmd. Cmd is held
-            // only where the pattern names it, or names Mod.
-            && (modifiers.mac_cmd || modifiers.command || !held.mac_cmd)
-    )
-}
-
-/// How many times `key` went down this frame with exactly `modifiers` (see
-/// [`is_press`]; a held key's repeats count). Takes the presses, so
-/// neither the editor nor a shortcut after this sees them.
-fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> usize {
-    let before = input.events.len();
-    input
-        .events
-        .retain(|event| !is_press(event, modifiers, key));
-    before - input.events.len()
 }
 
 /// The chords that edit the cells of the table on screen: they open an
@@ -1526,9 +1510,6 @@ fn letters(
     // An open menu keeps its Esc: this runs before the menu is drawn, and
     // the key closes the menu before it closes anything under it.
     let menu_open = egui::Popup::is_any_open(ctx);
-    // A press of its own: not the repeats of a key held since it did
-    // something else (the Esc that left insert mode).
-    let fresh = |key: Key| ctx.input_mut(|input| consume_press(input, Modifiers::NONE, key));
     if let crate::model::ConnTabContent::Picker(picker) = &app.active_tab().content {
         let selected = picker.selected.clone();
         let scope = Scope::Connections;
@@ -1718,12 +1699,23 @@ fn letters(
     // when the grid is drawn, after these keys were read, and the letter
     // would act on the cell the selection leaves.
     let typed = typed_chars(ctx);
-    let (keys, pointer) = ctx.input(|input| {
+    let (keys, pointer, fresh_key) = ctx.input(|input| {
         let down = |event: &&egui::Event| matches!(event, egui::Event::Key { pressed: true, .. });
         let button = |event: &egui::Event| matches!(event, egui::Event::PointerButton { .. });
+        let fresh = |event: &egui::Event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    pressed: true,
+                    repeat: false,
+                    ..
+                }
+            )
+        };
         (
             input.events.iter().filter(down).count(),
             input.events.iter().any(button),
+            input.events.iter().any(fresh),
         )
     });
     // Where the letters that edit a cell are read: on its rows, or on a
@@ -1760,10 +1752,15 @@ fn letters(
             actions.push(Action::FieldFocused { tab, id, col });
         }
     };
+    // The card of a refused write, while a SQL editor's Messages show it:
+    // the command its button stands for, and what the button does.
+    let mut card = crate::ui::sql_results::card_key(app, tab);
+    let has_card = card.is_some();
     let holds = |when: crate::keymap::When| match when {
         crate::keymap::When::InspectorOpen => panel,
         crate::keymap::When::Review => reviewing.is_some(),
         crate::keymap::When::Note => note.is_some(),
+        crate::keymap::When::RefusedWrite => has_card,
         _ => false,
     };
     let review_only = |when: crate::keymap::When| when == crate::keymap::When::Review;
@@ -1966,6 +1963,26 @@ fn letters(
                     });
                 }
             }
+            // The script of the SQL editor in front, with the keyboard
+            // out of its text: formatting gives it back.
+            (Some(Command::Format), _) => {
+                if let Some(sql_tab) = app.active_sql().map(|(_, id)| id) {
+                    actions.push(Action::FormatSql { tab, sql_tab });
+                }
+            }
+            // The letter the card's button names. A press of its own:
+            // once writes are allowed the same letter runs the statements
+            // again, and the repeats of a key held since must not answer
+            // an offer nobody has read.
+            (Some(command @ (Command::EditRefusedConnection | Command::AllowRefusedWrite)), _) => {
+                let offered = card.as_ref().map(|(offered, _)| *offered);
+                if fresh_key
+                    && offered == Some(command)
+                    && let Some((_, action)) = card.take()
+                {
+                    actions.push(action);
+                }
+            }
             // Only the documents of a panel that shows.
             (Some(Command::FoldDocuments), _) => {
                 if let Some(id) = panel_tab.filter(|id| shown == Some(*id)) {
@@ -1976,17 +1993,6 @@ fn letters(
         }
     }
     ctx.data_mut(|data| data.insert_temp(typed_id(), waiting));
-    // The card of a refused write, while a SQL editor's Messages show it:
-    // the letter its button names, which it does in this look alone (the
-    // others returned above, and `card_key` answers none of them). A
-    // press of its own: once writes are
-    // allowed the same letter runs the statements again, and the repeats
-    // of a key held since must not answer an offer nobody has read.
-    if let Some((key, action)) = crate::ui::sql_results::card_key(app, tab)
-        && fresh(key)
-    {
-        actions.push(action);
-    }
 }
 
 #[cfg(test)]
@@ -2217,18 +2223,34 @@ mod tests {
 
     #[test]
     fn a_press_matches_its_modifiers_as_each_platform_reports_them() {
-        let press = |held| crate::testing::key(Key::I, held);
-        let is = |held, pattern| is_press(&press(held), pattern, Key::I);
+        // The Mac's layout and Windows', whose chords are spelled with
+        // `cmd` for the command key: Cmd on macOS, Ctrl elsewhere.
+        let named = |cmd, ctrl| Mods {
+            cmd,
+            ctrl,
+            ..Mods::default()
+        };
+        let is = |held, mods| {
+            [Layout::Mac, Layout::Windows]
+                .into_iter()
+                .all(|layout| held_is(layout, held, mods))
+        };
+        let is_not = |held, mods| {
+            [Layout::Mac, Layout::Windows]
+                .into_iter()
+                .all(|layout| !held_is(layout, held, mods))
+        };
         let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
         let ctrl_elsewhere = Modifiers::CTRL | Modifiers::COMMAND;
-        // Mod: Cmd on macOS, with Ctrl or without, and Ctrl elsewhere.
+        // The command key: Cmd on macOS, with Ctrl or without, and Ctrl
+        // elsewhere.
         for held in [
             Modifiers::COMMAND,
             cmd,
             cmd | Modifiers::CTRL,
             ctrl_elsewhere,
         ] {
-            assert!(is(held, Modifiers::COMMAND), "{held:?}");
+            assert!(is(held, named(true, false)), "{held:?}");
         }
         for held in [
             Modifiers::NONE,
@@ -2236,11 +2258,11 @@ mod tests {
             cmd | Modifiers::SHIFT,
             ctrl_elsewhere | Modifiers::ALT,
         ] {
-            assert!(!is(held, Modifiers::COMMAND), "{held:?}");
+            assert!(is_not(held, named(true, false)), "{held:?}");
         }
         // Ctrl: alone on macOS, with the command key elsewhere, never Cmd.
         for held in [Modifiers::CTRL, ctrl_elsewhere] {
-            assert!(is(held, Modifiers::CTRL), "{held:?}");
+            assert!(is(held, named(false, true)), "{held:?}");
         }
         for held in [
             Modifiers::NONE,
@@ -2248,17 +2270,22 @@ mod tests {
             cmd | Modifiers::CTRL,
             Modifiers::CTRL | Modifiers::SHIFT,
         ] {
-            assert!(!is(held, Modifiers::CTRL), "{held:?}");
+            assert!(is_not(held, named(false, true)), "{held:?}");
         }
         // No modifier is none at all.
-        assert!(is(Modifiers::NONE, Modifiers::NONE));
+        assert!(is(Modifiers::NONE, Mods::default()));
         for held in [Modifiers::SHIFT, Modifiers::ALT, Modifiers::CTRL, cmd] {
-            assert!(!is(held, Modifiers::NONE), "{held:?}");
+            assert!(is_not(held, Mods::default()), "{held:?}");
         }
         // Another key, and a key coming up, are not this press.
-        assert!(!is_press(&press(Modifiers::NONE), Modifiers::NONE, Key::O));
-        let up = crate::testing::release(Key::I, Modifiers::NONE);
-        assert!(!is_press(&up, Modifiers::NONE, Key::I));
+        let none = Modifiers::NONE;
+        let press = crate::testing::key(Key::I, none);
+        assert_eq!(press_of(Layout::Mac, none, &press, "i"), None, "a letter");
+        assert_eq!(press_of(Layout::Mac, none, &press, "f2"), None);
+        let up = crate::testing::release(Key::F2, none);
+        assert_eq!(press_of(Layout::Mac, none, &up, "f2"), None);
+        let down = crate::testing::key(Key::F2, none);
+        assert_eq!(press_of(Layout::Mac, none, &down, "f2"), Some(true));
     }
 
     #[test]

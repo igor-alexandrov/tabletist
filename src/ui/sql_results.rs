@@ -226,7 +226,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
     body.set_clip_rect(rest.intersect(ui.clip_rect()));
     match (state, sql.pane) {
         (State::Idle, _) => {
-            let (keys, _) = super::sql_editor::run_keys(&look);
+            let (keys, _) = super::sql_editor::run_keys(ui.ctx(), &look);
             let hint = env.said(|words| format!("{} {keys}", words.say("Run a statement with")));
             note(&body, rest, &hint, palette.secondary, &env);
         }
@@ -1255,13 +1255,17 @@ enum Offer {
 }
 
 impl Offer {
-    /// The button's name, and the letter that presses it in the terminal
-    /// look.
-    fn names(self) -> (&'static str, &'static str, egui::Key) {
+    /// The button's name, and the command whose key presses it in the
+    /// look that has one.
+    fn names(self) -> (&'static str, crate::keymap::Command) {
+        use crate::keymap::Command;
         match self {
-            Self::EditConnection => ("Edit connection", "e", egui::Key::E),
-            Self::AllowWrites => ("Allow writes in this tab", "w", egui::Key::W),
-            Self::RunAgain => ("Run in a read-write transaction", "w", egui::Key::W),
+            Self::EditConnection => ("Edit connection", Command::EditRefusedConnection),
+            Self::AllowWrites => ("Allow writes in this tab", Command::AllowRefusedWrite),
+            Self::RunAgain => (
+                "Run in a read-write transaction",
+                Command::AllowRefusedWrite,
+            ),
         }
     }
 }
@@ -1442,7 +1446,7 @@ impl Blocked<'_> {
 /// And only while the Messages show the card: not under the opening
 /// screen a switch of database puts over the editor, which keeps the tab
 /// and its last run.
-pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(egui::Key, Action)> {
+pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(crate::keymap::Command, Action)> {
     if !app.look.terminal {
         return None;
     }
@@ -1453,7 +1457,7 @@ pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(egui::Key, Action)>
     }
     let blocked = blocked(workspace, sql)?;
     let offer = blocked.offer()?;
-    Some((offer.names().2, blocked.action(offer, tab, sql.id)))
+    Some((offer.names().1, blocked.action(offer, tab, sql.id)))
 }
 
 /// The card of a refused write, at the head of the Messages: said as what
@@ -1518,10 +1522,11 @@ fn blocked_card(
             let Some(offer) = blocked.offer() else {
                 return;
             };
-            let (name, key, _) = offer.names();
+            let (name, command) = offer.names();
             let painted = look.label(&gettext(locale, name));
+            let key = crate::ui::keys::written(column.ctx(), look, command);
             let button = if look.terminal {
-                states::key_button(&painted, key, look)
+                states::key_button(&painted, &key, look)
             } else {
                 states::button(&painted, look)
             };
@@ -1788,7 +1793,7 @@ mod tests {
 
     /// The hint an editor that has run nothing shows.
     fn hint(look: &Look) -> String {
-        let (keys, _) = crate::ui::sql_editor::run_keys(look);
+        let (keys, _) = crate::ui::sql_editor::run_keys(&egui::Context::default(), look);
         format!("Run a statement with {keys}")
     }
 
@@ -2713,7 +2718,10 @@ mod tests {
         let (harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
         assert!(matches!(
             card_key(&harness.app, tab),
-            Some((Key::W, Action::SetSqlMode { .. }))
+            Some((
+                crate::keymap::Command::AllowRefusedWrite,
+                Action::SetSqlMode { .. }
+            ))
         ));
     }
 
