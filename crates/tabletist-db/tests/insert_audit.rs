@@ -325,25 +325,14 @@ mod postgres {
             "{message}"
         );
 
-        // What each failure is of, as PostgreSQL's error names it: the
-        // constraint of a taken value, a missing parent and a refused
-        // value, the column of a NULL.
-        assert_eq!(
+        // What each failure is of, as PostgreSQL's error names it. Held to
+        // once the tables are dropped.
+        let named = [
             names(&connection, &cases.taken_isbn()).await,
-            of_constraint("audit_books_isbn_key")
-        );
-        assert_eq!(
             names(&connection, &cases.no_publisher()).await,
-            of_constraint("audit_book_covers_publisher_id_fkey")
-        );
-        assert_eq!(
             names(&connection, &cases.null_publisher()).await,
-            of_column("publisher_id")
-        );
-        assert_eq!(
             names(&connection, &cases.vinyl()).await,
-            of_constraint("audit_book_covers_kind_check")
-        );
+        ];
 
         // Nothing of the four saves is in the tables.
         assert_eq!(count(&connection, "public", "audit_books").await, 1);
@@ -352,6 +341,17 @@ mod postgres {
         let covers = ObjectRef::new(cases.schema, cases.covers);
         assert_eq!(allowed_kinds(&connection, &covers).await, kinds());
         admin.batch_execute(DROP).await.unwrap();
+        // The constraint of a taken value, a missing parent and a refused
+        // value, the column of a NULL.
+        assert_eq!(
+            named,
+            [
+                of_constraint("audit_books_isbn_key"),
+                of_constraint("audit_book_covers_publisher_id_fkey"),
+                of_column("publisher_id"),
+                of_constraint("audit_book_covers_kind_check"),
+            ]
+        );
     }
 
     /// The statements PostgreSQL ran for `inserts` into covers of the
@@ -638,32 +638,13 @@ mod mysql {
         );
 
         // What each failure is of, read from its number and its message.
-        let numbered = |number: u32, named: Named| Named {
-            number: Some(number),
-            ..named
-        };
-        assert_eq!(
+        // Held to once the tables are dropped.
+        let named = [
             names(&connection, &cases.taken_isbn()).await,
-            numbered(1062, of_constraint("isbn"))
-        );
-        assert_eq!(
             names(&connection, &cases.no_publisher()).await,
-            numbered(
-                1452,
-                Named {
-                    columns: vec!["publisher_id".into()],
-                    ..of_constraint("audit_book_covers_ibfk_1")
-                }
-            )
-        );
-        assert_eq!(
             names(&connection, &cases.null_publisher()).await,
-            numbered(1048, of_column("publisher_id"))
-        );
-        assert_eq!(
             names(&connection, &cases.vinyl()).await,
-            numbered(3819, of_constraint("audit_book_covers_kind_check"))
-        );
+        ];
 
         assert_eq!(count(&connection, "tabletist", "audit_books").await, 1);
         assert_eq!(
@@ -671,6 +652,25 @@ mod mysql {
             2
         );
         admin.query_drop(DROP).await.unwrap();
+        let numbered = |number: u32, named: Named| Named {
+            number: Some(number),
+            ..named
+        };
+        assert_eq!(
+            named,
+            [
+                numbered(1062, of_constraint("isbn")),
+                numbered(
+                    1452,
+                    Named {
+                        columns: vec!["publisher_id".into()],
+                        ..of_constraint("audit_book_covers_ibfk_1")
+                    }
+                ),
+                numbered(1048, of_column("publisher_id")),
+                numbered(3819, of_constraint("audit_book_covers_kind_check")),
+            ]
+        );
     }
 
     /// Spec 9: MySQL's failures are worded by their error number
@@ -880,8 +880,14 @@ mod sqlite {
              );
              CREATE TABLE exact (
                  Kind TEXT CHECK (kind IN ('print', 'ebook')),
-                 pages INTEGER CHECK (pages IN ('1', '2'))
-             )",
+                 pages INTEGER CHECK (pages IN ('1', '2')),
+                 É TEXT,
+                 é TEXT CHECK (é IN ('x'))
+             );
+             -- A file can keep a statement as bytes: it is read all the same.
+             PRAGMA writable_schema = ON;
+             UPDATE sqlite_master SET sql = CAST(sql AS BLOB) WHERE name = 'exact';
+             PRAGMA writable_schema = OFF",
         )
         .await;
         let allowed =
@@ -901,6 +907,10 @@ mod sqlite {
             Some(vec!["print".into(), "ebook".into()])
         );
         assert_eq!(allowed(&exact, "pages"), None);
+        // SQLite folds ASCII alone: these are two columns, and the list is
+        // the second's.
+        assert_eq!(allowed(&exact, "É"), None);
+        assert_eq!(allowed(&exact, "é"), Some(vec!["x".into()]));
     }
 
     /// Spec 8: "SQLite uses `RETURNING *`. The app ships its own SQLite,

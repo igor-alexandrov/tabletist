@@ -1036,13 +1036,15 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         Some(_) => connection
             .query_row(
                 &format!(
-                    "SELECT sql FROM {}.sqlite_master WHERE type = 'table' AND name = ?1",
+                    "SELECT CAST(sql AS TEXT) FROM {}.sqlite_master \
+                     WHERE type = 'table' AND name = ?1",
                     Dialect::Sqlite.quote_ident(&object.schema)
                 ),
                 [&object.name],
                 // Lossy, as every name of this file is read: a statement
                 // can hold bytes that are no UTF-8, and a table with such
-                // a name is still described.
+                // a name is still described. Cast, because a file can
+                // keep it as a blob, which is no reason to fail either.
                 |row| optional_text(row, 0),
             )
             .optional()
@@ -1057,12 +1059,13 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
     let made = made.filter(|sql| !crate::check::names_a_collation(sql));
     let checks = made.as_deref().map(crate::check::in_create_table);
     let checks = checks.unwrap_or_default();
-    // SQLite matches a name without regard to its case. The parser folds
-    // a bare one to lower case and keeps a quoted one as written.
+    // SQLite matches a name without regard to the case of its ASCII
+    // letters, and no others: `É` and `é` are two columns. The parser folds
+    // a bare name to lower case and keeps a quoted one as written.
     let allowed = |name: &str| {
         checks.iter().find_map(|check| {
             crate::check::allowed_values(check, name)
-                .or_else(|| crate::check::allowed_values(check, &name.to_lowercase()))
+                .or_else(|| crate::check::allowed_values(check, &name.to_ascii_lowercase()))
         })
     };
     let mut statement = connection

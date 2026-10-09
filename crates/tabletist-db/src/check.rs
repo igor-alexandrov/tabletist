@@ -51,7 +51,8 @@ pub(crate) fn mysql_allowed_values(clause: &str, column: &str) -> Option<Vec<Str
     };
     // The clause has the column's name as the constraint wrote it, and
     // MySQL matches it without regard to its case: both in lower case.
-    allowed_values(&from_mysql(&clause)?, &column.to_lowercase())
+    // ASCII's alone, so that no other column's name comes to match.
+    allowed_values(&from_mysql(&clause)?, &column.to_ascii_lowercase())
 }
 
 /// A MySQL condition in the parser's own writing: a name in double quotes
@@ -78,7 +79,7 @@ fn from_mysql(clause: &str) -> Option<String> {
                 }
             }
             written.push('"');
-            written.push_str(&name.to_lowercase().replace('"', "\"\""));
+            written.push_str(&name.to_ascii_lowercase().replace('"', "\"\""));
             written.push('"');
             rest = &rest[end?..];
         } else if character == '\'' {
@@ -125,10 +126,16 @@ fn introduces(rest: &str) -> bool {
     name.is_some_and(|after| after.starts_with('\''))
 }
 
+/// How deep a condition's parentheses may nest and still be handed to the
+/// parser, which goes a call deeper for each. A list is two or three deep.
+/// The statement is a file's own text, and nothing there bounds it.
+const DEEPEST: usize = 32;
+
 /// The condition of each `CHECK (...)` in a `CREATE TABLE` statement, with
 /// its parentheses, in the order they stand. SQLite keeps no list of them:
 /// the statement, as it was written, is all there is. A `CHECK` inside a
-/// string, a quoted name or a comment is none.
+/// string, a quoted name or a comment is none, and one nested deeper than
+/// [`DEEPEST`] is left out: it is no plain list.
 pub(crate) fn in_create_table(sql: &str) -> Vec<&str> {
     let mut checks = Vec::new();
     let mut at = 0;
@@ -148,10 +155,12 @@ pub(crate) fn in_create_table(sql: &str) -> Vec<&str> {
             let after = rest[head.len()..].trim_start();
             if after.starts_with('(') {
                 let open = sql.len() - after.len();
-                let Some(length) = closed(after) else {
+                let Some((length, deepest)) = closed(after) else {
                     return checks;
                 };
-                checks.push(&sql[open..open + length]);
+                if deepest <= DEEPEST {
+                    checks.push(&sql[open..open + length]);
+                }
                 at = open + length;
                 in_word = false;
                 continue;
@@ -221,9 +230,11 @@ fn skip(rest: &str) -> Option<usize> {
 }
 
 /// How long the parenthesised text that `rest` begins with is, its closing
-/// parenthesis counted. `None` where it never closes.
-fn closed(rest: &str) -> Option<usize> {
+/// parenthesis counted, and how deep its parentheses nest. `None` where it
+/// never closes.
+fn closed(rest: &str) -> Option<(usize, usize)> {
     let mut depth = 0usize;
+    let mut deepest = 0;
     let mut at = 0;
     while at < rest.len() {
         if let Some(skipped) = skip(&rest[at..]) {
@@ -233,11 +244,14 @@ fn closed(rest: &str) -> Option<usize> {
         let character = rest[at..].chars().next()?;
         at += character.len_utf8();
         match character {
-            '(' => depth += 1,
+            '(' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
             ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(at);
+                    return Some((at, deepest));
                 }
             }
             _ => {}
@@ -596,6 +610,25 @@ mod tests {
         // A table with none, and a text that ends inside one.
         assert!(checks("CREATE TABLE t (a TEXT)").is_empty());
         assert!(checks("CREATE TABLE t (a TEXT CHECK (a IN ('x'").is_empty());
+        // A condition nested deeper than any list is, in a file's own
+        // text: it is left out, and nothing is parsed a call deeper for
+        // each of its parentheses.
+        let nested = |depth: usize| {
+            let (open, close) = ("(".repeat(depth), ")".repeat(depth));
+            format!("CREATE TABLE t (a TEXT CHECK {open}a IN ('x'){close}, CHECK (a <> ''))")
+        };
+        let shallow = nested(8);
+        let lists: Vec<_> = checks(&shallow)
+            .iter()
+            .map(|check| values(check, "a"))
+            .collect();
+        assert_eq!(lists, [list(&["x"]), None]);
+        let deep = nested(200_000);
+        let lists: Vec<_> = checks(&deep)
+            .iter()
+            .map(|check| values(check, "a"))
+            .collect();
+        assert_eq!(lists, [None]);
         // Whether the statement names a collation, where that is code.
         use super::names_a_collation as collates;
         assert!(!collates(sql));
