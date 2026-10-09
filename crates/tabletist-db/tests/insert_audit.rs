@@ -23,8 +23,9 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use tabletist_db::{
-    Access, ChangeSet, ConnectSpec, Connection, Dialect, Error, HostKeys, InsertValue, NewValue,
-    ObjectRef, RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value, WriteOutcome,
+    Access, ChangeSet, ConnectSpec, Connection, Dialect, Error, HostKeys, InsertValue, Named,
+    NewValue, ObjectRef, RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value,
+    WriteOutcome,
 };
 
 /// Harbor Press, as the design's picker finds it.
@@ -99,6 +100,28 @@ fn failure(outcome: WriteOutcome) -> Error {
     match outcome {
         WriteOutcome::FailedInsert { error, .. } => error,
         other => panic!("the save was to fail on a new row: {other:?}"),
+    }
+}
+
+/// What the database names in the failure of `changes`' save.
+async fn names(connection: &Connection, changes: &ChangeSet) -> Named {
+    match failure(save(connection, changes).await) {
+        Error::Query { named, .. } => *named,
+        other => panic!("a query error: {other:?}"),
+    }
+}
+
+fn of_constraint(name: &str) -> Named {
+    Named {
+        constraint: Some(name.into()),
+        ..Named::default()
+    }
+}
+
+fn of_column(name: &str) -> Named {
+    Named {
+        columns: vec![name.into()],
+        ..Named::default()
     }
 }
 
@@ -257,8 +280,8 @@ mod postgres {
 
     /// Spec 9, with INS-31: PostgreSQL says which rule a new row broke by
     /// its SQLSTATE, and names the column and the value in the error's
-    /// detail. The app's `Error` has no column or constraint of its own, so
-    /// a failed cell can be worded only from this text.
+    /// detail. The error names the constraint, and the column of a NULL: what
+    /// run 5 finds a failed cell by.
     #[tokio::test]
     async fn the_bookshops_failures_as_postgres_hands_them_over() {
         let Some((admin, connection)) = bookshop().await else {
@@ -300,6 +323,26 @@ mod postgres {
         assert!(
             message.ends_with(r#"check constraint "audit_book_covers_kind_check""#),
             "{message}"
+        );
+
+        // What each failure is of, as PostgreSQL's error names it: the
+        // constraint of a taken value, a missing parent and a refused
+        // value, the column of a NULL.
+        assert_eq!(
+            names(&connection, &cases.taken_isbn()).await,
+            of_constraint("audit_books_isbn_key")
+        );
+        assert_eq!(
+            names(&connection, &cases.no_publisher()).await,
+            of_constraint("audit_book_covers_publisher_id_fkey")
+        );
+        assert_eq!(
+            names(&connection, &cases.null_publisher()).await,
+            of_column("publisher_id")
+        );
+        assert_eq!(
+            names(&connection, &cases.vinyl()).await,
+            of_constraint("audit_book_covers_kind_check")
         );
 
         // Nothing of the four saves is in the tables.
