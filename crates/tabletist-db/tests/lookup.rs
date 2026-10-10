@@ -54,37 +54,45 @@ fn found(page: &LookupPage) -> Vec<(i64, String, Matched)> {
 
 /// What every engine answers for the Bookshop's publishers, which are the
 /// five of each module's `CREATE`.
-async fn the_bookshop_is_searched(connection: &Connection, schema: &str, table: &str) {
+async fn the_bookshop_is_searched(connection: &Connection, schema: &str, table: &str, on: &str) {
     let read = |part: LookupPart, limit: u32| {
         let lookup = publishers(schema, table, part, limit);
-        async move { connection.lookup(&lookup).await.unwrap() }
+        async move {
+            connection
+                .lookup(&lookup)
+                .await
+                .unwrap_or_else(|error| panic!("{on}: {error}"))
+        }
     };
 
     // Test 5: a label is found whatever its case, and its rows go by key.
     let page = read(matching("harb"), 50).await;
-    assert!(!page.more);
+    assert!(!page.more, "{on}");
     assert_eq!(
         found(&page),
         [
             (HARBOR_PRESS, "Harbor Press".to_owned(), Matched::Label),
             (HARBOR_LIGHTS, "Harbor Lights".to_owned(), Matched::Label),
-        ]
+        ],
+        "{on}"
     );
 
     // Test 6: the pinned row, and no row for a key nothing has.
     let page = read(LookupPart::Pinned(Value::Int(HARBOR_PRESS)), 1).await;
     assert_eq!(
         found(&page),
-        [(HARBOR_PRESS, "Harbor Press".to_owned(), Matched::Key)]
+        [(HARBOR_PRESS, "Harbor Press".to_owned(), Matched::Key)],
+        "{on}"
     );
     let page = read(LookupPart::Pinned(Value::Int(NO_PUBLISHER)), 1).await;
-    assert!(page.rows.is_empty() && !page.more);
+    assert!(page.rows.is_empty() && !page.more, "{on}");
     // Two keys that are one number as floats are still two rows.
     let page = read(LookupPart::Pinned(Value::Int(HARBOR_LIGHTS)), 1).await;
-    assert!(!page.more);
+    assert!(!page.more, "{on}");
     assert_eq!(
         found(&page),
-        [(HARBOR_LIGHTS, "Harbor Lights".to_owned(), Matched::Key)]
+        [(HARBOR_LIGHTS, "Harbor Lights".to_owned(), Matched::Key)],
+        "{on}"
     );
 
     // Test 7: the rows whose label holds the text come before the rows
@@ -97,30 +105,40 @@ async fn the_bookshop_is_searched(connection: &Connection, schema: &str, table: 
             (NORTHLIGHT, "Northlight Books".to_owned(), Matched::KeyStart),
             (HARBOR_PRESS, "Harbor Press".to_owned(), Matched::KeyStart),
             (HARBOR_LIGHTS, "Harbor Lights".to_owned(), Matched::KeyStart),
-        ]
+        ],
+        "{on}"
     );
 
     // A text that is a key says so.
     let page = read(matching("5"), 50).await;
-    assert_eq!(found(&page), [(5, "Studio 91".to_owned(), Matched::Key)]);
+    assert_eq!(
+        found(&page),
+        [(5, "Studio 91".to_owned(), Matched::Key)],
+        "{on}"
+    );
 
     // Nothing typed: the first rows by key, and whether there are more.
     let page = read(matching(""), 2).await;
-    assert!(page.more);
+    assert!(page.more, "{on}");
     assert_eq!(
         found(&page).iter().map(|row| row.0).collect::<Vec<_>>(),
-        [5, 6]
+        [5, 6],
+        "{on}"
     );
 
     // A wildcard typed is a character to find.
     let page = read(matching("0%"), 50).await;
-    assert_eq!(found(&page), [(6, "100% Books".to_owned(), Matched::Label)]);
+    assert_eq!(
+        found(&page),
+        [(6, "100% Books".to_owned(), Matched::Label)],
+        "{on}"
+    );
 
     // A quote typed ends no string.
     let page = read(matching("'; DROP TABLE x; --"), 50).await;
-    assert!(page.rows.is_empty());
+    assert!(page.rows.is_empty(), "{on}");
     let page = read(matching(""), 50).await;
-    assert_eq!(page.rows.len(), 5);
+    assert_eq!(page.rows.len(), 5, "{on}");
 }
 
 mod sqlite {
@@ -163,9 +181,9 @@ mod sqlite {
     async fn the_bookshop_is_searched_on_sqlite() {
         // Test 8: on a session that cannot write.
         let (connection, _dir) = made_with(CREATE, Access::ReadOnly).await;
-        the_bookshop_is_searched(&connection, "main", "publishers").await;
+        the_bookshop_is_searched(&connection, "main", "publishers", "sqlite, ReadOnly").await;
         let (connection, _dir) = made_with(CREATE, Access::Writable).await;
-        the_bookshop_is_searched(&connection, "main", "publishers").await;
+        the_bookshop_is_searched(&connection, "main", "publishers", "sqlite, Writable").await;
     }
 
     #[tokio::test]
@@ -293,5 +311,131 @@ mod sqlite {
             .unwrap();
         let rows: Vec<_> = page.rows.iter().map(|row| row.key.clone()).collect();
         assert_eq!(rows, [Value::Text("5".into())]);
+    }
+}
+
+mod postgres {
+    use super::*;
+    use tabletist_db::TlsMode;
+
+    const DROP: &str = "DROP TABLE IF EXISTS lookup_publishers";
+
+    const CREATE: &str = "
+        CREATE TABLE lookup_publishers (
+            id bigint PRIMARY KEY,
+            name text NOT NULL
+        );
+        INSERT INTO lookup_publishers VALUES
+            (5, 'Studio 91'),
+            (6, '100% Books'),
+            (9100000000000000001, 'Northlight Books'),
+            (9100000000000000004, 'Harbor Press'),
+            (9100000000000000007, 'Harbor Lights')";
+
+    fn url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_PG_URL").ok();
+        url.filter(|url| !url.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn the_bookshop_is_searched_on_postgres() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return;
+        };
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (admin, session) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(session);
+        admin.batch_execute(DROP).await.unwrap();
+        admin.batch_execute(CREATE).await.unwrap();
+
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        // Test 8: a session that cannot write looks up as one that can.
+        for access in [Access::ReadOnly, Access::Writable] {
+            let connection =
+                Connection::connect_with(&spec, &secrets, &HostKeys::default(), access)
+                    .await
+                    .unwrap();
+            the_bookshop_is_searched(
+                &connection,
+                "public",
+                "lookup_publishers",
+                &format!("postgres, {access:?}"),
+            )
+            .await;
+            // A text that is no number is no error on a bigint key: the
+            // key is compared as text.
+            let page = connection
+                .lookup(&publishers(
+                    "public",
+                    "lookup_publishers",
+                    matching("harbor p"),
+                    50,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(page.rows.len(), 1);
+        }
+        admin.batch_execute(DROP).await.unwrap();
+    }
+}
+
+mod mysql {
+    use super::*;
+    use mysql_async::prelude::Queryable;
+    use tabletist_db::TlsMode;
+
+    const DROP: &str = "DROP TABLE IF EXISTS lookup_publishers";
+
+    const CREATE: [&str; 2] = [
+        "CREATE TABLE lookup_publishers (
+             id BIGINT PRIMARY KEY,
+             name VARCHAR(64) NOT NULL
+         )",
+        "INSERT INTO lookup_publishers VALUES
+             (5, 'Studio 91'),
+             (6, '100% Books'),
+             (9100000000000000001, 'Northlight Books'),
+             (9100000000000000004, 'Harbor Press'),
+             (9100000000000000007, 'Harbor Lights')",
+    ];
+
+    fn url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").ok();
+        url.filter(|url| !url.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn the_bookshop_is_searched_on_mysql() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+            return;
+        };
+        let opts = mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+        admin.query_drop(DROP).await.unwrap();
+        for statement in CREATE {
+            admin.query_drop(statement).await.unwrap();
+        }
+
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        // Test 8: a session that cannot write looks up as one that can.
+        for access in [Access::ReadOnly, Access::Writable] {
+            let connection =
+                Connection::connect_with(&spec, &secrets, &HostKeys::default(), access)
+                    .await
+                    .unwrap();
+            the_bookshop_is_searched(
+                &connection,
+                "tabletist",
+                "lookup_publishers",
+                &format!("mysql, {access:?}"),
+            )
+            .await;
+        }
+        admin.query_drop(DROP).await.unwrap();
     }
 }
