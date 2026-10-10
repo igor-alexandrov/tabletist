@@ -930,12 +930,17 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
     };
     let (constraint, columns) = match number {
         // ER_DUP_ENTRY: "... for key 'table.key'", the key last. The
-        // value comes before it and may hold a quote of its own.
+        // value comes before it and may hold a quote of its own. The key
+        // is what follows the first dot: its name can hold one (an older
+        // Prisma's `User.email_unique`). So can a table's, and a server
+        // that names no table (before 8.0.19, MariaDB) leaves no dot of
+        // its own: a dotted table there, or a dotted key here, is read
+        // short, and then names a key the structure does not have.
         1062 => {
             let key = message
                 .strip_suffix('\'')
                 .and_then(|rest| rest.rsplit('\'').next());
-            let key = key.map(|key| key.rsplit('.').next().unwrap_or(key).to_owned());
+            let key = key.map(|key| key.split_once('.').map_or(key, |(_, key)| key).to_owned());
             (key, Vec::new())
         }
         // ER_NO_REFERENCED_ROW_2: the constraint as it was defined, which
@@ -1097,6 +1102,12 @@ mod tests {
                 "Duplicate entry '978-1-4028-9462-6' for key 'audit_books.isbn'"
             ),
             (Some(1062), Some("isbn".into()), vec![])
+        );
+        // A key's name can hold a dot (MySQL 8.4 said this one too): what
+        // follows the table's is the key.
+        assert_eq!(
+            of(1062, "Duplicate entry 'x' for key 'books.isbn.v2'"),
+            (Some(1062), Some("isbn.v2".into()), vec![])
         );
         // Before 8.0.19 the key came without its table.
         assert_eq!(
