@@ -626,3 +626,43 @@ fn y_then_capital_y_with_the_review_open_copies_the_sql_and_yanks_nothing() {
     assert_eq!(said.as_deref(), Some("Copied SQL"));
     assert!(!yanked(&harness, tab, id));
 }
+
+// A first key that waits, in the terminal look. A key another reader takes
+// before the letters are read (an arrow) ends its wait as a letter does.
+
+/// `y`, Down, `y` copies two cells: the second `y` is a first again, and
+/// no row is yanked or put on the clipboard.
+#[test]
+fn an_arrow_between_two_ys_ends_the_wait_of_the_first() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    // `kind` of the first cover is `print`, of the second `ebook`.
+    select(&mut harness, tab, id, (0, 2));
+    type_key(&mut harness, Key::Y, "y");
+    assert_eq!(harness.copied.as_deref(), Some("print"));
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+    type_key(&mut harness, Key::Y, "y");
+    assert_eq!(harness.copied.as_deref(), Some("ebook"));
+    assert!(!yanked(&harness, tab, id));
+    assert_eq!(crate::ui::toast::said(&harness.ctx), None);
+}
+
+/// `d`, Down, `d` on two new rows drops neither: the `d` on the second is
+/// no second `d` of `dd`.
+#[test]
+fn an_arrow_between_two_ds_ends_the_wait_of_the_first() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    let first = new_row(add(&mut harness, tab, id));
+    let second = new_row(add(&mut harness, tab, id));
+    // The second went under the first, at the top.
+    assert_eq!(shown(&harness, tab, id), [first, second, 0, 1, 2]);
+    select(&mut harness, tab, id, (first, 2));
+    type_key(&mut harness, Key::D, "d");
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(selected(&harness, tab, id), Some((second, 2)));
+    type_key(&mut harness, Key::D, "d");
+    assert_eq!(edits(&harness, tab, id).added.len(), 2);
+    // The next is its second, and drops the row the cursor is on.
+    type_key(&mut harness, Key::D, "d");
+    assert_eq!(shown(&harness, tab, id), [first, 0, 1, 2]);
+}

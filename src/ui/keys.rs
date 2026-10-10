@@ -329,6 +329,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id));
+    // Whether the frame brings a key press, asked before any is taken. One
+    // that is taken below (an arrow, Ctrl+L) ends the wait of a first key
+    // as a letter does, and the letters would not know it came.
+    let keys = ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
+    });
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
         // The completion list's keys come first: the editor never sees
@@ -644,7 +653,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if ctx.input(|input| input.pointer.any_pressed()) {
             forget_pending(ctx);
         }
-        letters(app, ctx, field, &mut actions);
+        letters(app, ctx, field, keys, &mut actions);
     } else {
         // The keys are a field's: a first key that waited is not the
         // first of what is typed once they are the grid's again.
@@ -1361,14 +1370,16 @@ fn typed(ctx: &egui::Context, text: &str) -> bool {
 /// workspace's vim keys. Only when no text field has the keyboard. `field`
 /// is the column of the row panel's field that has it: `j` and `k` step
 /// the fields then, and the letters that edit a cell edit that field.
-fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &mut Vec<Action>) {
-    // A frame without keys keeps a waiting first key (`d` of `dd`).
-    let keys = ctx.input(|input| {
-        input
-            .events
-            .iter()
-            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
-    });
+/// `keys` says whether the frame brought a key press, whoever took it.
+fn letters(
+    app: &mut App,
+    ctx: &egui::Context,
+    field: Option<usize>,
+    keys: bool,
+    actions: &mut Vec<Action>,
+) {
+    // A frame without keys keeps a waiting first key (`d` of `dd`). Any
+    // key ends the wait, one that is not left to be read here too.
     if !keys {
         return;
     }
