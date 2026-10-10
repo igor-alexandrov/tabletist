@@ -180,13 +180,17 @@ Two rules of earlier specs change, and only for a foreign key cell:
 - **The pinned row** is the one row read by its key, with `=`, and listed
   first:
   - With text, it is the row whose key is the text. It is asked for only
-    when the text reads as a value of the key's type. For an integer, a
-    decimal, a float and a text key that is the check a typed cell of the
-    type gets today. For a `uuid` key it is a rule of this spec, since such
-    a cell takes any text today: 36 characters with their hyphens, or 32
-    hex digits, the forms `bytes_from_text` reads. An `=` with any other
-    text is an error on PostgreSQL and a wrong match on MySQL (`'12abc'` is
-    12 there), so it is never sent.
+    when the text can be compared with the key exactly: a whole number
+    that fits 64 bits for an integer key, any text for a text key, and a
+    UUID for a `uuid` key (36 characters with their hyphens, or 32 hex
+    digits, the forms `bytes_from_text` reads; a rule of this spec, since
+    such a cell takes any text today). An `=` with any other text is an
+    error on PostgreSQL and a wrong match on MySQL (`'12abc'` is 12 there),
+    so it is never sent. A decimal or a float key, and a whole number too
+    wide for 64 bits, are not pinned either: MySQL compares a number with
+    a string as floats, and a neighbouring key would match. Such a key is
+    still found by the matches, which compare it as text.
+  - A pinned read that answers more than one row is taken as no row.
   - With no text, it is the row the cell points at now.
   - A key of a type the app does not know, other than `uuid`, is never
     pinned: it matches by its start alone.
@@ -205,10 +209,16 @@ Two rules of earlier specs change, and only for a foreign key cell:
   label matched, its key starts with the text). The app does not work that
   out again: its own search for the text in a label is only for the bold.
 - **When.** The first search is sent when the editor opens. Each later one
-  is sent 150 ms after the last change of the text. Sending one cancels
-  what the one before it still has running or waiting, and an answer that
-  is not the last search's is dropped. Closing the editor cancels what
-  runs.
+  is sent 150 ms after the last change of the text. An answer that is not
+  the last search's is dropped.
+- **Cancelling** (decided on 2026-10-10, after run 1). A search that more
+  typing overtook is left to end: on PostgreSQL and MySQL every cancel of
+  a statement that runs is a new connection to the server, which a pause
+  in typing must not cost. When the editor closes, the read of the matches
+  it still waits for is cancelled. The pinned row's read is never
+  cancelled: it is one row by its key. A read that comes back cancelled
+  though the picker did not ask for that (a late cancel of the statement
+  before it can land on it) is sent again, once.
 - The search reads and never writes: it runs as a page of rows runs, in a
   read-only transaction on PostgreSQL and MySQL and under `query_only` on
   SQLite.
@@ -543,8 +553,9 @@ The app, through `src/testing.rs`:
 15. An Enter sent before the answer takes the first option of that answer,
     not one of the list before it. Typing after the Enter drops it. A full
     key and Enter is applied by the pinned row's answer alone.
-16. An answer for an earlier text is dropped, and sending a search cancels
-    the one before it.
+16. An answer for an earlier text is dropped, and the search for it is
+    not cancelled. Closing the editor cancels the read of the matches, and
+    not the pinned row's. A read cancelled unasked is sent again once.
 17. A column of a composite foreign key opens the text editor and no list.
     So does a value that opens the large editor.
 18. A NOT NULL column's list has no Set NULL. A nullable one's sets NULL.

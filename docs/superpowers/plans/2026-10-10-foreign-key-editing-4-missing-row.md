@@ -28,6 +28,13 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
+## What run 2's decisions change here
+
+Decided on 2026-10-10, after this plan was written (see "Amendments of 2026-10-10" in run 2's plan). **Where a task below disagrees, this is right.**
+
+- `App::lookups` holds `SentLookup`s, and `send_lookup` takes the serial of the picker a lookup is for. The question of section 7 is no picker's: `ask_row` sends it as `self.send_lookup(session, lookup, 0)`.
+- A pinned row's read is never cancelled. So `ask_row` does not cancel a stale question (it only forgets it), task 2's addition to `send_due_lookups` (the questions' requests as "waited") is not needed, and the test `a_late_or_failed_answer_warns_of_nothing` must not expect a `Command::Cancel` after the discard: it expects none, and that the late answer warns of nothing.
+
 ## What the spec asks, and what gets built
 
 **Rows a to d change what the spec says a user sees. Ask the user before building them, and write the answer into the spec in task 4.**

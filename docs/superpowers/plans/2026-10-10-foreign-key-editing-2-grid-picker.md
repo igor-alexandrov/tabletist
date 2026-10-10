@@ -33,7 +33,7 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 
 ## What run 1 found for this run
 
-Run 1 is built. Its reviews read how the backend cancels a command, and three things there bear on a picker that sends and cancels lookups at the pace of typing. **Decide each before task 2, and change the task's code to match.** None of them is in the tasks below yet.
+Run 1 is built. Its reviews read how the backend cancels a command, and three things there bear on a picker that sends and cancels lookups at the pace of typing. The user decided on 2026-10-10 what to do about the first two, and asked for the pick to be announced. "Amendments of 2026-10-10", below, changes the tasks to match: **where a task and its amendment disagree, the amendment is right.**
 
 1. **Cancelling a lookup that is running costs a connection on PostgreSQL and MySQL.** `cancel_request` (a function of `src/backend.rs`) has each Cancel of a running command open a new connection to the server, and the session's next command waits for that cancel task (on MySQL up to the connect timeout, 10 s). The comment on `keep_cancelling`, a little below it, already warns about MySQL's `max_connect_errors`. This plan's `search` cancels the search before it on every pause in typing, and `send_due_lookups` cancels every orphan. A Cancel of a command that is still **queued** costs nothing: it is skipped and answered `Err(Cancelled)`. So: cancel only what has not started, or cancel a running lookup only when its editor closed, and let a superseded one that already runs finish (its answer is dropped as stale). The app does not know which of its requests is running. The simplest rule that needs no new knowledge: never send `Cancel` for the pinned read (it is one indexed row), and send it for the matches' read only when the editor closes.
 2. **A request the picker still waits for can answer `Err(Cancelled)` unasked.** The session waits until a cancel was sent, not until the server acted on it: on PostgreSQL, if the lookup it was for ends by itself first, the signal can land on the session's next command. `Picker::answered` treats any `Err` as the list's failure. It should take `Error::Cancelled` for a request it did not cancel as "send it again", once.
@@ -46,6 +46,322 @@ Also from run 1:
 - `LookupPart` and `LookupRow` have a `Debug` now. It prints the part's kind and a row's `matched`, and nothing typed or read. A state that holds them can derive `Debug`, and tests can compare rows with `assert_eq!` (the note under task 1's code, that they compare keys because a row has no `Debug`, is stale).
 - `LookupPart::Pinned` holds a `Value`, as this plan already has it.
 - Where run 1 was built (macOS, Docker Desktop), three tests of `crates/tabletist-db/tests/postgres.rs` were refused a connection with the PostgreSQL URL on `localhost` and passed with `127.0.0.1`. The cause was not looked into. `AGENTS.md` documents `localhost`.
+
+## Amendments of 2026-10-10
+
+Three decisions were made after the tasks below were written. Each amendment names the task it changes. The tasks' own text was left as it was.
+
+### A. A search is not cancelled by the next one (tasks 1, 2)
+
+Spec section 3, "Cancelling". Only a closed editor cancels, only the read of the matches, and a read cancelled unasked is sent again once.
+
+**Task 1, `src/key_picker.rs`:**
+
+- `Picker` gets two fields, both `0` in `Picker::new`:
+
+```rust
+    /// Which picker this is, among every one the app opened: a lookup is
+    /// sent in its name, and one whose picker is gone is an editor's that
+    /// closed.
+    pub serial: u64,
+    /// How often a read that came back cancelled unasked was sent again
+    /// for the text that shows. Once is enough for a cancel that was
+    /// late: twice is the session's trouble.
+    pub resends: u8,
+```
+
+  `Picker::typed` sets `self.resends = 0;` with the rest.
+
+- `Picker::answered` says more than whether the answer was its own:
+
+```rust
+/// What a picker made of an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answered {
+    /// Not a read this picker waits for.
+    NotMine,
+    /// Taken: the list is the answer's, or says why there is none.
+    Taken,
+    /// It came back cancelled, and the picker cancels nothing while its
+    /// editor is open: the search is to be sent again.
+    Resend,
+}
+```
+
+  At the top of `answered`, after the `let Some(asked) = self.asked.as_mut() else { return Answered::NotMine; };`:
+
+```rust
+        let mine = asked.pinned == Some(request) || asked.matching == Some(request);
+        if mine && matches!(result, Err(Error::Cancelled)) && self.resends == 0 {
+            // A late cancel of the statement before it landed on this
+            // one. Both reads are asked again: the reducer sends them.
+            self.resends = 1;
+            asked.pinned = None;
+            asked.matching = None;
+            return Answered::Resend;
+        }
+```
+
+  and every `return true` / `return false` / final `true` of the function becomes `Answered::Taken` / `Answered::NotMine`. A second cancelled answer for the same text falls through to the failure, as any error.
+
+- The module's tests: `assert!(picker.answered(...))` becomes `assert_eq!(picker.answered(...), Answered::Taken)`, and `assert!(!picker.answered(...))` becomes `assert_eq!(picker.answered(...), Answered::NotMine)`. Add one test:
+
+```rust
+    #[test]
+    fn a_read_cancelled_unasked_is_sent_again_once() {
+        let mut picker = asking("harb", true);
+        assert_eq!(
+            picker.answered(RequestId(2), Err(Error::Cancelled)),
+            Answered::Resend
+        );
+        assert!(picker.in_flight().is_empty());
+        assert!(picker.failed.is_none());
+        // Sent again, and cancelled again: that is the list's failure.
+        picker.asked = Some(Asked {
+            text: "harb".into(),
+            pinned: None,
+            matching: Some(RequestId(5)),
+            first: None,
+        });
+        assert_eq!(
+            picker.answered(RequestId(5), Err(Error::Cancelled)),
+            Answered::Taken
+        );
+        assert!(picker.failed.is_some());
+        // More typing starts the count again.
+        picker.typed("harbo", Instant::now(), DELAY);
+        assert_eq!(picker.resends, 0);
+    }
+```
+
+**Task 2, `src/app.rs` and `src/app/key_picker.rs`:**
+
+- `App::lookups` is a list of what was sent and for whom, not of pairs:
+
+```rust
+/// A lookup in flight, and the picker it was sent for.
+#[derive(Debug, Clone, Copy)]
+pub struct SentLookup {
+    pub session: SessionId,
+    pub request: RequestId,
+    /// `Picker::serial`.
+    pub picker: u64,
+    /// The read of the matches: the one a closed editor cancels. The
+    /// pinned row's read is one row by its key, and is left to end.
+    pub matches: bool,
+}
+```
+
+  (in `src/app/key_picker.rs`, `pub`; the field is `pub lookups: Vec<key_picker::SentLookup>` where `key_picker` is the `app` module's child).
+
+- `open_picker` gives the picker its serial before it is put on the editor: `picker.serial = self.next_id();` (take the id before the `if let Some(editor) = self.editor_mut(...)`).
+
+- `search` cancels nothing. Its lines `self.lookups.retain(...)` and `self.cancel(session, stale);` go, and so does `picker.in_flight()` from what it plans. It reads the picker's serial instead, and passes it on: `self.send_lookup(session, lookup, serial)`.
+
+- `send_lookup(&mut self, session, lookup, picker: u64)` pushes a `SentLookup` with `matches: matches!(lookup.part, LookupPart::Matching(_))`.
+
+- `lookup_answered` drops the request from the list as before (`self.lookups.retain(|sent| sent.request != request)`), and reads what the picker made of the answer. A `Resend` is noted in the loop and acted on after it, as a kept Enter is (task 3):
+
+```rust
+            match picker.answered(request, result) {
+                Answered::NotMine => continue,
+                Answered::Resend => resend = Some(id),
+                Answered::Taken => { /* task 3: a kept Enter */ }
+            }
+            break;
+```
+
+  with `let mut resend = None;` before the loop and `if let Some(id) = resend { self.search(tab, id); }` after it. (The `if !picker.in_flight().contains(&request) { continue; }` guard of the task goes: `answered` says `NotMine` itself. `result` is then moved into `answered` on a path that may `continue`: if the compiler refuses that, keep the guard and call `answered` after it.)
+
+- `send_due_lookups` cancels for closed editors only:
+
+```rust
+        // The pickers that are open, by their serials.
+        let mut open = Vec::new();
+        // ... in the loop over the object tabs, for each picker:
+        open.push(picker.serial);
+        // ... after the loop:
+        let (kept, orphans): (Vec<_>, Vec<_>) = self
+            .lookups
+            .iter()
+            .copied()
+            .partition(|sent| open.contains(&sent.picker));
+        self.lookups = kept;
+        for sent in orphans {
+            // Its editor closed. The matches' read may be a scan of a
+            // large table: it is stopped. The pinned row's is not.
+            if sent.matches {
+                self.cancel(sent.session, [sent.request]);
+            }
+        }
+```
+
+  The `waited` list of the task goes.
+
+- The tests of `src/ui/key_picker_tests.rs`:
+  - `an_answer_for_an_earlier_text_is_dropped`: the search for `ha` is **not** cancelled. Replace its `cancelled` assertion with one that no `Command::Cancel` was sent at all while the editor is open, and call `harness.app.send_due_lookups(...)` once more before asserting, so the sweep has run.
+  - `closing_the_editor_cancels_what_runs` stays: the last lookup sent is the matches' read. Add to it that a pinned read is left alone: open the editor with `EditStart::Value` on row 1 (two reads: the pinned row's, then the matches'), cancel the edit, run `send_due_lookups`, and assert a `Cancel` names the second request and none names the first.
+  - A new test, `a_read_cancelled_unasked_is_sent_again`: after `edit(.., EditStart::Typed("h".into()))` without answering, `harness.fail_lookup(tabletist_db::Error::Cancelled)` makes the app send the search again (`harness.lookups().len()` grows, the picker has not failed), and `harness.answer_lookups(&PUBLISHERS)` then lists the publishers.
+
+### B. A pick is said (tasks 3, 4)
+
+Spec section 5: "A screen reader hears the pick: publisher_id set to 9100000000000000004, Harbor Press". Row k of the table below is no longer "not built".
+
+A view announces by drawing a labelled node (`widgets::announce`), which is there for as long as it is drawn. So the last pick is kept on the tab's edits, and said while its cell still holds the key that was picked.
+
+**Task 3:**
+
+- `src/edit.rs`, beside `Edits`:
+
+```rust
+/// The last option a foreign key picker took, for a screen reader to be
+/// told. No `Debug`: it holds a key and a label of a table.
+#[derive(Clone, PartialEq)]
+pub struct Picked {
+    /// The cell, by row and column of the page.
+    pub at: (usize, usize),
+    /// The key that was set, as text.
+    pub key: String,
+    /// The row's label, where its table has one and it is not NULL.
+    pub label: Option<String>,
+}
+```
+
+  and in `Edits`: `pub picked: Option<Picked>,` with a doc line. `Edits` writes its own `Debug` without its texts: leave the field out of it.
+
+- `picker_takes` says what it took, so the commit can note it once the editor has closed:
+
+```rust
+/// What a commit takes from the editor's picker.
+pub(super) enum Taken {
+    /// Nothing yet: the commit waits for the list.
+    Wait,
+    /// The text as typed, or there is no picker.
+    Text,
+    /// An option's key, which is the editor's text now.
+    Option(crate::edit::Picked),
+}
+```
+
+  Its `Take::Option(index)` arm builds the `Picked` from the option (`at` from `editor.cell`, `key` the text it just put in the editor, `label` from `option.label` when it is a value that is not NULL, as `crate::ui::format::plain_text` writes it). `return true` becomes `Taken::Text` or `Taken::Option(..)`, `false` becomes `Taken::Wait`.
+
+- The `Action::CommitEdit` arm:
+
+```rust
+                let taken = self.picker_takes(tab, id, then);
+                if matches!(taken, Taken::Wait) {
+                    return;
+                }
+```
+
+  and inside its `if self.close_editor(tab, id, false) {`, first:
+
+```rust
+                    // What a screen reader is told of the pick.
+                    if let (Taken::Option(picked), Some(object)) =
+                        (taken, self.object_tab_mut(tab, id))
+                    {
+                        object.edits.picked = Some(picked);
+                    }
+```
+
+- A test in `enter_takes_the_highlighted_option`: after the first commit, `object.edits.picked` is the cell `(0, PUBLISHER)` with the key `HARBOR_PRESS` and the label `Some("Harbor Press")`. And in `a_text_that_only_begins_keys_is_kept_as_typed`: `picked` is `None`.
+
+**Task 4:**
+
+- `src/ui/key_picker.rs`:
+
+```rust
+/// What a screen reader is told of a pick: "publisher_id set to
+/// 9100000000000000004, Harbor Press".
+pub fn picked_text(column: &str, picked: &crate::edit::Picked, locale: Locale) -> String {
+    let column = display_safe(column);
+    let key = display_safe(&picked.key);
+    match &picked.label {
+        // A placeholder each: a translation puts them where they read.
+        Some(label) => gettext(locale, "{column} set to {key}, {label}")
+            .replace("{column}", &column)
+            .replace("{key}", &key)
+            .replace("{label}", &display_safe(label)),
+        None => gettext(locale, "{column} set to {key}")
+            .replace("{column}", &column)
+            .replace("{key}", &key),
+    }
+}
+```
+
+- `src/ui/data_view.rs`: where `target` is made (the tab is still borrowed shared there), work the words out, for a pick whose cell still holds the picked key:
+
+```rust
+        // The last pick of a foreign key's list, while its cell still
+        // holds it: said to a screen reader.
+        let picked = object.edits.picked.as_ref().and_then(|picked| {
+            let pending = object.edits.cells.get(&picked.at)?;
+            let holds = matches!(&pending.new, NewValue::Text(text) if *text == picked.key);
+            let column = page.columns.get(picked.at.1)?;
+            holds.then(|| key_picker::picked_text(&column.name, picked, locale))
+        });
+```
+
+  and after `grid::show`, say it on a point of the grid (a larger node would take the pointer from the cells under it):
+
+```rust
+        if let Some(words) = &picked {
+            let at = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(1.0, 1.0));
+            widgets::announce(ui, at, words);
+        }
+```
+
+  Use the names that function has for the page and the tab (`page`, `object`).
+
+- A test: in `the_keys_reach_the_list_while_the_field_has_the_keyboard`, after the Enter, `harness.has("publisher_id set to 9100000000000000007, Harbor Lights")`.
+
+### D. What task 1's review changed (tasks 1, 3)
+
+The review of `src/key_picker.rs` walked the picker through its states and asked for changes, which are built:
+
+- `pinned` pins only what compares exactly: a whole number that fits an `i64`, a text key, a `uuid` written as one. A decimal or float key and a wider number are found by the matches alone (spec section 3).
+- A pinned read that answers `more` is no row.
+- A cancelled answer while a new search is due is neither sent again nor a failure.
+- `typed` clears a failure, and the list is "searching" again.
+- `Picker::choose` returns whether there was such an option, and drops a kept key.
+
+**Task 3, the reducer:**
+
+- `picker_takes`, the `Take::Wait` arm: `take` can answer `Wait` with nothing on its way (no search was ever sent for the text that shows, for example after an option's key was put in the editor and its column refused it). The commit must not be kept for ever: send the search when one is due **or** when the picker waits for no read at all.
+
+```rust
+            Take::Wait => {
+                picker.kept = Some(then);
+                let idle = picker.in_flight().is_empty();
+                if picker.due.take().is_some() || idle {
+                    self.search(tab, id);
+                }
+                Taken::Wait
+            }
+```
+
+  (`self.search` after the borrow of `picker` ends: work the flag out first, as the task says.) If the referenced table's columns are not known yet, `search` sends nothing and the kept key waits for them, which `picker_columns` handles.
+
+- The `Action::PickOption` arm commits only when `choose` found the option:
+
+```rust
+            Action::PickOption { tab, id, index } => {
+                let chosen = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                    .is_some_and(|picker| picker.choose(index));
+                if chosen {
+                    let then = Advance::Stay;
+                    self.apply(Action::CommitEdit { tab, id, then });
+                }
+            }
+```
+
+### C. What the amendments change in the table below
+
+- Row f: built as amendment A says, not as the row says.
+- Row k: built, as amendment B says.
 
 ## What the spec asks, and what gets built
 
