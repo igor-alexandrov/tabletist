@@ -2592,6 +2592,9 @@ impl App {
                     }
                 }
             }
+            // Nothing asks for a lookup yet: the foreign key picker will
+            // (docs/superpowers/specs/2026-10-10-foreign-key-editing-design.md).
+            Event::Lookup { .. } => {}
             Event::ServerVersion {
                 session,
                 request,

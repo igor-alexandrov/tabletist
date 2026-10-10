@@ -101,6 +101,14 @@ pub enum Command {
         request: RequestId,
         query: RowQuery,
     },
+    /// Read rows of the table a foreign key points at (see
+    /// `Connection::lookup`). It waits its turn like every command of its
+    /// session, and a `Cancel` stops it as it stops a page.
+    Lookup {
+        session: SessionId,
+        request: RequestId,
+        lookup: tabletist_db::Lookup,
+    },
     /// Write a save's changes (see `Connection::write`). Awaited to its
     /// end like every command: a cancel reaches it through its stop flag,
     /// which ends it between two statements, and through the session's
@@ -245,6 +253,11 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         result: Result<u64, Error>,
+    },
+    Lookup {
+        session: SessionId,
+        request: RequestId,
+        result: Result<tabletist_db::LookupPage, Error>,
     },
     /// A `Write` ended. `Ok` holds how: written, conflicts, or a statement
     /// that failed, and only the first changed anything. `Err` is a save
@@ -1855,6 +1868,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Describe { session, .. }
         | Command::FetchRows { session, .. }
         | Command::CountRows { session, .. }
+        | Command::Lookup { session, .. }
         | Command::Write { session, .. }
         | Command::ListDatabases { session, .. }
         | Command::RunSql { session, .. }
@@ -1878,6 +1892,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::Describe { request, .. }
         | Command::FetchRows { request, .. }
         | Command::CountRows { request, .. }
+        | Command::Lookup { request, .. }
         | Command::Write { request, .. }
         | Command::ListDatabases { request, .. }
         | Command::RunSql { request, .. }
@@ -1931,6 +1946,13 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         Command::CountRows {
             session, request, ..
         } => Event::Count {
+            session,
+            request,
+            result: Err(error),
+        },
+        Command::Lookup {
+            session, request, ..
+        } => Event::Lookup {
             session,
             request,
             result: Err(error),
@@ -2137,6 +2159,20 @@ async fn run_session(
                 let result = connection.count_rows(query).await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Count {
+                    session: *session,
+                    request: *request,
+                    result,
+                });
+                lost
+            }
+            Command::Lookup {
+                session,
+                request,
+                lookup,
+            } => {
+                let result = connection.lookup(lookup).await;
+                let lost = lost_error(&result);
+                outbox.emit(Event::Lookup {
                     session: *session,
                     request: *request,
                     result,
@@ -4684,6 +4720,156 @@ mod tests {
                 result: Ok(page), ..
             }) => page.rows[0][2].clone(),
             other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_lookup_answers_with_the_rows_it_found() {
+        let (_dir, mut backend, session) = connected_as(Access::ReadOnly);
+        let lookup = |part: tabletist_db::LookupPart| tabletist_db::Lookup {
+            object: ObjectRef::new("main", "users"),
+            key: "id".into(),
+            label: Some("email".into()),
+            part,
+            limit: 50,
+        };
+        backend.send(Command::Lookup {
+            session,
+            request: RequestId(21),
+            lookup: lookup(tabletist_db::LookupPart::Matching("ADA".into())),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Lookup {
+                session: SessionId(1),
+                request: RequestId(21),
+                result: Ok(page),
+            }) => {
+                assert_eq!(page.rows.len(), 1);
+                assert_eq!(page.rows[0].key, Value::Int(1));
+                assert_eq!(
+                    page.rows[0].label,
+                    Some(Value::Text("ada@example.com".into()))
+                );
+            }
+            other => panic!("expected the lookup's rows, got {other:?}"),
+        }
+
+        backend.send(Command::Lookup {
+            session,
+            request: RequestId(22),
+            lookup: tabletist_db::Lookup {
+                object: ObjectRef::new("main", "nowhere"),
+                ..lookup(tabletist_db::LookupPart::Pinned(Value::Int(1)))
+            },
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Lookup {
+                request: RequestId(22),
+                result: Err(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_lookup_prints_without_what_was_typed() {
+        let command = Command::Lookup {
+            session: SessionId(1),
+            request: RequestId(1),
+            lookup: tabletist_db::Lookup {
+                object: ObjectRef::new("main", "users"),
+                key: "id".into(),
+                label: Some("email".into()),
+                part: tabletist_db::LookupPart::Matching("ada@example.com".into()),
+                limit: 50,
+            },
+        };
+        let printed = format!("{command:?}");
+        let pretty = format!("{command:#?}");
+        for printed in [&printed, &pretty] {
+            assert!(!printed.contains("ada@"), "{printed}");
+            // What may be logged is still there: the kind of search.
+            assert!(printed.contains("Matching"), "{printed}");
+        }
+        // The pretty form puts the request's number on a line of its own.
+        assert!(printed.contains("RequestId(1)"), "{printed}");
+    }
+
+    #[test]
+    fn a_cancelled_queued_lookup_never_runs() {
+        let (_dir, mut backend, session) = connected_as(Access::ReadOnly);
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(2),
+            query: slow_count(100_000),
+        });
+        backend.send(Command::Lookup {
+            session,
+            request: RequestId(3),
+            lookup: tabletist_db::Lookup {
+                object: ObjectRef::new("main", "users"),
+                key: "id".into(),
+                label: Some("email".into()),
+                part: tabletist_db::LookupPart::Matching("ada".into()),
+                limit: 50,
+            },
+        });
+        // Superseded while the count still runs.
+        backend.send(Command::Cancel {
+            session,
+            request: RequestId(3),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut events = Vec::new();
+        while events.len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "both must answer");
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            events.extend(backend.wait(Duration::from_millis(200)));
+        }
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    Event::Count {
+                        request: RequestId(2),
+                        result: Err(Error::Cancelled),
+                        ..
+                    },
+                    // Answered as cancelled, never read.
+                    Event::Lookup {
+                        request: RequestId(3),
+                        result: Err(Error::Cancelled),
+                        ..
+                    },
+                ]
+            ),
+            "{events:?}"
+        );
+        backend.send(Command::Lookup {
+            session,
+            request: RequestId(4),
+            lookup: tabletist_db::Lookup {
+                object: ObjectRef::new("main", "users"),
+                key: "id".into(),
+                label: Some("email".into()),
+                part: tabletist_db::LookupPart::Matching("ada".into()),
+                limit: 50,
+            },
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Lookup {
+                request: RequestId(4),
+                result: Ok(page),
+                ..
+            }) => {
+                assert_eq!(page.rows.len(), 1);
+                assert_eq!(page.rows[0].key, Value::Int(1));
+            }
+            other => panic!("expected the lookup's rows, got {other:?}"),
         }
     }
 
