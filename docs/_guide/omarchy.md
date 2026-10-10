@@ -26,7 +26,7 @@ back.
 
 | Keys | Do |
 | --- | --- |
-| Ctrl+Shift+C | Open the connection picker |
+| Ctrl+Shift+C | Open the connection picker. While you type in a field it copies what is selected instead |
 | Ctrl+Shift+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
 | Ctrl+Shift+W | Close the connection |
 | Ctrl+T | New SQL editor |

@@ -2373,6 +2373,30 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_shift_c_in_a_field_is_the_fields_copy_and_shows_no_connections() {
+        // In a cell's editor Ctrl+C drops the edit, so this chord is the
+        // only copy there. As the window sends it: a copy, with Shift.
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::I, "i");
+        assert!(harness.ctx.text_edit_focused());
+        harness.copy(true);
+        assert!(!on_picker(&harness), "from a cell's editor");
+        assert!(edits(&harness, tab, id).editor.is_some(), "the edit stays");
+        // In the SQL editor's text too.
+        let (mut harness, _) = sql_harness(Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, "select 1");
+        assert!(harness.ctx.text_edit_focused());
+        harness.copy(true);
+        assert!(!on_picker(&harness), "from the SQL editor");
+        // Out of the text it shows the connections, as from the rows.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        harness.copy(true);
+        assert!(on_picker(&harness));
+    }
+
+    #[test]
     fn omarchy_goes_to_a_connection_with_ctrl_shift_and_its_digit() {
         let mut harness = Harness::new();
         harness.set_look(Look::omarchy());

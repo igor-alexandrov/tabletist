@@ -758,7 +758,9 @@ pub const BINDINGS: &[Binding] = {
             C::Connections,
             GLOBAL,
             keys(&[k("cmd+o")]),
-            keys(&[k("ctrl+shift+c")]),
+            // In a text field the chord is the field's copy: the only one
+            // a cell's editor has, where Ctrl+C drops the edit.
+            keys(&[k("ctrl+shift+c")]).normal(),
         ),
         bind(
             C::GoToConnectionWindow,
