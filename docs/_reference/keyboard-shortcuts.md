@@ -79,6 +79,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | --- | --- |
 | Enter, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Mod+N | Add a row, at the top of the grid |
+| Mod+D | [Duplicate the row]({% link _guide/editing-data.md %}#duplicate-a-row), as a new row at the top of the grid |
 | Delete | Drop a new row that is not saved yet |
 | Mod+I | Edit the row in the row panel |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |

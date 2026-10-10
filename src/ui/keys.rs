@@ -90,6 +90,12 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("i, Enter", "Edit the cell", TERMINAL),
     ("Mod+N", "Add a row", DESKTOP),
     ("o, O", "Add a row below or above the cursor", TERMINAL),
+    ("Mod+D", "Duplicate the row", DESKTOP),
+    (
+        "yy, p, P",
+        "Yank the row, put a copy below or above",
+        TERMINAL,
+    ),
     ("Delete", "Drop a new row", DESKTOP),
     ("dd", "Drop a new row", TERMINAL),
     ("Mod+I", "Focus inspector fields", DESKTOP),
@@ -128,7 +134,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Esc", "Close the SQL of the pending changes", TERMINAL),
     ("Y", "Copy the SQL of the pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, dd, f, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, yy, p, P, dd, f, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -204,6 +210,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 crate::edit::Table::of(workspace, object)
             })
             .is_some_and(|table| table.no_rows().is_none())
+    });
+    // Mod+D makes a copy of the selected row wherever Mod+N adds a row.
+    // Like that key it does not ask what has the keyboard. With no row
+    // selected the reducer makes no copy either: asking here is what
+    // leaves the press untaken, as it is taken only where a copy can be
+    // made.
+    let copies = adds.filter(|&(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.selection.is_some())
     });
     // The row panel's field that has the keyboard, of the table on screen:
     // its keys are read here with the grid's, so one key is never both's.
@@ -319,6 +335,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id));
+    // Whether the frame brings a key press, asked before any is taken. One
+    // that is taken below (an arrow, Ctrl+L) ends the wait of a first key
+    // as a letter does, and the letters would not know it came.
+    let keys = ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
+    });
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
         // The completion list's keys come first: the editor never sees
@@ -373,8 +398,23 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             let place = crate::edit::Place::Top;
             actions.push(Action::AddRow { tab, id, place });
         }
-        // Taken here for the same reason: the chord is a new SQL editor's
-        // below.
+        // With its modifiers exactly: `consume_press` lets an extra Shift
+        // through, and Mod+Shift+D is Review SQL, read further down. Not in
+        // a frame that brings a click: the click selects its row once the
+        // frame is drawn, and the copy would be of the row the selection
+        // leaves. The press is taken there all the same.
+        let clicked = input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::PointerButton { .. }));
+        if let Some((tab, id)) = copies
+            && take_fresh_press(input, Modifiers::COMMAND, Key::D)
+            && !clicked
+        {
+            actions.push(Action::DuplicateRow { tab, id });
+        }
+        // Taken here as Mod+N is, so the line below that reads the same
+        // chord finds none: there it is a new SQL editor's.
         if let Some((tab, id)) = stamps
             && consume_press(input, Modifiers::CTRL, Key::T)
         {
@@ -619,7 +659,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if ctx.input(|input| input.pointer.any_pressed()) {
             forget_pending(ctx);
         }
-        letters(app, ctx, field, &mut actions);
+        letters(app, ctx, field, keys, &mut actions);
     } else {
         // The keys are a field's: a first key that waited is not the
         // first of what is typed once they are the grid's again.
@@ -879,6 +919,21 @@ fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> u
     before - input.events.len()
 }
 
+/// Whether `key` went down afresh this frame with exactly `modifiers` (see
+/// [`is_press`]). Takes the press, and the repeats of a held key with it,
+/// which are no press: what one press does, a held key does once.
+fn take_fresh_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
+    let mut fresh = false;
+    input.events.retain(|event| {
+        if !is_press(event, modifiers, key) {
+            return true;
+        }
+        fresh |= !matches!(event, egui::Event::Key { repeat: true, .. });
+        false
+    });
+    fresh
+}
+
 /// The keys that edit the cells of the table on screen: they open an editor
 /// on the selected cell, act on it without one, and save or drop what is
 /// pending. `keyboard` says the grid's keys are the grid's: no field or
@@ -1101,7 +1156,8 @@ fn editing_keys(
 /// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
 /// the cell NULL, `D` gives it its column's default, `u` puts back what was
 /// loaded, `o` and `O` open a new row
-/// below the cursor's and above it, and `:` opens the prompt
+/// below the cursor's and above it, `p` and `P` put a copy of the yanked
+/// row there, and `:` opens the prompt
 /// that writes, discards and shows the SQL. The letters are read as the
 /// text they type, in the order they came, and taken: a letter that opens
 /// an editor or the prompt is no part of its text, and what follows it in
@@ -1156,7 +1212,12 @@ fn editing_letters(
         }
     };
     let alone = actions.is_empty();
-    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":" | "o" | "O" | "D");
+    let mine = |text: &str| {
+        matches!(
+            text,
+            "i" | "c" | "x" | "u" | ":" | "o" | "O" | "D" | "p" | "P"
+        )
+    };
     let enter = |event: &egui::Event| is_press(event, Modifiers::NONE, Key::Enter);
     ctx.input_mut(|input| {
         // A chord types nothing, though some systems send its letter as
@@ -1251,6 +1312,13 @@ fn editing_letters(
                     };
                     actions.push(Action::AddRow { tab, id, place });
                 }
+                // A copy of the yanked row below the cursor's, or above it
+                // with the capital. It may open an editor, as `o` does.
+                "p" | "P" => {
+                    opened = true;
+                    let above = text == "P";
+                    actions.push(Action::PutRow { tab, id, above });
+                }
                 _ => {}
             }
             false
@@ -1308,14 +1376,16 @@ fn typed(ctx: &egui::Context, text: &str) -> bool {
 /// workspace's vim keys. Only when no text field has the keyboard. `field`
 /// is the column of the row panel's field that has it: `j` and `k` step
 /// the fields then, and the letters that edit a cell edit that field.
-fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &mut Vec<Action>) {
-    // A frame without keys keeps a waiting first key (`d` of `dd`).
-    let keys = ctx.input(|input| {
-        input
-            .events
-            .iter()
-            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
-    });
+/// `keys` says whether the frame brought a key press, whoever took it.
+fn letters(
+    app: &mut App,
+    ctx: &egui::Context,
+    field: Option<usize>,
+    keys: bool,
+    actions: &mut Vec<Action>,
+) {
+    // A frame without keys keeps a waiting first key (`d` of `dd`). Any
+    // key ends the wait, one that is not left to be read here too.
     if !keys {
         return;
     }
@@ -1616,6 +1686,31 @@ fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &m
                 crate::ui::toast::say(ctx, &said);
             }
         }
+        // The second `y` of `yy` yanks the cursor's row, for `p` and `P`:
+        // wherever the first copied the cell, in the Data view, with the
+        // keys on the grid or on a field of the row panel. The first is
+        // the cell's `y` still, and waits as the first `d` of `dd` does.
+        let row = app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(object_tab))
+            .filter(|object| object.view == crate::model::ObjectView::Data)
+            .is_some_and(|object| object.selection.is_some());
+        if sql.is_none() && !tree && row {
+            if pending == Some('y') {
+                actions.push(Action::YankRow {
+                    tab,
+                    id: object_tab,
+                });
+                // The row for the clipboard too, where it is the page's.
+                if let Some(text) = app.copy_text(true) {
+                    ctx.copy_text(text);
+                }
+                let said = crate::i18n::gettext(app.locale, "Row yanked");
+                crate::ui::toast::say(ctx, &app.look.label(&said));
+            } else {
+                next_pending = Some('y');
+            }
+        }
     }
     if pressed(Key::G) {
         next_pending = Some('g');
@@ -1842,9 +1937,13 @@ mod tests {
                 assert_eq!(keys("Add a row below or above the cursor"), Some("o, O"));
                 assert_eq!(keys("Drop a new row"), Some("dd"));
                 assert_eq!(keys("Add a row"), None);
+                let put = "Yank the row, put a copy below or above";
+                assert_eq!(keys(put), Some("yy, p, P"));
+                assert_eq!(keys("Duplicate the row"), None);
             } else {
                 assert_eq!(keys("Add a row"), Some("Mod+N"));
                 assert_eq!(keys("Drop a new row"), Some("Delete"));
+                assert_eq!(keys("Duplicate the row"), Some("Mod+D"));
             }
             // A new connection is still Mod+N, where no table is in front.
             assert_eq!(keys("New connection"), Some("Mod+N"));
@@ -1859,7 +1958,8 @@ mod tests {
             .expect("Omarchy's row");
         let keys: Vec<&str> = keys.split(", ").collect();
         for key in [
-            "i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", ":diff", "Y", "Space",
+            "i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", ":diff", "Y", "Space", "yy", "p",
+            "P",
         ] {
             assert!(keys.contains(&key), "{key}: {keys:?}");
         }
