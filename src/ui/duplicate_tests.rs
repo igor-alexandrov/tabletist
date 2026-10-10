@@ -4,7 +4,7 @@
 //! Only behaviour, names and words, on the Bookshop's `book_covers`. What
 //! a copy holds cell by cell is tested where it is decided, in `edit.rs`.
 
-use egui::accesskit::Role;
+use egui::accesskit::{Role, TreeUpdate};
 use egui::{Key, Modifiers};
 use tabletist_db::{IndexInfo, NewValue, ObjectKind, ObjectRef, RowPage, Structure, Value};
 
@@ -762,4 +762,53 @@ fn the_terminals_footer_names_yy_p_as_a_key_that_works() {
     // The row's own reason, as the panel's first line says it.
     let delete = button(&mut harness, "dd delete");
     assert_eq!(delete, said("read-only connection"));
+}
+
+// The copy's form.
+
+/// Where the label that starts with `start` is.
+fn label_place(tree: &TreeUpdate, start: &str) -> Option<egui::Rect> {
+    let labels = crate::testing::labels(tree);
+    let name = labels.iter().find(|label| label.starts_with(start))?;
+    crate::testing::bounds(tree, name, Role::Label)
+}
+
+/// Test 15: the form of a copy says what it was made as, in both looks,
+/// above its fields, and goes on saying it as the row is filled in.
+#[test]
+fn the_copys_form_says_what_it_was_made_as() {
+    let line = "Copied: kind, image_data, created_at. \
+                Cleared: id (identity), publisher_id (unique).";
+    for look in Look::ALL {
+        let (mut harness, tab, id) = covers(look, unique_publisher);
+        select(&mut harness, tab, id, (1, 2));
+        duplicate(&mut harness, tab, id);
+        harness.app.apply(Action::CancelEdit { tab, id });
+        let tree = harness.settle();
+        let said = crate::testing::bounds(&tree, &look.label(line), Role::Label);
+        let said = said.unwrap_or_else(|| panic!("{}: no line", look.name));
+        // Above every field: a field's label starts with its column's
+        // name, whatever the look says after it.
+        for column in ["id", "publisher_id", "kind", "image_data", "created_at"] {
+            let field = label_place(&tree, &format!("{column} · "));
+            let field = field.unwrap_or_else(|| panic!("{}: no {column}", look.name));
+            assert!(said.bottom() <= field.top(), "{}: {column}", look.name);
+        }
+        let row = newest(&harness, tab, id);
+        set(&mut harness, tab, id, (row, 1), "9100000000000000007");
+        assert!(harness.has(&look.label(line)), "{}: filled in", look.name);
+        // An added row's form says nothing of the kind.
+        let (mut harness, tab, id) = covers(look, unique_publisher);
+        add(&mut harness, tab, id);
+        let tree = harness.settle();
+        let labels = crate::testing::labels(&tree);
+        let form = "book_covers · not saved";
+        assert!(labels.iter().any(|label| label == form), "{}", look.name);
+        let copied = look.label("Copied:");
+        assert!(
+            !labels.iter().any(|label| label.starts_with(&copied)),
+            "{}",
+            look.name
+        );
+    }
 }

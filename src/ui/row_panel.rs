@@ -248,6 +248,8 @@ struct Fresh {
     /// The table has no key to find a row by: the row can be added, and
     /// no cell of it can be edited once it is.
     keyless: bool,
+    /// What the row was made as, where it is a copy of another row.
+    made: Option<crate::edit::Copied>,
 }
 
 impl Fresh {
@@ -261,6 +263,9 @@ impl Fresh {
         let columns = 0..table.page.columns.len();
         let column = |col: usize| table.column(col);
         let facts_of = |column: &tabletist_db::ColumnInfo| column_facts(column, look, locale);
+        // The new row itself, for what it keeps of how it was made.
+        let new =
+            crate::edit::new_id(row).and_then(|id| table.added.iter().find(|new| new.id == id));
         Self {
             unset: columns
                 .clone()
@@ -276,6 +281,7 @@ impl Fresh {
                 .map(|col| column(col).map(facts_of).unwrap_or_default())
                 .collect(),
             keyless: table.key().is_none(),
+            made: new.and_then(|new| new.made.clone()),
         }
     }
 }
@@ -858,6 +864,12 @@ fn draw(
                 let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(room.max(1.0), 16.0));
                 widgets::announce(ui, place, reason);
             }
+            // A copy says what it was made as at the form's top, above
+            // its fields and what a table without a key says.
+            if let Some(made) = fresh.as_ref().and_then(|fresh| fresh.made.as_ref()) {
+                let said = copy_line(made, &look, locale);
+                top = form_note(ui, full, top, &said, &look, &palette);
+            }
             // A table without a key takes the row, and can then find it
             // by nothing: said before the row is filled in.
             if fresh.as_ref().is_some_and(|fresh| fresh.keyless) {
@@ -866,20 +878,7 @@ fn draw(
                     "This table has no primary key. The row can be inserted, but not edited or \
                      deleted afterwards.",
                 ));
-                let room = (full.width() - 2.0 * side).max(24.0);
-                let laid = Text::one(&look, caption(&look), &said, palette.secondary)
-                    .wrap(room)
-                    .layout(ui.ctx());
-                let height = 9.0 + laid.height() + 9.0 + 1.0;
-                let strip = Rect::from_min_size(pos2(full.left(), top), vec2(full.width(), height));
-                top = strip.bottom();
-                if !look.terminal {
-                    ui.painter()
-                        .rect_filled(strip, CornerRadius::ZERO, palette.panel);
-                }
-                widgets::hline(ui, strip.x_range(), strip.bottom() - 0.5, divider);
-                laid.paint(ui.painter(), pos2(strip.left() + side, strip.top() + 9.0));
-                widgets::announce(ui, strip, &said);
+                top = form_note(ui, full, top, &said, &look, &palette);
             }
             // Footer: the row's controls. Its rule, the buttons (28 or 32)
             // and, where the row can be edited, the line under them that
@@ -2178,6 +2177,103 @@ fn new_row_footer(
     (dropped, added)
 }
 
+/// What the form of a copy says of how its row was made: the columns it
+/// has the source's values in, the ones it cleared and the ones it could
+/// not copy, the last two each with its reason. A sentence with no column
+/// is left out. The words are the look's, and a column's name keeps its
+/// own case, as it does in the status line.
+fn copy_line(made: &crate::edit::Copied, look: &Look, locale: crate::i18n::Locale) -> String {
+    use crate::edit::{Cleared, NotCopied};
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let name = |name: &str| format::display_safe(name).into_owned();
+    let mut said = Vec::new();
+    let copied: Vec<String> = made.copied.iter().map(|column| name(column)).collect();
+    // Up to three in full. More would fill the panel: the first two, and
+    // how many follow.
+    let listed = match copied.as_slice() {
+        [] => None,
+        [first, second, rest @ ..] if rest.len() > 1 => {
+            // A placeholder: a translation puts the number where it reads.
+            let more = gettext(locale, "{count} more").replace("{count}", &rest.len().to_string());
+            Some(format!(
+                "{first}, {second} {} {}",
+                say("and"),
+                look.label(&more)
+            ))
+        }
+        all => Some(all.join(", ")),
+    };
+    if let Some(listed) = listed {
+        said.push(format!("{}: {listed}.", say("Copied")));
+    }
+    let cleared: Vec<String> = made
+        .cleared
+        .iter()
+        .map(|(column, why)| {
+            let why = match why {
+                Cleared::Identity => say("identity"),
+                Cleared::Generated => say("generated"),
+                Cleared::PrimaryKey => say("primary key"),
+                Cleared::Unique => say("unique"),
+            };
+            format!("{} ({why})", name(column))
+        })
+        .collect();
+    if !cleared.is_empty() {
+        said.push(format!("{}: {}.", say("Cleared"), cleared.join(", ")));
+    }
+    let not_copied: Vec<String> = made
+        .not_copied
+        .iter()
+        .map(|(column, why)| {
+            let why = match why {
+                NotCopied::Unknown => say("unknown"),
+                NotCopied::Binary => say("binary"),
+                NotCopied::TooLarge => say("too large"),
+            };
+            format!("{} ({why})", name(column))
+        })
+        .collect();
+    if !not_copied.is_empty() {
+        said.push(format!("{}: {}.", say("Not copied"), not_copied.join(", ")));
+    }
+    said.join(" ")
+}
+
+/// A note of a new row's form, under the panel's header from `top` down:
+/// its words wrapped to the panel's width over a rule, and said whole to a
+/// screen reader. Says where it ends.
+fn form_note(
+    ui: &mut egui::Ui,
+    full: Rect,
+    top: f32,
+    said: &str,
+    look: &Look,
+    palette: &Palette,
+) -> f32 {
+    let side = side(look);
+    let room = (full.width() - 2.0 * side).max(24.0);
+    let laid = Text::one(look, caption(look), said, palette.secondary)
+        .wrap(room)
+        .layout(ui.ctx());
+    let height = 9.0 + laid.height() + 9.0 + 1.0;
+    let strip = Rect::from_min_size(pos2(full.left(), top), vec2(full.width(), height));
+    if !look.terminal {
+        ui.painter()
+            .rect_filled(strip, CornerRadius::ZERO, palette.panel);
+    }
+    // The rule the panel's header has under it.
+    let rule = if look.terminal {
+        palette.outline
+    } else {
+        palette.surface_hover
+    };
+    widgets::hline(ui, strip.x_range(), strip.bottom() - 0.5, rule);
+    laid.paint(ui.painter(), pos2(strip.left() + side, strip.top() + 9.0));
+    widgets::announce(ui, strip, said);
+    strip.bottom()
+}
+
 /// The pencil of a list that can be edited: 22 pt, as Copy is.
 const PENCIL: f32 = 22.0;
 
@@ -3253,5 +3349,68 @@ mod tests {
             harness.click("Show less");
             assert!(harness.has("Show all (560 B)"), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn a_copys_line_names_its_columns_and_why_each_was_left() {
+        use crate::edit::{Cleared, Copied, NotCopied};
+        let names = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let locale = crate::i18n::Locale::default();
+        let made = Copied {
+            copied: names(&["Title", "format", "pages", "price", "stock"]),
+            cleared: vec![
+                ("id".into(), Cleared::Identity),
+                ("isbn".into(), Cleared::Unique),
+            ],
+            not_copied: vec![("cover".into(), NotCopied::Binary)],
+        };
+        assert_eq!(
+            copy_line(&made, &Look::macos(), locale),
+            "Copied: Title, format and 3 more. Cleared: id (identity), isbn (unique). \
+             Not copied: cover (binary)."
+        );
+        // The terminal's words are in its case. A column's name keeps its.
+        assert_eq!(
+            copy_line(&made, &Look::omarchy(), locale),
+            "copied: Title, format and 3 more. cleared: id (identity), isbn (unique). \
+             not copied: cover (binary)."
+        );
+        // Up to three names are written out, and a sentence with no
+        // column is left out.
+        let few = Copied {
+            copied: names(&["a", "b", "c"]),
+            ..Copied::default()
+        };
+        assert_eq!(copy_line(&few, &Look::macos(), locale), "Copied: a, b, c.");
+        // Four are one too many, and one is written as it is.
+        let listed = |columns: &[&str]| {
+            let copied = names(columns);
+            let made = Copied {
+                copied,
+                ..Copied::default()
+            };
+            copy_line(&made, &Look::macos(), locale)
+        };
+        assert_eq!(listed(&["a", "b", "c", "d"]), "Copied: a, b and 2 more.");
+        assert_eq!(listed(&["a"]), "Copied: a.");
+        // Each reason in its words.
+        let all = Copied {
+            copied: Vec::new(),
+            cleared: vec![
+                ("a".into(), Cleared::Generated),
+                ("b".into(), Cleared::PrimaryKey),
+            ],
+            not_copied: vec![
+                ("c".into(), NotCopied::TooLarge),
+                ("d".into(), NotCopied::Unknown),
+            ],
+        };
+        assert_eq!(
+            copy_line(&all, &Look::macos(), locale),
+            "Cleared: a (generated), b (primary key). Not copied: c (too large), d (unknown)."
+        );
+        assert_eq!(copy_line(&Copied::default(), &Look::macos(), locale), "");
     }
 }
