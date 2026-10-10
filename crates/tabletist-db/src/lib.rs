@@ -292,8 +292,7 @@ impl Connection {
     /// the ones a text is found in (see [`Lookup`]). It reads as a page of
     /// rows does and cannot write: in a read-only transaction on
     /// PostgreSQL and MySQL, under `query_only` on SQLite. What was typed
-    /// is a bound value or an escaped literal, never SQL of its
-    /// own.
+    /// is a bound value or an escaped literal, never SQL of its own.
     pub async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
         match &self.inner {
             Inner::Sqlite(conn) => conn.lookup(lookup).await,

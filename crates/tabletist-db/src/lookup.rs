@@ -116,20 +116,35 @@ pub(crate) fn page(mut rows: Vec<Vec<Value>>, lookup: &Lookup) -> Result<LookupP
 }
 
 // What was typed, and what a table holds, stay out of a log line: a label
-// can be a name or an email.
+// can be a name or an email. Each type that holds either prints by hand,
+// with the names of its parts and not their values, so a type of the app
+// can derive `Debug` over a lookup or its rows and still print none of it.
 impl fmt::Debug for Lookup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let part = match &self.part {
-            LookupPart::Pinned(_) => "Pinned",
-            LookupPart::Matching(_) => "Matching",
-        };
         f.debug_struct("Lookup")
             .field("object", &self.object)
             .field("key", &self.key)
             .field("label", &self.label)
-            .field("part", &part)
+            .field("part", &self.part)
             .field("limit", &self.limit)
             .finish()
+    }
+}
+
+impl fmt::Debug for LookupPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Pinned(_) => "Pinned",
+            Self::Matching(_) => "Matching",
+        })
+    }
+}
+
+impl fmt::Debug for LookupRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LookupRow")
+            .field("matched", &self.matched)
+            .finish_non_exhaustive()
     }
 }
 
@@ -177,6 +192,31 @@ mod tests {
         let printed = format!("{pinned:?}");
         assert!(!printed.contains("Ada"), "{printed}");
         assert!(printed.contains("Pinned"), "{printed}");
+        // The parts and the rows print on their own too, in both forms.
+        let row = LookupRow {
+            key: Value::Int(424242),
+            label: Some(Value::Text("Ada Lovelace".into())),
+            matched: Matched::Label,
+        };
+        for printed in [
+            format!("{:?}", LookupPart::Pinned(Value::Text("Ada".into()))),
+            format!("{:#?}", LookupPart::Pinned(Value::Text("Ada".into()))),
+        ] {
+            assert!(!printed.contains("Ada"), "{printed}");
+            assert!(printed.contains("Pinned"), "{printed}");
+        }
+        for printed in [
+            format!("{:?}", LookupPart::Matching("Ada".into())),
+            format!("{:#?}", LookupPart::Matching("Ada".into())),
+        ] {
+            assert!(!printed.contains("Ada"), "{printed}");
+            assert!(printed.contains("Matching"), "{printed}");
+        }
+        for printed in [format!("{row:?}"), format!("{row:#?}")] {
+            assert!(!printed.contains("424242"), "{printed}");
+            assert!(!printed.contains("Ada"), "{printed}");
+            assert!(printed.contains("Label"), "{printed}");
+        }
     }
 
     #[test]

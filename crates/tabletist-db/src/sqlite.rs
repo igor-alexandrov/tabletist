@@ -1818,6 +1818,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_lookup_leaves_a_writable_session_read_only() {
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        let page = conn
+            .lookup(&Lookup {
+                object: ObjectRef::new("main", "users"),
+                key: "id".into(),
+                label: Some("email".into()),
+                part: crate::LookupPart::Matching("ada".into()),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(!page.rows.is_empty());
+        // A lookup writes nothing: the session still refuses a write.
+        assert_eq!(standing(&conn).await, (1, true));
+    }
+
+    #[tokio::test]
     async fn sqlite_denies_a_script_what_would_end_its_transaction_or_lift_query_only() {
         for access in [Access::ReadOnly, Access::Writable] {
             let (conn, _dir) = fixture_as(access).await;
