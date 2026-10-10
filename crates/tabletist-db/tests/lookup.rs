@@ -312,6 +312,57 @@ mod sqlite {
         let rows: Vec<_> = page.rows.iter().map(|row| row.key.clone()).collect();
         assert_eq!(rows, [Value::Text("5".into())]);
     }
+
+    /// Test 9. `REFERENCES publishers` means the parent's primary key.
+    #[tokio::test]
+    async fn an_implicit_reference_names_the_parents_primary_key() {
+        const KEYS: &str = "
+            CREATE TABLE publishers (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE pairs (a INTEGER, b INTEGER, PRIMARY KEY (b, a));
+            CREATE TABLE keyless (name TEXT);
+            CREATE TABLE book_covers (
+                id INTEGER PRIMARY KEY,
+                publisher_id INTEGER REFERENCES publishers,
+                named_id INTEGER REFERENCES publishers (id),
+                a INTEGER,
+                b INTEGER,
+                keyless_id INTEGER REFERENCES keyless,
+                gone_id INTEGER REFERENCES nowhere,
+                lone_id INTEGER REFERENCES pairs,
+                FOREIGN KEY (a, b) REFERENCES pairs
+            );";
+        let (connection, _dir) = made_with(KEYS, Access::ReadOnly).await;
+        let structure = connection
+            .describe(&ObjectRef::new("main", "book_covers"))
+            .await
+            .unwrap();
+        let referenced = |column: &str| {
+            let key = structure
+                .foreign_keys
+                .iter()
+                .find(|key| key.columns[0] == column)
+                .unwrap_or_else(|| panic!("no key of {column}"));
+            (key.ref_table.as_str(), key.ref_columns.clone())
+        };
+        assert_eq!(
+            referenced("publisher_id"),
+            ("publishers", vec!["id".to_owned()])
+        );
+        assert_eq!(
+            referenced("named_id"),
+            ("publishers", vec!["id".to_owned()])
+        );
+        // The parent's key in its own order, which is how SQLite pairs them.
+        assert_eq!(
+            referenced("a"),
+            ("pairs", vec!["b".to_owned(), "a".to_owned()])
+        );
+        // One column onto a two-column key means nothing.
+        assert_eq!(referenced("lone_id"), ("pairs", Vec::new()));
+        // No primary key to mean, and no table: the key names no column.
+        assert_eq!(referenced("keyless_id"), ("keyless", Vec::new()));
+        assert_eq!(referenced("gone_id"), ("nowhere", Vec::new()));
+    }
 }
 
 mod postgres {

@@ -1307,7 +1307,24 @@ fn foreign_keys(
             key.ref_columns.push(to);
         }
     }
-    Ok(keys.into_iter().map(|(_, key)| key).collect())
+    let mut keys: Vec<ForeignKeyInfo> = keys.into_iter().map(|(_, key)| key).collect();
+    for key in &mut keys {
+        if !key.ref_columns.is_empty() {
+            continue;
+        }
+        // `REFERENCES parent` names no column and means the parent's
+        // primary key. A parent that is not there, or has no primary key
+        // of as many columns, is a key SQLite itself refuses when a row is
+        // written: it stays without a column here. A name that is not
+        // UTF-8 cannot be written into a statement, so it is no column to
+        // follow the key by.
+        let parent = ObjectRef::new(key.ref_schema.clone(), key.ref_table.clone());
+        let primary = ordering_key(connection, &parent)?;
+        if primary.len() == key.columns.len() {
+            key.ref_columns = primary;
+        }
+    }
+    Ok(keys)
 }
 
 #[cfg(test)]

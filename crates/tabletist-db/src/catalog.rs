@@ -88,7 +88,9 @@ pub struct ForeignKeyInfo {
     pub columns: Vec<String>,
     pub ref_schema: String,
     pub ref_table: String,
-    /// Empty when the key references the other table's primary key implicitly.
+    /// The columns of `ref_table` the key points at. Empty only on SQLite,
+    /// for a key that names none (`REFERENCES parent`) whose parent is not
+    /// there or has no primary key of as many columns that SQL can name.
     pub ref_columns: Vec<String>,
     pub on_update: String,
     pub on_delete: String,
