@@ -1189,12 +1189,16 @@ impl App {
         }
     }
 
-    /// Runs what the terminal's `:` prompt holds, and closes it: `w` saves
-    /// the pending changes of the table on screen, `e!` drops them and
-    /// `diff` shows what a save would run, as their keys and the bar's
-    /// buttons do in the other looks. Any other text is not a command, and
-    /// is kept for the status line to say so.
+    /// Runs what the terminal's `:` prompt holds, and closes it. Which
+    /// line does what is the keymap's to say, for the tab in front: on a
+    /// table's, `w` saves its pending changes, `e!` drops them and `diff`
+    /// shows what a save would run, as their keys and the bar's buttons do
+    /// in the other looks; on a SQL editor's, `ro` and `rw` set the mode of
+    /// its runs. Any other text is not a command there, and is
+    /// kept for the status line to say so: a line of another kind of tab,
+    /// and one whose command is not built yet, too.
     pub(super) fn run_command(&mut self, tab: ConnTabId) {
+        use crate::keymap::{Command, Layout, Scope, Typed};
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -1205,31 +1209,60 @@ impl App {
         let Some(text) = workspace.command.take() else {
             return;
         };
-        // The table on screen, and whether anything is pending in it.
+        let line = text.trim();
+        if line.is_empty() {
+            return;
+        }
+        // The table on screen, and whether anything is pending in it. With
+        // none, the SQL editor in front.
         let table = workspace
             .active_object_tab()
             .map(|object| (object.id, object.edits.pending()));
-        let action = match (text.trim(), table) {
-            ("", _) => return,
-            ("w", Some((id, _))) => Action::WriteEdits { tab, id },
-            ("e!", Some((id, _))) => Action::DiscardEdits { tab, id },
-            ("diff", Some((id, true))) => Action::ReviewEdits {
+        let sql_tab = workspace.active_sql_tab().map(|sql| sql.id);
+        let scope = match table {
+            Some(_) => Scope::Grid,
+            None => Scope::SqlEditor,
+        };
+        // The prompt is Omarchy's, in whatever look it is driven.
+        let read = self.keymap.ex(Layout::Omarchy, scope, &|_| false, line);
+        let refused = |app: &mut Self| {
+            if let Some(workspace) = app.workspace_mut(tab) {
+                workspace.command_error = Some(line.to_owned());
+            }
+        };
+        let action = match (read, table) {
+            (Typed::Command(Command::SaveChanges), Some((id, _))) => Action::WriteEdits { tab, id },
+            (Typed::Command(Command::DiscardChanges), Some((id, _))) => {
+                Action::DiscardEdits { tab, id }
+            }
+            (Typed::Command(Command::ReviewSql), Some((id, true))) => Action::ReviewEdits {
                 tab,
                 id,
                 show: true,
             },
             // Nothing to show: the line says so, where a panel that opened
             // empty would say it less plainly.
-            ("diff", Some((_, false))) => {
-                workspace.review_refused = true;
+            (Typed::Command(Command::ReviewSql), Some((_, false))) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.review_refused = true;
+                }
                 return;
             }
-            // A SQL editor is in front: there is no table to act on.
-            ("w" | "e!" | "diff", None) => return,
-            (other, _) => {
-                workspace.command_error = Some(other.to_owned());
-                return;
+            // A SQL editor's lines set the mode of its runs, as its switch
+            // does. Where the tab cannot write the mode stays, as it does
+            // under the switch.
+            (Typed::Command(command @ (Command::ReadWriteTab | Command::ReadOnlyTab)), None) => {
+                let Some(sql_tab) = sql_tab else {
+                    return refused(self);
+                };
+                let mode = if command == Command::ReadWriteTab {
+                    crate::model::RunMode::ReadWrite
+                } else {
+                    crate::model::RunMode::ReadOnly
+                };
+                Action::SetSqlMode { tab, sql_tab, mode }
             }
+            _ => return refused(self),
         };
         // As from a key: under a question about the changes it is dropped.
         self.apply(action);

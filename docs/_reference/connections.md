@@ -6,7 +6,8 @@ nav_order: 0
 
 ## The picker
 
-Cmd/Ctrl+O opens the picker with your saved connections. Each row shows
+Cmd/Ctrl+O (Ctrl+Shift+C in the Omarchy look) opens the picker with your
+saved connections. Each row shows
 the connection's environment and when it was last used, and
 **Find connection…** searches by name or by `user@host:port/database`.
 

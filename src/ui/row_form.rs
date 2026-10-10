@@ -104,7 +104,7 @@ impl<'a> Form<'a> {
         tab: ConnTabId,
         row: usize,
         editor: Option<&'a mut Editor>,
-        (hold, terminal): (bool, bool),
+        (hold, terminal, keys): (bool, bool, &crate::ui::cell_editor::Keys),
     ) -> Self {
         // Only an editor on this row is the panel's to draw.
         let editor = editor.filter(|editor| editor.cell.row == row);
@@ -153,7 +153,8 @@ impl<'a> Form<'a> {
             })
             .collect();
         let target = editor.as_ref().and_then(|editor| {
-            crate::ui::data_view::editor_target(workspace, object, tab, editor.cell, hold)
+            let how = (hold, keys);
+            crate::ui::data_view::editor_target(workspace, object, tab, editor.cell, how)
         });
         Self {
             editor,

@@ -5,6 +5,7 @@ use egui::{
     vec2,
 };
 
+use crate::keymap::Written;
 use crate::theme::{DialogStyle, Icon, Look, Palette, Selection, TabStyle};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
@@ -112,6 +113,20 @@ pub fn icon_button(
     look: &Look,
     palette: &Palette,
 ) -> Response {
+    icon_button_tipped(ui, icon, (label, label), look, palette)
+}
+
+/// [`icon_button`] whose tooltip is not its accessible name: `label` is
+/// the name, which must tell it from the other buttons on screen, and
+/// `tip` what a pointer over it reads (a command's name, shared with the
+/// key that does the same).
+pub fn icon_button_tipped(
+    ui: &mut Ui,
+    icon: Icon,
+    (label, tip): (&str, &str),
+    look: &Look,
+    palette: &Palette,
+) -> Response {
     let size = vec2(24.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
@@ -133,7 +148,7 @@ pub fn icon_button(
             egui::Rect::from_center_size(rect.center(), vec2(16.0, 16.0)),
         );
     }
-    response.on_hover_text(label)
+    response.on_hover_text(tip)
 }
 
 /// [`icon_button`] at `size`, its icon `icon_size` points.
@@ -786,7 +801,8 @@ pub fn section_label(text: &str, look: &Look, palette: &Palette) -> Text {
 }
 
 /// One keyboard hint: its key, what it does, and whether it is possible.
-pub type Hint<'a> = (&'a str, &'a str, bool);
+/// The key is one the keymap wrote: a hint takes nothing spelled by hand.
+pub type Hint<'a> = (&'a Written, &'a str, bool);
 
 /// Keyboard hints: each key in the text colour, then what it does in the
 /// muted one. Disabled hints are struck through. Returns their width.
@@ -1323,8 +1339,9 @@ impl<'a> ButtonSpec<'a> {
         response
     }
 
-    pub fn shortcut(mut self, shortcut: &'a str) -> Self {
-        self.shortcut = Some(shortcut);
+    /// The key that does what the button does, as the keymap wrote it.
+    pub fn shortcut(mut self, shortcut: &'a Written) -> Self {
+        self.shortcut = Some(shortcut.as_str());
         self
     }
 

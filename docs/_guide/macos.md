@@ -46,7 +46,6 @@ a Mac keyboard labels Delete.
 | Keys | Do |
 | --- | --- |
 | Cmd+O | Open the connection picker |
-| Cmd+N | New connection. With a table's rows in front, a new row |
 | Cmd+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
 | Cmd+Shift+W | Close the connection |
 | Cmd+P | Quick open |
@@ -74,9 +73,10 @@ a Mac keyboard labels Delete.
 | Arrows | Move |
 | Return | Connect, or show the connection if it is open already |
 | Shift+Return | Open it again |
+| Cmd+N | New connection |
 | Cmd+E | Edit |
 | Cmd+D | Duplicate |
-| Cmd+Backspace | Delete |
+| Backspace | Delete |
 | Esc | Cancel connecting |
 
 ### The connection dialog
@@ -94,7 +94,7 @@ a Mac keyboard labels Delete.
 | --- | --- |
 | Arrows, Home, End | Move |
 | Return | Open the table or view |
-| Cmd+R | Refresh the list |
+| Cmd+R | Reload the list |
 
 ### A table
 
@@ -105,9 +105,10 @@ a Mac keyboard labels Delete.
 | Cmd+F | Filter bar |
 | Cmd+C | Copy the cell |
 | Cmd+Shift+C | Copy the row |
-| Cmd+R | Refresh |
+| Cmd+R | Reload |
 | Cmd+. | Cancel the running query |
-| Space, Cmd+Shift+R | Show or hide the row panel. On a boolean cell that can be edited, Space flips the cell instead |
+| Cmd+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
+| Cmd+Shift+R | Show or hide the row panel |
 
 ### Editing
 
@@ -116,7 +117,6 @@ a Mac keyboard labels Delete.
 | Return, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Cmd+N | Add a row, at the top of the grid |
 | Backspace, Forward Delete | Drop a new row that is not saved yet |
-| Cmd+I | Edit the row in the row panel |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |
 | Option+Return | Open the large editor. In it, Cmd+Return applies and Esc cancels |

@@ -14,10 +14,12 @@ pasting and deleting rows are not built yet.
 ## Change a value
 
 Select a cell and press Enter or F2, double-click it, or simply start
-typing. Tab moves to the next cell and keeps your change.
+typing. Tab moves to the next cell and keeps your change. In the Omarchy
+look `i` edits the cell, and its other keys are
+[its own]({% link _guide/omarchy.md %}#editing).
 
-To edit a long value, open the row panel and press Cmd/Ctrl+I, or
-double-click the value there.
+To edit a long value, press Cmd/Ctrl+I (Enter in the Omarchy look) to
+reach the row panel's fields, or double-click the value there.
 
 | To | Press |
 | --- | --- |
@@ -52,7 +54,8 @@ The cell shows the word until you save, and what the database stored
 after. Review SQL shows the keyword as it is sent.
 
 - In a text column these are text: `NULL` there is four letters. Use
-  Cmd/Ctrl+Backspace for NULL and Cmd/Ctrl+' for DEFAULT.
+  Cmd/Ctrl+Backspace for NULL and Cmd/Ctrl+' for DEFAULT (`x` and `D` in
+  the Omarchy look).
 - In a JSON column `null` is a JSON document. `NULL` and `DEFAULT` in
   capitals are the database's.
 - The same goes for a type that is no number, boolean, date or time and
@@ -65,7 +68,8 @@ after. Review SQL shows the keyword as it is sent.
 - A date column gets the date and a time column the time of day. On
   SQLite the time is UTC, to the second.
 - While a date or time value is being edited, the **now** button beside
-  it sets the same thing. In the Omarchy look the key is Ctrl+T.
+  it sets the same thing. The Omarchy look has no button: type `now()`
+  there.
 - In a new row, a cell you leave alone is its default already, so
   `DEFAULT` there takes the value out again.
 
@@ -79,7 +83,8 @@ appears with what you can do with them.
 - **Save** (Cmd/Ctrl+S) writes all of them in one transaction. Either
   every change is written or none is.
 - **Discard all** drops them.
-- **Review SQL** (Cmd/Ctrl+Shift+D) shows the statements a save will run.
+- **Review SQL** (Cmd/Ctrl+Shift+D; `:diff` in the Omarchy look) shows the
+  statements a save will run.
   **Copy SQL** in that panel copies them.
 
 {% include shot.html file="macos-edit-review" alt="Review SQL open above the bar, showing the statement a save will run and the conditions it runs under" %}
@@ -115,18 +120,18 @@ database will do if you leave it alone:
   it does for an identity column or a computed one. Such a cell cannot be
   typed into.
 
-Fill it as you edit any row. Cmd/Ctrl+Z on a cell takes its value out
-again. Esc leaves the editor and keeps the row. While new rows wait to be
-saved, the Omarchy look counts them at the right of the table's header:
-`+1`.
+Fill it as you edit any row. Cmd/Ctrl+Z on a cell (`u` in the Omarchy
+look) takes its value out again. Esc leaves the editor and keeps the row.
+While new rows wait to be saved, the Omarchy look counts them at the right
+of the table's header: `+1`.
 
 The row is saved with everything else that is pending, in the same
 transaction. Only the columns you set are sent, and **Review SQL** shows
 the `INSERT`. After the save the row shows what the database stored: its
 id, its defaults. It stays where it was until the next reload or sort.
 
-- Delete drops a new row that is not saved yet (`dd` in the Omarchy
-  look). **Discard all** drops every new row with the other changes.
+- Backspace or Delete drops a new row that is not saved yet (`dd` in the
+  Omarchy look). **Discard all** drops every new row with the other changes.
 - If the database refuses the row, nothing is written. The row stays, in
   red, with the database's words on it.
 - On a table with a trigger, and on MySQL where the new row cannot be
@@ -144,8 +149,9 @@ alone, as its cell does: **required**, the default with **from DEFAULT**,
 `CURRENT_TIMESTAMP on save` for a default the database works out, and
 **Assigned by the database on save**.
 
-Click a value to edit it there, or press Cmd/Ctrl+I and then Enter. Enter
-takes what you typed and goes on to the next field. **Discard new row**
+Click a value to edit it there, or press Cmd/Ctrl+I (Enter in the Omarchy
+look) and then Enter. Enter takes what you typed and goes on to the next
+field. **Discard new row**
 drops the row, and **Add another** adds one more. The Omarchy look has
 its keys for both, `dd` and `o`, and they work from a field of the form
 too.

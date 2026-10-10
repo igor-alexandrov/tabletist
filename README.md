@@ -54,14 +54,14 @@ The guide and the reference are on the website:
   nothing and asks about each such row, with what was loaded, what the
   server holds now and yours side by side (keep mine, use the server's
   values, or overwrite). Before saving, Review SQL shows the statements
-  that will run (`:diff` on Omarchy, Cmd/Ctrl+Shift+D everywhere) and
+  that will run (Cmd/Ctrl+Shift+D, or `:diff` on Omarchy) and
   copies them, and a save to production asks first, with them on screen.
 - A sidebar of recent objects and one schema's tables and views, folded into
   prefix groups (`book_`) or listed flat; each table opens with a data grid
   (keys, foreign keys, value tags, JSON at a glance), a row panel showing
   every field in full with a jump along foreign keys, where a value of a
-  writable table is edited in place (a click on it, or Cmd/Ctrl+I to
-  reach the row's fields and Enter or typing to edit one),
+  writable table is edited in place (a click on it, or Cmd/Ctrl+I, Enter on
+  Omarchy, to reach the row's fields, and Enter or typing to edit one),
   and a Structure view (columns, indexes, foreign keys).
 - Server-side sorting and paging, a filter bar with a raw WHERE option, exact
   counts on demand, and cancel for any running query. MySQL sessions run in
@@ -77,14 +77,15 @@ The guide and the reference are on the website:
   a tab opens in Read-write: a run that changes data is one transaction,
   committed when every statement succeeded and rolled back on the first
   error, cancel or timeout, and the Messages say which. A run of reads is
-  read-only there too, and the toolbar's switch (or Cmd/Ctrl+Shift+M)
+  read-only there too, and the toolbar's switch (or Cmd/Ctrl+Shift+M; `:ro` and `:rw` on Omarchy)
   sets the tab to Read-only and back.
-  Format (Cmd/Ctrl+Shift+F)
+  Format (Cmd/Ctrl+Shift+F; `=` on Omarchy)
   lays queries out in river style and uppercases reserved words, in the
   selection's statements or the whole script. Keywords, schemas, tables,
   views and the columns of a statement's tables are completed while typing
-  (Ctrl+Space or Cmd/Ctrl+I asks for the list anywhere).
-- Quick open (Cmd/Ctrl+P) and a full keyboard map: press `?` in the app.
+  (Ctrl+Space asks for the list anywhere).
+- Quick open (Cmd/Ctrl+P on macOS and Windows) and a full keyboard map:
+  press `?` in the app.
 - Looks native on each platform: a macOS look in IBM Plex, and on Linux the
   Omarchy look (square, keyboard first, vim keys, the desktop's monospace
   font throughout). It follows the Omarchy theme live on Omarchy, and the

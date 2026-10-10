@@ -528,7 +528,13 @@ fn terminal_foot(
     let names = [gettext(locale, "Hide SQL"), gettext(locale, "Copy SQL")];
     let mut pressed = [false; 2];
     let mut x = foot.left() + side;
-    for (index, hint) in [("esc", &*close, true), ("Y", &*copy, true)]
+    let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
+    let (close_key, copy_key) = (
+        key(crate::keymap::Command::CloseReview),
+        key(crate::keymap::Command::CopyReviewSql),
+    );
+    let save_key = key(crate::keymap::Command::SaveChanges);
+    for (index, hint) in [(&close_key, &*close, true), (&copy_key, &*copy, true)]
         .into_iter()
         .enumerate()
     {
@@ -541,7 +547,7 @@ fn terminal_foot(
     }
     // Left out on a connection that cannot write, as the status line
     // strikes it out there; and where the foot is too narrow for it.
-    let hint = [(":w", &*write, true)];
+    let hint = [(&save_key, &*write, true)];
     let start = foot.right() - side - widgets::key_hints_width(ui, &hint, GAP, look, palette);
     if !read_only && x <= start {
         widgets::key_hints(ui, (start, y), &hint, GAP, look, palette);

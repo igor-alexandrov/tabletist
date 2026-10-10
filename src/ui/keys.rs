@@ -1,8 +1,12 @@
-//! Keyboard shortcuts. Command means Cmd on macOS and Ctrl elsewhere.
+//! The keys' handler. Which key does what is the keymap's to say
+//! (`crate::keymap`): this reads what the window sends, asks the keymap
+//! whether it is a command's key where the keyboard is, and pushes what
+//! the command does. It names no key of its own.
 
 use egui::{Key, Modifiers};
 
 use crate::app::App;
+use crate::keymap::{Command, Keymap, Layout, Mods, Scope, Spelled, Stroke, Typed, Written};
 use crate::model::{Action, ConnTabId, TabId};
 
 const NUMBERS: [Key; 9] = [
@@ -17,147 +21,297 @@ const NUMBERS: [Key; 9] = [
     Key::Num9,
 ];
 
-/// The looks a shortcut holds in. The help dialog lists a row only where
-/// its keys are the look's own: a cell is edited with chords on macOS and
-/// Windows, and with letters and the `:` prompt on Omarchy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Holds {
-    All,
-    /// macOS and Windows.
-    Desktop,
-    /// Omarchy.
-    Terminal,
+/// Where a frame's drawing finds the keymap in force.
+fn keymap_id() -> egui::Id {
+    egui::Id::new("keymap")
 }
 
-const ALL: Holds = Holds::All;
-const DESKTOP: Holds = Holds::Desktop;
-const TERMINAL: Holds = Holds::Terminal;
-
-/// Every shortcut, for the help dialog, with the looks it holds in. `Mod`
-/// is Cmd on macOS, Ctrl elsewhere.
-pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
-    ("Mod+O", "Connections", ALL),
-    ("Mod+Shift+W", "Close connection", ALL),
-    (
-        "Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab",
-        "Switch connection",
-        ALL,
-    ),
-    ("Mod+N", "New connection", ALL),
-    (
-        "Mod+S, Mod+T, Mod+Enter",
-        "Save, test, or save and connect in the connection dialog",
-        ALL,
-    ),
-    ("Mod+T", "New SQL editor", ALL),
-    (
-        "Mod+Return, Mod+Shift+Return",
-        "Run statement / run all",
-        ALL,
-    ),
-    ("Mod+Shift+F", "Format SQL", ALL),
-    ("Mod+Shift+F", "Format a document being edited", ALL),
-    (
-        "Mod+Shift+M",
-        "Read-only or read-write runs in the SQL editor",
-        ALL,
-    ),
-    ("Ctrl+Space, Mod+I", "Complete in the SQL editor", ALL),
-    ("Mod+W", "Close tab", ALL),
-    ("Mod+Shift+[ / ]", "Previous / next tab", ALL),
-    ("Mod+R", "Refresh", ALL),
-    ("Mod+F", "Filter bar", ALL),
-    ("Mod+P", "Quick open", ALL),
-    ("Mod+B", "Show or hide the sidebar", ALL),
-    ("F6, Shift+F6", "Next / previous part of the window", ALL),
-    ("Mod+Alt+Left / Right", "Previous / next page", ALL),
-    ("Mod+.", "Cancel running query", ALL),
-    ("Esc", "Cancel connecting", ALL),
-    ("Space, Mod+Shift+R", "Toggle row panel", ALL),
-    ("Space", "Flip a boolean cell", ALL),
-    ("t, f", "Set a boolean cell true or false", TERMINAL),
-    ("Ctrl+T", "Now, in a date or time cell's editor", TERMINAL),
-    ("Mod+C, Mod+Shift+C", "Copy cell / copy row", ALL),
-    (
-        "Arrows, Enter, Shift+Enter, Mod+E, Mod+D, Mod+Backspace",
-        "Pick, open again, edit, duplicate or delete a connection",
-        ALL,
-    ),
-    ("Arrows, Home/End, Enter", "Move in the tree", ALL),
-    ("Arrows, Page Up/Down, Home/End", "Move in the grid", ALL),
-    // Editing a table's cells: each look's own keys for the same things.
-    ("Enter, F2", "Edit the cell", DESKTOP),
-    ("i, Enter", "Edit the cell", TERMINAL),
-    ("Mod+N", "Add a row", DESKTOP),
-    ("o, O", "Add a row below or above the cursor", TERMINAL),
-    ("Delete", "Drop a new row", DESKTOP),
-    ("dd", "Drop a new row", TERMINAL),
-    ("Mod+I", "Focus inspector fields", DESKTOP),
-    ("Ctrl+L, Mod+I", "Focus inspector fields", TERMINAL),
-    (
-        "j/k, Ctrl+H",
-        "Step the inspector's fields, back to the grid",
-        TERMINAL,
-    ),
-    (
-        "Up, Down, Esc",
-        "Step the inspector's fields, back to the grid",
-        DESKTOP,
-    ),
-    ("cc", "Edit the cell from nothing", TERMINAL),
-    ("Tab, Shift+Tab", "Commit and move right or left", ALL),
-    ("Esc", "Cancel the edit", DESKTOP),
-    ("Esc", "Leave the editor and keep the edit", TERMINAL),
-    ("Ctrl+C", "Drop the edit", TERMINAL),
-    ("Mod+Backspace", "Set NULL", DESKTOP),
-    ("x", "Set NULL", TERMINAL),
-    ("Mod+'", "Set DEFAULT", DESKTOP),
-    ("D", "Set DEFAULT", TERMINAL),
-    ("Mod+Z", "Revert the cell", DESKTOP),
-    ("u", "Revert the cell", TERMINAL),
-    ("Mod+S", "Save all pending changes", DESKTOP),
-    (":w, Mod+S", "Save all pending changes", TERMINAL),
-    ("Mod+Alt+Backspace", "Discard all pending changes", DESKTOP),
-    (":e!", "Discard all pending changes", TERMINAL),
-    (
-        "Mod+Shift+D",
-        "Show or hide the SQL of the pending changes",
-        ALL,
-    ),
-    (":diff", "Show the SQL of the pending changes", TERMINAL),
-    ("Esc", "Close the SQL of the pending changes", TERMINAL),
-    ("Y", "Copy the SQL of the pending changes", TERMINAL),
-    (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, dd, f, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
-        "Omarchy: vim keys (shown in the status line)",
-        ALL,
-    ),
-    ("Mod+,", "Settings", ALL),
-    ("?", "Shortcuts", ALL),
-];
-
-/// The shortcuts that hold in `look`, as the help dialog lists them: its
-/// keys and what they do. None that only another look has.
-pub fn shortcuts(look: &crate::theme::Look) -> impl Iterator<Item = (&'static str, &'static str)> {
-    let terminal = look.terminal;
-    SHORTCUTS
-        .iter()
-        .filter(move |(_, _, holds)| match holds {
-            Holds::All => true,
-            Holds::Desktop => !terminal,
-            Holds::Terminal => terminal,
-        })
-        .map(|(keys, what, _)| (*keys, *what))
+/// Leaves the keymap in force where what is drawn this frame reads a
+/// key's spelling from: a label names a key by its command, wherever it is
+/// drawn, and none is written by hand.
+pub fn publish(ctx: &egui::Context, keymap: &std::sync::Arc<Keymap>) {
+    ctx.data_mut(|data| data.insert_temp(keymap_id(), keymap.clone()));
 }
 
-/// `keys` with `Mod` named for this platform.
-pub fn keys_label(keys: &str) -> String {
-    let command = if cfg!(target_os = "macos") {
-        "Cmd"
-    } else {
-        "Ctrl"
+/// The keymap in force, or the defaults where none was published (a
+/// widget drawn on its own, in a test). For what reads its own keys: a
+/// dialog, which the workspace's handler does not run under. Asked for
+/// before the input is borrowed: both sit behind the context's lock.
+pub(crate) fn published(ctx: &egui::Context) -> std::sync::Arc<Keymap> {
+    ctx.data(|data| data.get_temp(keymap_id()))
+        .unwrap_or_default()
+}
+
+/// The command a letter typed in a prompt stands for there: `when` says
+/// which prompt, whose letters are its own and nobody else's.
+pub(crate) fn prompt_letter(
+    keymap: &Keymap,
+    layout: Layout,
+    when: crate::keymap::When,
+    typed: &str,
+) -> Option<Command> {
+    match keymap.typed(layout, Scope::Prompt, &|holds| holds == when, typed) {
+        Typed::Command(command) => Some(command),
+        Typed::Claimed | Typed::Waiting | Typed::Nothing => None,
+    }
+}
+
+/// The first key of `command`, as `look` writes it.
+pub fn written(ctx: &egui::Context, look: &crate::theme::Look, command: Command) -> Written {
+    published(ctx).key(Layout::of(look), command)
+}
+
+/// Every key of `command`, as `look` writes them.
+pub fn written_all(ctx: &egui::Context, look: &crate::theme::Look, command: Command) -> Written {
+    published(ctx).label(Layout::of(look), command)
+}
+
+/// The first key `command` has in `scope`, as `look` writes it.
+pub fn written_in(
+    ctx: &egui::Context,
+    look: &crate::theme::Look,
+    command: Command,
+    scope: Scope,
+) -> Written {
+    published(ctx).key_in(Layout::of(look), command, scope)
+}
+
+/// The first keys of `commands` as one hint, as `look` writes them.
+pub fn written_together(
+    ctx: &egui::Context,
+    look: &crate::theme::Look,
+    commands: &[Command],
+) -> Written {
+    published(ctx).together(Layout::of(look), commands)
+}
+
+/// Whether `held` is exactly `mods`, as `layout` reads what is held. Shift
+/// and Alt are exact everywhere (`consume_key` lets an extra Shift
+/// through, so `ctrl+shift+c` would be read as `ctrl+c`).
+pub(crate) fn held_is(layout: Layout, held: Modifiers, mods: Mods) -> bool {
+    if held.shift != mods.shift || held.alt != mods.alt {
+        return false;
+    }
+    match layout {
+        // One command key, Ctrl. Linux reports it as `ctrl` and `command`
+        // both; either names it. Cmd, where a Mac draws this look, is no
+        // key of its layout: Cmd+C stays the copy of whatever has the
+        // keyboard.
+        Layout::Omarchy => !mods.cmd && !held.mac_cmd && (held.ctrl || held.command) == mods.ctrl,
+        Layout::Mac | Layout::Windows => {
+            let pattern = Modifiers {
+                alt: mods.alt,
+                ctrl: mods.ctrl,
+                shift: mods.shift,
+                mac_cmd: false,
+                command: mods.cmd,
+            };
+            // As `is_press`: Cmd is held only where the chord names it.
+            held.matches_exact(pattern) && (mods.cmd || !held.mac_cmd)
+        }
+    }
+}
+
+/// How a chord went down in a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Presses {
+    /// A press of its own: not only what a held key repeats.
+    pub fresh: bool,
+    /// Every time it went down, repeats too.
+    pub count: usize,
+}
+
+/// With Shift held a US keyboard reports the brace for a bracket.
+fn same_key(named: Key, pressed: Key) -> bool {
+    named == pressed
+        || matches!(
+            (named, pressed),
+            (Key::OpenBracket, Key::OpenCurlyBracket) | (Key::CloseBracket, Key::CloseCurlyBracket)
+        )
+}
+
+/// Whether `event` is what the window sends in place of `key` held with
+/// the command key: it turns C, X and V into a copy, a cut and a paste
+/// before any key event is made, whatever else is held.
+fn clipboard_event(event: &egui::Event, key: Key) -> bool {
+    matches!(
+        (event, key),
+        (egui::Event::Copy, Key::C) | (egui::Event::Cut, Key::X) | (egui::Event::Paste(_), Key::V)
+    )
+}
+
+/// Whether `event` is a press of the chord spelled `keys`, and whether a
+/// fresh one (a held key's repeat is a press too). `held` is what the frame
+/// holds: a clipboard event says nothing of it itself, and one with
+/// nothing held is a Copy key or a menu's, and no chord. A spelling that
+/// is no single chord (letters, a line of the prompt, a range of digits)
+/// is never pressed.
+pub(crate) fn press_of(
+    layout: Layout,
+    held: Modifiers,
+    event: &egui::Event,
+    keys: &'static str,
+) -> Option<bool> {
+    let Ok(Spelled::Strokes(strokes)) = crate::keymap::spell(keys) else {
+        return None;
     };
-    keys.replace("Mod", command)
+    let [Stroke::Key { mods, key }] = strokes.as_slice() else {
+        return None;
+    };
+    match event {
+        egui::Event::Key {
+            key: down,
+            modifiers,
+            pressed: true,
+            repeat,
+            ..
+        } if same_key(*key, *down) && held_is(layout, *modifiers, *mods) => Some(!repeat),
+        // A held chord's repeats come as more of the same event, and none
+        // says it is a repeat: `held_copy` tells them apart where it
+        // matters.
+        event
+            if (mods.cmd || mods.ctrl)
+                && held_is(layout, held, *mods)
+                && clipboard_event(event, *key) =>
+        {
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// Takes the presses of the chord spelled `keys` out of the frame and
+/// counts them.
+pub(crate) fn presses(input: &mut egui::InputState, layout: Layout, keys: &'static str) -> Presses {
+    let held = input.modifiers;
+    let mut pressed = Presses::default();
+    input
+        .events
+        .retain(|event| match press_of(layout, held, event, keys) {
+            Some(fresh) => {
+                pressed.fresh |= fresh;
+                pressed.count += 1;
+                false
+            }
+            None => true,
+        });
+    pressed
+}
+
+/// How `command` was asked for in `scope` this frame, by any of the chords
+/// it has there in this mode (`normal`: no text field has the keyboard).
+pub(crate) fn asked(
+    input: &mut egui::InputState,
+    keymap: &Keymap,
+    layout: Layout,
+    command: Command,
+    scope: Scope,
+    normal: bool,
+) -> Presses {
+    let mut all = Presses::default();
+    for keys in keymap.chords_now(layout, command, scope, normal) {
+        let pressed = presses(input, layout, keys);
+        all.fresh |= pressed.fresh;
+        all.count += pressed.count;
+    }
+    all
+}
+
+/// The digit a command bound to a range (`alt+1..9`) was asked with, from
+/// nought. With Shift held the key reports what the digit types (`!`), so
+/// the key it is on counts too.
+pub(crate) fn digit_asked(
+    input: &mut egui::InputState,
+    keymap: &Keymap,
+    layout: Layout,
+    command: Command,
+    scope: Scope,
+    normal: bool,
+) -> Option<usize> {
+    let mut found = None;
+    for keys in keymap.chords_now(layout, command, scope, normal) {
+        let Ok(Spelled::Digits(mods)) = crate::keymap::spell(keys) else {
+            continue;
+        };
+        for (index, number) in NUMBERS.into_iter().enumerate() {
+            let before = input.events.len();
+            input.events.retain(|event| {
+                !matches!(event, egui::Event::Key { key, physical_key, modifiers, pressed: true, .. }
+                    if (*key == number || *physical_key == Some(number))
+                        && held_is(layout, *modifiers, mods))
+            });
+            if input.events.len() != before {
+                found = Some(index);
+            }
+        }
+    }
+    found
+}
+
+/// The characters this frame typed with nothing held but Shift: the text
+/// events where there are any, else the keys that went down, as the
+/// characters they type on a US keyboard (a test's bare key press sends
+/// no text; the real keyboard sends both).
+fn typed_chars(ctx: &egui::Context) -> Vec<char> {
+    ctx.input(|input| {
+        let held = input.modifiers;
+        if held.command || held.ctrl || held.mac_cmd || held.alt {
+            return Vec::new();
+        }
+        let text: Vec<char> = input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Text(text) => Some(text.chars()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if !text.is_empty() {
+            return text;
+        }
+        input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !(modifiers.command
+                    || modifiers.ctrl
+                    || modifiers.mac_cmd
+                    || modifiers.alt) =>
+                {
+                    crate::keymap::char_of(*key, modifiers.shift)
+                }
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Takes a typed character out of the frame, and the key that typed it:
+/// what it asked for may open a field, which must not get it again.
+fn take_char(ctx: &egui::Context, char: char) {
+    ctx.input_mut(|input| {
+        input.events.retain(|event| match event {
+            egui::Event::Text(text) => !text.chars().eq([char]),
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                // A test's key says nothing of Shift beside the text it
+                // sends: the letter's key goes with either case.
+                let typed = crate::keymap::char_of(*key, modifiers.shift);
+                !typed.is_some_and(|typed| typed.eq_ignore_ascii_case(&char))
+            }
+            _ => true,
+        });
+    });
 }
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
@@ -219,7 +373,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // table's filter bar, which Mod+F opens in every look: it is drawn
     // with the grid too, and takes its flag and the keyboard then, and a
     // character typed before that must not start an edit of the cell.
-    let asked = grid
+    let field_asked = grid
         && app.workspace(active).is_some_and(|workspace| {
             let bar = workspace
                 .active_object_tab()
@@ -243,7 +397,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // An editor that just opened takes the keyboard when its field is
     // first drawn, later in this frame: the keys are its own already, and
     // none of them is the grid's (Space, an arrow). So with the prompt.
-    let editing = ctx.text_edit_focused() || open || asked || prompt;
+    let editing = ctx.text_edit_focused() || open || field_asked || prompt;
     // What the prompt refused is said until the next key, whatever the key
     // goes on to do. A fresh press: the Enter that ran the line may still
     // be held, or the Mod+S that asked for the save.
@@ -308,278 +462,302 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             enter_breaks: list.enter_is_a_line_break(&sql.text),
         })
     });
-    // In the terminal look Ctrl+T in a date or time cell's editor is "now",
-    // as the design has it. Everywhere else it opens a SQL editor.
-    let stamps = object
-        .filter(|_| terminal && open)
-        .filter(|&(tab, id)| app.stamps(tab, id).is_some());
     // Space flips a boolean cell where the grid has the keys and the cell
-    // can be edited, as the design has it. Everywhere else it shows the
-    // row panel.
+    // can be edited. Everywhere else it is no key.
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id));
+    let layout = app.layout();
+    let on_picker = matches!(
+        app.active_tab().content,
+        crate::model::ConnTabContent::Picker(_)
+    );
+    // The tab in front, whatever has the keyboard in it: a cancel, a run
+    // and the `:` prompt are its own from the tree too.
+    let front = if on_picker {
+        Scope::Connections
+    } else if sql.is_some() {
+        Scope::SqlEditor
+    } else {
+        Scope::Grid
+    };
+    // What has the keyboard, for the letters: the nearest scope first.
+    // `pane` says where the user last worked, not `tree_arrows`, which
+    // also sends the arrows to the tree where there is no grid to move in.
+    let on_tree = app
+        .workspace(active)
+        .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree);
+    let scopes: &[Scope] = if on_picker {
+        &[Scope::Connections]
+    } else if open {
+        &[Scope::CellEditor]
+    } else if field.is_some() {
+        &[Scope::Inspector]
+    } else if on_tree {
+        &[Scope::Sidebar]
+    } else if sql.is_some() && sql_grid {
+        &[Scope::Results, Scope::SqlEditor]
+    } else if sql.is_some() {
+        &[Scope::SqlEditor]
+    } else {
+        &[Scope::Grid]
+    };
+    // Normal mode: no text field has the keyboard. A chord the keymap
+    // gives to normal mode is the field's own while one has it.
+    let normal = !editing;
+    // Something of the tab in front is loading or running: its cancel has
+    // something to cancel.
+    let busy = app.is_busy(active);
     let mut actions = Vec::new();
+    // The place of the tab asked for with its digit.
+    let mut tab_asked = None;
     ctx.input_mut(|input| {
+        // The keymap says which key: each line asks whether its command's
+        // chord went down, in the scope it is read in. The guards say when
+        // the command makes sense, as they did.
+        let keymap = &app.keymap;
+        let on = |input: &mut egui::InputState, command: Command, scope: Scope| {
+            asked(input, keymap, layout, command, scope, normal)
+        };
         // The completion list's keys come first: the editor never sees
-        // them, nor do the shortcuts below (Ctrl+N, Ctrl+P).
+        // them, nor do the chords below.
         if let Some(editor) = in_editor {
-            completion_keys(input, editor, completing, terminal, &mut actions);
+            completion_keys(input, editor, completing, (keymap, layout), &mut actions);
         }
-        // Running works while typing: the editor never sees these. A held
-        // chord runs once, or each repeat would cancel the run before it.
-        // Shift variants first: egui ignores an extra Shift when matching.
         if let Some((tab, sql_tab)) = sql {
-            for (modifiers, all) in [
-                (Modifiers::COMMAND | Modifiers::SHIFT, true),
-                (Modifiers::COMMAND, false),
-            ] {
-                if consume_press(input, modifiers, Key::Enter) {
+            // Running works while typing: the editor never sees these. A
+            // held chord runs once, or each repeat would cancel the run
+            // before it.
+            for (command, all) in [(Command::RunAll, true), (Command::RunStatement, false)] {
+                if on(input, command, Scope::SqlEditor).fresh {
                     actions.push(Action::RunSql { tab, sql_tab, all });
                 }
             }
+            // The chord that formats the script, in the looks that have
+            // one: Omarchy's key is a letter, read with the letters.
+            if on(input, Command::Format, Scope::SqlEditor).fresh {
+                actions.push(Action::FormatSql { tab, sql_tab });
+            }
+            // The other mode of the editor's runs, in the looks that have
+            // a chord for it: Omarchy sets the mode from its prompt.
+            if on(input, Command::ToggleSqlMode, Scope::SqlEditor).fresh {
+                actions.push(Action::ToggleSqlMode { tab, sql_tab });
+            }
         }
-        // Format is a SQL editor's, and a table's while a document is
-        // edited in its large editor. The press is taken on every tab, or
-        // Mod+F, below, would take it for its own.
-        let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
-        if format && let Some((tab, sql_tab)) = sql {
-            actions.push(Action::FormatSql { tab, sql_tab });
-        }
-        if format
-            && open
+        // A document being edited in a table's large editor is formatted
+        // by the editor's own chord.
+        if open
             && let Some((tab, id)) = object
+            && on(input, Command::Format, Scope::CellEditor).fresh
         {
             actions.push(Action::FormatEditor { tab, id });
         }
-        // The other mode of the editor's runs. Not Mod+W, as its design
-        // has it: that closes the tab.
-        if let Some((tab, sql_tab)) = sql
-            && consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::M)
-        {
-            actions.push(Action::ToggleSqlMode { tab, sql_tab });
-        }
         // A fresh press only: an Esc held to close a dialog over the tab
         // repeats after the dialog is gone.
-        if give_up && consume_press(input, Modifiers::NONE, Key::Escape) {
+        if give_up && on(input, Command::CancelConnecting, Scope::Global).fresh {
             actions.push(Action::Disconnect(active));
         }
-        // A fresh press only: held down, it would add a row a frame. The
-        // press is taken, so the line below that reads the same chord for
-        // a new connection finds none.
+        // A fresh press only: held down, it would add a row a frame.
         if let Some((tab, id)) = adds
-            && consume_press(input, Modifiers::COMMAND, Key::N)
+            && on(input, Command::AddRow, Scope::Grid).fresh
         {
             let place = crate::edit::Place::Top;
             actions.push(Action::AddRow { tab, id, place });
         }
-        // Taken here for the same reason: the chord is a new SQL editor's
-        // below.
-        if let Some((tab, id)) = stamps
-            && consume_press(input, Modifiers::CTRL, Key::T)
+        if let Some((tab, id)) = flips
+            && on(input, Command::BooleanCycle, Scope::Grid).count > 0
         {
-            actions.push(Action::SetNow { tab, id });
+            actions.push(Action::CycleBoolean { tab, id });
         }
-        let mut key = |modifiers: Modifiers, key: Key, action: Action| {
-            if input.consume_key(modifiers, key) {
-                actions.push(action);
-            }
-        };
-        key(
-            Modifiers::COMMAND | Modifiers::SHIFT,
-            Key::W,
-            Action::CloseConnTab(active),
-        );
-        // A SQL editor has nothing to refresh or filter, and a row panel
+        if on(input, Command::CloseConnection, Scope::Global).count > 0 {
+            actions.push(Action::CloseConnTab(active));
+        }
+        // A SQL editor has nothing to reload or filter, and a row panel
         // only for a selected row of its result.
         let on_sql = sql.is_some();
-        if !on_sql || sql_row {
-            key(
-                Modifiers::COMMAND | Modifiers::SHIFT,
-                Key::R,
-                Action::ToggleRowPanel(active),
-            );
+        let rows = if on_sql { Scope::Results } else { Scope::Grid };
+        if (!on_sql || sql_row) && on(input, Command::ToggleInspector, rows).count > 0 {
+            actions.push(Action::ToggleRowPanel(active));
         }
-        key(
-            Modifiers::CTRL | Modifiers::SHIFT,
-            Key::Tab,
-            Action::CycleConnTab(-1),
-        );
-        key(Modifiers::CTRL, Key::Tab, Action::CycleConnTab(1));
+        if on(input, Command::PreviousConnection, Scope::Global).count > 0 {
+            actions.push(Action::CycleConnTab(-1));
+        }
+        if on(input, Command::NextConnection, Scope::Global).count > 0 {
+            actions.push(Action::CycleConnTab(1));
+        }
         // A SQL editor belongs to a workspace: the picker has none to open.
+        if in_workspace && on(input, Command::NewSqlTab, Scope::Global).count > 0 {
+            actions.push(Action::NewSqlTab(active));
+        }
+        if on(input, Command::Connections, Scope::Global).count > 0 {
+            actions.push(Action::ShowConnections);
+        }
+        // A new connection is the picker's key. On a table's rows the
+        // same chord added a row, above.
+        if on_picker && on(input, Command::NewConnection, Scope::Connections).count > 0 {
+            actions.push(Action::NewConnection);
+        }
+        let window = Command::GoToConnectionWindow;
+        if let Some(index) = digit_asked(input, keymap, layout, window, Scope::Global, normal) {
+            actions.push(Action::ActivateConnection(index));
+        }
+        let switch = Command::SwitchTab;
         if in_workspace {
-            key(Modifiers::COMMAND, Key::T, Action::NewSqlTab(active));
+            tab_asked = digit_asked(input, keymap, layout, switch, Scope::Global, normal);
         }
-        key(Modifiers::COMMAND, Key::O, Action::ShowConnections);
-        key(Modifiers::COMMAND, Key::N, Action::NewConnection);
-        for (index, number) in NUMBERS.into_iter().enumerate() {
-            key(
-                Modifiers::COMMAND,
-                number,
-                Action::ActivateConnection(index),
-            );
-        }
-        if !on_sql {
-            // The tree refreshes itself when it has the arrows (spec 5.10).
-            let refresh = if tree_arrows {
+        if !on_sql && on(input, Command::Reload, Scope::Grid).count > 0 {
+            // The tree reloads itself when it has the arrows (spec 5.10).
+            actions.push(if tree_arrows {
                 Action::RefreshTree(active)
             } else {
                 Action::Refresh(active)
-            };
-            key(Modifiers::COMMAND, Key::R, refresh);
+            });
         }
-        key(Modifiers::COMMAND, Key::Period, Action::CancelQuery(active));
-        if !on_sql {
+        // With nothing loading or running, Omarchy's chord is the text
+        // field's copy, and the others' has nothing to do.
+        if busy && on(input, Command::CancelQuery, front).count > 0 {
+            actions.push(Action::CancelQuery(active));
+        }
+        if !on_sql && on(input, Command::FilterBar, Scope::Grid).count > 0 {
             // An open bar without focus gets it back rather than closing.
-            let filter_key = if filter_open && !editing {
+            actions.push(if filter_open && !editing {
                 Action::FocusFilterBar(active)
             } else {
                 Action::ToggleFilterBar(active)
-            };
-            key(Modifiers::COMMAND, Key::F, filter_key);
+            });
         }
-        key(Modifiers::COMMAND, Key::P, Action::OpenQuickOpen);
-        key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar(active));
+        if on(input, Command::FindObject, Scope::Global).count > 0 {
+            actions.push(Action::OpenQuickOpen);
+        }
+        if on(input, Command::ToggleSidebar, Scope::Global).count > 0 {
+            actions.push(Action::ToggleSidebar(active));
+        }
         if tree_arrows && !focused {
             use crate::model::TreeKey;
-            for (pressed, tree_key) in [
-                (Key::ArrowUp, TreeKey::Up),
-                (Key::ArrowDown, TreeKey::Down),
-                (Key::ArrowLeft, TreeKey::Left),
-                (Key::ArrowRight, TreeKey::Right),
-                (Key::Home, TreeKey::Home),
-                (Key::End, TreeKey::End),
-            ] {
-                key(
-                    Modifiers::NONE,
-                    pressed,
-                    Action::TreeKey {
-                        tab: active,
-                        key: tree_key,
-                    },
-                );
+            let tab = active;
+            for keys in keymap.chords_now(layout, Command::MoveInTree, Scope::Sidebar, normal) {
+                let key = match keys {
+                    "up" => TreeKey::Up,
+                    "down" => TreeKey::Down,
+                    "left" => TreeKey::Left,
+                    "right" => TreeKey::Right,
+                    "home" => TreeKey::Home,
+                    "end" => TreeKey::End,
+                    // A letter: read with the letters.
+                    _ => continue,
+                };
+                if presses(input, layout, keys).count > 0 {
+                    actions.push(Action::TreeKey { tab, key });
+                }
             }
-            key(
-                Modifiers::NONE,
-                Key::Enter,
-                Action::TreeKey {
-                    tab: active,
-                    key: TreeKey::Enter,
-                },
-            );
+            if on(input, Command::OpenObject, Scope::Sidebar).count > 0 {
+                let key = TreeKey::Enter;
+                actions.push(Action::TreeKey { tab, key });
+            }
         }
         // Paging is a table's: a SQL result has one page.
         if let Some((tab, object_tab)) = object {
-            key(
-                Modifiers::COMMAND | Modifiers::ALT,
-                Key::ArrowLeft,
-                Action::PrevPage { tab, object_tab },
-            );
-            key(
-                Modifiers::COMMAND | Modifiers::ALT,
-                Key::ArrowRight,
-                Action::NextPage { tab, object_tab },
-            );
+            if on(input, Command::PreviousPage, Scope::Grid).count > 0 {
+                actions.push(Action::PrevPage { tab, object_tab });
+            }
+            if on(input, Command::NextPage, Scope::Grid).count > 0 {
+                actions.push(Action::NextPage { tab, object_tab });
+            }
         }
         // The rest acts on the tab the workspace shows, of either kind.
         if let Some((tab, id)) = any_tab {
-            // With Shift held, US layouts report `{` and `}`, so match both.
-            for (pressed, step) in [
-                (Key::OpenBracket, -1),
-                (Key::OpenCurlyBracket, -1),
-                (Key::CloseBracket, 1),
-                (Key::CloseCurlyBracket, 1),
-            ] {
-                key(
-                    Modifiers::COMMAND | Modifiers::SHIFT,
-                    pressed,
-                    Action::CycleTab { tab, step },
-                );
+            for (command, step) in [(Command::PreviousTab, -1), (Command::NextTab, 1)] {
+                if on(input, command, Scope::Global).count > 0 {
+                    actions.push(Action::CycleTab { tab, step });
+                }
             }
-            key(Modifiers::COMMAND, Key::W, Action::CloseTab { tab, id });
+            if on(input, Command::CloseTab, Scope::Global).count > 0 {
+                actions.push(Action::CloseTab { tab, id });
+            }
             if !editing && any_grid && !tree_arrows && !focused {
                 let page = 20;
-                for (pressed, rows, cols) in [
-                    (Key::ArrowUp, -1, 0),
-                    (Key::ArrowDown, 1, 0),
-                    (Key::ArrowLeft, 0, -1),
-                    (Key::ArrowRight, 0, 1),
-                    (Key::PageUp, -page, 0),
-                    (Key::PageDown, page, 0),
-                    (Key::Home, isize::MIN, 0),
-                    (Key::End, isize::MAX, 0),
-                ] {
-                    key(
-                        Modifiers::NONE,
-                        pressed,
-                        Action::MoveSelection {
-                            tab,
-                            id,
-                            rows,
-                            cols,
-                        },
-                    );
-                }
-                // The row panel shows a table's row, or the selected row
-                // of a SQL result.
-                if grid || sql_row {
-                    let space = match flips {
-                        Some((tab, id)) => Action::CycleBoolean { tab, id },
-                        None => Action::ToggleRowPanel(tab),
-                    };
-                    key(Modifiers::NONE, Key::Space, space);
+                let moves = [Command::MoveRow, Command::MoveColumn, Command::MovePage];
+                for command in moves {
+                    for keys in keymap.chords_now(layout, command, rows, normal) {
+                        let (rows, cols) = match keys {
+                            "up" => (-1, 0),
+                            "down" => (1, 0),
+                            "left" => (0, -1),
+                            "right" => (0, 1),
+                            "pgup" => (-page, 0),
+                            "pgdn" => (page, 0),
+                            "home" => (isize::MIN, 0),
+                            "end" => (isize::MAX, 0),
+                            // A letter: read with the letters.
+                            _ => continue,
+                        };
+                        if presses(input, layout, keys).count > 0 {
+                            actions.push(Action::MoveSelection {
+                                tab,
+                                id,
+                                rows,
+                                cols,
+                            });
+                        }
+                    }
                 }
             }
         }
     });
+    // The tab at the place its digit named.
+    if let Some(index) = tab_asked
+        && let Some(workspace) = app.workspace(active)
+        && let Some(tab) = workspace.tabs.get(index)
+    {
+        let (tab, id) = (active, tab.id());
+        actions.push(Action::ActivateTab { tab, id });
+    }
     // F6 steps through the parts of the window (the bar, the filter, the
     // tree, the tabs, the table's header, the rows, the row panel), and
     // Shift+F6 back. The terminal look steps through its panes alone with
-    // ctrl+l and ctrl+h.
+    // ctrl+l and ctrl+h, out of a text field: the keymap has those two for
+    // it only, in normal mode.
     if let Some(workspace) = app.workspace(active) {
         use crate::ui::focus::{self, Region};
         let from = match workspace.pane {
             crate::model::Pane::Tree => Region::Tree,
             crate::model::Pane::Grid => Region::Grid,
         };
-        // The first that matches: egui ignores an extra Shift.
-        let pressed = |keys: [(Modifiers, Key); 2]| {
+        // Which of `commands` was asked for first, by its place.
+        let first = |commands: [Command; 2]| {
             ctx.input_mut(|input| {
-                keys.into_iter()
-                    .position(|(modifiers, key)| input.consume_key(modifiers, key))
+                commands.into_iter().position(|command| {
+                    let scope = Scope::Global;
+                    asked(input, &app.keymap, layout, command, scope, normal).count > 0
+                })
             })
         };
-        match pressed([(Modifiers::SHIFT, Key::F6), (Modifiers::NONE, Key::F6)]) {
-            Some(index) => focus::step(ctx, index == 1, None, Some(from)),
-            None if app.look.terminal && !editing => {
-                if let Some(index) = pressed([(Modifiers::CTRL, Key::H), (Modifiers::CTRL, Key::L)])
-                {
-                    // A row of the table on screen is selected, and no
-                    // control has the keyboard: the keys are the grid's.
-                    let on_grid = grid && !focused && from == Region::Grid;
-                    let row = object.filter(|(tab, id)| {
-                        let object = app.workspace(*tab).and_then(|w| w.object_tab(*id));
-                        on_grid && object.is_some_and(|object| object.selection.is_some())
-                    });
-                    match (index, field, object, row) {
-                        // From a field of the row panel, back to the grid,
-                        // on the cell of that column.
-                        (0, Some(col), Some((tab, id)), _) => {
-                            let stop = crate::ui::row_panel::field_stop(tab, id, col);
-                            ctx.memory_mut(|memory| memory.surrender_focus(stop));
-                            actions.push(Action::FieldFocused { tab, id, col });
-                            actions.push(Action::GridKeys(tab));
-                        }
-                        // From the grid, to the row's fields: the panel is
-                        // shown for it.
-                        (1, None, _, Some((tab, id))) => {
-                            actions.push(Action::FocusFields { tab, id });
-                        }
-                        _ => focus::step(ctx, index == 1, Some(&Region::PANES), Some(from)),
-                    }
+        if let Some(index) = first([Command::PreviousPart, Command::NextPart]) {
+            focus::step(ctx, index == 1, None, Some(from));
+        } else if let Some(index) = first([Command::PaneLeft, Command::PaneRight]) {
+            // A row of the table on screen is selected, and no control
+            // has the keyboard: the keys are the grid's.
+            let on_grid = grid && !focused && from == Region::Grid;
+            let row = object.filter(|(tab, id)| {
+                let object = app.workspace(*tab).and_then(|w| w.object_tab(*id));
+                on_grid && object.is_some_and(|object| object.selection.is_some())
+            });
+            match (index, field, object, row) {
+                // From a field of the row panel, back to the grid, on the
+                // cell of that column.
+                (0, Some(col), Some((tab, id)), _) => {
+                    let stop = crate::ui::row_panel::field_stop(tab, id, col);
+                    ctx.memory_mut(|memory| memory.surrender_focus(stop));
+                    actions.push(Action::FieldFocused { tab, id, col });
+                    actions.push(Action::GridKeys(tab));
                 }
+                // From the grid, to the row's fields: the panel is shown
+                // for it.
+                (1, None, _, Some((tab, id))) => {
+                    actions.push(Action::FocusFields { tab, id });
+                }
+                _ => focus::step(ctx, index == 1, Some(&Region::PANES), Some(from)),
             }
-            None => {}
         }
     }
     // The Ctrl+C that drops the terminal's edit may be held. Its repeats
@@ -589,29 +767,38 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         held_copy(ctx, open);
     }
     if !editing && grid {
-        let (copy, shift) = ctx.input(|input| {
-            (
-                input
-                    .events
-                    .iter()
-                    .any(|event| matches!(event, egui::Event::Copy)),
-                input.modifiers.shift,
-            )
+        // The row's chord first: with Shift exact neither is the other's.
+        // They come as the window's copy, which `presses` reads. A look
+        // with no chord for them copies nothing here.
+        let copied = ctx.input_mut(|input| {
+            [Command::CopyRow, Command::CopyCells]
+                .into_iter()
+                .find(|command| {
+                    let scope = Scope::Grid;
+                    asked(input, &app.keymap, layout, *command, scope, normal).count > 0
+                })
         });
-        if copy && let Some(text) = app.copy_text(shift) {
+        let row = copied == Some(Command::CopyRow);
+        if copied.is_some()
+            && let Some(text) = app.copy_text(row)
+        {
             ctx.copy_text(text);
         }
     }
     // The Settings window, wherever the keyboard is.
-    if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Comma)) {
+    let settings = |input: &mut egui::InputState| {
+        let scope = Scope::Global;
+        asked(input, &app.keymap, layout, Command::Settings, scope, normal).count > 0
+    };
+    if ctx.input_mut(settings) {
         actions.push(Action::ShowSettings);
     }
-    // Before `?`, which is typed text too and stays the shortcuts'. The
-    // terminal look saves with the same chord, and edits with its letters.
+    // Before the letters: a chord that edits is no letter's, and the key
+    // that opens a field is taken before anything reads what it typed.
     if app.dialog.is_none() {
-        let keyboard = !terminal && !editing && grid && !tree_arrows && !focused;
-        let on_field = field.filter(|_| !terminal && !editing);
-        editing_keys(app, ctx, keyboard, on_field, &mut actions);
+        let keyboard = !editing && grid && !tree_arrows && !focused;
+        let on_field = field.filter(|_| !editing);
+        editing_keys(app, ctx, (keyboard, normal), on_field, &mut actions);
     }
     if !editing && app.dialog.is_none() {
         // A click ends a first key's wait: what is typed after it is typed
@@ -619,23 +806,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if ctx.input(|input| input.pointer.any_pressed()) {
             forget_pending(ctx);
         }
-        letters(app, ctx, field, &mut actions);
+        letters(app, ctx, field, (scopes, tree_arrows), &mut actions);
     } else {
         // The keys are a field's: a first key that waited is not the
         // first of what is typed once they are the grid's again.
         forget_pending(ctx);
-    }
-    // `?` as typed text, so it works on every keyboard layout.
-    if !editing
-        && app.dialog.is_none()
-        && ctx.input(|input| {
-            input
-                .events
-                .iter()
-                .any(|event| matches!(event, egui::Event::Text(text) if text == "?"))
-        })
-    {
-        actions.push(Action::ShowHelp);
     }
     // Ahead of what the key asked for, which may be the prompt again. Put
     // there only now: a letter that edits acts only where nothing else was
@@ -764,38 +939,48 @@ struct Completing {
 }
 
 /// The keys of the completion list of `editor`, which has the keyboard:
-/// `Ctrl+Space` asks for a list, and an open one (`completing`) takes the
-/// keys that move in it, insert from it and close it.
+/// one asks for a list, and an open one (`completing`) takes the keys that
+/// move in it, insert from it and close it. Which keys is the keymap's to
+/// say; they are read with the keyboard in the text.
 fn completion_keys(
     input: &mut egui::InputState,
     (tab, sql_tab): (ConnTabId, TabId),
     completing: Option<Completing>,
-    terminal: bool,
+    (keymap, layout): (&Keymap, Layout),
     actions: &mut Vec<Action>,
 ) {
-    // Two chords ask for a list: some systems take Ctrl+Space before the
-    // app sees it (macOS switches input sources with it, and an input
-    // method may be woken by it).
-    let asked = take_press(input, Modifiers::CTRL, Key::Space)
-        + take_press(input, Modifiers::COMMAND, Key::I);
-    if asked > 0 {
+    let scope = Scope::SqlEditor;
+    let chords = |command: Command| -> Vec<&'static str> {
+        keymap.chords_now(layout, command, scope, false).collect()
+    };
+    // Every time any of `chords` went down, repeats too. All are taken.
+    let take = |input: &mut egui::InputState, chords: &[&'static str]| -> usize {
+        let pressed = chords.iter().map(|keys| presses(input, layout, keys).count);
+        pressed.sum()
+    };
+    // The Mac has two chords that ask for a list: some systems take
+    // Ctrl+Space before the app sees it (macOS switches input sources with
+    // it, and an input method may be woken by it).
+    if take(input, &chords(Command::Complete)) > 0 {
         actions.push(Action::OpenCompletion { tab, sql_tab });
     }
     let Some(list) = completing else {
         return;
     };
-    // The arrows are the list's once it has a row to move to. The
-    // terminal's Ctrl+N and Ctrl+P are its own as long as it is open, rows
-    // or not: they never reach New connection and Quick open.
-    for (modifiers, key, step, taken) in [
-        (Modifiers::NONE, Key::ArrowDown, 1, list.has_row),
-        (Modifiers::NONE, Key::ArrowUp, -1, list.has_row),
-        (Modifiers::CTRL, Key::N, 1, terminal),
-        (Modifiers::CTRL, Key::P, -1, terminal),
+    // The arrows are the list's once it has a row to move to. Its other
+    // keys (Omarchy's Ctrl+N and Ctrl+P) are its own as long as it is
+    // open, rows or not.
+    for (command, step) in [
+        (Command::NextCompletion, 1),
+        (Command::PreviousCompletion, -1),
     ] {
-        if taken {
+        for keys in chords(command) {
+            let arrow = matches!(keys, "up" | "down");
+            if arrow && !list.has_row {
+                continue;
+            }
             // One row for each press: a frame may hold several.
-            let presses = take_press(input, modifiers, key);
+            let presses = presses(input, layout, keys).count;
             actions.extend((0..presses).map(|_| Action::MoveCompletion { tab, sql_tab, step }));
         }
     }
@@ -805,9 +990,18 @@ fn completion_keys(
         row: None,
     };
     let close = Action::CloseCompletion { tab, sql_tab };
-    let pressed = |input: &egui::InputState, key: Key| {
-        let is_it = |event: &egui::Event| is_press(event, Modifiers::NONE, key);
-        input.events.iter().any(is_it)
+    // The keys that insert: Enter, which is also the editor's line break,
+    // and the others (Tab), which are the list's alone.
+    let inserts = chords(Command::InsertCompletion);
+    let (enters, others): (Vec<_>, Vec<_>) = inserts.into_iter().partition(|keys| *keys == "enter");
+    // Whether one of `chords` went down, left in the frame for the editor.
+    let pressed = |input: &egui::InputState, chords: &[&'static str]| {
+        let held = input.modifiers;
+        input.events.iter().any(|event| {
+            chords
+                .iter()
+                .any(|keys| press_of(layout, held, event, keys).is_some())
+        })
     };
     if list.has_row {
         if input.events.iter().any(inserts_text) {
@@ -817,22 +1011,22 @@ fn completion_keys(
             // list goes on is the refresh's to say, for the word as it
             // reads after this frame. Enter stays the editor's line break,
             // and the list is done.
-            take_press(input, Modifiers::NONE, Key::Tab);
-            if pressed(input, Key::Enter) {
+            take(input, &others);
+            if pressed(input, &enters) {
                 actions.push(close);
             }
-        } else if take_press(input, Modifiers::NONE, Key::Tab) > 0 {
+        } else if take(input, &others) > 0 {
             actions.push(accept);
         } else if list.enter_breaks {
             // The editor gets its line break; the list is done.
-            if pressed(input, Key::Enter) {
+            if pressed(input, &enters) {
                 actions.push(close);
             }
-        } else if take_press(input, Modifiers::NONE, Key::Enter) > 0 {
+        } else if take(input, &enters) > 0 {
             actions.push(accept);
         }
     }
-    if take_press(input, Modifiers::NONE, Key::Escape) > 0 {
+    if take(input, &chords(Command::CloseCompletion)) > 0 {
         actions.push(Action::CloseCompletion { tab, sql_tab });
     }
 }
@@ -844,58 +1038,23 @@ fn inserts_text(event: &egui::Event) -> bool {
         || matches!(event, egui::Event::Paste(text) if !text.is_empty())
 }
 
-/// Whether `event` is `key` going down with exactly `modifiers`: Shift and
-/// Alt as named (`consume_key` and `matches_logically` let an extra Shift
-/// through), and no Ctrl or Cmd that is not named.
+/// The chords that edit the cells of the table on screen: they open an
+/// editor on the selected cell, act on it without one, and save or drop
+/// what is pending. Which chord does what is the keymap's to say, for the
+/// look in use: Omarchy has few of them, and edits with letters (see
+/// `letters`). `keyboard` says the grid's keys are the grid's: no field or
+/// button has them, nor the tree. A save does not wait for that, in any
+/// look: it is read from wherever the table's tab shows, and so are the
+/// chords the keymap gives to any mode. A SQL editor's result takes none
+/// of them.
 ///
-/// Ctrl is named by `CTRL` and matches as every platform reports it: alone
-/// on macOS, with `command` set elsewhere. Ctrl held with Cmd on macOS is
-/// not Ctrl. Mod is named by `COMMAND`: Cmd on macOS, where an extra Ctrl
-/// changes nothing (as for the other Mod shortcuts), and Ctrl elsewhere.
-pub(crate) fn is_press(event: &egui::Event, modifiers: Modifiers, key: Key) -> bool {
-    matches!(
-        event,
-        egui::Event::Key {
-            key: pressed,
-            modifiers: held,
-            pressed: true,
-            ..
-        } if *pressed == key
-            && held.matches_exact(modifiers)
-            // egui lets the pattern's Ctrl match Ctrl+Cmd. Cmd is held
-            // only where the pattern names it, or names Mod.
-            && (modifiers.mac_cmd || modifiers.command || !held.mac_cmd)
-    )
-}
-
-/// How many times `key` went down this frame with exactly `modifiers` (see
-/// [`is_press`]; a held key's repeats count). Takes the presses, so
-/// neither the editor nor a shortcut after this sees them.
-fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> usize {
-    let before = input.events.len();
-    input
-        .events
-        .retain(|event| !is_press(event, modifiers, key));
-    before - input.events.len()
-}
-
-/// The keys that edit the cells of the table on screen: they open an editor
-/// on the selected cell, act on it without one, and save or drop what is
-/// pending. `keyboard` says the grid's keys are the grid's: no field or
-/// button has them, nor the tree, and the look is not the terminal's, which
-/// edits with letters (see `editing_letters`). Mod+S does not wait for
-/// that, in any look: it saves from wherever the table's tab shows, and
-/// Mod+Shift+D shows and hides Review SQL there. A SQL editor's result
-/// takes none of them.
-///
-/// `field` is the column of the row panel's field that has the keyboard,
-/// in those looks: the same keys then act on its cell, and open its editor
-/// in the panel. Up and Down step the fields, and Esc gives the keys back
-/// to the grid.
+/// `field` is the column of the row panel's field that has the keyboard:
+/// the same keys then act on its cell, and open its editor in the panel.
+/// Its own keys step the fields and give the keyboard back to the grid.
 fn editing_keys(
     app: &App,
     ctx: &egui::Context,
-    keyboard: bool,
+    (keyboard, normal): (bool, bool),
     field: Option<usize>,
     actions: &mut Vec<Action>,
 ) {
@@ -908,14 +1067,19 @@ fn editing_keys(
     else {
         return;
     };
-    let save = |input: &mut egui::InputState| take_press(input, Modifiers::COMMAND, Key::S) > 0;
+    let (keymap, layout) = (&app.keymap, app.layout());
+    let on = |input: &mut egui::InputState, command: Command, scope: Scope, normal: bool| {
+        asked(input, keymap, layout, command, scope, normal)
+    };
     let open = object.edits.editor.is_some();
     let editor = crate::ui::cell_editor::field_id(tab, id);
     let typing = open && ctx.memory(|memory| memory.has_focus(editor));
-    // Mod+S saves wherever the pending bar offers it with that key: there
-    // is something to save, whatever has the keyboard (the grid, the tree,
-    // a button, the filter's field) and in the Structure view as well. The
-    // terminal's Ctrl+S is the same chord.
+    // A save is read wherever the pending bar offers it with its key:
+    // there is something to save, whatever has the keyboard (the grid, the
+    // tree, a button, the filter's field) and in the Structure view too.
+    let save = |input: &mut egui::InputState| {
+        on(input, Command::SaveChanges, Scope::Grid, normal).count > 0
+    };
     if (open || object.edits.pending()) && ctx.input_mut(save) {
         // While the editor's field has the keyboard a save takes what is
         // being typed. Whether this frame changed the text is not known
@@ -927,11 +1091,11 @@ fn editing_keys(
         actions.push(Action::WriteEdits { tab, id });
     }
     // Review SQL by the same rule: wherever the table's tab shows, with
-    // something pending or an editor open, in every look. A fresh press
-    // only: a held chord would show and hide it by turns.
-    let review = |input: &mut egui::InputState| {
-        consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::D)
-    };
+    // something pending or an editor open, in the looks that have a chord
+    // for it. A fresh press only: a held chord would show and hide it by
+    // turns.
+    let review =
+        |input: &mut egui::InputState| on(input, Command::ReviewSql, Scope::Grid, normal).fresh;
     if (open || object.edits.pending()) && ctx.input_mut(review) {
         // Shown, the review takes what is being typed, as a save does:
         // noted as typed for the reason the save notes it.
@@ -941,20 +1105,22 @@ fn editing_keys(
         let show = !object.edits.reviewing;
         actions.push(Action::ReviewEdits { tab, id, show });
     }
-    // Mod+I puts the keyboard on the row's fields in the row panel, which
-    // it shows: from wherever the table's rows show, whatever has the
-    // keyboard, in every look, and with nothing pending. Not while an
-    // editor is open, which is where the user is, and not in a frame that
-    // brings a click: the click selects its row once the frame is drawn,
-    // and the key would reach the row the selection leaves. A fresh press
-    // only. (In a SQL editor the chord asks for completions: no table is
-    // in front there.)
+    // The inspector's chord puts the keyboard on the row's fields in the
+    // row panel, which it shows: from wherever the table's rows show,
+    // whatever has the keyboard, and with nothing pending. Only the chords
+    // the keymap gives to any mode are read here (asked for as if a field
+    // had the keyboard): a plain key among the command's (Omarchy's Enter)
+    // is the rows' own, and is read below, where the keys are the grid's.
+    // Not while an editor is open, which is where the user is, and not in
+    // a frame that brings a click: the click selects its row once the
+    // frame is drawn, and the key would reach the row the selection
+    // leaves. A fresh press only.
     let focus_fields = |input: &mut egui::InputState| {
         let clicked = input
             .events
             .iter()
             .any(|event| matches!(event, egui::Event::PointerButton { .. }));
-        consume_press(input, Modifiers::COMMAND, Key::I) && !clicked
+        on(input, Command::OpenInspector, Scope::Grid, false).fresh && !clicked
     };
     let rows = object.view == crate::model::ObjectView::Data;
     if !open && rows && ctx.input_mut(focus_fields) {
@@ -966,14 +1132,20 @@ fn editing_keys(
     if !(keyboard || field.is_some()) || open {
         return;
     }
+    // The keys are the rows' or a field's: normal mode's, of that scope.
+    let scope = if field.is_some() {
+        Scope::Inspector
+    } else {
+        Scope::Grid
+    };
+    let terminal = app.look.terminal;
     // The field the keys were given back from: it gives up the keyboard
     // once the input is read.
     let mut left = None;
     ctx.input_mut(|input| {
-        // Each chord with exactly its modifiers: Mod+Alt+Backspace drops
-        // every change and Mod+Backspace touches one cell, and Mod+Shift+Z
-        // is not Mod+Z.
-        if take_press(input, Modifiers::COMMAND | Modifiers::ALT, Key::Backspace) > 0 {
+        // Each chord with exactly what it names held: the one that drops
+        // every change is not the one that touches one cell.
+        if on(input, Command::DiscardChanges, Scope::Grid, true).count > 0 {
             actions.push(Action::DiscardEdits { tab, id });
         }
         // A click selects its cell once the frame is drawn, after these
@@ -996,7 +1168,7 @@ fn editing_keys(
                 actions.push(Action::FieldFocused { tab, id, col });
             }
         };
-        if take_press(input, Modifiers::COMMAND, Key::Backspace) > 0 {
+        if on(input, Command::SetNull, scope, true).count > 0 {
             on_cell(actions);
             // A refusal is said where it was asked for.
             actions.push(match field {
@@ -1004,11 +1176,11 @@ fn editing_keys(
                 None => Action::SetNull { tab, id },
             });
         }
-        if take_press(input, Modifiers::COMMAND, Key::Quote) > 0 {
+        if on(input, Command::SetDefault, scope, true).count > 0 {
             on_cell(actions);
             actions.push(Action::SetDefault { tab, id });
         }
-        if take_press(input, Modifiers::COMMAND, Key::Z) > 0 {
+        if on(input, Command::UndoCell, scope, true).count > 0 {
             on_cell(actions);
             actions.push(Action::RevertCell {
                 tab,
@@ -1019,12 +1191,10 @@ fn editing_keys(
         let Some(selected) = object.selection else {
             return;
         };
-        // Delete (the key a Mac labels so too) drops a new row: nothing of
-        // it is in the table. On a row of the page neither key does
-        // anything yet.
+        // The row's delete drops a new row: nothing of it is in the
+        // table. On a row of the page it does nothing yet.
         let on_new = crate::edit::new_id(selected.row).is_some() && field.is_none();
-        let deletes = take_press(input, Modifiers::NONE, Key::Delete)
-            + take_press(input, Modifiers::NONE, Key::Backspace);
+        let deletes = on(input, Command::DeleteRow, Scope::Grid, true).count;
         if on_new && deletes > 0 {
             actions.push(Action::DropRow { tab, id });
             return;
@@ -1047,33 +1217,48 @@ fn editing_keys(
                 start,
             },
         };
+        // The rows' own key for the inspector, in the look that has one
+        // (Omarchy's Enter, which edits nothing there). A fresh press: a
+        // held Enter would open the panel and then edit its field.
+        if field.is_none() && on(input, Command::OpenInspector, scope, true).fresh {
+            actions.push(Action::FocusFields { tab, id });
+            return;
+        }
         // A fresh press only: a held Enter would open, commit and move
         // down the whole column.
-        let enter = consume_press(input, Modifiers::NONE, Key::Enter);
-        if enter || consume_press(input, Modifiers::NONE, Key::F2) {
+        if on(input, Command::EditCell, scope, true).fresh {
             actions.push(edit(crate::model::EditStart::Value));
             return;
         }
         if let Some(col) = field {
-            // Up and Down step the fields; Esc gives the keys back to the
-            // grid, on the cell of this field's column.
-            for (key, by) in [(Key::ArrowUp, -1), (Key::ArrowDown, 1)] {
-                if input.consume_key(Modifiers::NONE, key) {
+            // The fields are stepped, and the keys given back to the grid,
+            // on the cell of this field's column. The letters that step
+            // them are read with the letters.
+            for keys in keymap.chords_now(layout, Command::MoveField, scope, true) {
+                let by = match keys {
+                    "up" => -1,
+                    "down" => 1,
+                    _ => continue,
+                };
+                if presses(input, layout, keys).count > 0 {
                     let from = col;
                     actions.push(Action::MoveField { tab, id, from, by });
                 }
             }
-            if consume_press(input, Modifiers::NONE, Key::Escape) {
+            if on(input, Command::BackToGrid, scope, true).fresh {
                 left = Some(crate::ui::row_panel::field_stop(tab, id, col));
                 on_cell(actions);
                 actions.push(Action::GridKeys(tab));
                 return;
             }
         }
-        // Typing starts the edit with what was typed. The text is taken,
-        // or the field that opens would get it again. Space and `?` keep
-        // their meaning (the row panel, the shortcuts), and a chord types
-        // nothing.
+        // Typing starts the edit with what was typed, in the looks whose
+        // letters are no keys. The text is taken, or the field that opens
+        // would get it again. Space and `?` keep their meaning (the
+        // booleans' key, the list of keys), and a chord types nothing.
+        if terminal {
+            return;
+        }
         let chord = input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd;
         if chord {
             return;
@@ -1097,43 +1282,342 @@ fn editing_keys(
     }
 }
 
-/// The terminal look's normal mode on the grid of the table `id`: `i` and
-/// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
-/// the cell NULL, `D` gives it its column's default, `u` puts back what was
-/// loaded, `o` and `O` open a new row
-/// below the cursor's and above it, and `:` opens the prompt
-/// that writes, discards and shows the SQL. The letters are read as the
-/// text they type, in the order they came, and taken: a letter that opens
-/// an editor or the prompt is no part of its text, and what follows it in
-/// its frame does nothing (the field is not there yet to be typed into).
-///
-/// They act on the selected cell, so they act only in a frame that brings
-/// nothing else: beside a key that moves the selection, or anything that
-/// was asked for already (`actions`), the order the two came in is lost,
-/// and the letter might reach another cell than the one it was typed on.
-/// It is dropped there. So beside a pointer's button, going down or coming
-/// up: a click selects its cell when the grid is drawn, after these keys
-/// were read, and the letter would act on the cell the selection leaves.
-///
-/// `waiting` says a first `c` came in an earlier frame; returns whether one
-/// waits now.
-fn editing_letters(
+/// Whether `sql` shows a result grid for the keys to move in: its last
+/// run's rows, unless the Messages pane covers them.
+fn shows_grid(sql: &crate::model::SqlTab) -> bool {
+    sql.pane == crate::model::ResultPane::Results && sql.dims().0 > 0
+}
+
+/// Ends the wait of a key of several (`cc`, `gd`, `yy p`): the character
+/// after it is a first one again. It waits through frames that bring no
+/// key, and no longer than the keys stay the grid's: not past a click, a
+/// field that has the keyboard, the `:` prompt or a dialog.
+pub(crate) fn forget_pending(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(typed_id(), String::new()));
+}
+
+/// The characters typed so far of a key of several (`yy p`), as the
+/// keymap reads them, kept between frames.
+fn typed_id() -> egui::Id {
+    egui::Id::new("typed-keys")
+}
+
+/// Whether a text field had the keyboard when the last frame ended.
+fn was_editing_id() -> egui::Id {
+    egui::Id::new("was-editing")
+}
+
+/// Notes, once the frame is drawn, whether a text field has the keyboard.
+/// egui takes it away on Escape before the next frame's keys are read,
+/// so only this tells an Escape that left a field from one pressed
+/// outside it.
+pub fn after_frame(ctx: &egui::Context) {
+    let editing = ctx.text_edit_focused();
+    ctx.data_mut(|data| data.insert_temp(was_editing_id(), editing));
+}
+
+/// Single letters: the picker's keys, and in the terminal look the
+/// workspace's vim keys. Only when no text field has the keyboard. `field`
+/// is the column of the row panel's field that has it: `j` and `k` step
+/// the fields then, and the letters that edit a cell edit that field.
+fn letters(
+    app: &mut App,
     ctx: &egui::Context,
-    (tab, id): (ConnTabId, TabId),
-    (selection, field): (Option<crate::model::CellPos>, Option<usize>),
-    waiting: bool,
+    field: Option<usize>,
+    (scopes, tree_arrows): (&[Scope], bool),
     actions: &mut Vec<Action>,
-) -> bool {
-    use crate::model::{CellPos, EditStart};
+) {
+    // The letters the keymap has been given so far, read before anything
+    // returns: a frame can bring a typed `?` and no key press, and the
+    // list of keys is every look's. A character that is one of them is
+    // taken from the frame, its key with it; any other is left for the
+    // code below.
+    let layout = app.layout();
+    let nothing = |_: crate::keymap::When| false;
+    let mine = [
+        Command::Reload,
+        Command::FindObject,
+        Command::ToggleTree,
+        Command::Help,
+    ];
+    for char in typed_chars(ctx) {
+        let read = scopes
+            .iter()
+            .map(|scope| {
+                let typed = char.to_string();
+                app.keymap.typed(layout, *scope, &nothing, &typed)
+            })
+            .find(|read| *read != Typed::Nothing);
+        let Some(Typed::Command(command)) = read else {
+            continue;
+        };
+        if !mine.contains(&command) {
+            continue;
+        }
+        take_char(ctx, char);
+        let tab = app.active_tab_id();
+        match command {
+            // A SQL editor has nothing to reload.
+            Command::Reload if app.active_sql().is_some() => {}
+            Command::Reload if tree_arrows => actions.push(Action::RefreshTree(tab)),
+            Command::Reload => actions.push(Action::Refresh(tab)),
+            Command::FindObject => {
+                use crate::ui::focus::{self, Region};
+                focus::step(ctx, true, Some(&[Region::Search]), None);
+            }
+            Command::ToggleTree => actions.push(Action::ToggleFlatTree(tab)),
+            Command::Help => actions.push(Action::ShowHelp),
+            _ => {}
+        }
+    }
+    // A frame without keys keeps a waiting first key (`d` of `dd`).
+    let keys = ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
+    });
+    if !keys {
+        return;
+    }
+    let tab = app.active_tab_id();
+    let terminal = app.look.terminal;
+    let left_field: bool = ctx
+        .data(|data| data.get_temp(was_editing_id()))
+        .unwrap_or(false);
+    // An open menu keeps its Esc: this runs before the menu is drawn, and
+    // the key closes the menu before it closes anything under it.
+    let menu_open = egui::Popup::is_any_open(ctx);
+    if let crate::model::ConnTabContent::Picker(picker) = &app.active_tab().content {
+        let selected = picker.selected.clone();
+        let scope = Scope::Connections;
+        // No text field has the keyboard here: these are normal mode's.
+        let on = |command: Command| {
+            ctx.input_mut(|input| asked(input, &app.keymap, layout, command, scope, true))
+        };
+        // The list's arrows. Its letters are read with the letters, below.
+        for keys in app
+            .keymap
+            .chords_now(layout, Command::MoveInConnections, scope, true)
+        {
+            let step = match keys {
+                "up" => -1,
+                "down" => 1,
+                _ => continue,
+            };
+            if ctx.input_mut(|input| presses(input, layout, keys)).count > 0 {
+                actions.push(Action::MovePickerSelection { tab, step });
+            }
+        }
+        // Enter shows a connection that is open already; with Shift it
+        // opens once more.
+        let connect = |conn: &crate::connections::ConnectionId, again: bool| match app
+            .tab_showing(conn)
+            .filter(|_| !again)
+        {
+            Some(open) => Action::ActivateConnTab(open),
+            None => Action::Connect {
+                tab,
+                conn: conn.clone(),
+            },
+        };
+        // With the keyboard on a control of the picker (a button, its
+        // search field) the keys that connect are the control's, and so is
+        // the one that deletes: a connection goes at once, with its
+        // secrets, and a Backspace meant for something else must not be
+        // the one that takes it.
+        let on_list = !crate::ui::focus::on_control(ctx);
+        if let Some(conn) = &selected {
+            if on_list {
+                let again = on(Command::ConnectAgain).count > 0;
+                if again || on(Command::Connect).count > 0 {
+                    actions.push(connect(conn, again));
+                }
+            }
+            if on(Command::EditConnection).count > 0 {
+                actions.push(Action::EditConnection(conn.clone()));
+            }
+            if on(Command::DuplicateConnection).count > 0 {
+                actions.push(Action::DuplicateConnection(conn.clone()));
+            }
+            if on_list && on(Command::DeleteConnection).count > 0 {
+                actions.push(Action::DeleteConnection(conn.clone()));
+            }
+        }
+        // The letters, with the wait the keymap needs for a key of
+        // several (`yy p`): the characters so far, kept between frames.
+        let typed = typed_chars(ctx);
+        let mut waiting: String = ctx
+            .data(|data| data.get_temp(typed_id()))
+            .unwrap_or_default();
+        // A key that types nothing (an arrow, Esc) ends a wait.
+        if typed.is_empty() {
+            waiting.clear();
+        }
+        let nothing = |_: crate::keymap::When| false;
+        for char in typed {
+            waiting.push(char);
+            let read = app.keymap.typed(layout, scope, &nothing, &waiting);
+            // No text field is under these keys: the character is taken
+            // whatever it came to.
+            take_char(ctx, char);
+            let command = match read {
+                Typed::Waiting => continue,
+                Typed::Command(command) => Some(command),
+                // Nobody's, or the key of something not built yet. A
+                // character that ends a wait is not read again as a first.
+                Typed::Claimed | Typed::Nothing => None,
+            };
+            let step = if char == 'k' { -1 } else { 1 };
+            match (command, &selected) {
+                (Some(Command::NewConnection), _) => actions.push(Action::NewConnection),
+                (Some(Command::FilterConnections), _) => {
+                    actions.push(Action::FocusPickerSearch(tab));
+                }
+                (Some(Command::MoveInConnections), _) => {
+                    actions.push(Action::MovePickerSelection { tab, step });
+                }
+                (Some(Command::EditConnection), Some(conn)) => {
+                    actions.push(Action::EditConnection(conn.clone()));
+                }
+                (Some(Command::DuplicateConnection), Some(conn)) => {
+                    actions.push(Action::DuplicateConnection(conn.clone()));
+                }
+                (Some(Command::DeleteConnection), Some(conn)) if on_list => {
+                    actions.push(Action::DeleteConnection(conn.clone()));
+                }
+                _ => {}
+            }
+            waiting.clear();
+        }
+        ctx.data_mut(|data| data.insert_temp(typed_id(), waiting));
+        return;
+    }
+    if !terminal {
+        return;
+    }
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let tree = workspace.pane == crate::model::Pane::Tree;
+    let panel = workspace.row_panel;
+    let shown = workspace.row_panel_tab();
+    let object = workspace.active_object_tab();
+    let active = object.map(|object| object.id);
+    let selection = object.and_then(|object| object.selection);
+    // The rows of the table show: where the letters that edit a cell and
+    // the one that drops a row are read, and not in the Structure view.
+    let rows_show = object.is_some_and(|object| object.view == crate::model::ObjectView::Data);
+    // The cursor's row is a new one: the row panel is its form, and the
+    // key that drops the row is read from the form's fields too.
+    let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
+    let on_sql = workspace.active_sql_tab().is_some();
+    // A SQL editor showing its result takes the letters that move in it.
+    let sql_grid = workspace
+        .active_sql_tab()
+        .filter(|sql| shows_grid(sql))
+        .map(|sql| sql.id);
+    // And, with a row of it selected, the keys of the row panel.
+    let sql_row = workspace
+        .active_sql_tab()
+        .filter(|sql| sql.selected_row().is_some())
+        .map(|sql| sql.id);
+    // The table on screen while its Review SQL is open, in either of its
+    // views: the panel stands under both.
+    let reviewing = object
+        .filter(|object| object.edits.reviewing)
+        .map(|object| object.id);
+    // What the last save came to, with nothing pending any more.
+    let note = object
+        .filter(|object| object.edits.note.is_some() && !object.edits.holds())
+        .map(|object| object.id);
+    // Enter belongs to a focused button, and so do the letters that edit.
+    let focused = crate::ui::focus::on_control(ctx);
+    let layout = app.layout();
+    // A chord of the keymap, read in normal mode: no field has the keys.
+    let on = |command: Command, scope: Scope| {
+        ctx.input_mut(|input| asked(input, &app.keymap, layout, command, scope, true))
+    };
+    let rows = if on_sql { Scope::Results } else { Scope::Grid };
+    // Esc, by what is up, the first that answers taking the key: it does
+    // no more. Nor does an Esc that left a text field, or the repeats of
+    // one held since. It closes the Review SQL panel, as its foot says;
+    // then it takes what the last save came to off the status line, as
+    // Dismiss does in the other looks; then it closes the row panel. (On a
+    // field of the panel it gave the keys back to the grid, before this.)
+    let quiet = !left_field && !menu_open;
+    if let Some(id) = reviewing
+        && quiet
+        && on(Command::CloseReview, Scope::Grid).fresh
+    {
+        let show = false;
+        actions.push(Action::ReviewEdits { tab, id, show });
+    }
+    if let Some(id) = note
+        && quiet
+        && on(Command::DismissNote, Scope::Grid).fresh
+    {
+        actions.push(Action::DismissNote { tab, id });
+    }
+    // The row panel's keys: an object tab's, or a SQL result's while a row
+    // of it is selected (with none its panel has nothing to show).
+    let panel_tab = active.or(sql_row);
+    if panel_tab.is_some() && panel && quiet && on(Command::CloseInspector, rows).fresh {
+        actions.push(Action::ToggleRowPanel(tab));
+    }
+    // Enter shows the panel of a SQL result's row. (A table's rows are
+    // read with its chords, where Enter puts the keyboard on the fields.)
+    let result_row = active.is_none() && sql_row.is_some() && !tree && !panel && !focused;
+    if result_row && on(Command::OpenInspector, Scope::Results).count > 0 {
+        actions.push(Action::ToggleRowPanel(tab));
+    }
+
+    // The letters, read as the text they type, in the order they came,
+    // and taken: a letter that opens an editor or the prompt is no part of
+    // its text, and what follows it in its frame does nothing (the field
+    // is not there yet to be typed into).
+    //
+    // The ones that edit act on the selected cell, so they act only in a
+    // frame that brings nothing else: beside a key that moves the
+    // selection, or anything that was asked for already (`actions`), the
+    // order the two came in is lost, and the letter might reach another
+    // cell than the one it was typed on. It is dropped there. So beside a
+    // pointer's button, going down or coming up: a click selects its cell
+    // when the grid is drawn, after these keys were read, and the letter
+    // would act on the cell the selection leaves.
+    let typed = typed_chars(ctx);
+    let (keys, pointer, fresh_key) = ctx.input(|input| {
+        let down = |event: &&egui::Event| matches!(event, egui::Event::Key { pressed: true, .. });
+        let button = |event: &egui::Event| matches!(event, egui::Event::PointerButton { .. });
+        let fresh = |event: &egui::Event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    pressed: true,
+                    repeat: false,
+                    ..
+                }
+            )
+        };
+        (
+            input.events.iter().filter(down).count(),
+            input.events.iter().any(button),
+            input.events.iter().any(fresh),
+        )
+    });
+    // Where the letters that edit a cell are read: on its rows, or on a
+    // field of its row panel, and not on a button, whose key Enter is.
+    let edits = rows_show && !tree && (field.is_some() || !focused);
     // On a field of the row panel the letters act on its cell, and edit
     // it in the panel.
-    let edit = |start: EditStart| {
+    let edit = |start: crate::model::EditStart| {
         let selected = selection?;
+        let id = active?;
         Some(match field {
             Some(col) => Action::EditField {
                 tab,
                 id,
-                cell: CellPos {
+                cell: crate::model::CellPos {
                     row: selected.row,
                     col,
                 },
@@ -1151,519 +1635,254 @@ fn editing_letters(
     // took the keyboard: a letter that comes before that says so first.
     let on_cell = |actions: &mut Vec<Action>| {
         let selected = selection.map(|cell| cell.col);
-        if let Some(col) = field.filter(|col| Some(*col) != selected) {
+        if let (Some(col), Some(id)) = (field.filter(|col| Some(*col) != selected), active) {
             actions.push(Action::FieldFocused { tab, id, col });
         }
     };
-    let alone = actions.is_empty();
-    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":" | "o" | "O" | "D");
-    let enter = |event: &egui::Event| is_press(event, Modifiers::NONE, Key::Enter);
-    ctx.input_mut(|input| {
-        // A chord types nothing, though some systems send its letter as
-        // text too: Ctrl+X is not `x`.
-        let held = input.modifiers;
-        if held.command || held.ctrl || held.mac_cmd || held.alt {
-            return false;
-        }
-        // Every key of the frame is one of these letters, or Enter.
-        let (mut keys, mut letters, mut other) = (0, 0, false);
-        for event in &input.events {
-            match event {
-                event if enter(event) => {}
-                egui::Event::Key { pressed: true, .. } => keys += 1,
-                egui::Event::Text(text) if mine(text) => letters += 1,
-                egui::Event::Text(_) | egui::Event::PointerButton { .. } => other = true,
-                _ => {}
+    // The card of a refused write, while a SQL editor's Messages show it:
+    // the command its button stands for, and what the button does.
+    let mut card = crate::ui::sql_results::card_key(app, tab);
+    let has_card = card.is_some();
+    let holds = |when: crate::keymap::When| match when {
+        crate::keymap::When::InspectorOpen => panel,
+        crate::keymap::When::Review => reviewing.is_some(),
+        crate::keymap::When::Note => note.is_some(),
+        crate::keymap::When::RefusedWrite => has_card,
+        crate::keymap::When::NewRow => on_new,
+        _ => false,
+    };
+    let review_only = |when: crate::keymap::When| when == crate::keymap::When::Review;
+    // What the characters typed so far come to, for the scope that has
+    // the keys. The Review SQL panel's own letter is read wherever the
+    // keys are in its tab: the panel stands under the tree's rows too.
+    let read = |waiting: &str| {
+        let read = scopes
+            .iter()
+            .map(|scope| app.keymap.typed(layout, *scope, &holds, waiting))
+            .find(|read| *read != Typed::Nothing)
+            .unwrap_or(Typed::Nothing);
+        if read == Typed::Nothing && reviewing.is_some() {
+            let panels = app.keymap.typed(layout, Scope::Grid, &review_only, waiting);
+            if panels == Typed::Command(Command::CopyReviewSql) {
+                return panels;
             }
         }
-        let alone = alone && !other && keys <= letters;
-        // A first `c` waits for its second, and for nothing else.
-        let mut first = waiting;
-        let mut waits = false;
-        // Whether a field was asked for: the frame's typing ends there.
-        let mut opened = false;
-        input.events.retain(|event| {
-            if enter(event) {
-                // A fresh press only: a held Enter would open, commit and
-                // move down the whole column.
-                let fresh = !matches!(event, egui::Event::Key { repeat: true, .. });
-                if fresh && alone && !opened {
-                    opened = true;
-                    actions.extend(edit(EditStart::Value));
-                }
-                return false;
-            }
-            let egui::Event::Text(text) = event else {
-                return true;
-            };
-            if !mine(text) {
+        read
+    };
+    // The characters so far of a key of several (`cc`, `gd`, `yy p`). A
+    // key that types nothing (an arrow, Esc) ends the wait.
+    let mut waiting: String = ctx
+        .data(|data| data.get_temp(typed_id()))
+        .unwrap_or_default();
+    if typed.is_empty() {
+        waiting.clear();
+    }
+    // Whether the frame brings nothing but letters that edit, the colon
+    // among them: read through once before any of them acts, since one
+    // that moves the selection may come after the one that edits.
+    let only_edits = {
+        let mut waiting = waiting.clone();
+        typed.iter().all(|char| {
+            if *char == ':' && waiting.is_empty() {
                 return true;
             }
-            let second = std::mem::take(&mut first);
-            waits = false;
-            if !alone || opened {
-                return false;
+            waiting.push(*char);
+            let read = read(&waiting);
+            if read != Typed::Waiting {
+                waiting.clear();
             }
-            match text.as_str() {
-                "i" => {
-                    opened = true;
-                    actions.extend(edit(EditStart::Value));
+            matches!(
+                read,
+                Typed::Waiting
+                    | Typed::Command(
+                        Command::EditCell
+                            | Command::ReplaceCell
+                            | Command::SetNull
+                            | Command::SetDefault
+                            | Command::UndoCell
+                            | Command::AddRow
+                            | Command::AddRowAbove
+                    )
+            )
+        })
+    };
+    let alone = actions.is_empty() && !pointer && keys <= typed.len() && only_edits;
+    // Whether a field or the prompt was asked for: the frame's typing ends
+    // there.
+    let mut opened = false;
+    for char in typed {
+        if opened {
+            take_char(ctx, char);
+            continue;
+        }
+        // The colon opens the prompt, wherever a tab of the workspace is
+        // in front: a table's or a SQL editor's, with the keys on the tree
+        // too. It is no key of the keymap's: its lines are.
+        if char == ':' && waiting.is_empty() {
+            take_char(ctx, char);
+            if alone {
+                opened = true;
+                actions.push(Action::OpenCommand(tab));
+            }
+            continue;
+        }
+        waiting.push(char);
+        let command = match read(&waiting) {
+            // Nobody's: left in the frame, as any other text is.
+            Typed::Nothing => {
+                waiting.clear();
+                continue;
+            }
+            Typed::Waiting => {
+                take_char(ctx, char);
+                continue;
+            }
+            // The key of something that is not built yet: taken.
+            Typed::Claimed => None,
+            Typed::Command(command) => Some(command),
+        };
+        take_char(ctx, char);
+        waiting.clear();
+        match (command, active) {
+            (Some(Command::EditCell), _) if edits && alone => {
+                opened = true;
+                actions.extend(edit(crate::model::EditStart::Value));
+            }
+            (Some(Command::ReplaceCell), _) if edits && alone => {
+                opened = true;
+                actions.extend(edit(crate::model::EditStart::Replace(String::new())));
+            }
+            (Some(Command::SetNull), Some(id)) if edits && alone => {
+                on_cell(actions);
+                // A refusal is said where it was asked for.
+                actions.push(match field {
+                    Some(_) => Action::SetFieldNull { tab, id },
+                    None => Action::SetNull { tab, id },
+                });
+            }
+            (Some(Command::SetDefault), Some(id)) if edits && alone => {
+                on_cell(actions);
+                actions.push(Action::SetDefault { tab, id });
+            }
+            (Some(Command::UndoCell), Some(id)) if edits && alone => {
+                on_cell(actions);
+                let cell = None;
+                actions.push(Action::RevertCell { tab, id, cell });
+            }
+            // A row below the cursor's, or above it with the capital.
+            // With no cursor, at the top.
+            (Some(command @ (Command::AddRow | Command::AddRowAbove)), Some(id))
+                if edits && alone =>
+            {
+                opened = true;
+                let place = match (selection, command) {
+                    (Some(cell), Command::AddRow) => crate::edit::Place::Below(cell.row),
+                    (Some(cell), _) => crate::edit::Place::Above(cell.row),
+                    (None, _) => crate::edit::Place::Top,
+                };
+                actions.push(Action::AddRow { tab, id, place });
+            }
+            // The row under the cursor is dropped where it is a new one,
+            // with the keys on the rows or on a field of its form.
+            (Some(Command::DeleteRow), Some(id))
+                if rows_show && !tree && (field.is_none() || on_new) =>
+            {
+                actions.push(Action::DropRow { tab, id });
+            }
+            (Some(Command::OpenReferencedRow), Some(object_tab)) => {
+                actions.push(Action::FollowSelectedKey { tab, object_tab });
+            }
+            (Some(Command::CopyCells), Some(_)) => {
+                if let Some(text) = app.copy_text(false) {
+                    ctx.copy_text(text);
                 }
-                "c" if second => {
-                    opened = true;
-                    actions.extend(edit(EditStart::Replace(String::new())));
+            }
+            // The whole statements, never the lines as the panel shows
+            // them. The copy shows nowhere, so the status line says it.
+            (Some(Command::CopyReviewSql), Some(id)) => {
+                if let Some(text) = crate::ui::review::copy_text(app, tab, id) {
+                    ctx.copy_text(text);
+                    let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
+                    crate::ui::toast::say(ctx, &said);
                 }
-                "c" => {
-                    first = true;
-                    waits = true;
-                }
-                "x" => {
-                    on_cell(actions);
-                    actions.push(match field {
-                        Some(_) => Action::SetFieldNull { tab, id },
-                        None => Action::SetNull { tab, id },
-                    });
-                }
-                "D" => {
-                    on_cell(actions);
-                    actions.push(Action::SetDefault { tab, id });
-                }
-                "u" => {
-                    on_cell(actions);
-                    actions.push(Action::RevertCell {
+            }
+            (Some(Command::WhereFilter), Some(_)) => actions.push(Action::FocusWhere(tab)),
+            // What `j/k/h/l` move in: the object's grid, or a SQL result.
+            (Some(Command::MoveRow | Command::MoveColumn), _) => {
+                let (rows, cols) = match char {
+                    'j' => (1, 0),
+                    'k' => (-1, 0),
+                    'h' => (0, -1),
+                    _ => (0, 1),
+                };
+                if let Some(id) = active.or(sql_grid) {
+                    actions.push(Action::MoveSelection {
                         tab,
                         id,
-                        cell: None,
-                    });
-                }
-                ":" => {
-                    opened = true;
-                    actions.push(Action::OpenCommand(tab));
-                }
-                // A row below the cursor's, or above it with the capital.
-                // With no cursor, at the top.
-                "o" | "O" => {
-                    opened = true;
-                    let place = match (selection, text.as_str()) {
-                        (Some(cell), "o") => crate::edit::Place::Below(cell.row),
-                        (Some(cell), _) => crate::edit::Place::Above(cell.row),
-                        (None, _) => crate::edit::Place::Top,
-                    };
-                    actions.push(Action::AddRow { tab, id, place });
-                }
-                _ => {}
-            }
-            false
-        });
-        waits
-    })
-}
-
-/// Whether `sql` shows a result grid for the keys to move in: its last
-/// run's rows, unless the Messages pane covers them.
-fn shows_grid(sql: &crate::model::SqlTab) -> bool {
-    sql.pane == crate::model::ResultPane::Results && sql.dims().0 > 0
-}
-
-/// The first key of a two-key command (`dd`, `gd`), kept between frames.
-fn pending_id() -> egui::Id {
-    egui::Id::new("pending-key")
-}
-
-/// Ends the wait of a first key (`c` of `cc`, `g` of `gd`): the key after
-/// it is a first key again. It waits through frames that bring no key, and
-/// no longer than the keys stay the grid's: not past a click, a field that
-/// has the keyboard, the `:` prompt or a dialog.
-pub(crate) fn forget_pending(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.insert_temp(pending_id(), None::<char>));
-}
-
-/// Whether a text field had the keyboard when the last frame ended.
-fn was_editing_id() -> egui::Id {
-    egui::Id::new("was-editing")
-}
-
-/// Notes, once the frame is drawn, whether a text field has the keyboard.
-/// egui takes it away on Escape before the next frame's keys are read,
-/// so only this tells an Escape that left a field from one pressed
-/// outside it.
-pub fn after_frame(ctx: &egui::Context) {
-    let editing = ctx.text_edit_focused();
-    ctx.data_mut(|data| data.insert_temp(was_editing_id(), editing));
-}
-
-/// Whether `text` was typed this frame (consumed): keys named by the
-/// character they type, so they work on every keyboard layout.
-fn typed(ctx: &egui::Context, text: &str) -> bool {
-    ctx.input_mut(|input| {
-        let before = input.events.len();
-        input
-            .events
-            .retain(|event| !matches!(event, egui::Event::Text(typed) if typed == text));
-        input.events.len() != before
-    })
-}
-
-/// Single letters: the picker's keys, and in the terminal look the
-/// workspace's vim keys. Only when no text field has the keyboard. `field`
-/// is the column of the row panel's field that has it: `j` and `k` step
-/// the fields then, and the letters that edit a cell edit that field.
-fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &mut Vec<Action>) {
-    // A frame without keys keeps a waiting first key (`d` of `dd`).
-    let keys = ctx.input(|input| {
-        input
-            .events
-            .iter()
-            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
-    });
-    if !keys {
-        return;
-    }
-    let tab = app.active_tab_id();
-    let terminal = app.look.terminal;
-    let pending: Option<char> = ctx.data(|data| data.get_temp(pending_id())).flatten();
-    let left_field: bool = ctx
-        .data(|data| data.get_temp(was_editing_id()))
-        .unwrap_or(false);
-    // An open menu keeps its Esc: this runs before the menu is drawn, and
-    // the key closes the menu before it closes anything under it.
-    let menu_open = egui::Popup::is_any_open(ctx);
-    let mut next_pending = None;
-    let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::NONE, key));
-    // A press of its own: not the repeats of a key held since it did
-    // something else (the Esc that left insert mode).
-    let fresh = |key: Key| ctx.input_mut(|input| consume_press(input, Modifiers::NONE, key));
-    let command = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
-    if let crate::model::ConnTabContent::Picker(picker) = &app.active_tab().content {
-        let selected = picker.selected.clone();
-        if pressed(Key::ArrowDown) || (terminal && pressed(Key::J)) {
-            actions.push(Action::MovePickerSelection { tab, step: 1 });
-        }
-        if pressed(Key::ArrowUp) || (terminal && pressed(Key::K)) {
-            actions.push(Action::MovePickerSelection { tab, step: -1 });
-        }
-        if let Some(conn) = selected {
-            if !crate::ui::focus::on_control(ctx) {
-                // Shift first: egui ignores an extra Shift when matching.
-                let again = ctx.input_mut(|input| input.consume_key(Modifiers::SHIFT, Key::Enter));
-                if again || pressed(Key::Enter) {
-                    // Enter shows a connection that is open already; with
-                    // Shift it opens once more.
-                    actions.push(match app.tab_showing(&conn).filter(|_| !again) {
-                        Some(open) => Action::ActivateConnTab(open),
-                        None => Action::Connect {
-                            tab,
-                            conn: conn.clone(),
-                        },
+                        rows,
+                        cols,
                     });
                 }
             }
-            if command(Key::E) || (terminal && pressed(Key::E)) {
-                actions.push(Action::EditConnection(conn.clone()));
-            }
-            if command(Key::D) {
-                actions.push(Action::DuplicateConnection(conn.clone()));
-            }
-            if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Backspace)) {
-                actions.push(Action::DeleteConnection(conn.clone()));
-            }
-            if terminal && pressed(Key::Y) {
-                if pending == Some('y') {
-                    actions.push(Action::DuplicateConnection(conn.clone()));
-                } else {
-                    next_pending = Some('y');
+            // On a field of the row panel `j` and `k` step the fields.
+            (Some(Command::MoveField), Some(id)) => {
+                if let Some(from) = field {
+                    let by = if char == 'k' { -1 } else { 1 };
+                    actions.push(Action::MoveField { tab, id, from, by });
                 }
             }
-            if terminal && pressed(Key::D) {
-                if pending == Some('d') {
-                    actions.push(Action::DeleteConnection(conn));
+            (Some(Command::MoveInTree), _) => {
+                let key = if char == 'k' {
+                    crate::model::TreeKey::Up
                 } else {
-                    next_pending = Some('d');
+                    crate::model::TreeKey::Down
+                };
+                actions.push(Action::TreeKey { tab, key });
+            }
+            // The row before and the one after, from a field of the
+            // panel or from the rows it shows one of.
+            (Some(command @ (Command::PreviousRow | Command::NextRow)), _) => {
+                let rows = if command == Command::NextRow { 1 } else { -1 };
+                let cols = 0;
+                if let Some(id) = active.or(sql_grid) {
+                    actions.push(Action::MoveSelection {
+                        tab,
+                        id,
+                        rows,
+                        cols,
+                    });
                 }
             }
-        }
-        if terminal && pressed(Key::N) {
-            actions.push(Action::NewConnection);
-        }
-        if terminal && typed(ctx, "/") {
-            actions.push(Action::FocusPickerSearch(tab));
-        }
-        ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
-        return;
-    }
-    if !terminal {
-        return;
-    }
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let tree = workspace.pane == crate::model::Pane::Tree;
-    let panel = workspace.row_panel;
-    let shown = workspace.row_panel_tab();
-    // The digits follow the strip, so they reach SQL editors too.
-    let tabs: Vec<_> = workspace.tabs.iter().map(crate::model::Tab::id).collect();
-    let active = workspace.active_object_tab().map(|object| object.id);
-    // A SQL editor showing its result takes the letters that move in it.
-    let sql_grid = workspace
-        .active_sql_tab()
-        .filter(|sql| shows_grid(sql))
-        .map(|sql| sql.id);
-    // And, with a row of it selected, the letters of the row panel.
-    let sql_row = workspace
-        .active_sql_tab()
-        .filter(|sql| sql.selected_row().is_some())
-        .map(|sql| sql.id);
-    // The table on screen while its Review SQL is open, in either of its
-    // views: the panel stands under both.
-    let reviewing = workspace
-        .active_object_tab()
-        .filter(|object| object.edits.reviewing)
-        .map(|object| object.id);
-    // Esc closes that panel, as its foot says. Before the row panel's Esc,
-    // and in its place: the key does no more. Nor does an Esc that left a
-    // text field, or the repeats of one held since.
-    if let Some(id) = reviewing
-        && !left_field
-        && !menu_open
-        && fresh(Key::Escape)
-    {
-        let show = false;
-        actions.push(Action::ReviewEdits { tab, id, show });
-    }
-    // What the last save came to, with nothing pending any more: Esc takes
-    // it off the status line, as Dismiss does in the other looks. Before
-    // the row panel's Esc, and in its place: the key does no more.
-    let note = workspace
-        .active_object_tab()
-        .filter(|object| object.edits.note.is_some() && !object.edits.holds())
-        .map(|object| object.id);
-    if let Some(id) = note
-        && !left_field
-        && !menu_open
-        && fresh(Key::Escape)
-    {
-        actions.push(Action::DismissNote { tab, id });
-    }
-    for (index, number) in NUMBERS.into_iter().enumerate() {
-        if pressed(number)
-            && let Some(id) = tabs.get(index)
-        {
-            actions.push(Action::ActivateTab { tab, id: *id });
-        }
-    }
-    // On a boolean cell that can be edited `t` and `f` set it true and
-    // false, as the design has it. Anywhere else `t` is the tree's.
-    let flag = active
-        .filter(|_| !tree && field.is_none() && !crate::ui::focus::on_control(ctx))
-        .filter(|id| app.flips(tab, *id));
-    if let Some(id) = flag {
-        for (key, value) in [(Key::T, true), (Key::F, false)] {
-            if ctx.input_mut(|input| take_press(input, Modifiers::NONE, key)) > 0 {
-                actions.push(Action::SetBoolean { tab, id, value });
+            // The script of the SQL editor in front, with the keyboard
+            // out of its text: formatting gives it back.
+            (Some(Command::Format), _) => {
+                if let Some(sql_tab) = app.active_sql().map(|(_, id)| id) {
+                    actions.push(Action::FormatSql { tab, sql_tab });
+                }
             }
-        }
-    }
-    if pressed(Key::T) {
-        actions.push(Action::ToggleFlatTree(tab));
-    }
-    if tree {
-        if pressed(Key::J) {
-            actions.push(Action::TreeKey {
-                tab,
-                key: crate::model::TreeKey::Down,
-            });
-        }
-        if pressed(Key::K) {
-            actions.push(Action::TreeKey {
-                tab,
-                key: crate::model::TreeKey::Up,
-            });
-        }
-    }
-    // On a field of the row panel `j` and `k` step the fields.
-    if let (Some(from), Some(id)) = (field, active) {
-        for (key, by) in [(Key::J, 1), (Key::K, -1)] {
-            if pressed(key) {
-                actions.push(Action::MoveField { tab, id, from, by });
+            // The letter the card's button names. A press of its own:
+            // once writes are allowed the same letter runs the statements
+            // again, and the repeats of a key held since must not answer
+            // an offer nobody has read.
+            (Some(command @ (Command::EditRefusedConnection | Command::AllowRefusedWrite)), _) => {
+                let offered = card.as_ref().map(|(offered, _)| *offered);
+                if fresh_key
+                    && offered == Some(command)
+                    && let Some((_, action)) = card.take()
+                {
+                    actions.push(action);
+                }
             }
-        }
-    }
-    // What `j/k/h/l` move in: the object's grid, or a SQL result.
-    if !tree
-        && field.is_none()
-        && let Some(id) = active.or(sql_grid)
-    {
-        for (key, rows, cols) in [
-            (Key::J, 1, 0),
-            (Key::K, -1, 0),
-            (Key::H, 0, -1),
-            (Key::L, 0, 1),
-        ] {
-            if pressed(key) {
-                actions.push(Action::MoveSelection {
-                    tab,
-                    id,
-                    rows,
-                    cols,
-                });
+            // Only the documents of a panel that shows.
+            (Some(Command::FoldDocuments), _) => {
+                if let Some(id) = panel_tab.filter(|id| shown == Some(*id)) {
+                    actions.push(Action::FoldDocuments { tab, id });
+                }
             }
+            _ => {}
         }
     }
-    // `[` and `]` step through the rows of the grid `j/k` move in.
-    if let Some(id) = active.or(sql_grid) {
-        for (text, rows) in [("[", -1), ("]", 1)] {
-            if typed(ctx, text) {
-                actions.push(Action::MoveSelection {
-                    tab,
-                    id,
-                    rows,
-                    cols: 0,
-                });
-            }
-        }
-    }
-    // The letters that edit a table's cells, where its grid has the keys
-    // or a field of its row panel has: not with the arrows on the tree, in
-    // the Structure view, or on a button, whose key Enter is.
-    let table = workspace
-        .active_object_tab()
-        .filter(|object| !tree && object.view == crate::model::ObjectView::Data)
-        .map(|object| (object.id, object.selection));
-    if let Some((id, selection)) = table
-        && (field.is_some() || !crate::ui::focus::on_control(ctx))
-    {
-        let waiting = pending == Some('c');
-        if editing_letters(ctx, (tab, id), (selection, field), waiting, actions) {
-            next_pending = Some('c');
-        }
-    }
-    // The prompt opens wherever a table's tab shows, as the status line
-    // offers it there (`:w`) and as Mod+S saves there: with the arrows on
-    // the tree, in the Structure view, on a button. On the grid the
-    // letters above took the colon.
-    if active.is_some() && typed(ctx, ":") {
-        actions.push(Action::OpenCommand(tab));
-    }
-    // The row panel's keys: an object tab's, or a SQL result's while a row
-    // of it is selected (with none its panel has nothing to show).
-    if let Some(id) = active.or(sql_row) {
-        // Enter and `i` open and close the panel of a SQL result's row. On
-        // a table they edit the cell (above): Space is its panel's key.
-        if active.is_none() {
-            // Enter belongs to a focused button.
-            let focused = crate::ui::focus::on_control(ctx);
-            if !tree && !panel && !focused && pressed(Key::Enter) {
-                actions.push(Action::ToggleRowPanel(tab));
-            }
-            if pressed(Key::I) {
-                actions.push(Action::ToggleRowPanel(tab));
-            }
-        }
-        // An Esc that left a text field did only that, and so do its
-        // repeats while it is held.
-        if panel && !left_field && !menu_open && fresh(Key::Escape) {
-            actions.push(Action::ToggleRowPanel(tab));
-        }
-        if pressed(Key::Z) {
-            next_pending = Some('z');
-        }
-        // Only the documents of a panel that shows.
-        if pressed(Key::A) && pending == Some('z') && shown == Some(id) {
-            actions.push(Action::FoldDocuments { tab, id });
-        }
-    }
-    // The card of a refused write, while a SQL editor's Messages show it:
-    // the letter its button names, which it does in this look alone (the
-    // others returned above, and `card_key` answers none of them). A
-    // press of its own: once writes are
-    // allowed the same letter runs the statements again, and the repeats
-    // of a key held since must not answer an offer nobody has read.
-    if let Some((key, action)) = crate::ui::sql_results::card_key(app, tab)
-        && fresh(key)
-    {
-        actions.push(action);
-    }
-    // The letters below act on an object tab: none of them on a SQL editor.
-    let Some(object_tab) = active else {
-        ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
-        return;
-    };
-    if typed(ctx, "/") {
-        actions.push(Action::FocusWhere(tab));
-    }
-    if pressed(Key::S) {
-        actions.push(Action::SetView {
-            tab,
-            object_tab,
-            view: crate::model::ObjectView::Structure,
-        });
-    }
-    // `Y` with the review open is its SQL: the cell's `y` is the same key.
-    // The typed text is read first, so the one press does one thing.
-    let sql = reviewing.filter(|_| typed(ctx, "Y"));
-    if pressed(Key::Y) || sql.is_some() {
-        // The whole statements, never the lines as the panel shows them.
-        let text = match sql {
-            Some(id) => crate::ui::review::copy_text(app, tab, id),
-            None => app.copy_text(false),
-        };
-        if let Some(text) = text {
-            ctx.copy_text(text);
-            // The cell's `y` shows in the grid; the review's `Y` shows
-            // nowhere, so the status line says it.
-            if sql.is_some() {
-                let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
-                crate::ui::toast::say(ctx, &said);
-            }
-        }
-    }
-    if pressed(Key::G) {
-        next_pending = Some('g');
-    }
-    // Whether the grid's rows have the keys: where `dd` is read. So does
-    // a field of a new row's form, whose footer names the key: the row
-    // under the cursor is the one the form is of.
-    let on_rows = !tree
-        && app
-            .workspace(tab)
-            .and_then(|workspace| workspace.object_tab(object_tab))
-            .is_some_and(|object| {
-                let on_new = object
-                    .selection
-                    .is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
-                object.view == crate::model::ObjectView::Data && (field.is_none() || on_new)
-            });
-    // The capital is Set DEFAULT's, read with the letters that edit: only
-    // a plain `d` is the Data view's key and half of `dd`. By the key's
-    // own modifiers, which a press carries whatever else is known of the
-    // keyboard.
-    let plain_d = ctx.input_mut(|input| take_press(input, Modifiers::NONE, Key::D)) > 0;
-    if plain_d {
-        if pending == Some('g') {
-            actions.push(Action::FollowSelectedKey { tab, object_tab });
-        } else {
-            // The second `d` of `dd` drops the row under the cursor where
-            // it is a new one. Each `d` is the Data view's key still,
-            // which changes nothing where the rows show already. Only
-            // there does a first `d` wait for a second: one that brought
-            // the rows up from the Structure view was that key and no more,
-            // and a dropped row is not brought back.
-            if on_rows && pending == Some('d') {
-                actions.push(Action::DropRow {
-                    tab,
-                    id: object_tab,
-                });
-            } else if on_rows {
-                next_pending = Some('d');
-            }
-            actions.push(Action::SetView {
-                tab,
-                object_tab,
-                view: crate::model::ObjectView::Data,
-            });
-        }
-    }
-    ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
+    ctx.data_mut(|data| data.insert_temp(typed_id(), waiting));
 }
 
 #[cfg(test)]
@@ -1671,241 +1890,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shortcut_table_lists_the_connection_dialogs_keys() {
-        assert!(
-            SHORTCUTS
-                .iter()
-                .any(|(keys, what, _)| keys.contains("Mod+S") && what.contains("connection dialog"))
-        );
-    }
-
-    #[test]
-    fn the_shortcut_table_names_the_keys_that_review_sql() {
-        for look in crate::theme::Look::ALL {
-            let listed = shortcuts(&look)
-                .any(|row| row == ("Mod+Shift+D", "Show or hide the SQL of the pending changes"));
-            assert!(listed, "{}", look.name);
-            // Omarchy's prompt, its Esc and its `Y`: no other look's.
-            for row in [
-                (":diff", "Show the SQL of the pending changes"),
-                ("Esc", "Close the SQL of the pending changes"),
-                ("Y", "Copy the SQL of the pending changes"),
-            ] {
-                let listed = shortcuts(&look).any(|listed| listed == row);
-                assert_eq!(listed, look.terminal, "{}: {row:?}", look.name);
-            }
-        }
-    }
-
-    #[test]
-    fn the_shortcut_table_lists_the_settings_key() {
-        assert!(
-            SHORTCUTS
-                .iter()
-                .any(|(keys, what, _)| (*keys, *what) == ("Mod+,", "Settings"))
-        );
-    }
-
-    #[test]
-    fn the_shortcut_table_covers_the_spec_map() {
-        let descriptions: Vec<&str> = SHORTCUTS.iter().map(|(_, what, _)| *what).collect();
-        for expected in [
-            "Connections",
-            "Close connection",
-            "Switch connection",
-            "New connection",
-            "New SQL editor",
-            "Run statement / run all",
-            "Format SQL",
-            "Complete in the SQL editor",
-            "Close tab",
-            "Previous / next tab",
-            "Refresh",
-            "Filter bar",
-            "Quick open",
-            "Previous / next page",
-            "Cancel running query",
-            "Toggle row panel",
-            "Copy cell / copy row",
-            "Move in the tree",
-            "Move in the grid",
-            "Edit the cell",
-            "Commit and move right or left",
-            "Cancel the edit",
-            "Set NULL",
-            "Revert the cell",
-            "Save all pending changes",
-            "Discard all pending changes",
-            "Shortcuts",
-        ] {
-            assert!(descriptions.contains(&expected), "{expected}");
-        }
-    }
-
-    #[test]
-    fn the_shortcut_table_names_the_keys_that_edit_a_cell() {
-        use crate::theme::Look;
-        // The keys of `what` as `look` has them.
-        let keys = |look: Look, what: &str| {
-            let rows: Vec<&str> = shortcuts(&look)
-                .filter(|(_, description)| *description == what)
-                .map(|(keys, _)| keys)
-                .collect();
-            match rows.as_slice() {
-                [keys] => Some(*keys),
-                [] => None,
-                several => panic!("{}: {what} twice: {several:?}", look.name),
-            }
-        };
-        // macOS and Windows edit with chords.
-        for look in [Look::standard(), Look::macos()] {
-            let keys = |what| keys(look, what);
-            assert_eq!(keys("Edit the cell"), Some("Enter, F2"));
-            assert_eq!(
-                keys("Commit and move right or left"),
-                Some("Tab, Shift+Tab")
-            );
-            assert_eq!(keys("Cancel the edit"), Some("Esc"));
-            assert_eq!(keys("Set NULL"), Some("Mod+Backspace"));
-            assert_eq!(keys("Set DEFAULT"), Some("Mod+'"));
-            assert_eq!(keys("Revert the cell"), Some("Mod+Z"));
-            assert_eq!(keys("Save all pending changes"), Some("Mod+S"));
-            assert_eq!(
-                keys("Discard all pending changes"),
-                Some("Mod+Alt+Backspace")
-            );
-            // Omarchy's own are not theirs.
-            for what in [
-                "Edit the cell from nothing",
-                "Leave the editor and keep the edit",
-                "Drop the edit",
-            ] {
-                assert_eq!(keys(what), None, "{}: {what}", look.name);
-            }
-        }
-        // Omarchy edits with letters and its `:` prompt, and its Esc keeps
-        // the edit where theirs drops it.
-        let keys = |what| keys(Look::omarchy(), what);
-        assert_eq!(keys("Edit the cell"), Some("i, Enter"));
-        assert_eq!(keys("Edit the cell from nothing"), Some("cc"));
-        assert_eq!(
-            keys("Commit and move right or left"),
-            Some("Tab, Shift+Tab")
-        );
-        assert_eq!(keys("Leave the editor and keep the edit"), Some("Esc"));
-        assert_eq!(keys("Drop the edit"), Some("Ctrl+C"));
-        assert_eq!(keys("Cancel the edit"), None);
-        assert_eq!(keys("Set NULL"), Some("x"));
-        assert_eq!(keys("Set DEFAULT"), Some("D"));
-        assert_eq!(keys("Revert the cell"), Some("u"));
-        assert_eq!(keys("Save all pending changes"), Some(":w, Mod+S"));
-        assert_eq!(keys("Discard all pending changes"), Some(":e!"));
-    }
-
-    #[test]
-    fn every_look_lists_what_holds_in_all_of_them() {
-        use crate::theme::Look;
-        for look in Look::ALL {
-            let listed: Vec<_> = shortcuts(&look).collect();
-            for (keys, what, holds) in SHORTCUTS {
-                let own = match holds {
-                    Holds::All => true,
-                    Holds::Desktop => !look.terminal,
-                    Holds::Terminal => look.terminal,
-                };
-                assert_eq!(
-                    listed.contains(&(*keys, *what)),
-                    own,
-                    "{}: {keys} {what}",
-                    look.name
-                );
-            }
-            // In the table's order.
-            let places = listed.iter().map(|(keys, what)| {
-                let mut rows = SHORTCUTS.iter();
-                rows.position(|(row, said, _)| row == keys && said == what)
-            });
-            assert!(places.is_sorted(), "{}", look.name);
-        }
-    }
-
-    #[test]
-    fn the_shortcut_table_names_the_keys_that_add_a_row() {
-        for look in crate::theme::Look::ALL {
-            let keys = |what: &str| {
-                let mut rows = shortcuts(&look).filter(|(_, listed)| *listed == what);
-                let found = rows.next().map(|(keys, _)| keys);
-                assert!(rows.next().is_none(), "{}: {what} twice", look.name);
-                found
-            };
-            if look.terminal {
-                assert_eq!(keys("Add a row below or above the cursor"), Some("o, O"));
-                assert_eq!(keys("Drop a new row"), Some("dd"));
-                assert_eq!(keys("Add a row"), None);
-            } else {
-                assert_eq!(keys("Add a row"), Some("Mod+N"));
-                assert_eq!(keys("Drop a new row"), Some("Delete"));
-            }
-            // A new connection is still Mod+N, where no table is in front.
-            assert_eq!(keys("New connection"), Some("Mod+N"));
-        }
-    }
-
-    #[test]
-    fn the_shortcut_table_names_omarchys_keys_that_edit() {
-        let (keys, _, _) = SHORTCUTS
-            .iter()
-            .find(|(_, what, _)| what.starts_with("Omarchy:"))
-            .expect("Omarchy's row");
-        let keys: Vec<&str> = keys.split(", ").collect();
-        for key in [
-            "i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", ":diff", "Y", "Space",
-        ] {
-            assert!(keys.contains(&key), "{key}: {keys:?}");
-        }
-        // Saving is Mod+S, as the row of the terminal's own keys has it:
-        // Cmd where Cmd is the command key.
-        assert!(!keys.contains(&"Ctrl+S"), "{keys:?}");
-        // `s` is the Structure view's still.
-        assert!(keys.contains(&"s"));
-    }
-
-    #[test]
-    fn the_shortcut_table_names_the_keys_that_open_tabs() {
-        let keys = |what: &str| {
-            SHORTCUTS
-                .iter()
-                .find(|(_, description, _)| *description == what)
-                .map(|(keys, _, _)| *keys)
-        };
-        assert_eq!(keys("New SQL editor"), Some("Mod+T"));
-        assert_eq!(keys("Connections"), Some("Mod+O"));
-        assert_eq!(
-            keys("Run statement / run all"),
-            Some("Mod+Return, Mod+Shift+Return")
-        );
-        assert_eq!(keys("Format SQL"), Some("Mod+Shift+F"));
-        // Ctrl+Space is taken by some systems before the app sees it.
-        assert_eq!(
-            keys("Complete in the SQL editor"),
-            Some("Ctrl+Space, Mod+I")
-        );
-    }
-
-    #[test]
     fn a_press_matches_its_modifiers_as_each_platform_reports_them() {
-        let press = |held| crate::testing::key(Key::I, held);
-        let is = |held, pattern| is_press(&press(held), pattern, Key::I);
+        // The Mac's layout and Windows', whose chords are spelled with
+        // `cmd` for the command key: Cmd on macOS, Ctrl elsewhere.
+        let named = |cmd, ctrl| Mods {
+            cmd,
+            ctrl,
+            ..Mods::default()
+        };
+        let is = |held, mods| {
+            [Layout::Mac, Layout::Windows]
+                .into_iter()
+                .all(|layout| held_is(layout, held, mods))
+        };
+        let is_not = |held, mods| {
+            [Layout::Mac, Layout::Windows]
+                .into_iter()
+                .all(|layout| !held_is(layout, held, mods))
+        };
         let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
         let ctrl_elsewhere = Modifiers::CTRL | Modifiers::COMMAND;
-        // Mod: Cmd on macOS, with Ctrl or without, and Ctrl elsewhere.
+        // The command key: Cmd on macOS, with Ctrl or without, and Ctrl
+        // elsewhere.
         for held in [
             Modifiers::COMMAND,
             cmd,
             cmd | Modifiers::CTRL,
             ctrl_elsewhere,
         ] {
-            assert!(is(held, Modifiers::COMMAND), "{held:?}");
+            assert!(is(held, named(true, false)), "{held:?}");
         }
         for held in [
             Modifiers::NONE,
@@ -1913,11 +1926,11 @@ mod tests {
             cmd | Modifiers::SHIFT,
             ctrl_elsewhere | Modifiers::ALT,
         ] {
-            assert!(!is(held, Modifiers::COMMAND), "{held:?}");
+            assert!(is_not(held, named(true, false)), "{held:?}");
         }
         // Ctrl: alone on macOS, with the command key elsewhere, never Cmd.
         for held in [Modifiers::CTRL, ctrl_elsewhere] {
-            assert!(is(held, Modifiers::CTRL), "{held:?}");
+            assert!(is(held, named(false, true)), "{held:?}");
         }
         for held in [
             Modifiers::NONE,
@@ -1925,17 +1938,22 @@ mod tests {
             cmd | Modifiers::CTRL,
             Modifiers::CTRL | Modifiers::SHIFT,
         ] {
-            assert!(!is(held, Modifiers::CTRL), "{held:?}");
+            assert!(is_not(held, named(false, true)), "{held:?}");
         }
         // No modifier is none at all.
-        assert!(is(Modifiers::NONE, Modifiers::NONE));
+        assert!(is(Modifiers::NONE, Mods::default()));
         for held in [Modifiers::SHIFT, Modifiers::ALT, Modifiers::CTRL, cmd] {
-            assert!(!is(held, Modifiers::NONE), "{held:?}");
+            assert!(is_not(held, Mods::default()), "{held:?}");
         }
         // Another key, and a key coming up, are not this press.
-        assert!(!is_press(&press(Modifiers::NONE), Modifiers::NONE, Key::O));
-        let up = crate::testing::release(Key::I, Modifiers::NONE);
-        assert!(!is_press(&up, Modifiers::NONE, Key::I));
+        let none = Modifiers::NONE;
+        let press = crate::testing::key(Key::I, none);
+        assert_eq!(press_of(Layout::Mac, none, &press, "i"), None, "a letter");
+        assert_eq!(press_of(Layout::Mac, none, &press, "f2"), None);
+        let up = crate::testing::release(Key::F2, none);
+        assert_eq!(press_of(Layout::Mac, none, &up, "f2"), None);
+        let down = crate::testing::key(Key::F2, none);
+        assert_eq!(press_of(Layout::Mac, none, &down, "f2"), Some(true));
     }
 
     #[test]
@@ -1984,12 +2002,177 @@ mod tests {
     }
 
     #[test]
-    fn mod_is_named_for_the_platform() {
-        let label = keys_label("Mod+Shift+W");
-        if cfg!(target_os = "macos") {
-            assert_eq!(label, "Cmd+Shift+W");
-        } else {
-            assert_eq!(label, "Ctrl+Shift+W");
+    fn what_is_held_is_read_as_the_layout_names_it() {
+        let mods = |cmd, ctrl, alt, shift| Mods {
+            cmd,
+            ctrl,
+            alt,
+            shift,
+        };
+        let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        // As Linux reports Ctrl: both.
+        let linux_ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        // Omarchy has one command key. Either name of it is Ctrl.
+        for held in [Modifiers::CTRL, Modifiers::COMMAND, linux_ctrl] {
+            assert!(held_is(
+                Layout::Omarchy,
+                held,
+                mods(false, true, false, false)
+            ));
+            assert!(!held_is(Layout::Omarchy, held, Mods::default()));
+            assert!(!held_is(
+                Layout::Omarchy,
+                held,
+                mods(false, true, false, true)
+            ));
         }
+        assert!(held_is(
+            Layout::Omarchy,
+            linux_ctrl | Modifiers::SHIFT,
+            mods(false, true, false, true)
+        ));
+        // Cmd is no key of Omarchy's, alone or with Ctrl.
+        for held in [cmd, cmd | Modifiers::CTRL] {
+            for wanted in [Mods::default(), mods(false, true, false, false)] {
+                assert!(!held_is(Layout::Omarchy, held, wanted), "{held:?}");
+            }
+        }
+        // Shift and Alt are exact everywhere: Ctrl+Shift+C is not Ctrl+C.
+        assert!(!held_is(
+            Layout::Omarchy,
+            linux_ctrl | Modifiers::SHIFT,
+            mods(false, true, false, false)
+        ));
+        // The Mac tells Cmd from Control.
+        let (command, control) = (
+            mods(true, false, false, false),
+            mods(false, true, false, false),
+        );
+        assert!(held_is(Layout::Mac, cmd, command));
+        assert!(!held_is(Layout::Mac, cmd, control));
+        assert!(held_is(Layout::Mac, Modifiers::CTRL, control));
+        assert!(!held_is(Layout::Mac, Modifiers::CTRL, command));
+        // Windows' Ctrl is the command key, and the Control of Ctrl+Space.
+        assert!(held_is(Layout::Windows, linux_ctrl, command));
+        assert!(held_is(Layout::Windows, linux_ctrl, control));
+        assert!(held_is(Layout::Mac, Modifiers::NONE, Mods::default()));
+    }
+
+    #[test]
+    fn a_chord_is_counted_fresh_and_repeated_and_taken() {
+        let mut input = egui::InputState::default();
+        let held = Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT;
+        let repeat = egui::Event::Key {
+            key: Key::D,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: held,
+        };
+        let other = crate::testing::key(Key::D, Modifiers::CTRL | Modifiers::COMMAND);
+        input.events = vec![crate::testing::key(Key::D, held), repeat, other.clone()];
+        let pressed = presses(&mut input, Layout::Omarchy, "ctrl+shift+d");
+        assert_eq!((pressed.fresh, pressed.count), (true, 2));
+        // Ctrl+D was another chord, and stays.
+        assert_eq!(input.events, vec![other]);
+        // A bracket with Shift comes as a brace on a US keyboard.
+        input.events = vec![crate::testing::key(Key::OpenCurlyBracket, held)];
+        assert!(presses(&mut input, Layout::Omarchy, "ctrl+shift+[").fresh);
+        // Letters and a line of the prompt are no chord.
+        input.events = vec![crate::testing::key(Key::D, Modifiers::NONE)];
+        assert_eq!(
+            presses(&mut input, Layout::Omarchy, "dd"),
+            Presses::default()
+        );
+        assert_eq!(
+            presses(&mut input, Layout::Omarchy, ":w"),
+            Presses::default()
+        );
+    }
+
+    #[test]
+    fn the_command_key_with_c_x_or_v_is_read_from_the_clipboard_event() {
+        // What the window sends for Ctrl+Shift+C: no key, a copy.
+        let mut input = egui::InputState::default();
+        input.modifiers = Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT;
+        input.events = vec![egui::Event::Copy];
+        assert!(
+            !presses(&mut input, Layout::Omarchy, "ctrl+c").fresh,
+            "Shift is held"
+        );
+        assert_eq!(input.events, vec![egui::Event::Copy], "left for its owner");
+        assert!(presses(&mut input, Layout::Omarchy, "ctrl+shift+c").fresh);
+        assert!(input.events.is_empty(), "taken");
+        // A cut, and a paste.
+        input.modifiers = Modifiers::CTRL | Modifiers::COMMAND;
+        input.events = vec![egui::Event::Paste("a\tb".into()), egui::Event::Cut];
+        assert!(presses(&mut input, Layout::Omarchy, "ctrl+x").fresh);
+        assert!(presses(&mut input, Layout::Omarchy, "ctrl+v").fresh);
+        assert!(input.events.is_empty());
+        // The Mac's copy, with Cmd.
+        input.modifiers = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        input.events = vec![egui::Event::Copy];
+        assert!(!presses(&mut input, Layout::Mac, "cmd+shift+c").fresh);
+        assert!(presses(&mut input, Layout::Mac, "cmd+c").fresh);
+        // A copy with nothing held (a Copy key, a menu's Copy) is no chord.
+        input.modifiers = Modifiers::NONE;
+        input.events = vec![egui::Event::Copy];
+        assert!(!presses(&mut input, Layout::Omarchy, "ctrl+c").fresh);
+        assert!(!presses(&mut input, Layout::Mac, "cmd+c").fresh);
+        assert_eq!(input.events, vec![egui::Event::Copy]);
+    }
+
+    #[test]
+    fn a_digit_is_read_by_the_key_it_is_on_when_shift_changes_what_it_types() {
+        let keymap = Keymap::default();
+        let held = Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT;
+        let mut input = egui::InputState::default();
+        let window = Command::GoToConnectionWindow;
+        let asked = |input: &mut egui::InputState, layout| {
+            digit_asked(input, &keymap, layout, window, Scope::Global, true)
+        };
+        // Ctrl+Shift+1 on a US keyboard: the key is `!`, on the key of 1.
+        input.events = vec![egui::Event::Key {
+            key: Key::Exclamationmark,
+            physical_key: Some(Key::Num1),
+            pressed: true,
+            repeat: false,
+            modifiers: held,
+        }];
+        assert_eq!(asked(&mut input, Layout::Omarchy), Some(0));
+        assert!(input.events.is_empty());
+        // The Mac's is Cmd and the digit, and no other layout's chord is.
+        let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        input.events = vec![crate::testing::key(Key::Num3, cmd)];
+        assert_eq!(asked(&mut input, Layout::Omarchy), None);
+        assert_eq!(asked(&mut input, Layout::Mac), Some(2));
+    }
+
+    #[test]
+    fn a_frames_typing_is_its_text_or_else_its_bare_keys() {
+        let ctx = egui::Context::default();
+        let typed = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut typed = Vec::new();
+            ctx.run_ui(input, |ui| typed = typed_chars(ui.ctx()))
+                .textures_delta
+                .clear();
+            typed
+        };
+        let key = |key, held| crate::testing::key(key, held);
+        // The real keyboard: a key and its text. The text is what counts.
+        let both = vec![key(Key::R, Modifiers::SHIFT), egui::Event::Text("R".into())];
+        assert_eq!(typed(both), ['R']);
+        // A test's bare key: the character it types on a US keyboard.
+        assert_eq!(typed(vec![key(Key::J, Modifiers::NONE)]), ['j']);
+        assert_eq!(typed(vec![key(Key::R, Modifiers::SHIFT)]), ['R']);
+        // A chord types nothing.
+        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        assert!(typed(vec![key(Key::R, ctrl)]).is_empty());
+        assert!(typed(vec![key(Key::Num2, Modifiers::ALT)]).is_empty());
+        assert!(typed(vec![key(Key::Enter, Modifiers::NONE)]).is_empty());
     }
 }

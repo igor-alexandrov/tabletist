@@ -11,6 +11,7 @@ use tabletist_db::{Value, ValueKind};
 use crate::app::App;
 use crate::edit::{Editor, Lock, State, Table, Unset};
 use crate::i18n::gettext;
+use crate::keymap::Command;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -376,6 +377,7 @@ fn draw(
     let value_tags = app.settings.value_tags;
     // An editor that is open has the keyboard, unless a dialog has it.
     let hold = app.dialog.is_none();
+    let editor_keys = crate::ui::cell_editor::Keys::of(&app.keymap, app.layout());
     // `za` asked to fold the documents.
     let fold = app.workspace_mut(tab).is_some_and(|workspace| {
         let asked = workspace.fold_documents == Some(id);
@@ -480,7 +482,7 @@ fn draw(
             focus::region(ui, Region::Panel, full);
             let mut form = match object {
                 Some(object) => {
-                    let how = (hold, look.terminal);
+                    let how = (hold, look.terminal, &editor_keys);
                     Form::of(workspace, object, tab, cell.row, editor, how)
                 }
                 None => Form::none(),
@@ -597,8 +599,15 @@ fn draw(
                 // esc ×: 8 in from the right, 24 tall, 8 at its sides, 6
                 // before the ×; the prev/next hint 10 before it.
                 let small = TextRole::OSecondary;
+                // The panel's keys, as the keymap writes them.
+                let key = |command| crate::ui::keys::written(ui.ctx(), &look, command);
+                let (close_key, focus_key) =
+                    (key(Command::CloseInspector), key(Command::PaneRight));
+                let edit_key = key(Command::EditCell);
+                let rows = [Command::PreviousRow, Command::NextRow];
+                let rows_key = crate::ui::keys::written_together(ui.ctx(), &look, &rows);
                 let esc_width =
-                    8.0 + small.width(ui.ctx(), look.faces, "esc") + 6.0 + 10.0 + 8.0 + 2.0;
+                    8.0 + small.width(ui.ctx(), look.faces, &close_key) + 6.0 + 10.0 + 8.0 + 2.0;
                 let esc = Rect::from_min_size(
                     pos2(header.right() - 8.0 - esc_width, y - 12.0),
                     vec2(esc_width, 24.0),
@@ -620,14 +629,14 @@ fn draw(
                 // edited offers, then the words of its own keys, when the
                 // whole name does not fit before them. The name is cut
                 // where the hint begins, 10 before it.
-                let steps: widgets::Hint<'_> = ("[ ]", "prev/next", true);
-                let focus: widgets::Hint<'_> = ("ctrl+l", "focus", true);
+                let steps: widgets::Hint<'_> = (&rows_key, "prev/next", true);
+                let focus: widgets::Hint<'_> = (&focus_key, "focus", true);
                 let editable = source.table && locked.is_none();
                 let hints: [&[widgets::Hint<'_>]; 4] = [
-                    &[steps, focus, ("i", "edit field", true)],
+                    &[steps, focus, (&edit_key, "edit field", true)],
                     &[steps, focus],
                     &[steps],
-                    &[("[ ]", "", true)],
+                    &[(&rows_key, "", true)],
                 ];
                 let fit = |hint: &[widgets::Hint<'_>]| {
                     let width = widgets::key_hints_width(ui, hint, HINT_GAP, &look, &palette);
@@ -679,7 +688,7 @@ fn draw(
                     ui,
                     esc.left() + 9.0,
                     y,
-                    Text::one(&look, small, "esc", palette.dim),
+                    Text::one(&look, small, &close_key, palette.dim),
                 );
                 Icon::X.image(palette.dim, 10.0).paint_at(
                     ui,
@@ -887,7 +896,7 @@ fn draw(
                 0.0
             } else if fresh.is_some() {
                 let room = (full.width() - 2.0 * side).max(24.0);
-                let keys = form_keys(&look, locale, palette.dim).wrap(room);
+                let keys = form_keys(ui.ctx(), &look, locale, palette.dim).wrap(room);
                 let keys = keys.layout(ui.ctx()).height();
                 if look.terminal {
                     1.0 + 8.0 + keys + 8.0
@@ -1601,17 +1610,19 @@ fn field(
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(copy));
         if look.terminal {
-            // "za fold · y copy", keys in the text colour, at the right. A
+            // "za fold · v y copy", keys in the text colour, at the right. A
             // SQL result has no `y`: the hint offers only the fold.
             let role = TextRole::OCaption;
+            let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
+            let (fold, copy) = (key(Command::FoldDocuments), key(Command::CopyCells));
             let hints = Text::new(look)
-                .add(role, "za", palette.text)
+                .add(role, &fold, palette.text)
                 .space(role, " ");
             let hints = if copy_key {
                 hints
                     .add(role, "fold ·", palette.dim)
                     .space(role, " ")
-                    .add(role, "y", palette.text)
+                    .add(role, &copy, palette.text)
                     .space(role, " ")
                     .add(role, "copy", palette.dim)
             } else {
@@ -2085,13 +2096,31 @@ fn unset_value(
 
 /// How a new row's form is walked, as its footer says it: the keys of the
 /// look. The terminal look has a key for everything the form does.
-fn form_keys(look: &Look, locale: crate::i18n::Locale, color: egui::Color32) -> Text {
+fn form_keys(
+    ctx: &egui::Context,
+    look: &Look,
+    locale: crate::i18n::Locale,
+    color: egui::Color32,
+) -> Text {
+    use crate::keymap::Scope;
+    let key = |command: Command| crate::ui::keys::written(ctx, look, command);
+    let key_in = |command, scope| crate::ui::keys::written_in(ctx, look, command, scope);
     let said = if look.terminal {
         // A key stays on the line of what it does, where the panel's
-        // width makes two lines of them.
-        "j/k\u{a0}field · i\u{a0}edit · D\u{a0}default · x\u{a0}null · dd\u{a0}drop\u{a0}row".into()
+        // width makes two lines of them. The letter that edits is the
+        // grid's, as the panel's header has it.
+        format!(
+            "{}\u{a0}field · {}\u{a0}edit · {}\u{a0}default · {}\u{a0}null · {}\u{a0}drop\u{a0}row",
+            key(Command::MoveField),
+            key_in(Command::EditCell, Scope::Grid),
+            key(Command::SetDefault),
+            key(Command::SetNull),
+            key(Command::DeleteRow),
+        )
     } else {
-        gettext(locale, "↩ next field · esc leaves the row pending")
+        gettext(locale, "{enter} next field · {esc} leaves the row pending")
+            .replace("{enter}", &key_in(Command::CommitDown, Scope::CellEditor))
+            .replace("{esc}", &key(Command::BackToGrid))
     };
     Text::one(look, caption(look), &said, color)
 }
@@ -2124,7 +2153,7 @@ fn new_row_footer(
     // The keys, on as many lines as the panel's width makes of them: the
     // footer was given the room they take.
     let walked = |ui: &mut egui::Ui, top: f32| {
-        let laid = form_keys(look, locale, palette.dim)
+        let laid = form_keys(ui.ctx(), look, locale, palette.dim)
             .wrap(inner.width().max(24.0))
             .layout(ui.ctx());
         let at = pos2(inner.left(), top);
@@ -2145,7 +2174,7 @@ fn new_row_footer(
     };
     let discard = gettext(locale, "Discard new row");
     let another = gettext(locale, "Add another");
-    let keys = format!("{}N", look.command_key());
+    let keys = crate::ui::keys::written(ui.ctx(), look, Command::AddRow);
     let drop = widgets::ButtonSpec::new(&discard).padding(0.0).drops();
     let add = widgets::ButtonSpec::new(&another)
         .padding(0.0)
@@ -2705,11 +2734,9 @@ fn format_link(
     (tab, tab_id): (ConnTabId, TabId),
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
 ) -> bool {
-    let chord = if look.command_key() == "⌘" {
-        "⇧⌘F"
-    } else {
-        "Ctrl+Shift+F"
-    };
+    // The large editor's own key for it: Omarchy's `=` is a SQL tab's.
+    let scope = crate::keymap::Scope::CellEditor;
+    let chord = crate::ui::keys::written_in(ui.ctx(), look, Command::Format, scope);
     let label = format!("{} {chord}", gettext(locale, "Format"));
     let role = TextRole::FieldLabel;
     let size = vec2(
@@ -2913,7 +2940,9 @@ fn editing_footer(
     let height = if look.terminal {
         // Two equal cells, the keys in the text colour: what waits is
         // dashed, at 55%.
-        let keys = [("yy p", "duplicate"), ("dd", "delete")];
+        let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
+        let (duplicate, delete) = (key(Command::DuplicateRow), key(Command::DeleteRow));
+        let keys = [(&duplicate, "duplicate"), (&delete, "delete")];
         let width = (inner.width() - gap) / 2.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
         for (index, (key, label)) in keys.iter().enumerate() {
@@ -2973,7 +3002,7 @@ fn editing_footer(
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
     let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
-    let key = format!("{}I", look.command_key());
+    let key = crate::ui::keys::written(ui.ctx(), look, Command::OpenInspector);
     let click = gettext(locale, "Click a value or press");
     let edit = gettext(locale, "to edit");
     let said = format!("{click} {key} {edit}");

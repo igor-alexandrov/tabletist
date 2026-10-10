@@ -26,29 +26,21 @@ back.
 
 | Keys | Do |
 | --- | --- |
-| Ctrl+O | Open the connection picker |
-| Ctrl+N | New connection |
-| Ctrl+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
+| Ctrl+Shift+C | Open the connection picker. While you type in a field it copies what is selected instead |
+| Ctrl+Shift+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
 | Ctrl+Shift+W | Close the connection |
-| Ctrl+P | Quick open |
 | Ctrl+T | New SQL editor |
-| `1` to `9` | Go to that tab |
+| Alt+1 to 9 | Go to that tab |
 | Ctrl+Shift+[ and ] | Previous and next tab |
-| Ctrl+W | Close the tab |
+| Ctrl+W | Close the tab. While you type in a field it deletes a word instead |
 | Ctrl+B | Show or hide the sidebar |
 | Ctrl+H, Ctrl+L | Move between the parts of the window |
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
 | `?` | The list of keys |
 
-### Quick open
-
-| Keys | Do |
-| --- | --- |
-| Ctrl+P | Open it, then type to find a table or view |
-| Up, Down | Move in the list |
-| Enter | Open the one selected |
-| Esc | Close |
+Quick open has no key in the Omarchy look. `/` in the sidebar filters its
+list instead.
 
 ### The picker
 
@@ -58,9 +50,9 @@ back.
 | Enter | Connect, or show the connection if it is open already |
 | Shift+Enter | Open it again |
 | `n` | New connection |
-| `e`, Ctrl+E | Edit |
-| `yy`, Ctrl+D | Duplicate |
-| `dd`, Ctrl+Backspace | Delete |
+| `e` | Edit |
+| `yy` then `p` | Duplicate |
+| `dd` | Delete |
 | `/` | Filter the list |
 | Esc | Cancel connecting |
 
@@ -85,9 +77,10 @@ back.
 | --- | --- |
 | `j` `k`, arrows, Home, End | Move |
 | Enter | Open the table or view |
+| `/` | Filter the list |
 | `t` | Switch between tree and flat |
+| `R` | Reload the list |
 | Ctrl+B | Hide the sidebar |
-| Ctrl+R | Refresh the list |
 
 ### A table
 
@@ -95,54 +88,57 @@ back.
 | --- | --- |
 | `j` `k` | Move by row |
 | `h` `l` | Move by column |
-| `[` `]` | Previous and next row |
 | Arrows, Page Up, Page Down, Home, End | Move in the grid |
 | Ctrl+Alt+Left and Right | Previous and next page |
 | `/` | Filter with a WHERE line |
 | Ctrl+F | Filter bar |
-| `s`, `d` | Structure view, Data view |
 | `gd` | Follow the selected foreign key |
-| `y`, Ctrl+C | Copy the cell |
-| Ctrl+Shift+C | Copy the row |
-| Ctrl+R | Refresh |
-| Ctrl+. | Cancel the running query |
+| `v` then `y` | Copy the cell |
+| `R` | Reload |
+| Ctrl+C | Cancel the running query |
+
+The Structure and Data views are clicked: they have no key. Nor has
+copying a whole row.
 
 ### The row panel
 
 | Keys | Do |
 | --- | --- |
-| Space, Ctrl+Shift+R | Show or hide the row panel. On a boolean cell that can be edited, Space flips the cell instead |
-| Esc | Close it |
-| `[` `]` | Previous and next row |
+| Enter | Open the row panel, with the keyboard on its fields. Ctrl+L goes to it too |
+| Ctrl+Shift+R | Show or hide the row panel |
+| `j` `k` | Move between its fields |
+| Enter, `i` | Edit the field |
+| `[` `]` | Previous and next row, while the panel shows |
 | `za` | Fold the documents in it |
-| `e`, Ctrl+I | Edit the row in it |
+| Esc | From its fields, back to the rows. From the rows, close it |
 
 ### Editing
 
 | Keys | Do |
 | --- | --- |
-| `i`, Enter | Edit the cell |
-| `cc` | Edit the cell from nothing |
+| `i` | Edit the cell |
+| `cc`, `s` | Edit the cell from nothing |
 | `o`, `O` | Add a row below the cursor's row, or above it |
 | `dd` | Drop a new row that is not saved yet |
-| `e`, Ctrl+I | Edit the row in the row panel |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
-| Alt+Enter | Open the large editor. In it, Ctrl+Enter applies and Esc keeps the text |
+| Alt+Enter | Open the large editor. In it, Ctrl+Enter applies, Esc keeps the text, Ctrl+C drops it and Ctrl+Shift+F formats JSON |
 | `x` | Set NULL. On a column that cannot be NULL, the status line says so |
 | `D` | Set DEFAULT, where the column has a default |
 | Space | Flip a boolean cell: true, false, NULL |
-| `t`, `f` | Set a boolean cell true or false |
-| Ctrl+T | Now, while a date or time cell is being edited. Anywhere else it opens a SQL editor |
 | `u` | Revert the cell |
 | `:w`, Ctrl+S | Save all pending changes |
 | `:e!` | Discard all pending changes |
-| `:diff`, Ctrl+Shift+D | Show the SQL of the pending changes |
+| `:diff` | Show the SQL of the pending changes |
 | `Y` | Copy that SQL, while it shows |
 | Esc | Close that SQL |
 
-The `:` prompt takes `w`, `e!` and `diff`, and nothing else.
+A date or time cell has no key for the time of the save: type `now()`
+into it.
+
+The `:` prompt takes `w`, `e!` and `diff` on a table, `ro` and `rw` in a
+SQL editor, and nothing else.
 
 {% include shot.html file="omarchy-edit-review" alt="The :diff panel above the status line, showing the statement a save will run" %}
 
@@ -150,7 +146,7 @@ A save can ask you something first. Each question has its own keys:
 
 | Question | Keys |
 | --- | --- |
-| A save to production | Type `write` to confirm |
+| A save to production | Type the database's name, then Enter. Where the connection names no database, its own name. Esc goes back |
 | A row that changed on the server | `o` overwrite, `s` use the server's values, `k` or Esc keep mine and reload. PgUp and PgDn scroll |
 | A row that was deleted on the server | `d` discard my changes, `k` or Esc keep them pending |
 | Leaving with pending changes | `w` write, `d` discard, Esc stay |
@@ -163,11 +159,11 @@ A save can ask you something first. Each question has its own keys:
 | --- | --- |
 | Ctrl+Enter | Run the statement at the cursor |
 | Ctrl+Shift+Enter | Run all |
-| Ctrl+. | Cancel the run |
-| Ctrl+Shift+F | Format |
-| Ctrl+Shift+M | Switch between read-only and read-write runs |
-| Ctrl+Space, Ctrl+I | Complete |
-| Esc | Leave the editor |
+| Ctrl+C | Cancel the run, while one runs. With none running it copies |
+| Esc | Leave the editor: the letters below are read from then on |
+| `=` | Format, with the keyboard out of the text |
+| `:ro`, `:rw` | Read-only and read-write runs, with the keyboard out of the text |
+| Ctrl+Space | Complete |
 
 {% include shot.html file="omarchy-sql" alt="A SQL editor in the Omarchy look, with its result under it and the run keys in the status line" %}
 
@@ -184,9 +180,10 @@ On a result, with the keyboard out of the editor:
 
 | Keys | Do |
 | --- | --- |
-| `j` `k`, `h` `l`, `[` `]` | Move in the result |
+| `j` `k`, `h` `l` | Move in the result |
 | Enter | Show the selected row in the row panel |
-| `i`, Space | Show or hide the row panel |
+| Ctrl+Shift+R | Show or hide the row panel |
+| `[` `]` | Previous and next row, while the panel shows |
 
 When a read-only run refused a write, the card in Messages has its own
 letters: `e` edits the connection, and `w` allows writes in this tab or

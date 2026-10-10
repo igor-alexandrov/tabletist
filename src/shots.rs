@@ -801,7 +801,8 @@ fn shots() {
         edit_production(harness);
     });
     both("dialog-new", |harness| {
-        harness.press(egui::Key::N, egui::Modifiers::COMMAND);
+        // As the picker's button asks: its key is each look's own.
+        harness.app.apply(Action::NewConnection);
         let postgres = harness.app.look.label("PostgreSQL");
         harness.click(&postgres);
     });
@@ -1387,9 +1388,10 @@ fn sidebar_width_over_time() {
     for frame in 0..300 {
         let tree = harness.frame(Vec::new());
         if frame % 50 == 0 {
-            let refresh = crate::testing::node(&tree, "Refresh", egui::accesskit::Role::Button)
-                .and_then(|id| tree.nodes.iter().find(|(n, _)| *n == id))
-                .and_then(|(_, node)| node.bounds());
+            let refresh =
+                crate::testing::node(&tree, "Reload objects", egui::accesskit::Role::Button)
+                    .and_then(|id| tree.nodes.iter().find(|(n, _)| *n == id))
+                    .and_then(|(_, node)| node.bounds());
             eprintln!("frame {frame}: refresh button {refresh:?}");
         }
     }

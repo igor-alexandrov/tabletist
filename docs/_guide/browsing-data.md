@@ -11,7 +11,9 @@ that share a prefix, such as `book_`, fold into a group. You can also
 list them flat. On macOS and Windows, the objects you opened recently
 are listed above them.
 
-Quick open (Cmd/Ctrl+P) finds any object by name without the sidebar.
+Quick open (Cmd+P on macOS, Ctrl+P on Windows) finds any object by name
+without the sidebar. The Omarchy look has no key for it: there `/` in the
+sidebar filters its list.
 
 System schemas such as `pg_catalog` and `information_schema` are hidden.
 [A setting]({% link _reference/settings-and-files.md %}#the-settings-file)
@@ -33,8 +35,10 @@ tags.
 - **Counts.** The footer shows the range you are looking at and the
   table's size. For a large table the size is the database's estimate, such
   as `~1.2M`. Click **Count** for the exact number.
-- **Cancel.** Cmd/Ctrl+. cancels a running query.
-- **Refresh.** Cmd/Ctrl+R loads the page again.
+- **Cancel.** Cmd/Ctrl+. cancels a running query. In the Omarchy look
+  the key is Ctrl+C.
+- **Reload.** Cmd/Ctrl+R loads the page again. In the Omarchy look the
+  key is `R`.
 
 A table without a primary key is marked **Unordered**: its rows may move
 between pages.
@@ -66,8 +70,8 @@ On MySQL, a raw WHERE reads `"..."` as a string, and names take backticks.
 ## The row panel
 
 Select a row and the panel on the right shows every one of its fields,
-with long text and JSON documents laid out to read. Space shows or hides
-it.
+with long text and JSON documents laid out to read. Cmd/Ctrl+Shift+R
+shows or hides it.
 
 A very large value is shown up to 256 KiB. Copying it gives the whole
 value.
@@ -83,8 +87,9 @@ and foreign keys.
 
 ## Copying
 
-Cmd/Ctrl+C copies the selected cell. Cmd/Ctrl+Shift+C copies the whole
-row, with tabs between its values.
+On macOS and Windows, Cmd/Ctrl+C copies the selected cell and
+Cmd/Ctrl+Shift+C the whole row, with tabs between its values. In the
+Omarchy look `v` then `y` copies the cell.
 
 ## Next
 

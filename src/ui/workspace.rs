@@ -6,6 +6,7 @@ use tabletist_db::TlsMode;
 
 use crate::app::App;
 use crate::i18n::gettext;
+use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -233,9 +234,10 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // it has no button that would close them, and the bar's Disconnect is
     // the way out. Named apart from a password prompt's Cancel, which can
     // be open over it.
+    let cancel_key = crate::ui::keys::written(ui.ctx(), &look, Command::CancelConnecting);
     let cancel = workspace
         .can_give_up()
-        .then(|| states::key_button(&name, "esc", &look).label("Cancel connecting"));
+        .then(|| states::key_button(&name, &cancel_key, &look).label("Cancel connecting"));
     let width = cancel
         .as_ref()
         .map_or(0.0, |cancel| cancel.width(ui, &look));
@@ -449,6 +451,10 @@ struct BarInfo {
     tls: Option<(&'static str, Tone)>,
     ssh_host: Option<String>,
     chips: Vec<Chip>,
+    /// The key that shows the connections, and the one that closes this
+    /// one, as the look writes them.
+    connections_key: crate::keymap::Written,
+    close_key: crate::keymap::Written,
 }
 
 /// How a status reads: fine, or a warning.
@@ -478,9 +484,9 @@ struct Chip {
     /// session stands while it is not connected.
     line: String,
     link: Link,
-    /// Its place among the open connections, from 1: Cmd/Ctrl+1 is the
-    /// first.
-    number: usize,
+    /// The key that goes to it, by its place among the open connections,
+    /// where that place has one: the first nine do.
+    key: crate::keymap::Written,
     /// What its card says: a name and a value per line.
     card: Vec<(String, String)>,
 }
@@ -517,6 +523,8 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         tls,
         ssh_host: spec.ssh.as_ref().map(|ssh| ssh.host.clone()),
         chips: chips(app, tab),
+        connections_key: app.keymap.key(app.layout(), Command::Connections),
+        close_key: app.keymap.key(app.layout(), Command::CloseConnection),
     })
 }
 
@@ -544,7 +552,10 @@ fn chips(app: &App, own: ConnTabId) -> Vec<Chip> {
                 env: workspace.environment,
                 line,
                 link,
-                number: index + 1,
+                key: {
+                    let window = Command::GoToConnectionWindow;
+                    app.keymap.digit_label(app.layout(), window, index + 1)
+                },
                 card: card_rows(workspace, &app.look, app.locale, now),
             }
         })
@@ -663,9 +674,8 @@ fn chip_card(ui: &mut egui::Ui, chip: &Chip, hint: Option<&str>, look: &Look, pa
             badge,
             look,
         );
-        if chip.number <= 9 {
-            let key = look.label(&format!("{}{}", look.command_key(), chip.number));
-            Text::one(look, small, &key, palette.dim)
+        if !chip.key.is_empty() {
+            Text::one(look, small, &chip.key, palette.dim)
                 .layout(ui.ctx())
                 .label(ui);
         }
@@ -965,7 +975,7 @@ fn mac_bar(
             Rect::from_center_size(connections.center(), vec2(16.0, 16.0)),
         );
         if response
-            .on_hover_text(connections_hint(look, locale))
+            .on_hover_text(connections_hint(look, locale, &info.connections_key))
             .clicked()
         {
             actions.push(Action::ShowConnections);
@@ -1233,7 +1243,7 @@ fn terminal_bar(
         );
         text.paint_left(ui.painter(), button.left() + 9.0, center);
         if response
-            .on_hover_text(connections_hint(look, locale))
+            .on_hover_text(connections_hint(look, locale, &info.connections_key))
             .clicked()
         {
             actions.push(Action::ShowConnections);
@@ -1241,7 +1251,8 @@ fn terminal_bar(
         x = button.right() + 12.0;
     }
     // The way out, a muted note that also answers a click.
-    let note = "ctrl+shift+w disconnect";
+    let note = format!("{} {}", info.close_key, gettext(locale, "disconnect"));
+    let note = note.as_str();
     let width = widgets::measure(ui, label_copy(look, TextRole::OSecondary, note));
     let left = rect.right() - 12.0 - width;
     let hit = Rect::from_min_size(
@@ -1449,12 +1460,15 @@ fn label_copy(look: &Look, role: TextRole, text: &str) -> Text {
 
 /// The Connections button's tooltip: its name and the key that does the
 /// same, as the look spells both.
-fn connections_hint(look: &Look, locale: crate::i18n::Locale) -> String {
-    look.label(&format!(
-        "{} · {}O",
-        gettext(locale, "Connections"),
-        look.command_key()
-    ))
+fn connections_hint(
+    look: &Look,
+    locale: crate::i18n::Locale,
+    key: &crate::keymap::Written,
+) -> String {
+    // The key is written by the keymap, in the look's own case: only the
+    // name is the look's to lower.
+    let name = look.label(&gettext(locale, "Connections"));
+    format!("{name} · {key}")
 }
 
 /// How an environment badge draws.
@@ -1879,6 +1893,18 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let palette = app.palette;
     let look = app.look;
     let locale = app.locale;
+    // The line's keys, as the keymap writes them for the look.
+    let key = |command: Command| app.keymap.key(app.layout(), command);
+    let cancel_key = key(Command::CancelQuery);
+    let (rows_key, cols_key) = (key(Command::MoveRow), key(Command::MoveColumn));
+    let (inspect_key, edit_key) = (key(Command::OpenInspector), key(Command::EditCell));
+    let (add_key, delete_key) = (key(Command::AddRow), key(Command::DeleteRow));
+    let (filter_key, sidebar_key) = (key(Command::WhereFilter), key(Command::ToggleSidebar));
+    let (copy_key, save_key) = (key(Command::CopyCells), key(Command::SaveChanges));
+    let review_key = key(Command::ReviewSql);
+    let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
+    let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
+    let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -1945,37 +1971,37 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let rect = ui.max_rect();
             widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
             let y = rect.top() + 1.0 + 15.0;
-            // Space shows the row; `i` edits the cell, where it can be.
+            // The row is shown in the inspector; the cell is edited, where
+            // it can be.
             let edit = gettext(locale, "edit");
             let mut table_hints: Vec<widgets::Hint<'_>> = vec![
-                ("j/k", "row", true),
-                ("h/l", "col", true),
-                ("space", "inspect", true),
+                (&rows_key, "row", true),
+                (&cols_key, "col", true),
+                (&inspect_key, "inspect", true),
             ];
             if editing.can_edit {
-                table_hints.push(("i", &*edit, true));
+                table_hints.push((&edit_key, &*edit, true));
             }
-            // `o` opens a new row, where the table takes one.
+            // A new row is opened, where the table takes one.
             let new_row = gettext(locale, "new row");
             if editing.can_add {
-                table_hints.push(("o", &*new_row, true));
+                table_hints.push((&add_key, &*new_row, true));
             }
             table_hints.extend([
-                ("/", "filter", true),
-                ("ctrl+b", "tables", true),
-                ("y", "copy", true),
-                ("s", "structure", true),
+                (&filter_key, "filter", true),
+                (&sidebar_key, "tables", true),
+                (&copy_key, "copy", true),
             ]);
-            // The prompt's key that saves, where a save can be made.
+            // The prompt's line that saves, where a save can be made.
             let write = gettext(locale, "write");
             if !read_only {
-                table_hints.push((":w", &*write, true));
+                table_hints.push((&save_key, &*write, true));
             }
             // And the one that shows what a save would run, while there is
             // anything to show.
             let review = gettext(locale, "review");
             if editing.pending.is_some() || editing.added.is_some() {
-                table_hints.push((":diff", &*review, true));
+                table_hints.push((&review_key, &*review, true));
             }
             // An editor's keys: a table's do nothing on it.
             let words = [
@@ -1988,15 +2014,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ]
             .map(|word| gettext(locale, word));
             let mut editor_hints: Vec<widgets::Hint<'_>> = vec![
-                ("ctrl+enter", &*words[0], true),
-                ("ctrl+shift+enter", &*words[1], true),
-                ("ctrl+.", &*words[2], true),
-                ("esc", &*words[3], true),
-                ("ctrl+b", &*words[4], true),
+                (&run_key, &*words[0], true),
+                (&run_all_key, &*words[1], true),
+                (&cancel_key, &*words[2], true),
+                (&leave_key, &*words[3], true),
+                (&sidebar_key, &*words[4], true),
             ];
             // An open completion list: its key leads.
             if completing {
-                editor_hints.insert(0, ("tab", &*words[5], true));
+                editor_hints.insert(0, (&complete_key, &*words[5], true));
             }
             let hints: &[widgets::Hint<'_>] = if on_editor {
                 &editor_hints
@@ -2064,7 +2090,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 let next = editing.walks.map(|next| gettext(locale, next));
                 let keys = || {
                     let leave = Text::new(&look)
-                        .add(role, "esc", palette.text)
+                        .add(role, &keep_key, palette.text)
                         .space(role, " ")
                         .add(role, &normal, palette.dim);
                     let Some(next) = &next else {
@@ -2072,7 +2098,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     };
                     leave
                         .add(role, " · ", palette.dim)
-                        .add(role, "tab", palette.text)
+                        .add(role, &next_key, palette.text)
                         .space(role, " ")
                         .add(role, next, palette.dim)
                 };
@@ -2134,15 +2160,17 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             });
             let said_room = said.as_ref().map_or(0.0, |said| said.3 + gap);
             let limit = end - fixed - said_room;
-            // `e edit` was here until `i` came to edit, `o new row` is
-            // here only where the table takes none, and `:w write` only on
-            // a connection that cannot write.
-            let disabled: &[&str] = match (editing.can_add, read_only) {
-                (true, true) => &["dd delete", ":w write"],
-                (true, false) => &["dd delete"],
-                (false, true) => &["o new row", "dd delete", ":w write"],
-                (false, false) => &["o new row", "dd delete"],
-            };
+            // The key that adds a row is here only where the table takes
+            // none, and the line that saves only on a connection that
+            // cannot write.
+            let mut disabled: Vec<String> = Vec::new();
+            if !editing.can_add {
+                disabled.push(format!("{add_key} new row"));
+            }
+            disabled.push(format!("{delete_key} delete"));
+            if read_only {
+                disabled.push(format!("{save_key} write"));
+            }
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
                 + 14.0 * (disabled.len() - 1) as f32;
             let mut x = left;
@@ -2466,7 +2494,7 @@ mod tests {
             env: crate::env::Environment::Dev,
             line: "fixture.db".into(),
             link: Link::Connected,
-            number: 1,
+            key: crate::keymap::Written::default(),
             card: Vec::new(),
         };
         let hint = |own: bool, switchable: bool, look: &Look| {
@@ -2492,15 +2520,15 @@ mod tests {
     #[test]
     fn the_connections_hint_names_the_key_as_the_look_spells_it() {
         let locale = crate::i18n::Locale::default();
-        assert_eq!(connections_hint(&Look::macos(), locale), "Connections · ⌘O");
-        assert_eq!(
-            connections_hint(&Look::standard(), locale),
-            "Connections · Ctrl+O"
-        );
-        assert_eq!(
-            connections_hint(&Look::omarchy(), locale),
-            "connections · ctrl+o"
-        );
+        let keymap = crate::keymap::Keymap::default();
+        let hint = |look: Look| {
+            let layout = crate::keymap::Layout::of(&look);
+            let key = keymap.key(layout, Command::Connections);
+            connections_hint(&look, locale, &key)
+        };
+        assert_eq!(hint(Look::macos()), "Connections · ⌘O");
+        assert_eq!(hint(Look::standard()), "Connections · Ctrl+O");
+        assert_eq!(hint(Look::omarchy()), "connections · ctrl+shift+c");
     }
 
     #[test]
