@@ -205,6 +205,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             })
             .is_some_and(|table| table.no_rows().is_none())
     });
+    // Mod+D makes a copy of the selected row wherever Mod+N adds a row.
+    // Like that key it does not ask what has the keyboard. With no row
+    // selected the reducer makes no copy either: asking here is what
+    // leaves the press untaken, as it is taken only where a copy can be
+    // made.
+    let copies = adds.filter(|&(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.selection.is_some())
+    });
     // The row panel's field that has the keyboard, of the table on screen:
     // its keys are read here with the grid's, so one key is never both's.
     let field = object.filter(|_| grid).and_then(|(tab, id)| {
@@ -372,6 +382,21 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         {
             let place = crate::edit::Place::Top;
             actions.push(Action::AddRow { tab, id, place });
+        }
+        // With its modifiers exactly: `consume_press` lets an extra Shift
+        // through, and Mod+Shift+D is Review SQL, read further down. Not in
+        // a frame that brings a click: the click selects its row once the
+        // frame is drawn, and the copy would be of the row the selection
+        // leaves. The press is taken there all the same.
+        let clicked = input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::PointerButton { .. }));
+        if let Some((tab, id)) = copies
+            && take_fresh_press(input, Modifiers::COMMAND, Key::D)
+            && !clicked
+        {
+            actions.push(Action::DuplicateRow { tab, id });
         }
         // Taken here for the same reason: the chord is a new SQL editor's
         // below.
@@ -877,6 +902,21 @@ fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> u
         .events
         .retain(|event| !is_press(event, modifiers, key));
     before - input.events.len()
+}
+
+/// Whether `key` went down afresh this frame with exactly `modifiers` (see
+/// [`is_press`]). Takes the press, and the repeats of a held key with it,
+/// which are no press: what one press does, a held key does once.
+fn take_fresh_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
+    let mut fresh = false;
+    input.events.retain(|event| {
+        if !is_press(event, modifiers, key) {
+            return true;
+        }
+        fresh |= !matches!(event, egui::Event::Key { repeat: true, .. });
+        false
+    });
+    fresh
 }
 
 /// The keys that edit the cells of the table on screen: they open an editor

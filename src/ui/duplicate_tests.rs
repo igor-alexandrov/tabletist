@@ -4,6 +4,7 @@
 //! Only behaviour, names and words, on the Bookshop's `book_covers`. What
 //! a copy holds cell by cell is tested where it is decided, in `edit.rs`.
 
+use egui::{Key, Modifiers};
 use tabletist_db::{IndexInfo, NewValue, ObjectKind, ObjectRef, RowPage, Structure, Value};
 
 use super::insert_audit_tests::{add, covers_as, covers_in, edits, select, selected, set};
@@ -412,4 +413,102 @@ fn review_shows_the_copy_as_one_insert_of_what_it_holds() {
     let named =
         r#"INSERT INTO "main"."book_covers" ("publisher_id", "kind", "created_at") VALUES ("#;
     assert!(statements[0].starts_with(named), "{statements:?}");
+}
+
+// The desktop looks' key.
+
+/// Test 1: a held Mod+D makes one copy. Its repeats are no presses.
+#[test]
+fn mod_d_makes_one_copy_however_long_it_is_held() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, (1, 2));
+    let repeat = egui::Event::Key {
+        key: Key::D,
+        physical_key: None,
+        pressed: true,
+        repeat: true,
+        modifiers: Modifiers::COMMAND,
+    };
+    harness.frame(vec![crate::testing::key(Key::D, Modifiers::COMMAND)]);
+    for _ in 0..3 {
+        harness.frame(vec![repeat.clone()]);
+    }
+    harness.frame(vec![crate::testing::release(Key::D, Modifiers::COMMAND)]);
+    harness.settle();
+    assert_eq!(edits(&harness, tab, id).added.len(), 1);
+    // A second press is a second copy, of the copy the cursor is on.
+    harness.press(Key::D, Modifiers::COMMAND);
+    assert_eq!(edits(&harness, tab, id).added.len(), 2);
+}
+
+/// Test 19: Mod+Shift+D is Review SQL still, and makes no copy.
+#[test]
+fn mod_shift_d_is_review_sql_and_makes_no_copy() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    set(&mut harness, tab, id, (1, 2), "audio");
+    select(&mut harness, tab, id, (1, 2));
+    harness.press(Key::D, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(edits(&harness, tab, id).reviewing);
+    assert!(edits(&harness, tab, id).added.is_empty());
+}
+
+/// Spec 1: the key is the desktop looks', and copies the selected row:
+/// with none selected it does nothing.
+#[test]
+fn mod_d_needs_a_row_and_is_not_the_terminals_key() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, (1, 2));
+    harness.press(Key::D, Modifiers::COMMAND);
+    assert!(edits(&harness, tab, id).added.is_empty(), "the terminal");
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    assert_eq!(selected(&harness, tab, id), None);
+    harness.press(Key::D, Modifiers::COMMAND);
+    assert!(edits(&harness, tab, id).added.is_empty(), "no row");
+    // Nor where no row is taken: a connection that opens read-only.
+    let (mut harness, tab, id) = covers_as(Look::macos(), ObjectKind::Table, true);
+    select(&mut harness, tab, id, (1, 2));
+    harness.press(Key::D, Modifiers::COMMAND);
+    assert!(edits(&harness, tab, id).added.is_empty(), "read-only");
+}
+
+/// Test 21: like Mod+N, the key does not ask what has the keyboard.
+#[test]
+fn mod_d_copies_with_the_keyboard_in_the_filters_field() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, (1, 2));
+    harness.press(Key::F, Modifiers::COMMAND);
+    assert!(harness.ctx.text_edit_focused(), "the filter's field");
+    harness.press(Key::D, Modifiers::COMMAND);
+    assert_eq!(edits(&harness, tab, id).added.len(), 1);
+}
+
+/// A click selects its cell when the grid is drawn, after the keys were
+/// read: a Mod+D in the click's frame would copy the row the selection
+/// leaves. It makes no copy, and the next press copies the clicked row.
+#[test]
+fn mod_d_in_the_frame_of_a_click_makes_no_copy() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, (0, 2));
+    // The page's one `ebook`, in row 1.
+    let at = harness.painted_rect("ebook").expect("its cell").center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![
+        button(true),
+        button(false),
+        crate::testing::key(Key::D, Modifiers::COMMAND),
+    ]);
+    harness.frame(vec![crate::testing::release(Key::D, Modifiers::COMMAND)]);
+    harness.settle();
+    assert!(edits(&harness, tab, id).added.is_empty());
+    assert_eq!(selected(&harness, tab, id), Some((1, 2)), "the click");
+    harness.press(Key::D, Modifiers::COMMAND);
+    assert_eq!(edits(&harness, tab, id).added.len(), 1);
+    let row = newest(&harness, tab, id);
+    assert_eq!(value(&harness, tab, id, (row, 2)), text("ebook"));
 }

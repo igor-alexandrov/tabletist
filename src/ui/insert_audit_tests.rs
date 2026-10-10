@@ -194,7 +194,6 @@ fn j_on_the_last_row_adds_no_row() {
 
 /// INS-02a. Spec 4: Mod+D makes a copy of the selected row.
 #[test]
-#[ignore = "INS-02a: Mod+D does not duplicate a row yet"]
 fn mod_d_duplicates_the_selected_row() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     select(&mut harness, tab, id, (1, 2));
