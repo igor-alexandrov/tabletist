@@ -4,6 +4,7 @@
 //! Only behaviour, names and words, on the Bookshop's `book_covers`. What
 //! a copy holds cell by cell is tested where it is decided, in `edit.rs`.
 
+use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use tabletist_db::{IndexInfo, NewValue, ObjectKind, ObjectRef, RowPage, Structure, Value};
 
@@ -665,4 +666,100 @@ fn an_arrow_between_two_ds_ends_the_wait_of_the_first() {
     // The next is its second, and drops the row the cursor is on.
     type_key(&mut harness, Key::D, "d");
     assert_eq!(shown(&harness, tab, id), [first, 0, 1, 2]);
+}
+
+// The row panel's footer.
+
+/// Whether the control named `name`, of the kind `role`, can be used, and
+/// what it says of itself where it cannot.
+fn control(harness: &mut Harness, name: &str, role: Role) -> (bool, Option<String>) {
+    let tree = harness.settle();
+    let found = crate::testing::node(&tree, name, role);
+    let found = found.unwrap_or_else(|| panic!("no {name}"));
+    let (_, node) = tree.nodes.iter().find(|(node, _)| *node == found).unwrap();
+    (!node.is_disabled(), node.description().map(str::to_owned))
+}
+
+/// Whether the button `name` can be pressed, and what it says of itself
+/// where it cannot.
+fn button(harness: &mut Harness, name: &str) -> (bool, Option<String>) {
+    control(harness, name, Role::Button)
+}
+
+/// Test 14: Duplicate makes a copy of the panel's row. Delete waits, and
+/// says so.
+#[test]
+fn the_panels_duplicate_makes_a_copy_and_delete_waits() {
+    for look in [Look::standard(), Look::macos()] {
+        let (mut harness, tab, id) = covers_in(look);
+        select(&mut harness, tab, id, (1, 2));
+        assert!(button(&mut harness, "Duplicate").0, "{}", look.name);
+        let later = "Deleting rows arrives in a later version";
+        let delete = button(&mut harness, "Delete");
+        assert_eq!(delete, (false, Some(later.to_owned())), "{}", look.name);
+        harness.click("Duplicate");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1, "{}", look.name);
+        let row = newest(&harness, tab, id);
+        assert_eq!(value(&harness, tab, id, (row, 2)), text("ebook"));
+    }
+}
+
+/// Test 13: where no row is taken Duplicate cannot be pressed and says
+/// why, in Add row's words.
+#[test]
+fn the_panels_duplicate_says_why_no_copy_can_be_made() {
+    for (kind, read_only, why) in [
+        (ObjectKind::Table, true, "This connection opens read-only"),
+        (ObjectKind::View, false, "Views cannot be edited"),
+    ] {
+        let (mut harness, tab, id) = covers_as(Look::macos(), kind, read_only);
+        select(&mut harness, tab, id, (1, 2));
+        let duplicate = button(&mut harness, "Duplicate");
+        assert_eq!(duplicate, (false, Some(why.to_owned())));
+        harness.click("Duplicate");
+        assert!(edits(&harness, tab, id).added.is_empty(), "{why}");
+    }
+}
+
+/// Spec 1: what keeps a row's fields from being edited does not keep it
+/// from being copied. A table without a key takes a copy.
+#[test]
+fn a_row_that_cannot_be_edited_can_still_be_copied() {
+    let keyless = |structure: &mut Structure, _: &mut RowPage| structure.primary_key.clear();
+    let (mut harness, tab, id) = covers(Look::macos(), keyless);
+    select(&mut harness, tab, id, (1, 2));
+    assert!(button(&mut harness, "Duplicate").0);
+    // Delete has the row's own reason.
+    let (pressable, why) = button(&mut harness, "Delete");
+    assert!(!pressable);
+    let no_key =
+        "book_covers has no primary key or unique index, so a row can't be targeted safely";
+    assert_eq!(why.as_deref(), Some(no_key));
+    harness.click("Duplicate");
+    assert_eq!(edits(&harness, tab, id).added.len(), 1);
+}
+
+/// Spec 2: the terminal look's footer names `yy p` as a key that works
+/// where a copy can be made, and `dd` as one that waits. A key that works
+/// is text, not a button: the cell is nothing to press. One that waits
+/// says why, in the terminal's lower case.
+#[test]
+fn the_terminals_footer_names_yy_p_as_a_key_that_works() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, (1, 2));
+    let works = control(&mut harness, "yy p duplicate", Role::Label);
+    assert_eq!(works, (true, None));
+    let tree = harness.settle();
+    let pressed = crate::testing::node(&tree, "yy p duplicate", Role::Button);
+    assert_eq!(pressed, None, "no button to press");
+    let said = |why: &str| (false, Some(why.to_owned()));
+    let delete = button(&mut harness, "dd delete");
+    assert_eq!(delete, said("deleting rows arrives in a later version"));
+    let (mut harness, tab, id) = covers_as(Look::omarchy(), ObjectKind::Table, true);
+    select(&mut harness, tab, id, (1, 2));
+    let duplicate = button(&mut harness, "yy p duplicate");
+    assert_eq!(duplicate, said("this connection opens read-only"));
+    // The row's own reason, as the panel's first line says it.
+    let delete = button(&mut harness, "dd delete");
+    assert_eq!(delete, said("read-only connection"));
 }

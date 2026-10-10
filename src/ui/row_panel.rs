@@ -486,20 +486,25 @@ fn draw(
                 None => Form::none(),
             };
             form.focus = focus;
-            // Why no field of the row can be edited, as the panel's first
-            // line says it: in the grid's own words, the terminal's in its
-            // lower case.
-            let locked = object.zip(form.locked).map(|(object, lock)| {
-                // The design's words for the commonest of them.
-                if lock == Lock::ReadOnly {
-                    return look.label(&gettext(locale, "Read-only connection"));
-                }
-                let table = format::display_safe(&object.object.name);
+            // A lock of the table `name` in the look's words: the grid's
+            // own, the terminal's in its lower case. One place says it, for
+            // the panel's first line and for its footer.
+            let lock_said = |name: &str, lock: Lock| {
+                let table = format::display_safe(name);
                 if look.terminal {
                     crate::ui::workspace::lock_line(lock, &table, &look, locale)
                 } else {
                     crate::ui::cell_editor::lock_text(lock, &table, locale)
                 }
+            };
+            // Why no field of the row can be edited, as the panel's first
+            // line says it.
+            let locked = object.zip(form.locked).map(|(object, lock)| {
+                // The design's words for the commonest of them.
+                if lock == Lock::ReadOnly {
+                    return look.label(&gettext(locale, "Read-only connection"));
+                }
+                lock_said(&object.object.name, lock)
             });
             let structure = source.structure;
             let info = |name: &str| {
@@ -917,7 +922,20 @@ fn draw(
                     actions.push(Action::AddRow { tab, id, place });
                 }
             } else if source.table {
-                editing_footer(ui, foot, locked.as_deref(), &look, &palette, locale);
+                // Why no copy of the row can be made, where none can: what
+                // keeps a row from being added, in Add row's words, and in
+                // the terminal's own where the look is its.
+                let no_copy = object.and_then(|object| {
+                    let lock = match Table::of(workspace, object) {
+                        Some(table) => table.no_rows(),
+                        None => Some(Lock::Refreshing),
+                    };
+                    lock.map(|lock| lock_said(&object.object.name, lock))
+                });
+                let why = (locked.as_deref(), no_copy.as_deref());
+                if editing_footer(ui, foot, why, &look, &palette, locale) {
+                    actions.push(Action::DuplicateRow { tab, id });
+                }
             }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
             let skin = FieldSkin {
@@ -2872,18 +2890,22 @@ fn attachment_card(
     );
 }
 
-/// The footer of a table's row: Duplicate and Delete, which wait for a
-/// later version, and under them how a value of the row is edited. `locked`
-/// is why no field of the row can be edited, in the look's words: the
-/// buttons say that under the pointer, and nothing is said of editing.
+/// The footer of a table's row: Duplicate, which makes a copy of the row,
+/// and Delete, which waits for a later version, and under them how a value
+/// of the row is edited. `locked` is why no field of the row can be
+/// edited, in the look's words: Delete says that under the pointer, and
+/// nothing is said of editing. `no_copy` is why no copy of the row can be
+/// made, where none can: what keeps a row from being added, which is not
+/// what keeps this one from being edited. Says whether a copy was asked
+/// for.
 fn editing_footer(
     ui: &mut egui::Ui,
     rect: Rect,
-    locked: Option<&str>,
+    (locked, no_copy): (Option<&str>, Option<&str>),
     look: &Look,
     palette: &Palette,
     locale: crate::i18n::Locale,
-) {
+) -> bool {
     let side = side(look);
     if !look.terminal {
         ui.painter()
@@ -2899,41 +2921,66 @@ fn editing_footer(
             palette.surface_hover
         },
     );
-    let later = gettext(
-        locale,
-        "Duplicating and deleting rows arrive in a later version",
-    );
-    // Why neither can be pressed: the row's reason, where it has one.
-    let why = locked.unwrap_or(later.as_ref());
+    // In the look's words, as the row's reason is: the terminal's in its
+    // lower case.
+    let later = look.label(&gettext(locale, "Deleting rows arrives in a later version"));
+    // Why Delete cannot be pressed: the row's reason, where it has one.
+    let no_delete = locked.unwrap_or(&later);
     let inner = rect.shrink2(vec2(side, 0.0));
     let gap = 6.0;
     let top = rect.top() + 1.0 + if look.terminal { 10.0 } else { 12.0 };
     let role = widgets::body(look);
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let mut copy = false;
     let height = if look.terminal {
-        // Two equal cells, the keys in the text colour: what waits is
-        // dashed, at 55%.
-        let keys = [("yy p", "duplicate"), ("dd", "delete")];
+        // Two equal cells, the keys in the text colour. What waits is
+        // dashed, at 55%. A key that works is whole.
+        let keys = [
+            ("yy p", "duplicate", no_copy),
+            ("dd", "delete", Some(no_delete)),
+        ];
         let width = (inner.width() - gap) / 2.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
-        for (index, (key, label)) in keys.iter().enumerate() {
+        for (index, (key, label, why)) in keys.into_iter().enumerate() {
             let place = Rect::from_min_size(
                 pos2(inner.left() + index as f32 * (width + gap), top),
                 vec2(width, 28.0),
             );
-            let response = ui.interact(place, ui.id().with(("edit", index)), Sense::hover());
             let name = format!("{key} {label}");
-            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
-            let _ = response.on_hover_text(why);
-            dashed(ui, place, faded(palette.outline));
+            let works = why.is_none();
+            match why {
+                // A key that works is named as text, as a new row's footer
+                // names its keys: the cell is nothing to press, and a
+                // button would say it is.
+                None => widgets::announce(ui, place, &name),
+                Some(why) => {
+                    let id = ui.id().with(("edit", index));
+                    let response = ui.interact(place, id, Sense::hover());
+                    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
+                    // Said to a screen reader as it is shown under the
+                    // pointer, as a disabled button says its reason.
+                    ui.ctx().accesskit_node_builder(response.id, |node| {
+                        node.set_description(why);
+                    });
+                    let _ = response.on_hover_text(why);
+                }
+            }
+            let shade = |color: egui::Color32| if works { color } else { faded(color) };
+            if works {
+                let stroke = Stroke::new(1.0, palette.outline);
+                ui.painter()
+                    .rect_stroke(place, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            } else {
+                dashed(ui, place, faded(palette.outline));
+            }
             // A cell too narrow for both shows its key alone.
-            let text = Text::one(look, role, key, faded(palette.text));
+            let text = Text::one(look, role, key, shade(palette.text));
             let total = measure(&name);
             let (total, text) = if total > width {
                 (measure(key), text)
             } else {
                 let text = text.space(role, " ");
-                (total, text.add(role, label, faded(palette.dim)))
+                (total, text.add(role, label, shade(palette.dim)))
             };
             let x = place.center().x - total / 2.0;
             widgets::paint_text(ui, x, place.center().y, text);
@@ -2943,24 +2990,29 @@ fn editing_footer(
         // Content-wide buttons sharing what is left equally: a 13 pt icon,
         // 6, the word.
         let labels = [
-            (Icon::Copy, gettext(locale, "Duplicate")),
-            (Icon::Trash2, gettext(locale, "Delete")),
+            (Icon::Copy, gettext(locale, "Duplicate"), no_copy),
+            (Icon::Trash2, gettext(locale, "Delete"), Some(no_delete)),
         ];
         let widths: Vec<f32> = labels
             .iter()
-            .map(|(_, text)| 13.0 + 6.0 + measure(text))
+            .map(|(_, text, _)| 13.0 + 6.0 + measure(text))
             .collect();
         let extra = (inner.width() - gap - widths.iter().sum::<f32>()) / 2.0;
         let mut x = inner.left();
-        for ((icon, text), width) in labels.iter().zip(widths) {
+        for (index, ((icon, text, why), width)) in labels.iter().zip(widths).enumerate() {
             let place = Rect::from_min_size(pos2(x, top), vec2(width + extra, 32.0));
             x += width + extra + gap;
-            widgets::ButtonSpec::new(text)
+            let button = widgets::ButtonSpec::new(text)
                 .icon(*icon)
                 .icon_size(13.0)
-                .padding(0.0)
-                .disabled(why)
-                .show_at(ui, place, look, palette);
+                .padding(0.0);
+            let button = match *why {
+                Some(why) => button.disabled(why),
+                None => button,
+            };
+            // Only Duplicate does anything yet: the first of the two.
+            let clicked = button.show_at(ui, place, look, palette).clicked();
+            copy |= clicked && index == 0;
         }
         32.0
     };
@@ -2968,7 +3020,7 @@ fn editing_footer(
     // terminal look's head names its keys, and a row that cannot be edited
     // says why at the top of the panel.
     if look.terminal || locked.is_some() {
-        return;
+        return copy;
     }
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
@@ -2987,6 +3039,7 @@ fn editing_footer(
         vec2(inner.width().max(1.0), 16.0),
     );
     widgets::announce(ui, place, &said);
+    copy
 }
 
 /// A dashed 1 pt outline round `rect`.
