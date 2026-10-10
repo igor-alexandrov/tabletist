@@ -43,6 +43,9 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 | f | "Sending one cancels what the one before it still has running" and "Closing the editor cancels what runs" | Both, through one list of the lookups in flight (`App::lookups`): each frame, one that no open picker waits for is cancelled | An editor is dropped in many places (a save, a reload, a closed tab). One sweep finds them all |
 | g | "The delay is a value the test harness sets to nothing" | `App::lookup_delay`, 150 ms, zero in `Harness` | As the spec says |
 | h | Test 12: a click on an option "does not first keep the text" | A press on the list keeps the field's keyboard, as a press on the Now button does, so no `LeaveEdit` is sent before the click lands | `cell_editor::now_button` is the pattern |
+| k | "A screen reader hears the pick: publisher_id set to ..., Harbor Press" (section 5) | Not built. The list's options are named, the highlighted one is the field's active descendant, and the cell's pending value is what a reader finds after the pick | The reducer takes the option, and only a view can announce (`widgets::announce`, on a frame it draws). **Ask the user** whether it is wanted now: it needs a line the next frame says once |
+| l | The answers are announced as "2 publishers match", "50 or more publishers match" (section 9) | "2 matches in publishers", "50 or more matches in publishers", "No matches in publishers" | A table's name cannot be made to agree with a count: "1 publishers matches" |
+| m | The field is red, and says why, while its text fails the column's check (today, for every cell) | Not for a foreign key's field while its text is a search: `harb` in a column of numbers is no mistake. It shows once a commit took the text and the column refused it, above the cell, since the list is under it | Section 5: "the text is a search and not a value" |
 | i | The row panel's field (section 8) | Not in this run: an editor opened in the panel gets no picker yet (`open_picker` asks for `EditorPlace::Grid`) | Run 3 |
 | j | A key that names no row (section 7) | Not in this run | Run 4 |
 
@@ -170,10 +173,17 @@ pub fn pinned(text: &str, class: ColumnClass, type_name: &str, passes: bool) -> 
     }
     let as_text = || Value::Text(text.into());
     match class {
-        ColumnClass::Integer { .. } => Some(text.parse().map_or_else(|_| as_text(), Value::Int)),
-        ColumnClass::Decimal { .. } | ColumnClass::Float | ColumnClass::Text { .. } => {
-            Some(as_text())
+        // The column's check lets a keyword through (`NULL`, `DEFAULT`),
+        // which is no key. A whole number too wide for an `i64` goes as
+        // its digits.
+        ColumnClass::Integer { .. } => match text.parse() {
+            Ok(number) => Some(Value::Int(number)),
+            Err(_) => text.bytes().all(|byte| byte.is_ascii_digit()).then(as_text),
+        },
+        ColumnClass::Decimal { .. } | ColumnClass::Float => {
+            text.parse::<f64>().is_ok().then(as_text)
         }
+        ColumnClass::Text { .. } => Some(as_text()),
         ColumnClass::Other if type_name.eq_ignore_ascii_case("uuid") => {
             is_uuid(text).then(as_text)
         }
@@ -273,6 +283,10 @@ pub struct Picker {
     pub kept: Option<Advance>,
     /// Why there is no list: the database's words.
     pub failed: Option<Error>,
+    /// A commit took the text and its column refused it. Until then what
+    /// the column would say of the text is not shown: the text is a
+    /// search, and `harb` is no mistake in a column of numbers.
+    pub refused: bool,
 }
 
 impl Picker {
@@ -301,6 +315,7 @@ impl Picker {
             due: None,
             kept: None,
             failed: None,
+            refused: false,
         }
     }
 
@@ -320,6 +335,7 @@ impl Picker {
         self.due = Some(now + delay);
         self.kept = None;
         self.moved = false;
+        self.refused = false;
     }
 
     /// The two reads of a search for `text`: the pinned row's, where `pin`
@@ -554,10 +570,12 @@ mod tests {
             type_name: type_name.into(),
             ..ColumnInfo::default()
         };
+        // As the structure names PostgreSQL's types, which is how
+        // `column_class` reads them.
         let columns = [
             column("code", "text"),
-            column("founded", "int4"),
-            column("name", "varchar(64)"),
+            column("founded", "integer"),
+            column("name", "character varying(64)"),
             column("email", "text"),
         ];
         assert_eq!(
@@ -584,6 +602,12 @@ mod tests {
         // What the column's own check refuses is never sent with `=`.
         assert_eq!(pinned("harb", whole, "int8", false), None);
         assert_eq!(pinned("", whole, "int8", true), None);
+        // A keyword passes the column's check and is no key.
+        assert_eq!(pinned("NULL", whole, "int8", true), None);
+        assert_eq!(
+            pinned("18446744073709551615", whole, "bigint unsigned", true),
+            Some(Value::Text("18446744073709551615".into()))
+        );
         let text = ColumnClass::Text { max_chars: None };
         assert_eq!(pinned("DE", text, "text", true), Some(Value::Text("DE".into())));
         let uuid = "123e4567-e89b-12d3-a456-426614174000";
@@ -760,7 +784,7 @@ mod tests {
 - [ ] **Step 3: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked --lib key_picker::tests`
-Expected: PASS, eleven tests. A failure here is a mistake in the module, not in a test: each test is a sentence of the spec's sections 3 to 5.
+Expected: PASS, twelve tests. A failure here is a mistake in the module, not in a test: each test is a sentence of the spec's sections 3 to 5.
 
 - [ ] **Step 4: Run the four checks, then commit**
 
@@ -842,6 +866,18 @@ pub fn keyed_covers_structure() -> tabletist_db::Structure {
         }],
         ..book_covers_structure()
     }
+}
+
+/// A page of `book_covers` whose three rows point at the three
+/// publishers in turn: Northlight Books, Harbor Press, Harbor Lights.
+/// [`book_covers_page`] numbers its publishers on from the first, and
+/// two of those are no publisher.
+pub fn keyed_covers_page() -> RowPage {
+    let mut page = book_covers_page(3);
+    for (row, (key, _)) in page.rows.iter_mut().zip(PUBLISHERS) {
+        row[1] = Value::Int(key);
+    }
+    page
 }
 
 /// What a database holding `rows` as a table of (key, label) answers
@@ -926,7 +962,7 @@ impl Harness {
             pin: true,
         });
         self.answer_structure(keyed_covers_structure());
-        self.answer_rows(book_covers_page(3));
+        self.answer_rows(keyed_covers_page());
         let id = self
             .app
             .workspace(tab)
@@ -1000,7 +1036,7 @@ Create `src/ui/key_picker_tests.rs`:
 //! picture of the design is.
 
 use egui::{Key, Modifiers};
-use tabletist_db::{LookupPart, NewValue, Value};
+use tabletist_db::{LookupPart, Value};
 
 use crate::backend::Command;
 use crate::key_picker::{Picker, Take};
@@ -1045,14 +1081,6 @@ fn edit(harness: &mut Harness, tab: ConnTabId, id: TabId, row: usize, start: Edi
     harness.answer_lookups(&PUBLISHERS);
 }
 
-/// Makes the editor's text `text`, as typing does, and has the search
-/// for it sent and answered.
-fn type_text(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str) {
-    set_text(harness, tab, id, text);
-    harness.app.send_due_lookups(std::time::Instant::now());
-    harness.answer_lookups(&PUBLISHERS);
-}
-
 /// Makes the editor's text `text`, as typing does, and no more.
 fn set_text(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str) {
     let object = harness.app.workspace_mut(tab).unwrap().object_tab_mut(id).unwrap();
@@ -1075,15 +1103,6 @@ fn listed(harness: &Harness, tab: ConnTabId, id: TabId) -> Vec<String> {
         .collect()
 }
 
-/// The pending text of `publisher_id` in the page's row `row`.
-fn pending(harness: &Harness, tab: ConnTabId, id: TabId, row: usize) -> Option<String> {
-    let object = harness.app.workspace(tab)?.object_tab(id)?;
-    match &object.edits.cells.get(&(row, PUBLISHER))?.new {
-        NewValue::Text(text) => Some(text.clone()),
-        _ => None,
-    }
-}
-
 fn editing(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
     let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
     object.edits.editor.is_some()
@@ -1095,7 +1114,7 @@ fn editing(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
 #[test]
 fn an_editor_on_a_foreign_key_lists_the_table_with_the_current_row_first() {
     let (mut harness, tab, id) = covers_in(Look::macos());
-    // Row 1 of the page points at Harbor Press (`book_covers_page`).
+    // Row 1 of the page points at Harbor Press (`keyed_covers_page`).
     edit(&mut harness, tab, id, 1, EditStart::Value);
     let picker = picker(&harness, tab, id).expect("the editor has a picker");
     assert_eq!(picker.target.name, "publishers");
@@ -1220,7 +1239,7 @@ fn closing_the_editor_cancels_what_runs() {
 }
 ```
 
-`Advance`, `Key` and `Modifiers` are for the tests the next tasks add. Until then allow them with nothing: remove them from the `use` lines now and add each back in the task that first needs it.
+`Advance`, `Key` and `Modifiers` are for the tests the next tasks add, and so are the constants `HARBOR_LIGHTS` and `NORTHLIGHT` if no test of this task names them. Clippy refuses what a test module does not use: take them out of this task's file and add each back in the task that first needs it.
 
 In `src/ui/mod.rs`, beside the line that declares `insert_audit_tests`, add:
 
@@ -1517,21 +1536,21 @@ Names to check against the tree before building: `Workspace::driver` and its `di
 
 - [ ] **Step 7: Call it**
 
-In `src/app/editing.rs`, `edit_cell`: in the `match opened`, the `Ok(editor)` arm ends with `object.pinned = true;`. The picker is opened after that `match`, where `object` is no longer borrowed. Change the end of the function to:
+In `src/app/editing.rs`, `edit_cell` ends with a `match opened { ... }` that puts the editor on the tab, and then sets the workspace's pane. The picker is opened after both, where nothing of the tab is borrowed. Before the `match`, note whether an editor opens:
 
 ```rust
-        let opened = matches!(opened, Ok(_));
-        // ... the existing `match opened { ... }` goes here, unchanged,
-        // matching on the value before it is shadowed ...
-        if let Some(workspace) = self.workspace_mut(tab) {
-            workspace.pane = Pane::Grid;
-        }
-        if opened {
+        let is_open = opened.is_ok();
+```
+
+leave the `match` as it is, and make the function's last statement:
+
+```rust
+        if is_open {
             self.open_picker(tab, id, from_value);
         }
 ```
 
-That is: compute `let is_open = opened.is_ok();` before the existing `match opened`, leave the `match` as it is, and after the function's last statement add `if is_open { self.open_picker(tab, id, from_value); }`. `from_value` is the function's own (near line 683). The two early `return`s of the `match` (no such cell, typing on a locked cell) return before it, as they should.
+`from_value` is the function's own (near line 683). The two early `return`s of the `match` (no such cell, typing on a locked cell) return before it, as they should.
 
 In `src/app.rs`:
 
@@ -1601,11 +1620,13 @@ In `src/app.rs`:
 - [ ] **Step 8: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked --lib key_picker`
-Expected: PASS, the six tests of `key_picker_tests` and the eleven of `key_picker::tests`.
+Expected: PASS, the six tests of `key_picker_tests` and the twelve of `key_picker::tests`.
 
 Then the whole suite: `~/.cargo/bin/cargo test --locked --workspace --all-targets`. Every test that was there passes unchanged: `Harness::book_covers` has no foreign key, so no editor of theirs gets a picker. If one fails, it built a structure with a one-column foreign key of its own (`src/ui/mod.rs` near line 11188 does, for `gd`): read what it does. A test that opens an editor on such a column now gets a `Describe` and two `Lookup` commands after its `EditCell`, which a test that counts the commands sent will see. Fix the count, and say so in the report.
 
 - [ ] **Step 9: Run the four checks and the shots build, then commit**
+
+The screenshots' Bookshop (`src/shots.rs`) has a one-column foreign key, `book_images.book_id` to `books`, and two of its scenes open an editor on it (`edit_field`, `row_form_field`). From this task the first of them has a picker that waits for the books' columns, so its picture shows the list as searching. Run 3 gives the scenes their answers. Nothing to do here but know it.
 
 ```bash
 git add src/edit.rs src/app.rs src/app/editing.rs src/app/key_picker.rs src/testing.rs src/ui/mod.rs src/ui/key_picker_tests.rs && git commit -m "Open a picker with the editor of a foreign key cell
@@ -1626,9 +1647,26 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `src/ui/key_picker_tests.rs` (add `Advance` back to its `use` line):
+Append to `src/ui/key_picker_tests.rs` (add `Advance` back to its `use` line, and `NewValue` to the `tabletist_db` one):
 
 ```rust
+/// Makes the editor's text `text`, as typing does, and has the search
+/// for it sent and answered.
+fn type_text(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str) {
+    set_text(harness, tab, id, text);
+    harness.app.send_due_lookups(std::time::Instant::now());
+    harness.answer_lookups(&PUBLISHERS);
+}
+
+/// The pending text of `publisher_id` in the page's row `row`.
+fn pending(harness: &Harness, tab: ConnTabId, id: TabId, row: usize) -> Option<String> {
+    let object = harness.app.workspace(tab)?.object_tab(id)?;
+    match &object.edits.cells.get(&(row, PUBLISHER))?.new {
+        NewValue::Text(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
 fn commit(harness: &mut Harness, tab: ConnTabId, id: TabId, then: Advance) {
     harness.app.apply(Action::CommitEdit { tab, id, then });
 }
@@ -1669,13 +1707,14 @@ fn the_arrows_and_a_click_choose_an_option() {
     commit(&mut harness, tab, id, Advance::Down);
     assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_LIGHTS));
 
-    edit(&mut harness, tab, id, 2, EditStart::Typed("h".into()));
+    // Row 1 points at Harbor Press: Harbor Lights is a change.
+    edit(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
     type_text(&mut harness, tab, id, "harb");
     harness.app.apply(Action::PickOption { tab, id, index: 1 });
     assert!(!editing(&harness, tab, id));
-    assert_eq!(pending(&harness, tab, id, 2).as_deref(), Some(HARBOR_LIGHTS));
+    assert_eq!(pending(&harness, tab, id, 1).as_deref(), Some(HARBOR_LIGHTS));
     // A click moves no selection.
-    assert_eq!(selection(&harness, tab, id), (2, PUBLISHER));
+    assert_eq!(selection(&harness, tab, id), (1, PUBLISHER));
 }
 
 /// Test 10's other half: an editor opened on its value and left with
@@ -1739,9 +1778,10 @@ fn an_enter_before_the_answer_waits_for_it() {
     assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
     harness.app.apply(Action::CancelEdit { tab, id });
 
-    // A full key: the pinned row's answer is enough.
+    // A full key: the pinned row's answer is enough. Row 2 points at
+    // Harbor Lights, so Northlight Books is a change.
     edit(&mut harness, tab, id, 2, EditStart::Typed("9".into()));
-    set_text(&mut harness, tab, id, HARBOR_LIGHTS);
+    set_text(&mut harness, tab, id, NORTHLIGHT);
     commit(&mut harness, tab, id, Advance::Stay);
     let sent = harness.lookups();
     let (session, request, lookup) = sent[sent.len() - 2].clone();
@@ -1752,7 +1792,26 @@ fn an_enter_before_the_answer_waits_for_it() {
         result: Ok(crate::testing::fake_lookup(&lookup, &PUBLISHERS)),
     }));
     assert!(!editing(&harness, tab, id));
-    assert_eq!(pending(&harness, tab, id, 2).as_deref(), Some(HARBOR_LIGHTS));
+    assert_eq!(pending(&harness, tab, id, 2).as_deref(), Some(NORTHLIGHT));
+}
+
+/// Spec 4 and 5: what the column would say of a search's text is not
+/// shown while it is a search. A commit that takes the text and is
+/// refused shows it, until the text changes.
+#[test]
+fn a_search_is_no_mistake_until_a_commit_is_refused() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("z".into()));
+    type_text(&mut harness, tab, id, "zzz");
+    // An integer column refuses `zzz`, and nothing matches it.
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.editor.as_ref().unwrap().problem.is_some());
+    assert!(!picker(&harness, tab, id).unwrap().refused);
+    commit(&mut harness, tab, id, Advance::Down);
+    assert!(editing(&harness, tab, id), "a text the column refuses was kept");
+    assert!(picker(&harness, tab, id).unwrap().refused);
+    set_text(&mut harness, tab, id, "zz");
+    assert!(!picker(&harness, tab, id).unwrap().refused);
 }
 
 /// Test 18: Set NULL closes the editor without its text and makes the
@@ -1891,28 +1950,12 @@ Add to `impl App` in `src/app/key_picker.rs` (and `ColumnClass` to its `tabletis
 
 `App::table` is private to `src/app/editing.rs` (`fn table<T>`). Make it `pub(super) fn table<T>`: this module is its sibling.
 
-In `lookup_answered`, a kept Enter is applied once the answer decides it. Replace the loop's body where the picker takes the answer:
+In `lookup_answered`, a kept Enter is applied once the answer decides it. The commit is an action, and `self` is borrowed by the loop over the tabs: the loop only notes it. Replace the loop with:
 
 ```rust
-            if picker.in_flight().contains(&request) {
-                picker.answered(request, result);
-                let id = object.id;
-                let decided = !matches!(
-                    picker.take(&object.edits.editor.as_ref().map_or("", |editor| &editor.text)),
-                    Take::Wait
-                );
-                let kept = picker.kept.filter(|_| decided);
-                if let Some(then) = kept {
-                    picker.kept = None;
-                    self.apply(Action::CommitEdit { tab, id, then });
-                }
-                return;
-            }
-```
-
-That does not borrow-check as written: `picker` borrows `object.edits.editor` mutably while the text is read from it. Take the editor apart first:
-
-```rust
+        let mut commit = None;
+        for object in workspace.object_tabs_mut() {
+            let id = object.id;
             let Some(editor) = object.edits.editor.as_mut() else {
                 continue;
             };
@@ -1924,20 +1967,42 @@ That does not borrow-check as written: `picker` borrows `object.edits.editor` mu
                 continue;
             }
             picker.answered(request, result);
-            let id = object.id;
+            // A kept Enter or Tab, once the answer says what it takes.
             let kept = picker
                 .kept
                 .filter(|_| !matches!(picker.take(text), Take::Wait));
-            if kept.is_some() {
-                picker.kept = None;
-            }
             if let Some(then) = kept {
-                self.apply(Action::CommitEdit { tab, id, then });
+                picker.kept = None;
+                commit = Some((id, then));
             }
-            return;
+            break;
+        }
+        if let Some((id, then)) = commit {
+            self.apply(Action::CommitEdit { tab, id, then });
+        }
 ```
 
-`result` is moved into `answered` inside a loop: the `return` after it is what lets the compiler accept that. If it does not, find the object's id in a first pass over `workspace.object_tabs()` and take the answer in a second step with `workspace.object_tab_mut(id)`.
+`result` is moved into `answered` inside a loop: the `break` after it is what lets the compiler accept that. If it does not, find the object's id in a first pass over `workspace.object_tabs()` and take the answer in a second step with `workspace.object_tab_mut(id)`.
+
+A kept key must not wait for ever when the referenced table's columns cannot be read. In `picker_columns`, where a picker is given `picker.failed = Some(error.clone());`, note its kept key too, and apply it after the loop as above:
+
+```rust
+            } else if let Some(error) = &kept.error {
+                picker.failed = Some(error.clone());
+                // Nothing will answer: a kept Enter takes the text.
+                if let Some(then) = picker.kept.take() {
+                    commits.push((id, then));
+                }
+            }
+```
+
+with `let mut commits = Vec::new();` beside `ready`, and after the `for id in ready { ... }`:
+
+```rust
+        for (id, then) in commits {
+            self.apply(Action::CommitEdit { tab, id, then });
+        }
+```
 
 - [ ] **Step 5: The arms**
 
@@ -1952,6 +2017,19 @@ In `src/app.rs`, the `Action::CommitEdit` arm gets one line at its start:
                 }
                 let field = self.panel_field(tab, id);
                 // ... the rest of the arm, unchanged ...
+```
+
+The arm goes on with `if self.close_editor(tab, id, false) { ... }`. Give that `if` an `else`: a text the column refused stays in the editor, and from now on the field says why.
+
+```rust
+                } else if let Some(picker) = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                {
+                    // The text was taken as a value and refused: what the
+                    // column says of it shows, until the text changes.
+                    picker.refused = true;
+                }
 ```
 
 and three arms after `Action::CancelEdit`:
@@ -1984,7 +2062,7 @@ Check how the arm above returns: if `apply`'s `match` is the function's last exp
 - [ ] **Step 6: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked --lib key_picker`
-Expected: PASS, thirteen tests of `key_picker_tests` now.
+Expected: PASS, fourteen tests of `key_picker_tests` now.
 
 `leaving_the_editor_keeps_the_text_and_not_the_option` passes without a change to `close_editor`: a `LeaveEdit` never asks the picker. If it fails with Harbor Lights' key pending, something made `LeaveEdit` go through `picker_takes`: it must not.
 
@@ -2056,7 +2134,7 @@ fn the_field_and_the_list_are_named_for_the_table_they_search() {
         crate::testing::node(&tree, "Harbor Press, 9100000000000000004", Role::ListBoxOption)
             .is_some()
     );
-    assert!(harness.has("2 publishers match"));
+    assert!(harness.has("2 matches in publishers"));
     assert!(harness.has("Esc cancels"));
     // NOT NULL: no Set NULL.
     assert!(crate::testing::node(&tree, "Set NULL", Role::Button).is_none());
@@ -2132,7 +2210,7 @@ fn the_list_says_when_it_has_nothing_failed_or_holds_more() {
     harness.settle();
     harness.answer_lookups(&many);
     assert!(harness.has("First 50 shown. Keep typing to narrow."));
-    assert!(harness.has("50 or more publishers match"));
+    assert!(harness.has("50 or more matches in publishers"));
 }
 
 /// Test 18, the nullable half: the foot offers Set NULL, and it sets
@@ -2195,6 +2273,12 @@ pub struct Search {
     /// How many options the list holds, as the terminal look counts them
     /// in the field: `2`, or `50+`. `None` before the first answer.
     pub count: Option<String>,
+    /// The cell's column takes NULL: the list's foot offers Set NULL.
+    pub nullable: bool,
+    /// A commit took the text and the column refused it: the field shows
+    /// why. Until then the text is a search, and the field says nothing
+    /// of what the column would make of it.
+    pub refused: bool,
 }
 ```
 
@@ -2256,11 +2340,22 @@ fn take_keyboard_selected(ctx: &egui::Context, id: Id, text: &str) {
             pos2(rect.left() + pad + SEARCH_ICON / 2.0, center),
             vec2(SEARCH_ICON, SEARCH_ICON),
         );
-        crate::ui::icons::Icon::Search
+        crate::theme::Icon::Search
             .image(palette.secondary, SEARCH_ICON)
             .paint_at(ui, place);
     }
 ```
+
+5. What the column says of the text. `field` draws a red ring while `editor.problem` is set (`let failing = editor.problem.is_some();`) and says the problem under the cell (`say_under`). A search's text is no value yet: `harb` in a column of numbers would be red from its first letter, and the note would stand where the list is. For a foreign key's field both wait until a commit was refused:
+
+```rust
+    // A foreign key's text is a search until a commit takes it: what its
+    // column would say of it shows only once it was refused.
+    let said = target.search.as_ref().is_none_or(|search| search.refused);
+    let failing = editor.problem.is_some() && said;
+```
+
+   and the note's condition becomes `if let (Some(problem), true, true) = (&editor.problem, target.hold, said)`. The list is under the cell, so that note goes over it: give `say_under` one more argument, `above: bool`, which makes it take the place above the cell (the `rect.top() - gap - size.y` it already has for a cell at the window's bottom) whatever room is below, and pass `target.search.is_some()`. Its other callers pass `false`.
 
    with, at the top of the file:
 
@@ -2271,7 +2366,7 @@ const SEARCH_ICON: f32 = 12.0;
 const SEARCH_LEAD: f32 = SEARCH_ICON + 6.0;
 ```
 
-   `Icon::Search`, `.image(tint, size)` and `.paint_at(ui, rect)` are what `widgets::add_search` uses (`src/ui/widgets.rs` near line 528): import `Icon` the way that file does.
+   `Icon::Search`, `.image(tint, size)` and `.paint_at(ui, rect)` are what `widgets::add_search` uses (`src/ui/widgets.rs` near line 528); `Icon` is `crate::theme::Icon`.
 
 In `src/ui/data_view.rs`, `editor_target` builds the `Target`. Add the field:
 
@@ -2285,13 +2380,14 @@ In `src/ui/data_view.rs`, `editor_target` builds the `Target`. Add the field:
             .map(|picker| cell_editor::Search {
                 table: picker.target.name.clone(),
                 count: picker.listed.as_ref().map(|_| {
-                    let count = picker.options.len();
                     if picker.more {
-                        format!("{count}+")
+                        format!("{}+", crate::key_picker::LIMIT)
                     } else {
-                        count.to_string()
+                        picker.options.len().to_string()
                     }
                 }),
+                nullable: table.column(cell.col).is_some_and(|column| column.nullable),
+                refused: picker.refused,
             }),
 ```
 
@@ -2312,7 +2408,7 @@ use egui::{CornerRadius, Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType,
 use tabletist_db::{LookupRow, Value};
 
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::key_picker::{Columns, Picker, VISIBLE, found_in};
+use crate::key_picker::{Columns, LIMIT, Picker, VISIBLE, found_in};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::{display_safe, plain_text};
@@ -2407,24 +2503,26 @@ fn state_line(picker: &Picker, typed: &str, table: &str, locale: Locale) -> Opti
     }
     picker.more.then(|| {
         let text = gettext(locale, "First {count} shown. Keep typing to narrow.")
-            .replace("{count}", &picker.options.len().to_string());
+            .replace("{count}", &LIMIT.to_string());
         (text, false)
     })
 }
 
-/// What an answer is announced as: "2 publishers match".
+/// What an answer is announced as: "2 matches in publishers". The
+/// table's name is not made to agree with the count: it is a name.
 fn count_line(picker: &Picker, table: &str, locale: Locale) -> Option<String> {
     picker.listed.as_ref()?;
     let table = display_safe(table);
     let count = picker.options.len();
     Some(if count == 0 {
-        gettext(locale, "No {table} match").replace("{table}", &table)
+        gettext(locale, "No matches in {table}").replace("{table}", &table)
     } else if picker.more {
-        gettext(locale, "{count} or more {table} match")
-            .replace("{count}", &count.to_string())
+        gettext(locale, "{count} or more matches in {table}")
+            .replace("{count}", &LIMIT.to_string())
             .replace("{table}", &table)
     } else {
-        ngettext(locale, "{count} {table} matches", "{count} {table} match", count as u64)
+        let plural = u32::try_from(count).unwrap_or(u32::MAX);
+        ngettext(locale, "{count} match in {table}", "{count} matches in {table}", plural)
             .replace("{count}", &count.to_string())
             .replace("{table}", &table)
     })
@@ -2478,7 +2576,8 @@ pub fn show(
     let head = !look.terminal;
     let foot = !look.terminal;
     let lines = usize::from(head) + usize::from(foot) + usize::from(state.is_some());
-    let width = anchor.width().clamp(280.0, 420.0);
+    // As wide as the cell, and wide enough for a label and a key.
+    let width = anchor.width().max(280.0);
     let height = 2.0 * shape.pad.y + rows as f32 * shape.option + lines as f32 * shape.line;
     let size = vec2(width, height);
     let mut shown = Shown::default();
@@ -2623,10 +2722,12 @@ fn paint_option(
     let room = (right - left).max(0.0);
     let clip = Rect::from_min_max(pos2(left, row.top()), pos2(right, row.bottom()));
     let painter = ui.painter().with_clip_rect(clip);
+    // A label is words: the body face, its match heavier. The terminal
+    // look writes everything in its one face, the match in the accent.
     let (plain, hit, hit_color) = if look.terminal {
         (TextRole::OCode, TextRole::OCode, palette.accent)
     } else {
-        (TextRole::CompletionName, TextRole::CompletionMatch, palette.text)
+        (TextRole::UiBody, TextRole::UiBodySemibold, palette.text)
     };
     let key_role = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OCode);
     let key = plain_text(&option.key);
@@ -2687,7 +2788,7 @@ fn paint_option(
 }
 ```
 
-Names to check against the tree: `palette.selection`, `palette.surface_hover`, `palette.secondary`, `palette.dim`, `palette.danger`, `TextRole::pick`, `widgets::paint_label`, `widgets::announce`, `widgets::ButtonSpec` (`now_button` in `src/ui/cell_editor.rs` builds one the same way), `crate::ui::grid::ellipsize`, `ngettext`'s argument order (as `src/ui/cell_editor.rs` calls it). `sql_complete::place` is `pub`; `sql_complete::panel` is `pub(crate)`.
+Names to check against the tree: `palette.selection`, `palette.surface_hover`, `palette.secondary`, `palette.dim`, `palette.danger`, `TextRole::pick`, `widgets::paint_label`, `widgets::announce`, `widgets::ButtonSpec` (`now_button` in `src/ui/cell_editor.rs` builds one the same way), `crate::ui::grid::ellipsize`, `ngettext`'s arguments (a `u32` count last, as `src/ui/cell_editor.rs` near line 1013 calls it). `sql_complete::place` is `pub`; `sql_complete::panel` is `pub(crate)`.
 
 In `src/ui/mod.rs`, beside `mod sql_complete;`:
 
@@ -2706,14 +2807,12 @@ In `src/ui/data_view.rs`, after `grid::show(...)` returns `output` and before th
         if !large
             && let (Some(editor), Some(target)) = (editor.as_deref(), &target)
             && let Some(picker) = &editor.picker
+            && let Some(search) = &target.search
             && let Some(anchor) = output.editing_rect
         {
-            let nullable = Table::of(workspace, object)
-                .and_then(|table| table.column(editor.cell.col).map(|column| column.nullable))
-                .unwrap_or(false);
             let names = key_picker::Names {
                 table: &picker.target.name,
-                nullable,
+                nullable: search.nullable,
             };
             let skin = (&look, &palette, locale);
             let shown =
@@ -2733,7 +2832,7 @@ In `src/ui/data_view.rs`, after `grid::show(...)` returns `output` and before th
         }
 ```
 
-`object` is borrowed mutably there through `editor` (`object.edits.editor.as_mut()`), so `Table::of(workspace, object)` will not borrow-check as written. Work `nullable` out earlier, where `target` is made (the function already reads the structure there), into a `let nullable: bool` the block uses. `use crate::ui::key_picker;` and `Table` (`crate::edit::Table`, already imported for `editor_target`) at the top of the file. `output.editing_rect` is what the large editor is anchored to.
+`use crate::ui::key_picker;` at the top of the file. `output.editing_rect` is what the large editor is anchored to. `editor` is the `Option<&mut Editor>` the function already holds: `editor.as_deref()` borrows it for the block and gives it back before the large editor's block moves it.
 
 The `outcome` is read a few lines below (`if outcome.changed { ... }`), so the changes to `outcome.left` above are made in time.
 
@@ -2802,7 +2901,7 @@ fn picker_keys(
 - [ ] **Step 7: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked --lib key_picker`
-Expected: PASS, nineteen tests of `key_picker_tests`.
+Expected: PASS, twenty tests of `key_picker_tests`.
 
 Where a test of this task fails, find which of three things it is before changing code:
 1. A name: print `crate::testing::labels(&tree)` and compare it with the string the test asks for, character for character (`·`, `↑↓`, `↩`, the straight quotes).
@@ -2842,7 +2941,7 @@ Append to `src/ui/key_picker_tests.rs`:
 /// Ctrl+P move the highlight and do nothing else.
 #[test]
 fn the_terminal_look_moves_with_ctrl_n_and_closes_with_esc() {
-    let (mut harness, tab, id) = covers_in(Look::terminal());
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
     select(&mut harness, tab, id, 0);
     harness.app.apply(Action::EditCell {
         tab,
@@ -2857,15 +2956,29 @@ fn the_terminal_look_moves_with_ctrl_n_and_closes_with_esc() {
     type_on_cell(&mut harness, "harb");
     assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(0));
     let tabs = harness.app.tabs.len();
-    harness.press(Key::N, Modifiers::CTRL);
+    // What a real Ctrl press reports: outside macOS Ctrl is the command
+    // key too (as `ctrl()` of `src/ui/complete_tests.rs`).
+    let ctrl = if cfg!(target_os = "macos") {
+        Modifiers::CTRL
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    harness.press(Key::N, ctrl);
     assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(1));
-    harness.press(Key::P, Modifiers::CTRL);
+    harness.press(Key::P, ctrl);
     assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(0));
     // No new connection, no quick open.
     assert_eq!(harness.app.tabs.len(), tabs);
     assert!(harness.app.dialog.is_none());
-    // The line at the bottom names the picker's keys.
-    assert!(harness.has("ctrl+n/p move · enter set · esc close"));
+    // The line at the bottom names the picker's keys. It is painted,
+    // not announced: the whole of it is one piece of text.
+    harness.settle();
+    let keys = "ctrl+n/p move · enter set · esc close";
+    assert!(
+        harness.painted.iter().any(|(piece, _)| piece == keys),
+        "{:?}",
+        harness.painted
+    );
     // No head line and no foot in this look.
     assert!(!harness.has("Esc cancels"));
 
@@ -2878,16 +2991,14 @@ fn the_terminal_look_moves_with_ctrl_n_and_closes_with_esc() {
 /// nothing is selected.
 #[test]
 fn the_terminal_look_selects_nothing_on_opening() {
-    let (mut harness, tab, id) = covers_in(Look::terminal());
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
     edit(&mut harness, tab, id, 1, EditStart::Value);
     let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
     assert!(!object.edits.editor.as_ref().unwrap().select);
 }
 ```
 
-`Look::terminal()` is the look the other terminal tests use: check its name in `src/theme.rs` (`insert_audit_tests.rs` has tests in that look) and use that. How a quick open or a new connection shows in `App` may differ from `dialog`: assert on whatever `Action::NewConnection` and `Action::OpenQuickOpen` change.
-
-If the terminal's line draws its keys as several pieces of text, `harness.has` will not find them as one label. Then assert on the pieces with the file's `painted` helper pattern (`harness.painted.iter().any(|(piece, _)| piece == "ctrl+n/p")`), as `insert_audit_tests.rs` does for the same line.
+`Look::omarchy()` is the terminal look (`src/theme.rs` near line 443). How a quick open or a new connection shows in `App` may differ from `dialog`: assert on whatever `Action::NewConnection` and `Action::OpenQuickOpen` change. The line's keys are painted with `paint_text_right` (`src/ui/workspace.rs` near line 2100), and a painted piece is the whole of a `Text`: the words above are what the closure of step 5 builds, spaces and dots included.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -3012,7 +3123,7 @@ In `src/ui/workspace.rs`:
 - [ ] **Step 6: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked --lib key_picker`
-Expected: PASS, twenty-one tests of `key_picker_tests`.
+Expected: PASS, twenty-two tests of `key_picker_tests`.
 
 Then `~/.cargo/bin/cargo test --locked --lib` whole: the terminal look's own editing tests pass unchanged, since `picking` is false for every editor without a picker.
 
@@ -3139,7 +3250,7 @@ In `src/app.rs`, `Action::FollowSelectedKey` reads the value from the page (`let
                         let pending = object.edits.cells.get(&(cell.row, cell.col));
                         let value = match pending {
                             Some(pending) => match (&pending.new, &pending.state) {
-                                (NewValue::Text(text), crate::edit::State::Ready) => {
+                                (tabletist_db::NewValue::Text(text), crate::edit::State::Ready) => {
                                     Some(text.clone())
                                 }
                                 _ => None,
