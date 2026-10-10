@@ -354,6 +354,25 @@ pub enum Action {
         id: TabId,
         place: crate::edit::Place,
     },
+    /// Add a copy of the selected row as a new row at the top, below the
+    /// new rows already there: what is pending in the row is what the copy
+    /// holds, and an open editor's text with it.
+    DuplicateRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Keep what the selected row shows on the tab, for `PutRow`.
+    YankRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Add a copy of the tab's yanked row right below the selected row, or
+    /// right above it. With nothing yanked, nothing.
+    PutRow {
+        tab: ConnTabId,
+        id: TabId,
+        above: bool,
+    },
     /// Drop the selected row where it is a new one, with what was set in
     /// it. A row of the page stays.
     DropRow {
@@ -1913,6 +1932,10 @@ pub struct ObjectTab {
     /// What is pending, while the tab's values are edited. A tab that holds
     /// edits keeps its page.
     pub edits: crate::edit::Edits,
+    /// The row the terminal look's `yy` took, for `p` and `P` to put: its
+    /// values by column. It is the tab's own and goes with the tab. A
+    /// reload, a save and a discard leave it.
+    pub yanked: Option<crate::edit::Yank>,
 }
 
 /// The row panel's text for one row, formatted once when the selection or
@@ -2043,6 +2066,7 @@ impl ObjectTab {
             fields: None,
             focus_field: None,
             edits: crate::edit::Edits::default(),
+            yanked: None,
         }
     }
 
