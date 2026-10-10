@@ -3,8 +3,8 @@
 use std::fmt::Write as _;
 
 use crate::{
-    ColumnClass, Error, Filter, FilterOp, NewValue, ObjectRef, Result, RowChange, RowInsert,
-    RowQuery, SortDir, Temporal, Value, column_class, temporal,
+    ColumnClass, Error, Filter, FilterOp, Lookup, LookupPart, Matched, NewValue, ObjectRef, Result,
+    RowChange, RowInsert, RowQuery, SortDir, Temporal, Value, column_class, temporal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +282,18 @@ impl Dialect {
         }
     }
 
+    /// `column`, as text, like `pattern`: what a contains filter writes,
+    /// with this engine's sense of case.
+    fn matches(self, column: &str, pattern: String, params: &mut Vec<Value>) -> String {
+        let placeholder = self.bind(params, pattern);
+        format!(
+            "{} {} {placeholder}{}",
+            self.as_text(column),
+            self.like(),
+            self.like_escape()
+        )
+    }
+
     /// A filter value in SQL. PostgreSQL rows are read through the
     /// simple-query protocol, which has no parameters, so its values become
     /// escape-string literals that do not depend on the session's
@@ -358,13 +370,7 @@ impl Dialect {
                 } else {
                     format!("{escaped}%")
                 };
-                let placeholder = self.bind(params, pattern);
-                format!(
-                    "{} {} {placeholder}{}",
-                    self.as_text(&column),
-                    self.like(),
-                    self.like_escape()
-                )
+                self.matches(&column, pattern, params)
             }
             FilterOp::In => {
                 let placeholders: Vec<String> = in_values(&filter.value)
@@ -871,6 +877,81 @@ impl Dialect {
         let mut params = Vec::new();
         let mut text = format!("SELECT count(*) FROM {}", self.qualified(&query.object));
         text.push_str(&self.where_clause(query, binary, &mut params));
+        Sql { text, params }
+    }
+
+    /// The one statement of a [`Lookup`]. Its rows are the key, the label
+    /// where the lookup names one, and how the row matched
+    /// (`Matched::code`).
+    ///
+    /// The matches are read inside a derived table that holds the limit,
+    /// so the database stops at the first rows it finds, and they are
+    /// ordered outside it: no table is sorted whole. The columns are
+    /// ordered by their place, since a column may be named as the `CASE`
+    /// would be.
+    pub fn lookup(self, lookup: &Lookup) -> Sql {
+        let table = self.qualified(&lookup.object);
+        let key = self.quote_ident(&lookup.key);
+        let label = lookup.label.as_deref().map(|label| self.quote_ident(label));
+        let columns = match &label {
+            Some(label) => format!("{key}, {label}"),
+            None => key.clone(),
+        };
+        let limit = u64::from(lookup.limit) + 1;
+        let mut params = Vec::new();
+        let text = match &lookup.part {
+            LookupPart::Pinned(value) => {
+                let operand = self.sent(&self.key_operand(value), &mut params);
+                format!(
+                    "SELECT {columns}, {} FROM {table} WHERE {key} = {operand} LIMIT {limit}",
+                    Matched::Key.code()
+                )
+            }
+            LookupPart::Matching(text) if text.is_empty() => format!(
+                "SELECT {columns}, {} FROM {table} ORDER BY 1 LIMIT {limit}",
+                Matched::KeyStart.code()
+            ),
+            LookupPart::Matching(text) => {
+                let escaped = escape_like(text);
+                // Each value is bound where the statement names it: MySQL
+                // and SQLite bind by position. The key is compared as
+                // text on purpose: SQLite binds a text that reads as a
+                // number as one, and only the cast makes `91` equal it.
+                let is_key = format!(
+                    "{} = {}",
+                    self.as_text(&key),
+                    self.bind(&mut params, text.clone())
+                );
+                let how = match &label {
+                    Some(label) => format!(
+                        "CASE WHEN {is_key} THEN {} WHEN {} THEN {} ELSE {} END",
+                        Matched::Key.code(),
+                        self.matches(label, format!("%{escaped}%"), &mut params),
+                        Matched::Label.code(),
+                        Matched::KeyStart.code()
+                    ),
+                    None => format!(
+                        "CASE WHEN {is_key} THEN {} ELSE {} END",
+                        Matched::Key.code(),
+                        Matched::KeyStart.code()
+                    ),
+                };
+                let mut found = Vec::with_capacity(2);
+                if let Some(label) = &label {
+                    found.push(self.matches(label, format!("%{escaped}%"), &mut params));
+                }
+                found.push(self.matches(&key, format!("{escaped}%"), &mut params));
+                let order = if label.is_some() { "3, 1" } else { "2, 1" };
+                // `OFFSET 0` is for SQLite: without it the derived table
+                // is folded into the outer query, and the whole table is
+                // scanned and sorted before the limit.
+                format!(
+                    "SELECT {columns}, {how} FROM (SELECT {columns} FROM {table} WHERE {} \
+                     LIMIT {limit} OFFSET 0) AS found ORDER BY {order}",
+                    found.join(" OR ")
+                )
+            }
+        };
         Sql { text, params }
     }
 }
@@ -2133,6 +2214,196 @@ mod tests {
         assert_eq!(
             Dialect::Postgres.select_row(&books(), &pair, false).text,
             r#"SELECT * FROM "public"."books" WHERE "a" = 1 AND "b" = 'x' LIMIT 2"#
+        );
+    }
+
+    fn looking(label: Option<&str>, part: LookupPart) -> Lookup {
+        Lookup {
+            object: ObjectRef::new("main", "publishers"),
+            key: "id".into(),
+            label: label.map(str::to_owned),
+            part,
+            limit: 50,
+        }
+    }
+
+    fn texts(sql: &Sql) -> Vec<&str> {
+        sql.params
+            .iter()
+            .map(|value| match value {
+                Value::Text(text) => &**text,
+                other => panic!("a bound value is {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_lookup_reads_the_matches_inside_the_limit_and_orders_outside_it() {
+        let sql =
+            Dialect::Sqlite.lookup(&looking(Some("name"), LookupPart::Matching("harb".into())));
+        assert_eq!(
+            sql.text,
+            "SELECT \"id\", \"name\", \
+             CASE WHEN CAST(\"id\" AS TEXT) = ? THEN 0 \
+             WHEN CAST(\"name\" AS TEXT) LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END \
+             FROM (SELECT \"id\", \"name\" FROM \"main\".\"publishers\" \
+             WHERE CAST(\"name\" AS TEXT) LIKE ? ESCAPE '\\' \
+             OR CAST(\"id\" AS TEXT) LIKE ? ESCAPE '\\' LIMIT 51 OFFSET 0) AS found \
+             ORDER BY 3, 1"
+        );
+        // In the order the statement names them: these bind by position.
+        assert_eq!(texts(&sql), ["harb", "%harb%", "%harb%", "harb%"]);
+    }
+
+    #[test]
+    fn a_lookup_compares_as_the_contains_filter_does_on_each_engine() {
+        let lookup = looking(Some("name"), LookupPart::Matching("harb".into()));
+        let pg = Dialect::Postgres.lookup(&lookup);
+        assert!(pg.params.is_empty());
+        assert!(
+            pg.text.contains(r#"CAST("name" AS TEXT) ILIKE E'%harb%'"#),
+            "{}",
+            pg.text
+        );
+        assert!(
+            pg.text.contains(r#"CAST("id" AS TEXT) ILIKE E'harb%'"#),
+            "{}",
+            pg.text
+        );
+        assert!(
+            pg.text.contains(r#"FROM "main"."publishers" WHERE"#),
+            "{}",
+            pg.text
+        );
+        let my = Dialect::MySql.lookup(&lookup);
+        assert!(
+            my.text.contains("CAST(`name` AS CHAR) LIKE ?"),
+            "{}",
+            my.text
+        );
+        assert!(
+            my.text
+                .contains("LIMIT 51 OFFSET 0) AS found ORDER BY 3, 1"),
+            "{}",
+            my.text
+        );
+        assert_eq!(texts(&my), ["harb", "%harb%", "%harb%", "harb%"]);
+    }
+
+    #[test]
+    fn a_lookup_escapes_the_wildcards_of_what_was_typed() {
+        let sql =
+            Dialect::Sqlite.lookup(&looking(Some("name"), LookupPart::Matching("50%_".into())));
+        assert_eq!(texts(&sql), ["50%_", r"%50\%\_%", r"%50\%\_%", r"50\%\_%"]);
+    }
+
+    #[test]
+    fn a_lookup_of_a_table_with_no_label_goes_by_the_key_alone() {
+        let sql = Dialect::Sqlite.lookup(&looking(None, LookupPart::Matching("12".into())));
+        assert_eq!(
+            sql.text,
+            "SELECT \"id\", CASE WHEN CAST(\"id\" AS TEXT) = ? THEN 0 ELSE 2 END \
+             FROM (SELECT \"id\" FROM \"main\".\"publishers\" \
+             WHERE CAST(\"id\" AS TEXT) LIKE ? ESCAPE '\\' LIMIT 51 OFFSET 0) AS found \
+             ORDER BY 2, 1"
+        );
+        assert_eq!(texts(&sql), ["12", "12%"]);
+    }
+
+    #[test]
+    fn a_lookup_for_nothing_reads_the_first_rows_by_key() {
+        let sql =
+            Dialect::MySql.lookup(&looking(Some("name"), LookupPart::Matching(String::new())));
+        assert_eq!(
+            sql.text,
+            "SELECT `id`, `name`, 2 FROM `main`.`publishers` ORDER BY 1 LIMIT 51"
+        );
+        assert!(sql.params.is_empty());
+    }
+
+    #[test]
+    fn a_pinned_lookup_is_one_equality_on_the_key() {
+        let pinned = |value: Value| looking(Some("name"), LookupPart::Pinned(value));
+        let number = Value::Int(9_100_000_000_000_000_004);
+        // A whole number goes as one: MySQL would compare a string with a
+        // BIGINT as floats.
+        let my = Dialect::MySql.lookup(&pinned(number.clone()));
+        assert_eq!(
+            my.text,
+            "SELECT `id`, `name`, 0 FROM `main`.`publishers` WHERE `id` = ? LIMIT 51"
+        );
+        assert_eq!(my.params, std::slice::from_ref(&number));
+        // PostgreSQL has no parameters here: the value is a literal.
+        let pg = Dialect::Postgres.lookup(&pinned(number));
+        assert_eq!(
+            pg.text,
+            "SELECT \"id\", \"name\", 0 FROM \"main\".\"publishers\" \
+             WHERE \"id\" = 9100000000000000004 LIMIT 51"
+        );
+        let text = Dialect::Postgres.lookup(&pinned(Value::Text("it's".into())));
+        assert!(
+            text.text.contains(r#"WHERE "id" = 'it''s' LIMIT 51"#),
+            "{}",
+            text.text
+        );
+    }
+
+    #[test]
+    fn a_lookup_escapes_what_was_typed_into_postgres_literals() {
+        // The text is: i t ' s backslash.
+        let sql = Dialect::Postgres.lookup(&looking(
+            Some("name"),
+            LookupPart::Matching("it's\\".into()),
+        ));
+        assert!(sql.params.is_empty());
+        // The key is compared as typed: the quote and the backslash doubled.
+        assert!(
+            sql.text.contains(r#"CAST("id" AS TEXT) = E'it''s\\' THEN"#),
+            "{}",
+            sql.text
+        );
+        // LIKE escapes the backslash first (two), then the literal doubles
+        // each of those (four).
+        assert!(
+            sql.text
+                .contains(r#"CAST("name" AS TEXT) ILIKE E'%it''s\\\\%' THEN"#),
+            "{}",
+            sql.text
+        );
+        assert!(
+            sql.text
+                .contains(r#"CAST("id" AS TEXT) ILIKE E'it''s\\\\%' LIMIT"#),
+            "{}",
+            sql.text
+        );
+    }
+
+    #[test]
+    fn a_lookup_is_one_statement_with_no_parameters_on_postgres() {
+        let sql =
+            Dialect::Postgres.lookup(&looking(Some("name"), LookupPart::Matching("harb".into())));
+        assert_eq!(
+            sql.text,
+            "SELECT \"id\", \"name\", \
+             CASE WHEN CAST(\"id\" AS TEXT) = E'harb' THEN 0 \
+             WHEN CAST(\"name\" AS TEXT) ILIKE E'%harb%' THEN 1 ELSE 2 END \
+             FROM (SELECT \"id\", \"name\" FROM \"main\".\"publishers\" \
+             WHERE CAST(\"name\" AS TEXT) ILIKE E'%harb%' \
+             OR CAST(\"id\" AS TEXT) ILIKE E'harb%' LIMIT 51 OFFSET 0) AS found \
+             ORDER BY 3, 1"
+        );
+        assert!(sql.params.is_empty());
+    }
+
+    #[test]
+    fn the_codes_of_a_match_are_the_ones_the_statement_writes() {
+        assert_eq!(
+            [
+                Matched::Key.code(),
+                Matched::Label.code(),
+                Matched::KeyStart.code()
+            ],
+            [0, 1, 2]
         );
     }
 }

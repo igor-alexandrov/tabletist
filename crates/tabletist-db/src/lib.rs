@@ -16,6 +16,7 @@ pub mod complete;
 mod dialect;
 mod error;
 pub mod fixtures;
+mod lookup;
 mod mysql;
 mod pg;
 mod query;
@@ -42,6 +43,7 @@ pub use dialect::{
     Dialect, InsertParts, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
 };
 pub use error::{Error, Named, Result, SshStage};
+pub use lookup::{Lookup, LookupPage, LookupPart, LookupRow, Matched};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
 pub use script::{
     ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
