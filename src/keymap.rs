@@ -141,6 +141,9 @@ pub enum When {
     Conflict,
     /// The question about leaving with pending changes.
     Leaving,
+    /// The cursor's row is a new one, not saved yet: the row panel is its
+    /// form.
+    NewRow,
 }
 
 /// The mode a chord holds in: with the keyboard in a text field (insert),
@@ -1118,6 +1121,11 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("backspace"), k("delete")]),
             keys(&[k("dd")]),
         ),
+        // From a field of a new row's form too, whose footer names the
+        // key: the row under the cursor is the one the form is of. The
+        // other looks have a button there.
+        bind(C::DeleteRow, INSPECTOR, NONE, keys(&[k("dd")])).when(When::NewRow),
+        bind(C::AddRow, INSPECTOR, NONE, keys(&[k("o")])).when(When::NewRow),
         bind(C::OpenReferencedRow, GRID, NONE, keys(&[k("gd")])),
         bind(C::ShowSavedRow, GRID, NONE, keys(&[k("gs")])),
         bind(

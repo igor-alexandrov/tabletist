@@ -355,10 +355,20 @@ impl App {
                 // in the grid. The set's every change drops this text, so
                 // it is made again from the set as it stands.
                 let request = object.rows.loaded;
-                object.fields = page
-                    .rows
-                    .get(row)
-                    .map(|values| row_fields(request, row, values, &object.edits.cells));
+                let cells = &object.edits.cells;
+                object.fields = match crate::edit::new_id(row) {
+                    // A new row loaded nothing: each field is what was
+                    // set in it, and a NULL to draw where nothing was.
+                    Some(new) => {
+                        let held = object.edits.added.iter().any(|added| added.id == new);
+                        let blank = vec![tabletist_db::Value::Null; page.columns.len()];
+                        held.then(|| row_fields(request, row, &blank, cells))
+                    }
+                    None => page
+                        .rows
+                        .get(row)
+                        .map(|values| row_fields(request, row, values, cells)),
+                };
             }
         }
     }
@@ -847,11 +857,9 @@ impl App {
                 start,
             } => self.edit_cell(tab, id, cell, start, EditorPlace::Panel),
             Action::MoveField { tab, id, from, by } => {
-                if let Some(object) = self.object_tab_mut(tab, id)
-                    && let Some(columns) = object.rows.value.as_ref().map(|page| page.columns.len())
-                {
-                    let last = columns.saturating_sub(1);
-                    object.focus_field(from.saturating_add_signed(by).min(last));
+                let to = self.field_beside(tab, id, from, by);
+                if let (Some(to), Some(object)) = (to, self.object_tab_mut(tab, id)) {
+                    object.focus_field(to);
                     // What a locked field said was said of the one left.
                     object.edits.why = None;
                 }
@@ -892,12 +900,15 @@ impl App {
             }
             Action::CommitEdit { tab, id, then } => {
                 let field = self.panel_field(tab, id);
+                // Found before the text is taken: a value set in a new
+                // row moves its field up the form, and the commit walks
+                // on from where the field stood when it was edited.
+                let after = field.and_then(|col| self.field_after(tab, id, col, then));
                 if self.close_editor(tab, id, false) {
                     // In the panel the keyboard goes to the field the
                     // commit walks to, or back to the one that was edited.
                     if let Some(col) = field {
-                        let to = self.field_after(tab, id, col, then).unwrap_or(col);
-                        self.back_to_field(tab, id, to);
+                        self.back_to_field(tab, id, after.unwrap_or(col));
                         return;
                     }
                     let (rows, cols) = match then {

@@ -140,7 +140,24 @@ id, its defaults. It stays where it was until the next reload or sort.
 - A table without a primary key takes new rows. They cannot be edited
   afterwards, as no row of such a table can.
 
-The row panel does not show a new row yet: it is edited in the grid.
+### In the row panel
+
+While a new row is selected, the row panel is its form. The fields a save
+needs come first, then the ones you set, then the rest, and last the ones
+the database fills. Each says what the database will do if you leave it
+alone, as its cell does: **required**, the default with **from DEFAULT**,
+`CURRENT_TIMESTAMP on save` for a default the database works out, and
+**Assigned by the database on save**.
+
+Click a value to edit it there, or press Cmd/Ctrl+I (Enter in the Omarchy
+look) and then Enter. Enter takes what you typed and goes on to the next
+field. **Discard new row**
+drops the row, and **Add another** adds one more. The Omarchy look has
+its keys for both, `dd` and `o`, and they work from a field of the form
+too.
+
+On a table without a primary key the form says at its top that the row
+cannot be edited or deleted once it is saved.
 
 ## When someone else changed the row
 

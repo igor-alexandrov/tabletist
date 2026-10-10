@@ -601,10 +601,34 @@ impl App {
         }
     }
 
+    /// The field Up or Down steps to from the row panel's field of the
+    /// column `from`: the one `by` after it as the panel lists the selected
+    /// row's fields, or the last that way. `None` while the tab has no
+    /// page.
+    pub(super) fn field_beside(
+        &self,
+        tab: ConnTabId,
+        id: TabId,
+        from: usize,
+        by: isize,
+    ) -> Option<usize> {
+        self.table(tab, id, |table, object| {
+            let last = table.page.columns.len().checked_sub(1)?;
+            // With no row selected the panel lists none: the page's order.
+            let row = object.selection.map_or(0, |cell| cell.row);
+            let fields = table.fields(row, &object.edits.cells);
+            let Some(at) = fields.iter().position(|col| *col == from) else {
+                return Some(from.saturating_add_signed(by).min(last));
+            };
+            fields.get(at.saturating_add_signed(by).min(last)).copied()
+        })
+        .flatten()
+    }
+
     /// The field a commit in the row panel's field of the column `col`
-    /// walks to: the selected row's next that can be edited, in the page's
-    /// column order, or the one before it. None at the row's end, and for
-    /// a commit that stays.
+    /// walks to: the selected row's next that can be edited, in the order
+    /// the panel lists its fields, or the one before it. None at the row's
+    /// end, and for a commit that stays.
     pub(super) fn field_after(
         &self,
         tab: ConnTabId,
@@ -619,11 +643,13 @@ impl App {
         };
         self.table(tab, id, |table, object| {
             let row = object.selection?.row;
-            let free = |col: &usize| table.lock(CellPos { row, col: *col }).is_none();
+            let free = |col: &&usize| table.lock(CellPos { row, col: **col }).is_none();
+            let fields = table.fields(row, &object.edits.cells);
+            let at = fields.iter().position(|field| *field == col)?;
             if forward {
-                (col + 1..table.page.columns.len()).find(free)
+                fields[at + 1..].iter().find(free).copied()
             } else {
-                (0..col).rev().find(free)
+                fields[..at].iter().rev().find(free).copied()
             }
         })
         .flatten()
@@ -823,17 +849,13 @@ impl App {
     }
 
     /// Shows the row panel and asks it to give the keyboard to the selected
-    /// row's first field that can be edited, in the page's column order. No
+    /// row's first field that can be edited, as the panel lists them. No
     /// editor opens. A row with no such field keeps the keyboard where it
     /// is: the panel says why no cell of it can be edited, and the reason
     /// is kept for the selected cell, for the terminal's mode line.
     pub(super) fn focus_fields(&mut self, tab: ConnTabId, id: TabId) {
         let found = self.table(tab, id, |table, object| {
             let cell = object.selection?;
-            // The panel has no form for a new row yet.
-            if new_id(cell.row).is_some() {
-                return None;
-            }
             // The panel shows a row of the Data view only.
             if object.view != crate::model::ObjectView::Data {
                 return None;
@@ -849,7 +871,8 @@ impl App {
                     })
                     .is_none()
             };
-            match (0..table.page.columns.len()).find(free) {
+            let fields = table.fields(cell.row, &object.edits.cells);
+            match fields.into_iter().find(free) {
                 Some(col) => Some((cell, Ok(col))),
                 // Each cell is locked for a reason of its own: the
                 // selected cell's is the one said.

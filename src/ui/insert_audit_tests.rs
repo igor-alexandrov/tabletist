@@ -456,7 +456,6 @@ fn typing_into_a_foreign_key_opens_its_picker() {
 
 /// INS-11. Spec 7: the inspector of a new row is its form.
 #[test]
-#[ignore = "INS-11: the inspector has no form for a new row yet"]
 fn the_inspector_is_the_new_rows_form() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     add(&mut harness, tab, id);
@@ -470,7 +469,6 @@ fn the_inspector_is_the_new_rows_form() {
 /// publisher set in the grid is then shown twice: in its cell, and in the
 /// inspector's field for `publisher_id`.
 #[test]
-#[ignore = "INS-11b: the inspector shows none of a new row's fields or values"]
 fn the_inspector_holds_what_was_set_in_a_new_row() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     let new = add(&mut harness, tab, id);
@@ -485,7 +483,6 @@ fn the_inspector_holds_what_was_set_in_a_new_row() {
 
 /// INS-14. Spec 7: what the inspector says of a table without a key.
 #[test]
-#[ignore = "INS-14: the inspector does not warn of a table without a primary key"]
 fn the_inspector_warns_of_a_table_without_a_key() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     {

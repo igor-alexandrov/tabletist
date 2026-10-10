@@ -1508,6 +1508,9 @@ fn letters(
     // The rows of the table show: where the letters that edit a cell and
     // the one that drops a row are read, and not in the Structure view.
     let rows_show = object.is_some_and(|object| object.view == crate::model::ObjectView::Data);
+    // The cursor's row is a new one: the row panel is its form, and the
+    // key that drops the row is read from the form's fields too.
+    let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
     let on_sql = workspace.active_sql_tab().is_some();
     // A SQL editor showing its result takes the letters that move in it.
     let sql_grid = workspace
@@ -1645,6 +1648,7 @@ fn letters(
         crate::keymap::When::Review => reviewing.is_some(),
         crate::keymap::When::Note => note.is_some(),
         crate::keymap::When::RefusedWrite => has_card,
+        crate::keymap::When::NewRow => on_new,
         _ => false,
     };
     let review_only = |when: crate::keymap::When| when == crate::keymap::When::Review;
@@ -1779,8 +1783,10 @@ fn letters(
                 actions.push(Action::AddRow { tab, id, place });
             }
             // The row under the cursor is dropped where it is a new one,
-            // and only with the keys on the rows.
-            (Some(Command::DeleteRow), Some(id)) if rows_show && !tree && field.is_none() => {
+            // with the keys on the rows or on a field of its form.
+            (Some(Command::DeleteRow), Some(id))
+                if rows_show && !tree && (field.is_none() || on_new) =>
+            {
                 actions.push(Action::DropRow { tab, id });
             }
             (Some(Command::OpenReferencedRow), Some(object_tab)) => {

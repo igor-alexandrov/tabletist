@@ -12144,18 +12144,346 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_row_panel_says_a_new_row_is_edited_in_the_grid() {
-        let (mut harness, tab, id) = covers_in(Look::macos());
+    /// The Bookshop's covers with a new row under the header, selected,
+    /// its editor closed: the row panel is its form. Says the row its
+    /// cells are kept under.
+    fn new_form(look: Look) -> (Harness, ConnTabId, TabId, usize) {
+        let (mut harness, tab, id) = covers_in(look);
         let place = crate::edit::Place::Top;
         harness.app.apply(Action::AddRow { tab, id, place });
-        assert!(harness.has("A new row is edited in the grid"));
-        // And Mod+I, which puts the keyboard on a row's fields, leaves it.
         harness.app.apply(Action::CancelEdit { tab, id });
         harness.settle();
-        harness.press(Key::I, Modifiers::COMMAND);
-        assert!(!harness.ctx.text_edit_focused());
-        assert!(edits(&harness, tab, id).why.is_none());
+        (harness, tab, id, crate::edit::new_row(0))
+    }
+
+    /// Where the rightmost piece of text that starts with `start` was
+    /// painted: the row panel's, right of the grid.
+    fn panel_piece(harness: &Harness, start: &str) -> egui::Rect {
+        let written = harness.text_rects.iter();
+        let written = written.filter(|(piece, _)| piece.starts_with(start));
+        let rightmost = written.max_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+        rightmost
+            .unwrap_or_else(|| panic!("the panel shows nothing that starts with {start}"))
+            .1
+    }
+
+    #[test]
+    fn the_row_panel_is_the_form_of_a_new_row() {
+        for look in Look::ALL {
+            let (mut harness, _, _, _) = new_form(look);
+            // Its header says what it is of, and that nothing is saved.
+            assert!(harness.has("book_covers · not saved"), "{}", look.name);
+            let title = if look.terminal {
+                "+ new row"
+            } else {
+                "New row"
+            };
+            assert!(painted(&harness, title), "{}", look.name);
+            // Each field says what the database will do with a column
+            // nothing is set in. The one it works out for each row is
+            // slanted, as its cell of the grid is.
+            let slanted = |text: &str| harness.slanted.iter().any(|piece| piece == text);
+            let says: &[&str] = if look.terminal {
+                &[
+                    "publisher_id · INTEGER *",
+                    "required",
+                    "print · default",
+                    "CURRENT_TIMESTAMP on :w",
+                    "identity · assigned on :w",
+                    "j/k\u{a0}field · i\u{a0}edit · D\u{a0}default · x\u{a0}null · dd\u{a0}drop\u{a0}row",
+                ]
+            } else if crate::keymap::Layout::of(&look) == crate::keymap::Layout::Mac {
+                &[
+                    "kind · TEXT · print, ebook, audio",
+                    "required",
+                    "from DEFAULT",
+                    "CURRENT_TIMESTAMP on save",
+                    "Assigned by the database on save",
+                    "↩ next field · esc leaves the row pending",
+                ]
+            } else {
+                // The same keys, as the look writes them.
+                &[
+                    "kind · TEXT · print, ebook, audio",
+                    "required",
+                    "from DEFAULT",
+                    "CURRENT_TIMESTAMP on save",
+                    "Assigned by the database on save",
+                    "Enter next field · Esc leaves the row pending",
+                ]
+            };
+            for said in says {
+                assert!(
+                    painted(&harness, said),
+                    "{}: {said}: {:?}",
+                    look.name,
+                    harness.painted
+                );
+            }
+            let worked_out = if look.terminal {
+                "CURRENT_TIMESTAMP on :w"
+            } else {
+                "CURRENT_TIMESTAMP on save"
+            };
+            assert!(slanted(worked_out), "{}", look.name);
+            // Nothing of it was anything before, and nothing is pending
+            // over a loaded value.
+            assert!(!says_was(&harness, "NULL"), "{}", look.name);
+            // What a save needs comes first, and what the database gives
+            // last: `id` is the page's first column.
+            let needed = panel_piece(&harness, "publisher_id · INTEGER");
+            let given = panel_piece(&harness, "id · INTEGER");
+            assert!(needed.top() < given.top(), "{}", look.name);
+            // The buttons of a new row, where the look has buttons: the
+            // terminal look has its keys.
+            assert_eq!(
+                has_button(&mut harness, "Discard new row"),
+                !look.terminal,
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                has_button(&mut harness, "Add another"),
+                !look.terminal,
+                "{}",
+                look.name
+            );
+            assert!(!has_button(&mut harness, "Duplicate"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_new_rows_field_is_edited_in_the_row_panel() {
+        for look in Look::ALL {
+            let (mut harness, tab, id, row) = new_form(look);
+            // The look's key puts the keyboard on the form's first field: the one
+            // a save needs, not the page's first column that takes a value.
+            open_inspector(&mut harness);
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 1), "{}", look.name);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            // Enter edits it where it stands, and what is typed is set in
+            // the row.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((row, 1), true)),
+                "{}",
+                look.name
+            );
+            type_text(&mut harness, "9100000000000000004");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (row, 1)).as_deref(),
+                Some("9100000000000000004"),
+                "{}",
+                look.name
+            );
+            // The row is still the one the panel shows, and its value is
+            // in its cell and in its field.
+            assert_eq!(
+                selected(&harness, tab, id).map(|(row, _)| row),
+                Some(row),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                times_painted(&harness, "9100000000000000004"),
+                2,
+                "{}",
+                look.name
+            );
+            // The commit walks to the form's next field.
+            assert!(field_focused(&harness, tab, id, 2), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_new_rows_default_edits_it_in_the_row_panel() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id, row) = new_form(look);
+            // The default is shown, and is no value of the row yet.
+            assert!(pending_text(&harness, tab, id, (row, 2)).is_none());
+            click_value(&mut harness, "from DEFAULT");
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((row, 2), true)),
+                "{}",
+                look.name
+            );
+            // A new row's cell starts from nothing: the default is not
+            // typed for the user.
+            let text = edits(&harness, tab, id)
+                .editor
+                .as_ref()
+                .unwrap()
+                .text
+                .clone();
+            assert_eq!(text, "", "{}", look.name);
+            type_text(&mut harness, "ebook");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                pending_text(&harness, tab, id, (row, 2)).as_deref(),
+                Some("ebook"),
+                "{}",
+                look.name
+            );
+            // Set, it is the row's value and no default any more.
+            assert!(!painted(&harness, "from DEFAULT"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_arrows_step_a_new_rows_fields_in_the_forms_order() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id, _) = new_form(look);
+            open_inspector(&mut harness);
+            harness.settle();
+            // `publisher_id`, then the page's other columns that take a
+            // value, and `id` last.
+            for col in [2, 3, 4, 0, 0] {
+                harness.press(Key::ArrowDown, Modifiers::NONE);
+                harness.settle();
+                assert!(
+                    field_focused(&harness, tab, id, col),
+                    "{}: {col}",
+                    look.name
+                );
+            }
+            harness.press(Key::ArrowUp, Modifiers::NONE);
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 4), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_commit_walks_on_from_where_a_new_rows_field_stood() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id, row) = new_form(look);
+            // `created_at` is the last field that takes a value: a commit
+            // there has no field to walk to, and stays.
+            let cell = CellPos { row, col: 4 };
+            let start = EditStart::Replace("2026-10-10 09:00:00".into());
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            });
+            harness.settle();
+            harness.press(Key::Enter, Modifiers::NONE);
+            harness.settle();
+            assert_eq!(
+                pending_text(&harness, tab, id, (row, 4)).as_deref(),
+                Some("2026-10-10 09:00:00"),
+                "{}",
+                look.name
+            );
+            // Set, the field stands before the ones nothing is set in.
+            // The commit did not walk on from there, to `kind`.
+            assert!(field_focused(&harness, tab, id, 4), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 2), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_new_rows_form_drops_its_row_and_adds_another() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id, row) = new_form(look);
+            harness.click("Add another");
+            // The second stands under the first, and is the one selected:
+            // the form is its form now.
+            let second = crate::edit::new_row(1);
+            assert_eq!(edits(&harness, tab, id).added.len(), 2, "{}", look.name);
+            assert_eq!(
+                selected(&harness, tab, id).map(|(row, _)| row),
+                Some(second),
+                "{}",
+                look.name
+            );
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.click("Discard new row");
+            let left: Vec<usize> = edits(&harness, tab, id)
+                .added
+                .iter()
+                .map(|new| crate::edit::new_row(new.id))
+                .collect();
+            assert_eq!(left, [row], "{}", look.name);
+            // With the last of them gone the panel shows a row of the
+            // page, which has no such button.
+            select(&mut harness, tab, id, (row, 1));
+            harness.click("Discard new row");
+            assert!(edits(&harness, tab, id).added.is_empty(), "{}", look.name);
+            assert!(
+                !has_button(&mut harness, "Discard new row"),
+                "{}",
+                look.name
+            );
+            assert!(has_button(&mut harness, "Duplicate"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn o_on_a_field_of_a_new_rows_form_adds_another() {
+        let (mut harness, tab, id, _) = new_form(Look::omarchy());
+        open_inspector(&mut harness);
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 1));
+        type_key(&mut harness, Key::O, "o");
+        assert_eq!(edits(&harness, tab, id).added.len(), 2);
+        // On a field of a row of the page the letter adds nothing.
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        select(&mut harness, tab, id, (1, 1));
+        open_inspector(&mut harness);
+        harness.settle();
+        type_key(&mut harness, Key::O, "o");
+        assert!(edits(&harness, tab, id).added.is_empty());
+    }
+
+    #[test]
+    fn dd_on_a_field_of_a_new_rows_form_drops_the_row() {
+        let (mut harness, tab, id, _) = new_form(Look::omarchy());
+        open_inspector(&mut harness);
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 1));
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(edits(&harness, tab, id).added.len(), 1, "one d waits");
+        type_key(&mut harness, Key::D, "d");
+        assert!(edits(&harness, tab, id).added.is_empty());
+        // On a field of a row of the page the key drops nothing.
+        select(&mut harness, tab, id, (1, 1));
+        open_inspector(&mut harness);
+        harness.settle();
+        type_key(&mut harness, Key::D, "d");
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .object_tab(id)
+                .unwrap()
+                .page()
+                .unwrap()
+                .rows
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn the_rows_beside_a_new_row_are_stepped_to_from_the_row_panel() {
+        let (mut harness, tab, id, row) = new_form(Look::macos());
+        // The new row is the grid's first: nothing is above it, and the
+        // page's first row is below.
+        harness.click("Next row");
+        assert_eq!(selected(&harness, tab, id).map(|(row, _)| row), Some(0));
+        // And from that row the new one is the row above.
+        harness.click("Previous row");
+        assert_eq!(selected(&harness, tab, id).map(|(row, _)| row), Some(row));
     }
 
     #[test]
