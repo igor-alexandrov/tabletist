@@ -9,7 +9,7 @@ use egui::{Key, Modifiers};
 use tabletist_db::{IndexInfo, NewValue, ObjectKind, ObjectRef, RowPage, Structure, Value};
 
 use super::insert_audit_tests::{
-    add, covers_as, covers_in, edits, select, selected, set, type_key,
+    add, covers_as, covers_in, edits, painted, select, selected, set, type_key,
 };
 use crate::edit::{Cleared, Order, State, new_row};
 use crate::model::{
@@ -810,5 +810,88 @@ fn the_copys_form_says_what_it_was_made_as() {
             "{}",
             look.name
         );
+    }
+}
+
+// What a copy's cleared cell says.
+
+/// Test 16: a cell of a copy that a save needs a value in, and that was
+/// cleared for holding what no other row may, says so: in the grid's cell
+/// and in the form's field, to the eye and to a screen reader. An added
+/// row's cell of the same column says only that it is required.
+#[test]
+fn a_copys_cleared_cell_says_it_is_required_and_unique() {
+    let both = "required · unique";
+    let field = "publisher_id, INTEGER, required · unique";
+    let said = |harness: &mut Harness, label: &str| {
+        let tree = harness.settle();
+        let labels = crate::testing::labels(&tree);
+        labels.iter().any(|found| found.starts_with(label))
+    };
+    // How many pieces of the last frame are `text`.
+    let times = |harness: &Harness, text: &str| {
+        let pieces = harness.painted.iter();
+        pieces.filter(|(piece, _)| piece == text).count()
+    };
+    for look in Look::ALL {
+        let (mut harness, tab, id) = covers(look, unique_publisher);
+        select(&mut harness, tab, id, (1, 2));
+        duplicate(&mut harness, tab, id);
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        // The grid's cell in the desktop looks, the form's field in all.
+        assert!(painted(&harness, both), "{}", look.name);
+        // Each says it once: the terminal's cell asks in its header.
+        let places = if look.terminal { 1 } else { 2 };
+        assert_eq!(times(&harness, both), places, "{}", look.name);
+        assert!(said(&mut harness, field), "{}", look.name);
+        // The terminal's status line names what the rows lack together,
+        // as it did.
+        if look.terminal {
+            assert!(painted(&harness, "publisher_id required"));
+            assert!(!painted(&harness, "publisher_id required · unique"));
+        }
+        // An added row beside the copy: the form is the added row's now,
+        // and each row's cell says what is asked of its own row.
+        let added = new_row(add(&mut harness, tab, id));
+        let on = selected(&harness, tab, id).map(|at| at.0);
+        assert_eq!(on, Some(added), "{}", look.name);
+        // `required · unique`: the copy's cell, in the looks whose grid
+        // says it. `required`: the added row's field, and its cell there.
+        let (of_copy, of_added) = if look.terminal { (0, 1) } else { (1, 2) };
+        assert_eq!(times(&harness, both), of_copy, "{}", look.name);
+        assert_eq!(times(&harness, "required"), of_added, "{}", look.name);
+        // An added row: required, and no more.
+        let (mut harness, tab, id) = covers(look, unique_publisher);
+        add(&mut harness, tab, id);
+        harness.settle();
+        assert!(!painted(&harness, both), "{}", look.name);
+        assert!(painted(&harness, "required"), "{}", look.name);
+        assert!(!said(&mut harness, field), "{}", look.name);
+        let plain = "publisher_id, INTEGER, required";
+        assert!(said(&mut harness, plain), "{}", look.name);
+        // A copy of a new row no publisher is set in: the copy needs one,
+        // and cleared none. A column that was not cleared is required as
+        // ever, and one cleared as the database's own asks nothing.
+        let (mut harness, tab, id) = covers_in(look);
+        let first = new_row(add(&mut harness, tab, id));
+        select(&mut harness, tab, id, (first, 2));
+        duplicate(&mut harness, tab, id);
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        let copy = newest(&harness, tab, id);
+        assert_ne!(copy, first, "{}", look.name);
+        let now = edits(&harness, tab, id);
+        let made = now.added.iter().find_map(|new| new.made.as_ref());
+        let cleared = &made.expect("made as a copy").cleared;
+        assert_eq!(*cleared, [("id".to_owned(), Cleared::Identity)]);
+        assert_eq!(value(&harness, tab, id, (copy, 1)), None);
+        // The form is the copy's.
+        let on = selected(&harness, tab, id).map(|at| at.0);
+        assert_eq!(on, Some(copy), "{}", look.name);
+        assert!(painted(&harness, "required"), "{}", look.name);
+        assert!(!painted(&harness, both), "{}", look.name);
+        assert!(said(&mut harness, plain), "{}", look.name);
+        assert!(!said(&mut harness, field), "{}", look.name);
     }
 }

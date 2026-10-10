@@ -250,6 +250,10 @@ struct Fresh {
     keyless: bool,
     /// What the row was made as, where it is a copy of another row.
     made: Option<crate::edit::Copied>,
+    /// Whether the row is a copy that cleared the column for holding what
+    /// no other row may, by the page's columns: where a save needs a
+    /// value in one, its field says why.
+    unique: Vec<bool>,
 }
 
 impl Fresh {
@@ -282,6 +286,12 @@ impl Fresh {
                 .collect(),
             keyless: table.key().is_none(),
             made: new.and_then(|new| new.made.clone()),
+            unique: table
+                .page
+                .columns
+                .iter()
+                .map(|column| new.is_some_and(|new| new.cleared_unique(&column.name)))
+                .collect(),
         }
     }
 }
@@ -1330,6 +1340,8 @@ fn field(
     let unset = fresh
         .filter(|_| pending_cell.is_none())
         .and_then(|fresh| fresh.unset.get(col));
+    // Whether the row is a copy that cleared this column as unique.
+    let unique = fresh.is_some_and(|fresh| fresh.unique.get(col).copied().unwrap_or(false));
     // A save waits for a value here.
     let missing = matches!(unset, Some(Unset::Required));
     // A document's label shares its line with the document's controls.
@@ -1424,7 +1436,7 @@ fn field(
         format::display_safe(&column.name),
         column.type_name,
         match (unset, formatted) {
-            (Some(unset), _) => unset_words(unset, locale),
+            (Some(unset), _) => unset_words(unset, unique, locale),
             (None, Some(text)) if !value.is_null() => text.short.clone(),
             (None, _) => "NULL".to_owned(),
         },
@@ -1476,7 +1488,7 @@ fn field(
     // look draws chips: that a save needs a value, or that the column
     // has a default. The terminal look says both in the value's place.
     let chip = match unset {
-        Some(Unset::Required) => Some((gettext(locale, "required"), true)),
+        Some(Unset::Required) => Some((format::required_word(unique, locale).into(), true)),
         Some(Unset::Default(_) | Unset::Expression(_)) => Some((gettext(locale, "default"), false)),
         Some(Unset::Assigned | Unset::Null) | None => None,
     }
@@ -1739,7 +1751,7 @@ fn field(
                 Part::Read | Part::Editable | Part::InGrid | Part::Editing => None,
             };
             let tag = tag.map(|style| crate::ui::value_tags::style_colors(style, look, palette));
-            unset_value(ui, unset, (tag, lock), (role, pad), skin)
+            unset_value(ui, (unset, unique), (tag, lock), (role, pad), skin)
         }
         (Part::Editing | Part::Read | Part::Editable | Part::Locked(_), None) => {
             let read = Reading {
@@ -1975,8 +1987,9 @@ fn field(
 const CHIP_SIDE: f32 = 6.0;
 
 /// What a screen reader hears in the place of the value of a new row's
-/// field nothing is set in.
-fn unset_words(unset: &Unset, locale: crate::i18n::Locale) -> String {
+/// field nothing is set in. `unique` says the row is a copy that cleared
+/// the column for holding what no other row may.
+fn unset_words(unset: &Unset, unique: bool, locale: crate::i18n::Locale) -> String {
     let say = |text: &'static str| gettext(locale, text);
     match unset {
         Unset::Assigned => say("assigned by the database").into_owned(),
@@ -1984,7 +1997,7 @@ fn unset_words(unset: &Unset, locale: crate::i18n::Locale) -> String {
             format!("{} {}", say("default"), format::display_safe(text))
         }
         Unset::Null => "NULL".to_owned(),
-        Unset::Required => say("required").into_owned(),
+        Unset::Required => format::required_word(unique, locale),
     }
 }
 
@@ -1993,10 +2006,11 @@ fn unset_words(unset: &Unset, locale: crate::i18n::Locale) -> String {
 /// and not sent, one the database works out is written slanted as its
 /// cell of the grid is, and a column the database fills says so. `tag` is
 /// the colours of a default its column lists, `lock` why the column takes
-/// no value, `role` and `pad` the value's own.
+/// no value, `role` and `pad` the value's own. `unique` says the row is a
+/// copy that cleared the column for holding what no other row may.
 fn unset_value(
     ui: &mut egui::Ui,
-    unset: &Unset,
+    (unset, unique): (&Unset, bool),
     (tag, lock): (Option<(egui::Color32, Option<egui::Color32>)>, Option<Lock>),
     (role, pad): (TextRole, f32),
     skin: FieldSkin<'_>,
@@ -2030,7 +2044,8 @@ fn unset_value(
             let line = whole_line(ui);
             // The other looks say it in a chip beside the label.
             if look.terminal {
-                let word = Text::one(look, role, &say("required"), palette.danger);
+                let word = format::required_word(unique, locale);
+                let word = Text::one(look, role, &word, palette.danger);
                 widgets::paint_label(ui, line.left(), line.center().y, word);
             }
             line

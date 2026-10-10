@@ -468,6 +468,19 @@ pub fn plain_text(value: &Value) -> String {
     }
 }
 
+/// What a new row's cell or field says where a save needs a value:
+/// "required", and "required · unique" in a copy of a row that cleared the
+/// column for holding what no other row may.
+pub fn required_word(unique: bool, locale: crate::i18n::Locale) -> String {
+    let required = crate::i18n::gettext(locale, "required");
+    if unique {
+        let unique = crate::i18n::gettext(locale, "unique");
+        format!("{required} · {unique}")
+    } else {
+        required.into_owned()
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// How many times this thread ran `full_text`.
