@@ -4,8 +4,9 @@ Date: 2026-10-07. Amended 2026-10-08. Status: built in runs. Run 1
 (`docs/superpowers/plans/2026-10-07-inserting-rows-1-save.md`) is built: a
 save carries new rows and the three drivers write them. Run 2
 (`docs/superpowers/plans/2026-10-07-inserting-rows-2-add-row.md`) is
-built: a row is added from the grid, filled, reviewed and saved. What is
-left is listed under "Delivery". Each plan's "What the design asks, and
+built: a row is added from the grid, filled, reviewed and saved. The row
+panel is the new row's form (section 7). What is left is listed under
+"Delivery". Each plan's "What the design asks, and
 what gets built" says what of the text below the app can do, and in which
 run.
 
@@ -218,7 +219,8 @@ In runs, each its own pull request. Each commit passes `cargo fmt --check`, `car
 | 2 | Add a row in the grid, fill it, review it, save it | built (pull request 104) |
 | Fixes | What run 2 built and the spec draws otherwise: the row's colours, a selected new row that stays green, a default as its tag at 60%, an expression default slanted (the same face leaned over: the boards load no italic one), Omarchy's 2px bar, its `+1` in the header and what the row needs in insert mode, and of the copy the audit lists the bar's green dot and its words without a mark. The rest of that list is left where the plan's table says: to run 2b, to run 5, or to the board (`docs/superpowers/plans/2026-10-08-inserting-rows-fixes.md`) | built |
 | Groundwork | In the drivers, for runs 4 and 5: an error carries the constraint, the columns and MySQL's number, and a CHECK's list is read on MySQL and SQLite (`docs/superpowers/plans/2026-10-08-inserting-rows-driver-groundwork.md`) | built |
-| 2b | The inspector as the "New row" form, the row pinned under the header on macOS, and a name for each cell of the grid to a screen reader | |
+| 2b, the form | The inspector as the "New row" form (section 7): its green header, the fields in the form's order with what the database will do with each, every field edited in place, "Discard new row" and "Add another", and the note for a table without a primary key. Built without a plan of its own. Where it departs: the header keeps the app's Previous and Next row beside Close, since a new row stands among the grid's rows until it is pinned; a field's label lists its column's values without the word CHECK, which a PostgreSQL enum's are not; and the footer's line is "↩ next field · esc leaves the row pending", since Tab in the panel goes to the next field as Enter does | built |
+| 2b, the rest | The row pinned under the header on macOS, and a name for each cell of the grid to a screen reader | |
 | 3 | Duplicate, and Down on the last row | |
 | 4 | Paste rows with its preview, and rows sent together up to 100 | |
 | 5 | Errors and after the save: the message on the failing cell by error code, "Open row", "row 2 of 5", `]e` / `[e` and ⌥⌘↓ / ⌥⌘↑, "Show in sorted position" and `gs`, the filter note, and the line that says a page was reloaded | |

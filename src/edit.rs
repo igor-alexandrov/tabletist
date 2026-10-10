@@ -320,6 +320,36 @@ impl Table<'_> {
             .collect()
     }
 
+    /// The page's columns in the order the row panel lists the fields of
+    /// the row `row`. A page's row has them in the page's order. A new row
+    /// is a form to fill in: the columns a save needs a value in come
+    /// first, then the ones a value was set in, then the rest that take
+    /// one, and last the ones that take none. Each of the four in the
+    /// page's order.
+    pub fn fields(&self, row: usize, cells: &BTreeMap<(usize, usize), Pending>) -> Vec<usize> {
+        let mut fields: Vec<usize> = (0..self.page.columns.len()).collect();
+        if new_id(row).is_none() {
+            return fields;
+        }
+        let required = |col: usize| {
+            self.column(col)
+                .is_some_and(|column| unset(self.dialect, column) == Unset::Required)
+        };
+        // The sort keeps the page's order among the columns of one group.
+        fields.sort_by_key(|&col| {
+            if self.new_lock(col).is_some() {
+                3
+            } else if required(col) {
+                0
+            } else if cells.contains_key(&(row, col)) {
+                1
+            } else {
+                2
+            }
+        });
+        fields
+    }
+
     /// Whether a save could not match a key column of this type exactly.
     /// MySQL shows a TIMESTAMP in the session's zone without it, reads a BIT
     /// bound as bytes as a number, and misses a FLOAT bound as a double; the
@@ -2136,6 +2166,38 @@ mod tests {
             },
         );
         assert!(missing(&edits).is_empty());
+    }
+
+    #[test]
+    fn a_new_rows_fields_are_listed_as_a_form_to_fill_in() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let mut edits = Edits::default();
+        let id = edits.add_row(Place::Top, 3);
+        let fields = |edits: &Edits, row: usize| {
+            let table = Table {
+                added: &edits.added,
+                ..table(Some(&structure), &page)
+            };
+            table.fields(row, &edits.cells)
+        };
+        // What a save needs (`publisher_id`), the rest that take a value
+        // as the page has them, and `id`, which takes none, last.
+        assert_eq!(fields(&edits, new_row(id)), [1, 2, 3, 4, 0]);
+        // A value set in `created_at` brings it before the unset ones. A
+        // required column stays first, set or not.
+        for col in [1, 4] {
+            edits.put(
+                (new_row(id), col),
+                Pending {
+                    new: NewValue::Text("2026-10-10".into()),
+                    state: State::Ready,
+                },
+            );
+        }
+        assert_eq!(fields(&edits, new_row(id)), [1, 4, 2, 3, 0]);
+        // A row of the page is read as the page has it.
+        assert_eq!(fields(&edits, 1), [0, 1, 2, 3, 4]);
     }
 
     #[test]

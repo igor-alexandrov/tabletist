@@ -1620,13 +1620,19 @@ fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &m
     if pressed(Key::G) {
         next_pending = Some('g');
     }
-    // Whether the grid's rows have the keys: where `dd` is read.
+    // Whether the grid's rows have the keys: where `dd` is read. So does
+    // a field of a new row's form, whose footer names the key: the row
+    // under the cursor is the one the form is of.
     let on_rows = !tree
-        && field.is_none()
         && app
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(object_tab))
-            .is_some_and(|object| object.view == crate::model::ObjectView::Data);
+            .is_some_and(|object| {
+                let on_new = object
+                    .selection
+                    .is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
+                object.view == crate::model::ObjectView::Data && (field.is_none() || on_new)
+            });
     // The capital is Set DEFAULT's, read with the letters that edit: only
     // a plain `d` is the Data view's key and half of `dd`. By the key's
     // own modifiers, which a press carries whatever else is known of the

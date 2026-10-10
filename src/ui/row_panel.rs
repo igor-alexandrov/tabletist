@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tabletist_db::{Value, ValueKind};
 
 use crate::app::App;
-use crate::edit::{Editor, Lock, State};
+use crate::edit::{Editor, Lock, State, Table, Unset};
 use crate::i18n::gettext;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
@@ -235,6 +235,69 @@ struct Source<'a> {
     table: bool,
 }
 
+/// What the panel knows of the new row it is the form of.
+struct Fresh {
+    /// What each of the page's columns holds while nothing is set in it.
+    unset: Vec<Unset>,
+    /// The page's columns in the form's order (`Table::fields`).
+    order: Vec<usize>,
+    /// What a field's label says of its column, for one who fills it in:
+    /// the values it lists, that it takes a NULL, that the database gives
+    /// its value.
+    facts: Vec<Vec<String>>,
+    /// The table has no key to find a row by: the row can be added, and
+    /// no cell of it can be edited once it is.
+    keyless: bool,
+}
+
+impl Fresh {
+    /// The form of the new row whose cells are kept under `row`.
+    fn of(
+        table: &Table<'_>,
+        row: usize,
+        cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
+    ) -> Self {
+        let columns = 0..table.page.columns.len();
+        let column = |col: usize| table.column(col);
+        Self {
+            unset: columns
+                .clone()
+                .map(|col| match column(col) {
+                    Some(column) => crate::edit::unset(table.dialect, column),
+                    // A column the structure does not list is left to the
+                    // database.
+                    None => Unset::Assigned,
+                })
+                .collect(),
+            order: table.fields(row, cells),
+            facts: columns
+                .map(|col| column(col).map(column_facts).unwrap_or_default())
+                .collect(),
+            keyless: table.key().is_none(),
+        }
+    }
+}
+
+/// What a new row's field says of `column` after its name and type.
+fn column_facts(column: &tabletist_db::ColumnInfo) -> Vec<String> {
+    let mut facts = Vec::new();
+    if let Some(allowed) = &column.allowed_values {
+        let listed: Vec<_> = allowed
+            .iter()
+            .map(|value| format::display_safe(value))
+            .collect();
+        facts.push(listed.join(", "));
+    }
+    if column.identity {
+        facts.push("identity".into());
+    } else if column.generated {
+        facts.push("generated".into());
+    } else if column.nullable {
+        facts.push("nullable".into());
+    }
+    facts
+}
+
 /// The source the tab `id` gives the panel: none for a closed tab, or a
 /// SQL editor that shows no rows.
 fn source(workspace: &Workspace, id: TabId, locale: crate::i18n::Locale) -> Option<Source<'_>> {
@@ -373,27 +436,32 @@ fn draw(
             } else {
                 widgets::vline(ui, full.left() - 0.5, full.y_range(), palette.outline);
             }
-            let selected = source
-                .selection
-                .and_then(|cell| source.rows.get(cell.row).map(|row| (cell, row)));
+            // What editing adds, for a table's row that can be edited.
+            let object = match workspace.tab(id) {
+                Some(Tab::Object(object)) => Some(object),
+                _ => None,
+            };
+            // A new row is no row of the page: the panel is its form, and
+            // each of its fields starts from nothing.
+            let fresh = object.zip(source.selection).and_then(|(object, cell)| {
+                let new = crate::edit::new_id(cell.row)?;
+                let held = object.edits.added.iter().any(|added| added.id == new);
+                let table = Table::of(workspace, object)?;
+                held.then(|| Fresh::of(&table, cell.row, &object.edits.cells))
+            });
+            let blank = vec![Value::Null; source.columns.len()];
+            let selected = source.selection.and_then(|cell| match &fresh {
+                Some(_) => Some((cell, blank.as_slice())),
+                None => source.rows.get(cell.row).map(|row| (cell, row.as_slice())),
+            });
             // Formatted by the app when the selection changed, never here.
             let texts = source.texts;
             let Some((cell, row)) = selected else {
-                // A new row is no row of the page: the panel has no form
-                // for it yet, and says where it is edited.
-                let on_new = source
-                    .selection
-                    .is_some_and(|cell| source.table && crate::edit::new_id(cell.row).is_some());
-                let says = if on_new {
-                    "A new row is edited in the grid"
-                } else {
-                    "Select a row to see its fields"
-                };
                 ui.centered_and_justified(|ui| {
                     Text::one(
                         &look,
                         widgets::body(&look),
-                        &gettext(locale, says),
+                        &gettext(locale, "Select a row to see its fields"),
                         palette.secondary,
                     )
                     .layout(ui.ctx())
@@ -403,11 +471,6 @@ fn draw(
             };
             // A part of the window to step to once it has a row to show.
             focus::region(ui, Region::Panel, full);
-            // What editing adds, for a table's row that can be edited.
-            let object = match workspace.tab(id) {
-                Some(Tab::Object(object)) => Some(object),
-                _ => None,
-            };
             let mut form = match object {
                 Some(object) => {
                     let how = (hold, look.terminal);
@@ -456,7 +519,20 @@ fn draw(
                 .iter()
                 .map(|column| crate::ui::value_tags::Tags::of(column, structure).when(value_tags))
                 .collect();
-            let tag_of = |col: usize, value: &Value| tags[col].style(value);
+            // A new row's default that nothing is set over is drawn as the
+            // value it will be.
+            let tag_of = |col: usize, value: &Value| {
+                let unset = fresh
+                    .as_ref()
+                    .filter(|_| pending_field(texts, col).is_none())
+                    .and_then(|fresh| fresh.unset.get(col));
+                match unset {
+                    Some(Unset::Default(text)) => {
+                        tags[col].style(&Value::Text(text.as_str().into()))
+                    }
+                    _ => tags[col].style(value),
+                }
+            };
             // The row's name: its key, else its number. The key a save
             // finds the row by (`row_key`), so the bar and a save's line
             // name the row as the title does: a primary key, or else a
@@ -478,25 +554,39 @@ fn draw(
             } else {
                 palette.surface_hover
             };
+            // A new row's form wears the row's green, as its row of the
+            // grid does.
+            let green = crate::env::new_row_colors(crate::env::Platform::of(&look), &palette);
+            if fresh.is_some() {
+                ui.painter()
+                    .rect_filled(header, CornerRadius::ZERO, green.fill);
+            }
             widgets::hline(ui, header.x_range(), header.bottom() - 0.5, divider);
+            let not_saved = format!("{} · {}", source.name, gettext(locale, "not saved"));
+            // The rows above and below, as the grid shows them: a table's
+            // new rows stand among its page's.
             let rows = source.rows.len();
-            let can_prev = cell.row > 0;
-            let can_next = cell.row + 1 < rows;
+            let (can_prev, can_next) = match object {
+                Some(object) => {
+                    let order = crate::edit::Order::of(&object.edits.added, rows);
+                    let place = order.place(cell.row);
+                    (
+                        place.is_some_and(|place| place > 0),
+                        place.is_some_and(|place| place + 1 < order.len()),
+                    )
+                }
+                None => (cell.row > 0, cell.row + 1 < rows),
+            };
             if look.terminal {
                 let y = header.top() + 20.0;
                 let role = TextRole::OBody;
                 let mut x = header.left() + side;
-                x += widgets::paint_text(
-                    ui,
-                    x,
-                    y,
-                    Text::one(
-                        &look,
-                        TextRole::OGroup,
-                        &gettext(locale, "row"),
-                        palette.text,
-                    ),
-                ) + 10.0;
+                let (word, ink) = match fresh {
+                    Some(_) => (format!("+ {}", gettext(locale, "new row")), green.bar),
+                    None => (gettext(locale, "row").into_owned(), palette.text),
+                };
+                let word = Text::one(&look, TextRole::OGroup, &word, ink);
+                x += widgets::paint_label(ui, x, y, word) + 10.0;
                 // esc ×: 8 in from the right, 24 tall, 8 at its sides, 6
                 // before the ×; the prev/next hint 10 before it.
                 let small = TextRole::OSecondary;
@@ -506,11 +596,16 @@ fn draw(
                     pos2(header.right() - 8.0 - esc_width, y - 12.0),
                     vec2(esc_width, 24.0),
                 );
-                // The row's name: its key and value, or its number.
-                let keyed = key_column.as_ref().zip(key_value.as_ref());
-                let whole = match keyed {
-                    Some((key, value)) => format!("{key} {value}"),
-                    None => number.to_string(),
+                // The row's name: its key and value, or its number. A new
+                // row has neither yet: its table, and that it is not saved.
+                let keyed = key_column
+                    .as_ref()
+                    .zip(key_value.as_ref())
+                    .filter(|_| fresh.is_none());
+                let whole = match (keyed, &fresh) {
+                    (Some((key, value)), _) => format!("{key} {value}"),
+                    (None, Some(_)) => not_saved.clone(),
+                    (None, None) => number.to_string(),
                 };
                 let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
                 // The hint gives way before the name does: first the keys
@@ -533,10 +628,15 @@ fn draw(
                 };
                 let offered = &hints[if editable { 0 } else { 2 }..];
                 let fitting = offered.iter().find(|hint| measure(&whole) <= fit(hint).1);
-                let hint = *fitting.unwrap_or(&hints[3]);
+                // A new row's name ends in that it is not saved: the last
+                // of the hint goes before that is cut.
+                let none: &[widgets::Hint<'_>] = &[];
+                let least = if fresh.is_some() { none } else { hints[3] };
+                let hint = *fitting.unwrap_or(&least);
                 let (width, room) = fit(hint);
                 // A number keeps its last digits.
-                let shown = crate::ui::grid::ellipsize(&whole, room, keyed.is_none(), measure);
+                let numbered = keyed.is_none() && fresh.is_none();
+                let shown = crate::ui::grid::ellipsize(&whole, room, numbered, measure);
                 let name = match keyed {
                     Some((key, _)) => {
                         let value = shown.strip_prefix(key.as_str());
@@ -548,9 +648,16 @@ fn draw(
                             None => Text::one(&look, role, &shown, palette.dim),
                         }
                     }
+                    None if fresh.is_some() => Text::one(&look, role, &shown, palette.dim),
                     None => Text::one(&look, role, &shown, palette.warning),
                 };
-                widgets::paint_text(ui, x, y, name);
+                let name_width = widgets::paint_text(ui, x, y, name);
+                if fresh.is_some() {
+                    // The whole of it for a screen reader, cut or not.
+                    let place =
+                        Rect::from_min_size(pos2(x, y - 8.0), vec2(name_width.max(1.0), 16.0));
+                    widgets::announce(ui, place, &whole);
+                }
                 let response = ui.interact(esc, ui.id().with("close"), Sense::click());
                 let close = gettext(locale, "Close the row panel");
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &close));
@@ -582,9 +689,9 @@ fn draw(
                     &look,
                     &palette,
                 );
-                for (enabled, step, label) in
-                    [(can_prev, -1, "Previous row"), (can_next, 1, "Next row")]
-                {
+                // The brackets are what the pointer steps the rows by.
+                let steps = [(can_prev, -1, "Previous row"), (can_next, 1, "Next row")];
+                for (enabled, step, label) in steps.into_iter().filter(|_| !hint.is_empty()) {
                     let hit = Rect::from_min_size(
                         pos2(
                             esc.left() - 10.0 - width + if step < 0 { 0.0 } else { 12.0 },
@@ -606,8 +713,9 @@ fn draw(
                     }
                 }
             } else {
-                let title = match (&key_column, &key_value) {
-                    (Some(key), Some(value)) => {
+                let title = match (&key_column, &key_value, &fresh) {
+                    (_, _, Some(_)) => gettext(locale, "New row").into_owned(),
+                    (Some(key), Some(value), None) => {
                         format!("{} · {key} {value}", gettext(locale, "Row"))
                     }
                     _ => format!("{} {number}", gettext(locale, "Row")),
@@ -627,6 +735,8 @@ fn draw(
                 // not saved yet, while anything is.
                 let changed = texts.map_or(0, |texts| texts.pending.iter().flatten().count());
                 let under = match changed {
+                    // A new row is unsaved whole, whatever is set in it.
+                    _ if fresh.is_some() => Text::one(&look, sub_role, &not_saved, green.marker),
                     0 => Text::one(&look, sub_role, &source.name, palette.dim),
                     _ => {
                         let what = if changed == 1 {
@@ -638,12 +748,17 @@ fn draw(
                         Text::one(&look, sub_role, &said, palette.warning)
                     }
                 };
-                widgets::paint_text(
+                let under_width = widgets::paint_text(
                     ui,
                     header.left() + side,
                     top + title_line + sub_line / 2.0,
                     under,
                 );
+                if fresh.is_some() {
+                    let at = pos2(header.left() + side, top + title_line);
+                    let place = Rect::from_min_size(at, vec2(under_width.max(1.0), sub_line));
+                    widgets::announce(ui, place, &not_saved);
+                }
                 // Three 30 pt buttons, 4 apart, 8 in from the right.
                 let y = header.top() + 26.0;
                 let mut right = header.right() - 8.0;
@@ -731,13 +846,47 @@ fn draw(
                 let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(room.max(1.0), 16.0));
                 widgets::announce(ui, place, reason);
             }
+            // A table without a key takes the row, and can then find it
+            // by nothing: said before the row is filled in.
+            if fresh.as_ref().is_some_and(|fresh| fresh.keyless) {
+                let said = look.label(&gettext(
+                    locale,
+                    "This table has no primary key. The row can be inserted, but not edited or \
+                     deleted afterwards.",
+                ));
+                let room = (full.width() - 2.0 * side).max(24.0);
+                let laid = Text::one(&look, caption(&look), &said, palette.secondary)
+                    .wrap(room)
+                    .layout(ui.ctx());
+                let height = 9.0 + laid.height() + 9.0 + 1.0;
+                let strip = Rect::from_min_size(pos2(full.left(), top), vec2(full.width(), height));
+                top = strip.bottom();
+                if !look.terminal {
+                    ui.painter()
+                        .rect_filled(strip, CornerRadius::ZERO, palette.panel);
+                }
+                widgets::hline(ui, strip.x_range(), strip.bottom() - 0.5, divider);
+                laid.paint(ui.painter(), pos2(strip.left() + side, strip.top() + 9.0));
+                widgets::announce(ui, strip, &said);
+            }
             // Footer: the row's controls. Its rule, the buttons (28 or 32)
             // and, where the row can be edited, the line under them that
             // says how (the terminal's head names its keys). A SQL result
-            // has none: its rows are no table's to edit.
+            // has none: its rows are no table's to edit. A new row's has
+            // what drops it and what adds another, or in the terminal look
+            // a line of its keys.
             let note = line_of(ui, caption(&look), &look);
             let footer_height = if !source.table {
                 0.0
+            } else if fresh.is_some() {
+                let room = (full.width() - 2.0 * side).max(24.0);
+                let keys = form_keys(&look, locale, palette.dim).wrap(room);
+                let keys = keys.layout(ui.ctx()).height();
+                if look.terminal {
+                    1.0 + 8.0 + keys + 8.0
+                } else {
+                    1.0 + 12.0 + 32.0 + 8.0 + keys + 12.0
+                }
             } else if look.terminal {
                 1.0 + 10.0 + 28.0 + 10.0
             } else if locked.is_some() {
@@ -750,7 +899,17 @@ fn draw(
                 pos2(full.right(), full.bottom() - footer_height),
             );
             let foot = Rect::from_min_max(pos2(full.left(), body.bottom()), full.max);
-            if source.table {
+            if source.table && fresh.is_some() {
+                let why = locked.as_deref();
+                let (drop, another) = new_row_footer(ui, foot, why, &look, &palette, locale);
+                if drop {
+                    actions.push(Action::DropRow { tab, id });
+                }
+                if another {
+                    let place = crate::edit::Place::Top;
+                    actions.push(Action::AddRow { tab, id, place });
+                }
+            } else if source.table {
                 editing_footer(ui, foot, locked.as_deref(), &look, &palette, locale);
             }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
@@ -761,6 +920,7 @@ fn draw(
                 fold,
                 texts,
                 copy_key: source.table,
+                fresh: fresh.as_ref(),
             };
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -778,6 +938,14 @@ fn draw(
                             (col, column, pending.map_or(value, |cell| &cell.new))
                         })
                         .collect();
+                    // A new row's are listed as a form to fill in.
+                    let fields = match &fresh {
+                        Some(fresh) => {
+                            let listed = fresh.order.iter();
+                            listed.filter_map(|col| fields.get(*col).copied()).collect()
+                        }
+                        None => fields,
+                    };
                     let ctx = ui.ctx().clone();
                     let is_doc = |column: &tabletist_db::ColumnMeta, value: &Value| {
                         column.kind == ValueKind::Json && !value.is_null()
@@ -909,6 +1077,10 @@ fn draw(
                             // it; documents on the panel tone.
                             let top = ui.cursor().top();
                             let document = is_doc(column, value);
+                            // A new row's field that takes no value stands
+                            // back, as a document does.
+                            let given =
+                                fresh.is_some() && matches!(form.part(*col), Part::Locked(_));
                             let backdrop = ui.painter().add(egui::Shape::Noop);
                             ui.add_space(12.0);
                             ui.horizontal_top(|ui| {
@@ -944,7 +1116,7 @@ fn draw(
                             });
                             ui.add_space(12.0);
                             let y = ui.cursor().top();
-                            if document {
+                            if document || given {
                                 ui.painter().set(
                                     backdrop,
                                     egui::epaint::RectShape::filled(
@@ -959,6 +1131,25 @@ fn draw(
                             }
                             ui.add_space(1.0);
                             widgets::hline(ui, ui.max_rect().x_range(), y + 0.5, palette.surface);
+                        }
+                        // Under a new row's fields: why they stand in this
+                        // order, and what a default that is left alone does.
+                        if fresh.is_some() {
+                            let said = gettext(
+                                locale,
+                                "Required fields come first. Columns with a default show it and \
+                                 send nothing unless you change them.",
+                            );
+                            ui.add_space(12.0);
+                            ui.horizontal_top(|ui| {
+                                ui.add_space(side);
+                                let room = (ui.available_width() - side).max(24.0);
+                                Text::one(&look, caption(&look), &said, palette.secondary)
+                                    .wrap(room)
+                                    .layout(ui.ctx())
+                                    .label(ui);
+                            });
+                            ui.add_space(12.0);
                         }
                     }
                 });
@@ -995,6 +1186,9 @@ struct FieldSkin<'a> {
     texts: Option<&'a crate::model::RowFields>,
     /// Whether `y` copies the selected cell: in a table, not in a result.
     copy_key: bool,
+    /// The form of the new row the panel shows. `None` for a row that is
+    /// loaded: a page's, a result's.
+    fresh: Option<&'a Fresh>,
 }
 
 /// What is pending in the column `col` of the row `texts` is of.
@@ -1014,7 +1208,8 @@ fn was(ui: &mut egui::Ui, col: usize, column: &str, skin: FieldSkin<'_>) -> bool
         texts,
         ..
     } = skin;
-    let Some(pending) = pending_field(texts, col) else {
+    // What is set in a new row was nothing before.
+    let Some(pending) = pending_field(texts, col).filter(|_| skin.fresh.is_none()) else {
         return false;
     };
     ui.add_space(if look.terminal { 2.0 } else { 3.0 });
@@ -1095,6 +1290,7 @@ fn field(
         locale,
         texts,
         copy_key,
+        fresh,
         ..
     } = skin;
     let row = selected.row;
@@ -1104,11 +1300,29 @@ fn field(
     let label_role = caption(look);
     let formatted = texts.and_then(|texts| texts.fields.get(col));
     let doc = json_doc(ui.ctx(), value, column.kind);
+    let pending_cell = pending_field(texts, col);
+    // What the database does with the column of a new row while nothing
+    // is set in it: what stands in the value's place.
+    let unset = fresh
+        .filter(|_| pending_cell.is_none())
+        .and_then(|fresh| fresh.unset.get(col));
+    // A save waits for a value here.
+    let missing = matches!(unset, Some(Unset::Required));
     // A document's label shares its line with the document's controls.
     let facts = if doc.is_some() {
         Vec::new()
     } else {
-        facts(value, column, formatted, look, locale)
+        // A new row's field says first what its column takes. The
+        // terminal's half-width cells have no room for it.
+        let of_column = fresh
+            .filter(|_| !look.terminal)
+            .and_then(|fresh| fresh.facts.get(col))
+            .into_iter()
+            .flatten()
+            .cloned();
+        of_column
+            .chain(facts(value, column, formatted, look, locale))
+            .collect()
     };
     let text = label(
         &column.name,
@@ -1118,6 +1332,13 @@ fn field(
         &facts,
         look,
     );
+    // The terminal look stars the column a save needs, as its grid's
+    // header does.
+    let text = if missing && look.terminal {
+        format!("{text} *")
+    } else {
+        text
+    };
     let width = ui.available_width();
     // A document's label line holds its 26 pt copy button (macOS); a
     // plain label is one line of its text.
@@ -1128,8 +1349,9 @@ fn field(
     };
     let (line, response) = ui.allocate_exact_size(vec2(width, label_height), Sense::hover());
     let name_id = response.id;
-    let pending_cell = pending_field(texts, col);
-    let pending = pending_cell.is_some();
+    // A changed cell of a loaded row. What is set in a new row is the row
+    // itself, and changes nothing that was.
+    let pending = pending_cell.is_some() && fresh.is_none();
     // What stands against a pending cell, in the words its cell of the
     // grid says it in: what its column refuses of the text, or what the
     // database said of its row's statement.
@@ -1150,6 +1372,7 @@ fn field(
     let tone = match (&trouble, pending) {
         (Some(_), _) => Some(Tone::Danger),
         (None, true) => Some(Tone::Warning),
+        (None, false) if missing => Some(Tone::Danger),
         (None, false) => None,
     };
     // A screen reader hears the mark as a word.
@@ -1176,12 +1399,13 @@ fn field(
         "{}, {}, {}",
         format::display_safe(&column.name),
         column.type_name,
-        match formatted {
-            Some(text) if !value.is_null() => text.short.as_str(),
-            _ => "NULL",
+        match (unset, formatted) {
+            (Some(unset), _) => unset_words(unset, locale),
+            (None, Some(text)) if !value.is_null() => text.short.clone(),
+            (None, _) => "NULL".to_owned(),
         },
     );
-    if let Some(pending) = pending_field(texts, col) {
+    if let Some(pending) = pending_cell.filter(|_| pending) {
         let from = gettext(locale, "changed from");
         said = format!("{said}, {from} {}", pending.was);
     }
@@ -1197,7 +1421,7 @@ fn field(
     // line: "was print · revert". A document's line is its controls', and
     // the terminal look's has its hints: there it is said under the value.
     let was = pending_cell
-        .filter(|_| !look.terminal && doc.is_none())
+        .filter(|_| pending && !look.terminal && doc.is_none())
         .map(|cell| format!("{} {}", gettext(locale, "was"), cell.was));
     let revert = gettext(locale, "revert");
     let revert_width = measure(" · ") + measure(&revert);
@@ -1224,15 +1448,40 @@ fn field(
     // has its key.
     let formats = part == Part::Editing && form.formats() && !look.terminal;
     let format_room = if formats && doc.is_none() { 100.0 } else { 0.0 };
-    let room = line.width() - 30.0 - was_room - mark - lock_room - pencil_room - format_room;
+    // What a new row's unset field ends its label's line with, where the
+    // look draws chips: that a save needs a value, or that the column
+    // has a default. The terminal look says both in the value's place.
+    let chip = match unset {
+        Some(Unset::Required) => Some((gettext(locale, "required"), true)),
+        Some(Unset::Default(_) | Unset::Expression(_)) => Some((gettext(locale, "default"), false)),
+        Some(Unset::Assigned | Unset::Null) | None => None,
+    }
+    .filter(|_| !look.terminal);
+    let chip_width = chip
+        .as_ref()
+        .map_or(0.0, |(word, _)| measure(word) + 2.0 * CHIP_SIDE);
+    let chip_room = if chip.is_some() {
+        chip_width + 6.0
+    } else {
+        0.0
+    };
+    let room =
+        line.width() - 30.0 - was_room - mark - lock_room - pencil_room - format_room - chip_room;
     let shown = crate::ui::grid::ellipsize(&text, room, false, measure);
+    let label_ink = if missing && look.terminal {
+        palette.danger
+    } else {
+        palette.dim
+    };
     let label_width = widgets::paint_text(
         ui,
         line.left(),
         line.center().y,
-        Text::one(look, label_role, &shown, palette.dim),
+        Text::one(look, label_role, &shown, label_ink),
     );
-    if let Some(tone) = tone {
+    // A field that waits for its first value is in no trouble yet: its
+    // label and what stands in its value's place say what it waits for.
+    if let Some(tone) = tone.filter(|_| !missing) {
         if look.terminal {
             // The terminal look's mark stands in the gutter, as a changed
             // row's does in the grid: `~`, or `!` for a cell in trouble.
@@ -1293,6 +1542,25 @@ fn field(
         lock.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
         Icon::Lock.image(palette.faint, LOCK).paint_at(ui, place);
         lock.on_hover_text(reason.as_str());
+    }
+    if let Some((word, asked)) = &chip {
+        let height = line_of(ui, label_role, look) + 2.0;
+        let place = Rect::from_min_size(
+            pos2(copy_right - chip_width, line.center().y - height / 2.0),
+            vec2(chip_width, height),
+        );
+        copy_right = place.left() - 6.0;
+        // The failure's tint for what is asked of the user, and a quiet
+        // one for what the database does by itself.
+        let (fill, ink) = if *asked {
+            (Tone::Danger.fill(look, palette), palette.danger)
+        } else {
+            (palette.surface, palette.secondary)
+        };
+        let corner = CornerRadius::same((height / 2.0) as u8);
+        ui.painter().rect_filled(place, corner, fill);
+        let word = Text::one(look, label_role, word, ink);
+        widgets::paint_text(ui, place.left() + CHIP_SIDE, place.center().y, word);
     }
     let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
     let edit_label = format!("{} {column_name}", gettext(locale, "Edit"));
@@ -1393,7 +1661,10 @@ fn field(
             vec2(22.0, 22.0),
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(copy));
-        if caption_button(&mut child, Icon::Copy, &copy_label, hovered, look, palette).clicked() {
+        // A new row's field nothing is set in holds nothing to copy.
+        if unset.is_none()
+            && caption_button(&mut child, Icon::Copy, &copy_label, hovered, look, palette).clicked()
+        {
             ui.ctx().copy_text(format::plain_text(value));
         }
         // A document being typed where the field holds none yet (a NULL,
@@ -1427,14 +1698,26 @@ fn field(
     let pad = if whole { box_pad(ui, role, look) } else { 0.0 };
     // The control's states are painted behind the value.
     let behind = ui.painter().add(egui::Shape::Noop);
-    let shown = match part {
+    let shown = match (part, unset) {
         // The editor, in the value's place.
-        Part::Editing if form.editing(ui, (tab, tab_id), role, (look, palette, locale)) => return,
-        Part::InGrid => {
+        (Part::Editing, _) if form.editing(ui, (tab, tab_id), role, (look, palette, locale)) => {
+            return;
+        }
+        (Part::InGrid, _) => {
             row_form::in_grid(ui, look, palette, locale);
             Shown::default()
         }
-        Part::Editing | Part::Read | Part::Editable | Part::Locked(_) => {
+        (Part::Editing | Part::Read | Part::Editable | Part::Locked(_), Some(unset)) => {
+            // Why the column takes no value, where it takes none: the
+            // terminal look names it before what the save will do.
+            let lock = match part {
+                Part::Locked(lock) => Some(lock),
+                Part::Read | Part::Editable | Part::InGrid | Part::Editing => None,
+            };
+            let tag = tag.map(|style| crate::ui::value_tags::style_colors(style, look, palette));
+            unset_value(ui, unset, (tag, lock), (role, pad), skin)
+        }
+        (Part::Editing | Part::Read | Part::Editable | Part::Locked(_), None) => {
             let read = Reading {
                 doc,
                 formatted,
@@ -1526,9 +1809,13 @@ fn field(
             // inside it, a pencil at its right, and the text cursor.
             let hover = crate::ui::grid::row_fill(false, true, false, look, palette)
                 .unwrap_or(palette.surface);
+            // A default nothing is set over stands in a box of its own,
+            // as the board draws a value the form came filled in with.
+            let filled = matches!(unset, Some(Unset::Default(_)));
             let fill = match tone {
                 Some(tone) => Some(tone.fill(look, palette)),
-                None => hovering.then_some(hover),
+                None if hovering => Some(hover),
+                None => filled.then_some(palette.panel),
             };
             if let Some(fill) = fill {
                 let fill = egui::epaint::RectShape::filled(frame, corner, fill);
@@ -1538,7 +1825,8 @@ fn field(
             // the failure's red, or a field's border under the pointer.
             let line = match tone {
                 Some(tone) => Some(tone.edge(look, palette)),
-                None => hovering.then_some(palette.border),
+                None if hovering => Some(palette.border),
+                None => filled.then_some(palette.outline),
             };
             if let Some(color) = line {
                 let stroke = Stroke::new(1.0, color);
@@ -1657,6 +1945,207 @@ fn field(
         // it: the next frame draws it.
         ui.ctx().request_repaint();
     }
+}
+
+/// At each side of the word in a chip that ends a label's line.
+const CHIP_SIDE: f32 = 6.0;
+
+/// What a screen reader hears in the place of the value of a new row's
+/// field nothing is set in.
+fn unset_words(unset: &Unset, locale: crate::i18n::Locale) -> String {
+    let say = |text: &'static str| gettext(locale, text);
+    match unset {
+        Unset::Assigned => say("assigned by the database").into_owned(),
+        Unset::Default(text) | Unset::Expression(text) => {
+            format!("{} {}", say("default"), format::display_safe(text))
+        }
+        Unset::Null => "NULL".to_owned(),
+        Unset::Required => say("required").into_owned(),
+    }
+}
+
+/// What stands in the value's place in a field of a new row nothing is
+/// set in: what the database will do with its column. A default is shown
+/// and not sent, one the database works out is written slanted as its
+/// cell of the grid is, and a column the database fills says so. `tag` is
+/// the colours of a default its column lists, `lock` why the column takes
+/// no value, `role` and `pad` the value's own.
+fn unset_value(
+    ui: &mut egui::Ui,
+    unset: &Unset,
+    (tag, lock): (Option<(egui::Color32, Option<egui::Color32>)>, Option<Lock>),
+    (role, pad): (TextRole, f32),
+    skin: FieldSkin<'_>,
+) -> Shown {
+    let FieldSkin {
+        look,
+        palette,
+        locale,
+        ..
+    } = skin;
+    let say = |text: &'static str| gettext(locale, text);
+    // What a save is called in each look: the terminal's is its command.
+    let on_save = if look.terminal {
+        "on :w".to_owned()
+    } else {
+        say("on save").into_owned()
+    };
+    let whole_line = |ui: &mut egui::Ui| {
+        let size = vec2(ui.available_width(), line_of(ui, role, look));
+        ui.allocate_exact_size(size, Sense::hover()).0
+    };
+    let short = |text: &str| format::cell_line(text, format::Marks::PLAIN).into_owned();
+    ui.add_space(pad);
+    let line = match unset {
+        Unset::Null => {
+            let mark = crate::ui::grid::null_label(ui, look, palette).rect;
+            Rect::from_min_max(mark.min, pos2(ui.max_rect().right(), mark.bottom()))
+        }
+        Unset::Required => {
+            let line = whole_line(ui);
+            // The other looks say it in a chip beside the label.
+            if look.terminal {
+                let word = Text::one(look, role, &say("required"), palette.danger);
+                widgets::paint_label(ui, line.left(), line.center().y, word);
+            }
+            line
+        }
+        Unset::Default(text) => {
+            let text = short(text);
+            if look.terminal {
+                let line = whole_line(ui);
+                let said = format!("{text} · {}", say("default"));
+                let said = Text::one(look, role, &said, palette.dim);
+                widgets::paint_label(ui, line.left(), line.center().y, said);
+                line
+            } else {
+                // The value it will be, as a field shows one: its tag
+                // where its column lists it.
+                let line = match tag {
+                    Some((ink, Some(fill))) => tag_chip(ui, &text, (ink, fill), role, look),
+                    _ => {
+                        let line = whole_line(ui);
+                        let value = Text::one(look, role, &text, palette.secondary);
+                        widgets::paint_label(ui, line.left(), line.center().y, value);
+                        line
+                    }
+                };
+                let from = Text::one(look, caption(look), &say("from DEFAULT"), palette.faint);
+                widgets::paint_text_right(ui, line.right(), line.center().y, from);
+                line
+            }
+        }
+        Unset::Expression(text) => {
+            let line = whole_line(ui);
+            let said = format!("{} {on_save}", short(text));
+            let said = Text::new(look).add_with(role, &said, 0.0, |format| {
+                format.color = palette.faint;
+                format.italics = true;
+            });
+            widgets::paint_label(ui, line.left(), line.center().y, said);
+            line
+        }
+        Unset::Assigned => {
+            let line = whole_line(ui);
+            let said = if look.terminal {
+                let what = match lock {
+                    Some(Lock::Assigned) => "identity · ",
+                    Some(Lock::Generated) => "generated · ",
+                    _ => "",
+                };
+                format!("{what}assigned {on_save}")
+            } else {
+                say("Assigned by the database on save").into_owned()
+            };
+            let role = if look.terminal {
+                role
+            } else {
+                widgets::secondary(look)
+            };
+            let said = Text::one(look, role, &said, palette.faint);
+            widgets::paint_label(ui, line.left(), line.center().y, said);
+            line
+        }
+    };
+    ui.add_space(pad);
+    Shown { place: Some(line) }
+}
+
+/// How a new row's form is walked, as its footer says it: the keys of the
+/// look. The terminal look has a key for everything the form does.
+fn form_keys(look: &Look, locale: crate::i18n::Locale, color: egui::Color32) -> Text {
+    let said = if look.terminal {
+        // A key stays on the line of what it does, where the panel's
+        // width makes two lines of them.
+        "j/k\u{a0}field · i\u{a0}edit · D\u{a0}default · x\u{a0}null · dd\u{a0}drop\u{a0}row".into()
+    } else {
+        gettext(locale, "↩ next field · esc leaves the row pending")
+    };
+    Text::one(look, caption(look), &said, color)
+}
+
+/// The footer of a new row's form: what drops the row and what adds
+/// another, and under them how the form is walked ([`form_keys`]), which
+/// is all the terminal look's has. `why` is why neither can be done now (a
+/// save is running). Says whether the row is to be dropped, and whether
+/// another is asked for.
+fn new_row_footer(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    why: Option<&str>,
+    look: &Look,
+    palette: &Palette,
+    locale: crate::i18n::Locale,
+) -> (bool, bool) {
+    let side = side(look);
+    if !look.terminal {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::ZERO, palette.panel);
+    }
+    let rule = if look.terminal {
+        palette.outline
+    } else {
+        palette.surface_hover
+    };
+    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, rule);
+    let inner = rect.shrink2(vec2(side, 0.0));
+    // The keys, on as many lines as the panel's width makes of them: the
+    // footer was given the room they take.
+    let walked = |ui: &mut egui::Ui, top: f32| {
+        let laid = form_keys(look, locale, palette.dim)
+            .wrap(inner.width().max(24.0))
+            .layout(ui.ctx());
+        let at = pos2(inner.left(), top);
+        laid.paint(ui.painter(), at);
+        let place = Rect::from_min_size(at, laid.size());
+        widgets::announce(ui, place, laid.galley.text());
+    };
+    if look.terminal {
+        walked(ui, rect.top() + 1.0 + 8.0);
+        return (false, false);
+    }
+    let gap = 6.0;
+    let top = rect.top() + 1.0 + 12.0;
+    let width = ((inner.width() - gap) / 2.0).max(0.0);
+    let place = |index: f32| {
+        let left = inner.left() + index * (width + gap);
+        Rect::from_min_size(pos2(left, top), vec2(width, 32.0))
+    };
+    let discard = gettext(locale, "Discard new row");
+    let another = gettext(locale, "Add another");
+    let keys = format!("{}N", look.command_key());
+    let drop = widgets::ButtonSpec::new(&discard).padding(0.0).drops();
+    let add = widgets::ButtonSpec::new(&another)
+        .padding(0.0)
+        .shortcut(&keys);
+    let (drop, add) = match why {
+        Some(why) => (drop.disabled(why), add.disabled(why)),
+        None => (drop, add),
+    };
+    let dropped = drop.show_at(ui, place(0.0), look, palette).clicked();
+    let added = add.show_at(ui, place(1.0), look, palette).clicked();
+    walked(ui, top + 32.0 + 8.0);
+    (dropped, added)
 }
 
 /// The pencil of a list that can be edited: 22 pt, as Copy is.

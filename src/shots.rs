@@ -378,7 +378,9 @@ const EDITING: [(&str, Scene); 13] = [
 ];
 
 /// The row panel's fields, one scene per state, in every look.
-const ROW_FORM: [(&str, Scene); 7] = [
+const ROW_FORM: [(&str, Scene); 9] = [
+    ("row-form-new-row", row_form_new_row),
+    ("row-form-new-row-filled", row_form_new_row_filled),
     ("row-form-field", row_form_field),
     ("row-form-locked", row_form_locked),
     ("row-form-pending", row_form_pending),
@@ -387,6 +389,29 @@ const ROW_FORM: [(&str, Scene); 7] = [
     ("row-form-json", row_form_json),
     ("row-form-json-broken", row_form_json_broken),
 ];
+
+/// A new row in the row panel, nothing set in it yet: the form to fill in,
+/// what a save needs first and what the database gives last.
+fn row_form_new_row(harness: &mut Harness) {
+    edit_new_row(harness);
+    let (tab, id) = active(harness);
+    harness.app.apply(Action::CancelEdit { tab, id });
+}
+
+/// The same form with its book given and a kind that is no default any
+/// more: what is set, among what the database will fill.
+fn row_form_new_row_filled(harness: &mut Harness) {
+    edit_new_row(harness);
+    let (tab, id) = active(harness);
+    let new = crate::edit::new_row(0);
+    retype(harness, tab, id, (new, BOOK_ID), "107233");
+    retype(harness, tab, id, (new, KIND), "preview");
+    let cell = CellPos {
+        row: new,
+        col: IMAGE_DATA,
+    };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+}
 
 /// A field of the row panel being edited: the editor in the value's place,
 /// holding a text its column does not take, with why under it. Another

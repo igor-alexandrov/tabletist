@@ -1150,6 +1150,8 @@ pub struct ButtonSpec<'a> {
     quiet: bool,
     /// No border, and the text in the accent colour.
     link: bool,
+    /// The text in the danger colour.
+    drops: bool,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -1173,6 +1175,7 @@ impl<'a> ButtonSpec<'a> {
             hint: false,
             quiet: false,
             link: false,
+            drops: false,
         }
     }
 
@@ -1202,6 +1205,14 @@ impl<'a> ButtonSpec<'a> {
     /// under the pointer, the text in the accent colour.
     pub fn link(mut self) -> Self {
         self.link = true;
+        self
+    }
+
+    /// A secondary button that drops something of the user's which no
+    /// save has written: its text in the danger colour. Not the filled
+    /// [`Self::danger`], which is a dialog's one button that writes.
+    pub fn drops(mut self) -> Self {
+        self.drops = true;
         self
     }
 
@@ -1491,6 +1502,8 @@ impl<'a> ButtonSpec<'a> {
         };
         let (text, shortcut) = if self.hint && self.kind == ButtonKind::Secondary {
             (palette.dim, palette.text)
+        } else if self.drops && self.kind == ButtonKind::Secondary {
+            (palette.danger, shortcut)
         } else {
             (text, shortcut)
         };
