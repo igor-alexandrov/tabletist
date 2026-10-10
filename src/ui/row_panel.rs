@@ -256,9 +256,11 @@ impl Fresh {
         table: &Table<'_>,
         row: usize,
         cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
+        (look, locale): (&Look, crate::i18n::Locale),
     ) -> Self {
         let columns = 0..table.page.columns.len();
         let column = |col: usize| table.column(col);
+        let facts_of = |column: &tabletist_db::ColumnInfo| column_facts(column, look, locale);
         Self {
             unset: columns
                 .clone()
@@ -271,7 +273,7 @@ impl Fresh {
                 .collect(),
             order: table.fields(row, cells),
             facts: columns
-                .map(|col| column(col).map(column_facts).unwrap_or_default())
+                .map(|col| column(col).map(facts_of).unwrap_or_default())
                 .collect(),
             keyless: table.key().is_none(),
         }
@@ -279,7 +281,12 @@ impl Fresh {
 }
 
 /// What a new row's field says of `column` after its name and type.
-fn column_facts(column: &tabletist_db::ColumnInfo) -> Vec<String> {
+fn column_facts(
+    column: &tabletist_db::ColumnInfo,
+    look: &Look,
+    locale: crate::i18n::Locale,
+) -> Vec<String> {
+    let say = |text: &'static str| look.label(&gettext(locale, text));
     let mut facts = Vec::new();
     if let Some(allowed) = &column.allowed_values {
         let listed: Vec<_> = allowed
@@ -289,11 +296,11 @@ fn column_facts(column: &tabletist_db::ColumnInfo) -> Vec<String> {
         facts.push(listed.join(", "));
     }
     if column.identity {
-        facts.push("identity".into());
+        facts.push(say("identity"));
     } else if column.generated {
-        facts.push("generated".into());
+        facts.push(say("generated"));
     } else if column.nullable {
-        facts.push("nullable".into());
+        facts.push(say("nullable"));
     }
     facts
 }
@@ -447,7 +454,7 @@ fn draw(
                 let new = crate::edit::new_id(cell.row)?;
                 let held = object.edits.added.iter().any(|added| added.id == new);
                 let table = Table::of(workspace, object)?;
-                held.then(|| Fresh::of(&table, cell.row, &object.edits.cells))
+                held.then(|| Fresh::of(&table, cell.row, &object.edits.cells, (&look, locale)))
             });
             let blank = vec![Value::Null; source.columns.len()];
             let selected = source.selection.and_then(|cell| match &fresh {
@@ -1984,9 +1991,10 @@ fn unset_value(
         ..
     } = skin;
     let say = |text: &'static str| gettext(locale, text);
-    // What a save is called in each look: the terminal's is its command.
+    // What a save is called in each look: the terminal's is its command,
+    // which is no word to translate.
     let on_save = if look.terminal {
-        "on :w".to_owned()
+        format!("{} :w", look.label(&say("on")))
     } else {
         say("on save").into_owned()
     };
@@ -2048,12 +2056,16 @@ fn unset_value(
         Unset::Assigned => {
             let line = whole_line(ui);
             let said = if look.terminal {
+                let given = format!("{} {on_save}", look.label(&say("assigned")));
                 let what = match lock {
-                    Some(Lock::Assigned) => "identity · ",
-                    Some(Lock::Generated) => "generated · ",
-                    _ => "",
+                    Some(Lock::Assigned) => Some(say("identity")),
+                    Some(Lock::Generated) => Some(say("generated")),
+                    _ => None,
                 };
-                format!("{what}assigned {on_save}")
+                match what {
+                    Some(what) => format!("{} · {given}", look.label(&what)),
+                    None => given,
+                }
             } else {
                 say("Assigned by the database on save").into_owned()
             };
