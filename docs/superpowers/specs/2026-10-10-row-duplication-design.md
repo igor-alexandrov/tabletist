@@ -1,6 +1,9 @@
 # Duplicating a row
 
-Date: 2026-10-10. Status: designed, not built.
+Date: 2026-10-10. Status: built
+(`docs/superpowers/plans/2026-10-10-row-duplication.md`, whose "What the
+spec leaves open, and what gets built" says what the build decided). Where
+the build's reviews added to the text below, the text says so: "As built".
 
 This is the first half of run 3 of `2026-10-07-inserting-rows-design.md`
 ("Duplicate, and Down on the last row"): Duplicate alone. Section 4 of that
@@ -55,6 +58,9 @@ Made with the user on 2026-10-10.
   key's repeats are taken with it and make none, as a held Enter's are in
   `editing_letters`. `take_press` alone would not do: it counts repeats.
 - The press is taken only where a copy can be made.
+- As built: in a frame that brings a click the press is taken and no copy
+  is made, as Mod+I has it. The click selects its row once the frame is
+  drawn, and the copy would be of the row the selection leaves.
 - The row is the selected cell's row: a row of the page, or a new row.
 - The Duplicate button is drawn as it is today, its icon and its word,
   without its key.
@@ -78,6 +84,11 @@ loaded yet, a save or a fetch running. And only in the Data view. Then:
 
 - The first `y` copies the cell, as it does today, and waits for a second
   the way the first `d` of `dd` waits. The wait ends as that one does.
+- As built: that wait now ends at any key press, for every first key
+  (`d`, `c`, `g`, `z`, `y`). It did not end at a key the grid took before
+  the letters were read (the arrows, Page Up and Down, Home, End, Space):
+  `d`, Down, `d` dropped the new row the cursor had come to, and `y`,
+  Down, `y` would have yanked a row where two cells were copied.
 - The second `y` yanks the cursor's row: the tab keeps its values (see 3).
   The status line says "row yanked". It is read wherever the first copies
   the cell, in the Data view: with the keys on the grid, or on a field of
@@ -89,13 +100,16 @@ loaded yet, a save or a fetch running. And only in the Data view. Then:
   as Mod+Shift+C puts none.
 - `p` and `P` are read with the letters that edit (`i`, `o`, `O`, ...), and
   under their rule: alone in their frame. With nothing yanked they do
-  nothing. With no cell selected the copy goes to the top.
+  nothing. As built: nothing at all, an open editor stays open too. With no cell selected the copy goes to the top.
 - A yank stays until the next one, or until its tab closes. It survives a
   reload, a sort, a filter, a save and Discard. `p` can be pressed again
   for another copy.
 - A yank is its tab's: it is not put into another table.
 - The row panel's footer shows `yy p duplicate` as a live key where a copy
   can be made, no longer dashed and faded. `dd delete` stays as it is.
+  As built: a key that works is named to a screen reader as text, since
+  it is no button to press, and a key that waits says its reason to a
+  screen reader as it says it under the pointer.
 
 ### 3. What a yank holds
 
@@ -122,7 +136,7 @@ is made, in this order. The first that applies wins.
 | 4 | Of the primary key (`Structure::primary_key`) | unset | cleared (primary key) |
 | 5 | Alone in a unique index | unset | cleared (unique) |
 | 6 | Of a binary type, or holding bytes | unset | not copied (binary) |
-| 7 | Holding text over `MAX_EDIT_BYTES` | unset | not copied (too large) |
+| 7 | Holding text over `MAX_EDIT_BYTES`, loaded or pending | unset | not copied (too large) |
 | 8 | Anything else | the source's value | copied |
 
 - Row 5: an index with `unique` set whose `key_columns` is `Some` of one
@@ -133,6 +147,9 @@ is made, in this order. The first that applies wins.
   compares (`key_columns` is `None`: an expression, MySQL's prefix,
   another collation) clears none. The copy holds the value and the
   database judges the save, as it does for an index of several columns.
+- As built: on SQLite another collation goes unseen (`IndexInfo::key_columns`
+  is `Some` there, as its own comment says), so such an index clears its
+  column on that engine.
 - A primary key of several columns is cleared whole. A unique index of
   several columns clears none: the copy holds them and the database judges
   the save, as the insert spec has it.

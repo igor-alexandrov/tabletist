@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, egui/eframe (the crmne forks). Spec: `docs/superpowers/specs/2026-10-10-row-duplication-design.md` ("spec N" below is a section of its Behavior, "test N" an entry of its Tests). It is the first half of run 3 of `docs/superpowers/specs/2026-10-07-inserting-rows-design.md`.
 
-Status: written, not built.
+Status: built. Each task's blocks are the plan's as written. Where a task's review changed what was built, the table below says so (rows h to n), and the spec has it under "As built".
 
 ---
 
@@ -43,12 +43,19 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 | e | Section 4's reasons "in brackets" | `identity`, `generated`, `primary key`, `unique`, `unknown`, `binary`, `too large` | The table's own words |
 | f | `YankRow` under a prompt about pending changes | Not among the actions dropped there. `DuplicateRow` and `PutRow` are, as `AddRow` is | A yank changes nothing that is pending |
 | g | Spec 4's row 7 names a loaded text over the limit | A pending text over it is not copied either | The spec asks it of the value the yank holds, whichever it is. An editor caps what is typed, so it is rare |
+| h | Mod+D and a click in one frame: not in the spec | The press is taken and no copy is made, as Mod+I has it (task 3's review) | The click selects its row once the frame is drawn: the copy would be of the row the selection leaves |
+| i | "The wait ends as that one does" | A first key's wait now ends at any key press, in its own commit after task 4 | Task 4's review: `y`, Down, `y` yanked the row, since a key the grid took first never reached the letters. `d`, Down, `d` had the same gap before |
+| j | The terminal footer's live key | Named to a screen reader as text, not as a button, and a waiting key's reason reaches a screen reader (task 5's review) | A button that cannot be pressed was announced as one |
+| k | `p` with nothing yanked | Nothing at all: an open editor stays open. The copy is made from the tab's yank in place, without cloning it (task 2's review) | Its own words said "nothing", and a yank can hold megabytes |
+| l | What a copy could not take was `Left` in this plan | `NotCopied`, and `Copied::not_copied` (task 1's review) | `Left::Binary` reads wrong in views full of left and right |
+| m | "and N more" in the form's line | One phrase with its number, the msgid `sql_complete.rs` has (task 6's review) | A translation puts the number where it reads |
+| n | The guide's section | Says `256 KiB` as the pages do, how the Omarchy look shows a required cell, and that an index over an expression or part of a column does not count (task 8's review) | Each sentence was held to the code |
 
 ## File map
 
 | File | What changes |
 |---|---|
-| `src/edit.rs` | `Kept`, `Yank`, `Cleared`, `Left`, `Copied`, `Duplicate`; `Table::yank`, `Table::duplicate`, `Table::first_to_fill`; `NewRow::made`, `NewRow::cleared_unique`; `Edits::add_copy` (task 1) |
+| `src/edit.rs` | `Kept`, `Yank`, `Cleared`, `NotCopied`, `Copied`, `Duplicate`; `Table::yank`, `Table::duplicate`, `Table::first_to_fill`; `NewRow::made`, `NewRow::cleared_unique`; `Edits::add_copy` (task 1) |
 | `src/model.rs` | `Action::DuplicateRow`, `YankRow`, `PutRow`; `ObjectTab::yanked` (task 2) |
 | `src/app.rs` | the three actions in `App::apply` (task 2) |
 | `src/app/editing.rs` | `duplicate_row`, `yank_row`, `put_row`, `put_copy`; `add_row` split into `takes_rows` and `settle_new_row` (task 2) |
@@ -67,6 +74,8 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 ### Task 1: What a copy of a row holds
 
 Everything here is decided from the page and the structure alone. Nothing of the app is read, and no view changes.
+
+As built, after its review: what a copy could not take is `NotCopied` (and `Copied::not_copied`), the reasons a column is cleared are found by a private `Table::cleared`, and a tenth test holds that a yank is put by its columns' names on a page that has changed since. The blocks below are the plan's as written, but for those names.
 
 **Files:**
 - Modify: `src/edit.rs` (`NewRow` near line 808; `impl Table` near line 283; `Edits::add_row` near line 1176; its `mod tests` from line 1851)
@@ -172,7 +181,7 @@ They use two helpers the module's tests have already: `text(value)`, a loaded te
             ])
         );
         assert_eq!(copy.made.copied, ["kind", "image_data", "created_at"]);
-        assert!(copy.made.left.is_empty());
+        assert!(copy.made.not_copied.is_empty());
         assert_eq!(set_in(&copy, 0), None);
         assert_eq!(set_in(&copy, 1), None);
         assert_eq!(set_in(&copy, 2), Some(&text_of("ebook")));
@@ -314,14 +323,14 @@ They use two helpers the module's tests have already: `text(value)`, a loaded te
         let mut cells = BTreeMap::new();
         cells.insert((1, 1), pending(NewValue::Text(long.clone())));
         let over = table.duplicate(&table.yank(1, &cells).unwrap());
-        assert!(over.made.left.contains(&("publisher_id".to_owned(), Left::TooLarge)));
+        assert!(over.made.not_copied.contains(&("publisher_id".to_owned(), NotCopied::TooLarge)));
         let copy = copy_of(&structure, &page);
         assert_eq!(
-            copy.made.left,
+            copy.made.not_copied,
             [
-                ("kind".to_owned(), Left::Binary),
-                ("created_at".to_owned(), Left::TooLarge),
-                ("thumbnail".to_owned(), Left::Binary),
+                ("kind".to_owned(), NotCopied::Binary),
+                ("created_at".to_owned(), NotCopied::TooLarge),
+                ("thumbnail".to_owned(), NotCopied::Binary),
             ]
         );
         assert_eq!(copy.made.copied, ["publisher_id", "image_data"]);
@@ -335,7 +344,7 @@ They use two helpers the module's tests have already: `text(value)`, a loaded te
             row.push(text("x"));
         }
         let copy = copy_of(&structure, &page);
-        assert_eq!(copy.made.left, [("added_since".to_owned(), Left::Unknown)]);
+        assert_eq!(copy.made.not_copied, [("added_since".to_owned(), NotCopied::Unknown)]);
         assert_eq!(set_in(&copy, 5), None);
     }
 
@@ -405,7 +414,7 @@ They use two helpers the module's tests have already: `text(value)`, a loaded te
 - [ ] **Step 2: Run them to see them fail.**
 
 Run: `~/.cargo/bin/cargo test --locked --lib a_yank_holds`
-Expected: it does not compile: `Duplicate`, `Kept`, `Cleared`, `Left`, `Table::yank`, `Table::duplicate`, `Edits::add_copy`, `NewRow::made` are not there.
+Expected: it does not compile: `Duplicate`, `Kept`, `Cleared`, `NotCopied`, `Table::yank`, `Table::duplicate`, `Edits::add_copy`, `NewRow::made` are not there.
 
 - [ ] **Step 3: Give a new row what it was made as.** In `src/edit.rs`, `NewRow` gains a field and a method. The struct becomes:
 
@@ -487,7 +496,7 @@ pub enum Cleared {
 
 /// Why a copy of a row could not take a column's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Left {
+pub enum NotCopied {
     /// The structure does not list the column, or the page names it twice.
     Unknown,
     /// Bytes: a pending value has no form for them.
@@ -504,7 +513,7 @@ pub struct Copied {
     /// where the source had nothing set.
     pub copied: Vec<String>,
     pub cleared: Vec<(String, Cleared)>,
-    pub left: Vec<(String, Left)>,
+    pub not_copied: Vec<(String, NotCopied)>,
 }
 
 /// A copy of a row, before it is a new row of the set.
@@ -573,7 +582,7 @@ pub struct Duplicate {
         for (col, meta) in self.page.columns.iter().enumerate() {
             let name = &meta.name;
             let Some(column) = self.column(col) else {
-                made.left.push((name.clone(), Left::Unknown));
+                made.not_copied.push((name.clone(), NotCopied::Unknown));
                 continue;
             };
             let cleared = if column.identity {
@@ -595,18 +604,18 @@ pub struct Duplicate {
             let held = held.find(|(of, _)| of == name).map(|(_, held)| held);
             let class = column_class(self.dialect, &column.type_name);
             let left = match held {
-                _ if class == ColumnClass::Binary => Some(Left::Binary),
-                Some(Kept::Loaded(Value::Bytes(_))) => Some(Left::Binary),
+                _ if class == ColumnClass::Binary => Some(NotCopied::Binary),
+                Some(Kept::Loaded(Value::Bytes(_))) => Some(NotCopied::Binary),
                 Some(Kept::Loaded(Value::Text(text))) if text.len() > MAX_EDIT_BYTES => {
-                    Some(Left::TooLarge)
+                    Some(NotCopied::TooLarge)
                 }
                 Some(Kept::Pending(NewValue::Text(text))) if text.len() > MAX_EDIT_BYTES => {
-                    Some(Left::TooLarge)
+                    Some(NotCopied::TooLarge)
                 }
                 _ => None,
             };
             if let Some(why) = left {
-                made.left.push((name.clone(), why));
+                made.not_copied.push((name.clone(), why));
                 continue;
             }
             made.copied.push(name.clone());
@@ -1974,7 +1983,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```rust
     #[test]
     fn a_copys_line_names_its_columns_and_why_each_was_left() {
-        use crate::edit::{Cleared, Copied, Left};
+        use crate::edit::{Cleared, Copied, NotCopied};
         let names = |names: &[&str]| -> Vec<String> {
             names.iter().map(|name| (*name).to_owned()).collect()
         };
@@ -1985,7 +1994,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
                 ("id".into(), Cleared::Identity),
                 ("isbn".into(), Cleared::Unique),
             ],
-            left: vec![("cover".into(), Left::Binary)],
+            not_copied: vec![("cover".into(), NotCopied::Binary)],
         };
         assert_eq!(
             copy_line(&made, &Look::macos(), locale),
@@ -2012,7 +2021,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
                 ("a".into(), Cleared::Generated),
                 ("b".into(), Cleared::PrimaryKey),
             ],
-            left: vec![("c".into(), Left::TooLarge), ("d".into(), Left::Unknown)],
+            not_copied: vec![("c".into(), NotCopied::TooLarge), ("d".into(), NotCopied::Unknown)],
         };
         assert_eq!(
             copy_line(&all, &Look::macos(), locale),
@@ -2092,7 +2101,7 @@ and in the literal, after `keyless: table.key().is_none(),`:
 /// is left out. The words are the look's, and a column's name keeps its
 /// own case, as it does in the status line.
 fn copy_line(made: &crate::edit::Copied, look: &Look, locale: crate::i18n::Locale) -> String {
-    use crate::edit::{Cleared, Left};
+    use crate::edit::{Cleared, NotCopied};
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let name = |name: &str| format::display_safe(name).into_owned();
     let mut said = Vec::new();
@@ -2126,20 +2135,20 @@ fn copy_line(made: &crate::edit::Copied, look: &Look, locale: crate::i18n::Local
     if !cleared.is_empty() {
         said.push(format!("{}: {}.", say("Cleared"), cleared.join(", ")));
     }
-    let left: Vec<String> = made
-        .left
+    let not_copied: Vec<String> = made
+        .not_copied
         .iter()
         .map(|(column, why)| {
             let why = match why {
-                Left::Unknown => say("unknown"),
-                Left::Binary => say("binary"),
-                Left::TooLarge => say("too large"),
+                NotCopied::Unknown => say("unknown"),
+                NotCopied::Binary => say("binary"),
+                NotCopied::TooLarge => say("too large"),
             };
             format!("{} ({why})", name(column))
         })
         .collect();
-    if !left.is_empty() {
-        said.push(format!("{}: {}.", say("Not copied"), left.join(", ")));
+    if !not_copied.is_empty() {
+        said.push(format!("{}: {}.", say("Not copied"), not_copied.join(", ")));
     }
     said.join(" ")
 }
