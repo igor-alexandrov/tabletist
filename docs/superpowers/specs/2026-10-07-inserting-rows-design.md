@@ -80,7 +80,7 @@ Omarchy writes `NULL` as every row of its grid does: the inserting board's lower
 - The marker on macOS is `#1F6B35`. A selected new row stays green: only its cell takes the selection's colour. In dark mode the row is the same mix, made from the dark palette's green.
 - The Omarchy status line says what the row still needs (`publisher_id required`, in red) in insert mode too, while its first value is typed.
 - A row nothing is required of: the selection goes to the first column that takes a value, and no editor opens.
-- Column metadata (NOT NULL, DEFAULT, identity, generated, CHECK, FK, unique) comes from the schema introspection that the Structure view already loads. Don't run a new query per row. A CHECK's list of allowed values is read on all three engines, not on PostgreSQL alone.
+- Column metadata (NOT NULL, DEFAULT, identity, generated, CHECK, FK, unique) comes from the schema introspection that the Structure view already loads. Don't run a new query per row. A CHECK's list of allowed values is read on all three engines, for a text column whose comparison is exact: the app holds a typed value to the list letter for letter. On MySQL that is a collation that ends `_bin`, `_cs` or `_cs_ks` and has no `_ai_` in its name (MariaDB's `utf8mb4_uca1400_ai_cs` tells case apart and not accents); on SQLite a table whose statement names no `COLLATE`. One gap is accepted: a MySQL collation that pads (`utf8mb4_bin` is `PAD SPACE`) takes `'print '`, with a space after it, for `print`, and the app's list refuses it.
 - A column is **required** when it is NOT NULL, has no DEFAULT, and isn't identity or generated.
 - Defaults are shown only as a preview. The value is **not sent** unless the user changes it (see 6). If a default can't be shown as a literal, show its expression text, as the engine writes it: `now()` on PostgreSQL, `CURRENT_TIMESTAMP` on MySQL and SQLite.
 - Editors are the shared editors from the inspector spec. A foreign key column opens the search picker on the first keystroke, searching the referenced table by its first text column and by id. The editors by type, the picker among them, are slice 2 of the value editing spec, not a run of this one.
@@ -182,7 +182,7 @@ Omarchy writes `NULL` as every row of its grid does: the inserting board's lower
 ## Implementation notes
 
 - Extend the pending store with `Insert { temp_id, values: HashMap<Column, Value> }`. Don't create a separate store.
-- Put column insert metadata (required, default expression, identity, generated, unique) on the existing column model, filled from the introspection queries for each driver. The values a CHECK allows are read on MySQL and SQLite as they are on PostgreSQL.
+- Put column insert metadata (required, default expression, identity, generated, unique) on the existing column model, filled from the introspection queries for each driver. The values a CHECK allows are read on MySQL and SQLite as they are on PostgreSQL, for a text column that compares exactly (section 3).
 - An error of the database carries what the messages of section 9 are chosen by: the column and the constraint it names, and on MySQL the server's error number beside the SQLSTATE (1062, 1452 and 1048 share the state 23000).
 - The grid draws pinned new rows in a separate band above the virtualized body, so scrolling and virtualization don't need to know about them.
 - SQL generation lives in the per-driver writer that already builds UPDATE/DELETE. Insert ordering and batching happen there.
@@ -217,10 +217,11 @@ In runs, each its own pull request. Each commit passes `cargo fmt --check`, `car
 | 1 | The save inserts rows on the three drivers | built (pull request 102) |
 | 2 | Add a row in the grid, fill it, review it, save it | built (pull request 104) |
 | Fixes | What run 2 built and the spec draws otherwise: the row's colours, a selected new row that stays green, a default as its tag at 60%, an expression default slanted (the same face leaned over: the boards load no italic one), Omarchy's 2px bar, its `+1` in the header and what the row needs in insert mode, and of the copy the audit lists the bar's green dot and its words without a mark. The rest of that list is left where the plan's table says: to run 2b, to run 5, or to the board (`docs/superpowers/plans/2026-10-08-inserting-rows-fixes.md`) | built |
+| Groundwork | In the drivers, for runs 4 and 5: an error carries the constraint, the columns and MySQL's number, and a CHECK's list is read on MySQL and SQLite (`docs/superpowers/plans/2026-10-08-inserting-rows-driver-groundwork.md`) | built |
 | 2b | The inspector as the "New row" form, the row pinned under the header on macOS, and a name for each cell of the grid to a screen reader | |
 | 3 | Duplicate, and Down on the last row | |
-| 4 | Paste rows with its preview, rows sent together up to 100, and CHECK lists read on MySQL and SQLite | |
-| 5 | Errors and after the save: the column, the constraint and MySQL's number in an error, the message on the failing cell by error code, "Open row", "row 2 of 5", `]e` / `[e` and ⌥⌘↓ / ⌥⌘↑, "Show in sorted position" and `gs`, the filter note, and the line that says a page was reloaded | |
+| 4 | Paste rows with its preview, and rows sent together up to 100 | |
+| 5 | Errors and after the save: the message on the failing cell by error code, "Open row", "row 2 of 5", `]e` / `[e` and ⌥⌘↓ / ⌥⌘↑, "Show in sorted position" and `gs`, the filter note, and the line that says a page was reloaded | |
 
 Not runs of this spec, and asked of it above:
 

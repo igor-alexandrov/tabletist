@@ -6,6 +6,22 @@ use crate::script::{ScriptMode, refusal_sentence};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// What the database names in an error beside its words: what a failed
+/// cell is found by, and what its message is chosen by. Each part is there
+/// only where the database itself gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Named {
+    /// MySQL's error number (1062, 1452): three of its constraint
+    /// failures share one SQLSTATE. `None` on PostgreSQL and SQLite, whose
+    /// `code` tells their failures apart.
+    pub number: Option<u32>,
+    /// The constraint that was broken, or the index of a unique one.
+    pub constraint: Option<String>,
+    /// The columns the database says the failure is of. Empty where it
+    /// names a constraint alone, or nothing.
+    pub columns: Vec<String>,
+}
+
 /// Everything that can go wrong talking to a database. Messages are shown to
 /// the user as they are, so they must never contain a password.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -25,6 +41,10 @@ pub enum Error {
         message: String,
         detail: Option<String>,
         hint: Option<String>,
+        /// What the error is of, where the database says. Boxed: the
+        /// error is in every `Result` of the crate, and `Named` inline
+        /// would make it larger than clippy lets an `Err` be.
+        named: Box<Named>,
     },
     #[error("the query was cancelled")]
     Cancelled,
@@ -67,6 +87,7 @@ impl Error {
             message: message.into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         }
     }
 
@@ -125,6 +146,16 @@ mod tests {
         let error = Error::query("no such table: nope");
         assert_eq!(error.to_string(), "no such table: nope");
         assert!(matches!(error, Error::Query { code: None, .. }));
+    }
+
+    #[test]
+    fn an_error_made_from_words_alone_names_nothing() {
+        let Error::Query { named, .. } = Error::query("no such table") else {
+            panic!("a query error");
+        };
+        assert_eq!(*named, Named::default());
+        assert_eq!((named.number, named.constraint), (None, None));
+        assert!(named.columns.is_empty());
     }
 
     #[test]

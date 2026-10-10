@@ -22,11 +22,24 @@ use mysql_common::named_params::ParsedNamedParams;
 use crate::adapter::Adapter;
 use crate::script::retry_cancelled;
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result,
-    RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure, TlsMode, Value,
-    ValueKind, WriteOutcome,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
+    Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind,
+    ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure,
+    TlsMode, Value, ValueKind, WriteOutcome, column_class,
 };
+
+/// A column as `describe` reads it from `information_schema.columns`: its
+/// name, its type, whether it takes NULL, its default, its comment, its
+/// `extra` and its collation.
+type ColumnRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+);
 
 /// MySQL's `binary` character set: bytes, not text.
 const BINARY_CHARSET: u16 = 63;
@@ -233,10 +246,10 @@ impl Adapter for Conn {
 
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let at = (&object.schema, &object.name);
-        let columns: Vec<(String, String, String, Option<String>, String, String)> = self
+        let columns: Vec<ColumnRow> = self
             .catalog(
                 "SELECT column_name, column_type, is_nullable, column_default, column_comment, \
-                        COALESCE(extra, '') \
+                        COALESCE(extra, ''), COALESCE(collation_name, '') \
                  FROM information_schema.columns \
                  WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
                 at,
@@ -248,23 +261,74 @@ impl Adapter for Conn {
                 object.name
             )));
         }
+        // The conditions of the table's CHECK constraints that hold.
+        // MariaDB is asked first, by the table's name: its constraint
+        // names are a table's own, so MySQL's question below could answer
+        // with another table's. MySQL has no such column there and
+        // refuses, and is asked its own way. A server with no list at all
+        // (MySQL before 8.0.16) has no CHECK that holds either.
+        let of_table = self
+            .catalog::<String>(
+                "SELECT check_clause FROM information_schema.check_constraints \
+                 WHERE constraint_schema = ? AND table_name = ? \
+                 ORDER BY constraint_name",
+                at,
+            )
+            .await;
+        let checks: Vec<String> = match of_table {
+            Ok(checks) => checks,
+            Err(Error::Query { .. }) => match self
+                .catalog(
+                    "SELECT cc.check_clause \
+                     FROM information_schema.table_constraints tc \
+                     JOIN information_schema.check_constraints cc \
+                       ON cc.constraint_schema = tc.constraint_schema \
+                      AND cc.constraint_name = tc.constraint_name \
+                     WHERE tc.table_schema = ? AND tc.table_name = ? \
+                       AND tc.constraint_type = 'CHECK' AND tc.enforced = 'YES' \
+                     ORDER BY cc.constraint_name",
+                    at,
+                )
+                .await
+            {
+                Ok(checks) => checks,
+                Err(Error::Query { .. }) => Vec::new(),
+                Err(other) => return Err(other),
+            },
+            Err(other) => return Err(other),
+        };
         let columns = columns
             .into_iter()
             .map(
-                |(name, type_name, nullable, default, comment, extra)| ColumnInfo {
-                    name,
-                    type_name,
-                    nullable: nullable == "YES",
-                    default,
-                    comment: (!comment.is_empty()).then_some(comment),
-                    allowed_values: None,
-                    // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
-                    // MariaDB `VIRTUAL` or `PERSISTENT`. Not `DEFAULT_GENERATED`,
-                    // which MySQL 8 says of a default that is an expression.
-                    generated: ["VIRTUAL", "STORED", "PERSISTENT"]
-                        .iter()
-                        .any(|word| extra.to_ascii_uppercase().contains(word)),
-                    identity: extra.to_ascii_lowercase().contains("auto_increment"),
+                |(name, type_name, nullable, default, comment, extra, collation)| {
+                    // A list is the app's to hold a typed value to, letter
+                    // for letter. MySQL's default collations take `Print`
+                    // for `print`, so only a text column that tells them
+                    // apart has one here.
+                    let class = column_class(Dialect::MySql, &type_name);
+                    let text = matches!(class, ColumnClass::Text { .. });
+                    let allowed_values = (text && compares_exactly(&collation))
+                        .then(|| {
+                            checks
+                                .iter()
+                                .find_map(|check| crate::check::mysql_allowed_values(check, &name))
+                        })
+                        .flatten();
+                    ColumnInfo {
+                        name,
+                        type_name,
+                        nullable: nullable == "YES",
+                        default,
+                        comment: (!comment.is_empty()).then_some(comment),
+                        allowed_values,
+                        // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
+                        // MariaDB `VIRTUAL` or `PERSISTENT`. Not `DEFAULT_GENERATED`,
+                        // which MySQL 8 says of a default that is an expression.
+                        generated: ["VIRTUAL", "STORED", "PERSISTENT"]
+                            .iter()
+                            .any(|word| extra.to_ascii_uppercase().contains(word)),
+                        identity: extra.to_ascii_lowercase().contains("auto_increment"),
+                    }
                 },
             )
             .collect();
@@ -516,6 +580,23 @@ fn driver_parameter(text: &str) -> Result<()> {
 const MISREAD: &str = "If it stands in a quote or a comment right after a - or a /, put a space \
                        after the - or the /.";
 
+/// Whether a column of this collation holds two values apart that differ
+/// in a letter's case or its accent: what the app's list of a CHECK's
+/// values does. By the name's end, since `_cs` inside it is a language's
+/// tag (`utf8mb4_cs_0900_ai_ci` is Czech, and takes either case). MariaDB
+/// has collations that tell case apart and not accents
+/// (`utf8mb4_uca1400_ai_cs`): those are not exact.
+///
+/// One gap is left, and accepted: most of these collations pad
+/// (`utf8mb4_bin` is `PAD SPACE`), so the server takes `'print '` with a
+/// space after it for `print`, and the app's list refuses it.
+fn compares_exactly(collation: &str) -> bool {
+    ["_bin", "_cs", "_cs_ks"]
+        .iter()
+        .any(|end| collation.ends_with(end))
+        && !collation.contains("_ai_")
+}
+
 /// A raw WHERE's parameter, as a query error: there is no value for it.
 fn parameter(spelled: &str, hint: Option<&str>) -> Error {
     Error::Query {
@@ -523,6 +604,7 @@ fn parameter(spelled: &str, hint: Option<&str>) -> Error {
         message: format!("The WHERE text has a parameter ({spelled}), which has no value."),
         detail: None,
         hint: hint.map(str::to_owned),
+        named: Box::default(),
     }
 }
 
@@ -827,6 +909,7 @@ pub(crate) fn connect_error(error: mysql_async::Error) -> Error {
             message: server.message,
             detail: None,
             hint: None,
+            named: Box::default(),
         },
         mysql_async::Error::Io(IoError::Tls(tls)) => Error::Tls(tls.to_string()),
         mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer) => {
@@ -836,10 +919,66 @@ pub(crate) fn connect_error(error: mysql_async::Error) -> Error {
     }
 }
 
+/// What the server's error `number` with this `message` is of. MySQL says
+/// it only in the message, so the parts it quotes are read by the number:
+/// never by the message's words, which follow the server's language.
+pub(crate) fn named(number: u32, message: &str) -> Named {
+    // What stands between the first two of `quote` from `from` on.
+    let quoted = |from: &str, quote: char| -> Option<String> {
+        let rest = &from[from.find(quote)? + quote.len_utf8()..];
+        Some(rest[..rest.find(quote)?].to_owned())
+    };
+    let (constraint, columns) = match number {
+        // ER_DUP_ENTRY: "... for key 'table.key'", the key last. The
+        // value comes before it and may hold a quote of its own. The key
+        // is what follows the first dot: its name can hold one (an older
+        // Prisma's `User.email_unique`). So can a table's, and a server
+        // that names no table (before 8.0.19, MariaDB) leaves no dot of
+        // its own: a dotted table there, or a dotted key here, is read
+        // short, and then names a key the structure does not have.
+        1062 => {
+            let key = message
+                .strip_suffix('\'')
+                .and_then(|rest| rest.rsplit('\'').next());
+            let key = key.map(|key| key.split_once('.').map_or(key, |(_, key)| key).to_owned());
+            (key, Vec::new())
+        }
+        // ER_NO_REFERENCED_ROW_2: the constraint as it was defined, which
+        // is SQL and not translated.
+        1452 => {
+            let constraint = message
+                .split_once("CONSTRAINT ")
+                .and_then(|(_, rest)| quoted(rest, '`'));
+            let columns = message
+                .split_once("FOREIGN KEY (")
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .map(|(columns, _)| {
+                    columns
+                        .split(',')
+                        .map(|column| column.trim().trim_matches('`').to_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            (constraint, columns)
+        }
+        // ER_BAD_NULL_ERROR, ER_NO_DEFAULT_FOR_FIELD: the column, quoted.
+        1048 | 1364 => (None, quoted(message, '\'').into_iter().collect()),
+        // ER_CHECK_CONSTRAINT_VIOLATED: the constraint, quoted.
+        3819 => (quoted(message, '\''), Vec::new()),
+        _ => (None, Vec::new()),
+    };
+    Named {
+        number: Some(number),
+        constraint,
+        columns,
+    }
+}
+
 pub(crate) fn query_error(error: mysql_async::Error) -> Error {
     match error {
         mysql_async::Error::Server(server) if server.code == QUERY_INTERRUPTED => Error::Cancelled,
         mysql_async::Error::Server(server) => Error::Query {
+            named: Box::new(named(u32::from(server.code), &server.message)),
             code: Some(server.state),
             message: server.message,
             detail: None,
@@ -920,6 +1059,99 @@ fn params(values: &[Value]) -> Params {
 mod tests {
     use super::*;
     use mysql_async::Value as My;
+
+    #[test]
+    fn a_collation_compares_exactly_where_it_tells_case_and_accents_apart() {
+        for exact in [
+            "utf8mb4_bin",
+            "utf8mb4_0900_bin",
+            "latin1_bin",
+            "latin1_general_cs",
+            "utf8mb4_0900_as_cs",
+            "utf8mb4_ja_0900_as_cs_ks",
+        ] {
+            assert!(compares_exactly(exact), "{exact}");
+        }
+        for loose in [
+            "utf8mb4_0900_ai_ci",
+            "utf8mb4_general_ci",
+            "utf8mb4_0900_as_ci",
+            // Czech, which takes either case: `_cs` is its language here.
+            "utf8mb4_cs_0900_ai_ci",
+            // MariaDB's: they tell case apart and take `resume` for
+            // `résumé`.
+            "utf8mb4_uca1400_ai_cs",
+            "utf8mb4_uca1400_czech_ai_cs",
+            // A column that is not text has none.
+            "",
+        ] {
+            assert!(!compares_exactly(loose), "{loose}");
+        }
+    }
+
+    #[test]
+    fn a_failure_is_named_from_its_number_and_what_the_message_quotes() {
+        let of = |number: u32, message: &str| {
+            let named = named(number, message);
+            (named.number, named.constraint, named.columns)
+        };
+        // The messages are MySQL 8.4's, read from a live server.
+        assert_eq!(
+            of(
+                1062,
+                "Duplicate entry '978-1-4028-9462-6' for key 'audit_books.isbn'"
+            ),
+            (Some(1062), Some("isbn".into()), vec![])
+        );
+        // A key's name can hold a dot (MySQL 8.4 said this one too): what
+        // follows the table's is the key.
+        assert_eq!(
+            of(1062, "Duplicate entry 'x' for key 'books.isbn.v2'"),
+            (Some(1062), Some("isbn.v2".into()), vec![])
+        );
+        // Before 8.0.19 the key came without its table.
+        assert_eq!(
+            of(1062, "Duplicate entry 'it''s' for key 'isbn'"),
+            (Some(1062), Some("isbn".into()), vec![])
+        );
+        assert_eq!(
+            of(
+                1452,
+                "Cannot add or update a child row: a foreign key constraint fails \
+                 (`tabletist`.`audit_book_covers`, CONSTRAINT `audit_book_covers_ibfk_1` \
+                 FOREIGN KEY (`publisher_id`) REFERENCES `audit_publishers` (`id`))"
+            ),
+            (
+                Some(1452),
+                Some("audit_book_covers_ibfk_1".into()),
+                vec!["publisher_id".to_owned()]
+            )
+        );
+        assert_eq!(
+            of(1048, "Column 'publisher_id' cannot be null"),
+            (Some(1048), None, vec!["publisher_id".to_owned()])
+        );
+        assert_eq!(
+            of(1364, "Field 'publisher_id' doesn't have a default value"),
+            (Some(1364), None, vec!["publisher_id".to_owned()])
+        );
+        assert_eq!(
+            of(
+                3819,
+                "Check constraint 'audit_book_covers_kind_check' is violated."
+            ),
+            (
+                Some(3819),
+                Some("audit_book_covers_kind_check".into()),
+                vec![]
+            )
+        );
+        // Any other error keeps its number and names nothing.
+        assert_eq!(
+            of(1146, "Table 'tabletist.nope' doesn't exist"),
+            (Some(1146), None, vec![])
+        );
+    }
 
     #[test]
     fn text_the_driver_would_rewrite_is_refused() {

@@ -23,8 +23,9 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use tabletist_db::{
-    Access, ChangeSet, ConnectSpec, Connection, Dialect, Error, HostKeys, InsertValue, NewValue,
-    ObjectRef, RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value, WriteOutcome,
+    Access, ChangeSet, ConnectSpec, Connection, Dialect, Error, HostKeys, InsertValue, Named,
+    NewValue, ObjectRef, RowInsert, RowQuery, Secrets, StopFlag, Structure, TlsMode, Value,
+    WriteOutcome,
 };
 
 /// Harbor Press, as the design's picker finds it.
@@ -99,6 +100,28 @@ fn failure(outcome: WriteOutcome) -> Error {
     match outcome {
         WriteOutcome::FailedInsert { error, .. } => error,
         other => panic!("the save was to fail on a new row: {other:?}"),
+    }
+}
+
+/// What the database names in the failure of `changes`' save.
+async fn names(connection: &Connection, changes: &ChangeSet) -> Named {
+    match failure(save(connection, changes).await) {
+        Error::Query { named, .. } => *named,
+        other => panic!("a query error: {other:?}"),
+    }
+}
+
+fn of_constraint(name: &str) -> Named {
+    Named {
+        constraint: Some(name.into()),
+        ..Named::default()
+    }
+}
+
+fn of_column(name: &str) -> Named {
+    Named {
+        columns: vec![name.into()],
+        ..Named::default()
     }
 }
 
@@ -257,8 +280,8 @@ mod postgres {
 
     /// Spec 9, with INS-31: PostgreSQL says which rule a new row broke by
     /// its SQLSTATE, and names the column and the value in the error's
-    /// detail. The app's `Error` has no column or constraint of its own, so
-    /// a failed cell can be worded only from this text.
+    /// detail. The error names the constraint, and the column of a NULL: what
+    /// run 5 finds a failed cell by.
     #[tokio::test]
     async fn the_bookshops_failures_as_postgres_hands_them_over() {
         let Some((admin, connection)) = bookshop().await else {
@@ -302,6 +325,15 @@ mod postgres {
             "{message}"
         );
 
+        // What each failure is of, as PostgreSQL's error names it. Held to
+        // once the tables are dropped.
+        let named = [
+            names(&connection, &cases.taken_isbn()).await,
+            names(&connection, &cases.no_publisher()).await,
+            names(&connection, &cases.null_publisher()).await,
+            names(&connection, &cases.vinyl()).await,
+        ];
+
         // Nothing of the four saves is in the tables.
         assert_eq!(count(&connection, "public", "audit_books").await, 1);
         assert_eq!(count(&connection, "public", "audit_book_covers").await, 2);
@@ -309,6 +341,17 @@ mod postgres {
         let covers = ObjectRef::new(cases.schema, cases.covers);
         assert_eq!(allowed_kinds(&connection, &covers).await, kinds());
         admin.batch_execute(DROP).await.unwrap();
+        // The constraint of a taken value, a missing parent and a refused
+        // value, the column of a NULL.
+        assert_eq!(
+            named,
+            [
+                of_constraint("audit_books_isbn_key"),
+                of_constraint("audit_book_covers_publisher_id_fkey"),
+                of_column("publisher_id"),
+                of_constraint("audit_book_covers_kind_check"),
+            ]
+        );
     }
 
     /// The statements PostgreSQL ran for `inserts` into covers of the
@@ -520,7 +563,7 @@ mod mysql {
         "CREATE TABLE audit_book_covers (
              id BIGINT AUTO_INCREMENT PRIMARY KEY,
              publisher_id BIGINT NOT NULL,
-             kind VARCHAR(64) NOT NULL DEFAULT 'print',
+             kind VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT 'print',
              image_data JSON,
              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -594,20 +637,47 @@ mod mysql {
             "Check constraint 'audit_book_covers_kind_check' is violated."
         );
 
+        // What each failure is of, read from its number and its message.
+        // Held to once the tables are dropped.
+        let named = [
+            names(&connection, &cases.taken_isbn()).await,
+            names(&connection, &cases.no_publisher()).await,
+            names(&connection, &cases.null_publisher()).await,
+            names(&connection, &cases.vinyl()).await,
+        ];
+
         assert_eq!(count(&connection, "tabletist", "audit_books").await, 1);
         assert_eq!(
             count(&connection, "tabletist", "audit_book_covers").await,
             2
         );
         admin.query_drop(DROP).await.unwrap();
+        let numbered = |number: u32, named: Named| Named {
+            number: Some(number),
+            ..named
+        };
+        assert_eq!(
+            named,
+            [
+                numbered(1062, of_constraint("isbn")),
+                numbered(
+                    1452,
+                    Named {
+                        columns: vec!["publisher_id".into()],
+                        ..of_constraint("audit_book_covers_ibfk_1")
+                    }
+                ),
+                numbered(1048, of_column("publisher_id")),
+                numbered(3819, of_constraint("audit_book_covers_kind_check")),
+            ]
+        );
     }
 
-    /// INS-32a. Spec 9: MySQL's failures are worded by their error number
+    /// Spec 9: MySQL's failures are worded by their error number
     /// (1062, 1452, 1048, 3819). A taken value, a missing parent and a NULL
     /// share the SQLSTATE 23000, so the number is what tells them apart: it
     /// is somewhere in the error the app is handed.
     #[tokio::test]
-    #[ignore = "INS-32a: the driver drops MySQL's error number for its SQLSTATE"]
     async fn a_mysql_failure_keeps_its_error_number() {
         let Some((mut admin, connection)) = bookshop("audit_number").await else {
             return;
@@ -632,21 +702,35 @@ mod mysql {
         }
     }
 
-    /// INS-25a. Spec 5: a paste is checked against a CHECK's list of
-    /// values before anything is sent. The structure says what `kind` may
-    /// hold, as it does on PostgreSQL.
+    /// Spec 5: a paste is checked against a CHECK's list of values before
+    /// anything is sent. The structure says what `kind` may hold, as it
+    /// does on PostgreSQL: `kind` compares exactly (`utf8mb4_bin`), so the
+    /// list is what the database holds a value to.
     #[tokio::test]
-    #[ignore = "INS-25a: the values a MySQL CHECK allows are not read"]
     async fn mysql_reads_the_values_a_check_allows() {
         let Some((mut admin, connection)) = bookshop("audit_check").await else {
             return;
         };
         let cases = cases("audit_check");
+        // `format` of the books has the server's default collation, which
+        // takes `Hardcover` for `hardcover`: no list is read for it.
+        let altered = admin
+            .query_drop(named(
+                "ALTER TABLE audit_books ADD CONSTRAINT audit_books_format_check \
+                 CHECK (format IN ('hardcover', 'paperback'))",
+                "audit_check",
+            ))
+            .await;
+        let books = ObjectRef::new(cases.schema, cases.books.clone());
+        let books = connection.describe(&books).await;
         let covers = ObjectRef::new(cases.schema, cases.covers);
-        let allowed = allowed_kinds(&connection, &covers).await;
-        // Before it is asked for: a test that fails leaves no tables behind.
+        let covers = connection.describe(&covers).await;
+        // Before anything is asked of them: a test that fails leaves no
+        // tables behind.
         admin.query_drop(named(DROP, "audit_check")).await.unwrap();
-        assert_eq!(allowed, kinds());
+        altered.unwrap();
+        assert_eq!(column(&covers.unwrap(), "kind").allowed_values, kinds());
+        assert_eq!(column(&books.unwrap(), "format").allowed_values, None);
     }
 }
 
@@ -695,11 +779,16 @@ mod sqlite {
             (9100000000000000001, 'ebook')";
 
     async fn bookshop() -> (Connection, tempfile::TempDir) {
+        made_with(CREATE).await
+    }
+
+    /// A database of its own, made with `sql`.
+    async fn made_with(sql: &str) -> (Connection, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bookshop.db");
         rusqlite::Connection::open(&path)
             .unwrap()
-            .execute_batch(CREATE)
+            .execute_batch(sql)
             .unwrap();
         let connection = Connection::connect_with(
             &ConnectSpec::sqlite(&path),
@@ -744,20 +833,95 @@ mod sqlite {
         assert_eq!(code.as_deref(), Some("275"));
         assert_eq!(message, "CHECK constraint failed: book_covers_kind_check");
 
+        // What each failure is of. The foreign key's names nothing.
+        assert_eq!(
+            names(&connection, &cases.taken_isbn()).await,
+            of_column("isbn")
+        );
+        assert_eq!(
+            names(&connection, &cases.no_publisher()).await,
+            Named::default()
+        );
+        assert_eq!(
+            names(&connection, &cases.null_publisher()).await,
+            of_column("publisher_id")
+        );
+        assert_eq!(
+            names(&connection, &cases.vinyl()).await,
+            of_constraint("book_covers_kind_check")
+        );
+
         assert_eq!(count(&connection, "main", "books").await, 1);
         assert_eq!(count(&connection, "main", "book_covers").await, 2);
     }
 
-    /// INS-25a. Spec 5: a paste is checked against a CHECK's list of
-    /// values before anything is sent. The structure says what `kind` may
-    /// hold, as it does on PostgreSQL.
+    /// Spec 5: a paste is checked against a CHECK's list of values before
+    /// anything is sent. The structure says what `kind` may hold, as it
+    /// does on PostgreSQL.
     #[tokio::test]
-    #[ignore = "INS-25a: the values a SQLite CHECK allows are not read"]
     async fn sqlite_reads_the_values_a_check_allows() {
         let (connection, _dir) = bookshop().await;
         let cases = cases();
         let covers = ObjectRef::new(cases.schema, cases.covers);
         assert_eq!(allowed_kinds(&connection, &covers).await, kinds());
+    }
+
+    /// Spec 3: a list is read where the database would agree with it,
+    /// letter for letter. A table whose statement names a collation has
+    /// none (SQLite takes `Print` for `print` under `NOCASE`, and does not
+    /// say which column that is), nor has a column that is not text. A
+    /// column's name is matched as SQLite matches it, whatever its case.
+    #[tokio::test]
+    async fn sqlite_reads_a_list_only_where_a_value_compares_exactly() {
+        let (connection, _dir) = made_with(
+            "CREATE TABLE loose (
+                 kind TEXT COLLATE NOCASE CHECK (kind IN ('print', 'ebook')),
+                 format TEXT CHECK (format IN ('hardcover', 'paperback'))
+             );
+             CREATE TABLE exact (
+                 Kind TEXT CHECK (kind IN ('print', 'ebook')),
+                 pages INTEGER CHECK (pages IN ('1', '2')),
+                 É TEXT,
+                 é TEXT CHECK (é IN ('x'))
+             );
+             CREATE TABLE mirrored (
+                 É TEXT CHECK (É IN ('x')),
+                 é TEXT
+             );
+             -- A file can keep a statement as bytes: it is read all the same.
+             PRAGMA writable_schema = ON;
+             UPDATE sqlite_master SET sql = CAST(sql AS BLOB) WHERE name = 'exact';
+             PRAGMA writable_schema = OFF",
+        )
+        .await;
+        let allowed =
+            |structure: &Structure, name: &str| column(structure, name).allowed_values.clone();
+        let loose = connection
+            .describe(&ObjectRef::new("main", "loose"))
+            .await
+            .unwrap();
+        assert_eq!(allowed(&loose, "kind"), None);
+        assert_eq!(allowed(&loose, "format"), None);
+        let exact = connection
+            .describe(&ObjectRef::new("main", "exact"))
+            .await
+            .unwrap();
+        assert_eq!(
+            allowed(&exact, "Kind"),
+            Some(vec!["print".into(), "ebook".into()])
+        );
+        assert_eq!(allowed(&exact, "pages"), None);
+        // SQLite folds ASCII alone: these are two columns, and the list is
+        // the second's.
+        assert_eq!(allowed(&exact, "É"), None);
+        assert_eq!(allowed(&exact, "é"), Some(vec!["x".into()]));
+        // And the other way round, the list is the first's.
+        let mirrored = connection
+            .describe(&ObjectRef::new("main", "mirrored"))
+            .await
+            .unwrap();
+        assert_eq!(allowed(&mirrored, "É"), Some(vec!["x".into()]));
+        assert_eq!(allowed(&mirrored, "é"), None);
     }
 
     /// Spec 8: "SQLite uses `RETURNING *`. The app ships its own SQLite,

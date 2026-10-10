@@ -14,7 +14,7 @@ use tokio_postgres::{SimpleQueryMessage, Socket};
 use crate::adapter::Adapter;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result,
+    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
     RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure, Value, ValueKind,
     WriteOutcome, value_from_pg_text,
 };
@@ -156,6 +156,7 @@ pub(crate) fn connect_error(error: tokio_postgres::Error) -> Error {
             message: db.message().to_owned(),
             detail: db.detail().map(str::to_owned),
             hint: db.hint().map(str::to_owned),
+            named: Box::default(),
         };
     }
     if crate::tls::is_tls_error(&error) {
@@ -194,6 +195,14 @@ pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
             message: db.message().to_owned(),
             detail: db.detail().map(str::to_owned),
             hint: db.hint().map(str::to_owned),
+            // The server's own fields, which do not change with the
+            // language of its messages. It names a NOT NULL failure's
+            // column, and the constraint of the others.
+            named: Box::new(Named {
+                number: None,
+                constraint: db.constraint().map(str::to_owned),
+                columns: db.column().map(str::to_owned).into_iter().collect(),
+            }),
         };
     }
     Error::ConnectionLost(describe(&error))

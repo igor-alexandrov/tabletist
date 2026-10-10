@@ -15,10 +15,10 @@ use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 use crate::adapter::Adapter;
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error,
-    ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage,
-    RowQuery, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
-    Structure, Value, ValueKind, WriteOutcome,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
+    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
+    RowPage, RowQuery, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult,
+    StopFlag, Structure, Value, ValueKind, WriteOutcome, column_class,
 };
 
 mod fence;
@@ -36,6 +36,47 @@ pub(crate) struct Conn {
     journal_mode: String,
 }
 
+/// What a failure with this extended result `code` and `message` is of.
+/// SQLite's messages are its own English and no setting's, so what follows
+/// the colon is read as it stands.
+fn named(code: i32, message: &str) -> Named {
+    let Some((_, what)) = message.split_once(": ") else {
+        return Named::default();
+    };
+    // `table.column`, a column for each part.
+    let columns = || -> Vec<String> {
+        what.split(", ")
+            .map(|part| part.rsplit('.').next().unwrap_or(part).to_owned())
+            .collect()
+    };
+    match code {
+        // SQLITE_CONSTRAINT_UNIQUE, _PRIMARYKEY and _ROWID. An index over
+        // an expression is named in the place of its columns.
+        2067 | 1555 | 2579 => match what.strip_prefix("index '") {
+            Some(index) => Named {
+                constraint: Some(index.trim_end_matches('\'').to_owned()),
+                ..Named::default()
+            },
+            None => Named {
+                columns: columns(),
+                ..Named::default()
+            },
+        },
+        // SQLITE_CONSTRAINT_NOTNULL.
+        1299 => Named {
+            columns: columns(),
+            ..Named::default()
+        },
+        // SQLITE_CONSTRAINT_CHECK: the constraint's name, or its text
+        // where it has none.
+        275 => Named {
+            constraint: Some(what.to_owned()),
+            ..Named::default()
+        },
+        _ => Named::default(),
+    }
+}
+
 /// Maps rusqlite's errors onto ours.
 pub(crate) fn map_error(error: rusqlite::Error) -> Error {
     match &error {
@@ -46,6 +87,7 @@ pub(crate) fn map_error(error: rusqlite::Error) -> Error {
                 ErrorCode::CannotOpen | ErrorCode::NotADatabase => Error::Connect(message),
                 _ => Error::Query {
                     code: Some(failure.extended_code.to_string()),
+                    named: Box::new(named(failure.extended_code, &message)),
                     message,
                     detail: None,
                     hint: None,
@@ -601,6 +643,7 @@ fn filter_denied(error: Error) -> Error {
                 .into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         },
         other => other,
     }
@@ -964,15 +1007,15 @@ impl Adapter for Conn {
 
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
     // A table WITHOUT ROWID has no rowid for a column to be the alias of.
-    let rowid = connection
+    let listed = connection
         .query_row(
             "SELECT wr = 0 FROM pragma_table_list(?1) WHERE schema = ?2",
             [&object.name, &object.schema],
             |row| row.get::<_, bool>(0),
         )
         .optional()
-        .map_err(map_error)?
-        .unwrap_or(false);
+        .map_err(map_error)?;
+    let rowid = listed.unwrap_or(false);
     // The alias has no index: the rowid is the key. `INTEGER PRIMARY KEY
     // DESC` reads the same in the column list and is no alias (an old
     // exception SQLite keeps): its key has an index of its own, and an
@@ -985,6 +1028,46 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         )
         .map_err(map_error)?
         > 0;
+    // The table's CHECK conditions, from the statement it was made with:
+    // SQLite keeps them nowhere else. A table with no statement (a virtual
+    // one's shadow, an internal one) has none, and a table that is not
+    // there is not asked for: its schema may not be there either.
+    let made: Option<String> = match listed {
+        Some(_) => connection
+            .query_row(
+                &format!(
+                    "SELECT CAST(sql AS TEXT) FROM {}.sqlite_master \
+                     WHERE type = 'table' AND name = ?1",
+                    Dialect::Sqlite.quote_ident(&object.schema)
+                ),
+                [&object.name],
+                // Lossy, as every name of this file is read: a statement
+                // can hold bytes that are no UTF-8, and a table with such
+                // a name is still described. Cast, because a file can
+                // keep it as a blob, which is no reason to fail either.
+                |row| optional_text(row, 0),
+            )
+            .optional()
+            .map_err(map_error)?
+            .flatten(),
+        None => None,
+    };
+    // A list is the app's to hold a typed value to, letter for letter. A
+    // column that compares otherwise (`COLLATE NOCASE`) takes what the
+    // list would refuse, and SQLite does not say which column that is: a
+    // table whose statement names a collation anywhere has no lists.
+    let made = made.filter(|sql| !crate::check::names_a_collation(sql));
+    let checks = made.as_deref().map(crate::check::in_create_table);
+    let checks = checks.unwrap_or_default();
+    // SQLite matches a name without regard to the case of its ASCII
+    // letters, and no others: `É` and `é` are two columns. The parser folds
+    // a bare name the same way and keeps a quoted one as written.
+    let allowed = |name: &str| {
+        checks.iter().find_map(|check| {
+            crate::check::allowed_values(check, name)
+                .or_else(|| crate::check::allowed_values(check, &name.to_ascii_lowercase()))
+        })
+    };
     let mut statement = connection
         .prepare(
             "SELECT name, type, \"notnull\", dflt_value, hidden, pk \
@@ -995,13 +1078,17 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .query_map([&object.name, &object.schema], |row| {
             let type_name = optional_text(row, 1)?.unwrap_or_default();
             let keyed = row.get::<_, i64>(5)? > 0;
+            let name = text(row, 0)?;
+            // A text column's alone, as on PostgreSQL.
+            let class = column_class(Dialect::Sqlite, &type_name);
+            let texts = matches!(class, ColumnClass::Text { .. });
             Ok((
                 ColumnInfo {
-                    name: text(row, 0)?,
+                    allowed_values: texts.then(|| allowed(&name)).flatten(),
+                    name,
                     nullable: row.get::<_, i64>(2)? == 0,
                     default: optional_text(row, 3)?,
                     comment: None,
-                    allowed_values: None,
                     // 2 is a virtual generated column, 3 a stored one.
                     generated: matches!(row.get::<_, i64>(4)?, 2 | 3),
                     // Decided below, once the key's columns are counted.
@@ -1194,7 +1281,50 @@ fn foreign_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{code_only, counts_changes};
+    use super::{code_only, counts_changes, named};
+
+    #[test]
+    fn a_failure_is_named_from_its_code_and_its_message() {
+        let of = |code: i32, message: &str| {
+            let named = named(code, message);
+            (named.constraint, named.columns)
+        };
+        // SQLITE_CONSTRAINT_UNIQUE, of one column and of two.
+        assert_eq!(
+            of(2067, "UNIQUE constraint failed: books.isbn"),
+            (None, vec!["isbn".to_owned()])
+        );
+        assert_eq!(
+            of(2067, "UNIQUE constraint failed: books.title, books.format"),
+            (None, vec!["title".to_owned(), "format".to_owned()])
+        );
+        // Of an index over an expression, which has no column to name.
+        assert_eq!(
+            of(2067, "UNIQUE constraint failed: index 'books_lower_isbn'"),
+            (Some("books_lower_isbn".into()), vec![])
+        );
+        // SQLITE_CONSTRAINT_PRIMARYKEY and SQLITE_CONSTRAINT_NOTNULL.
+        assert_eq!(
+            of(1555, "UNIQUE constraint failed: books.id"),
+            (None, vec!["id".to_owned()])
+        );
+        assert_eq!(
+            of(1299, "NOT NULL constraint failed: book_covers.publisher_id"),
+            (None, vec!["publisher_id".to_owned()])
+        );
+        // SQLITE_CONSTRAINT_CHECK names the constraint.
+        assert_eq!(
+            of(275, "CHECK constraint failed: book_covers_kind_check"),
+            (Some("book_covers_kind_check".into()), vec![])
+        );
+        // SQLITE_CONSTRAINT_FOREIGNKEY names nothing, and no other error.
+        assert_eq!(of(787, "FOREIGN KEY constraint failed"), (None, vec![]));
+        assert_eq!(of(1, "no such table: nope"), (None, vec![]));
+        assert_eq!(
+            named(2067, "UNIQUE constraint failed: books.isbn").number,
+            None
+        );
+    }
 
     #[test]
     fn only_data_changes_report_a_count() {
@@ -1819,6 +1949,7 @@ mod tests {
             message: message.into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         };
         // The second is what SQLite says when the refusal comes from inside
         // a running statement.

@@ -881,6 +881,7 @@ mod tests {
             message: "no".into(),
             detail: None,
             hint: None,
+            named: Box::default(),
         };
         let refused = Error::Refused {
             line: 1,
