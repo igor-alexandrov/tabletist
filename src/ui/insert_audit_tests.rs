@@ -203,7 +203,6 @@ fn mod_d_duplicates_the_selected_row() {
 
 /// INS-02b. Spec 4: `yy` then `p` puts a copy of the row under the cursor.
 #[test]
-#[ignore = "INS-02b: yy p does not duplicate a row yet"]
 fn yy_p_duplicates_the_row_under_the_cursor() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     select(&mut harness, tab, id, (1, 2));

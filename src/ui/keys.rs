@@ -1141,7 +1141,8 @@ fn editing_keys(
 /// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
 /// the cell NULL, `D` gives it its column's default, `u` puts back what was
 /// loaded, `o` and `O` open a new row
-/// below the cursor's and above it, and `:` opens the prompt
+/// below the cursor's and above it, `p` and `P` put a copy of the yanked
+/// row there, and `:` opens the prompt
 /// that writes, discards and shows the SQL. The letters are read as the
 /// text they type, in the order they came, and taken: a letter that opens
 /// an editor or the prompt is no part of its text, and what follows it in
@@ -1196,7 +1197,12 @@ fn editing_letters(
         }
     };
     let alone = actions.is_empty();
-    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":" | "o" | "O" | "D");
+    let mine = |text: &str| {
+        matches!(
+            text,
+            "i" | "c" | "x" | "u" | ":" | "o" | "O" | "D" | "p" | "P"
+        )
+    };
     let enter = |event: &egui::Event| is_press(event, Modifiers::NONE, Key::Enter);
     ctx.input_mut(|input| {
         // A chord types nothing, though some systems send its letter as
@@ -1290,6 +1296,13 @@ fn editing_letters(
                         (None, _) => crate::edit::Place::Top,
                     };
                     actions.push(Action::AddRow { tab, id, place });
+                }
+                // A copy of the yanked row below the cursor's, or above it
+                // with the capital. It may open an editor, as `o` does.
+                "p" | "P" => {
+                    opened = true;
+                    let above = text == "P";
+                    actions.push(Action::PutRow { tab, id, above });
                 }
                 _ => {}
             }
@@ -1654,6 +1667,31 @@ fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &m
             if sql.is_some() {
                 let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
                 crate::ui::toast::say(ctx, &said);
+            }
+        }
+        // The second `y` of `yy` yanks the cursor's row, for `p` and `P`:
+        // wherever the first copied the cell, in the Data view, with the
+        // keys on the grid or on a field of the row panel. The first is
+        // the cell's `y` still, and waits as the first `d` of `dd` does.
+        let row = app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(object_tab))
+            .filter(|object| object.view == crate::model::ObjectView::Data)
+            .is_some_and(|object| object.selection.is_some());
+        if sql.is_none() && !tree && row {
+            if pending == Some('y') {
+                actions.push(Action::YankRow {
+                    tab,
+                    id: object_tab,
+                });
+                // The row for the clipboard too, where it is the page's.
+                if let Some(text) = app.copy_text(true) {
+                    ctx.copy_text(text);
+                }
+                let said = crate::i18n::gettext(app.locale, "Row yanked");
+                crate::ui::toast::say(ctx, &app.look.label(&said));
+            } else {
+                next_pending = Some('y');
             }
         }
     }

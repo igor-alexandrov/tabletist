@@ -7,7 +7,9 @@
 use egui::{Key, Modifiers};
 use tabletist_db::{IndexInfo, NewValue, ObjectKind, ObjectRef, RowPage, Structure, Value};
 
-use super::insert_audit_tests::{add, covers_as, covers_in, edits, select, selected, set};
+use super::insert_audit_tests::{
+    add, covers_as, covers_in, edits, select, selected, set, type_key,
+};
 use crate::edit::{Cleared, Order, State, new_row};
 use crate::model::{
     Action, CellPos, ConnTabId, Dialog, EditStart, ObjectView, Pane, SaveBlock, TabId,
@@ -511,4 +513,116 @@ fn mod_d_in_the_frame_of_a_click_makes_no_copy() {
     assert_eq!(edits(&harness, tab, id).added.len(), 1);
     let row = newest(&harness, tab, id);
     assert_eq!(value(&harness, tab, id, (row, 2)), text("ebook"));
+}
+
+// The terminal look's keys.
+
+fn yy(harness: &mut Harness) {
+    type_key(harness, Key::Y, "y");
+    type_key(harness, Key::Y, "y");
+}
+
+/// Test 2: `yy` then `p` puts a copy below the cursor's row, `P` above.
+#[test]
+fn yy_then_p_puts_a_copy_below_and_capital_p_above() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, (1, 2));
+    yy(&mut harness);
+    assert!(yanked(&harness, tab, id));
+    type_key(&mut harness, Key::P, "p");
+    let below = newest(&harness, tab, id);
+    assert_eq!(shown(&harness, tab, id), [0, 1, below, 2]);
+    select(&mut harness, tab, id, (0, 2));
+    type_key(&mut harness, Key::P, "P");
+    let above = newest(&harness, tab, id);
+    assert_eq!(shown(&harness, tab, id), [above, 0, 1, below, 2]);
+    for row in [below, above] {
+        assert_eq!(value(&harness, tab, id, (row, 2)), text("ebook"));
+    }
+}
+
+/// Test 12: `yy` puts the row on the system clipboard as TSV, as
+/// Mod+Shift+C does, and the status line says the row was yanked.
+#[test]
+fn yy_puts_the_row_on_the_clipboard_and_says_so() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::Y, "y");
+    // The first is the cell's, as it was.
+    assert_eq!(harness.copied.as_deref(), Some("ebook"));
+    assert!(!yanked(&harness, tab, id));
+    type_key(&mut harness, Key::Y, "y");
+    let row = harness.app.copy_text(true).expect("the row");
+    assert!(row.contains('\t'), "{row:?}");
+    assert_eq!(harness.copied, Some(row));
+    let said = crate::ui::toast::said(&harness.ctx);
+    assert_eq!(said.as_deref(), Some("row yanked"));
+}
+
+/// Spec 2: a `y` that is not followed by another yanks nothing, and `p`
+/// with nothing yanked adds no row.
+#[test]
+fn one_y_yanks_nothing_and_p_puts_nothing_then() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::Y, "y");
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::Y, "y");
+    assert!(!yanked(&harness, tab, id));
+    type_key(&mut harness, Key::P, "p");
+    assert!(edits(&harness, tab, id).added.is_empty());
+    // With no row selected there is nothing to yank, and nothing is said.
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    yy(&mut harness);
+    assert!(!yanked(&harness, tab, id));
+    assert_eq!(crate::ui::toast::said(&harness.ctx), None);
+}
+
+/// Test 21: `yy` yanks with the keys on a field of a loaded row's panel,
+/// whose footer names the key.
+#[test]
+fn yy_yanks_from_a_field_of_the_row_panel() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, (1, 2));
+    harness.press(Key::L, Modifiers::CTRL);
+    harness.settle();
+    let field = crate::ui::row_panel::focused_field(&harness.ctx, tab, id, 5);
+    assert!(field.is_some(), "a field of the panel has the keyboard");
+    yy(&mut harness);
+    assert!(yanked(&harness, tab, id));
+}
+
+/// Test 13: on a connection that opens read-only a row is yanked, for the
+/// clipboard, and `p` puts nothing.
+#[test]
+fn p_puts_nothing_where_no_row_is_taken() {
+    let (mut harness, tab, id) = covers_as(Look::omarchy(), ObjectKind::Table, true);
+    select(&mut harness, tab, id, (1, 2));
+    yy(&mut harness);
+    assert!(yanked(&harness, tab, id));
+    type_key(&mut harness, Key::P, "p");
+    assert!(edits(&harness, tab, id).added.is_empty());
+}
+
+/// With the review open a `Y` is its SQL's, after a `y` too: it copies the
+/// statements and says so, and is no second `y` that yanks the row.
+#[test]
+fn y_then_capital_y_with_the_review_open_copies_the_sql_and_yanks_nothing() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    set(&mut harness, tab, id, (1, 2), "audio");
+    select(&mut harness, tab, id, (1, 2));
+    let show = true;
+    harness.app.apply(Action::ReviewEdits { tab, id, show });
+    harness.settle();
+    assert!(edits(&harness, tab, id).reviewing);
+    // The cell's still, with the panel open.
+    type_key(&mut harness, Key::Y, "y");
+    assert_eq!(harness.copied.as_deref(), Some("audio"));
+    type_key(&mut harness, Key::Y, "Y");
+    let sql = crate::ui::review::copy_text(&harness.app, tab, id).expect("the SQL");
+    assert!(sql.contains("UPDATE"), "{sql:?}");
+    assert_eq!(harness.copied, Some(sql));
+    let said = crate::ui::toast::said(&harness.ctx);
+    assert_eq!(said.as_deref(), Some("Copied SQL"));
+    assert!(!yanked(&harness, tab, id));
 }
