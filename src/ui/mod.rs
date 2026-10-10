@@ -11531,6 +11531,50 @@ mod tests {
     }
 
     #[test]
+    fn a_new_rows_default_is_its_tag_at_six_tenths() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = covers_in(look);
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            let place = crate::edit::Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.settle();
+            // `kind` is `print` in the page's first and third rows, and in
+            // the new row as its default: the same tag, fainter.
+            let prints: Vec<egui::Color32> = harness
+                .painted
+                .iter()
+                .filter(|(text, _)| text == "print")
+                .map(|(_, color)| *color)
+                .collect();
+            let faded = prints.iter().any(|faded| {
+                prints
+                    .iter()
+                    .any(|full| faded != full && *faded == full.gamma_multiply(0.6))
+            });
+            assert!(faded, "{}: {prints:?}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_new_rows_default_the_database_works_out_is_slanted() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = covers_in(look);
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            let place = crate::edit::Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.settle();
+            // `created_at` is worked out for each row: `kind` is a value
+            // the column holds, and the marker is the row's own.
+            let slanted = |text: &str| harness.slanted.iter().any(|piece| piece == text);
+            assert!(slanted("CURRENT_TIMESTAMP"), "{}", look.name);
+            assert!(painted(&harness, "print") && !slanted("print"));
+            assert_eq!(harness.slanted.len(), 1, "{:?}", harness.slanted);
+        }
+    }
+
+    #[test]
     fn the_row_panel_says_a_new_row_is_edited_in_the_grid() {
         let (mut harness, tab, id) = covers_in(Look::macos());
         let place = crate::edit::Place::Top;
@@ -11582,6 +11626,38 @@ mod tests {
         harness.click("Review SQL");
         assert!(harness.has("-- new row"));
         assert!(harness.has("VALUES (9100000000000000004)"));
+    }
+
+    #[test]
+    fn the_bars_dot_is_a_new_rows_green_while_only_rows_are_pending() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let palette = harness.app.palette;
+        let look = harness.app.look;
+        let green = crate::env::new_row_colors(crate::env::Platform::of(&look), &palette).bar;
+        let amber = Tone::Warning.color(&palette);
+        // A circle of the dot's size in `color`, in the bar: the tab above
+        // has an amber dot of its own for anything unsaved.
+        let dot = |harness: &Harness, color: egui::Color32| {
+            let low = harness.size.y - 90.0;
+            harness.fills.iter().any(|(rect, fill)| {
+                *fill == color
+                    && rect.width() == rect.height()
+                    && rect.width() <= 10.0
+                    && rect.top() > low
+            })
+        };
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        assert!(dot(&harness, green) && !dot(&harness, amber));
+        // What the row needs is said after a dot of its own, and no mark.
+        assert!(painted_in(&harness, "·", palette.danger));
+        assert!(harness.has("publisher_id is required"));
+        // A changed value of a loaded row makes the bar a bar of changes.
+        make_pending(&mut harness, tab, id, (1, 2), "audio");
+        harness.settle();
+        assert!(dot(&harness, amber) && !dot(&harness, green));
     }
 
     #[test]
@@ -11673,6 +11749,29 @@ mod tests {
             "{:?}",
             harness.painted
         );
+    }
+
+    #[test]
+    fn the_terminals_header_counts_the_rows_to_add() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        let palette = harness.app.palette;
+        harness.settle();
+        assert!(!painted(&harness, "+1"));
+        for count in ["+1", "+2"] {
+            select(&mut harness, tab, id, (0, 1));
+            type_key(&mut harness, Key::O, "o");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(
+                painted_in(&harness, count, palette.success),
+                "{count}: {:?}",
+                harness.painted
+            );
+        }
+        // Gone with the rows.
+        harness.app.apply(Action::DiscardEdits { tab, id });
+        harness.settle();
+        assert!(!painted(&harness, "+2"));
     }
 
     #[test]

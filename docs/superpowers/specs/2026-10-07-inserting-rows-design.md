@@ -73,7 +73,9 @@ Design references (canvas "Tabletist", section **Editing · Inserting rows**):
 | Has a DEFAULT | the default value dimmed, `from DEFAULT` | dimmed value, `default` |
 | `now()` / expression default | italic `now()` (grid), `now() on save` (inspector) | italic `now()`, `now() on :w` |
 | Identity / serial / generated | locked; "Assigned by the database on save" | `▪`, `identity · assigned on :w` |
-| Nullable, no default | `NULL` chip | `null` |
+| Nullable, no default | `NULL` chip | `NULL` |
+
+Omarchy writes `NULL` as every row of its grid does: the inserting board's lower case is the board's to change.
 
 - The marker on macOS is `#1F6B35`. A selected new row stays green: only its cell takes the selection's colour. In dark mode the row is the same mix, made from the dark palette's green.
 - The Omarchy status line says what the row still needs (`publisher_id required`, in red) in insert mode too, while its first value is typed.
@@ -214,7 +216,7 @@ In runs, each its own pull request. Each commit passes `cargo fmt --check`, `car
 |---|---|---|
 | 1 | The save inserts rows on the three drivers | built (pull request 102) |
 | 2 | Add a row in the grid, fill it, review it, save it | built (pull request 104) |
-| Fixes | What run 2 built and the spec draws otherwise: the row's colours, a selected new row that stays green, a default as its tag at 60%, italics for an expression default (an italic text role and its two font files), Omarchy's 2px bar, its `+1` in the header and what the row needs in insert mode, and the copy the audit lists | next |
+| Fixes | What run 2 built and the spec draws otherwise: the row's colours, a selected new row that stays green, a default as its tag at 60%, an expression default slanted (the same face leaned over: the boards load no italic one), Omarchy's 2px bar, its `+1` in the header and what the row needs in insert mode, and of the copy the audit lists the bar's green dot and its words without a mark. The rest of that list is left where the plan's table says: to run 2b, to run 5, or to the board (`docs/superpowers/plans/2026-10-08-inserting-rows-fixes.md`) | built |
 | 2b | The inspector as the "New row" form, the row pinned under the header on macOS, and a name for each cell of the grid to a screen reader | |
 | 3 | Duplicate, and Down on the last row | |
 | 4 | Paste rows with its preview, rows sent together up to 100, and CHECK lists read on MySQL and SQLite | |
@@ -237,7 +239,7 @@ Made after the audit of pull request 108, whose findings are named (INS, DG). "A
 | A2 | A new row of a table with a trigger comes back unknown, and the page reloads (INS-30f) | Accepts a departure: section 9's reload, with a line that says so | `RETURNING` shows a row before its AFTER triggers ran. Run 1's review chose to show a row only as the database is known to hold it |
 | A3 | macOS: the new row scrolls away (INS-05a) | The spec stands: the pinned band, in run 2b | It is what the board draws |
 | A4 | A failed row's error is on every cell set in it (INS-31e) | The spec stands: the cell that failed. No cell where the database names no column | Run 5 |
-| A5 | `now()` is not italic (INS-08b) | The spec stands | The app gains an italic face |
+| A5 | `now()` is not italic (INS-08b) | The spec stands | The same face, slanted. The boards load no italic one, so no font file is added |
 | A6 | A default is plain dimmed text (INS-08a) | The spec stands: its tag at 60% | |
 | A7 | The row's colours on macOS, and a selected new row turning blue (INS-06a, INS-06c, DG-8, DG-10) | The spec stands. A selected new row stays green. Dark mode is the same mix | |
 | A8 | Omarchy: no 2px bar, no `+1` in the header, nothing said of what the row needs while it is typed (INS-06d, INS-10b, INS-07b) | The spec stands on all three | |

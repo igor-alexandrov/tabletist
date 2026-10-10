@@ -295,6 +295,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             // and what a new row still needs.
             let fix = (counts.to_fix > 0)
                 .then(|| format!("{} {}", counts.to_fix, gettext(locale, "to fix")));
+            // Nothing is to fix, and a new row needs a value: no mistake
+            // to mark. A dot and the words, as the design has it.
+            let asked = fix.is_none() && needs.is_some();
             let fix = match (fix, &needs) {
                 (Some(fix), Some(needs)) => Some(format!("{fix} · {needs}")),
                 (fix, needs) => fix.or_else(|| needs.clone()),
@@ -442,9 +445,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let limit = right - BETWEEN;
             let mut x = full.left() + SIDE;
             let dot = Rect::from_min_size(pos2(x, y - DOT / 2.0), vec2(DOT, DOT));
+            // Green while nothing but new rows is pending, as a new row
+            // is: amber once a value of a loaded row is changed too.
+            let dot_color = if counts.added > 0 && counts.changes == 0 {
+                crate::env::new_row_colors(crate::env::Platform::of(&look), &palette).bar
+            } else {
+                Tone::Warning.color(&palette)
+            };
             if dot.right() <= right {
                 ui.painter()
-                    .circle_filled(dot.center(), DOT / 2.0, Tone::Warning.color(&palette));
+                    .circle_filled(dot.center(), DOT / 2.0, dot_color);
             }
             x += lead;
             // The room is given out by what the bar alone says: that a
@@ -489,11 +499,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 named(ui, place, "pending-counts", whole, cut);
             }
             if let Some(fix) = fix.as_ref().filter(|_| fixes) {
-                let mark = Rect::from_center_size(pos2(x + MARK / 2.0, y), vec2(MARK, MARK));
-                Icon::CircleAlert
-                    .image(palette.danger, MARK)
-                    .paint_at(ui, mark);
-                x += MARK + 5.0;
+                if asked {
+                    // Painted and not named: a screen reader has the
+                    // words, and a lone dot says nothing.
+                    let dot = Text::one(&look, body, "·", palette.danger);
+                    x += widgets::paint_text(ui, x, y, dot) + 5.0;
+                } else {
+                    let mark = Rect::from_center_size(pos2(x + MARK / 2.0, y), vec2(MARK, MARK));
+                    Icon::CircleAlert
+                        .image(palette.danger, MARK)
+                        .paint_at(ui, mark);
+                    x += MARK + 5.0;
+                }
                 x += widgets::paint_label(ui, x, y, Text::one(&look, body, fix, palette.danger))
                     + APART;
             }

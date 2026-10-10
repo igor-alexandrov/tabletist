@@ -126,6 +126,9 @@ pub struct Cell<'a> {
     pub null: bool,
     pub style: Style,
     pub mark: Mark,
+    /// Written slanted: text that stands for what the database will work
+    /// out (a new row's `now()`), and is no value yet.
+    pub slanted: bool,
     /// What the cell says under the pointer: what a pending cell was, why
     /// a failed one failed. Never why a cell is locked, which is said only
     /// when asked.
@@ -280,6 +283,33 @@ fn paint(
     look: &Look,
 ) {
     let laid = Text::one(look, role, text, color).layout(ui.ctx());
+    if right {
+        laid.paint_right(painter, x, y);
+    } else {
+        laid.paint_left(painter, x, y);
+    }
+}
+
+/// [`paint`], slanted. The same face leaned over, as the design's own
+/// page draws it: it loads no italic one.
+#[allow(clippy::too_many_arguments)] // the text, its place, and its look
+fn paint_slanted(
+    painter: &egui::Painter,
+    ui: &Ui,
+    role: TextRole,
+    text: &str,
+    color: egui::Color32,
+    x: f32,
+    y: f32,
+    right: bool,
+    look: &Look,
+) {
+    let laid = Text::new(look)
+        .add_with(role, text, 0.0, |format| {
+            format.color = color;
+            format.italics = true;
+        })
+        .layout(ui.ctx());
     if right {
         laid.paint_right(painter, x, y);
     } else {
@@ -719,13 +749,14 @@ pub fn show<'a>(
                 // With the keyboard in the grid the cell takes the
                 // selection's colour and its row a lighter tint of it.
                 let lit_row = selected_row && lit && !look.terminal;
-                let fill = if lit_row {
+                let fresh = crate::env::new_row_colors(crate::env::Platform::of(look), palette);
+                let fill = if new {
+                    // A new row keeps its own fill under the selection
+                    // too: its cell alone takes the selection's colour,
+                    // and says where the keyboard is.
+                    Some(fresh.fill)
+                } else if lit_row {
                     Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
-                } else if new && !selected_row {
-                    // A new row is filled in its tone. Selected, it takes
-                    // the selection's colour, which says where the keyboard
-                    // is: its bar and its gutter still say it is new.
-                    Some(Tone::Success.fill(look, palette))
                 } else {
                     row_fill(
                         selected_row,
@@ -773,6 +804,16 @@ pub fn show<'a>(
                             );
                         }
                         if look.terminal {
+                            if new {
+                                // The terminal's bar: 2 wide, and as far
+                                // in as the pane's focus ring is wide. The
+                                // ring is drawn over the row's start while
+                                // the grid has the keyboard, and the bar
+                                // stands beside it, as the design has them.
+                                let at = lead.min + vec2(focus::WIDTH, 0.0);
+                                let bar = Rect::from_min_size(at, vec2(2.0, row_height));
+                                painter.rect_filled(bar, CornerRadius::ZERO, fresh.bar);
+                            }
                             let line = rect.center().y;
                             if selected_row {
                                 // The cursor: a bold accent block in the
@@ -872,11 +913,13 @@ pub fn show<'a>(
                     // accent line alone: what is pending reads as pending
                     // wherever the selection is.
                     if let Some(tone) = tone {
-                        painter.rect_filled(
-                            cell_rect,
-                            CornerRadius::ZERO,
-                            tone.fill(look, palette),
-                        );
+                        // What a save just wrote flashes in the colour a
+                        // saved new row does, a changed cell's too.
+                        let tint = match content.mark {
+                            Mark::Saved => fresh.saved,
+                            _ => tone.fill(look, palette),
+                        };
+                        painter.rect_filled(cell_rect, CornerRadius::ZERO, tint);
                     } else if here && lit {
                         painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.selection);
                     } else if locked {
@@ -907,6 +950,7 @@ pub fn show<'a>(
                         // with: of its pending cells' tone, else the
                         // accent of a selected row whose cell is not lit.
                         let color = match row_tone {
+                            Some(_) if new => Some(fresh.bar),
                             Some(tone) => Some(tone.color(palette)),
                             None => (selected_row && !lit_row).then_some(palette.accent),
                         };
@@ -924,7 +968,7 @@ pub fn show<'a>(
                         // terminal writes it dimmed, as it does what a
                         // cell will be filled with.
                         _ if content.mark == Mark::Added && !look.terminal => {
-                            written_in(palette, Tone::Success.color(palette))
+                            written_in(palette, fresh.marker)
                         }
                         _ if matches!(content.mark, Mark::Unset | Mark::Added) => {
                             written_in(palette, palette.dim)
@@ -977,11 +1021,16 @@ pub fn show<'a>(
                             Stroke::new(2.0, palette.accent),
                             StrokeKind::Inside,
                         );
-                    } else if here && col > 0 {
+                    } else if here && (col > 0 || (new && !look.terminal)) {
                         // The row is selected; a cell past the first is
                         // marked too, for the keys that act on one cell.
+                        // A new row's first is as well: the row keeps its
+                        // own fill and bar, and nothing else would say it
+                        // is selected. The line stands clear of that bar.
+                        let clear = if col == 0 { 3.0 } else { 0.0 };
+                        let marked = cell_rect.with_min_x(cell_rect.left() + clear);
                         painter.rect_stroke(
-                            cell_rect.shrink(1.0),
+                            marked.shrink(1.0),
                             CornerRadius::same(look.radius.min(3)),
                             Stroke::new(1.5, palette.accent),
                             StrokeKind::Inside,
@@ -1590,6 +1639,16 @@ fn draw_cell(
         }
         Style::Tag(_) => {
             let (color, fill) = crate::ui::value_tags::style_colors(content.style, look, palette);
+            // A value the row does not hold yet (a new row's default): its
+            // tag at six tenths, as the design fades it. The terminal has
+            // no tag to fade and writes it dimmed.
+            let (color, fill) = match fill {
+                Some(fill) if content.mark == Mark::Unset => {
+                    (color.gamma_multiply(0.6), Some(fill.gamma_multiply(0.6)))
+                }
+                None if content.mark == Mark::Unset => (palette.dim, None),
+                fill => (color, fill),
+            };
             // macOS and Windows: a chip in the value-tag face, 2 above and
             // below, 6 at the sides. Terminal: the text alone, in the
             // tag's colour.
@@ -1728,7 +1787,11 @@ fn draw_cell(
                 (true, false) => palette.secondary,
                 _ => palette.text,
             };
-            paint(&clip, ui, role, &shown, color, x, center, numeric, look);
+            if content.slanted {
+                paint_slanted(&clip, ui, role, &shown, color, x, center, numeric, look);
+            } else {
+                paint(&clip, ui, role, &shown, color, x, center, numeric, look);
+            }
         }
     }
 }
@@ -2038,8 +2101,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_row_is_filled_and_marked_in_the_success_tone() {
-        use crate::ui::states::Tone;
+    fn a_new_row_is_filled_and_marked_in_its_own_colours() {
         for look in Look::ALL {
             for palette in [Palette::light(), Palette::dark()] {
                 let said = format!("{}, dark: {}", look.name, palette.dark);
@@ -2049,33 +2111,38 @@ mod tests {
                 // The columns are fitted on the first frame.
                 marked(&ctx, &look, &palette, Mark::None, RowMark::None);
                 let (rects, texts) = marked(&ctx, &look, &palette, Mark::Added, RowMark::New);
-                let (fill, color) = (
-                    Tone::Success.fill(&look, &palette),
-                    Tone::Success.color(&palette),
-                );
+                let colors = crate::env::new_row_colors(crate::env::Platform::of(&look), &palette);
                 // The row's own fill, as wide as the grid: no cell's tint.
                 let filled = rects
                     .iter()
-                    .any(|rect| rect.fill == fill && rect.rect.width() > 400.0);
+                    .any(|rect| rect.fill == colors.fill && rect.rect.width() > 400.0);
                 assert!(filled, "{said}: the row's fill");
-                let bar = rects.iter().any(|rect| {
-                    rect.fill == color
-                        && rect.rect.width() == 3.0
+                // The bar at the row's left: 3 wide, and 2 in the terminal.
+                let wide = if look.terminal { 2.0 } else { 3.0 };
+                let bar = rects.iter().find(|rect| {
+                    rect.fill == colors.bar
+                        && rect.rect.width() == wide
                         && rect.rect.height() == look.grid_row
                 });
+                let bar = bar.unwrap_or_else(|| panic!("{said}: the row's bar"));
+                // The terminal's stands clear of the pane's focus ring,
+                // which is drawn over the row's start.
+                let row = rects.iter().find(|rect| rect.fill == colors.fill);
+                let from_start = bar.rect.left() - row.expect("the fill").rect.left();
+                let ring = if look.terminal { focus::WIDTH } else { 0.0 };
+                assert_eq!(from_start, ring, "{said}: where the bar is");
                 let signed = texts
                     .iter()
-                    .any(|(text, painted, _)| text == "+" && *painted == color);
+                    .any(|(text, painted, _)| text == "+" && *painted == palette.success);
                 let marker = texts.iter().find(|(text, ..)| text == "r1c1");
                 let marker = marker.map(|(_, color, _)| *color);
                 if look.terminal {
                     // `+` in the gutter, and the marker dimmed.
-                    assert!(signed && !bar, "{said}");
+                    assert!(signed, "{said}");
                     assert_eq!(marker, Some(palette.dim), "{said}");
                 } else {
-                    // The bar at the row's left, and the marker in the tone.
-                    assert!(bar && !signed, "{said}");
-                    assert_eq!(marker, Some(color), "{said}");
+                    assert!(!signed, "{said}");
+                    assert_eq!(marker, Some(colors.marker), "{said}");
                 }
                 // A cell nothing is set in is written quieter than a value.
                 let (_, texts) = marked(&ctx, &look, &palette, Mark::Unset, RowMark::New);
@@ -2086,6 +2153,119 @@ mod tests {
                     "{said}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_selected_new_row_keeps_its_fill_and_its_cell_takes_the_selection() {
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let said = look.name;
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+            let here = Some(CellPos { row: 1, col: 1 });
+            let on = (Mark::None, RowMark::New);
+            // A key, and the arrows are the grid's: its cell is lit, and
+            // a row of the page would take the selection's tint.
+            let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+            marked_with(&ctx, &look, &palette, on, here, vec![key]);
+            let (rects, _) = marked_with(&ctx, &look, &palette, on, here, Vec::new());
+            let colors = crate::env::new_row_colors(crate::env::Platform::of(&look), &palette);
+            let wide = |fill: egui::Color32| {
+                rects
+                    .iter()
+                    .any(|rect| rect.fill == fill && rect.rect.width() > 400.0)
+            };
+            assert!(wide(colors.fill), "{said}: the row is still a new row's");
+            // No row-wide fill in the selection's colour or its tint.
+            let tint = palette.window.lerp_to_gamma(palette.selection, 0.6);
+            assert!(!wide(tint) && !wide(palette.selection), "{said}");
+            if !look.terminal {
+                // The cell alone takes the selection's colour. (The
+                // terminal's lit cell is the accent, in reverse.)
+                let cell = rects
+                    .iter()
+                    .any(|rect| rect.fill == palette.selection && rect.rect.width() < 400.0);
+                assert!(cell, "{said}: the selection is the cell's");
+            }
+        }
+    }
+
+    #[test]
+    fn a_selected_new_rows_first_cell_is_marked_while_no_cell_is_lit() {
+        for look in Look::ALL.into_iter().filter(|look| !look.terminal) {
+            let palette = Palette::light();
+            let said = look.name;
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+            // No key: the selection is the pointer's, and no cell is lit.
+            let here = Some(CellPos { row: 1, col: 0 });
+            let outlined = |row: RowMark| {
+                let (rects, _) =
+                    marked_with(&ctx, &look, &palette, (Mark::None, row), here, vec![]);
+                let line = Stroke::new(1.5, palette.accent);
+                rects.iter().any(|rect| rect.stroke == line)
+            };
+            // A new row keeps its fill and its bar, so its cell says it.
+            assert!(outlined(RowMark::New), "{said}: the new row's cell");
+            // A row of the page says it with its fill and its bar.
+            assert!(!outlined(RowMark::None), "{said}: a row of the page");
+        }
+    }
+
+    #[test]
+    fn a_slanted_cell_is_written_leaned_over() {
+        for look in Look::ALL {
+            let palette = Palette::dark();
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 400.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                show(
+                    ui,
+                    egui::Id::new("grid"),
+                    &columns(),
+                    3,
+                    None,
+                    false,
+                    &palette,
+                    &look,
+                    &|at| numbered(RowMark::None, at),
+                    None,
+                    None,
+                    |row, col| Cell {
+                        text: format!("r{row}c{col}").into(),
+                        slanted: (row, col) == (1, 1),
+                        ..Default::default()
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            // Whether the cell that shows `text` is written slanted.
+            let slanted = |text: &str| {
+                let found = output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::Shape::Text(shape) if shape.galley.text() == text => Some(shape),
+                        _ => None,
+                    });
+                let sections = &found.expect("the cell's text").galley.job.sections;
+                sections.iter().all(|section| section.format.italics)
+            };
+            assert!(slanted("r1c1"), "{}", look.name);
+            assert!(!slanted("r0c1") && !slanted("r1c0"), "{}", look.name);
         }
     }
 
@@ -2217,10 +2397,9 @@ mod tests {
                 }
                 // Written: green, and no mark on the row.
                 let (rects, _) = marked(&ctx, &look, &palette, Mark::Saved, RowMark::None);
-                assert!(
-                    behind(&rects, Tone::Success.fill(&look, &palette)),
-                    "{said}: saved"
-                );
+                let platform = crate::env::Platform::of(&look);
+                let saved = crate::env::new_row_colors(platform, &palette).saved;
+                assert!(behind(&rects, saved), "{said}: saved");
                 // A computed column: quieter on macOS and Windows, as it
                 // was in the terminal.
                 let (rects, texts) = marked(&ctx, &look, &palette, Mark::Locked, RowMark::None);

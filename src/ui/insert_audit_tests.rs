@@ -417,10 +417,9 @@ fn a_pending_row_is_not_moved_by_a_sort_a_filter_or_a_page() {
     }
 }
 
-/// INS-07b. The Omarchy board's status line says `publisher_id required`
+/// Spec 3: the Omarchy status line says `publisher_id required`
 /// in insert mode, while the row's first value is being typed.
 #[test]
-#[ignore = "INS-07b: in insert mode the terminal's line does not say what the row needs"]
 fn the_terminals_line_says_what_the_row_needs_while_it_is_typed() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     harness.app.workspace_mut(tab).unwrap().row_panel = false;
