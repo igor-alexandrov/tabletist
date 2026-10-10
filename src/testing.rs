@@ -36,6 +36,9 @@ pub struct Harness {
     pub outlines: Vec<(egui::Rect, egui::Stroke)>,
     /// How soon the last frame asked to be drawn again: at once is zero.
     pub repaint_after: std::time::Duration,
+    /// How many of the `Lookup` commands sent so far were answered by
+    /// [`Harness::answer_lookups`].
+    pub lookups_answered: usize,
     #[cfg(feature = "shots")]
     renderer: Option<egui_kittest::wgpu::WgpuTestRenderer>,
     #[cfg(feature = "shots")]
@@ -736,6 +739,113 @@ pub fn book_covers_page(rows: usize) -> RowPage {
     }
 }
 
+/// The Bookshop's publishers, as (id, name).
+pub const PUBLISHERS: [(i64, &str); 3] = [
+    (9_100_000_000_000_000_001, "Northlight Books"),
+    (9_100_000_000_000_000_004, "Harbor Press"),
+    (9_100_000_000_000_000_007, "Harbor Lights"),
+];
+
+/// The structure of the Bookshop's `publishers`.
+pub fn publishers_structure() -> tabletist_db::Structure {
+    use tabletist_db::ColumnInfo;
+    let column = |name: &str, type_name: &str| ColumnInfo {
+        name: name.into(),
+        type_name: type_name.into(),
+        ..ColumnInfo::default()
+    };
+    tabletist_db::Structure {
+        columns: vec![column("id", "INTEGER"), column("name", "TEXT")],
+        primary_key: vec!["id".into()],
+        ..tabletist_db::Structure::default()
+    }
+}
+
+/// `book_covers` with its foreign key: `publisher_id` points at
+/// `publishers.id`. The tests that type into `publisher_id` as a number
+/// keep [`book_covers_structure`], which has no key.
+pub fn keyed_covers_structure() -> tabletist_db::Structure {
+    tabletist_db::Structure {
+        foreign_keys: vec![tabletist_db::ForeignKeyInfo {
+            columns: vec!["publisher_id".into()],
+            ref_schema: "main".into(),
+            ref_table: "publishers".into(),
+            ref_columns: vec!["id".into()],
+            ..tabletist_db::ForeignKeyInfo::default()
+        }],
+        ..book_covers_structure()
+    }
+}
+
+/// A page of `book_covers` whose three rows point at the three
+/// publishers in turn: Northlight Books, Harbor Press, Harbor Lights.
+/// [`book_covers_page`] numbers its publishers on from the first, and
+/// two of those are no publisher.
+pub fn keyed_covers_page() -> RowPage {
+    let mut page = book_covers_page(3);
+    for (row, (key, _)) in page.rows.iter_mut().zip(PUBLISHERS) {
+        row[1] = Value::Int(key);
+    }
+    page
+}
+
+/// What a database holding `rows` as a table of (key, label) answers
+/// `lookup`: by the rules of `Connection::lookup`, folding case as Rust's
+/// `to_lowercase` does. It differs from the real statement in one thing:
+/// it sorts every match before it applies the limit, where the database
+/// limits first.
+pub fn fake_lookup(
+    lookup: &tabletist_db::Lookup,
+    rows: &[(i64, &str)],
+) -> tabletist_db::LookupPage {
+    use tabletist_db::{LookupPart, LookupRow, Matched};
+    let rank = |matched: Matched| match matched {
+        Matched::Key => 0,
+        Matched::Label => 1,
+        Matched::KeyStart => 2,
+    };
+    let mut found: Vec<(Matched, i64, &str)> = rows
+        .iter()
+        .filter_map(|&(key, label)| {
+            let written = key.to_string();
+            let matched = match &lookup.part {
+                LookupPart::Pinned(Value::Int(pinned)) => (*pinned == key).then_some(Matched::Key),
+                LookupPart::Pinned(Value::Text(pinned)) => {
+                    (**pinned == *written).then_some(Matched::Key)
+                }
+                LookupPart::Pinned(_) => None,
+                LookupPart::Matching(text) if text.is_empty() => Some(Matched::KeyStart),
+                LookupPart::Matching(text) if written == *text => Some(Matched::Key),
+                LookupPart::Matching(text)
+                    if lookup.label.is_some()
+                        && label.to_lowercase().contains(&text.to_lowercase()) =>
+                {
+                    Some(Matched::Label)
+                }
+                LookupPart::Matching(text) => written
+                    .starts_with(text.as_str())
+                    .then_some(Matched::KeyStart),
+            };
+            Some((matched?, key, label))
+        })
+        .collect();
+    found.sort_by_key(|&(matched, key, _)| (rank(matched), key));
+    let limit = lookup.limit as usize;
+    let more = found.len() > limit;
+    found.truncate(limit);
+    tabletist_db::LookupPage {
+        rows: found
+            .into_iter()
+            .map(|(matched, key, label)| LookupRow {
+                key: Value::Int(key),
+                label: lookup.label.as_ref().map(|_| Value::Text(label.into())),
+                matched,
+            })
+            .collect(),
+        more,
+    }
+}
+
 impl Harness {
     /// A writable connection with `users` open and pinned, its structure
     /// and a page of five rows loaded: a table whose cells can be edited.
@@ -846,6 +956,89 @@ impl Harness {
             session,
             request,
             result,
+        }));
+    }
+}
+
+impl Harness {
+    /// As [`Self::book_covers`], with the key of `publisher_id` to
+    /// `publishers`: a table whose `publisher_id` cells open the picker.
+    pub fn keyed_covers(&mut self) -> (ConnTabId, TabId) {
+        let tab = self.connect_fake_as(false);
+        self.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "book_covers"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        self.answer_structure(keyed_covers_structure());
+        self.answer_rows(keyed_covers_page());
+        let id = self
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_tab)
+            .expect("the table's tab is open");
+        (tab, id)
+    }
+
+    /// The `Lookup` commands sent so far, with their requests.
+    pub fn lookups(&self) -> Vec<(SessionId, RequestId, tabletist_db::Lookup)> {
+        self.app
+            .backend
+            .sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::Lookup {
+                    session,
+                    request,
+                    lookup,
+                } => Some((*session, *request, lookup.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Answers every lookup not answered yet, in the order they were
+    /// sent, as a table holding `rows` would. One that was superseded is
+    /// answered too: the app drops what it no longer waits for. Returns
+    /// how many it answered.
+    pub fn answer_lookups(&mut self, rows: &[(i64, &str)]) -> usize {
+        let waiting: Vec<_> = self.lookups().split_off(self.lookups_answered);
+        for (session, request, lookup) in &waiting {
+            self.app.apply(Action::Backend(Event::Lookup {
+                session: *session,
+                request: *request,
+                result: Ok(fake_lookup(lookup, rows)),
+            }));
+        }
+        self.lookups_answered += waiting.len();
+        waiting.len()
+    }
+
+    /// Answers the lookup at `index` of [`Self::lookups`] alone, as a table
+    /// holding `rows` would, and leaves `lookups_answered` as it is: a test
+    /// that uses it manages the order of the answers itself, and answers
+    /// the rest by hand (or by [`Self::answer_lookups`], which then
+    /// answers this one again, and the app drops it).
+    pub fn answer_lookup_at(&mut self, index: usize, rows: &[(i64, &str)]) {
+        let (session, request, lookup) = self.lookups()[index].clone();
+        self.app.apply(Action::Backend(Event::Lookup {
+            session,
+            request,
+            result: Ok(fake_lookup(&lookup, rows)),
+        }));
+    }
+
+    /// Answers the newest lookup with `error`, and counts every lookup
+    /// before it as answered.
+    pub fn fail_lookup(&mut self, error: tabletist_db::Error) {
+        let all = self.lookups();
+        let (session, request, _) = all.last().expect("a Lookup was sent").clone();
+        self.lookups_answered = all.len();
+        self.app.apply(Action::Backend(Event::Lookup {
+            session,
+            request,
+            result: Err(error),
         }));
     }
 }
@@ -988,6 +1181,9 @@ impl Harness {
         let mut app = App::new(AppDirs::at(dir.path()), Settings::default().into(), backend);
         // Tests stay deterministic on every OS.
         app.look = crate::theme::Look::standard();
+        // A search is sent on the frame after the keystroke, not 150 ms
+        // later: no test waits.
+        app.lookup_delay = std::time::Duration::ZERO;
         app.attach(&ctx, false);
         Self {
             app,
@@ -1005,6 +1201,7 @@ impl Harness {
             strokes: Vec::new(),
             outlines: Vec::new(),
             repaint_after: std::time::Duration::MAX,
+            lookups_answered: 0,
             #[cfg(feature = "shots")]
             renderer: None,
             #[cfg(feature = "shots")]

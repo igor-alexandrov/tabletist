@@ -1050,6 +1050,13 @@ pub struct Editor {
     pub touched: bool,
     /// What the text fails, kept up to date by `Action::EditorTyped`.
     pub problem: Option<Problem>,
+    /// The search of the table a foreign key cell points at, while the
+    /// editor is the small field of such a cell.
+    pub picker: Option<crate::key_picker::Picker>,
+    /// Taken by the view with `focus`: the whole text is selected, not
+    /// the cursor put at its end. An editor opened on a foreign key's
+    /// value, where the first character typed starts a search.
+    pub select: bool,
 }
 
 /// What a table's tab holds while its values are edited.
@@ -2415,6 +2422,8 @@ mod tests {
             top: false,
             touched: false,
             problem: None,
+            picker: None,
+            select: false,
         });
         assert!(edits.drop_row(dropped));
         assert_eq!(ids(&edits), [kept]);
@@ -3412,6 +3421,8 @@ mod tests {
             top: false,
             touched: true,
             problem: None,
+            picker: None,
+            select: false,
         });
         let printed = format!("{edits:?}");
         assert!(!printed.contains("secret"), "{printed}");

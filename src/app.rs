@@ -26,6 +26,7 @@ use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
 mod editing;
+mod key_picker;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -105,6 +106,13 @@ pub struct App {
     /// (its undo history holds copies of the script) is dropped once a
     /// frame has the `egui::Context` to drop it from.
     pub closed_editors: Vec<(ConnTabId, TabId)>,
+    /// How long after the last keystroke a foreign key picker's search is
+    /// sent. `key_picker::DELAY`; nothing in the tests.
+    pub lookup_delay: std::time::Duration,
+    /// The lookups in flight, and the pickers they were sent for. The
+    /// matches' read of one whose picker is gone is cancelled
+    /// (`send_due_lookups`): an editor goes in many ways.
+    pub lookups: Vec<key_picker::SentLookup>,
     /// The window is closing: it was asked to, and no tab holds edits any
     /// more, or the user gave them up.
     pub closing: bool,
@@ -149,6 +157,8 @@ impl App {
             theme_changed: false,
             window_title: "Tabletist".into(),
             closed_editors: Vec::new(),
+            lookup_delay: crate::key_picker::DELAY,
+            lookups: Vec::new(),
             closing: false,
             next_id: 1,
         };
@@ -855,6 +865,7 @@ impl App {
             }
             Action::EditorTyped { tab, id } => {
                 let problem = self.editor_problem(tab, id);
+                let delay = self.lookup_delay;
                 if let Some(editor) = self.editor_mut(tab, id) {
                     editor.problem = problem;
                     editor.touched = true;
@@ -863,6 +874,12 @@ impl App {
                     // one of several lines from then on, edited as one.
                     if editor.place == EditorPlace::Panel && editor.text.contains('\n') {
                         editor.large = true;
+                    }
+                    if editor.large {
+                        // The large editor has no list.
+                        editor.picker = None;
+                    } else if let Some(picker) = editor.picker.as_mut() {
+                        picker.typed(&editor.text, std::time::Instant::now(), delay);
                     }
                 }
             }
@@ -931,6 +948,8 @@ impl App {
                     // After the break that was typed.
                     editor.top = false;
                     editor.touched = true;
+                    // The large editor has no list.
+                    editor.picker = None;
                 }
             }
             Action::FormatEditor { tab, id } => self.format_editor(tab, id),
@@ -2430,6 +2449,8 @@ impl App {
                     kept.finish(request, result.map(|structure| structure.columns));
                     workspace.catalog_changed();
                 }
+                // A picker that waited for these columns learns them.
+                self.picker_columns(tab);
             }
             Event::SecretLoaded { request, result } => {
                 match self.pending_secrets.remove(&request) {
@@ -2592,9 +2613,11 @@ impl App {
                     }
                 }
             }
-            // Nothing asks for a lookup yet: the foreign key picker will
-            // (docs/superpowers/specs/2026-10-10-foreign-key-editing-design.md).
-            Event::Lookup { .. } => {}
+            Event::Lookup {
+                session,
+                request,
+                result,
+            } => self.lookup_answered(session, request, result),
             Event::ServerVersion {
                 session,
                 request,
@@ -3864,10 +3887,20 @@ impl App {
         self.hold_close(ctx);
     }
 
+    /// The foreign key picker's searches wait for a pause in the typing:
+    /// the ones that are due are sent, and the frame comes back when the
+    /// next one is.
+    fn tick_lookups(&mut self, ctx: &egui::Context) {
+        if let Some(wait) = self.send_due_lookups(std::time::Instant::now()) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
     /// Draws one frame, then applies what the frame asked for.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_backend();
         self.apply_actions();
+        self.tick_lookups(ui.ctx());
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());
@@ -3889,6 +3922,7 @@ impl App {
         crate::ui::focus::paint(ui.ctx(), &self.look, &self.palette);
         crate::ui::keys::after_frame(ui.ctx());
         self.apply_actions();
+        self.tick_lookups(ui.ctx());
         // A list that opened or changed shows on the next frame.
         if self.refresh_completion(ui.ctx()) {
             ui.ctx().request_repaint();
@@ -13495,6 +13529,8 @@ mod tests {
                         top: false,
                         touched: true,
                         problem: None,
+                        picker: None,
+                        select: false,
                     });
                 }),
             ];

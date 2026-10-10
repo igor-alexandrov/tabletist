@@ -733,6 +733,8 @@ impl App {
                 top: large && from_value,
                 touched: touched || kept,
                 problem,
+                picker: None,
+                select: false,
             })
         });
         let Some(opened) = opened else {
@@ -741,6 +743,7 @@ impl App {
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
+        let is_open = opened.is_ok();
         match opened {
             Ok(editor) => {
                 object.selection = Some(cell);
@@ -764,6 +767,9 @@ impl App {
         }
         if let Some(workspace) = self.workspace_mut(tab) {
             workspace.pane = Pane::Grid;
+        }
+        if is_open {
+            self.open_picker(tab, id, from_value);
         }
     }
 
