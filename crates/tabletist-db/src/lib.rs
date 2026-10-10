@@ -4,7 +4,7 @@
 //! [`Connection::write`], which saves edited rows, and
 //! [`Connection::run_script`] in [`ScriptMode::Write`]. Both only on a
 //! session opened [`Access::Writable`]. Everything else stays fenced there
-//! as on a read-only session: row fetches and counts run in read-only
+//! as on a read-only session: row fetches, counts and lookups run in read-only
 //! transactions (on SQLite under `query_only`), and a script run in
 //! [`ScriptMode::ReadOnly`] cannot write.
 
@@ -285,6 +285,20 @@ impl Connection {
             Inner::Sqlite(conn) => conn.count_rows(query).await,
             Inner::Postgres(conn) => conn.count_rows(query).await,
             Inner::MySql(conn) => conn.count_rows(query).await,
+        }
+    }
+
+    /// Rows of the table a foreign key points at: the one a key names, or
+    /// the ones a text is found in (see [`Lookup`]). It reads as a page of
+    /// rows does and cannot write: in a read-only transaction on
+    /// PostgreSQL and MySQL, under `query_only` on SQLite. What was typed
+    /// is a bound value or an escaped literal, never SQL of its
+    /// own.
+    pub async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.lookup(lookup).await,
+            Inner::Postgres(conn) => conn.lookup(lookup).await,
+            Inner::MySql(conn) => conn.lookup(lookup).await,
         }
     }
 

@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::{ObjectRef, Value};
+use crate::{Error, ObjectRef, Result, Value};
 
 /// One read of the table a foreign key points at. A search of the app is
 /// two of these: the pinned row, then the matches.
@@ -56,6 +56,17 @@ impl Matched {
             Self::KeyStart => 2,
         }
     }
+
+    /// `None` for a cell the statement does not answer: a row that says
+    /// nothing true about how it matched is an error, not a key start.
+    fn from_cell(cell: &Value) -> Option<Self> {
+        match cell {
+            Value::Int(0) => Some(Self::Key),
+            Value::Int(1) => Some(Self::Label),
+            Value::Int(2) => Some(Self::KeyStart),
+            _ => None,
+        }
+    }
 }
 
 /// A row the lookup found.
@@ -73,6 +84,35 @@ pub struct LookupPage {
     pub rows: Vec<LookupRow>,
     /// There are more rows than `limit`.
     pub more: bool,
+}
+
+/// The rows a driver read for `lookup`, at most one more than its limit,
+/// as its page. Each row is the key, the label where the lookup names one,
+/// and how the row matched.
+pub(crate) fn page(mut rows: Vec<Vec<Value>>, lookup: &Lookup) -> Result<LookupPage> {
+    let limit = lookup.limit as usize;
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    let shape = || Error::query("the lookup returned a row of another shape");
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let (key, label, cell) = if lookup.label.is_some() {
+                let [key, label, cell] = <[Value; 3]>::try_from(row).map_err(|_| shape())?;
+                (key, Some(label), cell)
+            } else {
+                let [key, cell] = <[Value; 2]>::try_from(row).map_err(|_| shape())?;
+                (key, None, cell)
+            };
+            let matched = Matched::from_cell(&cell).ok_or_else(shape)?;
+            Ok(LookupRow {
+                key,
+                label,
+                matched,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(LookupPage { rows, more })
 }
 
 // What was typed, and what a table holds, stay out of a log line: a label
@@ -137,5 +177,51 @@ mod tests {
         let printed = format!("{pinned:?}");
         assert!(!printed.contains("Ada"), "{printed}");
         assert!(printed.contains("Pinned"), "{printed}");
+    }
+
+    #[test]
+    fn a_page_keeps_the_limit_and_says_there_are_more() {
+        let rows = vec![
+            vec![
+                Value::Int(4),
+                Value::Text("Harbor Press".into()),
+                Value::Int(1),
+            ],
+            vec![
+                Value::Int(7),
+                Value::Text("Harbor Lights".into()),
+                Value::Int(1),
+            ],
+            vec![Value::Int(40), Value::Null, Value::Int(2)],
+        ];
+        let page = page(rows, &lookup(Some("name"), 2)).unwrap();
+        assert!(page.more);
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0].key, Value::Int(4));
+        assert_eq!(page.rows[0].label, Some(Value::Text("Harbor Press".into())));
+        assert_eq!(page.rows[0].matched, Matched::Label);
+    }
+
+    #[test]
+    fn a_page_without_a_label_has_two_cells_to_a_row() {
+        let rows = vec![vec![Value::Int(4), Value::Int(0)]];
+        let page = page(rows, &lookup(None, 50)).unwrap();
+        assert!(!page.more);
+        assert_eq!(page.rows[0].label, None);
+        assert_eq!(page.rows[0].matched, Matched::Key);
+    }
+
+    #[test]
+    fn a_match_cell_the_statement_does_not_answer_is_an_error() {
+        for cell in [Value::Int(7), Value::Text("1".into())] {
+            let rows = vec![vec![Value::Int(4), Value::Text("Ada".into()), cell]];
+            assert!(page(rows, &lookup(Some("name"), 50)).is_err());
+        }
+    }
+
+    #[test]
+    fn a_row_of_another_shape_is_an_error() {
+        let rows = vec![vec![Value::Int(4)]];
+        assert!(page(rows, &lookup(Some("name"), 50)).is_err());
     }
 }

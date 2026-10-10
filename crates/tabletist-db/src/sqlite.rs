@@ -16,9 +16,10 @@ use crate::adapter::Adapter;
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
-    RowPage, RowQuery, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult,
-    StopFlag, Structure, Value, ValueKind, WriteOutcome, column_class,
+    Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptEnd, ScriptMode, ScriptOutcome,
+    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    column_class,
 };
 
 mod fence;
@@ -759,7 +760,8 @@ impl Conn {
         })?
     }
 
-    /// `run` for a page or a count, whose SQL holds the user's WHERE text.
+    /// `run` for a page, a count or a lookup. A page's or a count's SQL holds
+    /// the user's WHERE text.
     /// rusqlite finds a second statement in a text by preparing it, and
     /// SQLite applies a flag pragma as soon as it is prepared: a WHERE that
     /// got `; PRAGMA query_only = 0` past `check_raw_where` and past
@@ -977,6 +979,35 @@ impl Adapter for Conn {
                 )
                 .map_err(map_error)?;
             Ok(u64::try_from(count).unwrap_or(0))
+        })
+        .await
+    }
+
+    async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
+        let lookup = lookup.clone();
+        // No fence: the statement is the app's own, and what was typed is
+        // bound. It goes through `browse` and not `run` because the names in
+        // its statement are the file's own, and a failure still puts the
+        // session's settings back.
+        self.browse(move |connection| {
+            let sql = Dialect::Sqlite.lookup(&lookup);
+            let most = lookup.limit as usize + 1;
+            let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
+            let width = statement.column_count();
+            let mut rows = statement
+                .query(rusqlite::params_from_iter(sql.params.iter().map(to_sqlite)))
+                .map_err(map_error)?;
+            let mut values: Vec<Vec<Value>> = Vec::new();
+            while values.len() < most
+                && let Some(row) = rows.next().map_err(map_error)?
+            {
+                let mut cells = Vec::with_capacity(width);
+                for index in 0..width {
+                    cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+                }
+                values.push(cells);
+            }
+            crate::lookup::page(values, &lookup)
         })
         .await
     }
