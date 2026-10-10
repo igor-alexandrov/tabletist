@@ -382,7 +382,9 @@ impl Table<'_> {
     /// of it, compared as the column compares. `IndexInfo::columns` is not
     /// asked: it is text to show, which PostgreSQL quotes. An index whose
     /// columns are not known by name (an expression, a prefix, another
-    /// collation) says nothing here, and the database judges the save.
+    /// collation) says nothing here, and the database judges the save. On
+    /// SQLite another collation goes unseen (see `IndexInfo::key_columns`),
+    /// so such an index counts there.
     fn unique_alone(&self, name: &str) -> bool {
         let Some(structure) = self.structure else {
             return false;
@@ -986,7 +988,13 @@ impl NewRow {
         self.made.as_ref().is_some_and(|made| {
             let mut cleared = made.cleared.iter();
             cleared.any(|(name, why)| {
-                name == column && matches!(why, Cleared::Unique | Cleared::PrimaryKey)
+                name == column
+                    && match why {
+                        Cleared::Unique | Cleared::PrimaryKey => true,
+                        // The database's own to fill: nothing is asked
+                        // of the user there.
+                        Cleared::Identity | Cleared::Generated => false,
+                    }
             })
         })
     }

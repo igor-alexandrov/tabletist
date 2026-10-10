@@ -275,7 +275,7 @@ Made after the audit of pull request 108, whose findings are named (INS, DG). "A
 
 ## Decisions of 2026-10-10
 
-Made with the user while Duplicate was designed. They are D1 to D6 of `2026-10-10-row-duplication-design.md`, which gives each its reason.
+Made with the user while Duplicate was designed. They are the decisions of `2026-10-10-row-duplication-design.md`, which gives each its reason: its table D1 to D6, and for E4 row 5 of its section 4.
 
 | | What was open | Decided |
 |---|---|---|

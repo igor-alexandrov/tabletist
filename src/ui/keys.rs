@@ -413,8 +413,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         {
             actions.push(Action::DuplicateRow { tab, id });
         }
-        // Taken here for the same reason: the chord is a new SQL editor's
-        // below.
+        // Taken here as Mod+N is, so the line below that reads the same
+        // chord finds none: there it is a new SQL editor's.
         if let Some((tab, id)) = stamps
             && consume_press(input, Modifiers::CTRL, Key::T)
         {

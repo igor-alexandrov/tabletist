@@ -176,9 +176,9 @@ them. It leaves out what is the row's own:
   column, does not count: the copy keeps the value and the database
   judges the save.)
 
-The editor opens on the first value the copy still needs, as it does for
-an added row. If the copy needs none, no editor opens and the copy is
-selected, in the column the cursor was in.
+The editor opens on the first value the copy still needs. If the copy
+needs none, no editor opens and the copy is selected, in the column the
+cursor was in.
 
 Where an added row's cell says **required**, the copy's says **required ·
 unique** in a column it cleared for being unique or of the primary key,

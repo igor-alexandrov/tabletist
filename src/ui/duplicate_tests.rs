@@ -560,6 +560,26 @@ fn yy_puts_the_row_on_the_clipboard_and_says_so() {
     assert_eq!(said.as_deref(), Some("row yanked"));
 }
 
+/// Spec 2: a new row is yanked like any other, and the clipboard is left
+/// alone: it is no row of the page, and Mod+Shift+C copies none either.
+#[test]
+fn yy_on_a_new_row_yanks_it_and_leaves_the_clipboard_alone() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    let new = new_row(add(&mut harness, tab, id));
+    set(&mut harness, tab, id, (new, 2), "audio");
+    select(&mut harness, tab, id, (new, 2));
+    yy(&mut harness);
+    assert!(yanked(&harness, tab, id));
+    assert_eq!(harness.copied, None);
+    let said = crate::ui::toast::said(&harness.ctx);
+    assert_eq!(said.as_deref(), Some("row yanked"));
+    // And it is put as it was yanked.
+    type_key(&mut harness, Key::P, "p");
+    let copy = newest(&harness, tab, id);
+    assert_ne!(copy, new);
+    assert_eq!(value(&harness, tab, id, (copy, 2)), text("audio"));
+}
+
 /// Spec 2: a `y` that is not followed by another yanks nothing, and `p`
 /// with nothing yanked adds no row.
 #[test]
