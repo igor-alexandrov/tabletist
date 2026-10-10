@@ -1,6 +1,6 @@
 ---
 title: Editing Data
-description: Edit values in the grid, add rows, review the SQL before it runs, and what happens when someone else changed the same row.
+description: Edit values in the grid, add and duplicate rows, review the SQL before it runs, and what happens when someone else changed the same row.
 nav_order: 4
 ---
 
@@ -8,8 +8,8 @@ Editing needs a writable connection. A connection with **Open read-only**
 ticked blocks every write, and that is the default for production.
 [Read about read-only connections]({% link _reference/connections.md %}#open-read-only).
 
-Today you can change values in existing rows and add rows. Duplicating,
-pasting and deleting rows are not built yet.
+Today you can change values in existing rows, add rows and duplicate a
+row. Pasting and deleting rows are not built yet.
 
 ## Change a value
 
@@ -152,6 +152,47 @@ too.
 
 On a table without a primary key the form says at its top that the row
 cannot be edited or deleted once it is saved.
+
+## Duplicate a row
+
+Select a row and press Cmd/Ctrl+D, or **Duplicate** in the row panel's
+footer, under the row's fields. A copy of the row appears at the top of
+the grid as a new row, to be changed and saved like any other. The
+Omarchy look has neither the key nor the button. There, `yy` yanks the
+cursor's row, and `p` puts a copy below the cursor's row, `P` above it.
+The yanked row stays for the next `p`, through a reload too. `yy` also
+puts the row on the clipboard, unless it is a new row that is not saved
+yet.
+
+A new row is copied the same way, by the keys: its form has no
+**Duplicate** button.
+
+The copy holds what the row shows, the changes you have not saved among
+them. It leaves out what is the row's own:
+
+- the primary key, and a column the database numbers or computes;
+- a column that is alone in a unique index. The copy could not be saved
+  with the same value. (An index over an expression, or over part of a
+  column, does not count: the copy keeps the value and the database
+  judges the save.)
+
+The editor opens on the first value the copy still needs, as it does for
+an added row. If the copy needs none, no editor opens and the copy is
+selected, in the column the cursor was in.
+
+Where an added row's cell says **required**, the copy's says **required ·
+unique** in a column it cleared for being unique or of the primary key,
+and so does that column's field in the row panel, in every look. In the
+Omarchy look the grid has the column's red `*` in place of the words.
+
+Binary values are not copied, and neither is text over 256 KiB. A column
+whose structure the app does not know is not copied either, and the form
+calls it unknown. The row panel, as the copy's form, says at its top
+which columns were copied (the first of them where there are many), which
+were cleared and why, and which were not copied and why.
+
+One row is copied at a time. **Delete**, beside **Duplicate**, is not
+built yet.
 
 ## When someone else changed the row
 

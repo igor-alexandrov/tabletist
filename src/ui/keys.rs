@@ -90,6 +90,12 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("i, Enter", "Edit the cell", TERMINAL),
     ("Mod+N", "Add a row", DESKTOP),
     ("o, O", "Add a row below or above the cursor", TERMINAL),
+    ("Mod+D", "Duplicate the row", DESKTOP),
+    (
+        "yy, p, P",
+        "Yank the row, put a copy below or above",
+        TERMINAL,
+    ),
     ("Delete", "Drop a new row", DESKTOP),
     ("dd", "Drop a new row", TERMINAL),
     ("Mod+I", "Focus inspector fields", DESKTOP),
@@ -128,7 +134,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Esc", "Close the SQL of the pending changes", TERMINAL),
     ("Y", "Copy the SQL of the pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, dd, f, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, yy, p, P, dd, f, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -1931,9 +1937,13 @@ mod tests {
                 assert_eq!(keys("Add a row below or above the cursor"), Some("o, O"));
                 assert_eq!(keys("Drop a new row"), Some("dd"));
                 assert_eq!(keys("Add a row"), None);
+                let put = "Yank the row, put a copy below or above";
+                assert_eq!(keys(put), Some("yy, p, P"));
+                assert_eq!(keys("Duplicate the row"), None);
             } else {
                 assert_eq!(keys("Add a row"), Some("Mod+N"));
                 assert_eq!(keys("Drop a new row"), Some("Delete"));
+                assert_eq!(keys("Duplicate the row"), Some("Mod+D"));
             }
             // A new connection is still Mod+N, where no table is in front.
             assert_eq!(keys("New connection"), Some("Mod+N"));
@@ -1948,7 +1958,8 @@ mod tests {
             .expect("Omarchy's row");
         let keys: Vec<&str> = keys.split(", ").collect();
         for key in [
-            "i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", ":diff", "Y", "Space",
+            "i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", ":diff", "Y", "Space", "yy", "p",
+            "P",
         ] {
             assert!(keys.contains(&key), "{key}: {keys:?}");
         }
