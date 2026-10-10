@@ -1,6 +1,10 @@
 # Editing foreign key values: the search picker
 
-Date: 2026-10-10. Status: not built.
+Date: 2026-10-10. Status: built in runs. Run 1
+(`docs/superpowers/plans/2026-10-10-foreign-key-editing-1-lookup.md`) is
+built: the three drivers look a referenced row up, the backend runs it,
+and SQLite names the column an implicit reference means. Nothing in the
+app asks for a lookup yet. What is left is listed under "Delivery".
 
 This is one editor of slice 2 of `2026-10-03-value-editing-core-design.md`
 ("Editors by type"): the foreign key search. The other editors of that
@@ -430,7 +434,7 @@ In every look:
       }
       pub enum LookupPart {
           /// The one row whose key is this, by `=`.
-          Pinned(String),
+          Pinned(Value),
           /// Rows whose label contains the text or whose key starts with
           /// it. An empty text: the table's first rows by key.
           Matching(String),
@@ -444,7 +448,9 @@ In every look:
       pub struct LookupPage { pub rows: Vec<LookupRow>, pub more: bool }
 
   The app decides whether a text can be pinned (it has the check for a
-  typed cell), so the crate needs no type of the key. The statements are
+  typed cell) and makes the value: a whole number for a key that is one,
+  since MySQL compares a `BIGINT` with a string as floats. So the crate
+  needs no type of the key. The statements are
   `Dialect`'s, beside `select_rows`, and reuse what the filters use:
   `as_text`, `like`, `escape_like`, `bind`. The matches are read in a
   derived table with the limit, and ordered outside it. Every engine is

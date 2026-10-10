@@ -68,6 +68,7 @@ export TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabl
 | `src/backend.rs` | `Command::Lookup`, `Event::Lookup` (task 5) |
 | `src/app.rs` | An arm that drops `Event::Lookup` until run 2 (task 5) |
 | `docs/superpowers/specs/2026-10-10-foreign-key-editing-design.md` | Its status, and `Pinned(Value)` (task 6) |
+| `docs/superpowers/plans/2026-10-10-foreign-key-editing-2-grid-picker.md` | What this run found for the next (task 6, added when the run was built) |
 
 ---
 

@@ -31,6 +31,22 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
+## What run 1 found for this run
+
+Run 1 is built. Its reviews read how the backend cancels a command, and three things there bear on a picker that sends and cancels lookups at the pace of typing. **Decide each before task 2, and change the task's code to match.** None of them is in the tasks below yet.
+
+1. **Cancelling a lookup that is running costs a connection on PostgreSQL and MySQL.** `cancel_request` (a function of `src/backend.rs`) has each Cancel of a running command open a new connection to the server, and the session's next command waits for that cancel task (on MySQL up to the connect timeout, 10 s). The comment on `keep_cancelling`, a little below it, already warns about MySQL's `max_connect_errors`. This plan's `search` cancels the search before it on every pause in typing, and `send_due_lookups` cancels every orphan. A Cancel of a command that is still **queued** costs nothing: it is skipped and answered `Err(Cancelled)`. So: cancel only what has not started, or cancel a running lookup only when its editor closed, and let a superseded one that already runs finish (its answer is dropped as stale). The app does not know which of its requests is running. The simplest rule that needs no new knowledge: never send `Cancel` for the pinned read (it is one indexed row), and send it for the matches' read only when the editor closes.
+2. **A request the picker still waits for can answer `Err(Cancelled)` unasked.** The session waits until a cancel was sent, not until the server acted on it: on PostgreSQL, if the lookup it was for ends by itself first, the signal can land on the session's next command. `Picker::answered` treats any `Err` as the list's failure. It should take `Error::Cancelled` for a request it did not cancel as "send it again", once.
+3. **A lookup waits its turn.** It queues behind whatever the tab's session is doing (a slow exact count, a page of a large table), and nothing times it out. The list says it is searching, which is what section 3 of the spec says. No change, but test 15's kept Enter can wait that long: say so in the pull request.
+
+Also from run 1:
+
+- `Connection::lookup` answers an error ("the lookup returned a row of another shape") for a row it cannot read, where the plan had it take an unknown match for a key's start. Nothing here depends on the old leniency.
+- A pinned read is asked for one row. On MySQL a `Pinned(Value::Text(..))` against a numeric key can match several (the key is compared as a float): this plan pins a whole number as a `Value::Int`, which cannot. If a pinned read ever answers `more`, treat it as no row.
+- `LookupPart` and `LookupRow` have a `Debug` now. It prints the part's kind and a row's `matched`, and nothing typed or read. A state that holds them can derive `Debug`, and tests can compare rows with `assert_eq!` (the note under task 1's code, that they compare keys because a row has no `Debug`, is stale).
+- `LookupPart::Pinned` holds a `Value`, as this plan already has it.
+- Where run 1 was built (macOS, Docker Desktop), three tests of `crates/tabletist-db/tests/postgres.rs` were refused a connection with the PostgreSQL URL on `localhost` and passed with `127.0.0.1`. The cause was not looked into. `AGENTS.md` documents `localhost`.
+
 ## What the spec asks, and what gets built
 
 | | The spec | What gets built | Why |
