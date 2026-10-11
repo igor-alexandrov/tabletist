@@ -2823,8 +2823,9 @@ fn singular(table: &str) -> Cow<'_, str> {
     if let Some(stem) = table.strip_suffix("ies") {
         return Cow::Owned(format!("{stem}y"));
     }
-    // The endings whose plural is written with `es`.
-    let hissed = ["sses", "xes", "ches", "shes", "zes"]
+    // The endings whose plural is written with `es`. A lone `z` is not
+    // one: `sizes` is `size` and an `s`.
+    let hissed = ["sses", "xes", "ches", "shes", "zzes"]
         .iter()
         .any(|end| table.ends_with(end));
     let one = if hissed {
@@ -3216,6 +3217,9 @@ mod tests {
             ("branches", "branch"),
             ("dishes", "dish"),
             ("buzzes", "buzz"),
+            // One `z` is the row's own, and so is the `e` after it.
+            ("sizes", "size"),
+            ("prizes", "prize"),
             // No plural: a name that ends in `ss`, and one without an `s`.
             ("address", "address"),
             ("staff", "staff"),
