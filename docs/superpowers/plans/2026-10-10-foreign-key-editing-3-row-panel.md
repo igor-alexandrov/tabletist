@@ -29,6 +29,18 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
+## What run 2 found for this run
+
+Run 2 is built, and some of it is not as this plan read it. Follow what was built.
+
+- **The screenshots (task 2).** Run 2 already added `BOOKS`, `books_structure`, `answer_books` and the scenes `edit-key-picker` and `edit-key-picker-current` to `src/shots.rs`, and `EDITING` has 15 scenes. Task 2 here adds only what the row panel needs: the scene of the panel's field with its list. Do not add the others again.
+- **The list's keys.** `keys.rs` routes them only while the picker has no failure (`picker.failed.is_none()`), as `cell_editor` and `workspace.rs` already decide. The panel's field gets this with the same code.
+- **A kept Enter behind another tab** (spec section 8, last bullet) is built: `lookup_answered` and `picker_columns` apply a kept key only on the tab that shows, and `send_due_lookups` drops one each frame another tab shows. The tests are `a_kept_enter_is_dropped_when_another_tab_is_shown` and `a_frame_on_another_tab_drops_a_kept_enter`. Task 1 adds the same test for an editor in the panel, and nothing else.
+- **`gd`** follows the pending value, a failed save's too (`Action::FollowSelectedKey`). The panel's link already did.
+- **Not built, and nobody's yet.** Say them in the pull request:
+  - Reconnecting while a search runs leaves the list on "Searching…" until the user types or presses Esc: `reconnect` replaces the session and the old one's answers find no tab (`lookup_answered` returns at `tab_for_session`). A fix clears `asked` on the pickers of a workspace whose session is replaced and sends the search again.
+  - The pick's live region (`data_view.rs`) is drawn for as long as its cell holds the picked key, so a screen reader may hear it again when the Data view is shown again. A pick said once needs an `Action` that clears `Edits::picked` after the frame that drew it.
+
 ## What the spec asks, and what gets built
 
 | | The spec | What gets built | Why |

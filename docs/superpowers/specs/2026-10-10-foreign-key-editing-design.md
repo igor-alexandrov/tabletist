@@ -3,8 +3,14 @@
 Date: 2026-10-10. Status: built in runs. Run 1
 (`docs/superpowers/plans/2026-10-10-foreign-key-editing-1-lookup.md`) is
 built: the three drivers look a referenced row up, the backend runs it,
-and SQLite names the column an implicit reference means. Nothing in the
-app asks for a lookup yet. What is left is listed under "Delivery".
+and SQLite names the column an implicit reference means. Run 2
+(`docs/superpowers/plans/2026-10-10-foreign-key-editing-2-grid-picker.md`)
+is built: a foreign key cell of the grid, on an existing or a new row,
+searches and picks in both looks. Its plan's "What the spec asks, and what
+gets built" says what of sections 2 to 5 the app does otherwise: the
+Omarchy field stays on the cell, the wheel does not scroll the list, and a
+label that is cut is drawn without its match. What is left is listed under
+"Delivery".
 
 This is one editor of slice 2 of `2026-10-03-value-editing-core-design.md`
 ("Editors by type"): the foreign key search. The other editors of that

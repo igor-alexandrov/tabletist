@@ -71,6 +71,36 @@ after. Review SQL shows the keyword as it is sent.
 
 {% include shot.html file="macos-edit-pending" alt="The grid with three changed cells, one of them red because its column does not take the text, and the bar of pending changes under it" %}
 
+### Foreign keys
+
+A cell whose column points at another table searches that table while you
+type. Start typing a name, a title or an email, or the start of an id, and
+the rows that match are listed under the cell with their ids.
+
+| To | Press |
+| --- | --- |
+| Move in the list | Up, Down, Page Up, Page Down |
+| Set the cell to the highlighted row | Enter, or Tab to move on |
+| Take a row with the pointer | Click it |
+| Leave the cell as it was | Esc |
+
+The list is searched by the table's first text column and by its key. An id
+you type or paste in full is taken as it is.
+
+The first row is highlighted when what you typed is in its name or is its
+id. When the rows only begin with what you typed in their ids, none is, and
+Enter keeps your text: `12` stays 12 and does not become row 120.
+
+Press Enter on a cell without typing to see the table's first rows, with
+the row the cell points at now on top.
+
+The list holds up to 50 rows and shows eight at a time. Its last line says
+when the table has more: type more to narrow them. Where the column takes
+NULL, **Set NULL** under the list sets it, as Cmd/Ctrl+Backspace does.
+
+The picker is on the cells of the grid, in a new row too. In the row panel
+a foreign key is still edited as text, and so is a key of several columns.
+
 ## Save
 
 Nothing is written while you edit. Your changes stay pending, and a bar
