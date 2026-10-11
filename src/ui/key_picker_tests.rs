@@ -3301,3 +3301,222 @@ fn the_bar_draws_the_warning_count_where_it_fits() {
             .any(|label| label == whole)
     );
 }
+
+/// Hovers the pointer at `at` and waits past the tooltip's delay (a frame
+/// is 1/60 s). Returns every name on screen then.
+fn hover(harness: &mut Harness, at: egui::Pos2) -> Vec<String> {
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    for _ in 0..60 {
+        harness.frame(Vec::new());
+    }
+    crate::testing::labels(&harness.frame(Vec::new()))
+}
+
+/// What the warned cell says under the pointer, through the view: what the
+/// cell was, then the words. In the terminal look the app's own words are
+/// the look's lower case and the table, column and value are as they are.
+#[test]
+fn a_warned_cell_says_its_words_under_the_pointer() {
+    for (look, words) in [
+        (
+            Look::macos(),
+            "was 9100000000000000001\nNo publisher with id 9100000000000000099",
+        ),
+        (
+            Look::omarchy(),
+            "was 9100000000000000001\nno publisher with id 9100000000000000099",
+        ),
+    ] {
+        let name = look.name;
+        let (mut harness, tab, id) = covers_in(look);
+        // The grid alone: the row panel says the value too.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+        harness.settle();
+        let at = harness
+            .painted_rect(NO_PUBLISHER)
+            .unwrap_or_else(|| panic!("{name}: {:?}", harness.painted))
+            .center();
+        let said = hover(&mut harness, at);
+        assert!(said.iter().any(|label| label == words), "{name}: {said:?}");
+    }
+}
+
+/// The row panel's words are the look's too: lower case in the terminal
+/// look, the value as it is.
+#[test]
+fn the_panels_words_are_the_looks() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    harness.app.workspace_mut(tab).unwrap().row_panel = true;
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.app.apply(Action::FocusFields { tab, id });
+    assert!(harness.has("no publisher with id 9100000000000000099"));
+    assert!(!harness.has(WARNING));
+}
+
+/// A save that runs holds every warning's views back together: the bar's
+/// count and its live region, the panel's words and name, the terminal's
+/// line. A failed save shows its failure, and none of them is back.
+#[test]
+fn a_save_that_runs_takes_every_view_of_the_warning_with_it() {
+    let names_no_row = |tree: &egui::accesskit::TreeUpdate| {
+        let labels = crate::testing::labels(tree);
+        labels.iter().any(|label| {
+            let lower = label.to_lowercase();
+            lower.contains("names no row") || lower.contains("no publisher with")
+        })
+    };
+    for look in [Look::macos(), Look::omarchy()] {
+        let name = look.name;
+        let (mut harness, tab, id) = covers_in(look);
+        keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+        harness.app.apply(Action::FocusFields { tab, id });
+        let tree = harness.settle();
+        assert!(names_no_row(&tree), "{name}: the warning stands");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        let tree = harness.settle();
+        assert!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .object_tab(id)
+                .unwrap()
+                .edits
+                .saving
+                .is_some(),
+            "{name}: a save runs"
+        );
+        assert!(
+            !names_no_row(&tree),
+            "{name}: {:?}",
+            crate::testing::labels(&tree)
+        );
+        // It fails as a whole: nothing was written, the cell is ready as it
+        // was and its warning is back, every view of it together.
+        harness.answer_written(Err(tabletist_db::Error::query("the server went away")));
+        let tree = harness.settle();
+        let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+        assert!(object.edits.saving.is_none(), "{name}");
+        assert_eq!(
+            object.edits.cells[&(0, PUBLISHER)].state,
+            crate::edit::State::Ready,
+            "{name}"
+        );
+        assert!(names_no_row(&tree), "{name}: back after the failure");
+        assert!(
+            harness.has("1 value names no row") || look.terminal,
+            "{name}"
+        );
+    }
+}
+
+/// The terminal's line says the warning in the pending tone, as the line
+/// of a cell to fix is in the failure's.
+#[test]
+fn the_terminal_lines_warning_is_in_the_pending_tone() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.settle();
+    let palette = harness.app.palette;
+    let line = "? 1:publisher_id  no publisher with id 9100000000000000099";
+    assert_eq!(harness.painted_color(line), Some(palette.warning));
+    // A cell to fix comes first, in the failure's tone, and the count of
+    // warnings is still told.
+    edit(&mut harness, tab, id, 1, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    let tree = harness.settle();
+    let first = harness
+        .painted
+        .iter()
+        .find(|(text, _)| text.starts_with("! 2:publisher_id"))
+        .map(|(_, color)| *color);
+    assert_eq!(first, Some(palette.danger));
+    assert!(harness.painted_color(line).is_none());
+    let count = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.value() == Some("1 value names no row"))
+        .map(|(_, node)| node.live());
+    assert_eq!(count, Some(Some(egui::accesskit::Live::Polite)));
+}
+
+/// A new row's warning, through the view: the terminal's line names the
+/// row `new`, the bar counts the value, and the new row's form says it.
+#[test]
+fn a_new_rows_warning_is_said_by_the_line_the_bar_and_the_form() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let name = look.name;
+        let (mut harness, tab, id) = covers_in(look);
+        harness.app.apply(Action::AddRow {
+            tab,
+            id,
+            place: crate::edit::Place::Top,
+        });
+        harness.app.apply(Action::CancelEdit { tab, id });
+        let new = crate::edit::new_row(0);
+        let cell = CellPos {
+            row: new,
+            col: PUBLISHER,
+        };
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell,
+            start: EditStart::Replace(NO_PUBLISHER.into()),
+        });
+        harness.answer_structure(publishers_structure());
+        harness.answer_lookups(&PUBLISHERS);
+        commit(&mut harness, tab, id, Advance::Stay);
+        harness.answer_lookups(&PUBLISHERS);
+        assert_eq!(
+            warned(&harness, tab, id),
+            [((new, PUBLISHER), NO_PUBLISHER.to_owned())],
+            "{name}"
+        );
+        let tree = harness.settle();
+        let labels = crate::testing::labels(&tree);
+        let said = |text: &str| labels.iter().any(|label| label == text);
+        if look.terminal {
+            assert!(
+                said("? new:publisher_id  no publisher with id 9100000000000000099"),
+                "{name}: {labels:?}"
+            );
+        } else {
+            assert!(
+                said("1 new row · 1 value names no row"),
+                "{name}: {labels:?}"
+            );
+            // The new row's form, the panel on the row.
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::FocusFields { tab, id });
+            assert!(harness.has(WARNING), "{name}: the form");
+        }
+    }
+}
+
+/// The panel's words are not drawn while its field is edited: the list is
+/// what is under it then.
+#[test]
+fn the_panels_words_go_while_its_field_is_edited() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.app.apply(Action::FocusFields { tab, id });
+    assert!(harness.has(WARNING));
+    edit_field(&mut harness, tab, id, 0, EditStart::Value);
+    let tree = harness.settle();
+    assert!(editing(&harness, tab, id));
+    assert!(
+        !crate::testing::labels(&tree)
+            .iter()
+            .any(|label| label == WARNING),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+    assert!(
+        crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_some(),
+        "the list"
+    );
+}

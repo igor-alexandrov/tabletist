@@ -278,35 +278,24 @@ pub fn picked_text(column: &str, picked: &crate::edit::Picked, locale: Locale) -
 
 /// What a foreign key cell whose value names no row says: "No publisher
 /// with id 9100000000000000099". The table's name is made singular as the
-/// row panel's "Open publisher" makes it.
-pub fn doubt_text(found: &crate::key_picker::Unmatched, locale: Locale) -> String {
-    doubt_said(found, locale, |words| words.to_owned())
-}
-
-/// [`doubt_text`] as the terminal's line says it: the app's own words in
-/// the look's lower case, and the table, the column and the value as they
-/// are.
-pub fn doubt_line(found: &crate::key_picker::Unmatched, look: &Look, locale: Locale) -> String {
-    doubt_said(found, locale, |words| look.label(words))
-}
-
-/// The words of a warning, the app's own put through `own`.
-fn doubt_said(
-    found: &crate::key_picker::Unmatched,
-    locale: Locale,
-    own: impl Fn(&str) -> String,
-) -> String {
+/// row panel's "Open publisher" makes it. In the terminal look the app's
+/// own words are the look's lower case, and the table, the column and the
+/// value are as they are: the cell's hint, the row panel and the line under
+/// the grid all say it this way.
+pub fn doubt_text(found: &crate::key_picker::Unmatched, look: &Look, locale: Locale) -> String {
     let table = display_safe(&found.table);
     // A placeholder each: a translation puts them where they read, and
     // what they stand for is not the app's to lower.
-    own(&gettext(locale, "No {row} with {key} {value}"))
+    look.label(&gettext(locale, "No {row} with {key} {value}"))
         .replace("{row}", crate::ui::row_panel::singular(&table))
         .replace("{key}", &display_safe(&found.key))
         .replace("{value}", &display_safe(&found.value))
 }
 
 /// The warnings that stand on a table's tab, in the page's order with new
-/// rows last. None for a tab whose table the app cannot edit.
+/// rows last. None while the tab has no page, and none while a save runs:
+/// every view of a warning gives way together then, as the cell does, and
+/// a save that fails shows the failure instead.
 pub fn unmatched(
     workspace: &crate::model::Workspace,
     object: &crate::model::ObjectTab,
@@ -314,6 +303,9 @@ pub fn unmatched(
     let Some(table) = crate::edit::Table::of(workspace, object) else {
         return Vec::new();
     };
+    if table.saving {
+        return Vec::new();
+    }
     crate::key_picker::unmatched(&table, &object.object, &object.edits)
 }
 
@@ -321,11 +313,12 @@ pub fn unmatched(
 pub fn doubts(
     workspace: &crate::model::Workspace,
     object: &crate::model::ObjectTab,
+    look: &Look,
     locale: Locale,
 ) -> std::collections::BTreeMap<(usize, usize), String> {
     unmatched(workspace, object)
         .iter()
-        .map(|found| (found.at, doubt_text(found, locale)))
+        .map(|found| (found.at, doubt_text(found, look, locale)))
         .collect()
 }
 

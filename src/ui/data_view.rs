@@ -1239,7 +1239,7 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
         Some(format!(
             "? {row}:{}  {}",
             format::display_safe(&column.name),
-            key_picker::doubt_line(first, &look, locale)
+            key_picker::doubt_text(first, &look, locale)
         ))
     });
     // How many stand, for a screen reader: the line says the first.
@@ -1317,7 +1317,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         .as_ref()
         .and_then(|editor| editor_target(workspace, object, tab, editor.cell, hold));
     // The cells whose foreign key names no row, with what each says.
-    let doubts = key_picker::doubts(workspace, object, locale);
+    let doubts = key_picker::doubts(workspace, object, &look, locale);
     // The last pick of a foreign key's list, while its cell still holds
     // it: said to a screen reader.
     let picked = object.edits.picked.as_ref().and_then(|picked| {
@@ -1401,9 +1401,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             computed,
             &ctx,
         );
+        changes.doubts = doubts;
         // The column a new row's marker stands in: the first the database
         // assigns.
-        changes.doubts = doubts;
         changes.marker = unset.iter().position(|unset| *unset == Unset::Assigned);
         changes.unset = unset;
         changes.unique = object
@@ -1930,7 +1930,9 @@ impl<'a> Changes<'a> {
     /// The warning that stands on the cell at `at`, over what its state
     /// made of it: the mark, and the words under the pointer after what
     /// the cell was. `doubts` holds only cells that wait for a save with
-    /// nothing to fix.
+    /// nothing to fix, and none while a save runs. The check of `saving`
+    /// here is a guard for the mark's order alone: a cell being saved is
+    /// `Saving`, whatever a set of warnings handed in says.
     fn warn(&self, cell: &mut Cell<'_>, at: (usize, usize)) {
         let Some(words) = self.doubts.get(&at).filter(|_| !self.saving) else {
             return;

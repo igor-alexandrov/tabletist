@@ -527,7 +527,7 @@ fn draw(
             let structure = source.structure;
             // The warnings on the row the panel shows, by column.
             let doubts: std::collections::BTreeMap<usize, String> = object
-                .map(|object| super::key_picker::doubts(workspace, object, locale))
+                .map(|object| super::key_picker::doubts(workspace, object, &look, locale))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|((row, _), _)| *row == cell.row)

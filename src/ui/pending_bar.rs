@@ -249,7 +249,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let reviewing = edits.reviewing;
     let counts = edits.counts();
     let doubts = app.workspace(tab).map_or(0, |workspace| {
-        crate::ui::key_picker::doubts(workspace, object, locale).len()
+        crate::ui::key_picker::unmatched(workspace, object).len()
     });
     let note = edits
         .note

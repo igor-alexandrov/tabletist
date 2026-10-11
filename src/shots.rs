@@ -694,11 +694,15 @@ fn edit_key_picker_current(harness: &mut Harness) {
     answer_books(harness);
 }
 
-/// A key no book has, typed on `book_id` and kept as typed: the cell is
-/// pending and outlined, the bar counts the warning, Save is offered, and
-/// the terminal look says it under the grid.
+/// A key no book has, typed on `book_id` and kept as typed, in the grid
+/// alone: the cell is pending and outlined, the bar counts the warning
+/// ("1 change in 1 row · 1 value names no row"), Save is offered, and the
+/// terminal look says it under the grid. The row panel says it in
+/// `row_form_key_missing`.
 fn edit_key_missing(harness: &mut Harness) {
     let (tab, id) = editable(harness);
+    // The grid has its width, and the bar room for all its counts.
+    harness.app.apply(Action::ToggleRowPanel(tab));
     harness.app.apply(Action::EditCell {
         tab,
         id,
