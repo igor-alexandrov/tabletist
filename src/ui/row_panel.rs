@@ -4,6 +4,7 @@ use egui::{
     CornerRadius, Frame, Id, Rect, Sense, Stroke, StrokeKind, TextEdit, WidgetInfo, WidgetType,
     pos2, vec2,
 };
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use tabletist_db::{Value, ValueKind};
@@ -2814,13 +2815,26 @@ fn binary(
     link.clicked()
 }
 
-/// `books` becomes `book`, for "Open book →".
-fn singular(table: &str) -> &str {
-    table
-        .strip_suffix("ies")
-        .map(|_| table)
-        .or_else(|| table.strip_suffix('s'))
-        .unwrap_or(table)
+/// `books` becomes `book`, for "Open book →": a table is named as one of
+/// its rows. `categories` becomes `category`, and `addresses` and `boxes`
+/// lose the `es` their plural took. A name that is no plural stays whole:
+/// `address`, `staff`.
+fn singular(table: &str) -> Cow<'_, str> {
+    if let Some(stem) = table.strip_suffix("ies") {
+        return Cow::Owned(format!("{stem}y"));
+    }
+    // The endings whose plural is written with `es`.
+    let hissed = ["sses", "xes", "ches", "shes", "zes"]
+        .iter()
+        .any(|end| table.ends_with(end));
+    let one = if hissed {
+        table.strip_suffix("es")
+    } else if table.ends_with("ss") {
+        None
+    } else {
+        table.strip_suffix('s')
+    };
+    Cow::Borrowed(one.unwrap_or(table))
 }
 
 /// "Format" and its key, a link in a field's label line that ends at `at`:
@@ -3190,6 +3204,24 @@ mod tests {
         // Under its least width the panel gives way too.
         assert_eq!(range(400.0), (200.0, 200.0));
         assert_eq!(range(0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_table_is_named_as_one_of_its_rows() {
+        for (table, row) in [
+            ("books", "book"),
+            ("categories", "category"),
+            ("addresses", "address"),
+            ("boxes", "box"),
+            ("branches", "branch"),
+            ("dishes", "dish"),
+            ("buzzes", "buzz"),
+            // No plural: a name that ends in `ss`, and one without an `s`.
+            ("address", "address"),
+            ("staff", "staff"),
+        ] {
+            assert_eq!(singular(table), row, "{table}");
+        }
     }
 
     /// A table open on one row of awkward values, that row in the panel.
