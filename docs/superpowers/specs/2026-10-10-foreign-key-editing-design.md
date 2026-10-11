@@ -13,7 +13,9 @@ label that is cut is drawn without its match. Run 3
 (`docs/superpowers/plans/2026-10-10-foreign-key-editing-3-row-panel.md`)
 is built: the row panel's field has the same list. Its field has no
 magnifier, prompt or count, and no picture of the picker is on the website
-yet. What is left is listed under "Delivery".
+yet. Run 4 (`docs/superpowers/plans/2026-10-10-foreign-key-editing-4-missing-row.md`)
+is built: a typed key that names no row is warned about, as section 7
+says. All four runs are built.
 
 This is one editor of slice 2 of `2026-10-03-value-editing-core-design.md`
 ("Editors by type"): the foreign key search. The other editors of that
@@ -83,6 +85,7 @@ Canvas "Tabletist", sections **Editing · Rows**, **Editing · Values** and
 | Which columns | A column that is the one column of a foreign key. The columns of a composite key stay text editors (asked on 2026-10-10). |
 | Matching | A substring search the database runs: the label contains the text, or the key starts with it. The same in both looks (asked on 2026-10-10). |
 | A key that names no row | A warning on the cell. Save stays offered and the database has the last word (asked on 2026-10-10). |
+| How the warning looks | An outline in the pending tone on the cell, no glyph. The Omarchy look says it in the line under the grid and keeps `~` in the gutter. The words show under the pointer, under the row panel's field and as a count in the pending bar. A screen reader is told when it appears (asked on 2026-10-11). |
 | What the cell shows | The key, as today. The label shows only in the list. |
 | The label column | The referenced table's first text column that is not the key. None: the list shows keys alone. |
 | How many | The first 50 matches. More are said, not paged. |
@@ -364,20 +367,34 @@ In every look:
   and DEFAULT, a value that is to fix, a text that cannot be pinned (`harb`
   in a `uuid` column, which the column's own check lets through), and a
   key of a type that is never pinned (section 3).
-- The question and its answer are kept on the pending cell, beside its
-  state: asked, or no such row. Nothing shows until the answer. An answer
-  that the row is there, and one that failed, show nothing.
+- Also not asked about: a copy of a row, whose values were read from a
+  row, and a value the cell already held when its editor was opened and
+  closed without a change.
+- A number is asked about without the white space around it, as the
+  column's check reads it. A text key is asked about as typed.
+- The question and its answer are kept on the tab's edits, by cell, with
+  the text that was asked about: asked, or no such row. Nothing shows until
+  the answer. An answer that the row is there, and one that failed, show
+  nothing. One that comes back cancelled unasked is asked again, once.
 - **No such row** puts a warning on the cell. It is not the "to fix" state:
   the row's mark stays the mark of a changed row, the pending bar's Save
   stays offered, and Review SQL shows the statement as it is.
-  - The cell keeps the pending fill and gets the look's caution mark at its
-    start (`?` in the row's gutter in the Omarchy look, in the caution
-    colour).
+  - The cell keeps the pending fill and its bar, and gets an outline in
+    the pending tone, as a cell to fix has one in the failure's. A new
+    row's cell keeps the new row's look and gets the outline.
   - The words are `No publisher with id 9100000000000000099`, with the
     table's name made singular as the row panel's link makes it. They show
-    where a cell's problem shows: under the row panel's field, and in the
-    status line while the cell is selected.
-  - The pending bar adds `· 1 value names no row` (`2 values name no row`).
+    under the pointer on the cell and under the row panel's field.
+  - The Omarchy look keeps `~` in the row's gutter and says the first
+    warning in the line under the grid, after any cell to fix:
+    `? 4:publisher_id  no publisher with id 9100000000000000099`.
+  - The pending bar adds `· 1 value names no row` (`2 values name no row`)
+    where it has the room for its whole text. Its short form leaves it
+    out.
+  - A screen reader is told when a warning appears and when the count
+    changes: the count is a polite live region, on the pending bar and, in
+    the Omarchy look, on the line under the grid. The row panel's field
+    says the words in its name.
 - **A table that points at itself.** A warning does not show while a new
   row of the same tab holds that key in the referenced column: one new row
   can name another, and the save writes both. This is looked at when the
@@ -386,7 +403,9 @@ In every look:
 - The warning belongs to the cell and its value. It goes when the value
   changes, is reverted or is saved, and an answer for a value the cell no
   longer has is dropped. Discarding the changes, or loading the page again,
-  cancels a question that still runs.
+  forgets a question that still runs: its read is one row by its key and
+  is left to end, and its answer finds nothing to tell. A reconnect
+  forgets the questions the old session was asked.
 - It is asked once, when the value is kept. The save does not ask again:
   the database decides.
 
@@ -485,9 +504,11 @@ In every look:
   Enter or Tab. A new `src/key_picker.rs` holds it and what can be tested
   without a view: choosing the label column, whether a text can be pinned,
   the highlight rule, when the next search is due (from times it is given),
-  where the text is found in a label. `edit::Pending` gets the question of
-  section 7 as a field beside `state`. It is not a `State`: it holds
-  nothing.
+  where the text is found in a label. The question of section 7 is kept in
+  `Edits::doubts`, by cell, with the text that was asked about: a warning
+  that names its text ends by itself when the cell's text changes, and
+  `Edits::put`, `revert`, `drop_row` and `discard` drop it with the value.
+  It is not a `State`: it holds nothing.
 - **The reducer.** The edit reducer is `src/app/editing.rs`. The picker's
   part goes in a new `src/app/key_picker.rs` beside it: opening an editor
   builds the picker and sends the first search, `Action::EditorTyped` notes

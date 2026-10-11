@@ -35,6 +35,27 @@ Decided on 2026-10-10, after this plan was written (see "Amendments of 2026-10-1
 - `App::lookups` holds `SentLookup`s, and `send_lookup` takes the serial of the picker a lookup is for. The question of section 7 is no picker's: `ask_row` sends it as `self.send_lookup(session, lookup, 0)`.
 - A pinned row's read is never cancelled. So `ask_row` does not cancel a stale question (it only forgets it), task 2's addition to `send_due_lookups` (the questions' requests as "waited") is not needed, and the test `a_late_or_failed_answer_warns_of_nothing` must not expect a `Command::Cancel` after the discard: it expects none, and that the late answer warns of nothing.
 
+## What was decided and found while this was built
+
+The run is built. The tasks below were left as they were written; this is where the code differs from them.
+
+- **The user's answers of 2026-10-11** to rows a to d of the table below: a (the outline) as the row says; b (the Omarchy look's line under the grid, `~` in the gutter) as the row says; c (the hint, the row panel's field, the bar's count) as the row says; d is built as the spec has it and not as the row says: the count is a polite live region (`widgets::announce_polite`), on the pending bar and, in the Omarchy look, on the line under the grid.
+- **A doubt goes with its cell's text.** `Edits::put` drops the cell's doubt unless the new value is that very text, and `revert`, `drop_row` and `discard` drop it with the value. Task 2's note that a stale doubt is harmless does not hold: `close_editor` reads a doubt by its text, so one left behind by a revert would be taken as known when the same text is typed again.
+- **`close_editor` decides in this order:** not changed or to fix, no doubt; taken from the list, no doubt and nothing asked (the task's `keep` forgot `taken`, and a warned key picked from the list kept its warning); a doubt of this very text stands, kept; the cell already held this text before the close, nothing asked; otherwise asked.
+- **A number is asked about trimmed**, as the column's check reads it. A text key is asked about as typed.
+- **A question that comes back cancelled is asked again once**, as a picker's read is: the sweep cancels a closing editor's search on the same session just as the question is sent.
+- **A reconnect forgets the questions** the old session was asked (`Workspace::forget_session_requests`).
+- **Under the keyboard's cursor** the outline is drawn inside the cursor's line, in every look: the cursor is on the cell right after the key is typed and kept, and its line covered the outline.
+- **A save that runs** takes every view of the warning with it (`ui::key_picker::unmatched` answers nothing while the table is saving), not the grid's cell alone.
+- **The Omarchy look lowers the app's words** in the hint, the row panel and the line under the grid alike (`doubt_text` takes the look).
+- **Two scenes** in `src/shots.rs`, `edit-key-missing` and `row-form-key-missing`, are where the look was checked. Nobody ran the app.
+- **Left as it is:**
+  - The pending bar's short form leaves the count out, so a narrow bar (the row panel open) does not show it.
+  - The self-reference rule reads a number without the white space around it, and otherwise compares the key's text exactly (`099` is not `99`).
+  - A cell whose question a reconnect forgot, or whose read failed or came back cancelled twice, is not asked again until its text changes: its warning can be missed, never falsely shown.
+  - "Open publisher →" and `gd` still follow a warned value, and open the referenced table filtered to nothing.
+  - `row_panel::singular` makes "addresse" of `addresses` and leaves `categories` as it is, in the warning as in the row panel's link. It is older than this run.
+
 ## What the spec asks, and what gets built
 
 **Rows a to d change what the spec says a user sees. Ask the user before building them, and write the answer into the spec in task 4.**

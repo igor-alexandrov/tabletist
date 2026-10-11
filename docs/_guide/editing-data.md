@@ -35,7 +35,8 @@ The Omarchy look uses vim keys for these. They are in
 
 What you type is checked against the column's type before anything is
 sent: numbers and their ranges, booleans, enum values, the maximum length,
-and the syntax of JSON.
+and the syntax of JSON. A foreign key you type is also looked up in the
+table it points at, as a [warning](#foreign-keys).
 
 ### Words that are not text
 
@@ -100,6 +101,17 @@ NULL, **Set NULL** under the list sets it, as Cmd/Ctrl+Backspace does.
 
 The picker is on the cells of the grid and on the fields of the row panel,
 in a new row and in a copy too. A key of several columns is edited as text.
+
+An id you type yourself is looked up when you leave the cell. If no row
+has it, the cell gets an outline and says so under the pointer, the row
+panel says it under the field ("No publisher with id 12"), and the bar
+counts it where it has the room: "1 value names no row". The Omarchy look
+says it in the line under the grid, with a `?`.
+
+It is a warning, not a mistake to fix. You can still save, and the
+database decides: a row may be there by then, and a table that points at
+itself can name a row you are adding in the same save. A row you picked
+from the list is not looked up again.
 
 ## Save
 
