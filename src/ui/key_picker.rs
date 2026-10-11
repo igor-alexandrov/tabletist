@@ -287,7 +287,7 @@ pub fn doubt_text(found: &crate::key_picker::Unmatched, look: &Look, locale: Loc
     // A placeholder each: a translation puts them where they read, and
     // what they stand for is not the app's to lower.
     look.label(&gettext(locale, "No {row} with {key} {value}"))
-        .replace("{row}", crate::ui::row_panel::singular(&table))
+        .replace("{row}", &crate::ui::row_panel::singular(&table))
         .replace("{key}", &display_safe(&found.key))
         .replace("{value}", &display_safe(&found.value))
 }
