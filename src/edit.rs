@@ -1312,12 +1312,36 @@ pub struct Editor {
     pub select: bool,
 }
 
+/// What is known of whether a foreign key cell's pending value names a
+/// row of the table its key points at. No `Debug`: it holds what was
+/// typed, as `Pending` does.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Doubt {
+    /// The pending text that was asked about. A cell that holds another
+    /// text by now has no doubt: this one was of a value it no longer
+    /// has.
+    pub text: String,
+    pub state: DoubtState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubtState {
+    /// The database was asked, and has not answered.
+    Asked(crate::backend::RequestId),
+    /// No row has that key.
+    Missing,
+}
+
 /// What a table's tab holds while its values are edited.
 #[derive(Default)]
 pub struct Edits {
     /// By row and column of the loaded page. A new row's are under a row
     /// of its own (`new_row`).
     pub cells: BTreeMap<(usize, usize), Pending>,
+    /// The foreign key cells whose typed value was asked about, by row
+    /// and column as `cells`. A warning, and it holds nothing: see
+    /// `key_picker::unmatched`, which says which of them stand.
+    pub doubts: BTreeMap<(usize, usize), Doubt>,
     /// The rows to add, in the order they stand in the grid among
     /// themselves: `before` never decreases along them.
     pub added: Vec<NewRow>,

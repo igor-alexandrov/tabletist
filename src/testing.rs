@@ -777,6 +777,60 @@ pub fn keyed_covers_structure() -> tabletist_db::Structure {
     }
 }
 
+/// `genres`: a table that points at itself. `parent_id` is a foreign key
+/// to `genres.id`, and `id` is typed by hand: no database numbers it.
+pub fn genres_structure() -> tabletist_db::Structure {
+    use tabletist_db::ColumnInfo;
+    let column = |name: &str, type_name: &str, nullable: bool| ColumnInfo {
+        name: name.into(),
+        type_name: type_name.into(),
+        nullable,
+        ..ColumnInfo::default()
+    };
+    tabletist_db::Structure {
+        columns: vec![
+            column("id", "INTEGER", false),
+            column("parent_id", "INTEGER", true),
+            column("name", "TEXT", false),
+        ],
+        primary_key: vec!["id".into()],
+        foreign_keys: vec![tabletist_db::ForeignKeyInfo {
+            columns: vec!["parent_id".into()],
+            ref_schema: "main".into(),
+            ref_table: "genres".into(),
+            ref_columns: vec!["id".into()],
+            ..tabletist_db::ForeignKeyInfo::default()
+        }],
+        ..tabletist_db::Structure::default()
+    }
+}
+
+/// The two genres the tests hold: Fiction (1), and Crime (2) under it.
+pub fn genres_page() -> RowPage {
+    let meta = |name: &str, type_name: &str, kind: ValueKind| ColumnMeta {
+        name: name.into(),
+        type_name: type_name.into(),
+        kind,
+    };
+    RowPage {
+        columns: vec![
+            meta("id", "INTEGER", ValueKind::Numeric),
+            meta("parent_id", "INTEGER", ValueKind::Numeric),
+            meta("name", "TEXT", ValueKind::Text),
+        ],
+        rows: vec![
+            vec![Value::Int(1), Value::Null, Value::Text("Fiction".into())],
+            vec![Value::Int(2), Value::Int(1), Value::Text("Crime".into())],
+        ],
+        has_more: false,
+        ordered_by_key: true,
+        elapsed: std::time::Duration::from_millis(2),
+    }
+}
+
+/// The genres, as (id, name), for [`Harness::answer_lookups`].
+pub const GENRES: [(i64, &str); 2] = [(1, "Fiction"), (2, "Crime")];
+
 /// A page of `book_covers` whose three rows point at the three
 /// publishers in turn: Northlight Books, Harbor Press, Harbor Lights.
 /// [`book_covers_page`] numbers its publishers on from the first, and
@@ -973,6 +1027,25 @@ impl Harness {
         });
         self.answer_structure(keyed_covers_structure());
         self.answer_rows(keyed_covers_page());
+        let id = self
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_tab)
+            .expect("the table's tab is open");
+        (tab, id)
+    }
+
+    /// `genres` open, writable, its structure and its two rows loaded.
+    pub fn genres(&mut self) -> (ConnTabId, TabId) {
+        let tab = self.connect_fake_as(false);
+        self.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "genres"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        self.answer_structure(genres_structure());
+        self.answer_rows(genres_page());
         let id = self
             .app
             .workspace(tab)

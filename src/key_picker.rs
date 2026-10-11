@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 
 use tabletist_db::{
     ColumnClass, ColumnInfo, Dialect, Error, Lookup, LookupPage, LookupPart, LookupRow, Matched,
-    ObjectRef, Structure, Value, column_class,
+    NewValue, ObjectRef, Structure, Value, column_class,
 };
 
 use crate::backend::RequestId;
+use crate::edit::{DoubtState, Edits, State, Table, new_id};
 use crate::model::Advance;
 
 /// How many matches a list holds; more are said, not paged.
@@ -33,6 +34,76 @@ pub fn target(structure: &Structure, column: &str) -> Option<(ObjectRef, String)
     };
     let table = ObjectRef::new(foreign.ref_schema.clone(), foreign.ref_table.clone());
     Some((table, key.clone()))
+}
+
+/// A foreign key cell whose pending value names no row.
+pub struct Unmatched {
+    /// The cell, by row and column of the page.
+    pub at: (usize, usize),
+    /// The table its key points at, and the column there.
+    pub table: String,
+    pub key: String,
+    /// The value, as it was typed.
+    pub value: String,
+}
+
+/// The warnings of `edits` that stand, for the table `own` whose page
+/// `table` is: a cell that was answered "no such row", still holds the
+/// text that was asked about, and waits for a save with nothing to fix.
+/// Not one whose key a new row of the same tab gives the referenced
+/// column: a table that points at itself can have one new row name
+/// another, and the save writes both.
+pub fn unmatched(table: &Table<'_>, own: &ObjectRef, edits: &Edits) -> Vec<Unmatched> {
+    let Some(structure) = table.structure else {
+        return Vec::new();
+    };
+    edits
+        .doubts
+        .iter()
+        .filter(|(_, doubt)| doubt.state == DoubtState::Missing)
+        .filter_map(|(&at, doubt)| {
+            let pending = edits.cells.get(&at)?;
+            // A cell whose save failed shows the failure instead.
+            let holds = match (&pending.new, &pending.state) {
+                (NewValue::Text(text), State::Ready) => *text == doubt.text,
+                (NewValue::Text(_), State::ToFix(_) | State::Failed(_)) => false,
+                (
+                    NewValue::Null | NewValue::Default { .. } | NewValue::Now,
+                    State::Ready | State::ToFix(_) | State::Failed(_),
+                ) => false,
+            };
+            if !holds {
+                return None;
+            }
+            let column = table.page.columns.get(at.1)?;
+            let (target, key) = self::target(structure, &column.name)?;
+            if target == *own {
+                // The referenced column's place in this page, and whether
+                // a new row sets it to this value.
+                let place = table
+                    .page
+                    .columns
+                    .iter()
+                    .position(|column| column.name == key);
+                let made = place.is_some_and(|place| {
+                    edits.cells.iter().any(|(&(row, col), cell)| {
+                        col == place
+                            && new_id(row).is_some()
+                            && matches!(&cell.new, NewValue::Text(text) if *text == doubt.text)
+                    })
+                });
+                if made {
+                    return None;
+                }
+            }
+            Some(Unmatched {
+                at,
+                table: target.name,
+                key,
+                value: doubt.text.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The column a person reads a row of the referenced table by: its first
@@ -213,6 +284,10 @@ pub struct Picker {
     /// the column would say of the text is not shown: the text is a
     /// search, and `harb` is no mistake in a column of numbers.
     pub refused: bool,
+    /// The editor's text is the key of an option a commit took from the
+    /// list: it was just read from the table, and is not asked about
+    /// again.
+    pub taken: bool,
 }
 
 impl Picker {
@@ -244,6 +319,7 @@ impl Picker {
             kept: None,
             failed: None,
             refused: false,
+            taken: false,
         }
     }
 
@@ -272,6 +348,7 @@ impl Picker {
         self.moved = false;
         self.refused = false;
         self.resends = 0;
+        self.taken = false;
     }
 
     /// The editor's text was replaced by an option's key. It is the text
@@ -490,6 +567,11 @@ impl Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::BTreeSet;
+
+    use crate::edit::{Doubt, DoubtState, Edits, NEW_ROWS, Pending, State, Table};
+    use tabletist_db::{Access, ColumnMeta, ForeignKeyInfo, ObjectKind, RowPage, ValueKind};
 
     const HARBOR_PRESS: i64 = 9_100_000_000_000_000_004;
     const HARBOR_LIGHTS: i64 = 9_100_000_000_000_000_007;
@@ -1083,5 +1165,154 @@ mod tests {
         picker.typed("harbo", Instant::now(), DELAY);
         assert!(picker.failed.is_some());
         assert_eq!(picker.take("harbo"), Take::Text);
+    }
+
+    /// `genres (id, parent_id → genres.id, name)`, two rows loaded.
+    fn genres() -> (Structure, RowPage) {
+        let column = |name: &str| ColumnInfo {
+            name: name.into(),
+            type_name: if name == "name" { "TEXT" } else { "INTEGER" }.into(),
+            nullable: name == "parent_id",
+            ..ColumnInfo::default()
+        };
+        let meta = |name: &str, kind| ColumnMeta {
+            name: name.into(),
+            type_name: if name == "name" { "TEXT" } else { "INTEGER" }.into(),
+            kind,
+        };
+        let structure = Structure {
+            columns: vec![column("id"), column("parent_id"), column("name")],
+            primary_key: vec!["id".into()],
+            foreign_keys: vec![ForeignKeyInfo {
+                columns: vec!["parent_id".into()],
+                ref_schema: "main".into(),
+                ref_table: "genres".into(),
+                ref_columns: vec!["id".into()],
+                ..ForeignKeyInfo::default()
+            }],
+            ..Structure::default()
+        };
+        let page = RowPage {
+            columns: vec![
+                meta("id", ValueKind::Numeric),
+                meta("parent_id", ValueKind::Numeric),
+                meta("name", ValueKind::Text),
+            ],
+            rows: vec![
+                vec![Value::Int(1), Value::Null, Value::Text("Fiction".into())],
+                vec![Value::Int(2), Value::Int(1), Value::Text("Crime".into())],
+            ],
+            has_more: false,
+            ordered_by_key: true,
+            elapsed: Duration::ZERO,
+        };
+        (structure, page)
+    }
+
+    fn ready(text: &str) -> Pending {
+        Pending {
+            new: NewValue::Text(text.into()),
+            state: State::Ready,
+        }
+    }
+
+    fn missing(text: &str) -> Doubt {
+        Doubt {
+            text: text.into(),
+            state: DoubtState::Missing,
+        }
+    }
+
+    #[test]
+    fn a_warning_stands_only_for_the_text_the_cell_still_holds() {
+        let (structure, page) = genres();
+        let gone = BTreeSet::new();
+        let own = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        let table = |edits: &Edits| {
+            let found = unmatched(
+                &Table {
+                    access: Access::Writable,
+                    kind: ObjectKind::Table,
+                    dialect: Dialect::Sqlite,
+                    structure: Some(&structure),
+                    page: &page,
+                    refreshing: false,
+                    saving: false,
+                    gone: &gone,
+                    added: &edits.added,
+                },
+                &own,
+                edits,
+            );
+            found
+                .into_iter()
+                .map(|found| (found.at, found.table, found.key, found.value))
+                .collect::<Vec<_>>()
+        };
+        // Row 1's parent is 99, and no genre has that id.
+        edits.cells.insert((1, 1), ready("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        assert_eq!(
+            table(&edits),
+            [(
+                (1, 1),
+                "genres".to_owned(),
+                "id".to_owned(),
+                "99".to_owned()
+            )]
+        );
+        // Asked, not answered: nothing is said yet.
+        edits.doubts.insert(
+            (1, 1),
+            Doubt {
+                text: "99".into(),
+                state: DoubtState::Asked(RequestId(7)),
+            },
+        );
+        assert!(table(&edits).is_empty());
+        // The value changed since: the answer was of another text.
+        edits.doubts.insert((1, 1), missing("99"));
+        edits.cells.insert((1, 1), ready("98"));
+        assert!(table(&edits).is_empty());
+        // A cell to fix says its own problem.
+        edits.cells.insert(
+            (1, 1),
+            Pending {
+                new: NewValue::Text("99".into()),
+                state: State::ToFix(crate::edit::Problem::WholeNumber),
+            },
+        );
+        assert!(table(&edits).is_empty());
+        // Reverted: no pending cell, no warning.
+        edits.cells.remove(&(1, 1));
+        assert!(table(&edits).is_empty());
+    }
+
+    #[test]
+    fn a_key_that_a_new_row_of_the_same_table_holds_is_no_warning() {
+        let (structure, page) = genres();
+        let gone = BTreeSet::new();
+        let own = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        edits.cells.insert((1, 1), ready("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        // A new row whose `id` is 99: the same save writes it.
+        edits.cells.insert((NEW_ROWS, 0), ready("99"));
+        let table = Table {
+            access: Access::Writable,
+            kind: ObjectKind::Table,
+            dialect: Dialect::Sqlite,
+            structure: Some(&structure),
+            page: &page,
+            refreshing: false,
+            saving: false,
+            gone: &gone,
+            added: &edits.added,
+        };
+        assert!(unmatched(&table, &own, &edits).is_empty());
+        // Another table's key of the same number is no row of this one.
+        let other = ObjectRef::new("main", "books");
+        assert_eq!(unmatched(&table, &other, &edits).len(), 1);
     }
 }
