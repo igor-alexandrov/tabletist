@@ -414,10 +414,11 @@ const EDITING: [(&str, Scene); 15] = [
 ];
 
 /// The row panel's fields, one scene per state, in every look.
-const ROW_FORM: [(&str, Scene); 9] = [
+const ROW_FORM: [(&str, Scene); 10] = [
     ("row-form-new-row", row_form_new_row),
     ("row-form-new-row-filled", row_form_new_row_filled),
     ("row-form-field", row_form_field),
+    ("row-form-key-picker", row_form_key_picker),
     ("row-form-locked", row_form_locked),
     ("row-form-pending", row_form_pending),
     ("row-form-read-only", row_form_read_only),
@@ -469,6 +470,31 @@ fn row_form_field(harness: &mut Harness) {
     editor.expect("the panel's editor").text = "107233x".into();
     // What the field says when its text changed: the check runs.
     harness.app.apply(Action::EditorTyped { tab, id });
+    // A foreign key's field says why only once a commit took the text and
+    // the column refused it. The commit waits for the list, which is
+    // answered now; the kept Enter then finds the text refused.
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: Advance::Stay,
+    });
+    answer_books(harness);
+}
+
+/// The same picker in the row panel: the key's field searched for
+/// `rooms`, the two books it finds under it, the first highlighted.
+fn row_form_key_picker(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell: CellPos {
+            row: 4,
+            col: BOOK_ID,
+        },
+        start: EditStart::Replace("rooms".into()),
+    });
+    answer_books(harness);
 }
 
 /// An edit asked for on the key's field: its lock, and why under its value
