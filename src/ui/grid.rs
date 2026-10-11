@@ -103,6 +103,9 @@ pub enum Mark {
     #[default]
     None,
     Pending,
+    /// Pending, with a warning that holds no save: a foreign key that
+    /// names no row.
+    Doubt,
     /// To fix, or failed in the last save.
     Trouble,
     /// Pending and being saved.
@@ -887,7 +890,11 @@ pub fn show<'a>(
                     // terminal draws a computed column as any other. A row
                     // that is gone has no tint: nothing of it is pending.
                     let tone = match content.mark {
-                        Mark::Pending | Mark::Saving => Some(Tone::Warning),
+                        // A new row's cell keeps the row's own look: the
+                        // row says it is pending, and the outline below
+                        // says the warning.
+                        Mark::Doubt if new => None,
+                        Mark::Pending | Mark::Doubt | Mark::Saving => Some(Tone::Warning),
                         Mark::Trouble => Some(Tone::Danger),
                         Mark::Saved => Some(Tone::Success),
                         Mark::None | Mark::Locked | Mark::Gone | Mark::Added | Mark::Unset => None,
@@ -937,6 +944,25 @@ pub fn show<'a>(
                                 bar,
                                 CornerRadius::ZERO,
                                 Tone::Warning.color(palette),
+                            );
+                        }
+                        Mark::Doubt => {
+                            // A pending cell's bar, and an outline in its
+                            // tone, as a cell to fix has one in the
+                            // failure's.
+                            if !look.terminal && !new {
+                                let bar = Rect::from_min_size(cell_rect.min, vec2(2.0, height));
+                                painter.rect_filled(
+                                    bar,
+                                    CornerRadius::ZERO,
+                                    Tone::Warning.color(palette),
+                                );
+                            }
+                            painter.rect_stroke(
+                                cell_rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, Tone::Warning.color(palette)),
+                                StrokeKind::Inside,
                             );
                         }
                         Mark::Trouble => {
@@ -2227,6 +2253,51 @@ mod tests {
     }
 
     #[test]
+    fn a_new_rows_cell_with_a_warning_keeps_the_rows_look_and_is_outlined() {
+        use crate::ui::states::Tone;
+        for look in Look::ALL {
+            for palette in [Palette::light(), Palette::dark()] {
+                let said = format!("{}, dark: {}", look.name, palette.dark);
+                let ctx = egui::Context::default();
+                crate::theme::install(&ctx, false, &look);
+                crate::theme::apply(&ctx, &palette, &look);
+                marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+                let (rects, texts) = marked(&ctx, &look, &palette, Mark::Doubt, RowMark::New);
+                let (_, plain) = marked(&ctx, &look, &palette, Mark::None, RowMark::New);
+                let colors = crate::env::new_row_colors(crate::env::Platform::of(&look), &palette);
+                let warning = Tone::Warning.color(&palette);
+                // The outline, in the pending tone.
+                let lined = rects.iter().any(|rect| {
+                    rect.stroke == Stroke::new(1.0, warning)
+                        && rect.stroke_kind == StrokeKind::Inside
+                });
+                assert!(lined, "{said}: the line");
+                // No pending tint and no pending bar over the row's own.
+                let tinted = rects.iter().any(|rect| {
+                    rect.fill == Tone::Warning.fill(&look, &palette) && rect.rect.width() < 400.0
+                });
+                assert!(!tinted, "{said}: no tint");
+                let barred = rects
+                    .iter()
+                    .any(|rect| rect.fill == warning && rect.rect.width() == 2.0);
+                assert!(!barred, "{said}: no cell bar");
+                // The row's fill and its text stay the row's.
+                let filled = rects
+                    .iter()
+                    .any(|rect| rect.fill == colors.fill && rect.rect.width() > 400.0);
+                assert!(filled, "{said}: the row's fill");
+                let color_of = |texts: &[(String, egui::Color32, egui::Pos2)]| {
+                    texts
+                        .iter()
+                        .find(|(text, ..)| text == "r1c1")
+                        .map(|(_, color, _)| *color)
+                };
+                assert_eq!(color_of(&texts), color_of(&plain), "{said}: the text");
+            }
+        }
+    }
+
+    #[test]
     fn a_slanted_cell_is_written_leaned_over() {
         for look in Look::ALL {
             let palette = Palette::dark();
@@ -2364,6 +2435,7 @@ mod tests {
                 for (mark, row, tone, sign) in [
                     (Mark::Pending, RowMark::Changed, Tone::Warning, "~"),
                     (Mark::Saving, RowMark::Changed, Tone::Warning, "~"),
+                    (Mark::Doubt, RowMark::Changed, Tone::Warning, "~"),
                     (Mark::Trouble, RowMark::Trouble, Tone::Danger, "!"),
                 ] {
                     let said = format!("{said}, {mark:?}");
@@ -2397,12 +2469,17 @@ mod tests {
                         assert_eq!(color_at(&texts, cell), Some(palette.text), "{said}");
                         assert!(!signed, "{said}: no gutter");
                     }
-                    // A cell to fix has a line inside it as well.
+                    // A cell to fix has a line inside it as well, and so has
+                    // one with a warning, in the pending tone.
                     let lined = rects.iter().any(|rect| {
                         rect.stroke == Stroke::new(1.0, color)
                             && rect.stroke_kind == StrokeKind::Inside
                     });
-                    assert_eq!(lined, mark == Mark::Trouble, "{said}: the line");
+                    assert_eq!(
+                        lined,
+                        matches!(mark, Mark::Trouble | Mark::Doubt),
+                        "{said}: the line"
+                    );
                 }
                 // Written: green, and no mark on the row.
                 let (rects, _) = marked(&ctx, &look, &palette, Mark::Saved, RowMark::None);

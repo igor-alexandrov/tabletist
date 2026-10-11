@@ -21,6 +21,7 @@ use crate::ui::focus;
 use crate::ui::format;
 use crate::ui::grid::{self, Cell, Column, Mark, Style};
 use crate::ui::key_picker;
+use crate::ui::pending_bar;
 use crate::ui::states;
 use crate::ui::widgets;
 
@@ -1173,8 +1174,10 @@ pub fn type_line(
 
 /// The terminal look's line under the grid for the first cell that is to
 /// fix or that a save failed on: `! 4:publisher_id  int8 expects a whole
-/// number` (the row's number, the column, what was said). A bottom panel:
-/// called before the grid is drawn, it stands under it.
+/// number` (the row's number, the column, what was said). With none, the
+/// first foreign key that names no row, in a pending cell's tone:
+/// `? 4:publisher_id  no publisher with id 91`. A bottom panel: called
+/// before the grid is drawn, it stands under it.
 fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let said = app
@@ -1215,6 +1218,40 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
                 format::display_safe(&column.name)
             ))
         });
+    // The warnings that stand, and the first of them in the line's words.
+    let warned = app
+        .workspace(tab)
+        .and_then(|workspace| {
+            let object = workspace.object_tab(object_tab)?;
+            Some((object, key_picker::unmatched(workspace, object)))
+        })
+        .filter(|(_, found)| !found.is_empty());
+    let warning = warned.as_ref().and_then(|(object, found)| {
+        let page = object.page()?;
+        let first = found.first()?;
+        let (row, col) = first.at;
+        let column = page.columns.get(col)?;
+        // As the cells to fix are named.
+        let row = match crate::edit::new_id(row) {
+            Some(_) => look.label(&gettext(locale, "new")),
+            None => (object.query.offset + row as u64 + 1).to_string(),
+        };
+        Some(format!(
+            "? {row}:{}  {}",
+            format::display_safe(&column.name),
+            key_picker::doubt_line(first, &look, locale)
+        ))
+    });
+    // How many stand, for a screen reader: the line says the first.
+    let count = warned
+        .as_ref()
+        .map(|(_, found)| pending_bar::doubts_text(found.len(), locale));
+    // A cell to fix comes first, in the failure's colour.
+    let (said, color) = match (said, warning) {
+        (Some(said), _) => (Some(said), palette.danger),
+        (None, Some(warning)) => (Some(warning), states::Tone::Warning.color(&palette)),
+        (None, None) => (None, palette.danger),
+    };
     let Some(said) = said else {
         // A panel takes one of its parent's ids: passed over while there
         // is no line, so the grid under it is the same widget with the
@@ -1238,11 +1275,17 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
             let shown = grid::ellipsize(&said, room, false, |text| {
                 role.width(ui.ctx(), look.faces, text)
             });
-            let text = Text::one(&look, role, &shown, palette.danger);
+            let text = Text::one(&look, role, &shown, color);
             let width = widgets::paint_text(ui, left, y, text);
             // The whole of it for a screen reader, cut or not.
             let place = Rect::from_min_size(pos2(left, rect.top()), vec2(width.max(1.0), height));
             widgets::announce(ui, place, &said);
+            if let Some(count) = &count {
+                // Said when a warning appears or their number changes, as
+                // the pending bar says it in the other looks: over a point
+                // of the line, which has nothing to press.
+                widgets::announce_polite(ui, Rect::from_min_size(place.min, vec2(1.0, 1.0)), count);
+            }
         });
 }
 
@@ -1273,6 +1316,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         .editor
         .as_ref()
         .and_then(|editor| editor_target(workspace, object, tab, editor.cell, hold));
+    // The cells whose foreign key names no row, with what each says.
+    let doubts = key_picker::doubts(workspace, object, locale);
     // The last pick of a foreign key's list, while its cell still holds
     // it: said to a screen reader.
     let picked = object.edits.picked.as_ref().and_then(|picked| {
@@ -1358,6 +1403,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         );
         // The column a new row's marker stands in: the first the database
         // assigns.
+        changes.doubts = doubts;
         changes.marker = unset.iter().position(|unset| *unset == Unset::Assigned);
         changes.unset = unset;
         changes.unique = object
@@ -1651,6 +1697,8 @@ struct Changes<'a> {
     /// holding what no other row may (`NewRow::cleared_unique`), by row
     /// and column.
     unique: BTreeSet<(usize, usize)>,
+    /// The cells whose foreign key names no row, with what each says.
+    doubts: BTreeMap<(usize, usize), String>,
 }
 
 /// What a new row shows in each of the page's columns while nothing is set
@@ -1829,6 +1877,7 @@ impl<'a> Changes<'a> {
             unset: Vec::new(),
             marker: None,
             unique: BTreeSet::new(),
+            doubts: BTreeMap::new(),
         }
     }
 
@@ -1875,6 +1924,22 @@ impl<'a> Changes<'a> {
             return;
         };
         self.mark_state(cell, pending, Some(loaded), column, look, locale);
+        self.warn(cell, at);
+    }
+
+    /// The warning that stands on the cell at `at`, over what its state
+    /// made of it: the mark, and the words under the pointer after what
+    /// the cell was. `doubts` holds only cells that wait for a save with
+    /// nothing to fix.
+    fn warn(&self, cell: &mut Cell<'_>, at: (usize, usize)) {
+        let Some(words) = self.doubts.get(&at).filter(|_| !self.saving) else {
+            return;
+        };
+        cell.mark = Mark::Doubt;
+        cell.hint = Some(match cell.hint.take() {
+            Some(hint) => format!("{hint}\n{words}"),
+            None => words.clone(),
+        });
     }
 
     /// Says on `cell`, the cell `at` (row, column), why it cannot be
@@ -1965,6 +2030,7 @@ impl Changes<'_> {
             Some(pending) => {
                 let mut cell = pending_cell(&pending.new, &value);
                 self.mark_state(&mut cell, pending, None, column, look, locale);
+                self.warn(&mut cell, at);
                 cell
             }
             None => match self.unset.get(at.1) {
@@ -2450,6 +2516,53 @@ mod tests {
             has_more: false,
             ordered_by_key: true,
             elapsed: std::time::Duration::ZERO,
+        }
+    }
+
+    /// A warned cell is marked and says its words under the pointer, after
+    /// what the cell was; while a save runs it is the save's.
+    #[test]
+    fn a_warned_cell_is_marked_and_says_its_words_after_what_it_was() {
+        use crate::edit::{Pending, State};
+        let column = ColumnMeta {
+            name: "book_id".into(),
+            type_name: "int8".into(),
+            kind: ValueKind::Numeric,
+        };
+        let at = (0, 1);
+        let cells: BTreeMap<(usize, usize), Pending> = BTreeMap::from([(
+            at,
+            Pending {
+                new: NewValue::Text("999".into()),
+                state: State::Ready,
+            },
+        )]);
+        let gone = BTreeSet::new();
+        let ctx = egui::Context::default();
+        let words = "No book with id 999";
+        for saving in [false, true] {
+            let mut changes = Changes::of(&cells, saving, None, &gone, Vec::new(), &ctx);
+            changes.doubts = BTreeMap::from([(at, words.to_owned())]);
+            let look = Look::macos();
+            let locale = crate::i18n::Locale::default();
+            let mut cell = Cell::default();
+            changes.mark(&mut cell, at, &Value::Int(7), &column, &look, locale);
+            if saving {
+                assert_eq!(cell.mark, Mark::Saving);
+                assert_eq!(cell.hint.as_deref(), Some("was 7"));
+            } else {
+                assert_eq!(cell.mark, Mark::Doubt);
+                assert_eq!(cell.hint, Some(format!("was 7\n{words}")));
+            }
+            // A new row's cell: the words alone, the row's look kept by
+            // the grid.
+            let new = changes.new_cell(at, |_| Cell::default(), &column, &look, locale);
+            if saving {
+                assert_eq!(new.mark, Mark::Saving);
+            } else {
+                assert_eq!(new.mark, Mark::Doubt);
+                assert_eq!(new.hint.as_deref(), Some(words));
+            }
         }
     }
 

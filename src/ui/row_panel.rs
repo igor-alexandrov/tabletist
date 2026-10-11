@@ -102,6 +102,8 @@ struct FieldInfo {
     target: Option<tabletist_db::ObjectRef>,
     /// The column it points at there.
     target_column: String,
+    /// What the field's cell says when its pending key names no row.
+    doubt: Option<String>,
 }
 
 /// A column's label: `id · int8 · primary key`, then what [`facts`] says of
@@ -523,6 +525,14 @@ fn draw(
                 lock_said(&object.object.name, lock)
             });
             let structure = source.structure;
+            // The warnings on the row the panel shows, by column.
+            let doubts: std::collections::BTreeMap<usize, String> = object
+                .map(|object| super::key_picker::doubts(workspace, object, locale))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|((row, _), _)| *row == cell.row)
+                .map(|((_, col), words)| (col, words))
+                .collect();
             let info = |name: &str| {
                 let key =
                     structure.is_some_and(|s| s.primary_key.iter().any(|column| column == name));
@@ -539,6 +549,11 @@ fn draw(
                     target_column: foreign
                         .and_then(|f| f.ref_columns.first().cloned())
                         .unwrap_or_default(),
+                    doubt: source
+                        .columns
+                        .iter()
+                        .position(|column| column.name == name)
+                        .and_then(|col| doubts.get(&col).cloned()),
                 }
             };
             // Values the grid shows as tags keep their colour here.
@@ -1445,6 +1460,9 @@ fn field(
         let from = gettext(locale, "changed from");
         said = format!("{said}, {from} {}", pending.was);
     }
+    if let Some(words) = &info.doubt {
+        said = format!("{said}, {words}");
+    }
     if let Some(reason) = &locked {
         said = format!("{said}, {}: {reason}", gettext(locale, "read-only"));
     }
@@ -1808,6 +1826,15 @@ fn field(
         ui.add_space(if look.terminal { 2.0 } else { 3.0 });
         let width = ui.available_width();
         Text::one(look, caption(look), message, palette.danger)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(ui);
+    }
+    // A warning holds nothing, and is said where a problem would be.
+    if let (None, Some(words)) = (&trouble, &info.doubt) {
+        ui.add_space(if look.terminal { 2.0 } else { 3.0 });
+        let width = ui.available_width();
+        Text::one(look, caption(look), words, Tone::Warning.color(palette))
             .wrap(width)
             .layout(ui.ctx())
             .label(ui);
@@ -2815,7 +2842,7 @@ fn binary(
 }
 
 /// `books` becomes `book`, for "Open book →".
-fn singular(table: &str) -> &str {
+pub(crate) fn singular(table: &str) -> &str {
     table
         .strip_suffix("ies")
         .map(|_| table)

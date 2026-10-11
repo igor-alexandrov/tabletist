@@ -395,7 +395,7 @@ const DELETED: &str = "2026-10-04 09:30:00";
 /// user reaches it, through the model, so it is the same state in every
 /// look: the bar, the tints and the dialogs on macOS and Windows; the mode
 /// line, the gutter and the error line on Omarchy.
-const EDITING: [(&str, Scene); 15] = [
+const EDITING: [(&str, Scene); 16] = [
     ("edit-new-row", edit_new_row),
     ("edit-new-row-filled", edit_new_row_filled),
     ("edit-new-row-failed", edit_new_row_failed),
@@ -404,6 +404,7 @@ const EDITING: [(&str, Scene); 15] = [
     ("edit-field", edit_field),
     ("edit-key-picker", edit_key_picker),
     ("edit-key-picker-current", edit_key_picker_current),
+    ("edit-key-missing", edit_key_missing),
     ("edit-large", edit_large),
     ("edit-saved", edit_saved),
     ("edit-failed", edit_failed),
@@ -414,11 +415,12 @@ const EDITING: [(&str, Scene); 15] = [
 ];
 
 /// The row panel's fields, one scene per state, in every look.
-const ROW_FORM: [(&str, Scene); 10] = [
+const ROW_FORM: [(&str, Scene); 11] = [
     ("row-form-new-row", row_form_new_row),
     ("row-form-new-row-filled", row_form_new_row_filled),
     ("row-form-field", row_form_field),
     ("row-form-key-picker", row_form_key_picker),
+    ("row-form-key-missing", row_form_key_missing),
     ("row-form-locked", row_form_locked),
     ("row-form-pending", row_form_pending),
     ("row-form-read-only", row_form_read_only),
@@ -495,6 +497,29 @@ fn row_form_key_picker(harness: &mut Harness) {
         },
         start: EditStart::Replace("rooms".into()),
     });
+    answer_books(harness);
+}
+
+/// The same key in the row panel, kept as typed: the field holds `999`,
+/// no book has it, and the words stand under its value. Save is offered.
+fn row_form_key_missing(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell: CellPos {
+            row: 4,
+            col: BOOK_ID,
+        },
+        start: EditStart::Replace("999".into()),
+    });
+    answer_books(harness);
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: Advance::Stay,
+    });
+    // The question the kept key raises: no book has it.
     answer_books(harness);
 }
 
@@ -666,6 +691,30 @@ fn edit_key_picker_current(harness: &mut Harness) {
         },
         start: EditStart::Value,
     });
+    answer_books(harness);
+}
+
+/// A key no book has, typed on `book_id` and kept as typed: the cell is
+/// pending and outlined, the bar counts the warning, Save is offered, and
+/// the terminal look says it under the grid.
+fn edit_key_missing(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 2,
+            col: BOOK_ID,
+        },
+        start: EditStart::Replace("999".into()),
+    });
+    answer_books(harness);
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: Advance::Stay,
+    });
+    // The question the kept key raises: no book has it.
     answer_books(harness);
 }
 

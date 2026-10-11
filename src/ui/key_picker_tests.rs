@@ -2886,3 +2886,154 @@ fn a_typed_key_the_pickers_own_read_found_is_not_asked_about() {
     harness.answer_lookups(&PUBLISHERS);
     assert_eq!(harness.lookups().len(), sent);
 }
+
+const WARNING: &str = "No publisher with id 9100000000000000099";
+
+/// Test 21, what a user sees: the pending bar counts the value, Save is
+/// offered, and the row panel's field says it under its value.
+#[test]
+fn the_warning_is_said_and_holds_no_save() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.settle();
+    assert!(harness.has("1 change in 1 row · 1 value names no row"));
+    let tree = harness.settle();
+    let save = crate::testing::node(&tree, "Save", Role::Button).expect("Save is offered");
+    assert!(
+        !tree
+            .nodes
+            .iter()
+            .any(|(node, built)| *node == save && built.is_disabled())
+    );
+    // The row panel's field of the cell.
+    harness.app.apply(Action::FocusFields { tab, id });
+    harness.settle();
+    assert!(harness.has(WARNING));
+
+    // Two of them are counted as two.
+    keep(&mut harness, tab, id, 1, NO_PUBLISHER);
+    harness.settle();
+    assert!(harness.has("2 changes in 2 rows · 2 values name no row"));
+}
+
+/// The warning is gone with the value it was about: the bar does not count
+/// it and the panel does not say it.
+#[test]
+fn a_changed_value_takes_its_warning_off_the_bar_and_the_panel() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.app.apply(Action::FocusFields { tab, id });
+    assert!(harness.has(WARNING));
+    keep(&mut harness, tab, id, 0, HARBOR_LIGHTS);
+    let tree = harness.settle();
+    let said = crate::testing::labels(&tree);
+    assert!(said.iter().all(|label| !label.contains("names no row")));
+    assert!(said.iter().all(|label| !label.contains(WARNING)));
+}
+
+/// The row panel's field says the warning in its name too, for a screen
+/// reader, after what it holds.
+#[test]
+fn the_panels_field_names_the_warning() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.app.apply(Action::FocusFields { tab, id });
+    let tree = harness.settle();
+    let named = tree.nodes.iter().any(|(_, node)| {
+        node.role() == Role::Button
+            && node.label().is_some_and(|label| {
+                label.starts_with("publisher_id, ") && label.ends_with(WARNING)
+            })
+    });
+    assert!(named, "{:?}", crate::testing::labels(&tree));
+}
+
+/// The terminal look says the first warning in the line under the grid,
+/// in the pending tone, and a cell to fix comes first there.
+#[test]
+fn the_terminal_look_says_the_warning_under_the_grid() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.settle();
+    assert!(harness.has("? 1:publisher_id  no publisher with id 9100000000000000099"));
+
+    // Row 1 (the second) holds a text its column refuses: that is said
+    // first, though the warning stands on.
+    edit(&mut harness, tab, id, 1, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    let tree = harness.settle();
+    let lines: Vec<String> = crate::testing::labels(&tree)
+        .into_iter()
+        .filter(|label| label.starts_with("! ") || label.starts_with("? "))
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("! 2:publisher_id  "), "{lines:?}");
+}
+
+/// A screen reader is told when a warning appears and when the count
+/// changes: the count is a polite live region, in the pending bar and, in
+/// the terminal look, over the line under the grid.
+#[test]
+fn the_count_of_warnings_is_a_polite_live_region() {
+    let live = |tree: &egui::accesskit::TreeUpdate, label: &str| {
+        tree.nodes
+            .iter()
+            .find(|(_, node)| node.label().or_else(|| node.value()) == Some(label))
+            .map(|(_, node)| node.live())
+    };
+    let polite = Some(Some(egui::accesskit::Live::Polite));
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, id) = covers_in(look);
+        let tree = harness.settle();
+        assert_eq!(live(&tree, "1 value names no row"), None, "{}", look.name);
+        keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+        let tree = harness.settle();
+        assert_eq!(
+            live(&tree, "1 value names no row"),
+            polite,
+            "{}: {:?}",
+            look.name,
+            crate::testing::labels(&tree)
+        );
+        keep(&mut harness, tab, id, 1, NO_PUBLISHER);
+        let tree = harness.settle();
+        assert_eq!(live(&tree, "2 values name no row"), polite, "{}", look.name);
+        assert_eq!(live(&tree, "1 value names no row"), None, "{}", look.name);
+    }
+}
+
+/// With room the bar draws the warning count among its others; where only
+/// the short counts fit it draws none of it, and a screen reader is still
+/// told the whole.
+#[test]
+fn the_bar_draws_the_warning_count_where_it_fits() {
+    let whole = "1 change in 1 row · 1 value names no row";
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    harness.settle();
+    assert!(
+        harness.painted_color(whole).is_some(),
+        "{:?}",
+        harness.painted
+    );
+
+    // A narrow window: the bar is cut to its short counts.
+    let mut narrow = Harness::with_size(egui::vec2(760.0, 800.0));
+    narrow.set_look(Look::macos());
+    let (tab, id) = narrow.keyed_covers();
+    narrow.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    keep(&mut narrow, tab, id, 0, NO_PUBLISHER);
+    let tree = narrow.settle();
+    assert!(narrow.painted_color(whole).is_none());
+    assert!(
+        narrow.painted_color("1 change").is_some()
+            || narrow.painted_color("1 change in 1 row").is_some()
+    );
+    assert!(
+        crate::testing::labels(&tree)
+            .iter()
+            .any(|label| label == whole)
+    );
+}
