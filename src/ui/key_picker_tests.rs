@@ -2598,6 +2598,43 @@ fn doubt(harness: &Harness, tab: ConnTabId, id: TabId, row: usize) -> Option<&Do
     object.edits.doubts.get(&(row, PUBLISHER))
 }
 
+/// The questions asked so far: the pinned reads that no picker sent
+/// (a picker's pinned read carries the label column).
+fn questions(harness: &Harness) -> Vec<(RequestId, tabletist_db::Lookup)> {
+    harness
+        .lookups()
+        .into_iter()
+        .filter(|(_, _, lookup)| {
+            matches!(lookup.part, LookupPart::Pinned(_)) && lookup.label.is_none()
+        })
+        .map(|(_, request, lookup)| (request, lookup))
+        .collect()
+}
+
+/// As [`keep`], with the question left unanswered, and every other lookup
+/// that waits left too: only the picker's reads of this editor are
+/// answered, by their places. The publishers' columns are known.
+fn ask(harness: &mut Harness, tab: ConnTabId, id: TabId, row: usize, text: &str) {
+    let from = harness.lookups().len();
+    open(harness, tab, id, row, EditStart::Replace(String::new()));
+    set_text(harness, tab, id, text);
+    harness.app.send_due_lookups(std::time::Instant::now());
+    for at in from..harness.lookups().len() {
+        harness.answer_lookup_at(at, &PUBLISHERS);
+    }
+    commit(harness, tab, id, Advance::Stay);
+}
+
+/// Answers the lookup `request` alone, as a table holding `rows` would.
+fn answer_request(harness: &mut Harness, request: RequestId, rows: &[(i64, &str)]) {
+    let at = harness
+        .lookups()
+        .iter()
+        .position(|(_, sent, _)| *sent == request)
+        .expect("the request was sent");
+    harness.answer_lookup_at(at, rows);
+}
+
 /// Test 21: a typed key no row has leaves the cell pending and warned,
 /// with Save offered. Changing the value drops the warning.
 #[test]
@@ -2612,6 +2649,7 @@ fn a_typed_key_that_names_no_row_is_warned_about() {
     assert!(sent.len() > before);
     assert!(last.part == LookupPart::Pinned(Value::Int(9_100_000_000_000_000_099)));
     assert_eq!(last.limit, 1);
+    assert_eq!(questions(&harness).len(), 1, "exactly one question");
     assert_eq!(
         warned(&harness, tab, id),
         [((0, PUBLISHER), NO_PUBLISHER.to_owned())]
@@ -2643,7 +2681,12 @@ fn a_picked_value_and_a_value_to_fix_are_not_asked_about() {
     );
 
     // `harb` kept by leaving the editor: an integer column refuses it,
-    // and a text that is to fix names no key to ask about.
+    // and a text that is to fix names no key to ask about. This half
+    // shows little: `key_picker::pinned` answers `None` for `harb` in an
+    // integer column whatever `close_editor` does, and no fixture has a
+    // text key that pins and is to fix (a text column with a length
+    // limit would be one). It shows only that no question is sent and no
+    // doubt is left for a value to fix.
     edit(&mut harness, tab, id, 1, EditStart::Replace(String::new()));
     type_text(&mut harness, tab, id, "harb");
     let before = harness.lookups().len();
@@ -2885,6 +2928,227 @@ fn a_typed_key_the_pickers_own_read_found_is_not_asked_about() {
     assert!(doubt(&harness, tab, id, 2).is_none());
     harness.answer_lookups(&PUBLISHERS);
     assert_eq!(harness.lookups().len(), sent);
+}
+
+/// The Bookshop's publishers and one more, whose id is [`NO_PUBLISHER`]:
+/// the row that came to exist after the warning.
+const WITH_LATE: [(i64, &str); 4] = [
+    PUBLISHERS[0],
+    PUBLISHERS[1],
+    PUBLISHERS[2],
+    (9_100_000_000_000_000_099, "Late Books"),
+];
+
+/// Review: a warned key that is then taken from the list has no doubt.
+/// The row came to exist, the key is typed again, the picker's own pinned
+/// read finds it and Enter takes option 0.
+#[test]
+fn a_warned_key_taken_from_the_list_loses_its_warning() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    assert_eq!(warned(&harness, tab, id).len(), 1);
+    open(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    harness.answer_lookups(&WITH_LATE);
+    set_text(&mut harness, tab, id, NO_PUBLISHER);
+    harness.app.send_due_lookups(std::time::Instant::now());
+    harness.answer_lookups(&WITH_LATE);
+    let asked = questions(&harness).len();
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(NO_PUBLISHER));
+    assert!(warned(&harness, tab, id).is_empty());
+    assert!(doubt(&harness, tab, id, 0).is_none());
+    assert_eq!(questions(&harness).len(), asked, "a taken value was asked");
+}
+
+/// Spec 7: a value taken from the list is not asked about, and a kept one
+/// once. Reopening the editor and closing it with no change is no new
+/// value: a picked key, and a key answered "found", are not asked again.
+#[test]
+fn a_value_reopened_and_closed_unchanged_is_not_asked_again() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // Picked.
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+    edit(&mut harness, tab, id, 0, EditStart::Value);
+    commit(&mut harness, tab, id, Advance::Stay);
+    // Kept by leaving, asked once, answered "found".
+    edit(&mut harness, tab, id, 2, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NORTHLIGHT);
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(questions(&harness).len(), 1);
+    assert!(doubt(&harness, tab, id, 2).is_none());
+    // Reopened on the value and left, and the same key typed over it and
+    // left: it already held this text, ready.
+    edit(&mut harness, tab, id, 2, EditStart::Value);
+    commit(&mut harness, tab, id, Advance::Stay);
+    edit(&mut harness, tab, id, 2, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NORTHLIGHT);
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(questions(&harness).len(), 1, "a held key was asked again");
+    assert_eq!(pending(&harness, tab, id, 2).as_deref(), Some(NORTHLIGHT));
+}
+
+/// A key pasted with white space around it is `Ready` (the column's check
+/// trims it) and is asked about all the same, by the trimmed text. The
+/// warning says the key without the space.
+#[test]
+fn a_key_with_white_space_around_it_is_asked_about() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let spaced = format!(" {NO_PUBLISHER} ");
+    keep(&mut harness, tab, id, 0, &spaced);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(&*spaced));
+    let asked = questions(&harness);
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].1.part == LookupPart::Pinned(Value::Int(9_100_000_000_000_000_099)));
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((0, PUBLISHER), NO_PUBLISHER.to_owned())]
+    );
+}
+
+/// A question that comes back cancelled is asked again, once: the cancel
+/// meant for the editor's matches read can land on it.
+#[test]
+fn a_question_cancelled_once_is_asked_again() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(questions(&harness).len(), 1);
+    harness.fail_lookup(tabletist_db::Error::Cancelled);
+    let asked = questions(&harness);
+    assert_eq!(asked.len(), 2);
+    assert!(asked[0].1.part == asked[1].1.part);
+    assert!(warned(&harness, tab, id).is_empty());
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((0, PUBLISHER), NO_PUBLISHER.to_owned())]
+    );
+}
+
+/// Cancelled twice is a failure like any other: no doubt, no third read.
+#[test]
+fn a_question_cancelled_twice_is_dropped() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    harness.fail_lookup(tabletist_db::Error::Cancelled);
+    harness.fail_lookup(tabletist_db::Error::Cancelled);
+    assert_eq!(questions(&harness).len(), 2, "a third read was sent");
+    assert!(doubt(&harness, tab, id, 0).is_none());
+    assert!(warned(&harness, tab, id).is_empty());
+}
+
+/// A session replaced by a reconnect never answers the questions it was
+/// asked: they are forgotten. What was answered stays.
+#[test]
+fn a_reconnect_forgets_the_questions_and_keeps_the_answers() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    edit(&mut harness, tab, id, 1, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, ALSO_NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(matches!(
+        doubt(&harness, tab, id, 1),
+        Some(Doubt {
+            state: DoubtState::Asked(_),
+            ..
+        })
+    ));
+    harness.app.apply(Action::Reconnect(tab));
+    assert!(doubt(&harness, tab, id, 1).is_none());
+    assert!(matches!(
+        doubt(&harness, tab, id, 0),
+        Some(Doubt {
+            state: DoubtState::Missing,
+            ..
+        })
+    ));
+}
+
+/// A question overtaken by another value of the cell: its answer touches
+/// neither the second doubt nor the warning, and the second answer warns
+/// of the second text.
+#[test]
+fn an_overtaken_question_warns_of_nothing_and_leaves_the_next_alone() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    let (first, _) = questions(&harness)[0].clone();
+    ask(&mut harness, tab, id, 0, ALSO_NO_PUBLISHER);
+    let (second, _) = questions(&harness)[1].clone();
+    answer_request(&mut harness, first, &PUBLISHERS);
+    assert!(warned(&harness, tab, id).is_empty());
+    assert_eq!(
+        doubt(&harness, tab, id, 0).map(|doubt| (doubt.text.clone(), doubt.state)),
+        Some((ALSO_NO_PUBLISHER.to_owned(), DoubtState::Asked(second)))
+    );
+    answer_request(&mut harness, second, &PUBLISHERS);
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((0, PUBLISHER), ALSO_NO_PUBLISHER.to_owned())]
+    );
+}
+
+/// The answer of a tab that is not the one shown still lands.
+#[test]
+fn an_answer_for_a_tab_that_is_not_shown_still_lands() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: ObjectRef::new("main", "publishers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    assert_ne!(harness.app.active_workspace_tab(), Some((tab, id)));
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((0, PUBLISHER), NO_PUBLISHER.to_owned())]
+    );
+}
+
+/// A new row's foreign key cell is asked about and warned, and dropping
+/// the row leaves no doubt.
+#[test]
+fn a_new_rows_key_is_asked_about_and_its_doubt_goes_with_the_row() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.press(Key::N, Modifiers::COMMAND);
+    harness.settle();
+    let new = crate::edit::new_row(0);
+    harness.answer_structure(publishers_structure());
+    harness.answer_lookups(&PUBLISHERS);
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((new, PUBLISHER), NO_PUBLISHER.to_owned())]
+    );
+    harness.app.apply(Action::SelectCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: new,
+            col: PUBLISHER,
+        },
+    });
+    harness.app.apply(Action::DropRow { tab, id });
+    assert!(warned(&harness, tab, id).is_empty());
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.doubts.is_empty());
 }
 
 const WARNING: &str = "No publisher with id 9100000000000000099";

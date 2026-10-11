@@ -17,7 +17,9 @@ use crate::model::{Action, Advance, CellPos, ConnTabId, TabId};
 pub struct SentLookup {
     pub session: SessionId,
     pub request: RequestId,
-    /// `Picker::serial`.
+    /// `Picker::serial`. 0 is a question about a kept value (`ask_row`),
+    /// no picker's: the sweep of `send_due_lookups` drops it from the list
+    /// and never cancels it.
     pub picker: u64,
     /// The read of the matches: the one a closed editor cancels. The
     /// pinned row's read is one row by its key, and is left to end.
@@ -232,8 +234,12 @@ impl App {
         }
     }
 
-    /// A lookup answered. The picker that waits for it takes it; one that
-    /// nothing waits for any more is dropped.
+    /// A lookup answered. The picker that waits for it takes it. One that
+    /// no picker waits for may be a question about a kept value
+    /// (`ask_row`): its answer finds the doubt by the request. No row
+    /// makes the doubt a warning, a row or a failure ends it, and a first
+    /// cancel sends the question again. One that nothing waits for any
+    /// more is dropped.
     pub(super) fn lookup_answered(
         &mut self,
         session: SessionId,
@@ -260,22 +266,40 @@ impl App {
         });
         if !picked {
             let none = matches!(&result, Ok(page) if page.rows.is_empty());
+            let cancelled = matches!(&result, Err(Error::Cancelled));
+            // The cell to ask again, noted in the loop and asked after it.
+            let mut again = None;
             for object in workspace.object_tabs_mut() {
+                let id = object.id;
                 let asked = object.edits.doubts.iter().find_map(|(&at, doubt)| {
-                    (doubt.state == DoubtState::Asked(request)).then_some(at)
+                    (doubt.state == DoubtState::Asked(request)).then_some((at, doubt.again))
                 });
-                let Some(at) = asked else {
+                let Some((at, was_again)) = asked else {
                     continue;
                 };
                 if none {
                     if let Some(doubt) = object.edits.doubts.get_mut(&at) {
                         doubt.state = DoubtState::Missing;
                     }
+                } else if cancelled && !was_again {
+                    // The cancel meant for the editor's matches read can
+                    // land on the question: asked once more, as a picker's
+                    // search is.
+                    again = Some((
+                        id,
+                        CellPos {
+                            row: at.0,
+                            col: at.1,
+                        },
+                    ));
                 } else {
                     // The row is there, or the read failed: nothing to say.
                     object.edits.doubts.remove(&at);
                 }
                 break;
+            }
+            if let Some((id, cell)) = again {
+                self.question(tab, id, cell, true);
             }
             return;
         }
@@ -338,6 +362,12 @@ impl App {
     /// longer holds: it is forgotten, not cancelled, since a pinned row's
     /// read is left to end, and its answer finds no doubt.
     pub(super) fn ask_row(&mut self, tab: ConnTabId, id: TabId, cell: CellPos) {
+        self.question(tab, id, cell, false);
+    }
+
+    /// Sends the question about `cell` and notes it as the cell's doubt.
+    /// `again` is a question sent a second time, after a cancel.
+    fn question(&mut self, tab: ConnTabId, id: TabId, cell: CellPos, again: bool) {
         let planned = self.workspace(tab).and_then(|workspace| {
             let object = workspace.object_tab(id)?;
             let table = Table::of(workspace, object)?;
@@ -352,8 +382,15 @@ impl App {
             let column = table.column(cell.col)?;
             let (target, key) = key_picker::target(table.structure?, &column.name)?;
             let class = table.class(cell.col)?;
-            // It passed the column's check: it is ready.
-            let value = key_picker::pinned(text, class, &column.type_name, true)?;
+            // It passed the column's check: it is ready. The key is the
+            // text as the check read it, without the white space it
+            // overlooks; the doubt keeps the text as the cell holds it.
+            let value = key_picker::pinned(
+                key_picker::key_text(class, text),
+                class,
+                &column.type_name,
+                true,
+            )?;
             let lookup = tabletist_db::Lookup {
                 object: target,
                 key,
@@ -376,7 +413,7 @@ impl App {
             object
                 .edits
                 .doubts
-                .insert((cell.row, cell.col), Doubt { text, state });
+                .insert((cell.row, cell.col), Doubt { text, state, again });
         }
     }
 
@@ -475,7 +512,10 @@ impl App {
     /// stops the matches' reads of pickers that are gone, every one still
     /// in the list. A picker that is open has nothing cancelled, a search
     /// that more typing overtook neither: it runs to its end. The pinned
-    /// row's read is left to end. A picker that waits for the referenced
+    /// row's read is left to end. So is a question about a kept value (a
+    /// list entry of serial 0, no open picker's): the sweep drops it from
+    /// the list and never cancels it, and its answer still finds its
+    /// doubt by the request. A picker that waits for the referenced
     /// table's columns, has no failure and has nobody fetching them (the
     /// tree was refreshed under it, say) gets them asked for, once per
     /// table. A picker behind another tab loses a kept Enter or Tab.

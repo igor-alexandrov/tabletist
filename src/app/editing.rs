@@ -1050,16 +1050,35 @@ impl App {
         }
         object.edits.editor = None;
         let key = (cell.row, cell.col);
-        // The cell was asked about this very text before (an editor
-        // opened on a warned value and closed on it again): it is asked
-        // once, and what is known of it stays.
-        let known = matches!(
-            &new,
-            NewValue::Text(text)
-                if object.edits.doubts.get(&key).is_some_and(|doubt| doubt.text == *text)
-        );
-        let ask = changed && problem.is_none() && !taken && !known;
-        let keep = changed && problem.is_none() && known;
+        // What the cell's doubt comes to, as one ordered rule:
+        // 1. not changed, or a problem: the cell has no doubt;
+        // 2. taken from the picker's list: no doubt, nothing asked (the
+        //    row was just read);
+        // 3. a doubt of this very text stands: it is kept, nothing asked;
+        // 4. the cell already held this very text, ready, before this
+        //    close: nothing asked. It was asked when it was kept, or taken
+        //    from the list, or copied, and an editor reopened and closed
+        //    with no change is no new value;
+        // 5. otherwise the text is a new typed key: asked.
+        let same = |value: &NewValue| match (value, &new) {
+            (NewValue::Text(held), NewValue::Text(text)) => held == text,
+            (NewValue::Null | NewValue::Text(_) | NewValue::Default { .. } | NewValue::Now, _) => {
+                false
+            }
+        };
+        let known = object
+            .edits
+            .doubts
+            .get(&key)
+            .is_some_and(|doubt| matches!(&new, NewValue::Text(text) if doubt.text == *text));
+        let held = object
+            .edits
+            .cells
+            .get(&key)
+            .is_some_and(|held| held.state == State::Ready && same(&held.new));
+        let doubtful = changed && problem.is_none() && !taken;
+        let keep = doubtful && known;
+        let ask = doubtful && !known && !held;
         if changed {
             let state = problem.map_or(State::Ready, State::ToFix);
             object.edits.put(key, Pending { new, state });
@@ -1068,9 +1087,9 @@ impl App {
         }
         // The row panel shows the pending value.
         object.fields = None;
-        // A question the cell had was of the value before this one, and a
-        // reverted cell keeps none that could match a later value.
-        if !ask && !keep {
+        // `put` keeps a doubt of the same text, which a taken value must
+        // not keep, and a question the cell had was of the value before.
+        if !keep {
             object.edits.doubts.remove(&key);
         }
         if ask {

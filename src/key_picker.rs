@@ -43,7 +43,8 @@ pub struct Unmatched {
     /// The table its key points at, and the column there.
     pub table: String,
     pub key: String,
-    /// The value, as it was typed.
+    /// The value, as the database reads it: the text typed, without the
+    /// white space around a whole number (`key_text`).
     pub value: String,
 }
 
@@ -96,11 +97,12 @@ pub fn unmatched(table: &Table<'_>, own: &ObjectRef, edits: &Edits) -> Vec<Unmat
                     return None;
                 }
             }
+            let class = table.class(at.1)?;
             Some(Unmatched {
                 at,
                 table: target.name,
                 key,
-                value: doubt.text.clone(),
+                value: key_text(class, &doubt.text).to_owned(),
             })
         })
         .collect()
@@ -136,6 +138,24 @@ fn is_uuid(text: &str) -> bool {
             }) && parts.next().is_none()
         }
         _ => false,
+    }
+}
+
+/// The key a pending `text` of a foreign key column of `class` names:
+/// the column's check overlooks the ASCII white space around a whole
+/// number (`edit::check`), and so does the database. Any other text is
+/// the key as typed: white space is part of a text key, and the check of
+/// a `uuid` does not trim it.
+pub fn key_text(class: ColumnClass, text: &str) -> &str {
+    match class {
+        ColumnClass::Integer { .. } => text.trim_ascii(),
+        ColumnClass::Decimal { .. }
+        | ColumnClass::Float
+        | ColumnClass::Text { .. }
+        | ColumnClass::Boolean
+        | ColumnClass::Json
+        | ColumnClass::Binary
+        | ColumnClass::Other => text,
     }
 }
 
@@ -1220,6 +1240,7 @@ mod tests {
         Doubt {
             text: text.into(),
             state: DoubtState::Missing,
+            again: false,
         }
     }
 
@@ -1268,6 +1289,7 @@ mod tests {
             Doubt {
                 text: "99".into(),
                 state: DoubtState::Asked(RequestId(7)),
+                again: false,
             },
         );
         assert!(table(&edits).is_empty());
@@ -1284,9 +1306,35 @@ mod tests {
             },
         );
         assert!(table(&edits).is_empty());
+        // A cell whose last save failed shows the failure, not the warning.
+        edits.cells.insert(
+            (1, 1),
+            Pending {
+                new: NewValue::Text("99".into()),
+                state: State::Failed(tabletist_db::Error::query("duplicate key")),
+            },
+        );
+        assert!(table(&edits).is_empty());
         // Reverted: no pending cell, no warning.
         edits.cells.remove(&(1, 1));
         assert!(table(&edits).is_empty());
+    }
+
+    /// `taken` says the editor's text is an option's key just read: typing
+    /// ends it, and a text the picker already saw (`put`) leaves it.
+    #[test]
+    fn typing_clears_taken_and_a_text_put_leaves_it() {
+        let mut picker = picker(false, "");
+        let now = Instant::now();
+        assert!(!picker.taken);
+        picker.put("9100000000000000004");
+        picker.taken = true;
+        // The `EditorTyped` that follows a pick: the text is the one the
+        // picker saw.
+        picker.typed("9100000000000000004", now, Duration::ZERO);
+        assert!(picker.taken);
+        picker.typed("910000000000000000", now, Duration::ZERO);
+        assert!(!picker.taken);
     }
 
     #[test]

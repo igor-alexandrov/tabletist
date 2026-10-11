@@ -3099,6 +3099,12 @@ impl Workspace {
             if object.edits.saving.take().is_some() {
                 object.edits.note = Some(crate::edit::Note::Lost);
             }
+            // A question about a kept key, asked on the old session, will
+            // not be answered either. An answered one stays.
+            object.edits.doubts.retain(|_, doubt| match doubt.state {
+                crate::edit::DoubtState::Asked(_) => false,
+                crate::edit::DoubtState::Missing => true,
+            });
         }
         self.server_version = Fetch::default();
         // Fetches the old session will never answer, and names that may

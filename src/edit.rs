@@ -1322,6 +1322,10 @@ pub struct Doubt {
     /// has.
     pub text: String,
     pub state: DoubtState,
+    /// The question came back cancelled and was sent again once. The
+    /// session's next statement can take a cancel meant for the read
+    /// before it; a second cancel is a failure like any other.
+    pub again: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4266,6 +4270,7 @@ mod tests {
         let missing = |text: &str| Doubt {
             text: text.into(),
             state: DoubtState::Missing,
+            again: false,
         };
         let mut edits = Edits::default();
         edits.put((1, 1), text("99"));
