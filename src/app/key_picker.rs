@@ -388,10 +388,10 @@ impl App {
     }
 
     /// Called every frame. Sends the searches whose time has come, and
-    /// stops the matches' reads of pickers that are gone: every one of a
-    /// closed picker's still in the list, those that more typing overtook
-    /// too (one that is queued costs nothing to cancel). The pinned row's
-    /// read is left to end. A picker that waits for the referenced
+    /// stops the matches' reads of pickers that are gone, every one still
+    /// in the list. A picker that is open has nothing cancelled, a search
+    /// that more typing overtook neither: it runs to its end. The pinned
+    /// row's read is left to end. A picker that waits for the referenced
     /// table's columns, has no failure and has nobody fetching them (the
     /// tree was refreshed under it, say) gets them asked for, once per
     /// table. A picker behind another tab loses a kept Enter or Tab.
