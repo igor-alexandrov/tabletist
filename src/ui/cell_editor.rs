@@ -44,7 +44,8 @@ pub struct Outcome {
     /// The now button: the cell takes the time of the save, and the text
     /// is dropped.
     pub now: bool,
-    /// Where the field stands, for what is anchored to it: the row
+    /// Where the field stands, with what the panel laid out under it
+    /// (the words, the count), for what is anchored to it: the row
     /// panel's field, whose place the panel's layout decides. `None` from
     /// a cell's field, whose place the grid gives.
     pub rect: Option<Rect>,
@@ -600,8 +601,11 @@ fn block_cursor(
 /// commit moves no selection: Enter and Tab take the text and ask for the
 /// row's next field, Shift+Tab for the one before. Where a click on the
 /// value's text asked for it, its cursor opens under the pointer. Under
-/// the field it says what the text fails, and how much of its column's
-/// length the text takes.
+/// the field, in the panel's flow, it says what the text fails, and how
+/// much of its column's length the text takes; a foreign key's field says
+/// the first once a commit was refused, and the second never while the
+/// text is a search. `Outcome::rect` is the field and what stands under it,
+/// which a foreign key's list hangs from.
 pub fn in_panel(
     ui: &mut Ui,
     editor: &mut Editor,
@@ -719,32 +723,27 @@ pub fn in_panel(
     if opened {
         response.scroll_to_me(None);
     }
-    let message = editor
+    // A foreign key's text is a search until a commit takes it: the
+    // words say what the column makes of it only once it was refused.
+    let problem = editor
         .problem
         .as_ref()
         .filter(|_| said)
         .map(|problem| problem_text(problem, &target.type_name, Some(&editor.text), locale));
-    // The list is under a foreign key's field: the words go over it, as
-    // on a cell, and nothing of the field's own is laid out under it.
-    let problem = match &target.search {
-        Some(_) => {
-            if let (Some(message), true) = (&message, target.hold) {
-                say_under(ui, response.rect, id, message, true, look, palette);
-            }
-            None
-        }
-        None => message,
-    };
     // While the text is a search it is no value, and its length is none
     // of the column's business.
+    let searching = target.search.as_ref().is_some_and(|search| !search.refused);
     let count = target
         .max_chars
-        .filter(|_| target.search.is_none())
+        .filter(|_| !searching)
         .map(|max| format!("{} / {max}", editor.text.chars().count()));
+    // What is laid out under the field ends where a foreign key's list
+    // begins: the list never covers the words or the count.
+    let mut anchor = response.rect;
     if problem.is_some() || count.is_some() {
         let small = widgets::secondary(look);
         ui.add_space(3.0);
-        ui.horizontal_top(|ui| {
+        let under = ui.horizontal_top(|ui| {
             let taken = count
                 .as_ref()
                 .map_or(0.0, |count| small.width(ui.ctx(), look.faces, count) + 8.0);
@@ -762,6 +761,7 @@ pub fn in_panel(
                 });
             }
         });
+        anchor.max.y = anchor.max.y.max(under.response.rect.bottom());
     }
     outcome.changed = response.changed();
     keyboard_after(ui.ctx(), target, has, had, &mut outcome);
@@ -770,7 +770,7 @@ pub fn in_panel(
     }
     // What a foreign key's list hangs from: the panel's layout put the
     // field here, the grid knows nothing of it.
-    outcome.rect = Some(response.rect);
+    outcome.rect = Some(anchor);
     outcome
 }
 

@@ -451,8 +451,9 @@ fn row_form_new_row_filled(harness: &mut Harness) {
 }
 
 /// A field of the row panel being edited: the editor in the value's place,
-/// holding a text its column does not take, with why under it. Another
-/// field of the row is pending.
+/// holding a text its column does not take. The field is red, why stands
+/// under it in the panel's flow, and the key's list hangs under that,
+/// saying no books match. Another field of the row is pending.
 fn row_form_field(harness: &mut Harness) {
     let (tab, id) = editable(harness);
     retype(harness, tab, id, (4, DELETED_AT), DELETED);

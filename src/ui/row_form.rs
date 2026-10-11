@@ -229,6 +229,10 @@ impl<'a> Form<'a> {
         if !editor.large
             && let Some(picker) = &editor.picker
             && let (Some(anchor), Some(search)) = (outcome.rect, &target.search)
+            // Only while the field is in sight, its top edge clear of the
+            // panel's view: the list hangs from the part that shows, as a
+            // cell's does from the grid's body.
+            && let Some(anchor) = crate::ui::key_picker::hung_from(anchor, ui.clip_rect())
         {
             let names = crate::ui::key_picker::Names {
                 table: &picker.target.name,

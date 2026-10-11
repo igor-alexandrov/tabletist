@@ -23,6 +23,8 @@ const HARBOR_PRESS: &str = "9100000000000000004";
 const HARBOR_LIGHTS: &str = "9100000000000000007";
 /// `publisher_id`, by its place in the page.
 const PUBLISHER: usize = 1;
+/// `kind`, the field after it.
+const KIND: usize = 2;
 /// A pause shorter than any other reason the frame has to come back.
 const DELAY: Duration = Duration::from_millis(40);
 
@@ -1363,10 +1365,9 @@ fn the_list_says_when_it_has_nothing_failed_or_holds_more() {
     assert!(harness.has("50 or more matches in publishers"));
 }
 
-/// Test 18, the nullable half: the foot offers Set NULL, and it sets
-/// NULL.
-#[test]
-fn a_nullable_columns_list_sets_null() {
+/// The Bookshop's covers with `publisher_id` taking NULL, the grid holding
+/// the keyboard.
+fn nullable_covers() -> (Harness, ConnTabId, TabId) {
     let mut harness = Harness::new();
     harness.set_look(Look::macos());
     let tab = harness.connect_fake_as(false);
@@ -1382,19 +1383,32 @@ fn a_nullable_columns_list_sets_null() {
     harness.answer_rows(crate::testing::keyed_covers_page());
     let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
     harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
-    select(&mut harness, tab, id, 0);
-    type_on_cell(&mut harness, "harb");
-    harness.click("Set NULL");
-    assert!(!editing(&harness, tab, id));
+    (harness, tab, id)
+}
+
+/// Whether the page's row 0 holds a pending NULL in `publisher_id`.
+fn pending_null(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
     let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
-    assert!(matches!(
+    matches!(
         object
             .edits
             .cells
             .get(&(0, PUBLISHER))
             .map(|pending| &pending.new),
         Some(NewValue::Null)
-    ));
+    )
+}
+
+/// Test 18, the nullable half: the foot offers Set NULL, and it sets
+/// NULL.
+#[test]
+fn a_nullable_columns_list_sets_null() {
+    let (mut harness, tab, id) = nullable_covers();
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    harness.click("Set NULL");
+    assert!(!editing(&harness, tab, id));
+    assert!(pending_null(&harness, tab, id));
 }
 
 /// Clicks the node `label` of `role` with the pointer, as a mouse does:
@@ -2317,10 +2331,12 @@ fn the_row_panels_field_opens_the_same_list() {
     );
     assert!(crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_some());
     assert_eq!(listed(&harness, tab, id), [HARBOR_PRESS, HARBOR_LIGHTS]);
-    // Enter in the panel takes the option and walks on to the next field.
+    // Enter in the panel takes the option and walks on to the next field:
+    // the keyboard is asked for it, and the selection is its cell.
     commit(&mut harness, tab, id, Advance::NextField);
     assert!(!editing(&harness, tab, id));
     assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+    assert_eq!(selection(&harness, tab, id), (0, KIND));
     let tree = harness.settle();
     assert!(crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_none());
     // What a screen reader is told of the pick, whichever field made it.
@@ -2345,15 +2361,19 @@ fn the_keys_reach_the_panels_list_while_its_field_has_the_keyboard() {
     );
 }
 
-/// A click on an option of the panel's list takes it, and the text typed
-/// is not first kept.
+/// A click on an option of the panel's list takes it, as a mouse does it.
+/// The field gives the keyboard up on that click, and the pick goes ahead
+/// of the leave: the text typed is not first kept.
 #[test]
 fn a_click_takes_an_option_of_the_panels_list() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
     type_text(&mut harness, tab, id, "harb");
-    harness.settle();
-    harness.click("Harbor Lights, 9100000000000000007");
+    pointer_click(
+        &mut harness,
+        "Harbor Lights, 9100000000000000007",
+        Role::ListBoxOption,
+    );
     assert!(!editing(&harness, tab, id));
     assert_eq!(
         pending(&harness, tab, id, 0).as_deref(),
@@ -2398,6 +2418,13 @@ fn the_new_row_forms_field_picks() {
         EditStart::Replace(String::new()),
     );
     type_text(&mut harness, tab, id, "harb");
+    // The form's field draws its list, as the row panel's does.
+    let tree = harness.settle();
+    assert!(
+        crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_some(),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
     commit(&mut harness, tab, id, Advance::NextField);
     assert_eq!(
         pending(&harness, tab, id, new).as_deref(),
@@ -2407,16 +2434,31 @@ fn the_new_row_forms_field_picks() {
 }
 
 /// Spec 2: opened on its value by a key, the panel's field has its text
-/// selected on macOS, and not in the terminal look.
+/// selected on macOS, and not in the terminal look: what is typed next
+/// replaces the key in the first, and goes after it in the second.
 #[test]
 fn the_panels_field_selects_its_text_where_the_grids_does() {
     for (look, selects) in [(Look::macos(), true), (Look::omarchy(), false)] {
         let (mut harness, tab, id) = covers_in(look);
+        // Row 1 points at Harbor Press (`keyed_covers_page`).
         edit_field(&mut harness, tab, id, 1, EditStart::Value);
         let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
         let editor = object.edits.editor.as_ref().unwrap();
         assert!(editor.picker.is_some());
         assert_eq!(editor.select, selects, "{}", look.name);
+        let loaded = editor.text.clone();
+        assert_eq!(loaded, HARBOR_PRESS, "{}", look.name);
+        harness.settle();
+        harness.frame(vec![egui::Event::Text("7".into())]);
+        harness.settle();
+        let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+        let text = &object.edits.editor.as_ref().unwrap().text;
+        if selects {
+            assert_eq!(text, "7", "{}", look.name);
+        } else {
+            // The cursor is at the end of the key, where the field opened.
+            assert_eq!(*text, format!("{loaded}7"), "{}", look.name);
+        }
     }
 }
 
@@ -2440,4 +2482,85 @@ fn a_kept_enter_of_the_panels_field_is_dropped_when_another_tab_is_shown() {
     assert!(editing(&harness, tab, id), "the hidden tab's editor closed");
     assert_eq!(pending(&harness, tab, id, 0), None);
     assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
+}
+
+/// A press between the options, on the list's foot, is the list's too: the
+/// panel's editor stays open with its text, and Enter still takes.
+#[test]
+fn a_press_beside_the_options_of_the_panels_list_keeps_the_editor_and_its_text() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    pointer_click(&mut harness, "Esc cancels", Role::Label);
+    assert!(editing(&harness, tab, id));
+    assert!(picker(&harness, tab, id).is_some());
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+}
+
+/// The panel's field says what the column refuses only after a refused
+/// commit, in the panel's flow under the field with the label over it still
+/// readable, and the list hangs under the words.
+#[test]
+fn the_panels_field_says_what_the_column_refuses_only_after_a_refused_commit() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "zzz");
+    let note = "INTEGER expects a whole number";
+    assert!(!harness.has(note), "said while it is a search");
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(editing(&harness, tab, id));
+    let tree = harness.settle();
+    let said = crate::testing::bounds(&tree, note, Role::Label)
+        .unwrap_or_else(|| panic!("not said: {:?}", crate::testing::labels(&tree)));
+    let field = crate::testing::bounds(
+        &tree,
+        "Search publishers for publisher_id",
+        Role::MultilineTextInput,
+    )
+    .expect("the field");
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    let label = crate::testing::bounds(&tree, "publisher_id \u{b7} INTEGER", Role::Label)
+        .unwrap_or_else(|| panic!("no label: {:?}", crate::testing::labels(&tree)));
+    // The words are under the field and the list under the words; the
+    // label is over the field, whole.
+    assert!(said.top() >= field.bottom() - 0.5, "{said:?} {field:?}");
+    assert!(list.top() >= said.bottom() - 0.5, "{list:?} {said:?}");
+    assert!(label.bottom() <= field.top() + 0.5, "{label:?} {field:?}");
+    assert!(window_of(&harness).contains_rect(list), "{list:?}");
+}
+
+/// The panel's list is under its field and inside the window.
+#[test]
+fn the_panels_list_stands_under_its_field_and_inside_the_window() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    let tree = harness.settle();
+    let field = crate::testing::bounds(
+        &tree,
+        "Search publishers for publisher_id",
+        Role::MultilineTextInput,
+    )
+    .expect("the field");
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    assert!(list.top() >= field.bottom(), "{list:?} {field:?}");
+    assert!(window_of(&harness).contains_rect(list), "{list:?}");
+}
+
+/// Set NULL from the panel's list sets the cell's NULL and closes the
+/// editor.
+#[test]
+fn a_nullable_columns_panel_list_sets_null() {
+    let (mut harness, tab, id) = nullable_covers();
+    harness.settle();
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    harness.click("Set NULL");
+    assert!(!editing(&harness, tab, id));
+    assert!(pending_null(&harness, tab, id));
 }
