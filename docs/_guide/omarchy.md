@@ -131,7 +131,7 @@ back.
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
-| Ctrl+N, Ctrl+P, Down, Up | Move in a foreign key cell's list |
+| Ctrl+N, Ctrl+P, Down, Up, Page Down, Page Up | Move in a foreign key cell's list |
 | Enter, Tab | In that list: set the cell to the highlighted row |
 | Esc | In that list: close it and leave the cell as it was |
 | Alt+Enter | Open the large editor. In it, Ctrl+Enter applies and Esc keeps the text |
