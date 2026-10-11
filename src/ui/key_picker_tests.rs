@@ -696,6 +696,57 @@ fn an_enter_before_the_answer_waits_for_it() {
     assert_eq!(pending(&harness, tab, id, 2).as_deref(), Some(NORTHLIGHT));
 }
 
+/// Spec section 8: showing another tab leaves the editor open behind it,
+/// and drops an Enter that waited for the answer. The answer is kept for
+/// the return, and the next Enter takes.
+#[test]
+fn a_kept_enter_is_dropped_when_another_tab_is_shown() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("l".into()));
+    set_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Down);
+    assert!(picker(&harness, tab, id).unwrap().kept.is_some());
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: tabletist_db::ObjectRef::new("main", "publishers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    assert_ne!(harness.app.active_workspace_tab(), Some((tab, id)));
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(editing(&harness, tab, id), "the hidden tab's editor closed");
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    assert_eq!(selection(&harness, tab, id), (0, PUBLISHER));
+    assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
+    // Back on the tab, the list is the answer's and Enter takes from it.
+    harness.app.apply(Action::ActivateTab { tab, id });
+    assert_eq!(listed(&harness, tab, id), [HARBOR_PRESS, HARBOR_LIGHTS]);
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+}
+
+/// The same for an Enter whose answer has not come when the user is back:
+/// the frame that draws another tab drops it.
+#[test]
+fn a_frame_on_another_tab_drops_a_kept_enter() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("l".into()));
+    set_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Down);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: tabletist_db::ObjectRef::new("main", "publishers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.app.send_due_lookups(Instant::now());
+    assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
+    harness.app.apply(Action::ActivateTab { tab, id });
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0), None);
+}
+
 /// Spec 4 and 5: what the column would say of a search's text is not
 /// shown while it is a search. A commit that takes the text and is
 /// refused shows it, until the text changes.

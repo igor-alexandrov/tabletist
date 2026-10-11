@@ -181,6 +181,7 @@ impl App {
     /// waited for them learns its label column and sends its first
     /// search, or says why it has no list.
     pub(super) fn picker_columns(&mut self, tab: ConnTabId) {
+        let shown = self.active_workspace_tab();
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -212,8 +213,11 @@ impl App {
                 // Nothing will answer: a kept Enter takes the text. Under
                 // a prompt about pending changes the commit is dropped
                 // (`App::apply`) and the key is lost: accepted, the next
-                // Enter takes at once.
-                if let Some(then) = picker.kept.take() {
+                // Enter takes at once. So is the key of a tab that is not
+                // the one shown: nothing moves behind the user's back.
+                if let Some(then) = picker.kept.take()
+                    && shown == Some((tab, id))
+                {
                     commits.push((id, then));
                 }
             }
@@ -239,6 +243,7 @@ impl App {
         let Some(tab) = self.tab_for_session(session) else {
             return;
         };
+        let shown = self.active_workspace_tab();
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -274,9 +279,11 @@ impl App {
                         // Under a prompt about pending changes the commit
                         // is dropped (`App::apply`) and the key is lost:
                         // accepted. The editor stays open and the next
-                        // Enter takes at once.
+                        // Enter takes at once. A tab that is not the one
+                        // shown loses the key too, and keeps the answer
+                        // for the return.
                         picker.kept = None;
-                        commit = Some((id, then));
+                        commit = (shown == Some((tab, id))).then_some((id, then));
                     }
                 }
             }
@@ -386,8 +393,9 @@ impl App {
     /// read is left to end. A picker that waits for the referenced
     /// table's columns, has no failure and has nobody fetching them (the
     /// tree was refreshed under it, say) gets them asked for, once per
-    /// table. Returns how long until the next search is due, for the
-    /// frame to come back then.
+    /// table. A picker behind another tab loses a kept Enter or Tab.
+    /// Returns how long until the next search is due, for the frame to
+    /// come back then.
     pub fn send_due_lookups(&mut self, now: Instant) -> Option<Duration> {
         let mut due = Vec::new();
         let mut next: Option<Duration> = None;
@@ -395,6 +403,9 @@ impl App {
         let mut open = Vec::new();
         // Tables whose columns a waiting picker has nobody fetching.
         let mut stranded: Vec<(ConnTabId, ObjectRef)> = Vec::new();
+        // Pickers behind another tab that keep an Enter or a Tab.
+        let mut hidden = Vec::new();
+        let shown = self.active_workspace_tab();
         for (tab, workspace) in self.open_connections() {
             for object in workspace.object_tabs() {
                 let Some(picker) = object
@@ -406,6 +417,9 @@ impl App {
                     continue;
                 };
                 open.push(picker.serial);
+                if picker.kept.is_some() && shown != Some((tab, object.id)) {
+                    hidden.push((tab, object.id));
+                }
                 let fetching = workspace
                     .columns
                     .get(&picker.target)
@@ -435,6 +449,15 @@ impl App {
             // large table: it is stopped. The pinned row's is not.
             if sent.matches {
                 self.cancel(sent.session, [sent.request]);
+            }
+        }
+        for (tab, id) in hidden {
+            // Another tab shows: the key is dropped, the search goes on.
+            if let Some(picker) = self
+                .editor_mut(tab, id)
+                .and_then(|editor| editor.picker.as_mut())
+            {
+                picker.kept = None;
             }
         }
         for (tab, table) in stranded {
