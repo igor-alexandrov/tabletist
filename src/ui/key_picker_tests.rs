@@ -2276,3 +2276,168 @@ fn a_list_that_fits_or_is_at_its_limit_has_no_more_line() {
     let tree = harness.settle();
     assert!(!more(&tree));
 }
+
+/// Opens the row panel's editor on `publisher_id` of the page's row `row`
+/// from `start`, the panel showing, and answers what the picker asks.
+fn edit_field(harness: &mut Harness, tab: ConnTabId, id: TabId, row: usize, start: EditStart) {
+    let cell = CellPos {
+        row,
+        col: PUBLISHER,
+    };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+    harness.app.apply(Action::FocusFields { tab, id });
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell,
+        start,
+    });
+    harness.answer_structure(publishers_structure());
+    harness.answer_lookups(&PUBLISHERS);
+}
+
+/// Test 22: the row panel's field opens the same list, and a pick there
+/// marks the grid's cell pending.
+#[test]
+fn the_row_panels_field_opens_the_same_list() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    let tree = harness.settle();
+    // The panel's field wraps: a text field of several lines to egui.
+    assert!(
+        crate::testing::node(
+            &tree,
+            "Search publishers for publisher_id",
+            Role::MultilineTextInput
+        )
+        .is_some(),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+    assert!(crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_some());
+    assert_eq!(listed(&harness, tab, id), [HARBOR_PRESS, HARBOR_LIGHTS]);
+    // Enter in the panel takes the option and walks on to the next field.
+    commit(&mut harness, tab, id, Advance::NextField);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+    let tree = harness.settle();
+    assert!(crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_none());
+    // What a screen reader is told of the pick, whichever field made it.
+    assert!(harness.has("publisher_id set to 9100000000000000004, Harbor Press"));
+}
+
+/// The keys reach the panel's list as they reach a cell's: Down moves the
+/// highlight and Enter takes the option it is on.
+#[test]
+fn the_keys_reach_the_panels_list_while_its_field_has_the_keyboard() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    harness.settle();
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(1));
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+}
+
+/// A click on an option of the panel's list takes it, and the text typed
+/// is not first kept.
+#[test]
+fn a_click_takes_an_option_of_the_panels_list() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    harness.settle();
+    harness.click("Harbor Lights, 9100000000000000007");
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+}
+
+/// Esc in the panel's picker leaves the field as it was, in both looks:
+/// the terminal look's Esc keeps a text field's edit, and not a search.
+#[test]
+fn esc_closes_the_panels_picker_in_both_looks() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, id) = covers_in(look);
+        edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+        type_text(&mut harness, tab, id, "harb");
+        harness.settle();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!editing(&harness, tab, id), "{}", look.name);
+        assert_eq!(pending(&harness, tab, id, 0), None, "{}", look.name);
+    }
+}
+
+/// Spec 8: the "New row" form's field picks as any field does, and the
+/// pick fills what the row needed.
+#[test]
+fn the_new_row_forms_field_picks() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.app.apply(Action::AddRow {
+        tab,
+        id,
+        place: crate::edit::Place::Top,
+    });
+    // Adding the row opened the grid's editor on its first required
+    // cell: the form's field is edited instead.
+    harness.app.apply(Action::CancelEdit { tab, id });
+    let new = crate::edit::new_row(0);
+    edit_field(
+        &mut harness,
+        tab,
+        id,
+        new,
+        EditStart::Replace(String::new()),
+    );
+    type_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::NextField);
+    assert_eq!(
+        pending(&harness, tab, id, new).as_deref(),
+        Some(HARBOR_PRESS)
+    );
+    assert!(harness.app.lacking(tab, id).is_empty());
+}
+
+/// Spec 2: opened on its value by a key, the panel's field has its text
+/// selected on macOS, and not in the terminal look.
+#[test]
+fn the_panels_field_selects_its_text_where_the_grids_does() {
+    for (look, selects) in [(Look::macos(), true), (Look::omarchy(), false)] {
+        let (mut harness, tab, id) = covers_in(look);
+        edit_field(&mut harness, tab, id, 1, EditStart::Value);
+        let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+        let editor = object.edits.editor.as_ref().unwrap();
+        assert!(editor.picker.is_some());
+        assert_eq!(editor.select, selects, "{}", look.name);
+    }
+}
+
+/// An Enter kept for the answer is dropped when another tab is shown, for
+/// an editor opened in the row panel as for one on a cell.
+#[test]
+fn a_kept_enter_of_the_panels_field_is_dropped_when_another_tab_is_shown() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Typed("l".into()));
+    set_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::NextField);
+    assert!(picker(&harness, tab, id).unwrap().kept.is_some());
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: tabletist_db::ObjectRef::new("main", "publishers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    assert_ne!(harness.app.active_workspace_tab(), Some((tab, id)));
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(editing(&harness, tab, id), "the hidden tab's editor closed");
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
+}

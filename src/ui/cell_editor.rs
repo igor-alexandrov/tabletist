@@ -44,6 +44,10 @@ pub struct Outcome {
     /// The now button: the cell takes the time of the save, and the text
     /// is dropped.
     pub now: bool,
+    /// Where the field stands, for what is anchored to it: the row
+    /// panel's field, whose place the panel's layout decides. `None` from
+    /// a cell's field, whose place the grid gives.
+    pub rect: Option<Rect>,
 }
 
 /// The cell an editor is open on, as its field needs it.
@@ -66,6 +70,21 @@ pub struct Target {
     /// The cell is a foreign key's, and its editor searches the table the
     /// key points at.
     pub search: Option<Search>,
+}
+
+impl Target {
+    /// What the field is called: "Edit title", or for a foreign key's
+    /// field what it searches, "Search publishers for publisher_id".
+    fn field_name(&self, locale: Locale) -> String {
+        match &self.search {
+            // A placeholder each: a translation puts the names where they
+            // read.
+            Some(search) => gettext(locale, "Search {table} for {column}")
+                .replace("{table}", &display_safe(&search.table))
+                .replace("{column}", &display_safe(&self.name)),
+            None => format!("{} {}", gettext(locale, "Edit"), display_safe(&self.name)),
+        }
+    }
 }
 
 /// What a foreign key cell's field says of its search.
@@ -484,13 +503,7 @@ pub fn field(
     }
     let response: egui::Response = output.response.response;
     // The name only: the field keeps the role and the value egui gave it.
-    let name = match &target.search {
-        // A placeholder each: a translation puts the names where they read.
-        Some(search) => gettext(locale, "Search {table} for {column}")
-            .replace("{table}", &display_safe(&search.table))
-            .replace("{column}", &display_safe(&target.name)),
-        None => format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name)),
-    };
+    let name = target.field_name(locale);
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
@@ -599,6 +612,7 @@ pub fn in_panel(
     let mut outcome = Outcome::default();
     let id = target.id;
     let opened = std::mem::take(&mut editor.focus);
+    let select = std::mem::take(&mut editor.select);
     if opened {
         take_keyboard(ui.ctx(), id, &editor.text);
     }
@@ -607,8 +621,10 @@ pub fn in_panel(
     if has {
         keep_keyboard(ui.ctx());
     }
-    // The row panel's field gets its picker in a later run.
-    ending_keys(ui, has, had, look.terminal, false, &mut outcome);
+    // A search that failed leaves the plain text editor, whose Esc keeps
+    // the edit in the terminal look.
+    let picking = target.search.as_ref().is_some_and(|search| !search.failed);
+    ending_keys(ui, has, had, look.terminal, picking, &mut outcome);
     // In the panel a commit walks the row's fields, not the grid's cells.
     outcome.commit = outcome.commit.map(|then| match then {
         Advance::Stay => Advance::Stay,
@@ -618,6 +634,12 @@ pub fn in_panel(
     // A click on the value's text asked for it: the cursor goes under the
     // pointer, once the text is laid out.
     let at = opened.then(|| asked_at(ui.ctx(), id)).flatten();
+    // A foreign key's field opened by a key: its text is selected, so
+    // what is typed next starts a search. A click put the cursor where it
+    // was read, and selects nothing.
+    if opened && select && at.is_none() {
+        take_keyboard_selected(ui.ctx(), id, &editor.text);
+    }
     // A date or time field offers now beside it, as the design's row has
     // it: the field is that much narrower.
     let now = (target.now && !look.terminal).then(|| now_room(ui, look, locale));
@@ -664,7 +686,7 @@ pub fn in_panel(
     }
     let response: egui::Response = output.response.response;
     // The name only: the field keeps the role and the value egui gave it.
-    let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+    let name = target.field_name(locale);
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
@@ -672,11 +694,15 @@ pub fn in_panel(
     if has {
         hold_keys(ui.ctx(), id);
     }
+    // A foreign key's text is a search until a commit takes it: what its
+    // column would say of it shows only once it was refused.
+    let said = target.search.as_ref().is_none_or(|search| search.refused);
+    let failing = editor.problem.is_some() && said;
     // A field's own ring, red while the text fails its check. The ring
     // shows once the keyboard is in use; the red border does not wait for
     // that, since a pasted text can fail before any key is pressed.
     let radius = look.radius;
-    let ring = if editor.problem.is_some() {
+    let ring = if failing {
         ui.painter().rect_stroke(
             response.rect,
             CornerRadius::same(radius),
@@ -693,12 +719,27 @@ pub fn in_panel(
     if opened {
         response.scroll_to_me(None);
     }
-    let problem = editor
+    let message = editor
         .problem
         .as_ref()
+        .filter(|_| said)
         .map(|problem| problem_text(problem, &target.type_name, Some(&editor.text), locale));
+    // The list is under a foreign key's field: the words go over it, as
+    // on a cell, and nothing of the field's own is laid out under it.
+    let problem = match &target.search {
+        Some(_) => {
+            if let (Some(message), true) = (&message, target.hold) {
+                say_under(ui, response.rect, id, message, true, look, palette);
+            }
+            None
+        }
+        None => message,
+    };
+    // While the text is a search it is no value, and its length is none
+    // of the column's business.
     let count = target
         .max_chars
+        .filter(|_| target.search.is_none())
         .map(|max| format!("{} / {max}", editor.text.chars().count()));
     if problem.is_some() || count.is_some() {
         let small = widgets::secondary(look);
@@ -727,6 +768,9 @@ pub fn in_panel(
     if let Some(place) = now {
         now_button(ui, place, id, (look, palette, locale), &mut outcome);
     }
+    // What a foreign key's list hangs from: the panel's layout put the
+    // field here, the grid knows nothing of it.
+    outcome.rect = Some(response.rect);
     outcome
 }
 

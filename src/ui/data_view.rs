@@ -1732,20 +1732,34 @@ pub(super) fn editor_target(
             .editor
             .as_ref()
             .filter(|editor| editor.cell == cell)
-            .and_then(|editor| editor.picker.as_ref())
-            .map(|picker| cell_editor::Search {
-                table: picker.target.name.clone(),
-                count: picker.listed.as_ref().map(|_| {
-                    if picker.more {
-                        format!("{}+", crate::key_picker::LIMIT)
-                    } else {
-                        picker.options.len().to_string()
-                    }
-                }),
-                nullable: table.column(cell.col).is_some_and(|column| column.nullable),
-                failed: picker.failed.is_some(),
-                refused: picker.refused,
-            }),
+            .and_then(|editor| search_of(workspace, object, editor)),
+    })
+}
+
+/// What a foreign key cell's field says of its search: from the picker
+/// of `editor`, which is the tab's own or, while the row panel draws, the
+/// one the panel took out of the tab.
+pub(super) fn search_of(
+    workspace: &crate::model::Workspace,
+    object: &ObjectTab,
+    editor: &crate::edit::Editor,
+) -> Option<cell_editor::Search> {
+    let picker = editor.picker.as_ref()?;
+    let table = Table::of(workspace, object)?;
+    Some(cell_editor::Search {
+        table: picker.target.name.clone(),
+        count: picker.listed.as_ref().map(|_| {
+            if picker.more {
+                format!("{}+", crate::key_picker::LIMIT)
+            } else {
+                picker.options.len().to_string()
+            }
+        }),
+        nullable: table
+            .column(editor.cell.col)
+            .is_some_and(|column| column.nullable),
+        failed: picker.failed.is_some(),
+        refused: picker.refused,
     })
 }
 

@@ -8,7 +8,7 @@ use tabletist_db::{ColumnClass, Error, LookupPage, LookupPart, ObjectRef, Value}
 
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
-use crate::edit::{EditorPlace, Picked, Table, start_text};
+use crate::edit::{Picked, Table, start_text};
 use crate::key_picker::{self, Answered, Asked, Columns, Picker, Take};
 use crate::model::{Action, Advance, ConnTabId, TabId};
 
@@ -36,8 +36,8 @@ pub(super) enum Taken {
 
 impl App {
     /// Gives the tab's editor, which just opened, its picker, where its
-    /// cell is a foreign key's and the editor is the small field on the
-    /// cell. `from_value` says it opened on the cell's value, not on
+    /// cell is a foreign key's and the editor is the small field, on the
+    /// cell or in the row panel. `from_value` says it opened on the cell's value, not on
     /// something typed. The referenced table's columns are asked for if
     /// the workspace does not know them, and the first search is sent as
     /// soon as they are known.
@@ -47,8 +47,9 @@ impl App {
             let object = workspace.object_tab(id)?;
             let table = Table::of(workspace, object)?;
             let editor = object.edits.editor.as_ref()?;
-            // The row panel's field gets its picker in run 3.
-            if editor.large || editor.place != EditorPlace::Grid {
+            // The picker belongs to the small field, on the cell or in
+            // the row panel: the large editor has no list.
+            if editor.large {
                 return None;
             }
             let column = table.column(editor.cell.col)?;
