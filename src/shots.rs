@@ -14,7 +14,7 @@ use tabletist_db::{
 
 use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Environment;
-use crate::model::{Action, CellPos, ConnTabId, EditStart, RunMode, TabId};
+use crate::model::{Action, Advance, CellPos, ConnTabId, EditStart, RunMode, TabId};
 use crate::testing::Harness;
 
 const SIZE: egui::Vec2 = egui::vec2(1000.0, 650.0);
@@ -223,6 +223,40 @@ fn structure() -> Structure {
     }
 }
 
+/// Some of the Bookshop's books, as (id, title): what the picker of
+/// `book_images.book_id` finds. The ids are ones [`page_of`] points at.
+const BOOKS: [(i64, &str); 5] = [
+    (1_048_576, "The Lighthouse Keeper's Daughter"),
+    (1_056_495, "Small Rooms"),
+    (1_064_414, "Small Rooms, Second Edition"),
+    (1_072_333, "Lighthouses of the North Coast"),
+    (1_080_252, "A Year of Tides"),
+];
+
+/// What `books` describes as, as far as a picker reads it: its key and
+/// the column a book is read by.
+fn books_structure() -> Structure {
+    let column = |name: &str, type_name: &str| ColumnInfo {
+        name: name.into(),
+        type_name: type_name.into(),
+        ..ColumnInfo::default()
+    };
+    Structure {
+        // As a structure names PostgreSQL's types: `column_class` reads
+        // `character varying` as text, and not the page's `varchar`.
+        columns: vec![column("id", "bigint"), column("title", "character varying")],
+        primary_key: vec!["id".into()],
+        ..Structure::default()
+    }
+}
+
+/// Answers what a picker of `book_id` asked: the books' columns, then
+/// its lookups.
+fn answer_books(harness: &mut Harness) {
+    harness.answer_structure(books_structure());
+    harness.answer_lookups(&BOOKS);
+}
+
 /// A connected PostgreSQL-looking tab with a table open and row 5 selected.
 fn workspace(harness: &mut Harness) -> ConnTabId {
     let tab = harness.connect_fake();
@@ -361,13 +395,16 @@ const DELETED: &str = "2026-10-04 09:30:00";
 /// user reaches it, through the model, so it is the same state in every
 /// look: the bar, the tints and the dialogs on macOS and Windows; the mode
 /// line, the gutter and the error line on Omarchy.
-const EDITING: [(&str, Scene); 13] = [
+const EDITING: [(&str, Scene); 16] = [
     ("edit-new-row", edit_new_row),
     ("edit-new-row-filled", edit_new_row_filled),
     ("edit-new-row-failed", edit_new_row_failed),
     ("edit-pending", edit_pending),
     ("edit-review", edit_review),
     ("edit-field", edit_field),
+    ("edit-key-picker", edit_key_picker),
+    ("edit-key-picker-current", edit_key_picker_current),
+    ("edit-key-missing", edit_key_missing),
     ("edit-large", edit_large),
     ("edit-saved", edit_saved),
     ("edit-failed", edit_failed),
@@ -378,10 +415,12 @@ const EDITING: [(&str, Scene); 13] = [
 ];
 
 /// The row panel's fields, one scene per state, in every look.
-const ROW_FORM: [(&str, Scene); 9] = [
+const ROW_FORM: [(&str, Scene); 11] = [
     ("row-form-new-row", row_form_new_row),
     ("row-form-new-row-filled", row_form_new_row_filled),
     ("row-form-field", row_form_field),
+    ("row-form-key-picker", row_form_key_picker),
+    ("row-form-key-missing", row_form_key_missing),
     ("row-form-locked", row_form_locked),
     ("row-form-pending", row_form_pending),
     ("row-form-read-only", row_form_read_only),
@@ -414,8 +453,9 @@ fn row_form_new_row_filled(harness: &mut Harness) {
 }
 
 /// A field of the row panel being edited: the editor in the value's place,
-/// holding a text its column does not take, with why under it. Another
-/// field of the row is pending.
+/// holding a text its column does not take. The field is red, why stands
+/// under it in the panel's flow, and the key's list hangs under that,
+/// saying no books match. Another field of the row is pending.
 fn row_form_field(harness: &mut Harness) {
     let (tab, id) = editable(harness);
     retype(harness, tab, id, (4, DELETED_AT), DELETED);
@@ -433,6 +473,54 @@ fn row_form_field(harness: &mut Harness) {
     editor.expect("the panel's editor").text = "107233x".into();
     // What the field says when its text changed: the check runs.
     harness.app.apply(Action::EditorTyped { tab, id });
+    // A foreign key's field says why only once a commit took the text and
+    // the column refused it. The commit waits for the list, which is
+    // answered now; the kept Enter then finds the text refused.
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: Advance::Stay,
+    });
+    answer_books(harness);
+}
+
+/// The same picker in the row panel: the key's field searched for
+/// `rooms`, the two books it finds under it, the first highlighted.
+fn row_form_key_picker(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell: CellPos {
+            row: 4,
+            col: BOOK_ID,
+        },
+        start: EditStart::Replace("rooms".into()),
+    });
+    answer_books(harness);
+}
+
+/// The same key in the row panel, kept as typed: the field holds `999`,
+/// no book has it, and the words stand under its value. Save is offered.
+fn row_form_key_missing(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell: CellPos {
+            row: 4,
+            col: BOOK_ID,
+        },
+        start: EditStart::Replace("999".into()),
+    });
+    answer_books(harness);
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: Advance::Stay,
+    });
+    // The question the kept key raises: no book has it.
+    answer_books(harness);
 }
 
 /// An edit asked for on the key's field: its lock, and why under its value
@@ -563,6 +651,75 @@ fn edit_field(harness: &mut Harness) {
     });
     // What the field says when its text changed: the check runs.
     harness.app.apply(Action::EditorTyped { tab, id });
+    // A foreign key's field says why only once a commit took the text and
+    // the column refused it. The commit waits for the list, which is
+    // answered now; the kept Enter then finds the text refused.
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: Advance::Stay,
+    });
+    answer_books(harness);
+}
+
+/// The picker of a foreign key cell: `light` typed on `book_id`, the two
+/// books it finds under the cell, the first highlighted.
+fn edit_key_picker(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 2,
+            col: BOOK_ID,
+        },
+        start: EditStart::Typed("light".into()),
+    });
+    answer_books(harness);
+}
+
+/// The picker on the value of a foreign key cell: the table's first books,
+/// the one the cell points at first and marked as current.
+fn edit_key_picker_current(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 1,
+            col: BOOK_ID,
+        },
+        start: EditStart::Value,
+    });
+    answer_books(harness);
+}
+
+/// A key no book has, typed on `book_id` and kept as typed, in the grid
+/// alone: the cell is pending and outlined, the bar counts the warning
+/// ("1 change in 1 row · 1 value names no row"), Save is offered, and the
+/// terminal look says it under the grid. The row panel says it in
+/// `row_form_key_missing`.
+fn edit_key_missing(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    // The grid has its width, and the bar room for all its counts.
+    harness.app.apply(Action::ToggleRowPanel(tab));
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 2,
+            col: BOOK_ID,
+        },
+        start: EditStart::Replace("999".into()),
+    });
+    answer_books(harness);
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: Advance::Stay,
+    });
+    // The question the kept key raises: no book has it.
+    answer_books(harness);
 }
 
 /// The popover, on the JSON column.
@@ -609,6 +766,7 @@ fn edit_new_row(harness: &mut Harness) {
         crate::edit::Place::Top
     };
     harness.app.apply(Action::AddRow { tab, id, place });
+    answer_books(harness);
 }
 
 /// The new row with its book given and the rest still to come, and a

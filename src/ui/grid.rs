@@ -103,6 +103,9 @@ pub enum Mark {
     #[default]
     None,
     Pending,
+    /// Pending, with a warning that holds no save: a foreign key that
+    /// names no row.
+    Doubt,
     /// To fix, or failed in the last save.
     Trouble,
     /// Pending and being saved.
@@ -150,6 +153,10 @@ pub struct GridOutput {
     /// Where the cell being edited is, in view or not: what an editor that
     /// does not sit on the cell is anchored to.
     pub editing_rect: Option<Rect>,
+    /// Where the rows show: the grid's viewport without the header that
+    /// stays over its top. What hangs from a cell (a list) is drawn only
+    /// while the cell is in it.
+    pub body: Option<Rect>,
     pub sort_clicked: Option<usize>,
     /// The keyboard came to the grid this frame (the Tab key, a screen
     /// reader): the arrows should be the grid's.
@@ -745,6 +752,10 @@ pub fn show<'a>(
                     RowMark::New => Some(Tone::Success),
                 };
                 let new = mark == RowMark::New;
+                // A new row's cell, as a warning knows it: by the row's
+                // having no number among the table's. Its mark is not
+                // steady enough, a cell to fix in it makes it `Trouble`.
+                let held_back = new || number.is_none();
                 let selected_row = selection.is_some_and(|cell| cell.row == row);
                 // With the keyboard in the grid the cell takes the
                 // selection's colour and its row a lighter tint of it.
@@ -883,13 +894,19 @@ pub fn show<'a>(
                     // terminal draws a computed column as any other. A row
                     // that is gone has no tint: nothing of it is pending.
                     let tone = match content.mark {
-                        Mark::Pending | Mark::Saving => Some(Tone::Warning),
+                        // A new row's cell keeps the row's own look: the
+                        // row says it is pending, and the outline below
+                        // says the warning.
+                        Mark::Doubt if held_back => None,
+                        Mark::Pending | Mark::Doubt | Mark::Saving => Some(Tone::Warning),
                         Mark::Trouble => Some(Tone::Danger),
                         Mark::Saved => Some(Tone::Success),
                         Mark::None | Mark::Locked | Mark::Gone | Mark::Added | Mark::Unset => None,
                     };
                     let locked = content.mark == Mark::Locked && !look.terminal;
-                    if here && lit && look.terminal && tone.is_none() && !edited {
+                    // A cell with a warning keeps its lines under the cursor.
+                    let reversed_cursor = tone.is_none() && content.mark != Mark::Doubt;
+                    if here && lit && look.terminal && reversed_cursor && !edited {
                         // Reverse video, as a terminal marks its cursor:
                         // the accent behind, the text in the window's tone.
                         painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.accent);
@@ -933,6 +950,25 @@ pub fn show<'a>(
                                 bar,
                                 CornerRadius::ZERO,
                                 Tone::Warning.color(palette),
+                            );
+                        }
+                        Mark::Doubt => {
+                            // A pending cell's bar, and an outline in its
+                            // tone, as a cell to fix has one in the
+                            // failure's.
+                            if !look.terminal && !held_back {
+                                let bar = Rect::from_min_size(cell_rect.min, vec2(2.0, height));
+                                painter.rect_filled(
+                                    bar,
+                                    CornerRadius::ZERO,
+                                    Tone::Warning.color(palette),
+                                );
+                            }
+                            painter.rect_stroke(
+                                cell_rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, Tone::Warning.color(palette)),
+                                StrokeKind::Inside,
                             );
                         }
                         Mark::Trouble => {
@@ -1021,6 +1057,16 @@ pub fn show<'a>(
                             Stroke::new(2.0, palette.accent),
                             StrokeKind::Inside,
                         );
+                        if content.mark == Mark::Doubt {
+                            // The cursor's line covers the outline of the
+                            // same rect: the warning's goes inside it.
+                            painter.rect_stroke(
+                                cell_rect.shrink(2.0),
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, Tone::Warning.color(palette)),
+                                StrokeKind::Inside,
+                            );
+                        }
                     } else if here && (col > 0 || (new && !look.terminal)) {
                         // The row is selected; a cell past the first is
                         // marked too, for the keys that act on one cell.
@@ -1264,6 +1310,11 @@ pub fn show<'a>(
             },
         );
     });
+    let viewport = scroll.inner_rect;
+    output.body = Some(Rect::from_min_max(
+        pos2(viewport.left(), viewport.top() + header_height),
+        viewport.max,
+    ));
     output
 }
 
@@ -2052,6 +2103,23 @@ mod tests {
         Vec<egui::epaint::RectShape>,
         Vec<(String, egui::Color32, egui::Pos2)>,
     ) {
+        let rows = |at: usize| numbered(if at == 1 { row } else { RowMark::None }, at);
+        marked_rows(ctx, look, palette, mark, &rows, selection, events)
+    }
+
+    /// [`marked_with`], the rows as `rows` gives them.
+    fn marked_rows(
+        ctx: &egui::Context,
+        look: &Look,
+        palette: &Palette,
+        mark: Mark,
+        rows: &dyn Fn(usize) -> Row,
+        selection: Option<CellPos>,
+        events: Vec<egui::Event>,
+    ) -> (
+        Vec<egui::epaint::RectShape>,
+        Vec<(String, egui::Color32, egui::Pos2)>,
+    ) {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -2071,7 +2139,7 @@ mod tests {
                 true,
                 palette,
                 look,
-                &|at| numbered(if at == 1 { row } else { RowMark::None }, at),
+                rows,
                 None,
                 None,
                 |row, col| Cell {
@@ -2218,6 +2286,160 @@ mod tests {
     }
 
     #[test]
+    fn a_new_rows_cell_with_a_warning_keeps_the_rows_look_and_is_outlined() {
+        use crate::ui::states::Tone;
+        for look in Look::ALL {
+            for palette in [Palette::light(), Palette::dark()] {
+                let said = format!("{}, dark: {}", look.name, palette.dark);
+                let ctx = egui::Context::default();
+                crate::theme::install(&ctx, false, &look);
+                crate::theme::apply(&ctx, &palette, &look);
+                marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+                let (rects, texts) = marked(&ctx, &look, &palette, Mark::Doubt, RowMark::New);
+                let (_, plain) = marked(&ctx, &look, &palette, Mark::None, RowMark::New);
+                let colors = crate::env::new_row_colors(crate::env::Platform::of(&look), &palette);
+                let warning = Tone::Warning.color(&palette);
+                // The outline, in the pending tone.
+                let lined = rects.iter().any(|rect| {
+                    rect.stroke == Stroke::new(1.0, warning)
+                        && rect.stroke_kind == StrokeKind::Inside
+                });
+                assert!(lined, "{said}: the line");
+                // No pending tint and no pending bar over the row's own.
+                let tinted = rects.iter().any(|rect| {
+                    rect.fill == Tone::Warning.fill(&look, &palette) && rect.rect.width() < 400.0
+                });
+                assert!(!tinted, "{said}: no tint");
+                let barred = rects
+                    .iter()
+                    .any(|rect| rect.fill == warning && rect.rect.width() == 2.0);
+                assert!(!barred, "{said}: no cell bar");
+                // The row's fill and its text stay the row's.
+                let filled = rects
+                    .iter()
+                    .any(|rect| rect.fill == colors.fill && rect.rect.width() > 400.0);
+                assert!(filled, "{said}: the row's fill");
+                let color_of = |texts: &[(String, egui::Color32, egui::Pos2)]| {
+                    texts
+                        .iter()
+                        .find(|(text, ..)| text == "r1c1")
+                        .map(|(_, color, _)| *color)
+                };
+                assert_eq!(color_of(&texts), color_of(&plain), "{said}: the text");
+            }
+        }
+    }
+
+    /// A new row is the grid's by its having no number, not by its mark: a
+    /// new row with a cell to fix is in trouble, and a warned cell of it is
+    /// no different from one of a row that is not.
+    #[test]
+    fn a_new_rows_cell_with_a_warning_is_the_same_when_a_sibling_is_to_fix() {
+        use crate::ui::states::Tone;
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+            let new = |mark: RowMark| {
+                move |at: usize| match at {
+                    1 => Row { mark, number: None },
+                    at => numbered(RowMark::None, at),
+                }
+            };
+            let (sound, _) = marked_rows(
+                &ctx,
+                &look,
+                &palette,
+                Mark::Doubt,
+                &new(RowMark::New),
+                None,
+                vec![],
+            );
+            let (trouble, _) = marked_rows(
+                &ctx,
+                &look,
+                &palette,
+                Mark::Doubt,
+                &new(RowMark::Trouble),
+                None,
+                vec![],
+            );
+            let tinted = |rects: &[egui::epaint::RectShape]| {
+                rects.iter().any(|rect| {
+                    rect.fill == Tone::Warning.fill(&look, &palette) && rect.rect.width() < 400.0
+                })
+            };
+            let barred = |rects: &[egui::epaint::RectShape]| {
+                rects.iter().any(|rect| {
+                    rect.fill == Tone::Warning.color(&palette) && rect.rect.width() == 2.0
+                })
+            };
+            let lined = |rects: &[egui::epaint::RectShape]| {
+                rects
+                    .iter()
+                    .any(|rect| rect.stroke == Stroke::new(1.0, Tone::Warning.color(&palette)))
+            };
+            for rects in [&sound, &trouble] {
+                assert!(lined(rects), "{}: the line", look.name);
+                assert!(!tinted(rects), "{}: no tint", look.name);
+                assert!(!barred(rects), "{}: no cell bar", look.name);
+            }
+        }
+    }
+
+    /// The keyboard's line is 2 wide, inside the cell, and covers a 1 wide
+    /// outline of the same rect: a warned cell under it draws its own inside
+    /// the cursor's, so both show, in a row of the page and in a new one.
+    #[test]
+    fn a_warned_cell_under_the_keyboard_cursor_shows_both_lines() {
+        use crate::ui::states::Tone;
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            let here = Some(CellPos { row: 1, col: 1 });
+            // A key, and the arrows are the grid's: its cell is lit.
+            let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+            for (row, said) in [
+                (RowMark::Changed, "a row of the page"),
+                (RowMark::New, "a new row"),
+            ] {
+                let cell = (Mark::Doubt, row);
+                marked_with(&ctx, &look, &palette, cell, here, vec![key.clone()]);
+                let (rects, texts) = marked_with(&ctx, &look, &palette, cell, here, Vec::new());
+                let (_, _, text) = texts
+                    .iter()
+                    .find(|(text, ..)| text == "r1c1")
+                    .expect("the cell's text");
+                let drawn = |stroke: Stroke| -> Vec<Rect> {
+                    let found = rects.iter().filter(|rect| {
+                        rect.stroke == stroke
+                            && rect.stroke_kind == StrokeKind::Inside
+                            && rect.rect.contains(*text)
+                            && rect.rect.width() < 400.0
+                    });
+                    found.map(|rect| rect.rect).collect()
+                };
+                let cursor = drawn(Stroke::new(2.0, palette.accent));
+                let warning = drawn(Stroke::new(1.0, Tone::Warning.color(&palette)));
+                let [cursor] = cursor[..] else {
+                    panic!("{}, {said}: {cursor:?}", look.name);
+                };
+                // Inside the cursor's line, clear of it.
+                let clear = cursor.shrink(2.0 - 0.01);
+                assert!(
+                    warning.iter().any(|line| clear.contains_rect(*line)),
+                    "{}, {said}: {warning:?} in {cursor:?}",
+                    look.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_slanted_cell_is_written_leaned_over() {
         for look in Look::ALL {
             let palette = Palette::dark();
@@ -2355,6 +2577,7 @@ mod tests {
                 for (mark, row, tone, sign) in [
                     (Mark::Pending, RowMark::Changed, Tone::Warning, "~"),
                     (Mark::Saving, RowMark::Changed, Tone::Warning, "~"),
+                    (Mark::Doubt, RowMark::Changed, Tone::Warning, "~"),
                     (Mark::Trouble, RowMark::Trouble, Tone::Danger, "!"),
                 ] {
                     let said = format!("{said}, {mark:?}");
@@ -2388,12 +2611,17 @@ mod tests {
                         assert_eq!(color_at(&texts, cell), Some(palette.text), "{said}");
                         assert!(!signed, "{said}: no gutter");
                     }
-                    // A cell to fix has a line inside it as well.
+                    // A cell to fix has a line inside it as well, and so has
+                    // one with a warning, in the pending tone.
                     let lined = rects.iter().any(|rect| {
                         rect.stroke == Stroke::new(1.0, color)
                             && rect.stroke_kind == StrokeKind::Inside
                     });
-                    assert_eq!(lined, mark == Mark::Trouble, "{said}: the line");
+                    assert_eq!(
+                        lined,
+                        matches!(mark, Mark::Trouble | Mark::Doubt),
+                        "{said}: the line"
+                    );
                 }
                 // Written: green, and no mark on the row.
                 let (rects, _) = marked(&ctx, &look, &palette, Mark::Saved, RowMark::None);
@@ -2916,7 +3144,17 @@ mod tests {
         assert!(crate::testing::node(&tree, "email", Role::Button).is_none());
         let email = crate::testing::node(&tree, "email", Role::Label).expect("email header");
         let (output, _) = frame_of(&ctx, &columns, 100, vec![click(email)]);
-        assert_eq!(output, GridOutput::default());
+        // Nothing was clicked: the body is where the rows show, not an
+        // event, and it begins under the header.
+        let header = header_height(&crate::theme::Look::standard());
+        assert_eq!(output.body.map(|body| body.top()), Some(header));
+        assert_eq!(
+            output,
+            GridOutput {
+                body: output.body,
+                ..GridOutput::default()
+            }
+        );
         // Scrolled, rows pass under the header: a press on the header is
         // not one on the row under it.
         let header = crate::testing::bounds(&tree, "email", Role::Label).unwrap();
@@ -2947,7 +3185,11 @@ mod tests {
         };
         let (down, _) = frame_of(&ctx, &columns, 100, vec![press(true)]);
         let (up, _) = frame_of(&ctx, &columns, 100, vec![press(false)]);
-        assert_eq!((down, up), (GridOutput::default(), GridOutput::default()));
+        let quiet = |output: &GridOutput| GridOutput {
+            body: output.body,
+            ..GridOutput::default()
+        };
+        assert_eq!((&down, &up), (&quiet(&down), &quiet(&up)));
         // A press under the header does select the row there.
         let below = at + egui::vec2(0.0, header.height() + 10.0);
         let press = |pressed| egui::Event::PointerButton {

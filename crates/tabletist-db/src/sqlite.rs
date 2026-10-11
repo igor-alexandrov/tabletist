@@ -16,9 +16,10 @@ use crate::adapter::Adapter;
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
-    RowPage, RowQuery, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult,
-    StopFlag, Structure, Value, ValueKind, WriteOutcome, column_class,
+    Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptEnd, ScriptMode, ScriptOutcome,
+    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    column_class,
 };
 
 mod fence;
@@ -759,7 +760,8 @@ impl Conn {
         })?
     }
 
-    /// `run` for a page or a count, whose SQL holds the user's WHERE text.
+    /// `run` for a page, a count or a lookup. A page's or a count's SQL holds
+    /// the user's WHERE text.
     /// rusqlite finds a second statement in a text by preparing it, and
     /// SQLite applies a flag pragma as soon as it is prepared: a WHERE that
     /// got `; PRAGMA query_only = 0` past `check_raw_where` and past
@@ -977,6 +979,35 @@ impl Adapter for Conn {
                 )
                 .map_err(map_error)?;
             Ok(u64::try_from(count).unwrap_or(0))
+        })
+        .await
+    }
+
+    async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
+        let lookup = lookup.clone();
+        // No fence: the statement is the app's own, and what was typed is
+        // bound. It goes through `browse` and not `run` because the names in
+        // its statement are the file's own, and a failure still puts the
+        // session's settings back.
+        self.browse(move |connection| {
+            let sql = Dialect::Sqlite.lookup(&lookup);
+            let most = lookup.limit as usize + 1;
+            let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
+            let width = statement.column_count();
+            let mut rows = statement
+                .query(rusqlite::params_from_iter(sql.params.iter().map(to_sqlite)))
+                .map_err(map_error)?;
+            let mut values: Vec<Vec<Value>> = Vec::new();
+            while values.len() < most
+                && let Some(row) = rows.next().map_err(map_error)?
+            {
+                let mut cells = Vec::with_capacity(width);
+                for index in 0..width {
+                    cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+                }
+                values.push(cells);
+            }
+            crate::lookup::page(values, &lookup)
         })
         .await
     }
@@ -1276,7 +1307,24 @@ fn foreign_keys(
             key.ref_columns.push(to);
         }
     }
-    Ok(keys.into_iter().map(|(_, key)| key).collect())
+    let mut keys: Vec<ForeignKeyInfo> = keys.into_iter().map(|(_, key)| key).collect();
+    for key in &mut keys {
+        if !key.ref_columns.is_empty() {
+            continue;
+        }
+        // `REFERENCES parent` names no column and means the parent's
+        // primary key. A parent that is not there, or has no primary key
+        // of as many columns, is a key SQLite itself refuses when a row is
+        // written: it stays without a column here. A name that is not
+        // UTF-8 cannot be written into a statement, so it is no column to
+        // follow the key by.
+        let parent = ObjectRef::new(key.ref_schema.clone(), key.ref_table.clone());
+        let primary = ordering_key(connection, &parent)?;
+        if primary.len() == key.columns.len() {
+            key.ref_columns = primary;
+        }
+    }
+    Ok(keys)
 }
 
 #[cfg(test)]
@@ -1767,6 +1815,24 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_lookup_leaves_a_writable_session_read_only() {
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        let page = conn
+            .lookup(&Lookup {
+                object: ObjectRef::new("main", "users"),
+                key: "id".into(),
+                label: Some("email".into()),
+                part: crate::LookupPart::Matching("ada".into()),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(!page.rows.is_empty());
+        // A lookup writes nothing: the session still refuses a write.
+        assert_eq!(standing(&conn).await, (1, true));
     }
 
     #[tokio::test]

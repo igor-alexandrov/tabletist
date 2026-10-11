@@ -17,6 +17,14 @@ use crate::ui::keys::{press_of, presses};
 use crate::ui::states::Tone;
 use crate::ui::{grid, sql_complete, widgets};
 
+/// The magnifier in a foreign key cell's field, and the room it takes
+/// with the gap after it.
+const SEARCH_ICON: f32 = 12.0;
+const SEARCH_LEAD: f32 = SEARCH_ICON + 6.0;
+/// What the text of a search must keep of the field beside the terminal
+/// look's count of options: this many characters wide.
+const SEARCH_ROOM: &str = "000000";
+
 /// What a frame of an open editor asks for.
 #[derive(Debug, Default, PartialEq)]
 pub struct Outcome {
@@ -37,6 +45,11 @@ pub struct Outcome {
     /// The now button: the cell takes the time of the save, and the text
     /// is dropped.
     pub now: bool,
+    /// Where the field stands, with what the panel laid out under it
+    /// (the words, the count), for what is anchored to it: the row
+    /// panel's field, whose place the panel's layout decides. `None` from
+    /// a cell's field, whose place the grid gives.
+    pub rect: Option<Rect>,
 }
 
 /// The cell an editor is open on, as its field needs it.
@@ -58,6 +71,42 @@ pub struct Target {
     pub now: bool,
     /// The keys that end the edit, as the keymap has them.
     pub keys: Keys,
+    /// The cell is a foreign key's, and its editor searches the table the
+    /// key points at.
+    pub search: Option<Search>,
+}
+
+impl Target {
+    /// What the field is called: "Edit title", or for a foreign key's
+    /// field what it searches, "Search publishers for publisher_id".
+    fn field_name(&self, locale: Locale) -> String {
+        match &self.search {
+            // A placeholder each: a translation puts the names where they
+            // read.
+            Some(search) => gettext(locale, "Search {table} for {column}")
+                .replace("{table}", &display_safe(&search.table))
+                .replace("{column}", &display_safe(&self.name)),
+            None => format!("{} {}", gettext(locale, "Edit"), display_safe(&self.name)),
+        }
+    }
+}
+
+/// What a foreign key cell's field says of its search.
+pub struct Search {
+    /// The table that is searched.
+    pub table: String,
+    /// How many options the list holds, as the terminal look counts them
+    /// in the field: `2`, or `50+`. `None` before the first answer.
+    pub count: Option<String>,
+    /// The cell's column takes NULL: the list's foot offers Set NULL.
+    pub nullable: bool,
+    /// The search failed: the field goes on as the plain text editor it
+    /// was, Esc keeping the edit in the terminal look.
+    pub failed: bool,
+    /// A commit took the text and the column refused it: the field shows
+    /// why. Until then the text is a search, and the field says nothing
+    /// of what the column would make of it.
+    pub refused: bool,
 }
 
 /// The now button beside a date or time cell's editor, at `place`, in the
@@ -122,6 +171,8 @@ pub struct Keys {
     apply: Vec<&'static str>,
     cancel_large: Vec<&'static str>,
     keep_large: Vec<&'static str>,
+    /// Close the list of a foreign key cell's picker.
+    close_picker: Vec<&'static str>,
     /// The band's keys: what applies the large editor, and what leaves it.
     apply_key: Written,
     leave_key: Written,
@@ -154,6 +205,7 @@ impl Keys {
             apply: chords(Command::ApplyLargeEditor),
             cancel_large: chords(Command::CancelLargeEditor),
             keep_large,
+            close_picker: chords(Command::ClosePicker),
             apply_key: keymap.key(layout, Command::ApplyLargeEditor),
             leave_key: keymap.key(layout, leaves),
         }
@@ -196,6 +248,16 @@ fn take_keyboard(ctx: &egui::Context, id: Id, text: &str) {
     // it has the keyboard: ask for that frame, since no event need follow
     // the one that opened the editor.
     ctx.request_repaint();
+}
+
+/// As [`take_keyboard`], with the whole of `text` selected: what is typed
+/// next takes its place.
+fn take_keyboard_selected(ctx: &egui::Context, id: Id, text: &str) {
+    take_keyboard(ctx, id, text);
+    let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    let range = CCursorRange::two(CCursor::new(0), CCursor::new(text.chars().count()));
+    state.cursor.set_char_range(Some(range));
+    state.store(ctx, id);
 }
 
 /// Where it is kept that a pointer asked for the editor of the field `id`
@@ -241,7 +303,7 @@ fn caret_at(
 /// take Enter as giving the keyboard up, and Alt+Enter with it. Tab and
 /// Esc are egui's to move and drop the keyboard with, unless the field
 /// holds them (see `hold_keys`).
-fn ending_keys(ui: &Ui, has: bool, had: bool, keys: &Keys, outcome: &mut Outcome) {
+fn ending_keys(ui: &Ui, has: bool, had: bool, keys: &Keys, picking: bool, outcome: &mut Outcome) {
     ui.input_mut(|input| {
         if has {
             // Each chord with exactly what it names held: none is taken
@@ -257,7 +319,8 @@ fn ending_keys(ui: &Ui, has: bool, had: bool, keys: &Keys, outcome: &mut Outcome
             }
         }
         let leaving = (keys.cancel.as_slice(), keys.keep.as_slice());
-        leaving_keys(input, has || had, leaving, keys.layout, outcome);
+        let closing = picking.then_some(keys.close_picker.as_slice());
+        leaving_keys(input, has || had, leaving, closing, keys.layout, outcome);
     });
 }
 
@@ -265,7 +328,10 @@ fn ending_keys(ui: &Ui, has: bool, had: bool, keys: &Keys, outcome: &mut Outcome
 /// ago: in the first frames of a field egui still drops the keyboard on
 /// Esc before any of this runs, and the key is the editor's all the same.
 /// `cancel` drops the edit, and `keep` leaves with the text kept (the
-/// terminal look's Esc leaves insert mode so, and its Ctrl+C drops).
+/// terminal look's Esc leaves insert mode so, and its Ctrl+C drops). In a
+/// foreign key cell's picker the text is a search, not a value: `closing`
+/// are the keys that close its list, and they drop the edit in every
+/// look, whatever they do in a plain editor.
 ///
 /// Ctrl+C comes as a copy where Ctrl is the command key, and is taken
 /// before the field sees it: nothing is copied. A copy asked for any other
@@ -275,6 +341,7 @@ fn leaving_keys(
     input: &mut egui::InputState,
     mine: bool,
     (cancel, keep): (&[&'static str], &[&'static str]),
+    closing: Option<&[&'static str]>,
     layout: Layout,
     outcome: &mut Outcome,
 ) {
@@ -298,8 +365,11 @@ fn leaving_keys(
                 .iter()
                 .find_map(|keys| press_of(layout, held, event, keys))
         };
+        // The list's own key first: it is the plain editor's key that
+        // keeps the text, in the terminal look.
+        let closed = closing.and_then(&pressed);
         // A held key's repeats are taken and end nothing.
-        if let Some(fresh) = pressed(cancel) {
+        if let Some(fresh) = closed.or_else(|| pressed(cancel)) {
             outcome.cancel |= fresh;
             ended = fresh;
             false
@@ -330,6 +400,14 @@ fn hold_keys(ctx: &egui::Context, id: Id) {
             },
         );
     });
+}
+
+/// Whether the field `id` has the keyboard among the window's widgets,
+/// whichever window is typed in. `Response::has_focus` is false for as
+/// long as another app has the keyboard, and a window that gave it away
+/// and has it back left no field: the edit is neither kept nor dropped.
+fn has_keyboard(ui: &Ui, id: Id) -> bool {
+    ui.memory(|memory| memory.has_focus(id))
 }
 
 /// Keeps the keyboard on a field that has it, for this frame. egui decides
@@ -364,14 +442,21 @@ pub fn field(
     let mut outcome = Outcome::default();
     let id = target.id;
     if std::mem::take(&mut editor.focus) {
-        take_keyboard(ui.ctx(), id, &editor.text);
+        if std::mem::take(&mut editor.select) {
+            take_keyboard_selected(ui.ctx(), id, &editor.text);
+        } else {
+            take_keyboard(ui.ctx(), id, &editor.text);
+        }
     }
     let has = ui.memory(|memory| memory.has_focus(id));
     let had = had_keyboard(ui.ctx(), id);
     if has {
         keep_keyboard(ui.ctx());
     }
-    ending_keys(ui, has, had, &target.keys, &mut outcome);
+    // A search that failed leaves the plain text editor, whose Esc keeps
+    // the edit in the terminal look.
+    let picking = target.search.as_ref().is_some_and(|search| !search.failed);
+    ending_keys(ui, has, had, &target.keys, picking, &mut outcome);
 
     // Over the cell: the row's fill would show through a field with none.
     ui.painter()
@@ -397,18 +482,49 @@ pub fn field(
     let role = grid::data_role(look);
     let pad = grid::cell_pad(look);
     let center = rect.center().y;
+    // A foreign key's field has the magnifier of a search field at its
+    // start, and its text begins after it. The terminal look's `>` prompt
+    // takes its place.
+    let prompt = "> ";
+    let lead = match &target.search {
+        Some(_) if look.terminal => role.width(ui.ctx(), look.faces, prompt),
+        Some(_) => SEARCH_LEAD,
+        None => 0.0,
+    };
+    let text_left = rect.left() + pad + lead;
     // How much of the column's length the text takes, at the field's right.
+    // While the text is a search it is no value, and its length is none of
+    // the column's business: the list's count has the room.
     let mut right = rect.right() - pad;
-    if let Some(max) = target.max_chars {
+    let searching = target.search.as_ref().is_some_and(|search| !search.refused);
+    if let Some(max) = target.max_chars.filter(|_| !searching) {
         let count = format!("{} / {max}", editor.text.chars().count());
         let laid = Text::one(look, widgets::secondary(look), &count, palette.dim).layout(ui.ctx());
         right -= laid.paint_right(ui.painter(), right, center) + pad;
     }
+    // The terminal look counts the list's options in the field, if the
+    // text keeps room for a few characters beside the count: in a narrow
+    // column the count gives way.
+    if let (true, Some(count)) = (
+        look.terminal,
+        target
+            .search
+            .as_ref()
+            .and_then(|search| search.count.as_ref()),
+    ) {
+        let laid = Text::one(look, widgets::secondary(look), count, palette.dim).layout(ui.ctx());
+        let taken = laid.width() + pad;
+        let room = role.width(ui.ctx(), look.faces, SEARCH_ROOM);
+        if right - taken - text_left >= room {
+            laid.paint_right(ui.painter(), right, center);
+            right -= taken;
+        }
+    }
     let line = role.row_height(ui.ctx(), look.faces);
     // Where the text is: where the cell had it.
     let inner = Rect::from_min_max(
-        pos2(rect.left() + pad, center - line / 2.0),
-        pos2(right.max(rect.left() + pad), center + line / 2.0),
+        pos2(text_left, center - line / 2.0),
+        pos2(right.max(text_left), center + line / 2.0),
     );
     // The field is the whole cell, the text inside its margins: a click
     // beside the text, in the cell's own padding or on the count, places
@@ -455,16 +571,32 @@ pub fn field(
     }
     let response: egui::Response = output.response.response;
     // The name only: the field keeps the role and the value egui gave it.
-    let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+    let name = target.field_name(locale);
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
-    let has = response.has_focus();
+    if look.terminal && target.search.is_some() {
+        Text::one(look, role, prompt, palette.dim)
+            .layout(ui.ctx())
+            .paint_left(ui.painter(), rect.left() + pad, center);
+    } else if lead > 0.0 {
+        let place = Rect::from_center_size(
+            pos2(rect.left() + pad + SEARCH_ICON / 2.0, center),
+            vec2(SEARCH_ICON, SEARCH_ICON),
+        );
+        crate::theme::Icon::Search
+            .image(palette.secondary, SEARCH_ICON)
+            .paint_at(ui, place);
+    }
+    let has = has_keyboard(ui, id);
     if has {
         hold_keys(ui.ctx(), id);
     }
-    // The ring is the cell's: red while the text fails its check.
-    let failing = editor.problem.is_some();
+    // The ring is the cell's: red while the text fails its check. A
+    // foreign key's text is a search until a commit takes it: what its
+    // column would say of it shows only once it was refused.
+    let said = target.search.as_ref().is_none_or(|search| search.refused);
+    let failing = editor.problem.is_some() && said;
     if look.terminal {
         // The cursor's line, as the grid draws it round the cell its keys
         // are on, and no halo: the grid marks its own cell.
@@ -485,9 +617,11 @@ pub fn field(
     } else {
         focus::hint(ui, &response, rect, Ring::Field { radius: 0 });
     }
-    if let (Some(problem), true) = (&editor.problem, target.hold) {
+    if let (Some(problem), true, true) = (&editor.problem, target.hold, said) {
         let message = problem_text(problem, &target.type_name, Some(&editor.text), locale);
-        say_under(ui, rect, id, &message, look, palette);
+        // The list is under a foreign key's cell: the note goes over it.
+        let above = target.search.is_some();
+        say_under(ui, rect, id, &message, above, look, palette);
     }
     outcome.changed = response.changed();
     keyboard_after(ui.ctx(), target, has, had, &mut outcome);
@@ -534,8 +668,11 @@ fn block_cursor(
 /// commit moves no selection: Enter and Tab take the text and ask for the
 /// row's next field, Shift+Tab for the one before. Where a click on the
 /// value's text asked for it, its cursor opens under the pointer. Under
-/// the field it says what the text fails, and how much of its column's
-/// length the text takes.
+/// the field, in the panel's flow, it says what the text fails, and how
+/// much of its column's length the text takes; a foreign key's field says
+/// the first once a commit was refused, and the second never while the
+/// text is a search. `Outcome::rect` is the field and what stands under it,
+/// which a foreign key's list hangs from.
 pub fn in_panel(
     ui: &mut Ui,
     editor: &mut Editor,
@@ -546,6 +683,7 @@ pub fn in_panel(
     let mut outcome = Outcome::default();
     let id = target.id;
     let opened = std::mem::take(&mut editor.focus);
+    let select = std::mem::take(&mut editor.select);
     if opened {
         take_keyboard(ui.ctx(), id, &editor.text);
     }
@@ -554,7 +692,10 @@ pub fn in_panel(
     if has {
         keep_keyboard(ui.ctx());
     }
-    ending_keys(ui, has, had, &target.keys, &mut outcome);
+    // A search that failed leaves the plain text editor, whose Esc keeps
+    // the edit in the terminal look.
+    let picking = target.search.as_ref().is_some_and(|search| !search.failed);
+    ending_keys(ui, has, had, &target.keys, picking, &mut outcome);
     // In the panel a commit walks the row's fields, not the grid's cells.
     outcome.commit = outcome.commit.map(|then| match then {
         Advance::Stay => Advance::Stay,
@@ -564,6 +705,12 @@ pub fn in_panel(
     // A click on the value's text asked for it: the cursor goes under the
     // pointer, once the text is laid out.
     let at = opened.then(|| asked_at(ui.ctx(), id)).flatten();
+    // A foreign key's field opened by a key: its text is selected, so
+    // what is typed next starts a search. A click put the cursor where it
+    // was read, and selects nothing.
+    if opened && select && at.is_none() {
+        take_keyboard_selected(ui.ctx(), id, &editor.text);
+    }
     // A date or time field offers now beside it, as the design's row has
     // it: the field is that much narrower.
     let now = (target.now && !look.terminal).then(|| now_room(ui, look, locale));
@@ -610,19 +757,23 @@ pub fn in_panel(
     }
     let response: egui::Response = output.response.response;
     // The name only: the field keeps the role and the value egui gave it.
-    let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+    let name = target.field_name(locale);
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
-    let has = response.has_focus();
+    let has = has_keyboard(ui, id);
     if has {
         hold_keys(ui.ctx(), id);
     }
+    // A foreign key's text is a search until a commit takes it: what its
+    // column would say of it shows only once it was refused.
+    let said = target.search.as_ref().is_none_or(|search| search.refused);
+    let failing = editor.problem.is_some() && said;
     // A field's own ring, red while the text fails its check. The ring
     // shows once the keyboard is in use; the red border does not wait for
     // that, since a pasted text can fail before any key is pressed.
     let radius = look.radius;
-    let ring = if editor.problem.is_some() {
+    let ring = if failing {
         ui.painter().rect_stroke(
             response.rect,
             CornerRadius::same(radius),
@@ -639,17 +790,27 @@ pub fn in_panel(
     if opened {
         response.scroll_to_me(None);
     }
+    // A foreign key's text is a search until a commit takes it: the
+    // words say what the column makes of it only once it was refused.
     let problem = editor
         .problem
         .as_ref()
+        .filter(|_| said)
         .map(|problem| problem_text(problem, &target.type_name, Some(&editor.text), locale));
+    // While the text is a search it is no value, and its length is none
+    // of the column's business.
+    let searching = target.search.as_ref().is_some_and(|search| !search.refused);
     let count = target
         .max_chars
+        .filter(|_| !searching)
         .map(|max| format!("{} / {max}", editor.text.chars().count()));
+    // What is laid out under the field ends where a foreign key's list
+    // begins: the list never covers the words or the count.
+    let mut anchor = response.rect;
     if problem.is_some() || count.is_some() {
         let small = widgets::secondary(look);
         ui.add_space(3.0);
-        ui.horizontal_top(|ui| {
+        let under = ui.horizontal_top(|ui| {
             let taken = count
                 .as_ref()
                 .map_or(0.0, |count| small.width(ui.ctx(), look.faces, count) + 8.0);
@@ -667,12 +828,16 @@ pub fn in_panel(
                 });
             }
         });
+        anchor.max.y = anchor.max.y.max(under.response.rect.bottom());
     }
     outcome.changed = response.changed();
     keyboard_after(ui.ctx(), target, has, had, &mut outcome);
     if let Some(place) = now {
         now_button(ui, place, id, (look, palette, locale), &mut outcome);
     }
+    // What a foreign key's list hangs from: the panel's layout put the
+    // field here, the grid knows nothing of it.
+    outcome.rect = Some(anchor);
     outcome
 }
 
@@ -842,7 +1007,7 @@ fn large_keys(ui: &Ui, id: Id, keys: &Keys, outcome: &mut Outcome) -> bool {
             outcome.commit = Some(Advance::Stay);
         }
         let leaving = (keys.cancel_large.as_slice(), keys.keep_large.as_slice());
-        leaving_keys(input, has || had, leaving, keys.layout, outcome);
+        leaving_keys(input, has || had, leaving, None, keys.layout, outcome);
     });
     had
 }
@@ -970,7 +1135,7 @@ fn large_body(
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
-    let mut has = response.has_focus();
+    let mut has = has_keyboard(ui, id);
     if !has && had && pressed {
         // The press landed outside the field, which gave the keys up:
         // they stay the editor's.
@@ -1120,16 +1285,25 @@ fn band(
 }
 
 /// Paints `message` under the field at `rect`, or over it where the grid
-/// ends under it: what the text fails, in red. Over the rows, which are
-/// drawn after the field's.
-fn say_under(ui: &Ui, rect: Rect, id: Id, message: &str, look: &Look, palette: &Palette) {
+/// ends under it, or whatever the room, where `above` says something else
+/// stands under it (a foreign key's list): what the text fails, in red.
+/// Over the rows, which are drawn after the field's.
+fn say_under(
+    ui: &Ui,
+    rect: Rect,
+    id: Id,
+    message: &str,
+    above: bool,
+    look: &Look,
+    palette: &Palette,
+) {
     let clip = ui.clip_rect();
     let laid = Text::one(look, widgets::secondary(look), message, palette.danger).layout(ui.ctx());
     let size = laid.size() + vec2(12.0, 6.0);
     // Clear of the field's halo.
     let gap = 4.0;
     let below = rect.bottom() + gap;
-    let top = if below + size.y > clip.bottom() {
+    let top = if above || below + size.y > clip.bottom() {
         rect.top() - gap - size.y
     } else {
         below
@@ -1511,6 +1685,114 @@ mod tests {
             Lock::TooLarge,
         ] {
             assert!(!why(lock).is_empty(), "{lock:?}");
+        }
+    }
+
+    /// Every piece of text a field of `width` painted, for a search with
+    /// `count` options listed (`refused`: a commit was refused), on a
+    /// column that holds `max_chars` characters.
+    fn painted(
+        look: &Look,
+        (width, text): (f32, &str),
+        search: Option<(Option<&str>, bool)>,
+        max_chars: Option<u32>,
+    ) -> Vec<String> {
+        fn texts(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, into)),
+                egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, look);
+        let palette = Palette::dark();
+        let mut editor = Editor {
+            cell: crate::model::CellPos { row: 0, col: 0 },
+            place: crate::edit::EditorPlace::Grid,
+            text: text.to_owned(),
+            large: false,
+            focus: false,
+            top: false,
+            touched: true,
+            problem: None,
+            picker: None,
+            select: false,
+        };
+        let target = Target {
+            id: Id::new("field"),
+            name: "publisher_id".into(),
+            type_name: "int8".into(),
+            max_chars,
+            json: false,
+            hold: true,
+            now: false,
+            keys: Keys::of(&Keymap::default(), Layout::of(look)),
+            search: search.map(|(count, refused)| Search {
+                table: "publishers".into(),
+                count: count.map(str::to_owned),
+                nullable: false,
+                failed: false,
+                refused,
+            }),
+        };
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 400.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(width, 24.0));
+                    field(
+                        ui,
+                        rect,
+                        &mut editor,
+                        &target,
+                        (look, &palette, Locale::English),
+                    );
+                },
+            );
+            // egui panics if a frame's texture updates are dropped unhandled.
+            output.textures_delta.clear();
+            seen.clear();
+            for clipped in &output.shapes {
+                texts(&clipped.shape, &mut seen);
+            }
+        }
+        seen
+    }
+
+    /// The terminal look's count gives way in a narrow column: the prompt
+    /// and the text keep the room, and nothing is painted over the prompt.
+    #[test]
+    fn the_count_gives_way_in_a_narrow_column() {
+        let look = Look::omarchy();
+        let search = Some((Some("2"), false));
+        let wide = painted(&look, (400.0, "harb"), search, None);
+        assert!(wide.iter().any(|piece| piece == "2"), "{wide:?}");
+        assert!(wide.iter().any(|piece| piece == "> "), "{wide:?}");
+        let narrow = painted(&look, (60.0, "harb"), search, None);
+        assert!(!narrow.iter().any(|piece| piece == "2"), "{narrow:?}");
+        assert!(narrow.iter().any(|piece| piece == "> "), "{narrow:?}");
+        assert!(narrow.iter().any(|piece| piece == "harb"), "{narrow:?}");
+    }
+
+    /// While the text is a search, the length of the column is none of its
+    /// business; once a commit was refused, the text is a value and the
+    /// counter is back. In every look.
+    #[test]
+    fn the_length_counter_waits_for_a_commit_to_refuse_the_search() {
+        for look in [Look::omarchy(), Look::macos()] {
+            let counter = |search| {
+                let seen = painted(&look, (400.0, "harb"), search, Some(64));
+                seen.iter().any(|piece| piece == "4 / 64")
+            };
+            assert!(!counter(Some((Some("2"), false))), "{}", look.terminal);
+            assert!(counter(Some((Some("2"), true))), "{}", look.terminal);
+            // A column that is no foreign key shows it as ever.
+            assert!(counter(None), "{}", look.terminal);
         }
     }
 }

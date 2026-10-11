@@ -773,6 +773,22 @@ pub fn announce(ui: &Ui, rect: Rect, text: &str) {
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
 }
 
+/// [`announce`], as a polite live region: a screen reader reads it out
+/// when it appears or changes, without taking the user's place. For what
+/// the app says of something it did (a count of matches, a pick).
+pub fn announce_polite(ui: &Ui, rect: Rect, text: &str) {
+    // The node's id is the words alone: where the region sits is no
+    // change, and a list that moves (it flips above its cell, the window
+    // is resized) must not make a new node, which a screen reader would
+    // read out again.
+    let id = ui.id().with(("announce-polite", text));
+    let response = ui.interact(rect, id, Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_live(egui::accesskit::Live::Polite);
+    });
+}
+
 /// [`paint_text`], announced as a label.
 pub fn paint_label(ui: &Ui, x: f32, y: f32, text: Text) -> f32 {
     let laid = text.layout(ui.ctx());

@@ -144,6 +144,8 @@ pub enum When {
     /// The cursor's row is a new one, not saved yet: the row panel is its
     /// form.
     NewRow,
+    /// The list of a foreign key cell's picker is open under its field.
+    KeyPicker,
 }
 
 /// The mode a chord holds in: with the keyboard in a text field (insert),
@@ -355,6 +357,11 @@ commands! {
     CommitNext,
     CommitPrevious,
     KeepEdit,
+    NextPick,
+    PreviousPick,
+    PickPageDown,
+    PickPageUp,
+    ClosePicker,
     CancelEdit,
     OpenLargeEditor,
     ApplyLargeEditor,
@@ -562,6 +569,11 @@ impl Command {
             C::CommitNext => info("Commit cell and move to the next", COMMIT, Editing),
             C::CommitPrevious => info("Commit cell and move to the previous", COMMIT, Editing),
             C::KeepEdit => info("Leave the editor and keep the edit", COMMIT, Editing),
+            C::NextPick => info("Next row of a foreign key's list", "", Editing),
+            C::PreviousPick => info("Previous row of a foreign key's list", "", Editing),
+            C::PickPageDown => info("A page down in a foreign key's list", "", Editing),
+            C::PickPageUp => info("A page up in a foreign key's list", "", Editing),
+            C::ClosePicker => info("Close a foreign key's list", "", Editing),
             C::CancelEdit => info("Cancel cell edit", "Cancel cell edit", Editing),
             C::OpenLargeEditor => info("Open the large editor", "", Editing),
             C::ApplyLargeEditor => info("Apply large editor", LARGE, Editing),
@@ -1061,6 +1073,45 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("shift+tab")]),
         ),
         bind(C::KeepEdit, CELL_EDITOR, NONE, keys(&[k("esc")])),
+        // The list under a foreign key cell's field, while it is open. The
+        // keys that commit the edit take its highlighted row. The one that
+        // closes it leaves the cell as it was: the text is a search there,
+        // not a value to keep.
+        bind(
+            C::NextPick,
+            CELL_EDITOR,
+            keys(&[k("down")]),
+            keys(&[k("ctrl+n"), k("down")]),
+        )
+        .when(When::KeyPicker),
+        bind(
+            C::PreviousPick,
+            CELL_EDITOR,
+            keys(&[k("up")]),
+            keys(&[k("ctrl+p"), k("up")]),
+        )
+        .when(When::KeyPicker),
+        bind(
+            C::PickPageDown,
+            CELL_EDITOR,
+            keys(&[k("pgdn")]),
+            keys(&[k("pgdn")]),
+        )
+        .when(When::KeyPicker),
+        bind(
+            C::PickPageUp,
+            CELL_EDITOR,
+            keys(&[k("pgup")]),
+            keys(&[k("pgup")]),
+        )
+        .when(When::KeyPicker),
+        bind(
+            C::ClosePicker,
+            CELL_EDITOR,
+            keys(&[k("esc")]),
+            keys(&[k("esc")]),
+        )
+        .when(When::KeyPicker),
         bind(
             C::CancelEdit,
             CELL_EDITOR,

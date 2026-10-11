@@ -4,6 +4,7 @@ use egui::{
     CornerRadius, Frame, Id, Rect, Sense, Stroke, StrokeKind, TextEdit, WidgetInfo, WidgetType,
     pos2, vec2,
 };
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use tabletist_db::{Value, ValueKind};
@@ -103,6 +104,8 @@ struct FieldInfo {
     target: Option<tabletist_db::ObjectRef>,
     /// The column it points at there.
     target_column: String,
+    /// What the field's cell says when its pending key names no row.
+    doubt: Option<String>,
 }
 
 /// A column's label: `id · int8 · primary key`, then what [`facts`] says of
@@ -525,6 +528,14 @@ fn draw(
                 lock_said(&object.object.name, lock)
             });
             let structure = source.structure;
+            // The warnings on the row the panel shows, by column.
+            let doubts: std::collections::BTreeMap<usize, String> = object
+                .map(|object| super::key_picker::doubts(workspace, object, &look, locale))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|((row, _), _)| *row == cell.row)
+                .map(|((_, col), words)| (col, words))
+                .collect();
             let info = |name: &str| {
                 let key =
                     structure.is_some_and(|s| s.primary_key.iter().any(|column| column == name));
@@ -541,6 +552,11 @@ fn draw(
                     target_column: foreign
                         .and_then(|f| f.ref_columns.first().cloned())
                         .unwrap_or_default(),
+                    doubt: source
+                        .columns
+                        .iter()
+                        .position(|column| column.name == name)
+                        .and_then(|col| doubts.get(&col).cloned()),
                 }
             };
             // Values the grid shows as tags keep their colour here.
@@ -1454,6 +1470,9 @@ fn field(
         let from = gettext(locale, "changed from");
         said = format!("{said}, {from} {}", pending.was);
     }
+    if let Some(words) = &info.doubt {
+        said = format!("{said}, {words}");
+    }
     if let Some(reason) = &locked {
         said = format!("{said}, {}: {reason}", gettext(locale, "read-only"));
     }
@@ -1819,6 +1838,15 @@ fn field(
         ui.add_space(if look.terminal { 2.0 } else { 3.0 });
         let width = ui.available_width();
         Text::one(look, caption(look), message, palette.danger)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(ui);
+    }
+    // A warning holds nothing, and is said where a problem would be.
+    if let (None, Some(words)) = (&trouble, &info.doubt) {
+        ui.add_space(if look.terminal { 2.0 } else { 3.0 });
+        let width = ui.available_width();
+        Text::one(look, caption(look), words, Tone::Warning.color(palette))
             .wrap(width)
             .layout(ui.ctx())
             .label(ui);
@@ -2843,13 +2871,27 @@ fn binary(
     link.clicked()
 }
 
-/// `books` becomes `book`, for "Open book →".
-fn singular(table: &str) -> &str {
-    table
-        .strip_suffix("ies")
-        .map(|_| table)
-        .or_else(|| table.strip_suffix('s'))
-        .unwrap_or(table)
+/// `books` becomes `book`, for "Open book →": a table is named as one of
+/// its rows. `categories` becomes `category`, and `addresses` and `boxes`
+/// lose the `es` their plural took. A name that is no plural stays whole:
+/// `address`, `staff`.
+pub(crate) fn singular(table: &str) -> Cow<'_, str> {
+    if let Some(stem) = table.strip_suffix("ies") {
+        return Cow::Owned(format!("{stem}y"));
+    }
+    // The endings whose plural is written with `es`. A lone `z` is not
+    // one: `sizes` is `size` and an `s`.
+    let hissed = ["sses", "xes", "ches", "shes", "zzes"]
+        .iter()
+        .any(|end| table.ends_with(end));
+    let one = if hissed {
+        table.strip_suffix("es")
+    } else if table.ends_with("ss") {
+        None
+    } else {
+        table.strip_suffix('s')
+    };
+    Cow::Borrowed(one.unwrap_or(table))
 }
 
 /// "Format" and its key, a link in a field's label line that ends at `at`:
@@ -3219,6 +3261,27 @@ mod tests {
         // Under its least width the panel gives way too.
         assert_eq!(range(400.0), (200.0, 200.0));
         assert_eq!(range(0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_table_is_named_as_one_of_its_rows() {
+        for (table, row) in [
+            ("books", "book"),
+            ("categories", "category"),
+            ("addresses", "address"),
+            ("boxes", "box"),
+            ("branches", "branch"),
+            ("dishes", "dish"),
+            ("buzzes", "buzz"),
+            // One `z` is the row's own, and so is the `e` after it.
+            ("sizes", "size"),
+            ("prizes", "prize"),
+            // No plural: a name that ends in `ss`, and one without an `s`.
+            ("address", "address"),
+            ("staff", "staff"),
+        ] {
+            assert_eq!(singular(table), row, "{table}");
+        }
     }
 
     /// A table open on one row of awkward values, that row in the panel.

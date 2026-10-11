@@ -26,6 +26,7 @@ use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
 mod editing;
+mod key_picker;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -108,6 +109,13 @@ pub struct App {
     /// (its undo history holds copies of the script) is dropped once a
     /// frame has the `egui::Context` to drop it from.
     pub closed_editors: Vec<(ConnTabId, TabId)>,
+    /// How long after the last keystroke a foreign key picker's search is
+    /// sent. `key_picker::DELAY`; nothing in the tests.
+    pub lookup_delay: std::time::Duration,
+    /// The lookups in flight, and the pickers they were sent for. The
+    /// matches' read of one whose picker is gone is cancelled
+    /// (`send_due_lookups`): an editor goes in many ways.
+    pub lookups: Vec<key_picker::SentLookup>,
     /// The window is closing: it was asked to, and no tab holds edits any
     /// more, or the user gave them up.
     pub closing: bool,
@@ -153,6 +161,8 @@ impl App {
             theme_changed: false,
             window_title: "Tabletist".into(),
             closed_editors: Vec::new(),
+            lookup_delay: crate::key_picker::DELAY,
+            lookups: Vec::new(),
             closing: false,
             next_id: 1,
         };
@@ -575,17 +585,36 @@ impl App {
                         let foreign = object.structure.value.as_ref()?.foreign_keys.iter().find(
                             |foreign| foreign.columns.len() == 1 && &foreign.columns[0] == column,
                         )?;
-                        let value = page.rows.get(cell.row)?.get(cell.col)?;
-                        (!value.is_null()).then(|| {
-                            (
-                                ObjectRef::new(
-                                    foreign.ref_schema.clone(),
-                                    foreign.ref_table.clone(),
-                                ),
-                                foreign.ref_columns.first().cloned().unwrap_or_default(),
-                                crate::ui::format::plain_text(value),
-                            )
-                        })
+                        // What the cell shows: its pending value, where it
+                        // has one, sent already or not. A cell to fix, a
+                        // pending NULL and what the database will make
+                        // have nothing to follow.
+                        let value = match object.edits.cells.get(&(cell.row, cell.col)) {
+                            Some(pending) => match (&pending.new, &pending.state) {
+                                (
+                                    tabletist_db::NewValue::Text(text),
+                                    crate::edit::State::Ready | crate::edit::State::Failed(_),
+                                ) => Some(text.clone()),
+                                (tabletist_db::NewValue::Text(_), crate::edit::State::ToFix(_))
+                                | (
+                                    tabletist_db::NewValue::Null
+                                    | tabletist_db::NewValue::Default { .. }
+                                    | tabletist_db::NewValue::Now,
+                                    _,
+                                ) => None,
+                            },
+                            None => page
+                                .rows
+                                .get(cell.row)
+                                .and_then(|row| row.get(cell.col))
+                                .filter(|value| !value.is_null())
+                                .map(crate::ui::format::plain_text),
+                        }?;
+                        Some((
+                            ObjectRef::new(foreign.ref_schema.clone(), foreign.ref_table.clone()),
+                            foreign.ref_columns.first().cloned().unwrap_or_default(),
+                            value,
+                        ))
                     });
                 if let Some((object, column, value)) = target {
                     self.follow_foreign_key(tab, object, column, value);
@@ -887,6 +916,7 @@ impl App {
             }
             Action::EditorTyped { tab, id } => {
                 let problem = self.editor_problem(tab, id);
+                let delay = self.lookup_delay;
                 if let Some(editor) = self.editor_mut(tab, id) {
                     editor.problem = problem;
                     editor.touched = true;
@@ -896,15 +926,36 @@ impl App {
                     if editor.place == EditorPlace::Panel && editor.text.contains('\n') {
                         editor.large = true;
                     }
+                    if editor.large {
+                        // The large editor has no list.
+                        editor.picker = None;
+                    } else if let Some(picker) = editor.picker.as_mut() {
+                        picker.typed(&editor.text, std::time::Instant::now(), delay);
+                    }
                 }
             }
             Action::CommitEdit { tab, id, then } => {
+                // A foreign key picker says what is taken: its highlighted
+                // option, the text, or nothing until its list answers.
+                let taken = self.picker_takes(tab, id, then);
+                if matches!(taken, key_picker::Taken::Wait) {
+                    return;
+                }
                 let field = self.panel_field(tab, id);
                 // Found before the text is taken: a value set in a new
                 // row moves its field up the form, and the commit walks
                 // on from where the field stood when it was edited.
                 let after = field.and_then(|col| self.field_after(tab, id, col, then));
                 if self.close_editor(tab, id, false) {
+                    // What a screen reader is told of the pick: only while
+                    // the pick left a pending cell. One equal to the value
+                    // the cell loaded is no change, and says nothing.
+                    if let (key_picker::Taken::Option(picked), Some(object)) =
+                        (taken, self.object_tab_mut(tab, id))
+                    {
+                        let pending = object.edits.cells.contains_key(&picked.at);
+                        object.edits.picked = pending.then_some(picked);
+                    }
                     // In the panel the keyboard goes to the field the
                     // commit walks to, or back to the one that was edited.
                     if let Some(col) = field {
@@ -925,6 +976,13 @@ impl App {
                             cols,
                         });
                     }
+                } else if let Some(picker) = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                {
+                    // The text was taken as a value and refused: what the
+                    // column says of it shows, until the text changes.
+                    picker.refused = true;
                 }
             }
             Action::LeaveEdit {
@@ -951,6 +1009,25 @@ impl App {
                     self.back_to_field(tab, id, col);
                 }
             }
+            Action::PickerMove { tab, id, by } => {
+                if let Some(picker) = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                {
+                    picker.step(by);
+                }
+            }
+            Action::PickOption { tab, id, index } => {
+                let chosen = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                    .is_some_and(|picker| picker.choose(index));
+                if chosen {
+                    let then = Advance::Stay;
+                    self.apply(Action::CommitEdit { tab, id, then });
+                }
+            }
+            Action::PickerNull { tab, id } => self.picker_null(tab, id),
             Action::EditorBreak { tab, id } => {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     // At the end of the text, where the cursor of a field
@@ -963,6 +1040,8 @@ impl App {
                     // After the break that was typed.
                     editor.top = false;
                     editor.touched = true;
+                    // The large editor has no list.
+                    editor.picker = None;
                 }
             }
             Action::FormatEditor { tab, id } => self.format_editor(tab, id),
@@ -2455,6 +2534,8 @@ impl App {
                     kept.finish(request, result.map(|structure| structure.columns));
                     workspace.catalog_changed();
                 }
+                // A picker that waited for these columns learns them.
+                self.picker_columns(tab);
             }
             Event::SecretLoaded { request, result } => {
                 match self.pending_secrets.remove(&request) {
@@ -2617,6 +2698,11 @@ impl App {
                     }
                 }
             }
+            Event::Lookup {
+                session,
+                request,
+                result,
+            } => self.lookup_answered(session, request, result),
             Event::ServerVersion {
                 session,
                 request,
@@ -3886,10 +3972,20 @@ impl App {
         self.hold_close(ctx);
     }
 
+    /// The foreign key picker's searches wait for a pause in the typing:
+    /// the ones that are due are sent, and the frame comes back when the
+    /// next one is.
+    fn tick_lookups(&mut self, ctx: &egui::Context) {
+        if let Some(wait) = self.send_due_lookups(std::time::Instant::now()) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
     /// Draws one frame, then applies what the frame asked for.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_backend();
         self.apply_actions();
+        self.tick_lookups(ui.ctx());
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());
@@ -3913,6 +4009,7 @@ impl App {
         crate::ui::focus::paint(ui.ctx(), &self.look, &self.palette);
         crate::ui::keys::after_frame(ui.ctx());
         self.apply_actions();
+        self.tick_lookups(ui.ctx());
         // A list that opened or changed shows on the next frame.
         if self.refresh_completion(ui.ctx()) {
             ui.ctx().request_repaint();
@@ -13522,6 +13619,8 @@ mod tests {
                         top: false,
                         touched: true,
                         problem: None,
+                        picker: None,
+                        select: false,
                     });
                 }),
             ];

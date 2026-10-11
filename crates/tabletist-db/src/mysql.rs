@@ -23,9 +23,9 @@ use crate::adapter::Adapter;
 use crate::script::retry_cancelled;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
-    Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind,
-    ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure,
-    TlsMode, Value, ValueKind, WriteOutcome, column_class,
+    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag,
+    Structure, TlsMode, Value, ValueKind, WriteOutcome, column_class,
 };
 
 /// A column as `describe` reads it from `information_schema.columns`: its
@@ -448,6 +448,19 @@ impl Adapter for Conn {
         row.map(from_row::<u64>)
             .transpose()?
             .ok_or_else(|| Error::query("the count returned no number"))
+    }
+
+    async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
+        let sql = Dialect::MySql.lookup(lookup);
+        let mut conn = self.conn.lock().await;
+        let mut transaction = conn
+            .start_transaction(read_only())
+            .await
+            .map_err(query_error)?;
+        // `read_page` stops one row past the limit.
+        let outcome = read_page(&mut transaction, &sql, lookup.limit as usize).await;
+        let (_, rows) = finish(transaction, outcome).await?;
+        crate::lookup::page(rows, lookup)
     }
 
     async fn run_script(

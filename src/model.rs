@@ -302,6 +302,27 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Move the highlight of the open editor's foreign key picker `by`
+    /// options: the arrows, Page Up and Page Down, the terminal look's
+    /// Ctrl+N and Ctrl+P.
+    PickerMove {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Take the option at `index` of that picker's list as the cell's new
+    /// value: a click on it.
+    PickOption {
+        tab: ConnTabId,
+        id: TabId,
+        index: usize,
+    },
+    /// The picker's Set NULL: drop the editor's text and make the cell
+    /// NULL, where its column takes one.
+    PickerNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Add a line break and move the text into the large editor.
     EditorBreak {
         tab: ConnTabId,
@@ -3078,6 +3099,12 @@ impl Workspace {
             if object.edits.saving.take().is_some() {
                 object.edits.note = Some(crate::edit::Note::Lost);
             }
+            // A question about a kept key, asked on the old session, will
+            // not be answered either. An answered one stays.
+            object.edits.doubts.retain(|_, doubt| match doubt.state {
+                crate::edit::DoubtState::Asked(_) => false,
+                crate::edit::DoubtState::Missing => true,
+            });
         }
         self.server_version = Fetch::default();
         // Fetches the old session will never answer, and names that may

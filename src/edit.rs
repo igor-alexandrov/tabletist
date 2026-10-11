@@ -1303,6 +1303,37 @@ pub struct Editor {
     pub touched: bool,
     /// What the text fails, kept up to date by `Action::EditorTyped`.
     pub problem: Option<Problem>,
+    /// The search of the table a foreign key cell points at, while the
+    /// editor is the small field of such a cell.
+    pub picker: Option<crate::key_picker::Picker>,
+    /// Taken by the view with `focus`: the whole text is selected, not
+    /// the cursor put at its end. An editor opened on a foreign key's
+    /// value, where the first character typed starts a search.
+    pub select: bool,
+}
+
+/// What is known of whether a foreign key cell's pending value names a
+/// row of the table its key points at. No `Debug`: it holds what was
+/// typed, as `Pending` does.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Doubt {
+    /// The pending text that was asked about. A cell that holds another
+    /// text by now has no doubt: this one was of a value it no longer
+    /// has.
+    pub text: String,
+    pub state: DoubtState,
+    /// The question came back cancelled and was sent again once. The
+    /// session's next statement can take a cancel meant for the read
+    /// before it; a second cancel is a failure like any other.
+    pub again: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubtState {
+    /// The database was asked, and has not answered.
+    Asked(crate::backend::RequestId),
+    /// No row has that key.
+    Missing,
 }
 
 /// What a table's tab holds while its values are edited.
@@ -1311,6 +1342,13 @@ pub struct Edits {
     /// By row and column of the loaded page. A new row's are under a row
     /// of its own (`new_row`).
     pub cells: BTreeMap<(usize, usize), Pending>,
+    /// The foreign key cells whose typed value was asked about, by row
+    /// and column as `cells`. A warning, and it holds nothing: see
+    /// `key_picker::unmatched`, which says which of them stand. A doubt
+    /// goes with its cell's text: `put`, `revert`, `drop_row` and
+    /// `discard` keep the two in step, so none outlives the value it was
+    /// of and is read as known of a later one.
+    pub doubts: BTreeMap<(usize, usize), Doubt>,
     /// The rows to add, in the order they stand in the grid among
     /// themselves: `before` never decreases along them.
     pub added: Vec<NewRow>,
@@ -1338,6 +1376,21 @@ pub struct Edits {
     /// What a save would run, as lines to read: made by the reducer while
     /// `reviewing`. `None` once the set changed, until it is made again.
     pub review: Option<crate::review::Review>,
+    /// The last option a foreign key picker took, for a screen reader to
+    /// be told while its cell still holds the key.
+    pub picked: Option<Picked>,
+}
+
+/// The last option a foreign key picker took, for a screen reader to be
+/// told. No `Debug`: it holds a key and a label of a table.
+#[derive(Clone, PartialEq)]
+pub struct Picked {
+    /// The cell, by row and column of the page.
+    pub at: (usize, usize),
+    /// The key that was set, as text.
+    pub key: String,
+    /// The row's label, where its table has one and it is not NULL.
+    pub label: Option<String>,
 }
 
 /// How much is pending.
@@ -1495,6 +1548,7 @@ impl Edits {
         self.added.remove(at);
         let row = new_row(id);
         self.cells.retain(|&(of, _), _| of != row);
+        self.doubts.retain(|&(of, _), _| of != row);
         let edited = self.editor.as_ref().map(|editor| editor.cell.row);
         if edited == Some(row) {
             self.editor = None;
@@ -1558,6 +1612,13 @@ impl Edits {
     /// Makes `pending` the new value of the cell at `at` (row, column).
     /// What was made of the set, its review, is stale.
     pub fn put(&mut self, at: (usize, usize), pending: Pending) {
+        // A doubt was of the text the cell held: another value ends it.
+        let same = self.doubts.get(&at).is_some_and(
+            |doubt| matches!(&pending.new, NewValue::Text(text) if *text == doubt.text),
+        );
+        if !same {
+            self.doubts.remove(&at);
+        }
         self.cells.insert(at, pending);
         self.mended(at.0);
         self.review = None;
@@ -1566,6 +1627,7 @@ impl Edits {
     /// Takes the cell at `at` out of the set: it is as it loaded again.
     pub fn revert(&mut self, at: (usize, usize)) {
         self.cells.remove(&at);
+        self.doubts.remove(&at);
         self.mended(at.0);
         self.review = None;
     }
@@ -2684,6 +2746,8 @@ mod tests {
             top: false,
             touched: false,
             problem: None,
+            picker: None,
+            select: false,
         });
         assert!(edits.drop_row(dropped));
         assert_eq!(ids(&edits), [kept]);
@@ -4069,6 +4133,8 @@ mod tests {
             top: false,
             touched: true,
             problem: None,
+            picker: None,
+            select: false,
         });
         let printed = format!("{edits:?}");
         assert!(!printed.contains("secret"), "{printed}");
@@ -4189,6 +4255,58 @@ mod tests {
         assert_eq!(edits.gone, gone);
         assert!(!edits.holds());
         assert!(format!("{edits:?}").contains("gone: {1}"));
+    }
+
+    /// A doubt is of one text in one cell. It goes when the cell gets
+    /// another value, is reverted, or its new row is dropped, and with
+    /// everything that is discarded: none is left to stand on a value it
+    /// was not asked about.
+    #[test]
+    fn a_doubt_goes_with_the_text_it_was_of() {
+        let text = |text: &str| Pending {
+            new: NewValue::Text(text.into()),
+            state: State::Ready,
+        };
+        let missing = |text: &str| Doubt {
+            text: text.into(),
+            state: DoubtState::Missing,
+            again: false,
+        };
+        let mut edits = Edits::default();
+        edits.put((1, 1), text("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        // The same text put again: what is known of it stays.
+        edits.put((1, 1), text("99"));
+        assert!(edits.doubts.contains_key(&(1, 1)));
+        // Another text, and another kind of value.
+        edits.put((1, 1), text("98"));
+        assert!(edits.doubts.is_empty());
+        edits.put((1, 1), text("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        edits.put(
+            (1, 1),
+            Pending {
+                new: NewValue::Null,
+                state: State::Ready,
+            },
+        );
+        assert!(edits.doubts.is_empty());
+        // Reverted.
+        edits.put((1, 1), text("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        edits.revert((1, 1));
+        assert!(edits.doubts.is_empty());
+        // A new row dropped takes its own, and no other row's.
+        let id = edits.add_row(Place::Top, 2);
+        let row = new_row(id);
+        edits.put((row, 1), text("99"));
+        edits.doubts.insert((row, 1), missing("99"));
+        edits.put((0, 1), text("77"));
+        edits.doubts.insert((0, 1), missing("77"));
+        assert!(edits.drop_row(id));
+        assert_eq!(edits.doubts.keys().copied().collect::<Vec<_>>(), [(0, 1)]);
+        edits.discard();
+        assert!(edits.doubts.is_empty());
     }
 
     fn pending(new: NewValue) -> Pending {

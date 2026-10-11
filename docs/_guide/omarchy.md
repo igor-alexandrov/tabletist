@@ -110,6 +110,8 @@ copying a whole row.
 | Enter, `i` | Edit the field |
 | `[` `]` | Previous and next row, while the panel shows |
 | `za` | Fold the documents in it |
+| `cc`, `x`, `D`, `u` | Work on the field as they do on its cell |
+| Ctrl+H | Back to the grid, on that field's cell |
 | Esc | From its fields, back to the rows. From the rows, close it |
 
 ### Editing
@@ -125,6 +127,9 @@ copying a whole row.
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
+| Ctrl+N, Ctrl+P, Down, Up, Page Down, Page Up | Move in a foreign key cell's list |
+| Enter, Tab | In that list: set the cell to the highlighted row |
+| Esc | In that list: close it and leave the cell as it was |
 | Alt+Enter | Open the large editor. In it, Ctrl+Enter applies, Esc keeps the text, Ctrl+C drops it and Ctrl+Shift+F formats JSON |
 | `x` | Set NULL. On a column that cannot be NULL, the status line says so |
 | `D` | Set DEFAULT, where the column has a default |
