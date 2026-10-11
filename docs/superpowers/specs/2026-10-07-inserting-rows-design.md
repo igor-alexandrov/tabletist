@@ -5,7 +5,8 @@ Date: 2026-10-07. Amended 2026-10-08. Status: built in runs. Run 1
 save carries new rows and the three drivers write them. Run 2
 (`docs/superpowers/plans/2026-10-07-inserting-rows-2-add-row.md`) is
 built: a row is added from the grid, filled, reviewed and saved. The row
-panel is the new row's form (section 7). What is left is listed under
+panel is the new row's form (section 7). A row is duplicated (section 4,
+as `2026-10-10-row-duplication-design.md` builds it). What is left is listed under
 "Delivery". Each plan's "What the design asks, and
 what gets built" says what of the text below the app can do, and in which
 run.
@@ -91,11 +92,13 @@ Omarchy writes `NULL` as every row of its grid does: the inserting board's lower
 - Copies every column of the selected row except:
   - primary key columns;
   - identity, serial and generated columns;
-  - columns with a UNIQUE constraint or unique index (single-column only; multi-column unique indexes are copied and left to the database).
+  - columns with a UNIQUE constraint or unique index (single-column only; multi-column unique indexes are copied and left to the database). An index that is not over one whole column (an expression, MySQL's prefix) clears none and is left to the database too.
+- A binary value and text over 256 KiB are not copied: a pending value has no form for them. The inspector says which columns they were.
+- A NULL is set in the copy only where the column has a default. Elsewhere the column is left unset, which is NULL.
 - Cleared columns that are required are marked `required · unique` (or `required`), and focus goes to the first of them.
-- The inspector shows "Copied: format, title and 31 more. Cleared: id (identity), isbn (unique)."
+- The inspector shows "Copied: format, title and 31 more. Cleared: id (identity), isbn (unique)." Where a value was not copied it says that too, and why.
 - Duplicating a pending new row copies its pending values. Duplicating an existing row that has pending edits copies the pending values, not the loaded ones.
-- With several rows selected, ⌘D duplicates each of them (at most 500). Omarchy uses `yy` with a count or a visual selection, then `p`.
+- With several rows selected, ⌘D duplicates each of them (at most 500). Omarchy uses `yy` with a count or a visual selection, then `p`. This waits for a selection of several rows, which is slice 4 of the value editing spec: until then one row is copied at a time.
 
 ### 5. Paste rows
 
@@ -221,7 +224,8 @@ In runs, each its own pull request. Each commit passes `cargo fmt --check`, `car
 | Groundwork | In the drivers, for runs 4 and 5: an error carries the constraint, the columns and MySQL's number, and a CHECK's list is read on MySQL and SQLite (`docs/superpowers/plans/2026-10-08-inserting-rows-driver-groundwork.md`) | built |
 | 2b, the form | The inspector as the "New row" form (section 7): its green header, the fields in the form's order with what the database will do with each, every field edited in place, "Discard new row" and "Add another", and the note for a table without a primary key. Built without a plan of its own. Where it departs: the header keeps the app's Previous and Next row beside Close, since a new row stands among the grid's rows until it is pinned; a field's label lists its column's values without the word CHECK, which a PostgreSQL enum's are not; and the footer's line is "↩ next field · esc leaves the row pending", since Tab in the panel goes to the next field as Enter does | built |
 | 2b, the rest | The row pinned under the header on macOS, and a name for each cell of the grid to a screen reader | |
-| 3 | Duplicate, and Down on the last row | |
+| 3, Duplicate | A copy of the selected row as a new row: ⌘D and the inspector's Duplicate, `yy` then `p` or `P` on Omarchy, the inspector's line of what was copied and cleared, and `required · unique` (`2026-10-10-row-duplication-design.md`, `docs/superpowers/plans/2026-10-10-row-duplication.md`). One row at a time. With it, a first key's wait on Omarchy (`d` of `dd`, `y` of `yy`) ends at any key press, the arrows among them | built |
+| 3, the rest | Down on the last row | |
 | 4 | Paste rows with its preview, and rows sent together up to 100 | |
 | 5 | Errors and after the save: the message on the failing cell by error code, "Open row", "row 2 of 5", `]e` / `[e` and ⌥⌘↓ / ⌥⌘↑, "Show in sorted position" and `gs`, the filter note, and the line that says a page was reloaded | |
 
@@ -231,6 +235,7 @@ Not runs of this spec, and asked of it above:
 - The paste over cells (⌘V, `v` … `y` / `p`) and undo and redo, of adding and dropping a row too: slice 4 of the value editing spec.
 - Reading a role's INSERT privilege: later, with UPDATE's, for the three engines at once.
 - Typing the database's name to confirm a production save on Omarchy: a change to the value editing spec's save, for every save.
+- Several rows duplicated at once: with the selection of several rows, slice 4 of the value editing spec.
 
 ## Decisions of 2026-10-08
 
@@ -267,3 +272,16 @@ Made after the audit of pull request 108, whose findings are named (INS, DG). "A
 | D2 | The order of the runs | As the table under "Delivery" | |
 | D3 | The small fixes to what is built | One pull request before run 2b | |
 | D4 | Names for a new row's cells to a screen reader (INS-35b) | With run 2b, for every cell of the grid | The grid's cells have no names today |
+
+## Decisions of 2026-10-10
+
+Made with the user while Duplicate was designed. They are the decisions of `2026-10-10-row-duplication-design.md`, which gives each its reason: its table D1 to D6, and for E4 row 5 of its section 4.
+
+| | What was open | Decided |
+|---|---|---|
+| E1 | A binary value and a text over 256 KiB in a copy | Not copied, and said |
+| E2 | A NULL in the source | Set only where the column has a default |
+| E3 | Several rows at once | Waits for a selection of several rows |
+| E4 | A unique index not over one whole column | Clears none: the database judges the save |
+| E5 | How Omarchy's `yy` reaches `p` | The row's values are kept on the tab. `yy` also puts the row on the clipboard as TSV |
+| E6 | Down on the last row | A later run, apart from Duplicate |

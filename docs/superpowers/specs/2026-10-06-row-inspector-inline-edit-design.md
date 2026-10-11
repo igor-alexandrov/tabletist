@@ -6,6 +6,9 @@ Date: 2026-10-06. Status: step 1 is built, see
 it (editors by type, the undo stack, rows). Step 2, a long value and a
 document edited in the panel, is built too:
 `docs/superpowers/plans/2026-10-06-row-inspector-tall-values.md`.
+Duplicate is built since 2026-10-10
+(`2026-10-10-row-duplication-design.md`): of the row actions below only
+Delete still waits.
 
 This replaces `2026-10-06-row-form-design.md` (pull request #89), which kept
 the row panel's fields as text to read and added a pencil, a double-click

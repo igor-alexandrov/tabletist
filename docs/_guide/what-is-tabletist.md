@@ -45,8 +45,8 @@ Windows.
 
 Tabletist is young. These are the limits you are most likely to meet:
 
-- You can change values in existing rows. Adding, duplicating and deleting
-  rows are not built yet.
+- You can change values in existing rows, add rows and duplicate a row.
+  Deleting rows is not built yet.
 - Binary values, values over 256 KiB, views, and tables without a primary
   key or unique index cannot be edited.
 - The SQL editor does not run read-write on a production connection.

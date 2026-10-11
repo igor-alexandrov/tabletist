@@ -124,6 +124,8 @@ back.
 | `i`, Enter | Edit the cell |
 | `cc` | Edit the cell from nothing |
 | `o`, `O` | Add a row below the cursor's row, or above it |
+| `yy` | Yank the cursor's row, and put it on the clipboard. The first `y` copies the cell, as `y` alone does |
+| `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
 | `dd` | Drop a new row that is not saved yet |
 | `e`, Ctrl+I | Edit the row in the row panel |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |

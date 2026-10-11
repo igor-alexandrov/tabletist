@@ -350,6 +350,166 @@ impl Table<'_> {
         fields
     }
 
+    /// What the row `row` shows in each of the page's columns, by the
+    /// column's name: what is pending in `cells` where anything is, else
+    /// what the page loaded. A new row gives what is set in it and nothing
+    /// for the rest. `None` for a row that is neither the page's nor a new
+    /// row the tab holds.
+    pub fn yank(&self, row: usize, cells: &BTreeMap<(usize, usize), Pending>) -> Option<Yank> {
+        let loaded = match new_id(row) {
+            Some(id) => {
+                if !self.added.iter().any(|new| new.id == id) {
+                    return None;
+                }
+                None
+            }
+            None => Some(self.page.rows.get(row)?),
+        };
+        let columns = self.page.columns.iter().enumerate();
+        let kept = columns
+            .filter_map(|(col, column)| {
+                let held = match cells.get(&(row, col)) {
+                    Some(pending) => Kept::Pending(pending.new.clone()),
+                    None => Kept::Loaded(loaded?.get(col)?.clone()),
+                };
+                Some((column.name.clone(), held))
+            })
+            .collect();
+        Some(Yank { cells: kept })
+    }
+
+    /// Whether the column `name` is alone in a unique index over the whole
+    /// of it, compared as the column compares. `IndexInfo::columns` is not
+    /// asked: it is text to show, which PostgreSQL quotes. An index whose
+    /// columns are not known by name (an expression, a prefix, another
+    /// collation) says nothing here, and the database judges the save. On
+    /// SQLite another collation goes unseen (see `IndexInfo::key_columns`),
+    /// so such an index counts there.
+    fn unique_alone(&self, name: &str) -> bool {
+        let Some(structure) = self.structure else {
+            return false;
+        };
+        let mut unique = structure.indexes.iter().filter(|index| index.unique);
+        unique.any(|index| {
+            let key = index.key_columns.as_deref();
+            key.is_some_and(|key| matches!(key, [only] if only == name))
+        })
+    }
+
+    /// Why a copy of a row clears `column`, or `None` where it does not:
+    /// the first reason that holds. The counter comes before the computed
+    /// column, as `new_lock` has them, then the primary key, then a unique
+    /// index the column is alone in.
+    fn cleared(&self, column: &ColumnInfo) -> Option<Cleared> {
+        if column.identity {
+            return Some(Cleared::Identity);
+        }
+        if column.generated {
+            return Some(Cleared::Generated);
+        }
+        let key = self.structure.map(|structure| &structure.primary_key);
+        if key.is_some_and(|key| key.contains(&column.name)) {
+            return Some(Cleared::PrimaryKey);
+        }
+        self.unique_alone(&column.name).then_some(Cleared::Unique)
+    }
+
+    /// A copy of the row `yank` was taken from, for the page as it is now:
+    /// what each of its columns is set to, and what the copy was made as.
+    /// For each column the first of these that holds decides: the structure
+    /// does not know it; the database numbers it, or computes it; it is of
+    /// the primary key, or alone in a unique index; it is bytes, or text no
+    /// editor opens. Every other column takes what the yank holds for it.
+    pub fn duplicate(&self, yank: &Yank) -> Duplicate {
+        let mut cells = Vec::new();
+        let mut made = Copied::default();
+        for (col, meta) in self.page.columns.iter().enumerate() {
+            let name = &meta.name;
+            let Some(column) = self.column(col) else {
+                made.not_copied.push((name.clone(), NotCopied::Unknown));
+                continue;
+            };
+            if let Some(why) = self.cleared(column) {
+                made.cleared.push((name.clone(), why));
+                continue;
+            }
+            let mut kept = yank.cells.iter();
+            let kept = kept.find(|(of, _)| of == name).map(|(_, kept)| kept);
+            let class = column_class(self.dialect, &column.type_name);
+            let not_copied = if class == ColumnClass::Binary {
+                Some(NotCopied::Binary)
+            } else {
+                match kept {
+                    Some(Kept::Loaded(Value::Bytes(_))) => Some(NotCopied::Binary),
+                    Some(Kept::Loaded(Value::Text(text))) if text.len() > MAX_EDIT_BYTES => {
+                        Some(NotCopied::TooLarge)
+                    }
+                    Some(Kept::Pending(NewValue::Text(text))) if text.len() > MAX_EDIT_BYTES => {
+                        Some(NotCopied::TooLarge)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(why) = not_copied {
+                made.not_copied.push((name.clone(), why));
+                continue;
+            }
+            made.copied.push(name.clone());
+            let new = match kept {
+                // Nothing was set there: nothing is.
+                None => None,
+                Some(Kept::Loaded(Value::Null) | Kept::Pending(NewValue::Null)) => {
+                    // Whether the column, left alone, would be something
+                    // else than NULL: only there is a NULL set. Whether it
+                    // takes a NULL at all is not asked: a column that
+                    // stopped taking one since the yank is the database's
+                    // to refuse.
+                    let defaults = match unset(self.dialect, column) {
+                        Unset::Default(_) | Unset::Expression(_) => true,
+                        Unset::Assigned | Unset::Null | Unset::Required => false,
+                    };
+                    defaults.then_some(NewValue::Null)
+                }
+                // A new row's unset cell is its default already.
+                Some(Kept::Pending(NewValue::Default { .. })) => None,
+                Some(Kept::Pending(new)) => Some(new.clone()),
+                // The whole value as an editor starts with it. A document
+                // is the text it loaded as: an editor lays it out, and what
+                // is written here is the document as it was.
+                Some(Kept::Loaded(value)) => Some(NewValue::Text(match class {
+                    ColumnClass::Json => crate::ui::format::plain_text(value),
+                    _ => start_text(value, class),
+                })),
+            };
+            let Some(new) = new else {
+                continue;
+            };
+            // Checked as a typed value is. What the source's cell failed
+            // with in a save is not carried: the copy has not been sent.
+            let state = match &new {
+                NewValue::Text(text) => {
+                    check(self.dialect, column, text).map_or(State::Ready, State::ToFix)
+                }
+                NewValue::Null | NewValue::Default { .. } | NewValue::Now => State::Ready,
+            };
+            cells.push((col, Pending { new, state }));
+        }
+        Duplicate { cells, made }
+    }
+
+    /// The first column, in the page's order, that the new row `id` still
+    /// needs a value in and that takes one: where the editor opens on a
+    /// copy. A column a save needs and no cell takes (bytes) is passed
+    /// over: nothing can be typed there.
+    pub fn first_to_fill(
+        &self,
+        id: usize,
+        cells: &BTreeMap<(usize, usize), Pending>,
+    ) -> Option<usize> {
+        let mut missing = self.missing(id, cells).into_iter();
+        missing.find(|&col| self.new_lock(col).is_none())
+    }
+
     /// Whether a save could not match a key column of this type exactly.
     /// MySQL shows a TIMESTAMP in the session's zone without it, reads a BIT
     /// bound as bytes as a number, and misses a FLOAT bound as a double; the
@@ -814,6 +974,99 @@ pub struct NewRow {
     /// What its `INSERT` failed with in the last save. It is sent again by
     /// the next.
     pub failed: Option<Error>,
+    /// What it was made as, where it is a copy of another row. It says
+    /// what the copy was, and does not change as the row is filled in.
+    pub made: Option<Copied>,
+}
+
+impl NewRow {
+    /// Whether the row is a copy that cleared `column` for holding what no
+    /// other row may: the column is alone in a unique index, or of the
+    /// primary key. Where a save needs a value there, its cell and its
+    /// field say why.
+    pub fn cleared_unique(&self, column: &str) -> bool {
+        self.made.as_ref().is_some_and(|made| {
+            let mut cleared = made.cleared.iter();
+            cleared.any(|(name, why)| {
+                name == column
+                    && match why {
+                        Cleared::Unique | Cleared::PrimaryKey => true,
+                        // The database's own to fill: nothing is asked
+                        // of the user there.
+                        Cleared::Identity | Cleared::Generated => false,
+                    }
+            })
+        })
+    }
+}
+
+/// What a row shows in one column, as a copy of the row takes it.
+#[derive(Clone, PartialEq)]
+pub enum Kept {
+    /// What the page loaded there.
+    Loaded(Value),
+    /// What is pending there.
+    Pending(NewValue),
+}
+
+/// A row's values by its columns' names: what `yy` keeps on its tab, and
+/// what a copy of the row is made from. By name, since the page it was
+/// taken from can be another by the time it is put: loaded again, sorted,
+/// or with a column more.
+#[derive(Clone, PartialEq, Default)]
+pub struct Yank {
+    pub cells: Vec<(String, Kept)>,
+}
+
+/// Without the values: a loaded one can be megabytes, and a pending one is
+/// what the user typed, which stays out of logs and panics.
+impl std::fmt::Debug for Yank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Yank {{ cells: {} }}", self.cells.len())
+    }
+}
+
+/// Why a copy of a row leaves a column for the database or the user: its
+/// value is the source row's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleared {
+    /// The database numbers it.
+    Identity,
+    /// The database computes it.
+    Generated,
+    /// Of the primary key.
+    PrimaryKey,
+    /// Alone in a unique index.
+    Unique,
+}
+
+/// Why a copy of a row could not take a column's value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotCopied {
+    /// The structure does not list the column, or the page names it twice.
+    Unknown,
+    /// Bytes: a pending value has no form for them.
+    Binary,
+    /// Text over `MAX_EDIT_BYTES`, which no editor opens.
+    TooLarge,
+}
+
+/// What a copy of a row was made as: the page's columns by name, in the
+/// page's order, each in one of the three.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Copied {
+    /// The copy has there what the source has: its value, or nothing set
+    /// where the source had nothing set.
+    pub copied: Vec<String>,
+    pub cleared: Vec<(String, Cleared)>,
+    pub not_copied: Vec<(String, NotCopied)>,
+}
+
+/// A copy of a row, before it is a new row of the set.
+pub struct Duplicate {
+    /// What it sets, by the page's column.
+    pub cells: Vec<(usize, Pending)>,
+    pub made: Copied,
 }
 
 /// Where a new row is put.
@@ -1233,9 +1486,25 @@ impl Edits {
                 id,
                 before,
                 failed: None,
+                made: None,
             },
         );
         self.review = None;
+        id
+    }
+
+    /// Adds `copy` as a new row at `place` of a page `height` rows long,
+    /// and says its id: the row, what the copy sets in it, and what it was
+    /// made as.
+    pub fn add_copy(&mut self, place: Place, height: usize, copy: Duplicate) -> usize {
+        let id = self.add_row(place, height);
+        let row = new_row(id);
+        for (col, pending) in copy.cells {
+            self.cells.insert((row, col), pending);
+        }
+        if let Some(new) = self.added.iter_mut().find(|new| new.id == id) {
+            new.made = Some(copy.made);
+        }
         id
     }
 
@@ -2510,6 +2779,394 @@ mod tests {
         edits.added[0].failed = Some(Error::query("violates check"));
         edits.revert((new_row(id), 1));
         assert_eq!(edits.added[0].failed, None);
+    }
+
+    /// A unique index over `columns`, each a whole column.
+    fn unique_index(name: &str, columns: &[&str]) -> IndexInfo {
+        let columns: Vec<String> = columns.iter().map(|column| (*column).to_owned()).collect();
+        IndexInfo {
+            name: name.into(),
+            columns: columns.clone(),
+            key_columns: Some(columns),
+            unique: true,
+            ..IndexInfo::default()
+        }
+    }
+
+    /// The Bookshop's covers: `id` (the database's counter, the key),
+    /// `publisher_id` (required), `kind` (a default, a list of values),
+    /// `image_data` (a document, NULL in every row) and `created_at` (a
+    /// default the database works out).
+    fn covers() -> (Structure, RowPage) {
+        (
+            crate::testing::book_covers_structure(),
+            crate::testing::book_covers_page(3),
+        )
+    }
+
+    /// A copy of the covers' second row, with nothing pending.
+    fn copy_of(structure: &Structure, page: &RowPage) -> Duplicate {
+        let table = table(Some(structure), page);
+        let yank = table.yank(1, &BTreeMap::new()).expect("the second row");
+        table.duplicate(&yank)
+    }
+
+    /// What `copy` sets in the column `col`.
+    fn set_in(copy: &Duplicate, col: usize) -> Option<&NewValue> {
+        let mut cells = copy.cells.iter();
+        cells.find(|(at, _)| *at == col).map(|(_, cell)| &cell.new)
+    }
+
+    /// A text as a cell's new value.
+    fn text_of(value: &str) -> NewValue {
+        NewValue::Text(value.into())
+    }
+
+    #[test]
+    fn a_yank_holds_what_the_row_shows() {
+        let (structure, page) = covers();
+        let table = table(Some(&structure), &page);
+        let mut cells = BTreeMap::new();
+        cells.insert((1, 2), pending(text_of("audio")));
+        let yank = table.yank(1, &cells).expect("the page's row");
+        let names: Vec<&str> = yank.cells.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["id", "publisher_id", "kind", "image_data", "created_at"]
+        );
+        assert!(
+            yank.cells[0].1 == Kept::Loaded(Value::Int(2)),
+            "id, as loaded"
+        );
+        assert!(
+            yank.cells[1].1 == Kept::Loaded(Value::Int(9_100_000_000_000_000_002)),
+            "publisher_id, as loaded"
+        );
+        // What is pending, over what was loaded.
+        assert!(
+            yank.cells[2].1 == Kept::Pending(text_of("audio")),
+            "kind, pending"
+        );
+        // No such row.
+        assert!(table.yank(7, &cells).is_none());
+        // A new row gives what is set in it, and nothing for the rest.
+        let added = [NewRow {
+            id: 0,
+            before: 0,
+            failed: None,
+            made: None,
+        }];
+        let table = Table {
+            added: &added,
+            ..table
+        };
+        cells.insert((new_row(0), 2), pending(text_of("ebook")));
+        let yank = table.yank(new_row(0), &cells).expect("the new row");
+        assert_eq!(yank.cells.len(), 1);
+        assert!(
+            yank.cells[0] == ("kind".to_owned(), Kept::Pending(text_of("ebook"))),
+            "kind, set in the new row"
+        );
+        // A new row the tab does not hold is no row.
+        assert!(table.yank(new_row(5), &cells).is_none());
+    }
+
+    #[test]
+    fn a_copy_clears_what_the_database_gives_and_what_no_other_row_may_hold() {
+        let (plain, page) = covers();
+        let owned = |columns: &[(&str, Cleared)]| -> Vec<(String, Cleared)> {
+            let columns = columns.iter();
+            columns
+                .map(|(name, why)| ((*name).to_owned(), *why))
+                .collect()
+        };
+        let mut structure = plain.clone();
+        let index = unique_index("book_covers_publisher_id_key", &["publisher_id"]);
+        structure.indexes.push(index);
+        let copy = copy_of(&structure, &page);
+        assert_eq!(
+            copy.made.cleared,
+            owned(&[("id", Cleared::Identity), ("publisher_id", Cleared::Unique)])
+        );
+        assert_eq!(copy.made.copied, ["kind", "image_data", "created_at"]);
+        assert!(copy.made.not_copied.is_empty());
+        assert_eq!(set_in(&copy, 0), None);
+        assert_eq!(set_in(&copy, 1), None);
+        assert_eq!(set_in(&copy, 2), Some(&text_of("ebook")));
+        assert_eq!(set_in(&copy, 4), Some(&text_of("2026-01-12 09:14:03")));
+        // A key that is no counter is cleared as the key, and whole.
+        let mut keyed = plain.clone();
+        keyed.columns[0].identity = false;
+        keyed.primary_key = vec!["id".into(), "kind".into()];
+        assert_eq!(
+            copy_of(&keyed, &page).made.cleared,
+            owned(&[("id", Cleared::PrimaryKey), ("kind", Cleared::PrimaryKey)])
+        );
+        // A column the database computes.
+        let mut computed = plain.clone();
+        computed.columns[4].generated = true;
+        assert_eq!(
+            copy_of(&computed, &page).made.cleared,
+            owned(&[
+                ("id", Cleared::Identity),
+                ("created_at", Cleared::Generated)
+            ])
+        );
+        // A unique index of two columns clears neither: the database
+        // judges the pair.
+        let mut pair = plain.clone();
+        let index = unique_index("by_publisher_and_kind", &["publisher_id", "kind"]);
+        pair.indexes.push(index);
+        let only_id = owned(&[("id", Cleared::Identity)]);
+        assert_eq!(copy_of(&pair, &page).made.cleared, only_id);
+        // Nor does one that is not over the whole column, compared as the
+        // column compares: its names are not known.
+        let mut prefix = plain.clone();
+        prefix.indexes.push(IndexInfo {
+            key_columns: None,
+            ..unique_index("by_prefix", &["publisher_id"])
+        });
+        assert_eq!(copy_of(&prefix, &page).made.cleared, only_id);
+        // Nor an index that holds no row unique.
+        let mut loose = plain.clone();
+        loose.indexes.push(IndexInfo {
+            unique: false,
+            ..unique_index("by_publisher", &["publisher_id"])
+        });
+        assert_eq!(copy_of(&loose, &page).made.cleared, only_id);
+        // One over some of the rows counts: the copy might be one of them.
+        let mut partial = plain.clone();
+        partial.indexes.push(IndexInfo {
+            partial: true,
+            ..unique_index("live_publishers", &["publisher_id"])
+        });
+        assert_eq!(
+            copy_of(&partial, &page).made.cleared,
+            owned(&[("id", Cleared::Identity), ("publisher_id", Cleared::Unique)])
+        );
+    }
+
+    #[test]
+    fn a_copy_holds_each_value_as_its_editor_would_start_with_it() {
+        let (mut structure, mut page) = covers();
+        structure.columns.push(column("in_print", "BOOLEAN"));
+        page.columns.push(meta("in_print", "BOOLEAN"));
+        for row in &mut page.rows {
+            // SQLite and MySQL hold a boolean as 1 and 0.
+            row.push(Value::Int(1));
+        }
+        // A document as it loaded: on one line, with its own spaces.
+        let document = r#"{"w":600,  "h":900}"#;
+        page.rows[1][3] = text(document);
+        let copy = copy_of(&structure, &page);
+        assert_eq!(set_in(&copy, 1), Some(&text_of("9100000000000000002")));
+        // Not laid out a member to a line, as its editor would lay it.
+        assert_eq!(set_in(&copy, 3), Some(&text_of(document)));
+        assert_eq!(set_in(&copy, 5), Some(&text_of("true")));
+        let mut states = copy.cells.iter().map(|(_, cell)| &cell.state);
+        assert!(states.all(|state| *state == State::Ready));
+    }
+
+    #[test]
+    fn a_null_is_set_only_where_the_column_would_not_be_null_anyway() {
+        let (mut structure, mut page) = covers();
+        // `kind` takes a NULL, and has its default.
+        structure.columns[2].nullable = true;
+        page.rows[1][2] = Value::Null;
+        let copy = copy_of(&structure, &page);
+        // Left alone it would be `print`, not NULL.
+        assert_eq!(set_in(&copy, 2), Some(&NewValue::Null));
+        // `image_data` has no default: unset, it is NULL already.
+        assert_eq!(set_in(&copy, 3), None);
+        assert!(copy.made.copied.iter().any(|name| name == "image_data"));
+        // A NULL that is pending goes the same way.
+        let (_, page) = covers();
+        let table = table(Some(&structure), &page);
+        let mut cells = BTreeMap::new();
+        cells.insert((1, 2), pending(NewValue::Null));
+        let copy = table.duplicate(&table.yank(1, &cells).unwrap());
+        assert_eq!(set_in(&copy, 2), Some(&NewValue::Null));
+    }
+
+    #[test]
+    fn a_pending_default_is_left_unset_and_the_moment_of_the_save_is_carried() {
+        let (structure, page) = covers();
+        let table = table(Some(&structure), &page);
+        let mut cells = BTreeMap::new();
+        let default = NewValue::Default {
+            expression: Some("'print'".into()),
+        };
+        cells.insert((1, 2), pending(default));
+        cells.insert((1, 4), pending(NewValue::Now));
+        // What the last save refused of the source is the source's.
+        let failed = Pending {
+            new: text_of("9100000000000000007"),
+            state: State::Failed(Error::query("duplicate key")),
+        };
+        cells.insert((1, 1), failed);
+        let copy = table.duplicate(&table.yank(1, &cells).unwrap());
+        // A new row's unset cell is its default already.
+        assert_eq!(set_in(&copy, 2), None);
+        assert_eq!(set_in(&copy, 4), Some(&NewValue::Now));
+        assert_eq!(set_in(&copy, 1), Some(&text_of("9100000000000000007")));
+        let mut states = copy.cells.iter().map(|(_, cell)| &cell.state);
+        assert!(states.all(|state| *state == State::Ready));
+    }
+
+    #[test]
+    fn bytes_and_a_text_no_editor_opens_are_not_copied() {
+        let (mut structure, mut page) = covers();
+        structure.columns.push(column("thumbnail", "BLOB"));
+        page.columns.push(meta("thumbnail", "BLOB"));
+        for row in &mut page.rows {
+            row.push(Value::Bytes(vec![1, 2, 3].into()));
+        }
+        // Bytes in a column of another type: SQLite keeps what it is given.
+        page.rows[1][2] = Value::Bytes(vec![4].into());
+        // Longer than any editor opens.
+        let long = "x".repeat(MAX_EDIT_BYTES + 1);
+        page.rows[1][4] = text(&long);
+        // Pending, such a text is no more a value to copy than loaded.
+        let table = table(Some(&structure), &page);
+        let mut cells = BTreeMap::new();
+        cells.insert((1, 1), pending(NewValue::Text(long.clone())));
+        let over = table.duplicate(&table.yank(1, &cells).unwrap());
+        assert!(
+            over.made
+                .not_copied
+                .contains(&("publisher_id".to_owned(), NotCopied::TooLarge))
+        );
+        let copy = copy_of(&structure, &page);
+        assert_eq!(
+            copy.made.not_copied,
+            [
+                ("kind".to_owned(), NotCopied::Binary),
+                ("created_at".to_owned(), NotCopied::TooLarge),
+                ("thumbnail".to_owned(), NotCopied::Binary),
+            ]
+        );
+        assert_eq!(copy.made.copied, ["publisher_id", "image_data"]);
+        for col in [2, 4, 5] {
+            assert_eq!(set_in(&copy, col), None, "column {col}");
+        }
+        // A column the structure does not list is the database's to fill.
+        let (structure, mut page) = covers();
+        page.columns.push(meta("added_since", "TEXT"));
+        for row in &mut page.rows {
+            row.push(text("x"));
+        }
+        let copy = copy_of(&structure, &page);
+        assert_eq!(
+            copy.made.not_copied,
+            [("added_since".to_owned(), NotCopied::Unknown)]
+        );
+        assert_eq!(set_in(&copy, 5), None);
+    }
+
+    #[test]
+    fn a_copied_value_its_column_does_not_take_is_to_fix() {
+        let (structure, mut page) = covers();
+        // Not one of the values `kind` lists.
+        page.rows[1][2] = text("vinyl");
+        let copy = copy_of(&structure, &page);
+        let mut cells = copy.cells.iter();
+        let (_, cell) = cells.find(|(col, _)| *col == 2).expect("kind is copied");
+        assert!(matches!(cell.state, State::ToFix(_)));
+    }
+
+    #[test]
+    fn a_copy_becomes_a_new_row_with_its_cells_and_what_it_was_made_as() {
+        let (mut structure, page) = covers();
+        let index = unique_index("book_covers_publisher_id_key", &["publisher_id"]);
+        structure.indexes.push(index);
+        let mut edits = Edits::default();
+        let id = edits.add_copy(Place::Below(1), 3, copy_of(&structure, &page));
+        assert_eq!(edits.added.len(), 1);
+        assert_eq!(edits.added[0].before, 2);
+        let row = new_row(id);
+        let set: Vec<(usize, usize)> = edits.cells.keys().copied().collect();
+        assert_eq!(set, [(row, 2), (row, 4)]);
+        let new = &edits.added[0];
+        assert!(new.cleared_unique("publisher_id"));
+        // `id` was cleared as the database's own, which asks nothing, and
+        // `kind` was not cleared.
+        assert!(!new.cleared_unique("id") && !new.cleared_unique("kind"));
+        // An added row was made as no copy.
+        let other = edits.add_row(Place::Top, 3);
+        let added = edits.added.iter().find(|new| new.id == other).unwrap();
+        assert!(added.made.is_none() && !added.cleared_unique("publisher_id"));
+        // The first cell a save needs a value in: `publisher_id`.
+        let table = Table {
+            added: &edits.added,
+            ..table(Some(&structure), &page)
+        };
+        assert_eq!(table.first_to_fill(id, &edits.cells), Some(1));
+        // A column cleared as of the key holds what no other row may too.
+        let mut keyed = structure.clone();
+        keyed.columns[0].identity = false;
+        let mut of_keyed = Edits::default();
+        of_keyed.add_copy(Place::Top, 3, copy_of(&keyed, &page));
+        assert!(of_keyed.added[0].cleared_unique("id"));
+    }
+
+    #[test]
+    fn a_yank_is_put_by_its_columns_names_whatever_the_page_is_now() {
+        let (mut structure, mut page) = covers();
+        let taken = table(Some(&structure), &page).yank(1, &BTreeMap::new());
+        let yank = taken.expect("the second row");
+        // The page since: `kind` stands before `publisher_id`, `created_at`
+        // is gone, there is a `note` more, and its rows are other rows.
+        structure.columns.swap(1, 2);
+        structure.columns.remove(4);
+        structure.columns.push(column("note", "TEXT"));
+        page.columns.swap(1, 2);
+        page.columns.remove(4);
+        page.columns.push(meta("note", "TEXT"));
+        for row in &mut page.rows {
+            *row = vec![
+                Value::Int(40),
+                text("audio"),
+                Value::Int(7),
+                text("{}"),
+                text("a note"),
+            ];
+        }
+        let copy = table(Some(&structure), &page).duplicate(&yank);
+        // Each value under its own name, where the name stands now, and
+        // the yank's, not the page's.
+        assert_eq!(set_in(&copy, 1), Some(&text_of("ebook")));
+        assert_eq!(set_in(&copy, 2), Some(&text_of("9100000000000000002")));
+        let set: Vec<usize> = copy.cells.iter().map(|(col, _)| *col).collect();
+        assert_eq!(set, [1, 2]);
+        // The column that is gone is nowhere, and the one the yank does not
+        // know is copied as nothing set.
+        let made = &copy.made;
+        assert_eq!(made.copied, ["kind", "publisher_id", "image_data", "note"]);
+        assert_eq!(made.cleared, [("id".to_owned(), Cleared::Identity)]);
+        assert!(made.not_copied.is_empty());
+        assert_eq!(set_in(&copy, 4), None);
+    }
+
+    #[test]
+    fn a_cell_that_takes_no_value_is_not_the_first_to_fill() {
+        let (mut structure, mut page) = covers();
+        // Bytes a save needs: no cell of a new row takes them.
+        structure.columns.push(ColumnInfo {
+            nullable: false,
+            ..column("thumbnail", "BLOB")
+        });
+        page.columns.push(meta("thumbnail", "BLOB"));
+        for row in &mut page.rows {
+            row.push(Value::Bytes(vec![1].into()));
+        }
+        let mut edits = Edits::default();
+        let id = edits.add_copy(Place::Top, 3, copy_of(&structure, &page));
+        let table = Table {
+            added: &edits.added,
+            ..table(Some(&structure), &page)
+        };
+        assert_eq!(table.missing(id, &edits.cells), [5]);
+        assert_eq!(table.first_to_fill(id, &edits.cells), None);
     }
 
     fn column(name: &str, type_name: &str) -> ColumnInfo {

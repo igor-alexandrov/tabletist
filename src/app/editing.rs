@@ -7,8 +7,8 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Answer, Editor, EditorPlace, Lock, NEW_ROWS, Note, Order, Pending, Place, Problem, Saved,
-    Saving, Sent, State, Table, change_set, check, conflicting, is_change, new_id, new_row,
+    Answer, Duplicate, Editor, EditorPlace, Lock, NEW_ROWS, Note, Order, Pending, Place, Problem,
+    Saved, Saving, Sent, State, Table, change_set, check, conflicting, is_change, new_id, new_row,
     opens_large, same_changes, settled, shown_lines, start_text,
 };
 use crate::model::{
@@ -26,7 +26,8 @@ use crate::review::{Part, Values};
 /// prompts' own answers, `CloseDialog` and what the backend says are not
 /// among them. Nor is `EditorTyped`: it changes no text, and a keystroke
 /// that shares its frame with the key that raised the prompt must be noted,
-/// or the prompt's Save would close the editor without it.
+/// or the prompt's Save would close the editor without it. Nor is
+/// `YankRow`: it changes nothing that is pending.
 pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
     matches!(
         action,
@@ -48,6 +49,8 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::SetBoolean { .. }
             | Action::SetNow { .. }
             | Action::AddRow { .. }
+            | Action::DuplicateRow { .. }
+            | Action::PutRow { .. }
             | Action::DropRow { .. }
             | Action::RevertCell { .. }
             | Action::DiscardEdits { .. }
@@ -776,6 +779,40 @@ impl App {
         }
     }
 
+    /// Whether the tab's table takes a new row now: its rows show, and
+    /// nothing stands against a row (`Table::no_rows`).
+    fn takes_rows(&self, tab: ConnTabId, id: TabId) -> bool {
+        let takes = self.table(tab, id, |table, object| {
+            object.view == ObjectView::Data && table.no_rows().is_none()
+        });
+        takes == Some(true)
+    }
+
+    /// What follows a new row put into the set, for its cell `cell`: the
+    /// editor on the cell where it is to `open`, else the selection there
+    /// and the keys with the grid.
+    fn settle_new_row(&mut self, tab: ConnTabId, id: TabId, cell: CellPos, open: bool) {
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.why = None;
+            object.fields = None;
+            // A tab with a new row is no preview to replace.
+            object.pinned = true;
+        }
+        if open {
+            self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Grid);
+            return;
+        }
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.selection = Some(cell);
+            object.focus_field = None;
+        }
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.pane = Pane::Grid;
+            workspace.save_refused = false;
+            workspace.review_refused = false;
+        }
+    }
+
     /// Adds a new row to the tab's table at `place`, where it takes one,
     /// and opens the editor on the first cell a save needs a value in.
     /// With no such cell the selection goes to the first that takes a
@@ -783,11 +820,7 @@ impl App {
     pub(super) fn add_row(&mut self, tab: ConnTabId, id: TabId, place: Place) {
         // An editor open on another cell keeps its text.
         self.close_editor(tab, id, true);
-        // Only where the rows show, and only a table that takes one.
-        let takes = self.table(tab, id, |table, object| {
-            object.view == ObjectView::Data && table.no_rows().is_none()
-        });
-        if takes != Some(true) {
+        if !self.takes_rows(tab, id) {
             return;
         }
         let Some(object) = self.object_tab_mut(tab, id) else {
@@ -796,10 +829,6 @@ impl App {
         let height = object.page().map_or(0, |page| page.rows.len());
         let new = object.edits.add_row(place, height);
         let row = new_row(new);
-        object.edits.why = None;
-        object.fields = None;
-        // A tab with a new row is no preview to replace.
-        object.pinned = true;
         let found = self.table(tab, id, |table, object| {
             let required = table.missing(new, &object.edits.cells).into_iter().next();
             let free = || {
@@ -813,19 +842,88 @@ impl App {
             row,
             col: col.unwrap_or(0),
         };
-        if required.is_some() {
-            self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Grid);
+        self.settle_new_row(tab, id, cell, required.is_some());
+    }
+
+    /// Adds a copy of the selected row as a new row at the top.
+    pub(super) fn duplicate_row(&mut self, tab: ConnTabId, id: TabId) {
+        // Before the row is read: an open editor's text is part of what
+        // the row shows, and closed it is pending.
+        self.close_editor(tab, id, true);
+        let copy = self.table(tab, id, |table, object| {
+            let yank = table.yank(object.selection?.row, &object.edits.cells)?;
+            Some(table.duplicate(&yank))
+        });
+        if let Some(Some(copy)) = copy {
+            self.put_copy(tab, id, copy, Place::Top);
+        }
+    }
+
+    /// Keeps what the selected row shows on the tab, where its rows show.
+    /// No editor is closed for it, as `duplicate_row` closes one: the keys
+    /// that yank are not read while an editor has them.
+    pub(super) fn yank_row(&mut self, tab: ConnTabId, id: TabId) {
+        let yank = self.table(tab, id, |table, object| {
+            if object.view != ObjectView::Data {
+                return None;
+            }
+            table.yank(object.selection?.row, &object.edits.cells)
+        });
+        if let (Some(Some(yank)), Some(object)) = (yank, self.object_tab_mut(tab, id)) {
+            object.yanked = Some(yank);
+        }
+    }
+
+    /// Adds a copy of the tab's yanked row right below the selected row,
+    /// or right above it. With no row selected, at the top. With nothing
+    /// yanked, nothing: an open editor stays open too.
+    pub(super) fn put_row(&mut self, tab: ConnTabId, id: TabId, above: bool) {
+        // The copy is made from the yank where it is kept, not from a
+        // clone of it: a yanked value can be megabytes.
+        let read = self.table(tab, id, |table, object| {
+            let yank = object.yanked.as_ref()?;
+            Some((table.duplicate(yank), object.selection))
+        });
+        let Some(Some((copy, selection))) = read else {
+            return;
+        };
+        // An editor open on another cell keeps its text: it is pending
+        // before a row is put under it.
+        self.close_editor(tab, id, true);
+        let place = match (selection, above) {
+            (Some(cell), false) => Place::Below(cell.row),
+            (Some(cell), true) => Place::Above(cell.row),
+            (None, _) => Place::Top,
+        };
+        self.put_copy(tab, id, copy, place);
+    }
+
+    /// Adds `copy` as a new row at `place`, where the table takes one, and
+    /// settles it. The editor opens on the first cell a save needs a value
+    /// in and that takes one. With none the selection goes to the copy, in
+    /// the column the cursor was in. Both are the copy's own rules: an
+    /// added row opens on its first required cell whatever it is, and
+    /// otherwise selects the first cell that takes a value.
+    fn put_copy(&mut self, tab: ConnTabId, id: TabId, copy: Duplicate, place: Place) {
+        if !self.takes_rows(tab, id) {
             return;
         }
-        if let Some(object) = self.object_tab_mut(tab, id) {
-            object.selection = Some(cell);
-            object.focus_field = None;
-        }
-        if let Some(workspace) = self.workspace_mut(tab) {
-            workspace.pane = Pane::Grid;
-            workspace.save_refused = false;
-            workspace.review_refused = false;
-        }
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let stood = object.selection.map_or(0, |cell| cell.col);
+        let height = object.page().map_or(0, |page| page.rows.len());
+        let new = object.edits.add_copy(place, height, copy);
+        let row = new_row(new);
+        let open = self.table(tab, id, |table, object| {
+            table.first_to_fill(new, &object.edits.cells)
+        });
+        let open = open.flatten();
+        let cell = CellPos {
+            row,
+            col: open.unwrap_or(stood),
+        };
+        self.settle_new_row(tab, id, cell, open.is_some());
     }
 
     /// Drops the selected row where it is a new one. The selection stays

@@ -115,6 +115,7 @@ a Mac keyboard labels Delete.
 | --- | --- |
 | Return, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Cmd+N | Add a row, at the top of the grid |
+| Cmd+D | Duplicate the row, as a new row at the top of the grid |
 | Backspace, Forward Delete | Drop a new row that is not saved yet |
 | Cmd+I | Edit the row in the row panel |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |

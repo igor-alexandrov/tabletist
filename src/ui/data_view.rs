@@ -1360,6 +1360,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         // assigns.
         changes.marker = unset.iter().position(|unset| *unset == Unset::Assigned);
         changes.unset = unset;
+        changes.unique = object
+            .edits
+            .added
+            .iter()
+            .flat_map(|new| {
+                let row = crate::edit::new_row(new.id);
+                let columns = page.columns.iter().enumerate();
+                columns
+                    .filter(move |(_, column)| new.cleared_unique(&column.name))
+                    .map(move |(col, _)| (row, col))
+            })
+            .collect();
         // Whether the `INSERT` of the new row `id` failed in the last save.
         let failed = |id: usize| {
             let mut added = object.edits.added.iter();
@@ -1635,6 +1647,10 @@ struct Changes<'a> {
     unset: Vec<Unset>,
     /// The column a new row's marker stands in.
     marker: Option<usize>,
+    /// The cells of new rows that are copies and were cleared there for
+    /// holding what no other row may (`NewRow::cleared_unique`), by row
+    /// and column.
+    unique: BTreeSet<(usize, usize)>,
 }
 
 /// What a new row shows in each of the page's columns while nothing is set
@@ -1798,6 +1814,7 @@ impl<'a> Changes<'a> {
             why: None,
             unset: Vec::new(),
             marker: None,
+            unique: BTreeSet::new(),
         }
     }
 
@@ -1990,7 +2007,7 @@ impl Changes<'_> {
                 // The terminal asks in its header and its status line.
                 Some(Unset::Required) if look.terminal => Cell::default(),
                 Some(Unset::Required) => Cell {
-                    text: say("required").into(),
+                    text: format::required_word(self.unique.contains(&at), locale).into(),
                     mark: Mark::Trouble,
                     hint: Some(say("A save needs a value here")),
                     ..Cell::default()
