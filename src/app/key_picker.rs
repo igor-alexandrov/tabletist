@@ -4,13 +4,13 @@
 
 use std::time::{Duration, Instant};
 
-use tabletist_db::{ColumnClass, Error, LookupPage, LookupPart, ObjectRef, Value};
+use tabletist_db::{ColumnClass, Error, LookupPage, LookupPart, NewValue, ObjectRef, Value};
 
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
-use crate::edit::{Picked, Table, start_text};
+use crate::edit::{Doubt, DoubtState, Picked, State, Table, start_text};
 use crate::key_picker::{self, Answered, Asked, Columns, Picker, Take};
-use crate::model::{Action, Advance, ConnTabId, TabId};
+use crate::model::{Action, Advance, CellPos, ConnTabId, TabId};
 
 /// A lookup in flight, and the picker it was sent for.
 #[derive(Debug, Clone, Copy)]
@@ -248,6 +248,37 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
+        // A lookup no picker waits for may be a question about a kept
+        // value (`ask_row`).
+        let picked = workspace.object_tabs().any(|object| {
+            object
+                .edits
+                .editor
+                .as_ref()
+                .and_then(|editor| editor.picker.as_ref())
+                .is_some_and(|picker| picker.in_flight().contains(&request))
+        });
+        if !picked {
+            let none = matches!(&result, Ok(page) if page.rows.is_empty());
+            for object in workspace.object_tabs_mut() {
+                let asked = object.edits.doubts.iter().find_map(|(&at, doubt)| {
+                    (doubt.state == DoubtState::Asked(request)).then_some(at)
+                });
+                let Some(at) = asked else {
+                    continue;
+                };
+                if none {
+                    if let Some(doubt) = object.edits.doubts.get_mut(&at) {
+                        doubt.state = DoubtState::Missing;
+                    }
+                } else {
+                    // The row is there, or the read failed: nothing to say.
+                    object.edits.doubts.remove(&at);
+                }
+                break;
+            }
+            return;
+        }
         let mut resend = None;
         let mut commit = None;
         for object in workspace.object_tabs_mut() {
@@ -298,6 +329,57 @@ impl App {
         }
     }
 
+    /// Asks whether the pending value of the foreign key cell `cell`
+    /// names a row of the table its key points at: one read of that key
+    /// alone, which belongs to no picker. Nothing is asked of a cell that
+    /// is no foreign key's, of what is no typed text waiting for a save, or
+    /// of a text that cannot be compared with the key exactly
+    /// (`key_picker::pinned`). A question the cell had is of a value it no
+    /// longer holds: it is forgotten, not cancelled, since a pinned row's
+    /// read is left to end, and its answer finds no doubt.
+    pub(super) fn ask_row(&mut self, tab: ConnTabId, id: TabId, cell: CellPos) {
+        let planned = self.workspace(tab).and_then(|workspace| {
+            let object = workspace.object_tab(id)?;
+            let table = Table::of(workspace, object)?;
+            let pending = object.edits.cells.get(&(cell.row, cell.col))?;
+            let text = match (&pending.new, &pending.state) {
+                (NewValue::Text(text), State::Ready) => text,
+                (
+                    NewValue::Null | NewValue::Text(_) | NewValue::Default { .. } | NewValue::Now,
+                    State::Ready | State::ToFix(_) | State::Failed(_),
+                ) => return None,
+            };
+            let column = table.column(cell.col)?;
+            let (target, key) = key_picker::target(table.structure?, &column.name)?;
+            let class = table.class(cell.col)?;
+            // It passed the column's check: it is ready.
+            let value = key_picker::pinned(text, class, &column.type_name, true)?;
+            let lookup = tabletist_db::Lookup {
+                object: target,
+                key,
+                label: None,
+                part: LookupPart::Pinned(value),
+                limit: 1,
+            };
+            Some((workspace.session, lookup, text.clone()))
+        });
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.doubts.remove(&(cell.row, cell.col));
+        }
+        let Some((session, lookup, text)) = planned else {
+            return;
+        };
+        // No picker's: serial 0 is nobody's.
+        let request = self.send_lookup(session, lookup, 0);
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            let state = DoubtState::Asked(request);
+            object
+                .edits
+                .doubts
+                .insert((cell.row, cell.col), Doubt { text, state });
+        }
+    }
+
     /// What a commit of the tab's editor takes, where the editor has a
     /// picker: the highlighted option's key becomes the editor's text, or
     /// the text stays as typed. `Taken::Wait` when the list has not
@@ -340,6 +422,8 @@ impl App {
                 *text = start_text(&option.key, class);
                 *touched = true;
                 picker.put(text);
+                // Just read from the table: not asked about again.
+                picker.taken = true;
                 return Taken::Option(Picked {
                     at: (cell.row, cell.col),
                     key: text.clone(),

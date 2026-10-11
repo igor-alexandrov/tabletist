@@ -1022,6 +1022,12 @@ impl App {
     /// closed.
     pub(super) fn close_editor(&mut self, tab: ConnTabId, id: TabId, left: bool) -> bool {
         let verdict = self.table(tab, id, typed);
+        // Whether the text is the key of an option taken from the
+        // picker's list: read before the editor goes.
+        let taken = self
+            .editor_mut(tab, id)
+            .and_then(|editor| editor.picker.as_ref())
+            .is_some_and(|picker| picker.taken);
         let Some(object) = self.object_tab_mut(tab, id) else {
             return false;
         };
@@ -1044,6 +1050,16 @@ impl App {
         }
         object.edits.editor = None;
         let key = (cell.row, cell.col);
+        // The cell was asked about this very text before (an editor
+        // opened on a warned value and closed on it again): it is asked
+        // once, and what is known of it stays.
+        let known = matches!(
+            &new,
+            NewValue::Text(text)
+                if object.edits.doubts.get(&key).is_some_and(|doubt| doubt.text == *text)
+        );
+        let ask = changed && problem.is_none() && !taken && !known;
+        let keep = changed && problem.is_none() && known;
         if changed {
             let state = problem.map_or(State::Ready, State::ToFix);
             object.edits.put(key, Pending { new, state });
@@ -1052,6 +1068,15 @@ impl App {
         }
         // The row panel shows the pending value.
         object.fields = None;
+        // A question the cell had was of the value before this one, and a
+        // reverted cell keeps none that could match a later value.
+        if !ask && !keep {
+            object.edits.doubts.remove(&key);
+        }
+        if ask {
+            // A typed key: does it name a row?
+            self.ask_row(tab, id, cell);
+        }
         true
     }
 

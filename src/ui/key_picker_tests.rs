@@ -13,6 +13,7 @@ use egui::{Key, Modifiers};
 use tabletist_db::{LookupPart, NewValue, ObjectRef, Value};
 
 use crate::backend::{Command, Event, RequestId};
+use crate::edit::{Doubt, DoubtState};
 use crate::key_picker::{Columns, Picker, Take};
 use crate::model::{Action, Advance, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::testing::{Harness, PUBLISHERS, publishers_structure};
@@ -2563,4 +2564,325 @@ fn a_nullable_columns_panel_list_sets_null() {
     harness.click("Set NULL");
     assert!(!editing(&harness, tab, id));
     assert!(pending_null(&harness, tab, id));
+}
+
+/// No publisher has this id.
+const NO_PUBLISHER: &str = "9100000000000000099";
+/// Nor has this one.
+const ALSO_NO_PUBLISHER: &str = "9100000000000000098";
+
+/// The warnings that stand on the tab's table.
+fn warned(harness: &Harness, tab: ConnTabId, id: TabId) -> Vec<((usize, usize), String)> {
+    let workspace = harness.app.workspace(tab).unwrap();
+    let object = workspace.object_tab(id).unwrap();
+    let table = crate::edit::Table::of(workspace, object).unwrap();
+    crate::key_picker::unmatched(&table, &object.object, &object.edits)
+        .into_iter()
+        .map(|found| (found.at, found.value))
+        .collect()
+}
+
+/// Types `text` into `publisher_id` of the page's row `row` and keeps it
+/// as typed, with every lookup answered: the picker's, then the question
+/// the kept value raises.
+fn keep(harness: &mut Harness, tab: ConnTabId, id: TabId, row: usize, text: &str) {
+    edit(harness, tab, id, row, EditStart::Replace(String::new()));
+    type_text(harness, tab, id, text);
+    commit(harness, tab, id, Advance::Stay);
+    harness.answer_lookups(&PUBLISHERS);
+}
+
+/// The doubt the tab holds on `publisher_id` of the page's row `row`.
+fn doubt(harness: &Harness, tab: ConnTabId, id: TabId, row: usize) -> Option<&Doubt> {
+    let object = harness.app.workspace(tab)?.object_tab(id)?;
+    object.edits.doubts.get(&(row, PUBLISHER))
+}
+
+/// Test 21: a typed key no row has leaves the cell pending and warned,
+/// with Save offered. Changing the value drops the warning.
+#[test]
+fn a_typed_key_that_names_no_row_is_warned_about() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let before = harness.lookups().len();
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(NO_PUBLISHER));
+    // One read of that key alone, after the picker's own.
+    let sent = harness.lookups();
+    let last = &sent.last().unwrap().2;
+    assert!(sent.len() > before);
+    assert!(last.part == LookupPart::Pinned(Value::Int(9_100_000_000_000_000_099)));
+    assert_eq!(last.limit, 1);
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((0, PUBLISHER), NO_PUBLISHER.to_owned())]
+    );
+    // It holds nothing: the cell is ready, and a save is not blocked.
+    assert!(harness.app.save_blocked(tab, id).is_none());
+
+    // Another value: the warning was of the old one.
+    keep(&mut harness, tab, id, 0, HARBOR_LIGHTS);
+    assert!(warned(&harness, tab, id).is_empty());
+    // And Harbor Lights is there: no warning of its own.
+    assert!(doubt(&harness, tab, id, 0).is_none());
+}
+
+/// Test 21: a value taken from the list is not asked about, and neither
+/// is one that is to fix.
+#[test]
+fn a_picked_value_and_a_value_to_fix_are_not_asked_about() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    let before = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+    assert_eq!(
+        harness.lookups().len(),
+        before,
+        "a picked value was asked about"
+    );
+
+    // `harb` kept by leaving the editor: an integer column refuses it,
+    // and a text that is to fix names no key to ask about.
+    edit(&mut harness, tab, id, 1, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, "harb");
+    let before = harness.lookups().len();
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    assert_eq!(harness.lookups().len(), before);
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.doubts.is_empty());
+}
+
+/// Spec 7: an answer for a value the cell no longer has is dropped, a
+/// failed answer says nothing, and a question that nothing waits for is
+/// forgotten, not cancelled: a pinned row's read is left to end.
+#[test]
+fn a_late_or_failed_answer_warns_of_nothing() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    // Asked, not answered: nothing is said.
+    assert!(matches!(
+        doubt(&harness, tab, id, 0),
+        Some(Doubt {
+            state: DoubtState::Asked(_),
+            ..
+        })
+    ));
+    assert!(warned(&harness, tab, id).is_empty());
+    // The database refuses the read: no warning, and no question left.
+    harness.fail_lookup(tabletist_db::Error::query(
+        "permission denied for table publishers",
+    ));
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.doubts.is_empty());
+    assert!(warned(&harness, tab, id).is_empty());
+
+    // Asked again for another row, then discarded before the answer: the
+    // question is forgotten with what was pending.
+    edit(&mut harness, tab, id, 1, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    let asked = harness.lookups().last().unwrap().1;
+    harness.app.apply(Action::DiscardEdits { tab, id });
+    harness.app.send_due_lookups(std::time::Instant::now());
+    assert!(!cancelled(&harness).contains(&asked));
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(warned(&harness, tab, id).is_empty());
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.doubts.is_empty());
+}
+
+/// Test 21: a key that a new row of the same tab holds is not warned
+/// about, whichever of the two was typed first.
+#[test]
+fn a_key_a_new_row_of_the_same_table_holds_is_not_warned_about() {
+    use crate::testing::{GENRES, genres_structure};
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let (tab, id) = harness.genres();
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    harness.settle();
+    // Crime's parent becomes 99, and no genre has that id.
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos { row: 1, col: 1 },
+        start: EditStart::Replace("99".into()),
+    });
+    harness.answer_structure(genres_structure());
+    harness.answer_lookups(&GENRES);
+    commit(&mut harness, tab, id, Advance::Stay);
+    harness.answer_lookups(&GENRES);
+    assert_eq!(warned(&harness, tab, id), [((1, 1), "99".to_owned())]);
+    // A new genre with the id 99: the save writes both.
+    harness.app.apply(Action::AddRow {
+        tab,
+        id,
+        place: crate::edit::Place::Top,
+    });
+    harness.app.apply(Action::CancelEdit { tab, id });
+    let new = crate::edit::new_row(0);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos { row: new, col: 0 },
+        start: EditStart::Replace("99".into()),
+    });
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(warned(&harness, tab, id).is_empty());
+}
+
+/// Test 21 in the row panel: its field closes through the same code, so a
+/// key typed there is asked about and warned.
+#[test]
+fn a_key_typed_in_the_row_panels_field_is_asked_about() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit_field(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::NextField);
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(NO_PUBLISHER));
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((0, PUBLISHER), NO_PUBLISHER.to_owned())]
+    );
+}
+
+/// An editor opened on a warned cell and closed with its text as it was
+/// keeps the warning and asks nothing again: when nothing was typed, and
+/// when the same text was typed over it.
+#[test]
+fn a_warned_cell_closed_on_the_same_text_keeps_its_warning_and_asks_nothing() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    let warning = [((0, PUBLISHER), NO_PUBLISHER.to_owned())];
+    assert_eq!(warned(&harness, tab, id), warning);
+
+    // Opened on the pending value and left as it was.
+    edit(&mut harness, tab, id, 0, EditStart::Value);
+    let before = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(harness.lookups().len(), before);
+    assert_eq!(warned(&harness, tab, id), warning);
+
+    // The same text typed over it: the cell is put again, not asked again.
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    let before = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(harness.lookups().len(), before);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(NO_PUBLISHER));
+    assert_eq!(warned(&harness, tab, id), warning);
+}
+
+/// An editor closed with the loaded text reverts the pending cell, and no
+/// doubt is left that a later value could match.
+#[test]
+fn a_cell_reverted_to_its_loaded_text_leaves_no_doubt() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, id, 0, NO_PUBLISHER);
+    assert!(doubt(&harness, tab, id, 0).is_some());
+    // Row 0 loaded Northlight's key. Leaving keeps the text without the
+    // picker's say, as typed.
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NORTHLIGHT);
+    let before = harness.lookups().len();
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    assert!(doubt(&harness, tab, id, 0).is_none());
+    assert_eq!(
+        harness.lookups().len(),
+        before,
+        "a reverted cell was asked about"
+    );
+    assert!(warned(&harness, tab, id).is_empty());
+}
+
+/// Two cells asked about at once, answered in the other order: each answer
+/// finds its own cell.
+#[test]
+fn answers_in_the_other_order_find_their_own_cells() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // Row 0 is kept as typed, row 1 by leaving the editor: a key that a
+    // row has, asked about all the same.
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    // The picker of row 1 is answered alone: the question of row 0 waits.
+    let asked = harness.lookups().len();
+    open(&mut harness, tab, id, 1, EditStart::Replace(String::new()));
+    set_text(&mut harness, tab, id, HARBOR_LIGHTS);
+    harness.app.send_due_lookups(std::time::Instant::now());
+    for at in asked..harness.lookups().len() {
+        harness.answer_lookup_at(at, &PUBLISHERS);
+    }
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    // The questions are the pinned reads that ask for no label.
+    let sent = harness.lookups();
+    let questions: Vec<usize> = (0..sent.len())
+        .filter(|&at| {
+            matches!(sent[at].2.part, LookupPart::Pinned(_)) && sent[at].2.label.is_none()
+        })
+        .collect();
+    let [first, second] = questions[..] else {
+        panic!("two questions expected: {questions:?}");
+    };
+    assert!(sent[first].2.part == LookupPart::Pinned(Value::Int(9_100_000_000_000_000_099)));
+    assert!(sent[second].2.part == LookupPart::Pinned(Value::Int(9_100_000_000_000_000_007)));
+    // The second question answers first.
+    harness.answer_lookup_at(second, &PUBLISHERS);
+    assert!(doubt(&harness, tab, id, 1).is_none());
+    assert!(matches!(
+        doubt(&harness, tab, id, 0),
+        Some(Doubt {
+            state: DoubtState::Asked(_),
+            ..
+        })
+    ));
+    harness.answer_lookup_at(first, &PUBLISHERS);
+    assert_eq!(
+        warned(&harness, tab, id),
+        [((0, PUBLISHER), NO_PUBLISHER.to_owned())]
+    );
+    // Both missing, answered the other way round: both warned.
+    keep(&mut harness, tab, id, 1, ALSO_NO_PUBLISHER);
+    assert_eq!(warned(&harness, tab, id).len(), 2);
+}
+
+/// A typed full key the picker's own pinned read found is taken from the
+/// list: Enter takes option 0, now or once the answer comes, and the key is
+/// not asked about.
+#[test]
+fn a_typed_key_the_pickers_own_read_found_is_not_asked_about() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, HARBOR_LIGHTS);
+    let before = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+    assert_eq!(harness.lookups().len(), before);
+    assert!(doubt(&harness, tab, id, 0).is_none());
+
+    // Enter before the answer: kept, and applied by the answer.
+    // Row 2 loaded Harbor Lights: Harbor Press is a change there.
+    edit(&mut harness, tab, id, 2, EditStart::Replace(String::new()));
+    set_text(&mut harness, tab, id, HARBOR_PRESS);
+    harness.app.send_due_lookups(std::time::Instant::now());
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(editing(&harness, tab, id));
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(!editing(&harness, tab, id));
+    let sent = harness.lookups().len();
+    assert_eq!(pending(&harness, tab, id, 2).as_deref(), Some(HARBOR_PRESS));
+    assert!(doubt(&harness, tab, id, 2).is_none());
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(harness.lookups().len(), sent);
 }
