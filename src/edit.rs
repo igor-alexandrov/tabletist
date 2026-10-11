@@ -1340,7 +1340,10 @@ pub struct Edits {
     pub cells: BTreeMap<(usize, usize), Pending>,
     /// The foreign key cells whose typed value was asked about, by row
     /// and column as `cells`. A warning, and it holds nothing: see
-    /// `key_picker::unmatched`, which says which of them stand.
+    /// `key_picker::unmatched`, which says which of them stand. A doubt
+    /// goes with its cell's text: `put`, `revert`, `drop_row` and
+    /// `discard` keep the two in step, so none outlives the value it was
+    /// of and attaches to another.
     pub doubts: BTreeMap<(usize, usize), Doubt>,
     /// The rows to add, in the order they stand in the grid among
     /// themselves: `before` never decreases along them.
@@ -1541,6 +1544,7 @@ impl Edits {
         self.added.remove(at);
         let row = new_row(id);
         self.cells.retain(|&(of, _), _| of != row);
+        self.doubts.retain(|&(of, _), _| of != row);
         let edited = self.editor.as_ref().map(|editor| editor.cell.row);
         if edited == Some(row) {
             self.editor = None;
@@ -1604,6 +1608,13 @@ impl Edits {
     /// Makes `pending` the new value of the cell at `at` (row, column).
     /// What was made of the set, its review, is stale.
     pub fn put(&mut self, at: (usize, usize), pending: Pending) {
+        // A doubt was of the text the cell held: another value ends it.
+        let same = self.doubts.get(&at).is_some_and(
+            |doubt| matches!(&pending.new, NewValue::Text(text) if *text == doubt.text),
+        );
+        if !same {
+            self.doubts.remove(&at);
+        }
         self.cells.insert(at, pending);
         self.mended(at.0);
         self.review = None;
@@ -1612,6 +1623,7 @@ impl Edits {
     /// Takes the cell at `at` out of the set: it is as it loaded again.
     pub fn revert(&mut self, at: (usize, usize)) {
         self.cells.remove(&at);
+        self.doubts.remove(&at);
         self.mended(at.0);
         self.review = None;
     }
@@ -4239,6 +4251,60 @@ mod tests {
         assert_eq!(edits.gone, gone);
         assert!(!edits.holds());
         assert!(format!("{edits:?}").contains("gone: {1}"));
+    }
+
+    /// A doubt is of one text in one cell. It goes when the cell gets
+    /// another value, is reverted, or its new row is dropped, and with
+    /// everything that is discarded: none is left to stand on a value it
+    /// was not asked about.
+    #[test]
+    fn a_doubt_goes_with_the_text_it_was_of() {
+        let text = |text: &str| Pending {
+            new: NewValue::Text(text.into()),
+            state: State::Ready,
+        };
+        let missing = |text: &str| Doubt {
+            text: text.into(),
+            state: DoubtState::Missing,
+        };
+        let mut edits = Edits::default();
+        edits.put((1, 1), text("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        // The same text put again: what is known of it stays.
+        edits.put((1, 1), text("99"));
+        assert!(edits.doubts.contains_key(&(1, 1)));
+        // Another text, and another kind of value.
+        edits.put((1, 1), text("98"));
+        assert!(edits.doubts.is_empty());
+        edits.put((1, 1), text("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        edits.put(
+            (1, 1),
+            Pending {
+                new: NewValue::Null,
+                state: State::Ready,
+            },
+        );
+        assert!(edits.doubts.is_empty());
+        // Reverted.
+        edits.put((1, 1), text("99"));
+        edits.doubts.insert((1, 1), missing("99"));
+        edits.revert((1, 1));
+        assert!(edits.doubts.is_empty());
+        // A new row dropped takes its own, and no other row's.
+        let id = edits.add_row(Place::Top, 2);
+        let row = new_row(id);
+        edits.put((row, 1), text("99"));
+        edits.doubts.insert((row, 1), missing("99"));
+        edits.put((0, 1), text("77"));
+        edits.doubts.insert((0, 1), missing("77"));
+        assert!(edits.drop_row(id));
+        assert_eq!(edits.doubts.keys().copied().collect::<Vec<_>>(), [(0, 1)]);
+        // A row added after it gets the id again, and none of its doubts.
+        let again = edits.add_row(Place::Top, 2);
+        assert!(!edits.doubts.contains_key(&(new_row(again), 1)));
+        edits.discard();
+        assert!(edits.doubts.is_empty());
     }
 
     fn pending(new: NewValue) -> Pending {
