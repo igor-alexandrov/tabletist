@@ -65,8 +65,10 @@ impl App {
                 .contains_key(&(editor.cell.row, editor.cell.col));
             let current = match (from_value, pending) {
                 (false, _) => None,
+                // The key the pending text names, as the column reads it:
+                // white space is part of a text key.
                 (true, true) => {
-                    let text = editor.text.trim();
+                    let text = key_picker::key_text(class, &editor.text);
                     key_picker::pinned(text, class, &column.type_name, editor.problem.is_none())
                 }
                 // Pinned only where it compares exactly, as a typed text
@@ -134,8 +136,12 @@ impl App {
             let pin = if !picker.searching {
                 picker.current.clone()
             } else {
-                let passes = crate::edit::problem(table.dialect, column, &text).is_none();
-                key_picker::pinned(&text, class, &column.type_name, passes)
+                // The matches are searched for the text without the spaces
+                // at its ends; the pinned row is read by the key the text
+                // would be, and a text key keeps its white space.
+                let key = key_picker::pin_text(class, &editor.text);
+                let passes = crate::edit::problem(table.dialect, column, key).is_none();
+                key_picker::pinned(key, class, &column.type_name, passes)
             };
             let reads = picker.lookups(label.clone(), &text, pin);
             Some((workspace.session, reads, text, picker.serial))

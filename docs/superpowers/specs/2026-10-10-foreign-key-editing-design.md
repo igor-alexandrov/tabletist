@@ -202,8 +202,14 @@ Two rules of earlier specs change, and only for a foreign key cell:
     wide for 64 bits, are not pinned either: MySQL compares a number with
     a string as floats, and a neighbouring key would match. Such a key is
     still found by the matches, which compare it as text.
+  - A text key is read as typed, with the white space at its ends: it
+    is part of such a key, and `AB ` is not the row `AB` (section 7 asks
+    about a kept text the same way). A whole number and a `uuid` hold
+    none, and are read without it. The matches are searched for the text
+    without the spaces at its ends, whatever the key.
   - A pinned read that answers more than one row is taken as no row.
-  - With no text, it is the row the cell points at now.
+  - With no text, it is the row the cell points at now: for a pending
+    text, the key the column reads in it.
   - A key of a type the app does not know, other than `uuid`, is never
     pinned: it matches by its start alone.
 - **A search is two reads**, sent in this order: the pinned row alone,

@@ -164,6 +164,28 @@ pub fn key_text(class: ColumnClass, text: &str) -> &str {
     }
 }
 
+/// The text the pinned row of a search is read by, while the editor of a
+/// foreign key column of `class` holds `typed`: the key `typed` would be
+/// if it were kept. White space is part of a text key, so `AB ` is not
+/// the row `AB`. No other key that is pinned holds any: a whole number
+/// and a `uuid` are read without the white space at their ends, as the
+/// matches are searched for. White space alone is a search for nothing,
+/// and names no row.
+pub fn pin_text(class: ColumnClass, typed: &str) -> &str {
+    let searched = typed.trim();
+    match class {
+        ColumnClass::Text { .. } if !searched.is_empty() => typed,
+        ColumnClass::Text { .. }
+        | ColumnClass::Integer { .. }
+        | ColumnClass::Decimal { .. }
+        | ColumnClass::Float
+        | ColumnClass::Boolean
+        | ColumnClass::Json
+        | ColumnClass::Binary
+        | ColumnClass::Other => searched,
+    }
+}
+
 /// `text` as the key to read one row by with `=`, where it reads as a
 /// value of the key's type. `passes` says the foreign key column's own
 /// check takes it. Only a key that can be compared exactly is pinned: a
@@ -755,6 +777,23 @@ mod tests {
         );
         assert_eq!(pinned("harb", ColumnClass::Other, "uuid", true), None);
         assert_eq!(pinned("1", ColumnClass::Other, "ltree", true), None);
+    }
+
+    #[test]
+    fn a_search_pins_a_text_key_as_typed_and_any_other_without_its_spaces() {
+        let text = ColumnClass::Text { max_chars: None };
+        assert_eq!(pin_text(text, "AB "), "AB ");
+        assert_eq!(pin_text(text, " AB"), " AB");
+        // White space alone is a search for nothing.
+        assert_eq!(pin_text(text, "  "), "");
+        let whole = ColumnClass::Integer {
+            min: i128::from(i64::MIN),
+            max: i128::from(i64::MAX),
+        };
+        assert_eq!(pin_text(whole, " 12 "), "12");
+        // A `uuid` holds no white space: a pasted one is read without it.
+        let pasted = " 123e4567-e89b-12d3-a456-426614174000 ";
+        assert_eq!(pin_text(ColumnClass::Other, pasted), pasted.trim());
     }
 
     #[test]

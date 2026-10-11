@@ -484,6 +484,81 @@ fn a_loaded_key_is_pinned_only_where_it_compares_exactly() {
     assert!(sent[0].2.part == LookupPart::Pinned(Value::Int(9_100_000_000_000_000_004)));
 }
 
+/// Makes `publisher_id` a text key: white space is part of what such a
+/// key holds.
+fn text_key(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+    let object = harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .object_tab_mut(id)
+        .unwrap();
+    let structure = object.structure.value.as_mut().unwrap();
+    let column = structure
+        .columns
+        .iter_mut()
+        .find(|column| column.name == "publisher_id")
+        .unwrap();
+    column.type_name = "TEXT".into();
+}
+
+/// The pinned row of a typed text key is read by the key as typed, white
+/// space and all: `…004 ` is not the row `…004`. The matches are searched
+/// without the spaces at the text's ends. Enter takes the row that has
+/// the key that was typed, as it is.
+#[test]
+fn a_text_key_is_pinned_with_the_white_space_typed() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    text_key(&mut harness, tab, id);
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    let spaced = format!("{HARBOR_PRESS} ");
+    let from = harness.lookups().len();
+    set_text(&mut harness, tab, id, &spaced);
+    harness.app.send_due_lookups(Instant::now());
+    let sent = harness.lookups();
+    assert_eq!(sent.len(), from + 2);
+    assert!(sent[from].2.part == LookupPart::Pinned(Value::Text(spaced.as_str().into())));
+    assert!(sent[from + 1].2.part == LookupPart::Matching(HARBOR_PRESS.into()));
+    // A row has that key, its space too: it is the first option.
+    let (session, request, _) = sent[from].clone();
+    let row = tabletist_db::LookupRow {
+        key: Value::Text(spaced.as_str().into()),
+        label: Some(Value::Text("Harbor Press Annex".into())),
+        matched: tabletist_db::Matched::Key,
+    };
+    let rows = vec![row];
+    harness.app.apply(Action::Backend(Event::Lookup {
+        session,
+        request,
+        result: Ok(tabletist_db::LookupPage { rows, more: false }),
+    }));
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0), Some(spaced));
+}
+
+/// An editor opened on a pending text key points at the row of the text
+/// the cell holds: with a space after it, it is not the row of the key
+/// without one, and that row is not marked as the current one.
+#[test]
+fn a_pending_text_key_is_the_current_row_as_the_cell_holds_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    text_key(&mut harness, tab, id);
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    let spaced = format!("{HARBOR_PRESS} ");
+    set_text(&mut harness, tab, id, &spaced);
+    // Kept as typed: the keyboard goes elsewhere before any answer.
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    assert_eq!(pending(&harness, tab, id, 0), Some(spaced.clone()));
+    let from = harness.lookups().len();
+    open(&mut harness, tab, id, 0, EditStart::Value);
+    let current = picker(&harness, tab, id).unwrap().current.clone();
+    assert_eq!(current, Some(Value::Text(spaced.as_str().into())));
+    let sent = harness.lookups();
+    assert!(sent[from].2.part == LookupPart::Pinned(Value::Text(spaced.as_str().into())));
+}
+
 /// A picker that waits for columns nobody is fetching (the cache was
 /// emptied under it) gets them asked for, once.
 #[test]
