@@ -1031,7 +1031,17 @@ fn gd_follows_nothing_where_the_pending_value_is_not_a_key() {
             crate::edit::State::ToFix(crate::edit::Problem::WholeNumber),
         ),
     ];
+    // With nothing pending the loaded key is followed: the cell is one
+    // `gd` reads.
+    harness.app.apply(Action::FollowSelectedKey {
+        tab,
+        object_tab: id,
+    });
     let sent_before = harness.app.backend.sent.len();
+    assert!(matches!(
+        harness.app.backend.sent.last(),
+        Some(Command::FetchRows { query, .. }) if query.object.name == "publishers"
+    ));
     for (new, state) in states {
         let object = harness
             .app
@@ -1051,7 +1061,7 @@ fn gd_follows_nothing_where_the_pending_value_is_not_a_key() {
     assert_eq!(harness.app.backend.sent.len(), sent_before);
 }
 
-/// Spec spec 5: a pick that changes nothing (the cell already points at
+/// Spec section 5: a pick that changes nothing (the cell already points at
 /// that row, with or without a change pending before) leaves nothing
 /// pending and nothing to say; so does a commit the column refused.
 #[test]
@@ -1947,6 +1957,29 @@ fn a_failed_search_leaves_the_editors_keys_and_its_esc() {
     harness.press(Key::Escape, Modifiers::NONE);
     assert!(!editing(&harness, tab, id));
     assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("42"));
+}
+
+/// A search that failed has no list, so the keys that move in one are the
+/// field's again: Down goes to the end of the text, as in any cell.
+#[test]
+fn a_failed_search_leaves_the_arrows_to_the_field() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    harness.frame(vec![egui::Event::Text("42".into())]);
+    harness.settle();
+    harness.answer_structure(publishers_structure());
+    harness.settle();
+    harness.fail_lookup(tabletist_db::Error::query(
+        "permission denied for table publishers",
+    ));
+    harness.settle();
+    assert!(picker(&harness, tab, id).unwrap().failed.is_some());
+    harness.press(Key::Home, Modifiers::NONE);
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.frame(vec![egui::Event::Text("7".into())]);
+    harness.settle();
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert_eq!(object.edits.editor.as_ref().unwrap().text, "427");
 }
 
 /// On the keyed fixture, a column that is no foreign key still has the

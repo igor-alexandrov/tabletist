@@ -329,8 +329,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.object_tab(id))
             .and_then(|object| object.edits.editor.as_ref())
             // An editor that is about to take the keyboard counts: its
-            // field takes it a frame after the editor opens.
-            .is_some_and(|editor| (has || editor.focus) && editor.picker.is_some() && !editor.large)
+            // field takes it a frame after the editor opens. A search
+            // that failed has no list: its keys are the field's.
+            .is_some_and(|editor| {
+                let lists = editor
+                    .picker
+                    .as_ref()
+                    .is_some_and(|picker| picker.failed.is_none());
+                (has || editor.focus) && lists && !editor.large
+            })
     });
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
