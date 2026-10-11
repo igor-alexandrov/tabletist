@@ -553,17 +553,36 @@ impl App {
                         let foreign = object.structure.value.as_ref()?.foreign_keys.iter().find(
                             |foreign| foreign.columns.len() == 1 && &foreign.columns[0] == column,
                         )?;
-                        let value = page.rows.get(cell.row)?.get(cell.col)?;
-                        (!value.is_null()).then(|| {
-                            (
-                                ObjectRef::new(
-                                    foreign.ref_schema.clone(),
-                                    foreign.ref_table.clone(),
-                                ),
-                                foreign.ref_columns.first().cloned().unwrap_or_default(),
-                                crate::ui::format::plain_text(value),
-                            )
-                        })
+                        // What the cell shows: its pending value, where it
+                        // has one, sent already or not. A cell to fix, a
+                        // pending NULL and what the database will make
+                        // have nothing to follow.
+                        let value = match object.edits.cells.get(&(cell.row, cell.col)) {
+                            Some(pending) => match (&pending.new, &pending.state) {
+                                (
+                                    tabletist_db::NewValue::Text(text),
+                                    crate::edit::State::Ready | crate::edit::State::Failed(_),
+                                ) => Some(text.clone()),
+                                (tabletist_db::NewValue::Text(_), crate::edit::State::ToFix(_))
+                                | (
+                                    tabletist_db::NewValue::Null
+                                    | tabletist_db::NewValue::Default { .. }
+                                    | tabletist_db::NewValue::Now,
+                                    _,
+                                ) => None,
+                            },
+                            None => page
+                                .rows
+                                .get(cell.row)
+                                .and_then(|row| row.get(cell.col))
+                                .filter(|value| !value.is_null())
+                                .map(crate::ui::format::plain_text),
+                        }?;
+                        Some((
+                            ObjectRef::new(foreign.ref_schema.clone(), foreign.ref_table.clone()),
+                            foreign.ref_columns.first().cloned().unwrap_or_default(),
+                            value,
+                        ))
                     });
                 if let Some((object, column, value)) = target {
                     self.follow_foreign_key(tab, object, column, value);

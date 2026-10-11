@@ -919,46 +919,136 @@ fn a_click_past_the_list_and_a_move_over_nothing_change_nothing() {
     assert!(!picker.moved);
 }
 
-/// A pick in a new row's cell leaves that cell set.
+/// Test 23: a new row's foreign key cell opens the list, and a pick fills
+/// what was required.
 #[test]
-fn a_pick_in_a_new_rows_cell_sets_it() {
+fn a_new_rows_cell_is_picked_into() {
     let (mut harness, tab, id) = covers_in(Look::macos());
-    harness.app.apply(Action::AddRow {
-        tab,
-        id,
-        place: crate::edit::Place::Top,
-    });
-    harness.app.apply(Action::CancelEdit { tab, id });
-    let new = harness
-        .app
-        .workspace(tab)
-        .unwrap()
-        .object_tab(id)
-        .unwrap()
-        .edits
-        .added
-        .last()
-        .unwrap()
-        .id;
-    let row = crate::edit::new_row(new);
-    harness.app.apply(Action::EditCell {
-        tab,
-        id,
-        cell: CellPos {
-            row,
-            col: PUBLISHER,
-        },
-        start: EditStart::Typed("h".into()),
-    });
+    harness.press(Key::N, Modifiers::COMMAND);
+    harness.settle();
+    let new = crate::edit::new_row(0);
+    // Adding the row opened the editor on its first required cell,
+    // `publisher_id`, on nothing: the table's first rows are listed.
     harness.answer_structure(publishers_structure());
     harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(
+        listed(&harness, tab, id),
+        [NORTHLIGHT, HARBOR_PRESS, HARBOR_LIGHTS]
+    );
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, None);
+    assert!(!harness.app.lacking(tab, id).is_empty());
     type_text(&mut harness, tab, id, "harb");
     commit(&mut harness, tab, id, Advance::Stay);
     assert!(!editing(&harness, tab, id));
     assert_eq!(
-        pending(&harness, tab, id, row).as_deref(),
+        pending(&harness, tab, id, new).as_deref(),
         Some(HARBOR_PRESS)
     );
+    assert!(harness.app.lacking(tab, id).is_empty());
+}
+
+/// Test 24: `gd` follows the value the cell shows, the pending one where
+/// there is one.
+#[test]
+fn gd_follows_the_pending_value() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // Row 0 points at Northlight; the pick is another publisher.
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+    harness.app.apply(Action::FollowSelectedKey {
+        tab,
+        object_tab: id,
+    });
+    let filter = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::FetchRows { query, .. } if query.object.name == "publishers" => {
+                query.filters.first().cloned()
+            }
+            _ => None,
+        })
+        .expect("the publishers were asked for");
+    assert_eq!(
+        (filter.column.as_str(), filter.value.as_str()),
+        ("id", HARBOR_PRESS)
+    );
+}
+
+/// A key whose save the database refused still shows in its cell, and is
+/// the one `gd` follows: the row it names may be what the user looks for.
+#[test]
+fn gd_follows_a_pending_value_whose_save_failed() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    let object = harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .object_tab_mut(id)
+        .unwrap();
+    object.edits.cells.insert(
+        (0, PUBLISHER),
+        crate::edit::Pending {
+            new: NewValue::Text(HARBOR_PRESS.into()),
+            state: crate::edit::State::Failed(tabletist_db::Error::Cancelled),
+        },
+    );
+    harness.app.apply(Action::FollowSelectedKey {
+        tab,
+        object_tab: id,
+    });
+    let followed = harness.app.backend.sent.iter().rev().find_map(|command| {
+        let Command::FetchRows { query, .. } = command else {
+            return None;
+        };
+        let filter = query.filters.first()?;
+        (query.object.name == "publishers").then(|| filter.value.clone())
+    });
+    assert_eq!(followed.as_deref(), Some(HARBOR_PRESS));
+}
+
+/// A pending value with nothing to follow (NULL, the default, now, a text
+/// the column refuses) follows nothing, and not the value it replaced.
+#[test]
+fn gd_follows_nothing_where_the_pending_value_is_not_a_key() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    let states = [
+        (NewValue::Null, crate::edit::State::Ready),
+        (
+            NewValue::Default { expression: None },
+            crate::edit::State::Ready,
+        ),
+        (NewValue::Now, crate::edit::State::Ready),
+        (
+            NewValue::Text("harb".into()),
+            crate::edit::State::ToFix(crate::edit::Problem::WholeNumber),
+        ),
+    ];
+    let sent_before = harness.app.backend.sent.len();
+    for (new, state) in states {
+        let object = harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .object_tab_mut(id)
+            .unwrap();
+        object
+            .edits
+            .cells
+            .insert((0, PUBLISHER), crate::edit::Pending { new, state });
+        harness.app.apply(Action::FollowSelectedKey {
+            tab,
+            object_tab: id,
+        });
+    }
+    assert_eq!(harness.app.backend.sent.len(), sent_before);
 }
 
 /// Spec spec 5: a pick that changes nothing (the cell already points at
