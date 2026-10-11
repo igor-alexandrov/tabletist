@@ -249,6 +249,12 @@ struct Fresh {
     /// The table has no key to find a row by: the row can be added, and
     /// no cell of it can be edited once it is.
     keyless: bool,
+    /// What the row was made as, where it is a copy of another row.
+    made: Option<crate::edit::Copied>,
+    /// Whether the row is a copy that cleared the column for holding what
+    /// no other row may, by the page's columns: where a save needs a
+    /// value in one, its field says why.
+    unique: Vec<bool>,
 }
 
 impl Fresh {
@@ -262,6 +268,9 @@ impl Fresh {
         let columns = 0..table.page.columns.len();
         let column = |col: usize| table.column(col);
         let facts_of = |column: &tabletist_db::ColumnInfo| column_facts(column, look, locale);
+        // The new row itself, for what it keeps of how it was made.
+        let new =
+            crate::edit::new_id(row).and_then(|id| table.added.iter().find(|new| new.id == id));
         Self {
             unset: columns
                 .clone()
@@ -277,6 +286,13 @@ impl Fresh {
                 .map(|col| column(col).map(facts_of).unwrap_or_default())
                 .collect(),
             keyless: table.key().is_none(),
+            made: new.and_then(|new| new.made.clone()),
+            unique: table
+                .page
+                .columns
+                .iter()
+                .map(|column| new.is_some_and(|new| new.cleared_unique(&column.name)))
+                .collect(),
         }
     }
 }
@@ -488,20 +504,25 @@ fn draw(
                 None => Form::none(),
             };
             form.focus = focus;
-            // Why no field of the row can be edited, as the panel's first
-            // line says it: in the grid's own words, the terminal's in its
-            // lower case.
-            let locked = object.zip(form.locked).map(|(object, lock)| {
-                // The design's words for the commonest of them.
-                if lock == Lock::ReadOnly {
-                    return look.label(&gettext(locale, "Read-only connection"));
-                }
-                let table = format::display_safe(&object.object.name);
+            // A lock of the table `name` in the look's words: the grid's
+            // own, the terminal's in its lower case. One place says it, for
+            // the panel's first line and for its footer.
+            let lock_said = |name: &str, lock: Lock| {
+                let table = format::display_safe(name);
                 if look.terminal {
                     crate::ui::workspace::lock_line(lock, &table, &look, locale)
                 } else {
                     crate::ui::cell_editor::lock_text(lock, &table, locale)
                 }
+            };
+            // Why no field of the row can be edited, as the panel's first
+            // line says it.
+            let locked = object.zip(form.locked).map(|(object, lock)| {
+                // The design's words for the commonest of them.
+                if lock == Lock::ReadOnly {
+                    return look.label(&gettext(locale, "Read-only connection"));
+                }
+                lock_said(&object.object.name, lock)
             });
             let structure = source.structure;
             let info = |name: &str| {
@@ -862,6 +883,12 @@ fn draw(
                 let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(room.max(1.0), 16.0));
                 widgets::announce(ui, place, reason);
             }
+            // A copy says what it was made as at the form's top, above
+            // its fields and what a table without a key says.
+            if let Some(made) = fresh.as_ref().and_then(|fresh| fresh.made.as_ref()) {
+                let said = copy_line(made, &look, locale);
+                top = form_note(ui, full, top, &said, &look, &palette);
+            }
             // A table without a key takes the row, and can then find it
             // by nothing: said before the row is filled in.
             if fresh.as_ref().is_some_and(|fresh| fresh.keyless) {
@@ -870,20 +897,7 @@ fn draw(
                     "This table has no primary key. The row can be inserted, but not edited or \
                      deleted afterwards.",
                 ));
-                let room = (full.width() - 2.0 * side).max(24.0);
-                let laid = Text::one(&look, caption(&look), &said, palette.secondary)
-                    .wrap(room)
-                    .layout(ui.ctx());
-                let height = 9.0 + laid.height() + 9.0 + 1.0;
-                let strip = Rect::from_min_size(pos2(full.left(), top), vec2(full.width(), height));
-                top = strip.bottom();
-                if !look.terminal {
-                    ui.painter()
-                        .rect_filled(strip, CornerRadius::ZERO, palette.panel);
-                }
-                widgets::hline(ui, strip.x_range(), strip.bottom() - 0.5, divider);
-                laid.paint(ui.painter(), pos2(strip.left() + side, strip.top() + 9.0));
-                widgets::announce(ui, strip, &said);
+                top = form_note(ui, full, top, &said, &look, &palette);
             }
             // Footer: the row's controls. Its rule, the buttons (28 or 32)
             // and, where the row can be edited, the line under them that
@@ -926,7 +940,20 @@ fn draw(
                     actions.push(Action::AddRow { tab, id, place });
                 }
             } else if source.table {
-                editing_footer(ui, foot, locked.as_deref(), &look, &palette, locale);
+                // Why no copy of the row can be made, where none can: what
+                // keeps a row from being added, in Add row's words, and in
+                // the terminal's own where the look is its.
+                let no_copy = object.and_then(|object| {
+                    let lock = match Table::of(workspace, object) {
+                        Some(table) => table.no_rows(),
+                        None => Some(Lock::Refreshing),
+                    };
+                    lock.map(|lock| lock_said(&object.object.name, lock))
+                });
+                let why = (locked.as_deref(), no_copy.as_deref());
+                if editing_footer(ui, foot, why, &look, &palette, locale) {
+                    actions.push(Action::DuplicateRow { tab, id });
+                }
             }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
             let skin = FieldSkin {
@@ -1322,6 +1349,8 @@ fn field(
     let unset = fresh
         .filter(|_| pending_cell.is_none())
         .and_then(|fresh| fresh.unset.get(col));
+    // Whether the row is a copy that cleared this column as unique.
+    let unique = fresh.is_some_and(|fresh| fresh.unique.get(col).copied().unwrap_or(false));
     // A save waits for a value here.
     let missing = matches!(unset, Some(Unset::Required));
     // A document's label shares its line with the document's controls.
@@ -1416,7 +1445,7 @@ fn field(
         format::display_safe(&column.name),
         column.type_name,
         match (unset, formatted) {
-            (Some(unset), _) => unset_words(unset, locale),
+            (Some(unset), _) => unset_words(unset, unique, locale),
             (None, Some(text)) if !value.is_null() => text.short.clone(),
             (None, _) => "NULL".to_owned(),
         },
@@ -1468,7 +1497,7 @@ fn field(
     // look draws chips: that a save needs a value, or that the column
     // has a default. The terminal look says both in the value's place.
     let chip = match unset {
-        Some(Unset::Required) => Some((gettext(locale, "required"), true)),
+        Some(Unset::Required) => Some((format::required_word(unique, locale).into(), true)),
         Some(Unset::Default(_) | Unset::Expression(_)) => Some((gettext(locale, "default"), false)),
         Some(Unset::Assigned | Unset::Null) | None => None,
     }
@@ -1733,7 +1762,7 @@ fn field(
                 Part::Read | Part::Editable | Part::InGrid | Part::Editing => None,
             };
             let tag = tag.map(|style| crate::ui::value_tags::style_colors(style, look, palette));
-            unset_value(ui, unset, (tag, lock), (role, pad), skin)
+            unset_value(ui, (unset, unique), (tag, lock), (role, pad), skin)
         }
         (Part::Editing | Part::Read | Part::Editable | Part::Locked(_), None) => {
             let read = Reading {
@@ -1969,8 +1998,9 @@ fn field(
 const CHIP_SIDE: f32 = 6.0;
 
 /// What a screen reader hears in the place of the value of a new row's
-/// field nothing is set in.
-fn unset_words(unset: &Unset, locale: crate::i18n::Locale) -> String {
+/// field nothing is set in. `unique` says the row is a copy that cleared
+/// the column for holding what no other row may.
+fn unset_words(unset: &Unset, unique: bool, locale: crate::i18n::Locale) -> String {
     let say = |text: &'static str| gettext(locale, text);
     match unset {
         Unset::Assigned => say("assigned by the database").into_owned(),
@@ -1978,7 +2008,7 @@ fn unset_words(unset: &Unset, locale: crate::i18n::Locale) -> String {
             format!("{} {}", say("default"), format::display_safe(text))
         }
         Unset::Null => "NULL".to_owned(),
-        Unset::Required => say("required").into_owned(),
+        Unset::Required => format::required_word(unique, locale),
     }
 }
 
@@ -1987,10 +2017,11 @@ fn unset_words(unset: &Unset, locale: crate::i18n::Locale) -> String {
 /// and not sent, one the database works out is written slanted as its
 /// cell of the grid is, and a column the database fills says so. `tag` is
 /// the colours of a default its column lists, `lock` why the column takes
-/// no value, `role` and `pad` the value's own.
+/// no value, `role` and `pad` the value's own. `unique` says the row is a
+/// copy that cleared the column for holding what no other row may.
 fn unset_value(
     ui: &mut egui::Ui,
-    unset: &Unset,
+    (unset, unique): (&Unset, bool),
     (tag, lock): (Option<(egui::Color32, Option<egui::Color32>)>, Option<Lock>),
     (role, pad): (TextRole, f32),
     skin: FieldSkin<'_>,
@@ -2024,7 +2055,8 @@ fn unset_value(
             let line = whole_line(ui);
             // The other looks say it in a chip beside the label.
             if look.terminal {
-                let word = Text::one(look, role, &say("required"), palette.danger);
+                let word = format::required_word(unique, locale);
+                let word = Text::one(look, role, &word, palette.danger);
                 widgets::paint_label(ui, line.left(), line.center().y, word);
             }
             line
@@ -2187,6 +2219,103 @@ fn new_row_footer(
     let added = add.show_at(ui, place(1.0), look, palette).clicked();
     walked(ui, top + 32.0 + 8.0);
     (dropped, added)
+}
+
+/// What the form of a copy says of how its row was made: the columns it
+/// has the source's values in, the ones it cleared and the ones it could
+/// not copy, the last two each with its reason. A sentence with no column
+/// is left out. The words are the look's, and a column's name keeps its
+/// own case, as it does in the status line.
+fn copy_line(made: &crate::edit::Copied, look: &Look, locale: crate::i18n::Locale) -> String {
+    use crate::edit::{Cleared, NotCopied};
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let name = |name: &str| format::display_safe(name).into_owned();
+    let mut said = Vec::new();
+    let copied: Vec<String> = made.copied.iter().map(|column| name(column)).collect();
+    // Up to three in full. More would fill the panel: the first two, and
+    // how many follow.
+    let listed = match copied.as_slice() {
+        [] => None,
+        [first, second, rest @ ..] if rest.len() > 1 => {
+            // A placeholder: a translation puts the number where it reads.
+            let more = gettext(locale, "{count} more").replace("{count}", &rest.len().to_string());
+            Some(format!(
+                "{first}, {second} {} {}",
+                say("and"),
+                look.label(&more)
+            ))
+        }
+        all => Some(all.join(", ")),
+    };
+    if let Some(listed) = listed {
+        said.push(format!("{}: {listed}.", say("Copied")));
+    }
+    let cleared: Vec<String> = made
+        .cleared
+        .iter()
+        .map(|(column, why)| {
+            let why = match why {
+                Cleared::Identity => say("identity"),
+                Cleared::Generated => say("generated"),
+                Cleared::PrimaryKey => say("primary key"),
+                Cleared::Unique => say("unique"),
+            };
+            format!("{} ({why})", name(column))
+        })
+        .collect();
+    if !cleared.is_empty() {
+        said.push(format!("{}: {}.", say("Cleared"), cleared.join(", ")));
+    }
+    let not_copied: Vec<String> = made
+        .not_copied
+        .iter()
+        .map(|(column, why)| {
+            let why = match why {
+                NotCopied::Unknown => say("unknown"),
+                NotCopied::Binary => say("binary"),
+                NotCopied::TooLarge => say("too large"),
+            };
+            format!("{} ({why})", name(column))
+        })
+        .collect();
+    if !not_copied.is_empty() {
+        said.push(format!("{}: {}.", say("Not copied"), not_copied.join(", ")));
+    }
+    said.join(" ")
+}
+
+/// A note of a new row's form, under the panel's header from `top` down:
+/// its words wrapped to the panel's width over a rule, and said whole to a
+/// screen reader. Says where it ends.
+fn form_note(
+    ui: &mut egui::Ui,
+    full: Rect,
+    top: f32,
+    said: &str,
+    look: &Look,
+    palette: &Palette,
+) -> f32 {
+    let side = side(look);
+    let room = (full.width() - 2.0 * side).max(24.0);
+    let laid = Text::one(look, caption(look), said, palette.secondary)
+        .wrap(room)
+        .layout(ui.ctx());
+    let height = 9.0 + laid.height() + 9.0 + 1.0;
+    let strip = Rect::from_min_size(pos2(full.left(), top), vec2(full.width(), height));
+    if !look.terminal {
+        ui.painter()
+            .rect_filled(strip, CornerRadius::ZERO, palette.panel);
+    }
+    // The rule the panel's header has under it.
+    let rule = if look.terminal {
+        palette.outline
+    } else {
+        palette.surface_hover
+    };
+    widgets::hline(ui, strip.x_range(), strip.bottom() - 0.5, rule);
+    laid.paint(ui.painter(), pos2(strip.left() + side, strip.top() + 9.0));
+    widgets::announce(ui, strip, said);
+    strip.bottom()
 }
 
 /// The pencil of a list that can be edited: 22 pt, as Copy is.
@@ -2899,18 +3028,22 @@ fn attachment_card(
     );
 }
 
-/// The footer of a table's row: Duplicate and Delete, which wait for a
-/// later version, and under them how a value of the row is edited. `locked`
-/// is why no field of the row can be edited, in the look's words: the
-/// buttons say that under the pointer, and nothing is said of editing.
+/// The footer of a table's row: Duplicate, which makes a copy of the row,
+/// and Delete, which waits for a later version, and under them how a value
+/// of the row is edited. `locked` is why no field of the row can be
+/// edited, in the look's words: Delete says that under the pointer, and
+/// nothing is said of editing. `no_copy` is why no copy of the row can be
+/// made, where none can: what keeps a row from being added, which is not
+/// what keeps this one from being edited. Says whether a copy was asked
+/// for.
 fn editing_footer(
     ui: &mut egui::Ui,
     rect: Rect,
-    locked: Option<&str>,
+    (locked, no_copy): (Option<&str>, Option<&str>),
     look: &Look,
     palette: &Palette,
     locale: crate::i18n::Locale,
-) {
+) -> bool {
     let side = side(look);
     if !look.terminal {
         ui.painter()
@@ -2926,43 +3059,68 @@ fn editing_footer(
             palette.surface_hover
         },
     );
-    let later = gettext(
-        locale,
-        "Duplicating and deleting rows arrive in a later version",
-    );
-    // Why neither can be pressed: the row's reason, where it has one.
-    let why = locked.unwrap_or(later.as_ref());
+    // In the look's words, as the row's reason is: the terminal's in its
+    // lower case.
+    let later = look.label(&gettext(locale, "Deleting rows arrives in a later version"));
+    // Why Delete cannot be pressed: the row's reason, where it has one.
+    let no_delete = locked.unwrap_or(&later);
     let inner = rect.shrink2(vec2(side, 0.0));
     let gap = 6.0;
     let top = rect.top() + 1.0 + if look.terminal { 10.0 } else { 12.0 };
     let role = widgets::body(look);
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let mut copy = false;
     let height = if look.terminal {
-        // Two equal cells, the keys in the text colour: what waits is
-        // dashed, at 55%.
+        // Two equal cells, the keys in the text colour. What waits is
+        // dashed, at 55%. A key that works is whole.
         let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
         let (duplicate, delete) = (key(Command::DuplicateRow), key(Command::DeleteRow));
-        let keys = [(&duplicate, "duplicate"), (&delete, "delete")];
+        let keys = [
+            (&duplicate, "duplicate", no_copy),
+            (&delete, "delete", Some(no_delete)),
+        ];
         let width = (inner.width() - gap) / 2.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
-        for (index, (key, label)) in keys.iter().enumerate() {
+        for (index, (key, label, why)) in keys.into_iter().enumerate() {
             let place = Rect::from_min_size(
                 pos2(inner.left() + index as f32 * (width + gap), top),
                 vec2(width, 28.0),
             );
-            let response = ui.interact(place, ui.id().with(("edit", index)), Sense::hover());
             let name = format!("{key} {label}");
-            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
-            let _ = response.on_hover_text(why);
-            dashed(ui, place, faded(palette.outline));
+            let works = why.is_none();
+            match why {
+                // A key that works is named as text, as a new row's footer
+                // names its keys: the cell is nothing to press, and a
+                // button would say it is.
+                None => widgets::announce(ui, place, &name),
+                Some(why) => {
+                    let id = ui.id().with(("edit", index));
+                    let response = ui.interact(place, id, Sense::hover());
+                    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
+                    // Said to a screen reader as it is shown under the
+                    // pointer, as a disabled button says its reason.
+                    ui.ctx().accesskit_node_builder(response.id, |node| {
+                        node.set_description(why);
+                    });
+                    let _ = response.on_hover_text(why);
+                }
+            }
+            let shade = |color: egui::Color32| if works { color } else { faded(color) };
+            if works {
+                let stroke = Stroke::new(1.0, palette.outline);
+                ui.painter()
+                    .rect_stroke(place, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            } else {
+                dashed(ui, place, faded(palette.outline));
+            }
             // A cell too narrow for both shows its key alone.
-            let text = Text::one(look, role, key, faded(palette.text));
+            let text = Text::one(look, role, key, shade(palette.text));
             let total = measure(&name);
             let (total, text) = if total > width {
                 (measure(key), text)
             } else {
                 let text = text.space(role, " ");
-                (total, text.add(role, label, faded(palette.dim)))
+                (total, text.add(role, label, shade(palette.dim)))
             };
             let x = place.center().x - total / 2.0;
             widgets::paint_text(ui, x, place.center().y, text);
@@ -2972,24 +3130,29 @@ fn editing_footer(
         // Content-wide buttons sharing what is left equally: a 13 pt icon,
         // 6, the word.
         let labels = [
-            (Icon::Copy, gettext(locale, "Duplicate")),
-            (Icon::Trash2, gettext(locale, "Delete")),
+            (Icon::Copy, gettext(locale, "Duplicate"), no_copy),
+            (Icon::Trash2, gettext(locale, "Delete"), Some(no_delete)),
         ];
         let widths: Vec<f32> = labels
             .iter()
-            .map(|(_, text)| 13.0 + 6.0 + measure(text))
+            .map(|(_, text, _)| 13.0 + 6.0 + measure(text))
             .collect();
         let extra = (inner.width() - gap - widths.iter().sum::<f32>()) / 2.0;
         let mut x = inner.left();
-        for ((icon, text), width) in labels.iter().zip(widths) {
+        for (index, ((icon, text, why), width)) in labels.iter().zip(widths).enumerate() {
             let place = Rect::from_min_size(pos2(x, top), vec2(width + extra, 32.0));
             x += width + extra + gap;
-            widgets::ButtonSpec::new(text)
+            let button = widgets::ButtonSpec::new(text)
                 .icon(*icon)
                 .icon_size(13.0)
-                .padding(0.0)
-                .disabled(why)
-                .show_at(ui, place, look, palette);
+                .padding(0.0);
+            let button = match *why {
+                Some(why) => button.disabled(why),
+                None => button,
+            };
+            // Only Duplicate does anything yet: the first of the two.
+            let clicked = button.show_at(ui, place, look, palette).clicked();
+            copy |= clicked && index == 0;
         }
         32.0
     };
@@ -2997,7 +3160,7 @@ fn editing_footer(
     // terminal look's head names its keys, and a row that cannot be edited
     // says why at the top of the panel.
     if look.terminal || locked.is_some() {
-        return;
+        return copy;
     }
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
@@ -3016,6 +3179,7 @@ fn editing_footer(
         vec2(inner.width().max(1.0), 16.0),
     );
     widgets::announce(ui, place, &said);
+    copy
 }
 
 /// A dashed 1 pt outline round `rect`.
@@ -3229,5 +3393,68 @@ mod tests {
             harness.click("Show less");
             assert!(harness.has("Show all (560 B)"), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn a_copys_line_names_its_columns_and_why_each_was_left() {
+        use crate::edit::{Cleared, Copied, NotCopied};
+        let names = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let locale = crate::i18n::Locale::default();
+        let made = Copied {
+            copied: names(&["Title", "format", "pages", "price", "stock"]),
+            cleared: vec![
+                ("id".into(), Cleared::Identity),
+                ("isbn".into(), Cleared::Unique),
+            ],
+            not_copied: vec![("cover".into(), NotCopied::Binary)],
+        };
+        assert_eq!(
+            copy_line(&made, &Look::macos(), locale),
+            "Copied: Title, format and 3 more. Cleared: id (identity), isbn (unique). \
+             Not copied: cover (binary)."
+        );
+        // The terminal's words are in its case. A column's name keeps its.
+        assert_eq!(
+            copy_line(&made, &Look::omarchy(), locale),
+            "copied: Title, format and 3 more. cleared: id (identity), isbn (unique). \
+             not copied: cover (binary)."
+        );
+        // Up to three names are written out, and a sentence with no
+        // column is left out.
+        let few = Copied {
+            copied: names(&["a", "b", "c"]),
+            ..Copied::default()
+        };
+        assert_eq!(copy_line(&few, &Look::macos(), locale), "Copied: a, b, c.");
+        // Four are one too many, and one is written as it is.
+        let listed = |columns: &[&str]| {
+            let copied = names(columns);
+            let made = Copied {
+                copied,
+                ..Copied::default()
+            };
+            copy_line(&made, &Look::macos(), locale)
+        };
+        assert_eq!(listed(&["a", "b", "c", "d"]), "Copied: a, b and 2 more.");
+        assert_eq!(listed(&["a"]), "Copied: a.");
+        // Each reason in its words.
+        let all = Copied {
+            copied: Vec::new(),
+            cleared: vec![
+                ("a".into(), Cleared::Generated),
+                ("b".into(), Cleared::PrimaryKey),
+            ],
+            not_copied: vec![
+                ("c".into(), NotCopied::TooLarge),
+                ("d".into(), NotCopied::Unknown),
+            ],
+        };
+        assert_eq!(
+            copy_line(&all, &Look::macos(), locale),
+            "Cleared: a (generated), b (primary key). Not copied: c (too large), d (unknown)."
+        );
+        assert_eq!(copy_line(&Copied::default(), &Look::macos(), locale), "");
     }
 }

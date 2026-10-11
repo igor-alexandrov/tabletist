@@ -359,6 +359,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             })
             .is_some_and(|table| table.no_rows().is_none())
     });
+    // Mod+D makes a copy of the selected row wherever Mod+N adds a row.
+    // Like that key it does not ask what has the keyboard. With no row
+    // selected the reducer makes no copy either: asking here is what
+    // leaves the press untaken, as it is taken only where a copy can be
+    // made.
+    let copies = adds.filter(|&(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.selection.is_some())
+    });
     // The row panel's field that has the keyboard, of the table on screen:
     // its keys are read here with the grid's, so one key is never both's.
     let field = object.filter(|_| grid).and_then(|(tab, id)| {
@@ -508,6 +518,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // Something of the tab in front is loading or running: its cancel has
     // something to cancel.
     let busy = app.is_busy(active);
+    // Whether the frame brings a key press, asked before any is taken. One
+    // that is taken below (an arrow, Ctrl+L) ends the wait of a first key
+    // as a letter does, and the letters would not know it came.
+    let pressed = ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
+    });
     let mut actions = Vec::new();
     // The place of the tab asked for with its digit.
     let mut tab_asked = None;
@@ -563,6 +582,20 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         {
             let place = crate::edit::Place::Top;
             actions.push(Action::AddRow { tab, id, place });
+        }
+        // A fresh press only, as a held key adds one row. Not in a frame
+        // that brings a click: the click selects its row once the frame is
+        // drawn, and the copy would be of the row the selection leaves.
+        // The press is taken there all the same.
+        let clicked = input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::PointerButton { .. }));
+        if let Some((tab, id)) = copies
+            && on(input, Command::DuplicateRow, Scope::Grid).fresh
+            && !clicked
+        {
+            actions.push(Action::DuplicateRow { tab, id });
         }
         if let Some((tab, id)) = flips
             && on(input, Command::BooleanCycle, Scope::Grid).count > 0
@@ -806,7 +839,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if ctx.input(|input| input.pointer.any_pressed()) {
             forget_pending(ctx);
         }
-        letters(app, ctx, field, (scopes, tree_arrows), &mut actions);
+        letters(
+            app,
+            ctx,
+            field,
+            (scopes, tree_arrows, pressed),
+            &mut actions,
+        );
     } else {
         // The keys are a field's: a first key that waited is not the
         // first of what is typed once they are the grid's again.
@@ -1324,7 +1363,7 @@ fn letters(
     app: &mut App,
     ctx: &egui::Context,
     field: Option<usize>,
-    (scopes, tree_arrows): (&[Scope], bool),
+    (scopes, tree_arrows, pressed): (&[Scope], bool, bool),
     actions: &mut Vec<Action>,
 ) {
     // The letters the keymap has been given so far, read before anything
@@ -1370,14 +1409,10 @@ fn letters(
             _ => {}
         }
     }
-    // A frame without keys keeps a waiting first key (`d` of `dd`).
-    let keys = ctx.input(|input| {
-        input
-            .events
-            .iter()
-            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
-    });
-    if !keys {
+    // A frame without keys keeps a waiting first key (`d` of `dd`). Any
+    // key ends the wait, one that was taken before the letters are read
+    // too.
+    if !pressed {
         return;
     }
     let tab = app.active_tab_id();
@@ -1702,6 +1737,8 @@ fn letters(
                             | Command::UndoCell
                             | Command::AddRow
                             | Command::AddRowAbove
+                            | Command::PutRow
+                            | Command::PutRowAbove
                     )
             )
         })
@@ -1781,6 +1818,27 @@ fn letters(
                     (None, _) => crate::edit::Place::Top,
                 };
                 actions.push(Action::AddRow { tab, id, place });
+            }
+            // The cursor's row, kept on its tab for the keys that put a
+            // copy of it: in the Data view, with the keys on the rows or
+            // on a field of the row panel. For the clipboard too, where it
+            // is the page's.
+            (Some(Command::YankRow), Some(id)) if rows_show && !tree && selection.is_some() => {
+                actions.push(Action::YankRow { tab, id });
+                if let Some(text) = app.copy_text(true) {
+                    ctx.copy_text(text);
+                }
+                let said = crate::i18n::gettext(app.locale, "Row yanked");
+                crate::ui::toast::say(ctx, &app.look.label(&said));
+            }
+            // A copy of the yanked row below the cursor's, or above it
+            // with the capital. It may open an editor, as a new row does.
+            (Some(command @ (Command::PutRow | Command::PutRowAbove)), Some(id))
+                if edits && alone =>
+            {
+                opened = true;
+                let above = command == Command::PutRowAbove;
+                actions.push(Action::PutRow { tab, id, above });
             }
             // The row under the cursor is dropped where it is a new one,
             // with the keys on the rows or on a field of its form.

@@ -9,6 +9,8 @@ pub mod conflict_prompt;
 pub mod connect_dialog;
 pub mod data_view;
 #[cfg(test)]
+mod duplicate_tests;
+#[cfg(test)]
 mod env_tests;
 pub mod filter_bar;
 pub mod focus;
@@ -1046,7 +1048,7 @@ mod tests {
             };
             for text in others
                 .iter()
-                .chain(&["Rollback", "Duplicate row", "Ask AI"])
+                .chain(&["Rollback", "Paste as new rows", "Ask AI"])
             {
                 assert!(!shown(text), "{}: {text} is listed", look.name);
             }
@@ -14496,10 +14498,11 @@ mod tests {
         assert_eq!(harness.copied.as_deref(), Some("user2@example.com"));
     }
 
-    /// The brief's test 5, as far as it can go: the keys are claimed, and
-    /// nothing answers them until pasting and duplicating are built.
+    /// The brief's test 5, as far as it can go: the keys that paste are
+    /// claimed, and nothing answers them until pasting is built. A row is
+    /// duplicated: `duplicate_tests.rs` holds what its keys do.
     #[test]
-    fn the_keys_that_paste_and_duplicate_are_claimed_and_change_nothing() {
+    fn the_keys_that_paste_are_claimed_and_change_nothing() {
         use crate::keymap::{Command, Layout};
         let keymap = crate::keymap::Keymap::default();
         assert_eq!(keymap.label(Layout::Mac, Command::PasteCells), "⌘V");
@@ -14507,11 +14510,7 @@ mod tests {
         assert_eq!(keymap.label(Layout::Omarchy, Command::DuplicateRow), "yy p");
         assert_eq!(keymap.label(Layout::Omarchy, Command::CopyCells), "v y");
         assert_eq!(keymap.label(Layout::Omarchy, Command::PasteCells), "v p");
-        for command in [
-            Command::PasteCells,
-            Command::PasteNewRows,
-            Command::DuplicateRow,
-        ] {
+        for command in [Command::PasteCells, Command::PasteNewRows] {
             assert!(
                 !command.info().built,
                 "{command:?} is built: test what it does"
@@ -14532,19 +14531,12 @@ mod tests {
         let now = edits(&harness, tab, id);
         assert!(now.cells.is_empty() && now.added.is_empty() && now.editor.is_none());
         assert!(harness.app.dialog.is_none(), "no preview yet");
-        // Omarchy: yy p adds no row, yy P neither, and v p changes none.
+        // Omarchy: v p changes no cell.
         let (mut harness, tab, id) = normal_mode((1, 1));
-        for keys in [["y", "y", "p"], ["y", "y", "P"], ["v", "p", ""]] {
-            for text in keys.into_iter().filter(|text| !text.is_empty()) {
-                let key = Key::from_name(&text.to_uppercase()).expect("a letter");
-                type_key(&mut harness, key, text);
-            }
-            let now = edits(&harness, tab, id);
-            assert!(
-                now.cells.is_empty() && now.added.is_empty() && now.editor.is_none(),
-                "{keys:?}"
-            );
-        }
+        type_key(&mut harness, Key::V, "v");
+        type_key(&mut harness, Key::P, "p");
+        let now = edits(&harness, tab, id);
+        assert!(now.cells.is_empty() && now.added.is_empty() && now.editor.is_none());
     }
 
     /// The brief's test 6.
@@ -19056,7 +19048,8 @@ mod tests {
     }
 
     /// The buttons under the row panel's row, as the look names them, with
-    /// whether each can be pressed.
+    /// whether each can be pressed. In the terminal look they are keys, and
+    /// one that works is named as text, which holds its words as its value.
     fn footer_buttons(harness: &mut Harness, look: &Look) -> Vec<(&'static str, bool)> {
         let controls = if look.terminal {
             ["yy p duplicate", "dd delete"]
@@ -19066,14 +19059,14 @@ mod tests {
         let tree = harness.settle();
         let enabled = |name: &str| {
             let mut nodes = tree.nodes.iter();
-            let node = nodes.find(|(_, node)| node.label() == Some(name));
+            let node = nodes.find(|(_, node)| node.label().or_else(|| node.value()) == Some(name));
             !node.unwrap_or_else(|| panic!("no {name}")).1.is_disabled()
         };
         controls.map(|name| (name, enabled(name))).to_vec()
     }
 
     #[test]
-    fn the_row_panels_duplicate_and_delete_wait() {
+    fn the_row_panels_duplicate_can_be_pressed_and_delete_waits() {
         for look in Look::ALL {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (1, 1));
@@ -19084,10 +19077,10 @@ mod tests {
                     .map(|(_, enabled)| enabled)
                     .collect::<Vec<_>>()
             };
-            assert_eq!(pressable(&mut harness), [false, false], "{}", look.name);
+            assert_eq!(pressable(&mut harness), [true, false], "{}", look.name);
             // With a value pending as without.
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-            assert_eq!(pressable(&mut harness), [false, false], "{}", look.name);
+            assert_eq!(pressable(&mut harness), [true, false], "{}", look.name);
             // The panel is no mode to put it in: no button edits the row.
             let edit = if look.terminal { "e edit" } else { "Edit" };
             assert!(!has_button(&mut harness, edit), "{}", look.name);
@@ -23775,7 +23768,8 @@ mod tests {
             let owed = workspace.object_tab(id).unwrap().focus_field;
             assert_eq!(owed, None, "{}", look.name);
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
-            // Duplicate and Delete wait, as they do everywhere.
+            // A read-only connection takes no copy, and Delete waits as it does
+            // everywhere.
             let buttons = footer_buttons(&mut harness, &look);
             assert!(buttons.iter().all(|(_, enabled)| !enabled), "{}", look.name);
         }

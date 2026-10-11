@@ -9,7 +9,9 @@ What still holds of it: the tab's one editor and its place (`EditorPlace`),
 `Table::row_lock` and a field's own lock, "Editing in the grid…" for an
 edit asked for in the grid, the tall field of its step 2 (built since, see
 `docs/superpowers/plans/2026-10-06-row-inspector-tall-values.md`), and the
-edge cases under "Errors and edge cases".
+edge cases under "Errors and edge cases". Duplicate is built since
+2026-10-10 (`2026-10-10-row-duplication-design.md`): where the text below
+says Duplicate and Delete stay disabled, only Delete does.
 
 ## Intent
 

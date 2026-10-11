@@ -973,6 +973,9 @@ impl App {
             Action::SetBoolean { tab, id, value } => self.set_boolean(tab, id, value),
             Action::SetNow { tab, id } => self.set_now(tab, id),
             Action::AddRow { tab, id, place } => self.add_row(tab, id, place),
+            Action::DuplicateRow { tab, id } => self.duplicate_row(tab, id),
+            Action::YankRow { tab, id } => self.yank_row(tab, id),
+            Action::PutRow { tab, id, above } => self.put_row(tab, id, above),
             Action::DropRow { tab, id } => self.drop_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
                 // Not under a save: its answer is put into this set.

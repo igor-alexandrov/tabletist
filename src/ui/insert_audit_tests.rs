@@ -26,7 +26,7 @@ const NO_PUBLISHER: &str = "9100000000000000099";
 const HARBOR_PRESS: &str = "9100000000000000004";
 
 /// The Bookshop's covers, writable, the grid holding the keyboard.
-fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
+pub(super) fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
     let mut harness = Harness::new();
     harness.set_look(look);
     let (tab, id) = harness.book_covers();
@@ -37,7 +37,7 @@ fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
 
 /// The Bookshop's covers as an object of `kind`, on a connection that
 /// opens read-only or not, the grid holding the keyboard.
-fn covers_as(
+pub(super) fn covers_as(
     look: Look,
     kind: tabletist_db::ObjectKind,
     read_only: bool,
@@ -59,24 +59,24 @@ fn covers_as(
     (harness, tab, id)
 }
 
-fn edits(harness: &Harness, tab: ConnTabId, id: TabId) -> &Edits {
+pub(super) fn edits(harness: &Harness, tab: ConnTabId, id: TabId) -> &Edits {
     let workspace = harness.app.workspace(tab).unwrap();
     &workspace.object_tab(id).unwrap().edits
 }
 
-fn selected(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<(usize, usize)> {
+pub(super) fn selected(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<(usize, usize)> {
     let workspace = harness.app.workspace(tab).unwrap();
     let cell = workspace.object_tab(id).unwrap().selection?;
     Some((cell.row, cell.col))
 }
 
 /// Whether the last frame painted `text` as one piece.
-fn painted(harness: &Harness, text: &str) -> bool {
+pub(super) fn painted(harness: &Harness, text: &str) -> bool {
     harness.painted.iter().any(|(piece, _)| piece == text)
 }
 
 /// Selects the cell at `at` (row, column), as a click on it does.
-fn select(harness: &mut Harness, tab: ConnTabId, id: TabId, at: (usize, usize)) {
+pub(super) fn select(harness: &mut Harness, tab: ConnTabId, id: TabId, at: (usize, usize)) {
     let cell = CellPos {
         row: at.0,
         col: at.1,
@@ -86,7 +86,7 @@ fn select(harness: &mut Harness, tab: ConnTabId, id: TabId, at: (usize, usize)) 
 }
 
 /// A key the terminal look reads as the character it types.
-fn type_key(harness: &mut Harness, key: Key, text: &str) {
+pub(super) fn type_key(harness: &mut Harness, key: Key, text: &str) {
     harness.settle();
     harness.frame(vec![
         crate::testing::key(key, Modifiers::NONE),
@@ -98,7 +98,13 @@ fn type_key(harness: &mut Harness, key: Key, text: &str) {
 
 /// Types `text` over the cell at `at` and commits it: pending where the
 /// column takes it.
-fn set(harness: &mut Harness, tab: ConnTabId, id: TabId, at: (usize, usize), text: &str) {
+pub(super) fn set(
+    harness: &mut Harness,
+    tab: ConnTabId,
+    id: TabId,
+    at: (usize, usize),
+    text: &str,
+) {
     let cell = CellPos {
         row: at.0,
         col: at.1,
@@ -133,7 +139,7 @@ fn leave(harness: &mut Harness, tab: ConnTabId, id: TabId, at: (usize, usize), t
 }
 
 /// A new row under the header, its editor closed. Says its id.
-fn add(harness: &mut Harness, tab: ConnTabId, id: TabId) -> usize {
+pub(super) fn add(harness: &mut Harness, tab: ConnTabId, id: TabId) -> usize {
     let place = Place::Top;
     harness.app.apply(Action::AddRow { tab, id, place });
     harness.app.apply(Action::CancelEdit { tab, id });
@@ -188,7 +194,6 @@ fn j_on_the_last_row_adds_no_row() {
 
 /// INS-02a. Spec 4: Mod+D makes a copy of the selected row.
 #[test]
-#[ignore = "INS-02a: Mod+D does not duplicate a row yet"]
 fn mod_d_duplicates_the_selected_row() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     select(&mut harness, tab, id, (1, 2));
@@ -198,7 +203,6 @@ fn mod_d_duplicates_the_selected_row() {
 
 /// INS-02b. Spec 4: `yy` then `p` puts a copy of the row under the cursor.
 #[test]
-#[ignore = "INS-02b: yy p does not duplicate a row yet"]
 fn yy_p_duplicates_the_row_under_the_cursor() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     select(&mut harness, tab, id, (1, 2));
@@ -553,7 +557,7 @@ fn e_bang_drops_new_rows_with_everything_else() {
 
 /// The statements of the tab's review, each as one line of SQL, and how
 /// many of its comments are a new row's.
-fn reviewed(harness: &Harness, tab: ConnTabId, id: TabId) -> (Vec<String>, usize) {
+pub(super) fn reviewed(harness: &Harness, tab: ConnTabId, id: TabId) -> (Vec<String>, usize) {
     let review = edits(harness, tab, id).review.as_ref().expect("a review");
     let mut statements: Vec<String> = Vec::new();
     let mut new = 0;

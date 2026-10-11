@@ -373,7 +373,9 @@ commands! {
     AddRowAbove,
     AddRowAtEnd,
     DuplicateRow,
-    DuplicateRowAbove,
+    YankRow,
+    PutRow,
+    PutRowAbove,
     DeleteRow,
     OpenReferencedRow,
     ShowSavedRow,
@@ -579,10 +581,18 @@ impl Command {
             C::AddRow => info("Add row", "Add row", Editing),
             C::AddRowAbove => info("Add row above", "Add row", Editing),
             C::AddRowAtEnd => info("Add row after the last", "Add row", Editing).reserved(),
-            C::DuplicateRow => info("Duplicate row", "Duplicate row", Editing).reserved(),
-            C::DuplicateRowAbove => {
-                info("Duplicate row above", "Duplicate row", Editing).reserved()
-            }
+            C::DuplicateRow => info("Duplicate row", "Duplicate row", Editing),
+            C::YankRow => info("Yank the row", "Duplicate row", Editing),
+            C::PutRow => info(
+                "Put a copy of the yanked row below",
+                "Duplicate row",
+                Editing,
+            ),
+            C::PutRowAbove => info(
+                "Put a copy of the yanked row above",
+                "Duplicate row",
+                Editing,
+            ),
             C::DeleteRow => info("Delete row", "Delete row", Editing),
             C::OpenReferencedRow => info("Open referenced row", "Open referenced row", Editing),
             C::ShowSavedRow => info(
@@ -1108,13 +1118,20 @@ pub const BINDINGS: &[Binding] = {
         bind(C::AddRow, GRID, keys(&[k("cmd+n")]).any(), keys(&[k("o")])),
         bind(C::AddRowAbove, GRID, NONE, keys(&[k("O")])),
         bind(C::AddRowAtEnd, GRID, keys(&[k("down")]), NONE).when(When::LastRow),
+        // Wherever the key that adds a row is read: it does not ask what
+        // has the keyboard. In the terminal look a copy is two keys, each
+        // a command of its own: the row is yanked, and put as often as it
+        // is asked for.
         bind(
             C::DuplicateRow,
             GRID,
-            keys(&[k("cmd+d")]),
-            keys(&[k("yy p")]),
+            keys(&[k("cmd+d")]).any(),
+            keys(&[via("yy"), via("p")]).shown("yy p"),
         ),
-        bind(C::DuplicateRowAbove, GRID, NONE, keys(&[k("yy P")])),
+        // From a field of the row panel too, as the letters that edit are.
+        bind(C::YankRow, CELLS, NONE, keys(&[k("yy")])),
+        bind(C::PutRow, CELLS, NONE, keys(&[k("p")])),
+        bind(C::PutRowAbove, CELLS, NONE, keys(&[k("P")])),
         bind(
             C::DeleteRow,
             GRID,
@@ -2557,11 +2574,13 @@ mod tests {
         let omarchy = |scope, typed| keymap.typed(Layout::Omarchy, scope, &nothing, typed);
         use Typed::{Claimed, Nothing, Waiting};
         let command = Typed::Command;
-        // A row is duplicated with three letters, and that is not built.
+        // A row is yanked with two letters, and a copy of it put with a
+        // third: each a key of its own, so the copy can be put again.
         assert_eq!(omarchy(Scope::Grid, "y"), Waiting);
-        assert_eq!(omarchy(Scope::Grid, "yy"), Waiting);
-        assert_eq!(omarchy(Scope::Grid, "yyp"), Claimed);
-        assert_eq!(omarchy(Scope::Grid, "yyP"), Claimed);
+        assert_eq!(omarchy(Scope::Grid, "yy"), command(Command::YankRow));
+        assert_eq!(omarchy(Scope::Grid, "p"), command(Command::PutRow));
+        assert_eq!(omarchy(Scope::Grid, "P"), command(Command::PutRowAbove));
+        assert_eq!(omarchy(Scope::Inspector, "yy"), command(Command::YankRow));
         // A connection is, with the same three.
         assert_eq!(
             omarchy(Scope::Connections, "yyp"),
