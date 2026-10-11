@@ -9,8 +9,11 @@ is built: a foreign key cell of the grid, on an existing or a new row,
 searches and picks in both looks. Its plan's "What the spec asks, and what
 gets built" says what of sections 2 to 5 the app does otherwise: the
 Omarchy field stays on the cell, the wheel does not scroll the list, and a
-label that is cut is drawn without its match. What is left is listed under
-"Delivery".
+label that is cut is drawn without its match. Run 3
+(`docs/superpowers/plans/2026-10-10-foreign-key-editing-3-row-panel.md`)
+is built: the row panel's field has the same list. Its field has no
+magnifier, prompt or count, and no picture of the picker is on the website
+yet. What is left is listed under "Delivery".
 
 This is one editor of slice 2 of `2026-10-03-value-editing-core-design.md`
 ("Editors by type"): the foreign key search. The other editors of that

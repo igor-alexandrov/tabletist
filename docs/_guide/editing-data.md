@@ -98,8 +98,8 @@ The list holds up to 50 rows and shows eight at a time. Its last line says
 when the table has more: type more to narrow them. Where the column takes
 NULL, **Set NULL** under the list sets it, as Cmd/Ctrl+Backspace does.
 
-The picker is on the cells of the grid, in a new row too. In the row panel
-a foreign key is still edited as text, and so is a key of several columns.
+The picker is on the cells of the grid and on the fields of the row panel,
+in a new row and in a copy too. A key of several columns is edited as text.
 
 ## Save
 
