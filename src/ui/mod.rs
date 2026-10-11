@@ -20,6 +20,7 @@ pub mod host_key_prompt;
 mod insert_audit_tests;
 pub mod json_text;
 pub mod json_view;
+mod key_picker;
 #[cfg(test)]
 mod key_picker_tests;
 pub mod keys;

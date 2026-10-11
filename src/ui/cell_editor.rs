@@ -16,6 +16,11 @@ use crate::ui::keys::{consume_press, copy_is_ctrl_c, is_press};
 use crate::ui::states::Tone;
 use crate::ui::{grid, sql_complete, widgets};
 
+/// The magnifier in a foreign key cell's field, and the room it takes
+/// with the gap after it.
+const SEARCH_ICON: f32 = 12.0;
+const SEARCH_LEAD: f32 = SEARCH_ICON + 6.0;
+
 /// What a frame of an open editor asks for.
 #[derive(Debug, Default, PartialEq)]
 pub struct Outcome {
@@ -55,6 +60,24 @@ pub struct Target {
     pub hold: bool,
     /// The column keeps a date or a time: the editor offers now.
     pub now: bool,
+    /// The cell is a foreign key's, and its editor searches the table the
+    /// key points at.
+    pub search: Option<Search>,
+}
+
+/// What a foreign key cell's field says of its search.
+pub struct Search {
+    /// The table that is searched.
+    pub table: String,
+    /// How many options the list holds, as the terminal look counts them
+    /// in the field: `2`, or `50+`. `None` before the first answer.
+    pub count: Option<String>,
+    /// The cell's column takes NULL: the list's foot offers Set NULL.
+    pub nullable: bool,
+    /// A commit took the text and the column refused it: the field shows
+    /// why. Until then the text is a search, and the field says nothing
+    /// of what the column would make of it.
+    pub refused: bool,
 }
 
 /// The now button beside a date or time cell's editor, at `place`, in the
@@ -126,6 +149,16 @@ fn take_keyboard(ctx: &egui::Context, id: Id, text: &str) {
     // it has the keyboard: ask for that frame, since no event need follow
     // the one that opened the editor.
     ctx.request_repaint();
+}
+
+/// As [`take_keyboard`], with the whole of `text` selected: what is typed
+/// next takes its place.
+fn take_keyboard_selected(ctx: &egui::Context, id: Id, text: &str) {
+    take_keyboard(ctx, id, text);
+    let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    let range = CCursorRange::two(CCursor::new(0), CCursor::new(text.chars().count()));
+    state.cursor.set_char_range(Some(range));
+    state.store(ctx, id);
 }
 
 /// Where it is kept that a pointer asked for the editor of the field `id`
@@ -294,7 +327,11 @@ pub fn field(
     let mut outcome = Outcome::default();
     let id = target.id;
     if std::mem::take(&mut editor.focus) {
-        take_keyboard(ui.ctx(), id, &editor.text);
+        if std::mem::take(&mut editor.select) {
+            take_keyboard_selected(ui.ctx(), id, &editor.text);
+        } else {
+            take_keyboard(ui.ctx(), id, &editor.text);
+        }
     }
     let has = ui.memory(|memory| memory.has_focus(id));
     let had = had_keyboard(ui.ctx(), id);
@@ -335,10 +372,18 @@ pub fn field(
         right -= laid.paint_right(ui.painter(), right, center) + pad;
     }
     let line = role.row_height(ui.ctx(), look.faces);
+    // A foreign key's field has the magnifier of a search field at its
+    // start, and its text begins after it. The terminal look's prompt
+    // takes its place (task 5).
+    let lead = match &target.search {
+        Some(_) if !look.terminal => SEARCH_LEAD,
+        _ => 0.0,
+    };
+    let text_left = rect.left() + pad + lead;
     // Where the text is: where the cell had it.
     let inner = Rect::from_min_max(
-        pos2(rect.left() + pad, center - line / 2.0),
-        pos2(right.max(rect.left() + pad), center + line / 2.0),
+        pos2(text_left, center - line / 2.0),
+        pos2(right.max(text_left), center + line / 2.0),
     );
     // The field is the whole cell, the text inside its margins: a click
     // beside the text, in the cell's own padding or on the count, places
@@ -385,16 +430,34 @@ pub fn field(
     }
     let response: egui::Response = output.response.response;
     // The name only: the field keeps the role and the value egui gave it.
-    let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+    let name = match &target.search {
+        // A placeholder each: a translation puts the names where they read.
+        Some(search) => gettext(locale, "Search {table} for {column}")
+            .replace("{table}", &display_safe(&search.table))
+            .replace("{column}", &display_safe(&target.name)),
+        None => format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name)),
+    };
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
+    if lead > 0.0 {
+        let place = Rect::from_center_size(
+            pos2(rect.left() + pad + SEARCH_ICON / 2.0, center),
+            vec2(SEARCH_ICON, SEARCH_ICON),
+        );
+        crate::theme::Icon::Search
+            .image(palette.secondary, SEARCH_ICON)
+            .paint_at(ui, place);
+    }
     let has = response.has_focus();
     if has {
         hold_keys(ui.ctx(), id);
     }
-    // The ring is the cell's: red while the text fails its check.
-    let failing = editor.problem.is_some();
+    // The ring is the cell's: red while the text fails its check. A
+    // foreign key's text is a search until a commit takes it: what its
+    // column would say of it shows only once it was refused.
+    let said = target.search.as_ref().is_none_or(|search| search.refused);
+    let failing = editor.problem.is_some() && said;
     if look.terminal {
         // The cursor's line, as the grid draws it round the cell its keys
         // are on, and no halo: the grid marks its own cell.
@@ -415,9 +478,11 @@ pub fn field(
     } else {
         focus::hint(ui, &response, rect, Ring::Field { radius: 0 });
     }
-    if let (Some(problem), true) = (&editor.problem, target.hold) {
+    if let (Some(problem), true, true) = (&editor.problem, target.hold, said) {
         let message = problem_text(problem, &target.type_name, Some(&editor.text), locale);
-        say_under(ui, rect, id, &message, look, palette);
+        // The list is under a foreign key's cell: the note goes over it.
+        let above = target.search.is_some();
+        say_under(ui, rect, id, &message, above, look, palette);
     }
     outcome.changed = response.changed();
     keyboard_after(ui.ctx(), target, has, had, &mut outcome);
@@ -1053,16 +1118,25 @@ fn band(
 }
 
 /// Paints `message` under the field at `rect`, or over it where the grid
-/// ends under it: what the text fails, in red. Over the rows, which are
-/// drawn after the field's.
-fn say_under(ui: &Ui, rect: Rect, id: Id, message: &str, look: &Look, palette: &Palette) {
+/// ends under it, or whatever the room, where `above` says something else
+/// stands under it (a foreign key's list): what the text fails, in red.
+/// Over the rows, which are drawn after the field's.
+fn say_under(
+    ui: &Ui,
+    rect: Rect,
+    id: Id,
+    message: &str,
+    above: bool,
+    look: &Look,
+    palette: &Palette,
+) {
     let clip = ui.clip_rect();
     let laid = Text::one(look, widgets::secondary(look), message, palette.danger).layout(ui.ctx());
     let size = laid.size() + vec2(12.0, 6.0);
     // Clear of the field's halo.
     let gap = 4.0;
     let below = rect.bottom() + gap;
-    let top = if below + size.y > clip.bottom() {
+    let top = if above || below + size.y > clip.bottom() {
         rect.top() - gap - size.y
     } else {
         below

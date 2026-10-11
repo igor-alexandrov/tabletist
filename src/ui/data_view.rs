@@ -20,6 +20,7 @@ use crate::ui::cell_editor;
 use crate::ui::focus;
 use crate::ui::format;
 use crate::ui::grid::{self, Cell, Column, Mark, Style};
+use crate::ui::key_picker;
 use crate::ui::states;
 use crate::ui::widgets;
 
@@ -1272,6 +1273,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         .editor
         .as_ref()
         .and_then(|editor| editor_target(workspace, object, tab, editor.cell, hold));
+    // The last pick of a foreign key's list, while its cell still holds
+    // it: said to a screen reader.
+    let picked = object.edits.picked.as_ref().and_then(|picked| {
+        let pending = object.edits.cells.get(&picked.at)?;
+        let holds = matches!(&pending.new, NewValue::Text(text) if *text == picked.key);
+        let column = object.rows.value.as_ref()?.columns.get(picked.at.1)?;
+        holds.then(|| key_picker::picked_text(&column.name, picked, locale))
+    });
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
     // changed.
@@ -1462,6 +1471,46 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 cell
             },
         );
+        if let Some(words) = &picked {
+            // On a point of the grid: a larger node would take the pointer
+            // from the cells under it.
+            let at = Rect::from_min_size(ui.max_rect().min, vec2(1.0, 1.0));
+            widgets::announce_polite(ui, at, words);
+        }
+        // A foreign key cell's list, under the cell its field is on. A
+        // press on it is the editor's own: the field keeps the keyboard,
+        // and the frame does not read as an edit that was left.
+        let mut pick = None;
+        // Only while the cell is in sight, its top edge clear of the
+        // header: the list hangs from the part of the cell that shows.
+        let hangs = output
+            .editing_rect
+            .zip(output.body)
+            .and_then(|(cell, body)| key_picker::hung_from(cell, body));
+        if !large
+            && let (Some(editor), Some(target)) = (editor.as_deref(), &target)
+            && let Some(picker) = &editor.picker
+            && let Some(search) = &target.search
+            && let Some(anchor) = hangs
+        {
+            let names = key_picker::Names {
+                table: &picker.target.name,
+                nullable: search.nullable,
+            };
+            let skin = (&look, &palette, locale);
+            let shown = key_picker::show(ui, picker, &editor.text, anchor, target.id, &names, skin);
+            if shown.pressed {
+                ui.memory_mut(|memory| memory.request_focus(target.id));
+                outcome.left = false;
+                outcome.kept = false;
+            }
+            let id = object_tab;
+            if let Some(index) = shown.picked {
+                pick = Some(Action::PickOption { tab, id, index });
+            } else if shown.null {
+                pick = Some(Action::PickerNull { tab, id });
+            }
+        }
         if large
             && let (Some(editor), Some(target)) = (editor, &target)
             && let Some(anchor) = output.editing_rect
@@ -1476,7 +1525,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         if outcome.changed {
             actions.push(Action::EditorTyped { tab, id });
         }
-        if outcome.now {
+        // A pick ends the edit: the list was pressed, so nothing in this
+        // frame reads as the edit left, and the pick goes first.
+        if let Some(pick) = pick {
+            actions.push(pick);
+        } else if outcome.now {
             actions.push(Action::SetNow { tab, id });
         } else if outcome.large {
             actions.push(Action::EditorBreak { tab, id });
@@ -1658,6 +1711,24 @@ pub(super) fn editor_target(
         now: table
             .column(cell.col)
             .is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
+        search: object
+            .edits
+            .editor
+            .as_ref()
+            .filter(|editor| editor.cell == cell)
+            .and_then(|editor| editor.picker.as_ref())
+            .map(|picker| cell_editor::Search {
+                table: picker.target.name.clone(),
+                count: picker.listed.as_ref().map(|_| {
+                    if picker.more {
+                        format!("{}+", crate::key_picker::LIMIT)
+                    } else {
+                        picker.options.len().to_string()
+                    }
+                }),
+                nullable: table.column(cell.col).is_some_and(|column| column.nullable),
+                refused: picker.refused,
+            }),
     })
 }
 

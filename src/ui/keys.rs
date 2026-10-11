@@ -319,12 +319,29 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id));
+    // The table on screen has a foreign key cell's picker open, and its
+    // field has the keyboard: the list's keys are read here, before the
+    // shortcuts below and before the field.
+    let picking = object.filter(|&(tab, id)| {
+        let field = crate::ui::cell_editor::field_id(tab, id);
+        let has = ctx.memory(|memory| memory.has_focus(field));
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.edits.editor.as_ref())
+            // An editor that is about to take the keyboard counts: its
+            // field takes it a frame after the editor opens.
+            .is_some_and(|editor| (has || editor.focus) && editor.picker.is_some() && !editor.large)
+    });
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
         // The completion list's keys come first: the editor never sees
         // them, nor do the shortcuts below (Ctrl+N, Ctrl+P).
         if let Some(editor) = in_editor {
             completion_keys(input, editor, completing, terminal, &mut actions);
+        }
+        // The foreign key picker's keys, by the same rule.
+        if let Some((tab, id)) = picking {
+            picker_keys(input, (tab, id), terminal, &mut actions);
         }
         // Running works while typing: the editor never sees these. A held
         // chord runs once, or each repeat would cancel the run before it.
@@ -761,6 +778,34 @@ struct Completing {
     /// is already typed, or only a guess at a word that may be whole (see
     /// `Completion::enter_is_a_line_break`).
     enter_breaks: bool,
+}
+
+/// The keys that move in the list of a foreign key cell's picker, whose
+/// field has the keyboard. Enter, Tab and Esc are the field's
+/// (`cell_editor::ending_keys`): the reducer asks the picker what Enter
+/// takes. The terminal's Ctrl+N and Ctrl+P are the list's as long as it
+/// is open: they never reach New connection and Quick open.
+fn picker_keys(
+    input: &mut egui::InputState,
+    (tab, id): (ConnTabId, TabId),
+    terminal: bool,
+    actions: &mut Vec<Action>,
+) {
+    let page = crate::key_picker::VISIBLE as isize;
+    for (modifiers, key, by, taken) in [
+        (Modifiers::NONE, Key::ArrowDown, 1, true),
+        (Modifiers::NONE, Key::ArrowUp, -1, true),
+        (Modifiers::NONE, Key::PageDown, page, true),
+        (Modifiers::NONE, Key::PageUp, -page, true),
+        (Modifiers::CTRL, Key::N, 1, terminal),
+        (Modifiers::CTRL, Key::P, -1, terminal),
+    ] {
+        if taken {
+            // One step for each press: a frame may hold several.
+            let presses = take_press(input, modifiers, key);
+            actions.extend((0..presses).map(|_| Action::PickerMove { tab, id, by }));
+        }
+    }
 }
 
 /// The keys of the completion list of `editor`, which has the keyboard:

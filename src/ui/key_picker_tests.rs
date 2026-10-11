@@ -8,6 +8,8 @@
 
 use std::time::{Duration, Instant};
 
+use egui::accesskit::Role;
+use egui::{Key, Modifiers};
 use tabletist_db::{LookupPart, NewValue, ObjectRef, Value};
 
 use crate::backend::{Command, Event, RequestId};
@@ -1075,4 +1077,578 @@ fn an_enter_kept_across_a_prompt_is_lost_and_the_next_one_takes() {
         pending(&harness, tab, id, 1).as_deref(),
         Some(HARBOR_LIGHTS)
     );
+}
+
+/// Types `text` on the selected cell, a frame at a time, and answers what
+/// the picker asks.
+fn type_on_cell(harness: &mut Harness, text: &str) {
+    harness.frame(vec![egui::Event::Text(text.into())]);
+    harness.settle();
+    harness.answer_structure(publishers_structure());
+    harness.settle();
+    harness.answer_lookups(&PUBLISHERS);
+    harness.settle();
+}
+
+fn select(harness: &mut Harness, tab: ConnTabId, id: TabId, row: usize) {
+    let cell = CellPos {
+        row,
+        col: PUBLISHER,
+    };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+    harness.settle();
+}
+
+/// Tests 9 and 10: the field and the list are named as the board names
+/// them, and the head line says what is listed.
+#[test]
+fn the_field_and_the_list_are_named_for_the_table_they_search() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    let tree = harness.settle();
+    assert!(
+        crate::testing::node(&tree, "Search publishers for publisher_id", Role::TextInput)
+            .is_some(),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+    assert!(crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_some());
+    assert!(harness.has("publishers matching \"harb\" · ↑↓ choose · ↩ set"));
+    assert!(
+        crate::testing::node(
+            &tree,
+            "Harbor Press, 9100000000000000004",
+            Role::ListBoxOption
+        )
+        .is_some()
+    );
+    assert!(harness.has("2 matches in publishers"));
+    assert!(harness.has("Esc cancels"));
+    // NOT NULL: no Set NULL.
+    assert!(crate::testing::node(&tree, "Set NULL", Role::Button).is_none());
+}
+
+/// Test 11 through the keys: the arrows move the list, not the grid's
+/// selection, and Enter takes.
+#[test]
+fn the_keys_reach_the_list_while_the_field_has_the_keyboard() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(1));
+    assert_eq!(selection(&harness, tab, id), (0, PUBLISHER));
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+    assert_eq!(selection(&harness, tab, id), (1, PUBLISHER));
+    // What a screen reader is told of the pick.
+    assert!(harness.has("publisher_id set to 9100000000000000007, Harbor Lights"));
+}
+
+/// Test 12: a click on an option takes it, and the text typed is not
+/// first kept as a value.
+#[test]
+fn a_click_on_an_option_takes_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    harness.click("Harbor Lights, 9100000000000000007");
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+}
+
+/// Test 13, on macOS: Esc closes the list and leaves the cell as it was.
+#[test]
+fn esc_closes_the_list_without_a_change() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    let tree = harness.settle();
+    assert!(crate::testing::node(&tree, "Matching publishers", Role::ListBox).is_none());
+}
+
+/// Test 19: nothing found, a failure, and more than the list holds each
+/// have their line.
+#[test]
+fn the_list_says_when_it_has_nothing_failed_or_holds_more() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "zzz");
+    assert!(harness.has("No publishers match \"zzz\""));
+    harness.press(Key::Escape, Modifiers::NONE);
+
+    select(&mut harness, tab, id, 0);
+    harness.frame(vec![egui::Event::Text("h".into())]);
+    harness.settle();
+    harness.fail_lookup(tabletist_db::Error::query(
+        "permission denied for table publishers",
+    ));
+    assert!(harness.has("permission denied for table publishers"));
+    harness.press(Key::Escape, Modifiers::NONE);
+
+    // Sixty publishers whose names hold an x: fifty are listed.
+    let names: Vec<String> = (0..60).map(|index| format!("Annex {index}")).collect();
+    let many: Vec<(i64, &str)> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (index as i64 + 1, name.as_str()))
+        .collect();
+    select(&mut harness, tab, id, 0);
+    harness.frame(vec![egui::Event::Text("x".into())]);
+    harness.settle();
+    harness.answer_lookups(&many);
+    assert!(harness.has("First 50 shown. Keep typing to narrow."));
+    assert!(harness.has("50 or more matches in publishers"));
+}
+
+/// Test 18, the nullable half: the foot offers Set NULL, and it sets
+/// NULL.
+#[test]
+fn a_nullable_columns_list_sets_null() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let tab = harness.connect_fake_as(false);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: tabletist_db::ObjectRef::new("main", "book_covers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    let mut structure = crate::testing::keyed_covers_structure();
+    structure.columns[PUBLISHER].nullable = true;
+    harness.answer_structure(structure);
+    harness.answer_rows(crate::testing::keyed_covers_page());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    harness.click("Set NULL");
+    assert!(!editing(&harness, tab, id));
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(matches!(
+        object
+            .edits
+            .cells
+            .get(&(0, PUBLISHER))
+            .map(|pending| &pending.new),
+        Some(NewValue::Null)
+    ));
+}
+
+/// Clicks the node `label` of `role` with the pointer, as a mouse does:
+/// moved onto it, pressed and released in frames of their own. The press
+/// takes the keyboard from a field that is not asked to keep it.
+fn pointer_click(harness: &mut Harness, label: &str, role: Role) {
+    let tree = harness.settle();
+    let at = crate::testing::bounds(&tree, label, role)
+        .unwrap_or_else(|| {
+            panic!(
+                "nothing labelled {label:?}: {:?}",
+                crate::testing::labels(&tree)
+            )
+        })
+        .center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![button(true)]);
+    harness.frame(vec![button(false)]);
+    harness.settle();
+}
+
+/// Test 12, as a mouse does it: the press on an option is the list's, so
+/// the frame does not read as the editor left, and the text typed is not
+/// first kept as a value.
+#[test]
+fn a_pointer_click_on_an_option_takes_it_and_not_the_text() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    pointer_click(
+        &mut harness,
+        "Harbor Lights, 9100000000000000007",
+        Role::ListBoxOption,
+    );
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+}
+
+/// A press between the options, on the list's head or foot, is the list's
+/// too: the editor stays open with the text as it was.
+#[test]
+fn a_press_beside_the_options_keeps_the_editor_and_its_text() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    pointer_click(&mut harness, "Esc cancels", Role::Label);
+    assert!(editing(&harness, tab, id));
+    assert!(picker(&harness, tab, id).is_some());
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    // The keyboard is the field's still: Enter takes the highlighted row.
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+}
+
+/// Spec 5: while the text is a search the field says nothing of what the
+/// column would make of it. Once a commit was refused it says why, above
+/// the cell, since the list is under it.
+#[test]
+fn the_field_says_what_the_column_refuses_only_after_a_refused_commit() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "zzz");
+    let note = "INTEGER expects a whole number";
+    assert!(!harness.has(note), "said while it is a search");
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(editing(&harness, tab, id));
+    let tree = harness.settle();
+    let said = crate::testing::bounds(&tree, note, Role::Label)
+        .unwrap_or_else(|| panic!("not said: {:?}", crate::testing::labels(&tree)));
+    let field =
+        crate::testing::bounds(&tree, "Search publishers for publisher_id", Role::TextInput)
+            .expect("the field");
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    assert!(said.bottom() <= field.top(), "{said:?} {field:?}");
+    assert!(list.top() >= field.bottom(), "{list:?} {field:?}");
+}
+
+/// The list is under the cell and inside the window.
+#[test]
+fn the_list_stands_under_its_cell_and_inside_the_window() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    let tree = harness.settle();
+    let field =
+        crate::testing::bounds(&tree, "Search publishers for publisher_id", Role::TextInput)
+            .expect("the field");
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    assert!(list.top() >= field.bottom(), "{list:?} {field:?}");
+    assert!(
+        list.left() >= 0.0 && list.right() <= harness.size.x,
+        "{list:?}"
+    );
+    assert!(list.bottom() <= harness.size.y, "{list:?}");
+}
+
+/// The Bookshop's covers in a window of `size`, as [`covers_in`] has them,
+/// with `rows` rows in the page.
+fn covers_sized(size: egui::Vec2, rows: usize) -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::with_size(size);
+    harness.set_look(Look::macos());
+    let tab = harness.connect_fake_as(false);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: ObjectRef::new("main", "book_covers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(crate::testing::keyed_covers_structure());
+    let mut page = crate::testing::book_covers_page(rows);
+    for (row, (key, _)) in page.rows.iter_mut().zip(PUBLISHERS) {
+        row[1] = Value::Int(key);
+    }
+    harness.answer_rows(page);
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    harness.settle();
+    (harness, tab, id)
+}
+
+/// Sixty publishers whose names hold an x: more than the list holds.
+fn annexes() -> Vec<String> {
+    (0..60).map(|index| format!("Annex {index}")).collect()
+}
+
+/// Types an x on the selected cell, and has it answered by `names`, the
+/// publishers numbered from 1.
+fn search_annexes(harness: &mut Harness, names: &[String]) {
+    harness.frame(vec![egui::Event::Text("x".into())]);
+    harness.settle();
+    harness.answer_structure(publishers_structure());
+    let many: Vec<(i64, &str)> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (index as i64 + 1, name.as_str()))
+        .collect();
+    harness.answer_lookups(&many);
+    harness.settle();
+}
+
+fn window_of(harness: &Harness) -> egui::Rect {
+    egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size)
+}
+
+/// A full list does not run off the window's bottom: with the cell near
+/// it, the list takes the side with more room, above the cell, and shows
+/// the options that fit there.
+#[test]
+fn a_list_that_does_not_fit_below_goes_above_with_fewer_options() {
+    let (mut harness, tab, id) = covers_sized(egui::vec2(1280.0, 500.0), 3);
+    select(&mut harness, tab, id, 0);
+    search_annexes(&mut harness, &annexes());
+    let tree = harness.settle();
+    let field =
+        crate::testing::bounds(&tree, "Search publishers for publisher_id", Role::TextInput)
+            .expect("the field");
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    assert!(window_of(&harness).contains_rect(list), "{list:?}");
+    assert!(list.bottom() <= field.top(), "{list:?} {field:?}");
+    // Fewer than eight options, and the first of them is drawn.
+    let drawn = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == Role::ListBoxOption)
+        .count();
+    assert!((1..8).contains(&drawn), "{drawn}");
+}
+
+/// Where eight options fit on neither side, the highlighted one is still
+/// among those drawn, wherever the keys take it.
+#[test]
+fn the_highlighted_option_is_drawn_in_a_short_window() {
+    let (mut harness, tab, id) = covers_sized(egui::vec2(1280.0, 340.0), 3);
+    select(&mut harness, tab, id, 0);
+    search_annexes(&mut harness, &annexes());
+    for _ in 0..7 {
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+    }
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(7));
+    let tree = harness.settle();
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    assert!(window_of(&harness).contains_rect(list), "{list:?}");
+    assert!(
+        crate::testing::node(&tree, "Annex 7, 8", Role::ListBoxOption).is_some(),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+}
+
+/// The list hangs from its cell while the cell shows. The harness cannot
+/// scroll an edited cell away (the grid brings the cell it edits back into
+/// view every frame), so the rule is checked on its own.
+#[test]
+fn a_list_hangs_only_from_a_cell_that_shows() {
+    use super::key_picker::hung_from;
+    let body = egui::Rect::from_min_max(egui::pos2(0.0, 40.0), egui::pos2(600.0, 400.0));
+    let cell = |top: f32, left: f32| {
+        egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(100.0, 30.0))
+    };
+    // In sight: the list hangs from the cell itself.
+    assert_eq!(hung_from(cell(100.0, 10.0), body), Some(cell(100.0, 10.0)));
+    // Its top edge under the header, wholly or by a little.
+    assert_eq!(hung_from(cell(-20.0, 10.0), body), None);
+    assert_eq!(hung_from(cell(30.0, 10.0), body), None);
+    // Below the body, or beside it.
+    assert_eq!(hung_from(cell(410.0, 10.0), body), None);
+    assert_eq!(hung_from(cell(100.0, 620.0), body), None);
+    assert_eq!(hung_from(cell(100.0, -150.0), body), None);
+    // Cut at the bottom or at a side: from the part that shows.
+    let cut = hung_from(cell(385.0, 10.0), body).unwrap();
+    assert_eq!(cut.bottom(), 400.0);
+    let cut = hung_from(cell(100.0, 560.0), body).unwrap();
+    assert_eq!(cut.right(), 600.0);
+}
+
+/// A line of words longer than the list is cut with "…" inside it, and a
+/// screen reader has the whole of it.
+#[test]
+fn a_long_search_text_is_cut_inside_the_list() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    let long = "harbor press and the lights of the north";
+    assert_eq!(long.chars().count(), 40);
+    type_on_cell(&mut harness, long);
+    let head = format!("publishers matching \"{long}\" · ↑↓ choose · ↩ set");
+    assert!(harness.has(&head), "the whole head line is not announced");
+    assert!(harness.has(&format!("No publishers match \"{long}\"")));
+    let tree = harness.settle();
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    let lines: Vec<_> = harness
+        .text_rects
+        .iter()
+        .filter(|(text, _)| {
+            text.starts_with("publishers matching") || text.starts_with("No publishers")
+        })
+        .cloned()
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for (text, rect) in lines {
+        assert!(text.ends_with('…'), "{text:?}");
+        assert!(list.contains_rect(rect), "{text:?} {rect:?} {list:?}");
+    }
+}
+
+/// The error a database gives is a line of the list too, and is cut.
+#[test]
+fn a_long_error_is_cut_inside_the_list() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    harness.frame(vec![egui::Event::Text("h".into())]);
+    harness.settle();
+    harness.answer_structure(publishers_structure());
+    let words = "permission denied for table publishers because the role has no grant on it";
+    harness.fail_lookup(tabletist_db::Error::query(words));
+    assert!(harness.has(words));
+    let tree = harness.settle();
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    let cut = harness
+        .text_rects
+        .iter()
+        .find(|(text, _)| text.starts_with("permission denied"))
+        .cloned()
+        .expect("the error is painted");
+    assert!(cut.0.ends_with('…'), "{:?}", cut.0);
+    assert!(list.contains_rect(cut.1), "{cut:?} {list:?}");
+}
+
+/// A count is a polite live region, and so is the pick.
+#[test]
+fn the_count_and_the_pick_are_polite_live_regions() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    let live = |tree: &egui::accesskit::TreeUpdate, label: &str| {
+        tree.nodes
+            .iter()
+            .find(|(_, node)| node.label().or_else(|| node.value()) == Some(label))
+            .map(|(_, node)| node.live())
+    };
+    let tree = harness.settle();
+    assert_eq!(
+        live(&tree, "2 matches in publishers"),
+        Some(Some(egui::accesskit::Live::Polite))
+    );
+    harness.press(Key::Enter, Modifiers::NONE);
+    let tree = harness.settle();
+    assert_eq!(
+        live(
+            &tree,
+            "publisher_id set to 9100000000000000004, Harbor Press"
+        ),
+        Some(Some(egui::accesskit::Live::Polite))
+    );
+}
+
+/// The row the cell points at is named so, not only marked.
+#[test]
+fn the_current_option_says_so_in_its_name() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // Row 1 points at Harbor Press.
+    edit(&mut harness, tab, id, 1, EditStart::Value);
+    let tree = harness.settle();
+    assert!(
+        crate::testing::node(
+            &tree,
+            "Harbor Press, 9100000000000000004, current",
+            Role::ListBoxOption
+        )
+        .is_some(),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+    assert!(
+        crate::testing::node(
+            &tree,
+            "Northlight Books, 9100000000000000001",
+            Role::ListBoxOption
+        )
+        .is_some()
+    );
+}
+
+/// A label that is an empty text names the option by its key alone, as a
+/// NULL one does.
+#[test]
+fn an_option_with_an_empty_label_is_named_by_its_key() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    harness.frame(vec![egui::Event::Text("7".into())]);
+    harness.settle();
+    harness.answer_structure(publishers_structure());
+    harness.answer_lookups(&[(7, "")]);
+    let tree = harness.settle();
+    assert!(
+        crate::testing::node(&tree, "7", Role::ListBoxOption).is_some(),
+        "{:?}",
+        crate::testing::labels(&tree)
+    );
+}
+
+/// Page Down and Page Up move the highlight by the list's height.
+#[test]
+fn page_down_and_page_up_move_by_the_height_of_the_list() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    let names: Vec<String> = (0..20).map(|index| format!("Annex {index}")).collect();
+    search_annexes(&mut harness, &names);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(0));
+    harness.press(Key::PageDown, Modifiers::NONE);
+    assert_eq!(
+        picker(&harness, tab, id).unwrap().highlight,
+        Some(crate::key_picker::VISIBLE)
+    );
+    harness.press(Key::PageDown, Modifiers::NONE);
+    harness.press(Key::PageDown, Modifiers::NONE);
+    // The list ends at its last option.
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(19));
+    harness.press(Key::PageUp, Modifiers::NONE);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(11));
+    assert_eq!(selection(&harness, tab, id), (0, PUBLISHER));
+}
+
+/// Opened on its value with Enter, the whole text is selected: one
+/// character typed is the field's text, and a search for it.
+#[test]
+fn a_character_typed_over_an_opened_value_replaces_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 1);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(editing(&harness, tab, id));
+    harness.answer_structure(publishers_structure());
+    harness.answer_lookups(&PUBLISHERS);
+    harness.settle();
+    harness.frame(vec![egui::Event::Text("h".into())]);
+    harness.settle();
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert_eq!(object.edits.editor.as_ref().unwrap().text, "h");
+    assert!(picker(&harness, tab, id).unwrap().searching);
+}
+
+/// An arrow pressed in the first frame of an editor, before its field has
+/// the keyboard, is the list's.
+#[test]
+fn an_arrow_right_after_the_editor_opens_is_the_lists() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // No frame has drawn the editor yet: its field has not taken the
+    // keyboard.
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(0));
+    harness.frame(vec![crate::testing::key(Key::ArrowDown, Modifiers::NONE)]);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(1));
 }

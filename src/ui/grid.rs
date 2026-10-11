@@ -150,6 +150,10 @@ pub struct GridOutput {
     /// Where the cell being edited is, in view or not: what an editor that
     /// does not sit on the cell is anchored to.
     pub editing_rect: Option<Rect>,
+    /// Where the rows show: the grid's viewport without the header that
+    /// stays over its top. What hangs from a cell (a list) is drawn only
+    /// while the cell is in it.
+    pub body: Option<Rect>,
     pub sort_clicked: Option<usize>,
     /// The keyboard came to the grid this frame (the Tab key, a screen
     /// reader): the arrows should be the grid's.
@@ -1264,6 +1268,11 @@ pub fn show<'a>(
             },
         );
     });
+    let viewport = scroll.inner_rect;
+    output.body = Some(Rect::from_min_max(
+        pos2(viewport.left(), viewport.top() + header_height),
+        viewport.max,
+    ));
     output
 }
 
@@ -2916,7 +2925,17 @@ mod tests {
         assert!(crate::testing::node(&tree, "email", Role::Button).is_none());
         let email = crate::testing::node(&tree, "email", Role::Label).expect("email header");
         let (output, _) = frame_of(&ctx, &columns, 100, vec![click(email)]);
-        assert_eq!(output, GridOutput::default());
+        // Nothing was clicked: the body is where the rows show, not an
+        // event, and it begins under the header.
+        let header = header_height(&crate::theme::Look::standard());
+        assert_eq!(output.body.map(|body| body.top()), Some(header));
+        assert_eq!(
+            output,
+            GridOutput {
+                body: output.body,
+                ..GridOutput::default()
+            }
+        );
         // Scrolled, rows pass under the header: a press on the header is
         // not one on the row under it.
         let header = crate::testing::bounds(&tree, "email", Role::Label).unwrap();
@@ -2947,7 +2966,11 @@ mod tests {
         };
         let (down, _) = frame_of(&ctx, &columns, 100, vec![press(true)]);
         let (up, _) = frame_of(&ctx, &columns, 100, vec![press(false)]);
-        assert_eq!((down, up), (GridOutput::default(), GridOutput::default()));
+        let quiet = |output: &GridOutput| GridOutput {
+            body: output.body,
+            ..GridOutput::default()
+        };
+        assert_eq!((&down, &up), (&quiet(&down), &quiet(&up)));
         // A press under the header does select the row there.
         let below = at + egui::vec2(0.0, header.height() + 10.0);
         let press = |pressed| egui::Event::PointerButton {
