@@ -38,6 +38,9 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::CommitEdit { .. }
             | Action::LeaveEdit { .. }
             | Action::CancelEdit { .. }
+            | Action::PickerMove { .. }
+            | Action::PickOption { .. }
+            | Action::PickerNull { .. }
             | Action::SetNull { .. }
             | Action::SetFieldNull { .. }
             | Action::SetDefault { .. }
@@ -113,7 +116,7 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
 
 impl App {
     /// What editing may know of a table tab: `None` while it has no page.
-    fn table<T>(
+    pub(super) fn table<T>(
         &self,
         tab: ConnTabId,
         id: TabId,

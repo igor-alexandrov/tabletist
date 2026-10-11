@@ -884,12 +884,27 @@ impl App {
                 }
             }
             Action::CommitEdit { tab, id, then } => {
+                // A foreign key picker says what is taken: its highlighted
+                // option, the text, or nothing until its list answers.
+                let taken = self.picker_takes(tab, id, then);
+                if matches!(taken, key_picker::Taken::Wait) {
+                    return;
+                }
                 let field = self.panel_field(tab, id);
                 // Found before the text is taken: a value set in a new
                 // row moves its field up the form, and the commit walks
                 // on from where the field stood when it was edited.
                 let after = field.and_then(|col| self.field_after(tab, id, col, then));
                 if self.close_editor(tab, id, false) {
+                    // What a screen reader is told of the pick: only while
+                    // the pick left a pending cell. One equal to the value
+                    // the cell loaded is no change, and says nothing.
+                    if let (key_picker::Taken::Option(picked), Some(object)) =
+                        (taken, self.object_tab_mut(tab, id))
+                    {
+                        let pending = object.edits.cells.contains_key(&picked.at);
+                        object.edits.picked = pending.then_some(picked);
+                    }
                     // In the panel the keyboard goes to the field the
                     // commit walks to, or back to the one that was edited.
                     if let Some(col) = field {
@@ -910,6 +925,13 @@ impl App {
                             cols,
                         });
                     }
+                } else if let Some(picker) = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                {
+                    // The text was taken as a value and refused: what the
+                    // column says of it shows, until the text changes.
+                    picker.refused = true;
                 }
             }
             Action::LeaveEdit {
@@ -936,6 +958,25 @@ impl App {
                     self.back_to_field(tab, id, col);
                 }
             }
+            Action::PickerMove { tab, id, by } => {
+                if let Some(picker) = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                {
+                    picker.step(by);
+                }
+            }
+            Action::PickOption { tab, id, index } => {
+                let chosen = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                    .is_some_and(|picker| picker.choose(index));
+                if chosen {
+                    let then = Advance::Stay;
+                    self.apply(Action::CommitEdit { tab, id, then });
+                }
+            }
+            Action::PickerNull { tab, id } => self.picker_null(tab, id),
             Action::EditorBreak { tab, id } => {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     // At the end of the text, where the cursor of a field

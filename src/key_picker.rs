@@ -274,6 +274,21 @@ impl Picker {
         self.resends = 0;
     }
 
+    /// The editor's text was replaced by an option's key. It is the text
+    /// the picker last saw, so the `EditorTyped` that may follow starts no
+    /// search for it.
+    pub fn put(&mut self, text: &str) {
+        self.seen = text.to_owned();
+    }
+
+    /// Whether the last search sent was for the text the editor holds
+    /// now. A commit that waits for an answer waits in vain when it was
+    /// not.
+    pub fn asked_for(&self, typed: &str) -> bool {
+        let text = self.text(typed);
+        self.asked.as_ref().is_some_and(|asked| asked.text == text)
+    }
+
     /// The two reads of a search for `text`: the pinned row's, where `pin`
     /// names one, and the matches'.
     pub fn lookups(
@@ -446,6 +461,11 @@ impl Picker {
         // Opened on its value and not typed into: nothing was searched
         // for, and nothing is taken.
         if !self.searching || self.failed.is_some() {
+            return Take::Text;
+        }
+        // An emptied field highlights nothing, whatever the read that
+        // lists everything brings: Enter does not wait for it.
+        if typed.trim().is_empty() {
             return Take::Text;
         }
         if self.due.is_some() {
@@ -1004,6 +1024,55 @@ mod tests {
         let range = found_in(label, "i\u{307}s").unwrap();
         assert_eq!(range, 0..3);
         assert_eq!(&label[range], "İs");
+    }
+
+    #[test]
+    fn an_emptied_field_takes_the_text_without_waiting_for_the_list() {
+        // Searching, the read that lists everything still in flight.
+        let picker = asking("", false);
+        assert_eq!(picker.in_flight(), [RequestId(2)]);
+        assert_eq!(picker.take(""), Take::Text);
+        assert_eq!(picker.take("  "), Take::Text);
+        // A highlight the user moved to is still taken.
+        let mut moved = asking("", false);
+        moved.options = vec![row(5, "Studio 91", Matched::KeyStart)];
+        moved.step(1);
+        assert_eq!(moved.take(""), Take::Option(0));
+    }
+
+    #[test]
+    fn a_key_put_in_the_editor_is_the_text_last_seen() {
+        let mut picker = asking("harbo", false);
+        picker.put("9100000000000000004");
+        // The `EditorTyped` that follows starts no search.
+        picker.typed("9100000000000000004", Instant::now(), DELAY);
+        assert_eq!(picker.due, None);
+    }
+
+    #[test]
+    fn the_last_search_is_for_the_text_that_shows_or_it_is_not() {
+        let mut picker = picker(true, "harb");
+        // Nothing was sent yet.
+        assert!(!picker.asked_for("harb"));
+        picker.asked = Some(Asked {
+            text: "harb".into(),
+            pinned: None,
+            matching: Some(RequestId(2)),
+            first: None,
+        });
+        assert!(picker.asked_for("harb"));
+        // The spaces at its ends are not part of a search.
+        assert!(picker.asked_for(" harb "));
+        assert!(!picker.asked_for("harbo"));
+        // Not typed into: the search is for nothing.
+        let mut opened = self::picker(false, "9");
+        opened.asked = Some(Asked {
+            text: String::new(),
+            pinned: None,
+            matching: Some(RequestId(2)),
+            first: None,
+        });
+        assert!(opened.asked_for("9"));
     }
 
     #[test]

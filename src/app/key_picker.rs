@@ -4,13 +4,13 @@
 
 use std::time::{Duration, Instant};
 
-use tabletist_db::{Error, LookupPage, LookupPart, ObjectRef, Value};
+use tabletist_db::{ColumnClass, Error, LookupPage, LookupPart, ObjectRef, Value};
 
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
-use crate::edit::{EditorPlace, Table};
-use crate::key_picker::{self, Answered, Asked, Columns, Picker};
-use crate::model::{ConnTabId, TabId};
+use crate::edit::{EditorPlace, Picked, Table, start_text};
+use crate::key_picker::{self, Answered, Asked, Columns, Picker, Take};
+use crate::model::{Action, Advance, ConnTabId, TabId};
 
 /// A lookup in flight, and the picker it was sent for.
 #[derive(Debug, Clone, Copy)]
@@ -22,6 +22,16 @@ pub struct SentLookup {
     /// The read of the matches: the one a closed editor cancels. The
     /// pinned row's read is one row by its key, and is left to end.
     pub matches: bool,
+}
+
+/// What a commit takes from the editor's picker.
+pub(super) enum Taken {
+    /// Nothing yet: the commit waits for the list.
+    Wait,
+    /// The text as typed, or there is no picker.
+    Text,
+    /// An option's key, which is the editor's text now.
+    Option(Picked),
 }
 
 impl App {
@@ -176,6 +186,7 @@ impl App {
         };
         let dialect = workspace.driver.dialect();
         let mut ready = Vec::new();
+        let mut commits = Vec::new();
         // Split, so the tabs and the cache are borrowed side by side.
         let columns = std::mem::take(&mut workspace.columns);
         for object in workspace.object_tabs_mut() {
@@ -198,11 +209,21 @@ impl App {
                 ready.push(id);
             } else if let Some(error) = &kept.error {
                 picker.failed = Some(error.clone());
+                // Nothing will answer: a kept Enter takes the text. Under
+                // a prompt about pending changes the commit is dropped
+                // (`App::apply`) and the key is lost: accepted, the next
+                // Enter takes at once.
+                if let Some(then) = picker.kept.take() {
+                    commits.push((id, then));
+                }
             }
         }
         workspace.columns = columns;
         for id in ready {
             self.search(tab, id);
+        }
+        for (id, then) in commits {
+            self.apply(Action::CommitEdit { tab, id, then });
         }
     }
 
@@ -222,13 +243,14 @@ impl App {
             return;
         };
         let mut resend = None;
+        let mut commit = None;
         for object in workspace.object_tabs_mut() {
             let id = object.id;
-            let Some(picker) = object
-                .edits
-                .editor
-                .as_mut()
-                .and_then(|editor| editor.picker.as_mut())
+            let Some(crate::edit::Editor {
+                text,
+                picker: Some(picker),
+                ..
+            }) = object.edits.editor.as_mut()
             else {
                 continue;
             };
@@ -240,14 +262,121 @@ impl App {
             match picker.answered(request, result) {
                 // Cancelled unasked: sent again once the loop is over.
                 Answered::Resend => resend = Some(id),
-                // A kept Enter is applied here from the next task on.
-                Answered::NotMine | Answered::Taken => {}
+                Answered::NotMine => {}
+                Answered::Taken => {
+                    // A kept Enter or Tab, as soon as the answer says what
+                    // it takes. It is applied after the loop: the tabs are
+                    // borrowed here.
+                    let kept = picker
+                        .kept
+                        .filter(|_| !matches!(picker.take(text), Take::Wait));
+                    if let Some(then) = kept {
+                        // Under a prompt about pending changes the commit
+                        // is dropped (`App::apply`) and the key is lost:
+                        // accepted. The editor stays open and the next
+                        // Enter takes at once.
+                        picker.kept = None;
+                        commit = Some((id, then));
+                    }
+                }
             }
             break;
         }
         if let Some(id) = resend {
             self.search(tab, id);
         }
+        if let Some((id, then)) = commit {
+            self.apply(Action::CommitEdit { tab, id, then });
+        }
+    }
+
+    /// What a commit of the tab's editor takes, where the editor has a
+    /// picker: the highlighted option's key becomes the editor's text, or
+    /// the text stays as typed. `Taken::Wait` when the list has not
+    /// answered the text yet: the commit is kept, the search is sent at
+    /// once (or is already on its way), and the answer applies it.
+    pub(super) fn picker_takes(&mut self, tab: ConnTabId, id: TabId, then: Advance) -> Taken {
+        let class = self
+            .table(tab, id, |table, object| {
+                let editor = object.edits.editor.as_ref()?;
+                table.class(editor.cell.col)
+            })
+            .flatten()
+            .unwrap_or(ColumnClass::Other);
+        let Some(editor) = self.editor_mut(tab, id) else {
+            return Taken::Text;
+        };
+        let crate::edit::Editor {
+            cell,
+            text,
+            touched,
+            picker: Some(picker),
+            ..
+        } = editor
+        else {
+            return Taken::Text;
+        };
+        let search = match picker.take(text) {
+            Take::Text => return Taken::Text,
+            Take::Option(index) => {
+                let Some(option) = picker.options.get(index) else {
+                    return Taken::Text;
+                };
+                let label = option
+                    .label
+                    .as_ref()
+                    .filter(|label| !label.is_null())
+                    .map(crate::ui::format::plain_text);
+                // As if its key had been typed: the same check, the same
+                // pending cell.
+                *text = start_text(&option.key, class);
+                *touched = true;
+                picker.put(text);
+                return Taken::Option(Picked {
+                    at: (cell.row, cell.col),
+                    key: text.clone(),
+                    label,
+                });
+            }
+            Take::Wait => {
+                picker.kept = Some(then);
+                // Nothing may be on its way (no search was ever sent for
+                // the text that shows): the commit must not wait for ever.
+                let idle = picker.in_flight().is_empty();
+                // Or what was sent last is not for the text that shows
+                // (an option's key was put in the editor and refused):
+                // no answer on its way decides this text.
+                let stale = !picker.asked_for(text);
+                picker.due.take().is_some() || idle || stale
+            }
+        };
+        if search {
+            self.search(tab, id);
+        }
+        Taken::Wait
+    }
+
+    /// The picker's Set NULL: the editor closes without its text, and its
+    /// cell is made NULL where its column takes one. Only an editor with a
+    /// picker has this button. Set NULL does nothing while an editor is
+    /// open, so the close comes first, and acts on the selection, which is
+    /// made the editor's cell.
+    pub(super) fn picker_null(&mut self, tab: ConnTabId, id: TabId) {
+        let Some((cell, place)) = self
+            .editor_mut(tab, id)
+            .filter(|editor| editor.picker.is_some())
+            .map(|editor| (editor.cell, editor.place))
+        else {
+            return;
+        };
+        self.apply(Action::CancelEdit { tab, id });
+        let selected = self
+            .object_tab_mut(tab, id)
+            .is_some_and(|object| object.selection == Some(cell));
+        if !selected {
+            self.apply(Action::SelectCell { tab, id, cell });
+        }
+        self.set_null(tab, id, place);
     }
 
     /// Called every frame. Sends the searches whose time has come, and

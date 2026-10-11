@@ -302,6 +302,27 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Move the highlight of the open editor's foreign key picker `by`
+    /// options: the arrows, Page Up and Page Down, the terminal look's
+    /// Ctrl+N and Ctrl+P.
+    PickerMove {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Take the option at `index` of that picker's list as the cell's new
+    /// value: a click on it.
+    PickOption {
+        tab: ConnTabId,
+        id: TabId,
+        index: usize,
+    },
+    /// The picker's Set NULL: drop the editor's text and make the cell
+    /// NULL, where its column takes one.
+    PickerNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Add a line break and move the text into the large editor.
     EditorBreak {
         tab: ConnTabId,

@@ -1092,6 +1092,21 @@ pub struct Edits {
     /// What a save would run, as lines to read: made by the reducer while
     /// `reviewing`. `None` once the set changed, until it is made again.
     pub review: Option<crate::review::Review>,
+    /// The last option a foreign key picker took, for a screen reader to
+    /// be told while its cell still holds the key.
+    pub picked: Option<Picked>,
+}
+
+/// The last option a foreign key picker took, for a screen reader to be
+/// told. No `Debug`: it holds a key and a label of a table.
+#[derive(Clone, PartialEq)]
+pub struct Picked {
+    /// The cell, by row and column of the page.
+    pub at: (usize, usize),
+    /// The key that was set, as text.
+    pub key: String,
+    /// The row's label, where its table has one and it is not NULL.
+    pub label: Option<String>,
 }
 
 /// How much is pending.

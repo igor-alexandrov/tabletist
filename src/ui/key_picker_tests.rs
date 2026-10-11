@@ -8,11 +8,11 @@
 
 use std::time::{Duration, Instant};
 
-use tabletist_db::{LookupPart, ObjectRef, Value};
+use tabletist_db::{LookupPart, NewValue, ObjectRef, Value};
 
 use crate::backend::{Command, Event, RequestId};
 use crate::key_picker::{Columns, Picker, Take};
-use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
+use crate::model::{Action, Advance, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::testing::{Harness, PUBLISHERS, publishers_structure};
 use crate::theme::Look;
 
@@ -521,4 +521,558 @@ fn a_failed_refresh_of_known_columns_does_not_take_the_list_away() {
     harness.answer_lookups(&PUBLISHERS);
     assert!(picker(&harness, tab, id).unwrap().failed.is_none());
     assert_eq!(listed(&harness, tab, id).len(), 3);
+}
+
+/// Makes the editor's text `text`, as typing does, and has the search
+/// for it sent and answered.
+fn type_text(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str) {
+    set_text(harness, tab, id, text);
+    harness.app.send_due_lookups(std::time::Instant::now());
+    harness.answer_lookups(&PUBLISHERS);
+}
+
+/// The pending text of `publisher_id` in the page's row `row`.
+fn pending(harness: &Harness, tab: ConnTabId, id: TabId, row: usize) -> Option<String> {
+    let object = harness.app.workspace(tab)?.object_tab(id)?;
+    match &object.edits.cells.get(&(row, PUBLISHER))?.new {
+        NewValue::Text(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn commit(harness: &mut Harness, tab: ConnTabId, id: TabId, then: Advance) {
+    harness.app.apply(Action::CommitEdit { tab, id, then });
+}
+
+fn selection(harness: &Harness, tab: ConnTabId, id: TabId) -> (usize, usize) {
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    let cell = object.selection.unwrap();
+    (cell.row, cell.col)
+}
+
+/// Test 11: the first option of `harb` is highlighted, and Enter makes
+/// the cell pending with its key. Tab does the same and moves right.
+#[test]
+fn enter_takes_the_highlighted_option() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "harb");
+    assert_eq!(listed(&harness, tab, id), [HARBOR_PRESS, HARBOR_LIGHTS]);
+    commit(&mut harness, tab, id, Advance::Down);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+    assert_eq!(selection(&harness, tab, id), (1, PUBLISHER));
+    // What a screen reader is told of the pick.
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(
+        object.edits.picked
+            == Some(crate::edit::Picked {
+                at: (0, PUBLISHER),
+                key: HARBOR_PRESS.to_owned(),
+                label: Some("Harbor Press".to_owned()),
+            })
+    );
+
+    edit(&mut harness, tab, id, 1, EditStart::Typed("l".into()));
+    type_text(&mut harness, tab, id, "lights");
+    commit(&mut harness, tab, id, Advance::Right);
+    assert_eq!(
+        pending(&harness, tab, id, 1).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+    assert_eq!(selection(&harness, tab, id), (1, PUBLISHER + 1));
+}
+
+/// Test 12: the arrows choose, and a click takes its option.
+#[test]
+fn the_arrows_and_a_click_choose_an_option() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "harb");
+    harness.app.apply(Action::PickerMove { tab, id, by: 1 });
+    commit(&mut harness, tab, id, Advance::Down);
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+
+    // Row 1 points at Harbor Press: Harbor Lights is a change.
+    edit(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "harb");
+    harness.app.apply(Action::PickOption { tab, id, index: 1 });
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, 1).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+    // A click moves no selection.
+    assert_eq!(selection(&harness, tab, id), (1, PUBLISHER));
+}
+
+/// Test 10's other half: an editor opened on its value and left with
+/// Enter changes nothing, and an option moved to from there is taken.
+#[test]
+fn an_editor_that_was_only_opened_takes_nothing() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 1, EditStart::Value);
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 1), None);
+
+    edit(&mut harness, tab, id, 1, EditStart::Value);
+    // From Harbor Press, the current row, one down: Northlight Books.
+    harness.app.apply(Action::PickerMove { tab, id, by: 1 });
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(pending(&harness, tab, id, 1).as_deref(), Some(NORTHLIGHT));
+}
+
+/// Test 14: a text that only begins keys highlights nothing, and Enter
+/// keeps the text.
+#[test]
+fn a_text_that_only_begins_keys_is_kept_as_typed() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("9".into()));
+    type_text(&mut harness, tab, id, "91");
+    assert_eq!(listed(&harness, tab, id).len(), 3);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, None);
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("91"));
+    // Nothing was picked: nothing is said.
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.picked.is_none());
+}
+
+/// Test 15: an Enter sent before the answer takes the first option of
+/// that answer. Typing after the Enter drops it. A full key and Enter is
+/// applied by the pinned row's answer alone.
+#[test]
+fn an_enter_before_the_answer_waits_for_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("l".into()));
+    // The list is for `l` (Northlight, Harbor Lights): `harb` is typed and
+    // Enter pressed before anything of it is sent.
+    assert_eq!(listed(&harness, tab, id), [NORTHLIGHT, HARBOR_LIGHTS]);
+    set_text(&mut harness, tab, id, "harb");
+    let before = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Down);
+    assert!(editing(&harness, tab, id), "the commit did not wait");
+    // The search went out with the Enter, not 150 ms later.
+    assert!(harness.lookups().len() > before);
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some(HARBOR_PRESS));
+    // The kept Down was applied with it.
+    assert_eq!(selection(&harness, tab, id), (1, PUBLISHER));
+
+    // Typing after the Enter drops it.
+    edit(&mut harness, tab, id, 1, EditStart::Typed("l".into()));
+    set_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Down);
+    set_text(&mut harness, tab, id, "harbo");
+    harness.app.send_due_lookups(std::time::Instant::now());
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(editing(&harness, tab, id));
+    assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
+    harness.app.apply(Action::CancelEdit { tab, id });
+
+    // A full key: the pinned row's answer is enough. Row 2 points at
+    // Harbor Lights, so Northlight Books is a change.
+    edit(&mut harness, tab, id, 2, EditStart::Typed("9".into()));
+    set_text(&mut harness, tab, id, NORTHLIGHT);
+    commit(&mut harness, tab, id, Advance::Stay);
+    let sent = harness.lookups();
+    let (session, request, lookup) = sent[sent.len() - 2].clone();
+    assert!(matches!(lookup.part, LookupPart::Pinned(_)));
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Lookup {
+            session,
+            request,
+            result: Ok(crate::testing::fake_lookup(&lookup, &PUBLISHERS)),
+        }));
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 2).as_deref(), Some(NORTHLIGHT));
+}
+
+/// Spec 4 and 5: what the column would say of a search's text is not
+/// shown while it is a search. A commit that takes the text and is
+/// refused shows it, until the text changes.
+#[test]
+fn a_search_is_no_mistake_until_a_commit_is_refused() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("z".into()));
+    type_text(&mut harness, tab, id, "zzz");
+    // An integer column refuses `zzz`, and nothing matches it.
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.editor.as_ref().unwrap().problem.is_some());
+    assert!(!picker(&harness, tab, id).unwrap().refused);
+    commit(&mut harness, tab, id, Advance::Down);
+    assert!(
+        editing(&harness, tab, id),
+        "a text the column refuses was kept"
+    );
+    assert!(picker(&harness, tab, id).unwrap().refused);
+    set_text(&mut harness, tab, id, "zz");
+    assert!(!picker(&harness, tab, id).unwrap().refused);
+}
+
+/// Test 18: Set NULL closes the editor without its text and makes the
+/// cell NULL, where the column takes one.
+#[test]
+fn set_null_on_a_column_that_takes_none_drops_the_text_and_says_why() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("harb".into()));
+    harness.app.apply(Action::PickerNull { tab, id });
+    assert!(!editing(&harness, tab, id));
+    // `publisher_id` of the fixture is NOT NULL (its `ColumnInfo` has
+    // `nullable: false`): nothing is set, and the cell says why.
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.cells.is_empty());
+    assert!(object.edits.why.is_some());
+}
+
+/// Test 20: what leaves the editor without a pick keeps the text as
+/// typed, never the highlighted option.
+#[test]
+fn leaving_the_editor_keeps_the_text_and_not_the_option() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("9".into()));
+    type_text(&mut harness, tab, id, HARBOR_LIGHTS);
+    // Harbor Lights is highlighted: its key is the text. Another key is
+    // typed over it and the keyboard goes elsewhere before any answer.
+    set_text(&mut harness, tab, id, "42");
+    let leave = crate::testing::leave_edit(&harness.app, tab, id);
+    harness.app.apply(leave);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("42"));
+}
+
+/// An Enter pressed while the referenced table's columns are being fetched
+/// waits for them, and does not hang when that fetch fails: it takes the
+/// text.
+#[test]
+fn an_enter_kept_for_the_columns_is_released_when_they_cannot_be_read() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 0, EditStart::Typed("9".into()));
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(editing(&harness, tab, id), "the commit did not wait");
+    assert!(picker(&harness, tab, id).unwrap().kept.is_some());
+    fail_describe(
+        &mut harness,
+        tabletist_db::Error::query("permission denied for table publishers"),
+    );
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("9"));
+}
+
+/// An Enter kept while the reads of the text that shows run sends nothing
+/// more, and the answer applies it.
+#[test]
+fn an_enter_kept_while_reads_run_sends_nothing_and_the_answer_applies_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 1, EditStart::Typed("l".into()));
+    harness.answer_structure(publishers_structure());
+    let sent = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(editing(&harness, tab, id), "the commit did not wait");
+    assert_eq!(harness.lookups().len(), sent, "a second search was sent");
+    assert_eq!(picker(&harness, tab, id).unwrap().kept, Some(Advance::Stay));
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(!editing(&harness, tab, id));
+    assert!(pending(&harness, tab, id, 1).as_deref() == Some(NORTHLIGHT));
+}
+
+/// A move or a click drops an Enter kept for the list. A click takes its
+/// own option instead. A second Enter leaves one kept commit, the second's.
+#[test]
+fn a_kept_enter_is_dropped_by_a_move_or_a_click_and_replaced_by_another_enter() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    harness.answer_structure(publishers_structure());
+    commit(&mut harness, tab, id, Advance::Down);
+    assert!(picker(&harness, tab, id).unwrap().kept.is_some());
+    harness.app.apply(Action::PickerMove { tab, id, by: 1 });
+    assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(editing(&harness, tab, id), "a dropped Enter was applied");
+    harness.app.apply(Action::CancelEdit { tab, id });
+
+    // A click: the list is the one for `h`, the text is `harb`.
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    let second = listed(&harness, tab, id)[1].clone();
+    set_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Down);
+    assert!(picker(&harness, tab, id).unwrap().kept.is_some());
+    harness.app.apply(Action::PickOption { tab, id, index: 1 });
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0), Some(second));
+    assert_eq!(selection(&harness, tab, id).0, 0, "the dropped Down moved");
+    harness.answer_lookups(&PUBLISHERS);
+
+    // Two Enters: one kept commit, with the second's advance.
+    edit(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
+    set_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Down);
+    let sent = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Right);
+    assert_eq!(harness.lookups().len(), sent);
+    assert_eq!(
+        picker(&harness, tab, id).unwrap().kept,
+        Some(Advance::Right)
+    );
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(selection(&harness, tab, id), (1, PUBLISHER + 1));
+}
+
+/// An Enter kept for a list whose search then fails takes the text: one
+/// the column takes is kept as typed, one it refuses leaves the editor open
+/// and says why.
+#[test]
+fn a_kept_enter_takes_the_text_when_the_search_fails() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 0, EditStart::Typed("4".into()));
+    harness.answer_structure(publishers_structure());
+    set_text(&mut harness, tab, id, "42");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(editing(&harness, tab, id), "the commit did not wait");
+    harness.fail_lookup(tabletist_db::Error::query("permission denied"));
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("42"));
+
+    edit(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
+    set_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Stay);
+    harness.fail_lookup(tabletist_db::Error::query("permission denied"));
+    assert!(
+        editing(&harness, tab, id),
+        "a text the column refuses was kept"
+    );
+    assert!(picker(&harness, tab, id).unwrap().refused);
+    assert_eq!(pending(&harness, tab, id, 1), None);
+}
+
+/// A pinned row that is not found and matches that only begin keys
+/// highlight nothing: the kept Enter keeps the text.
+#[test]
+fn a_kept_enter_keeps_the_text_when_no_row_is_found() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 0, EditStart::Typed("9".into()));
+    harness.answer_structure(publishers_structure());
+    set_text(&mut harness, tab, id, "91");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(editing(&harness, tab, id), "the commit did not wait");
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("91"));
+}
+
+/// An Enter kept while the text that shows was put in the editor without
+/// the search for it: the reads in flight are for another text. It stands
+/// for an option's key the column refused (the editor stays open, the key
+/// is the text now, no `EditorTyped` follows) and a second Enter: with
+/// integer keys in an integer column the fixtures cannot refuse one.
+#[test]
+fn an_enter_kept_for_a_text_no_search_was_sent_for_sends_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    harness.answer_structure(publishers_structure());
+    let object = harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .object_tab_mut(id)
+        .unwrap();
+    object.edits.editor.as_mut().unwrap().text = "42".to_owned();
+    let sent = harness.lookups().len();
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(editing(&harness, tab, id), "the commit did not wait");
+    assert!(
+        harness.lookups().len() > sent,
+        "no search for `42` was sent"
+    );
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("42"));
+}
+
+/// A click on an option that is not there, and a move with nothing listed,
+/// change nothing.
+#[test]
+fn a_click_past_the_list_and_a_move_over_nothing_change_nothing() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    harness.app.apply(Action::PickOption { tab, id, index: 99 });
+    assert!(editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    harness.app.apply(Action::CancelEdit { tab, id });
+
+    open(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    harness.answer_structure(publishers_structure());
+    assert!(listed(&harness, tab, id).is_empty());
+    harness.app.apply(Action::PickerMove { tab, id, by: 1 });
+    assert!(editing(&harness, tab, id));
+    let picker = picker(&harness, tab, id).unwrap();
+    assert_eq!(picker.highlight, None);
+    assert!(!picker.moved);
+}
+
+/// A pick in a new row's cell leaves that cell set.
+#[test]
+fn a_pick_in_a_new_rows_cell_sets_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.app.apply(Action::AddRow {
+        tab,
+        id,
+        place: crate::edit::Place::Top,
+    });
+    harness.app.apply(Action::CancelEdit { tab, id });
+    let new = harness
+        .app
+        .workspace(tab)
+        .unwrap()
+        .object_tab(id)
+        .unwrap()
+        .edits
+        .added
+        .last()
+        .unwrap()
+        .id;
+    let row = crate::edit::new_row(new);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row,
+            col: PUBLISHER,
+        },
+        start: EditStart::Typed("h".into()),
+    });
+    harness.answer_structure(publishers_structure());
+    harness.answer_lookups(&PUBLISHERS);
+    type_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, row).as_deref(),
+        Some(HARBOR_PRESS)
+    );
+}
+
+/// Spec spec 5: a pick that changes nothing (the cell already points at
+/// that row, with or without a change pending before) leaves nothing
+/// pending and nothing to say; so does a commit the column refused.
+#[test]
+fn a_pick_equal_to_the_loaded_value_says_nothing() {
+    let picked = |harness: &Harness, tab, id| {
+        let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+        object.edits.picked.clone()
+    };
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // A pick that is a change says so.
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "lights");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(picked(&harness, tab, id).is_some());
+
+    // Row 1 points at Harbor Press already.
+    edit(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 1), None);
+    assert!(picked(&harness, tab, id).is_none());
+
+    // The same on a cell with a change pending: the change is reverted.
+    edit(&mut harness, tab, id, 1, EditStart::Typed("l".into()));
+    type_text(&mut harness, tab, id, "lights");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(
+        pending(&harness, tab, id, 1).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+    assert!(picked(&harness, tab, id).is_some());
+    edit(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "harb");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 1), None);
+    assert!(picked(&harness, tab, id).is_none());
+
+    // A text the column refuses is no pick.
+    edit(&mut harness, tab, id, 2, EditStart::Typed("z".into()));
+    type_text(&mut harness, tab, id, "zzz");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(editing(&harness, tab, id));
+    assert!(picked(&harness, tab, id).is_none());
+}
+
+/// The picker's Set NULL is the picker's: an editor without one is left
+/// open and nothing changes. One with a picker nulls its own cell, not the
+/// selection.
+#[test]
+fn set_null_belongs_to_the_picker_and_acts_on_the_editors_cell() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // `kind` is no foreign key: a text editor, no picker.
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos { row: 0, col: 2 },
+        start: EditStart::Value,
+    });
+    harness.app.apply(Action::PickerNull { tab, id });
+    assert!(editing(&harness, tab, id));
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.edits.why.is_none());
+    harness.app.apply(Action::CancelEdit { tab, id });
+
+    // The selection is elsewhere: the cell that says why is the editor's.
+    edit(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
+    let object = harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .object_tab_mut(id)
+        .unwrap();
+    object.selection = Some(CellPos { row: 0, col: 0 });
+    harness.app.apply(Action::PickerNull { tab, id });
+    assert!(!editing(&harness, tab, id));
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    let (cell, _) = object.edits.why.expect("the cell says why");
+    assert_eq!((cell.row, cell.col), (1, PUBLISHER));
+}
+
+/// A kept Enter whose answer comes while a prompt about pending changes is
+/// up is dropped with the prompt's other editing actions: the key is lost,
+/// the editor stays open, and the next Enter takes at once.
+#[test]
+fn an_enter_kept_across_a_prompt_is_lost_and_the_next_one_takes() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // Something pending, so that a reload is asked about.
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    type_text(&mut harness, tab, id, "lights");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert_eq!(
+        pending(&harness, tab, id, 0).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
+
+    edit(&mut harness, tab, id, 1, EditStart::Typed("l".into()));
+    set_text(&mut harness, tab, id, "lights");
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(picker(&harness, tab, id).unwrap().kept.is_some());
+    harness.app.apply(Action::Refresh(tab));
+    assert!(harness.app.dialog.is_some(), "no prompt was raised");
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 1), None);
+    assert_eq!(picker(&harness, tab, id).unwrap().kept, None);
+    // The prompt is answered, and the next Enter has its list.
+    harness.app.apply(Action::CloseDialog);
+    commit(&mut harness, tab, id, Advance::Stay);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(
+        pending(&harness, tab, id, 1).as_deref(),
+        Some(HARBOR_LIGHTS)
+    );
 }
