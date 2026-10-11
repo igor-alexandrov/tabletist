@@ -44,9 +44,16 @@ pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static s
     format!("{count} {}", ngettext(locale, one, many, plural))
 }
 
-/// "1 new row · 3 changes in 2 rows", each part where there is any. Short,
-/// the changes go without their rows.
-fn counts_text(counts: crate::edit::Counts, short: bool, locale: Locale) -> String {
+/// How many foreign keys name no row: "1 value names no row". What a save
+/// may be refused for, and is not held back by.
+pub fn doubts_text(doubts: usize, locale: Locale) -> String {
+    counted(locale, doubts, "value names no row", "values name no row")
+}
+
+/// "1 new row · 3 changes in 2 rows · 1 value names no row", each part
+/// where there is any. Short, the changes go without their rows and the
+/// warnings are left to the part that says them alone.
+fn counts_text(counts: crate::edit::Counts, doubts: usize, short: bool, locale: Locale) -> String {
     let mut parts = Vec::new();
     if counts.added > 0 {
         parts.push(counted(locale, counts.added, "new row", "new rows"));
@@ -62,6 +69,9 @@ fn counts_text(counts: crate::edit::Counts, short: bool, locale: Locale) -> Stri
                 counted(locale, counts.rows, "row", "rows")
             )
         });
+    }
+    if doubts > 0 && !short {
+        parts.push(doubts_text(doubts, locale));
     }
     parts.join(" · ")
 }
@@ -238,6 +248,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let pending = edits.pending();
     let reviewing = edits.reviewing;
     let counts = edits.counts();
+    let doubts = app.workspace(tab).map_or(0, |workspace| {
+        crate::ui::key_picker::unmatched(workspace, object).len()
+    });
     let note = edits
         .note
         .as_ref()
@@ -289,8 +302,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let width = move |role: TextRole, text: &str| role.width(&ctx, look.faces, text);
 
             // What the bar says, and the room each part of it asks for.
-            let whole = pending.then(|| counts_text(counts, false, locale));
-            let short = pending.then(|| counts_text(counts, true, locale));
+            let whole = pending.then(|| counts_text(counts, doubts, false, locale));
+            let short = pending.then(|| counts_text(counts, doubts, true, locale));
             // What stands against a save, in one place: the values to fix,
             // and what a new row still needs.
             let fix = (counts.to_fix > 0)
@@ -497,6 +510,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     None => dot,
                 };
                 named(ui, place, "pending-counts", whole, cut);
+                if doubts > 0 {
+                    // Said when a warning appears or their number changes,
+                    // though the bar draws only the short counts or none:
+                    // over a point of the counts, which have no button.
+                    let at = Rect::from_min_size(place.min, vec2(1.0, 1.0));
+                    widgets::announce_polite(ui, at, &doubts_text(doubts, locale));
+                }
             }
             if let Some(fix) = fix.as_ref().filter(|_| fixes) {
                 if asked {

@@ -16,6 +16,9 @@ row. Pasting and deleting rows are not built yet.
 Select a cell and press Enter or F2, double-click it, or simply start
 typing. Tab moves to the next cell and keeps your change.
 
+Switching to another app leaves the editor open with what you typed, and
+you go on typing when you are back.
+
 To edit a long value, open the row panel and press Cmd/Ctrl+I, or
 double-click the value there.
 
@@ -35,7 +38,8 @@ The Omarchy look uses vim keys for these. They are in
 
 What you type is checked against the column's type before anything is
 sent: numbers and their ranges, booleans, enum values, the maximum length,
-and the syntax of JSON.
+and the syntax of JSON. A foreign key you type is also looked up in the
+table it points at, as a [warning](#foreign-keys).
 
 ### Words that are not text
 
@@ -70,6 +74,47 @@ after. Review SQL shows the keyword as it is sent.
   `DEFAULT` there takes the value out again.
 
 {% include shot.html file="macos-edit-pending" alt="The grid with three changed cells, one of them red because its column does not take the text, and the bar of pending changes under it" %}
+
+### Foreign keys
+
+A cell whose column points at another table searches that table while you
+type. Start typing a name, a title or an email, or the start of an id, and
+the rows that match are listed under the cell with their ids.
+
+| To | Press |
+| --- | --- |
+| Move in the list | Up, Down, Page Up, Page Down |
+| Set the cell to the highlighted row | Enter, or Tab to move on |
+| Take a row with the pointer | Click it |
+| Leave the cell as it was | Esc |
+
+The list is searched by the table's first text column and by its key. An id
+you type or paste in full is taken as it is.
+
+The first row is highlighted when what you typed is in its name or is its
+id. When the rows only begin with what you typed in their ids, none is, and
+Enter keeps your text: `12` stays 12 and does not become row 120.
+
+Press Enter on a cell without typing to see the table's first rows, with
+the row the cell points at now on top.
+
+The list holds up to 50 rows and shows eight at a time. Its last line says
+when the table has more: type more to narrow them. Where the column takes
+NULL, **Set NULL** under the list sets it, as Cmd/Ctrl+Backspace does.
+
+The picker is on the cells of the grid and on the fields of the row panel,
+in a new row and in a copy too. A key of several columns is edited as text.
+
+An id you type yourself is looked up when you leave the cell. If no row
+has it, the cell gets an outline and says so under the pointer, the row
+panel says it under the field ("No publisher with id 12"), and the bar
+counts it where it has the room: "1 value names no row". The Omarchy look
+says it in the line under the grid, with a `?`.
+
+It is a warning, not a mistake to fix. You can still save, and the
+database decides: a row may be there by then, and a table that points at
+itself can name a row you are adding in the same save. A row you picked
+from the list is not looked up again.
 
 ## Save
 

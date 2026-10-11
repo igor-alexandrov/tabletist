@@ -441,9 +441,12 @@ fn the_terminals_line_says_what_the_row_needs_while_it_is_typed() {
 /// INS-09b. Spec 3: "A foreign key column opens the search picker on the
 /// first keystroke."
 #[test]
-#[ignore = "INS-09b: a foreign key column opens the text editor, not a picker"]
 fn typing_into_a_foreign_key_opens_its_picker() {
-    let (mut harness, tab, id) = covers_in(Look::macos());
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let (tab, id) = harness.keyed_covers();
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    harness.settle();
     harness.press(Key::N, Modifiers::COMMAND);
     harness.settle();
     assert_eq!(selected(&harness, tab, id), Some((new_row(0), 1)));

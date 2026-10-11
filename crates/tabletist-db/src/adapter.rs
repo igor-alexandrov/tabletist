@@ -1,8 +1,8 @@
 //! What the adapter of every database provides.
 
 use crate::{
-    CancelHandle, ChangeSet, ObjectInfo, ObjectRef, Result, RowPage, RowQuery, ScriptMode,
-    ScriptOutcome, StopFlag, Structure, WriteOutcome,
+    CancelHandle, ChangeSet, Lookup, LookupPage, ObjectInfo, ObjectRef, Result, RowPage, RowQuery,
+    ScriptMode, ScriptOutcome, StopFlag, Structure, WriteOutcome,
 };
 
 /// An open session with one kind of database. [`crate::Connection`] holds
@@ -29,6 +29,8 @@ pub(crate) trait Adapter {
     async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage>;
 
     async fn count_rows(&self, query: &RowQuery) -> Result<u64>;
+
+    async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage>;
 
     /// `texts` are statements [`crate::sql::refusal`] has let through.
     async fn run_script(

@@ -1565,6 +1565,9 @@ struct Editing {
     /// next field from one in the row panel. Nowhere from the large
     /// editor, in either place: Tab is its text's own.
     walks: Option<&'static str>,
+    /// Insert mode is in a foreign key cell's picker: the line names the
+    /// list's keys in place of the editor's.
+    picking: bool,
     /// How much is pending, while anything is: "3 pending · 2 rows".
     pending: Option<String>,
     /// The rows to add, while there are any: "+1 new".
@@ -1768,10 +1771,19 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         let panel = editor.place == crate::edit::EditorPlace::Panel;
         (!editor.large).then_some(if panel { "next field" } else { "next cell" })
     });
+    let picking = edits.editor.as_ref().is_some_and(|editor| {
+        // A search that failed leaves the plain text editor, keys and all.
+        !editor.large
+            && editor
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.failed.is_none())
+    });
     Editing {
         can_edit,
         insert,
         walks,
+        picking,
         pending,
         added,
         can_add,
@@ -2062,7 +2074,28 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.success);
                 let normal = gettext(locale, "normal");
                 let next = editing.walks.map(|next| gettext(locale, next));
+                let moves = gettext(locale, "move");
+                let sets = gettext(locale, "set");
+                let closes = gettext(locale, "close");
                 let keys = || {
+                    if editing.picking {
+                        // The list's keys, in place of the editor's. Only
+                        // Esc differs: it closes the picker and drops the
+                        // edit, where it keeps a text; Enter takes the
+                        // highlighted option, and Tab goes on as ever.
+                        return Text::new(&look)
+                            .add(role, "ctrl+n/p", palette.text)
+                            .space(role, " ")
+                            .add(role, &moves, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, "enter", palette.text)
+                            .space(role, " ")
+                            .add(role, &sets, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, "esc", palette.text)
+                            .space(role, " ")
+                            .add(role, &closes, palette.dim);
+                    }
                     let leave = Text::new(&look)
                         .add(role, "esc", palette.text)
                         .space(role, " ")
@@ -2098,6 +2131,18 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 if named && x + keys_width <= right {
                     widgets::paint_text_right(ui, right, y, keys());
+                } else if named && editing.picking {
+                    // The one key that behaves differently here, before
+                    // the whole line is dropped.
+                    let short = || {
+                        Text::new(&look)
+                            .add(role, "esc", palette.text)
+                            .space(role, " ")
+                            .add(role, &closes, palette.dim)
+                    };
+                    if x + widgets::measure(ui, short()) <= right {
+                        widgets::paint_text_right(ui, right, y, short());
+                    }
                 }
                 return;
             }

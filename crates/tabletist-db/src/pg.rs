@@ -14,9 +14,9 @@ use tokio_postgres::{SimpleQueryMessage, Socket};
 use crate::adapter::Adapter;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, Named, ObjectInfo, ObjectKind, ObjectRef, Result,
-    RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure, Value, ValueKind,
-    WriteOutcome, value_from_pg_text,
+    Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, Sql,
+    StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -425,6 +425,45 @@ impl Conn {
         rows.iter().map(|row| column(row, 0)).collect()
     }
 
+    /// Runs one reading statement in a read-only transaction and keeps at
+    /// most one row more than `limit`. The time is the statement's, from
+    /// when the session is this call's.
+    async fn read(
+        &self,
+        sql: &Sql,
+        limit: usize,
+    ) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>, Duration)> {
+        // Every value is a literal in the text, so there is nothing to bind.
+        debug_assert!(sql.params.is_empty());
+        let mut client = self.client.lock().await;
+        let started = Instant::now();
+        let transaction = client
+            .build_transaction()
+            .read_only(true)
+            .start()
+            .await
+            .map_err(query_error)?;
+        // Prepare first: it types the columns, and refuses a second
+        // statement before anything runs.
+        let statement = transaction.prepare(&sql.text).await.map_err(query_error)?;
+        let columns = column_metas(&statement);
+        let messages = transaction
+            .simple_query(&sql.text)
+            .await
+            .map_err(query_error)?;
+        transaction.rollback().await.map_err(query_error)?;
+        let mut rows = Vec::new();
+        for message in messages {
+            if let SimpleQueryMessage::Row(row) = message {
+                if rows.len() > limit {
+                    break;
+                }
+                rows.push(row_values(&row, &columns)?);
+            }
+        }
+        Ok((columns, rows, started.elapsed()))
+    }
+
     /// The `bytea` columns a filter of `query` compares as bytes when its
     /// value reads as bytes; empty, without asking, when no filter has such
     /// a value.
@@ -691,30 +730,7 @@ impl Adapter for Conn {
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::Postgres.select_rows(query, &key, &binary);
         let limit = query.limit as usize;
-        let mut client = self.client.lock().await;
-        let started = Instant::now();
-        let transaction = client
-            .build_transaction()
-            .read_only(true)
-            .start()
-            .await
-            .map_err(query_error)?;
-        let statement = transaction.prepare(&sql.text).await.map_err(query_error)?;
-        let columns = column_metas(&statement);
-        let messages = transaction
-            .simple_query(&sql.text)
-            .await
-            .map_err(query_error)?;
-        transaction.rollback().await.map_err(query_error)?;
-        let mut rows = Vec::new();
-        for message in messages {
-            if let SimpleQueryMessage::Row(row) = message {
-                if rows.len() > limit {
-                    break;
-                }
-                rows.push(row_values(&row, &columns)?);
-            }
-        }
+        let (columns, mut rows, elapsed) = self.read(&sql, limit).await?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         Ok(RowPage {
@@ -722,7 +738,7 @@ impl Adapter for Conn {
             rows,
             has_more,
             ordered_by_key: !key.is_empty(),
-            elapsed: started.elapsed(),
+            elapsed,
         })
     }
 
@@ -754,6 +770,12 @@ impl Adapter for Conn {
                 _ => None,
             })
             .ok_or_else(|| Error::query("the count returned no number"))
+    }
+
+    async fn lookup(&self, lookup: &Lookup) -> Result<LookupPage> {
+        let sql = Dialect::Postgres.lookup(lookup);
+        let (_, rows, _) = self.read(&sql, lookup.limit as usize).await?;
+        crate::lookup::page(rows, lookup)
     }
 
     async fn run_script(

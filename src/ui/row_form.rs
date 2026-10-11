@@ -153,7 +153,12 @@ impl<'a> Form<'a> {
             })
             .collect();
         let target = editor.as_ref().and_then(|editor| {
-            crate::ui::data_view::editor_target(workspace, object, tab, editor.cell, hold)
+            let mut target =
+                crate::ui::data_view::editor_target(workspace, object, tab, editor.cell, hold)?;
+            // The panel's editor is out of the tab while the panel draws:
+            // its search is read from the editor in hand.
+            target.search = crate::ui::data_view::search_of(workspace, object, editor);
+            Some(target)
         });
         Self {
             editor,
@@ -210,19 +215,59 @@ impl<'a> Form<'a> {
         // In the box its value showed under the pointer: the text stays
         // where it was read.
         let place = super::row_panel::field_box(skin.0);
-        let outcome = if editor.large {
+        let mut outcome = if editor.large {
             // A value of several lines, a long one or a document: the
             // large editor, in the field's place.
             cell_editor::tall(ui, editor, target, place.1, skin)
         } else {
             cell_editor::in_panel(ui, editor, target, (role, place), skin)
         };
+        // A foreign key field's list, under the field. A press on it is
+        // the editor's own: the field keeps the keyboard, and the frame
+        // does not read as an edit that was left.
+        let mut pick = None;
+        if !editor.large
+            && let Some(picker) = &editor.picker
+            && let (Some(anchor), Some(search)) = (outcome.rect, &target.search)
+            // Only while the field is in sight, its top edge clear of the
+            // panel's view: the list hangs from the part that shows, as a
+            // cell's does from the grid's body.
+            && let Some(anchor) = crate::ui::key_picker::hung_from(anchor, ui.clip_rect())
+        {
+            let names = crate::ui::key_picker::Names {
+                table: &picker.target.name,
+                nullable: search.nullable,
+            };
+            let shown = crate::ui::key_picker::show(
+                ui,
+                picker,
+                &editor.text,
+                anchor,
+                target.id,
+                &names,
+                skin,
+            );
+            if shown.pressed {
+                ui.memory_mut(|memory| memory.request_focus(target.id));
+                outcome.left = false;
+                outcome.kept = false;
+            }
+            if let Some(index) = shown.picked {
+                pick = Some(Action::PickOption { tab, id, index });
+            } else if shown.null {
+                pick = Some(Action::PickerNull { tab, id });
+            }
+        }
         // The text is noted as typed before anything ends the edit, as for
         // a cell's field.
         if outcome.changed {
             self.ending.push(Action::EditorTyped { tab, id });
         }
-        if outcome.now {
+        // A pick ends the edit: the list was pressed, so nothing in this
+        // frame reads as the edit left, and the pick goes first.
+        if let Some(pick) = pick {
+            self.ending.push(pick);
+        } else if outcome.now {
             self.ending.push(Action::SetNow { tab, id });
         } else if outcome.large {
             self.ending.push(Action::EditorBreak { tab, id });

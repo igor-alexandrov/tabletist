@@ -39,6 +39,9 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::CommitEdit { .. }
             | Action::LeaveEdit { .. }
             | Action::CancelEdit { .. }
+            | Action::PickerMove { .. }
+            | Action::PickOption { .. }
+            | Action::PickerNull { .. }
             | Action::SetNull { .. }
             | Action::SetFieldNull { .. }
             | Action::SetDefault { .. }
@@ -116,7 +119,7 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
 
 impl App {
     /// What editing may know of a table tab: `None` while it has no page.
-    fn table<T>(
+    pub(super) fn table<T>(
         &self,
         tab: ConnTabId,
         id: TabId,
@@ -736,6 +739,8 @@ impl App {
                 top: large && from_value,
                 touched: touched || kept,
                 problem,
+                picker: None,
+                select: false,
             })
         });
         let Some(opened) = opened else {
@@ -744,6 +749,7 @@ impl App {
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
+        let is_open = opened.is_ok();
         match opened {
             Ok(editor) => {
                 object.selection = Some(cell);
@@ -767,6 +773,9 @@ impl App {
         }
         if let Some(workspace) = self.workspace_mut(tab) {
             workspace.pane = Pane::Grid;
+        }
+        if is_open {
+            self.open_picker(tab, id, from_value);
         }
     }
 
@@ -1013,6 +1022,12 @@ impl App {
     /// closed.
     pub(super) fn close_editor(&mut self, tab: ConnTabId, id: TabId, left: bool) -> bool {
         let verdict = self.table(tab, id, typed);
+        // Whether the text is the key of an option taken from the
+        // picker's list: read before the editor goes.
+        let taken = self
+            .editor_mut(tab, id)
+            .and_then(|editor| editor.picker.as_ref())
+            .is_some_and(|picker| picker.taken);
         let Some(object) = self.object_tab_mut(tab, id) else {
             return false;
         };
@@ -1035,6 +1050,35 @@ impl App {
         }
         object.edits.editor = None;
         let key = (cell.row, cell.col);
+        // What the cell's doubt comes to, as one ordered rule:
+        // 1. not changed, or a problem: the cell has no doubt;
+        // 2. taken from the picker's list: no doubt, nothing asked (the
+        //    row was just read);
+        // 3. a doubt of this very text stands: it is kept, nothing asked;
+        // 4. the cell already held this very text, ready, before this
+        //    close: nothing asked. It was asked when it was kept, or taken
+        //    from the list, or copied, and an editor reopened and closed
+        //    with no change is no new value;
+        // 5. otherwise the text is a new typed key: asked.
+        let same = |value: &NewValue| match (value, &new) {
+            (NewValue::Text(held), NewValue::Text(text)) => held == text,
+            (NewValue::Null | NewValue::Text(_) | NewValue::Default { .. } | NewValue::Now, _) => {
+                false
+            }
+        };
+        let known = object
+            .edits
+            .doubts
+            .get(&key)
+            .is_some_and(|doubt| matches!(&new, NewValue::Text(text) if doubt.text == *text));
+        let held = object
+            .edits
+            .cells
+            .get(&key)
+            .is_some_and(|held| held.state == State::Ready && same(&held.new));
+        let doubtful = changed && problem.is_none() && !taken;
+        let keep = doubtful && known;
+        let ask = doubtful && !known && !held;
         if changed {
             let state = problem.map_or(State::Ready, State::ToFix);
             object.edits.put(key, Pending { new, state });
@@ -1043,6 +1087,15 @@ impl App {
         }
         // The row panel shows the pending value.
         object.fields = None;
+        // `put` keeps a doubt of the same text, which a taken value must
+        // not keep, and a question the cell had was of the value before.
+        if !keep {
+            object.edits.doubts.remove(&key);
+        }
+        if ask {
+            // A typed key: does it name a row?
+            self.ask_row(tab, id, cell);
+        }
         true
     }
 

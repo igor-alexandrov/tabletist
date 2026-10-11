@@ -335,6 +335,26 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
         .filter(|&(tab, id)| app.flips(tab, id));
+    // The table on screen has a foreign key cell's picker open, and its
+    // field has the keyboard: the list's keys are read here, before the
+    // shortcuts below and before the field.
+    let picking = object.filter(|&(tab, id)| {
+        let field = crate::ui::cell_editor::field_id(tab, id);
+        let has = ctx.memory(|memory| memory.has_focus(field));
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.edits.editor.as_ref())
+            // An editor that is about to take the keyboard counts: its
+            // field takes it a frame after the editor opens. A search
+            // that failed has no list: its keys are the field's.
+            .is_some_and(|editor| {
+                let lists = editor
+                    .picker
+                    .as_ref()
+                    .is_some_and(|picker| picker.failed.is_none());
+                (has || editor.focus) && lists && !editor.large
+            })
+    });
     // Whether the frame brings a key press, asked before any is taken. One
     // that is taken below (an arrow, Ctrl+L) ends the wait of a first key
     // as a letter does, and the letters would not know it came.
@@ -350,6 +370,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // them, nor do the shortcuts below (Ctrl+N, Ctrl+P).
         if let Some(editor) = in_editor {
             completion_keys(input, editor, completing, terminal, &mut actions);
+        }
+        // The foreign key picker's keys, by the same rule.
+        if let Some((tab, id)) = picking {
+            picker_keys(input, (tab, id), terminal, &mut actions);
         }
         // Running works while typing: the editor never sees these. A held
         // chord runs once, or each repeat would cancel the run before it.
@@ -801,6 +825,34 @@ struct Completing {
     /// is already typed, or only a guess at a word that may be whole (see
     /// `Completion::enter_is_a_line_break`).
     enter_breaks: bool,
+}
+
+/// The keys that move in the list of a foreign key cell's picker, whose
+/// field has the keyboard. Enter, Tab and Esc are the field's
+/// (`cell_editor::ending_keys`): the reducer asks the picker what Enter
+/// takes. The terminal's Ctrl+N and Ctrl+P are the list's as long as it
+/// is open: they never reach New connection and Quick open.
+fn picker_keys(
+    input: &mut egui::InputState,
+    (tab, id): (ConnTabId, TabId),
+    terminal: bool,
+    actions: &mut Vec<Action>,
+) {
+    let page = crate::key_picker::VISIBLE as isize;
+    for (modifiers, key, by, taken) in [
+        (Modifiers::NONE, Key::ArrowDown, 1, true),
+        (Modifiers::NONE, Key::ArrowUp, -1, true),
+        (Modifiers::NONE, Key::PageDown, page, true),
+        (Modifiers::NONE, Key::PageUp, -page, true),
+        (Modifiers::CTRL, Key::N, 1, terminal),
+        (Modifiers::CTRL, Key::P, -1, terminal),
+    ] {
+        if taken {
+            // One step for each press: a frame may hold several.
+            let presses = take_press(input, modifiers, key);
+            actions.extend((0..presses).map(|_| Action::PickerMove { tab, id, by }));
+        }
+    }
 }
 
 /// The keys of the completion list of `editor`, which has the keyboard:
