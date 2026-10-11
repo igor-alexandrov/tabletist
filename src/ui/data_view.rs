@@ -1727,6 +1727,7 @@ pub(super) fn editor_target(
                     }
                 }),
                 nullable: table.column(cell.col).is_some_and(|column| column.nullable),
+                failed: picker.failed.is_some(),
                 refused: picker.refused,
             }),
     })

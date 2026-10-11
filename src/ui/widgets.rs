@@ -762,9 +762,11 @@ pub fn announce(ui: &Ui, rect: Rect, text: &str) {
 /// when it appears or changes, without taking the user's place. For what
 /// the app says of something it did (a count of matches, a pick).
 pub fn announce_polite(ui: &Ui, rect: Rect, text: &str) {
-    let id = ui
-        .id()
-        .with(("announce", text, rect.min.x as i32, rect.min.y as i32));
+    // The node's id is the words alone: where the region sits is no
+    // change, and a list that moves (it flips above its cell, the window
+    // is resized) must not make a new node, which a screen reader would
+    // read out again.
+    let id = ui.id().with(("announce-polite", text));
     let response = ui.interact(rect, id, Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
     ui.ctx().accesskit_node_builder(response.id, |node| {

@@ -1652,3 +1652,273 @@ fn an_arrow_right_after_the_editor_opens_is_the_lists() {
     harness.frame(vec![crate::testing::key(Key::ArrowDown, Modifiers::NONE)]);
     assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(1));
 }
+
+/// Test 13, in the terminal look: Esc closes the picker without a change
+/// (on a text cell it keeps the edit), and so does Ctrl+C. Ctrl+N and
+/// Ctrl+P move the highlight and do nothing else.
+#[test]
+fn the_terminal_look_moves_with_ctrl_n_and_closes_with_esc() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, 0);
+    // A letter on a selected cell is a normal-mode command here: the
+    // editor is opened, and the text typed into its field.
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 0,
+            col: PUBLISHER,
+        },
+        start: EditStart::Replace(String::new()),
+    });
+    harness.settle();
+    type_on_cell(&mut harness, "harb");
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(0));
+    let tabs = harness.app.tabs.len();
+    // What a real Ctrl press reports: outside macOS Ctrl is the command
+    // key too (as `ctrl()` of `src/ui/complete_tests.rs`).
+    let ctrl = if cfg!(target_os = "macos") {
+        Modifiers::CTRL
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    harness.press(Key::N, ctrl);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(1));
+    harness.press(Key::P, ctrl);
+    assert_eq!(picker(&harness, tab, id).unwrap().highlight, Some(0));
+    // No new connection, no quick open.
+    assert_eq!(harness.app.tabs.len(), tabs);
+    assert!(harness.app.dialog.is_none());
+    // The line at the bottom names the picker's keys. It is painted, not
+    // announced: the whole of it is one piece of text, and the window is
+    // wide enough for the line to keep it.
+    harness.settle();
+    let keys = "ctrl+n/p move · enter set · esc close";
+    assert!(
+        harness.painted.iter().any(|(piece, _)| piece == keys),
+        "{:?}",
+        harness.painted
+    );
+    // No head line and no foot in this look.
+    assert!(!harness.has("Esc cancels"));
+
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0), None);
+}
+
+/// Spec 2: in the terminal look `i` goes on from the text's end, and
+/// nothing is selected.
+#[test]
+fn the_terminal_look_selects_nothing_on_opening() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    edit(&mut harness, tab, id, 1, EditStart::Value);
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(!object.edits.editor.as_ref().unwrap().select);
+}
+
+/// Spec 2 and 5, in the terminal look: the field keeps the cell, with a
+/// `>` prompt before the text and the count of the list's options at its
+/// end. The other looks have neither.
+#[test]
+fn the_terminal_look_puts_a_prompt_and_the_count_in_the_field() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, 0);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 0,
+            col: PUBLISHER,
+        },
+        start: EditStart::Replace(String::new()),
+    });
+    harness.settle();
+    type_on_cell(&mut harness, "harb");
+    // Harbor Press and Harbor Lights.
+    let prompt = harness.painted_rect("> ").expect("the prompt is painted");
+    let field = harness.painted_rect("harb").expect("the text is painted");
+    // A row's number is a "2" too: the count is the one on the field's line.
+    let count = harness
+        .text_rects
+        .iter()
+        .filter(|(piece, _)| piece == "2")
+        .map(|(_, rect)| *rect)
+        .find(|rect| (rect.center().y - field.center().y).abs() < 2.0)
+        .expect("the count is painted on the field's line");
+    assert!(prompt.right() <= field.left() + 0.5, "{prompt:?} {field:?}");
+    assert!(count.left() >= field.right(), "{count:?} {field:?}");
+    assert!((count.center().y - field.center().y).abs() < 2.0);
+
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    assert!(harness.painted_rect("> ").is_none());
+}
+
+/// A list that moves (it flips above its cell, the window is resized)
+/// keeps the node that announces its count: a screen reader is not told
+/// the same count again.
+#[test]
+fn the_count_keeps_its_node_when_the_list_moves() {
+    let (mut harness, tab, id) = covers_sized(egui::vec2(1280.0, 800.0), 3);
+    select(&mut harness, tab, id, 0);
+    search_annexes(&mut harness, &annexes());
+    let count = "50 or more matches in publishers";
+    let node_of =
+        |tree: &egui::accesskit::TreeUpdate| crate::testing::node(tree, count, Role::Label);
+    let before = node_of(&harness.settle()).expect("the count is announced");
+    let list = crate::testing::bounds(&harness.settle(), "Matching publishers", Role::ListBox);
+    harness.size = egui::vec2(1280.0, 420.0);
+    let tree = harness.settle();
+    let moved = crate::testing::bounds(&tree, "Matching publishers", Role::ListBox);
+    assert_ne!(list, moved, "the list did not move");
+    assert_eq!(node_of(&tree), Some(before));
+}
+
+/// Opens the editor on `publisher_id` of row 0 in the terminal look, as
+/// `i` would, with nothing in it.
+fn open_in_terminal(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+    select(harness, tab, id, 0);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 0,
+            col: PUBLISHER,
+        },
+        start: EditStart::Replace(String::new()),
+    });
+    harness.settle();
+}
+
+/// The editor's own words at the bottom of the terminal look.
+const EDITOR_KEYS: &str = "esc normal · tab next cell";
+const PICKER_KEYS: &str = "ctrl+n/p move · enter set · esc close";
+
+/// The Ctrl+C of a terminal: where Ctrl is the command key too it comes
+/// as a copy (`src/ui/mod.rs` presses it so).
+fn ctrl_c(harness: &mut Harness) {
+    let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+    harness.frame(vec![egui::Event::ModifiersChanged(ctrl), egui::Event::Copy]);
+    harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+    harness.settle();
+}
+
+/// Test 13, in the terminal look: Ctrl+C closes the picker with nothing
+/// pending, and copies nothing.
+#[test]
+fn ctrl_c_closes_the_terminal_looks_picker_without_a_change() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    open_in_terminal(&mut harness, tab, id);
+    type_on_cell(&mut harness, "harb");
+    assert!(picker(&harness, tab, id).is_some());
+    ctrl_c(&mut harness);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0), None);
+    assert_eq!(harness.copied, None);
+}
+
+/// A search that failed leaves the plain text editor, in the terminal
+/// look too: Esc keeps a text the column takes, and the line at the bottom
+/// names the editor's keys, not the picker's.
+#[test]
+fn a_failed_search_leaves_the_editors_keys_and_its_esc() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    open_in_terminal(&mut harness, tab, id);
+    harness.frame(vec![egui::Event::Text("42".into())]);
+    harness.settle();
+    harness.answer_structure(publishers_structure());
+    harness.settle();
+    // While the search lives, the picker's keys.
+    assert!(
+        harness
+            .painted
+            .iter()
+            .any(|(piece, _)| piece == PICKER_KEYS)
+    );
+    harness.fail_lookup(tabletist_db::Error::query(
+        "permission denied for table publishers",
+    ));
+    harness.settle();
+    assert!(picker(&harness, tab, id).unwrap().failed.is_some());
+    assert!(
+        harness
+            .painted
+            .iter()
+            .any(|(piece, _)| piece == EDITOR_KEYS)
+    );
+    assert!(
+        !harness
+            .painted
+            .iter()
+            .any(|(piece, _)| piece == PICKER_KEYS)
+    );
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert_eq!(pending(&harness, tab, id, 0).as_deref(), Some("42"));
+}
+
+/// On the keyed fixture, a column that is no foreign key still has the
+/// terminal look's editor: its words at the bottom, and Esc keeps the text.
+#[test]
+fn a_column_that_is_no_foreign_key_keeps_the_terminal_editor() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos { row: 0, col: 2 },
+        start: EditStart::Replace(String::new()),
+    });
+    harness.settle();
+    assert!(picker(&harness, tab, id).is_none());
+    harness.frame(vec![egui::Event::Text("ab".into())]);
+    harness.settle();
+    assert!(
+        harness
+            .painted
+            .iter()
+            .any(|(piece, _)| piece == EDITOR_KEYS)
+    );
+    assert!(
+        !harness
+            .painted
+            .iter()
+            .any(|(piece, _)| piece == PICKER_KEYS)
+    );
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    match &object
+        .edits
+        .cells
+        .get(&(0, 2))
+        .expect("the text is kept")
+        .new
+    {
+        NewValue::Text(text) => assert_eq!(text, "ab"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// In a window too narrow for the picker's three keys, the line falls back
+/// to the one key that differs from the editor's before it drops them all.
+#[test]
+fn a_narrow_line_keeps_esc_close_when_the_keys_do_not_fit() {
+    let mut seen = Vec::new();
+    for width in (300..=1280).rev().step_by(10) {
+        let mut harness = Harness::with_size(egui::vec2(width as f32, 800.0));
+        harness.set_look(Look::omarchy());
+        let (tab, id) = harness.keyed_covers();
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+        harness.settle();
+        open_in_terminal(&mut harness, tab, id);
+        type_on_cell(&mut harness, "harb");
+        let has = |text: &str| harness.painted.iter().any(|(piece, _)| piece == text);
+        seen.push((has(PICKER_KEYS), has("esc close")));
+    }
+    // Wide: the whole of it. Then the short one alone. Never both.
+    assert_eq!(seen.first(), Some(&(true, false)));
+    assert!(seen.contains(&(false, true)), "{seen:?}");
+    assert!(!seen.contains(&(true, true)));
+}

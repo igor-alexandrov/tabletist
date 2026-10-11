@@ -20,6 +20,9 @@ use crate::ui::{grid, sql_complete, widgets};
 /// with the gap after it.
 const SEARCH_ICON: f32 = 12.0;
 const SEARCH_LEAD: f32 = SEARCH_ICON + 6.0;
+/// What the text of a search must keep of the field beside the terminal
+/// look's count of options: this many characters wide.
+const SEARCH_ROOM: &str = "000000";
 
 /// What a frame of an open editor asks for.
 #[derive(Debug, Default, PartialEq)]
@@ -74,6 +77,9 @@ pub struct Search {
     pub count: Option<String>,
     /// The cell's column takes NULL: the list's foot offers Set NULL.
     pub nullable: bool,
+    /// The search failed: the field goes on as the plain text editor it
+    /// was, Esc keeping the edit in the terminal look.
+    pub failed: bool,
     /// A commit took the text and the column refused it: the field shows
     /// why. Until then the text is a search, and the field says nothing
     /// of what the column would make of it.
@@ -204,7 +210,14 @@ fn caret_at(
 /// take Enter as giving the keyboard up, and Alt+Enter with it. Tab and
 /// Esc are egui's to move and drop the keyboard with, unless the field
 /// holds them (see `hold_keys`).
-fn ending_keys(ui: &Ui, has: bool, had: bool, terminal: bool, outcome: &mut Outcome) {
+fn ending_keys(
+    ui: &Ui,
+    has: bool,
+    had: bool,
+    terminal: bool,
+    picking: bool,
+    outcome: &mut Outcome,
+) {
     ui.input_mut(|input| {
         if has {
             // Alt first: a match lets an extra Alt and Shift through.
@@ -218,7 +231,7 @@ fn ending_keys(ui: &Ui, has: bool, had: bool, terminal: bool, outcome: &mut Outc
                 outcome.commit = Some(Advance::Right);
             }
         }
-        leaving_keys(input, has || had, terminal, outcome);
+        leaving_keys(input, has || had, terminal, picking, outcome);
     });
 }
 
@@ -226,8 +239,16 @@ fn ending_keys(ui: &Ui, has: bool, had: bool, terminal: bool, outcome: &mut Outc
 /// keyboard or `had` it a frame ago: in the first frames of a field egui
 /// still drops the keyboard on Esc before any of this runs, and the key is
 /// the editor's all the same. Esc drops the edit. In the terminal look it
-/// leaves insert mode with the text kept, and Ctrl+C drops it.
-fn leaving_keys(input: &mut egui::InputState, mine: bool, terminal: bool, outcome: &mut Outcome) {
+/// leaves insert mode with the text kept, and Ctrl+C drops it. In a
+/// foreign key cell's picker (`picking`) the text is a search, not a
+/// value: Esc drops the edit in every look.
+fn leaving_keys(
+    input: &mut egui::InputState,
+    mine: bool,
+    terminal: bool,
+    picking: bool,
+    outcome: &mut Outcome,
+) {
     if !mine {
         return;
     }
@@ -267,8 +288,15 @@ fn leaving_keys(input: &mut egui::InputState, mine: bool, terminal: bool, outcom
                 if *repeat {
                     return false;
                 }
-                outcome.left = true;
-                outcome.kept = true;
+                if picking {
+                    // The text of a foreign key's picker is a search, not
+                    // a value: Esc closes it without a change, as the
+                    // Components sheet gives a picker.
+                    outcome.cancel = true;
+                } else {
+                    outcome.left = true;
+                    outcome.kept = true;
+                }
             }
             _ => return true,
         }
@@ -338,7 +366,10 @@ pub fn field(
     if has {
         keep_keyboard(ui.ctx());
     }
-    ending_keys(ui, has, had, look.terminal, &mut outcome);
+    // A search that failed leaves the plain text editor, whose Esc keeps
+    // the edit in the terminal look.
+    let picking = target.search.as_ref().is_some_and(|search| !search.failed);
+    ending_keys(ui, has, had, look.terminal, picking, &mut outcome);
 
     // Over the cell: the row's fill would show through a field with none.
     ui.painter()
@@ -364,22 +395,45 @@ pub fn field(
     let role = grid::data_role(look);
     let pad = grid::cell_pad(look);
     let center = rect.center().y;
+    // A foreign key's field has the magnifier of a search field at its
+    // start, and its text begins after it. The terminal look's `>` prompt
+    // takes its place.
+    let prompt = "> ";
+    let lead = match &target.search {
+        Some(_) if look.terminal => role.width(ui.ctx(), look.faces, prompt),
+        Some(_) => SEARCH_LEAD,
+        None => 0.0,
+    };
+    let text_left = rect.left() + pad + lead;
     // How much of the column's length the text takes, at the field's right.
+    // While the text is a search it is no value, and its length is none of
+    // the column's business: the list's count has the room.
     let mut right = rect.right() - pad;
-    if let Some(max) = target.max_chars {
+    let searching = target.search.as_ref().is_some_and(|search| !search.refused);
+    if let Some(max) = target.max_chars.filter(|_| !searching) {
         let count = format!("{} / {max}", editor.text.chars().count());
         let laid = Text::one(look, widgets::secondary(look), &count, palette.dim).layout(ui.ctx());
         right -= laid.paint_right(ui.painter(), right, center) + pad;
     }
+    // The terminal look counts the list's options in the field, if the
+    // text keeps room for a few characters beside the count: in a narrow
+    // column the count gives way.
+    if let (true, Some(count)) = (
+        look.terminal,
+        target
+            .search
+            .as_ref()
+            .and_then(|search| search.count.as_ref()),
+    ) {
+        let laid = Text::one(look, widgets::secondary(look), count, palette.dim).layout(ui.ctx());
+        let taken = laid.width() + pad;
+        let room = role.width(ui.ctx(), look.faces, SEARCH_ROOM);
+        if right - taken - text_left >= room {
+            laid.paint_right(ui.painter(), right, center);
+            right -= taken;
+        }
+    }
     let line = role.row_height(ui.ctx(), look.faces);
-    // A foreign key's field has the magnifier of a search field at its
-    // start, and its text begins after it. The terminal look's prompt
-    // takes its place (task 5).
-    let lead = match &target.search {
-        Some(_) if !look.terminal => SEARCH_LEAD,
-        _ => 0.0,
-    };
-    let text_left = rect.left() + pad + lead;
     // Where the text is: where the cell had it.
     let inner = Rect::from_min_max(
         pos2(text_left, center - line / 2.0),
@@ -440,7 +494,11 @@ pub fn field(
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
-    if lead > 0.0 {
+    if look.terminal && target.search.is_some() {
+        Text::one(look, role, prompt, palette.dim)
+            .layout(ui.ctx())
+            .paint_left(ui.painter(), rect.left() + pad, center);
+    } else if lead > 0.0 {
         let place = Rect::from_center_size(
             pos2(rect.left() + pad + SEARCH_ICON / 2.0, center),
             vec2(SEARCH_ICON, SEARCH_ICON),
@@ -549,7 +607,8 @@ pub fn in_panel(
     if has {
         keep_keyboard(ui.ctx());
     }
-    ending_keys(ui, has, had, look.terminal, &mut outcome);
+    // The row panel's field gets its picker in a later run.
+    ending_keys(ui, has, had, look.terminal, false, &mut outcome);
     // In the panel a commit walks the row's fields, not the grid's cells.
     outcome.commit = outcome.commit.map(|then| match then {
         Advance::Stay => Advance::Stay,
@@ -836,7 +895,7 @@ fn large_keys(ui: &Ui, id: Id, terminal: bool, outcome: &mut Outcome) -> bool {
         if has && consume_press(input, Modifiers::COMMAND, Key::Enter) {
             outcome.commit = Some(Advance::Stay);
         }
-        leaving_keys(input, has || had, terminal, outcome);
+        leaving_keys(input, has || had, terminal, false, outcome);
     });
     had
 }
@@ -1518,6 +1577,113 @@ mod tests {
             Lock::TooLarge,
         ] {
             assert!(!why(lock).is_empty(), "{lock:?}");
+        }
+    }
+
+    /// Every piece of text a field of `width` painted, for a search with
+    /// `count` options listed (`refused`: a commit was refused), on a
+    /// column that holds `max_chars` characters.
+    fn painted(
+        look: &Look,
+        (width, text): (f32, &str),
+        search: Option<(Option<&str>, bool)>,
+        max_chars: Option<u32>,
+    ) -> Vec<String> {
+        fn texts(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, into)),
+                egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, look);
+        let palette = Palette::dark();
+        let mut editor = Editor {
+            cell: crate::model::CellPos { row: 0, col: 0 },
+            place: crate::edit::EditorPlace::Grid,
+            text: text.to_owned(),
+            large: false,
+            focus: false,
+            top: false,
+            touched: true,
+            problem: None,
+            picker: None,
+            select: false,
+        };
+        let target = Target {
+            id: Id::new("field"),
+            name: "publisher_id".into(),
+            type_name: "int8".into(),
+            max_chars,
+            json: false,
+            hold: true,
+            now: false,
+            search: search.map(|(count, refused)| Search {
+                table: "publishers".into(),
+                count: count.map(str::to_owned),
+                nullable: false,
+                failed: false,
+                refused,
+            }),
+        };
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 400.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(width, 24.0));
+                    field(
+                        ui,
+                        rect,
+                        &mut editor,
+                        &target,
+                        (look, &palette, Locale::English),
+                    );
+                },
+            );
+            // egui panics if a frame's texture updates are dropped unhandled.
+            output.textures_delta.clear();
+            seen.clear();
+            for clipped in &output.shapes {
+                texts(&clipped.shape, &mut seen);
+            }
+        }
+        seen
+    }
+
+    /// The terminal look's count gives way in a narrow column: the prompt
+    /// and the text keep the room, and nothing is painted over the prompt.
+    #[test]
+    fn the_count_gives_way_in_a_narrow_column() {
+        let look = Look::omarchy();
+        let search = Some((Some("2"), false));
+        let wide = painted(&look, (400.0, "harb"), search, None);
+        assert!(wide.iter().any(|piece| piece == "2"), "{wide:?}");
+        assert!(wide.iter().any(|piece| piece == "> "), "{wide:?}");
+        let narrow = painted(&look, (60.0, "harb"), search, None);
+        assert!(!narrow.iter().any(|piece| piece == "2"), "{narrow:?}");
+        assert!(narrow.iter().any(|piece| piece == "> "), "{narrow:?}");
+        assert!(narrow.iter().any(|piece| piece == "harb"), "{narrow:?}");
+    }
+
+    /// While the text is a search, the length of the column is none of its
+    /// business; once a commit was refused, the text is a value and the
+    /// counter is back. In every look.
+    #[test]
+    fn the_length_counter_waits_for_a_commit_to_refuse_the_search() {
+        for look in [Look::omarchy(), Look::macos()] {
+            let counter = |search| {
+                let seen = painted(&look, (400.0, "harb"), search, Some(64));
+                seen.iter().any(|piece| piece == "4 / 64")
+            };
+            assert!(!counter(Some((Some("2"), false))), "{}", look.terminal);
+            assert!(counter(Some((Some("2"), true))), "{}", look.terminal);
+            // A column that is no foreign key shows it as ever.
+            assert!(counter(None), "{}", look.terminal);
         }
     }
 }
