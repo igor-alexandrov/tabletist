@@ -115,7 +115,10 @@ back.
 | Esc | Close it |
 | `[` `]` | Previous and next row |
 | `za` | Fold the documents in it |
-| `e`, Ctrl+I | Edit the row in it |
+| Ctrl+L, Ctrl+I | Put the keyboard on the row's first field that can be edited. They show the panel if it is hidden. Ctrl+L does this while the grid has the keyboard and a row is selected; anywhere else it moves between the parts of the window |
+| `j` `k` | Previous and next field, while a field has the keyboard |
+| `i`, Enter | Edit the field. `cc`, `x`, `D` and `u` work on it as they do on its cell |
+| Ctrl+H | Back to the grid, on that field's cell |
 
 ### Editing
 
@@ -127,7 +130,7 @@ back.
 | `yy` | Yank the cursor's row, and put it on the clipboard. The first `y` copies the cell, as `y` alone does |
 | `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
 | `dd` | Drop a new row that is not saved yet |
-| `e`, Ctrl+I | Edit the row in the row panel |
+| Ctrl+L, Ctrl+I | Go to the row's fields in [the row panel](#the-row-panel), where `i` and Enter edit one |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
