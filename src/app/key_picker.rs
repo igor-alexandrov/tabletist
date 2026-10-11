@@ -74,17 +74,14 @@ impl App {
             };
             // A fetch that failed is asked for again: the completion list
             // asks once per keystroke and so lets a failure stand, while
-            // this asks once per editor opened. The failure of the old
-            // fetch is not the new one's: the picker waits, and
-            // `picker_columns` gives it the failure if the retry fails too.
+            // this asks once per editor opened. A cached error is never
+            // the picker's failure at opening: a refresh that failed
+            // leaves columns that are known, and the list works with them,
+            // and columns that are not known are asked for again, so the
+            // old failure is not the new fetch's. `picker_columns` gives
+            // the picker the failure if the retry fails too.
             let load = kept.is_none_or(|kept| kept.value.is_none() && !kept.is_loading());
-            let failed = if load {
-                None
-            } else {
-                kept.and_then(|kept| kept.error.clone())
-            };
-            let mut picker = Picker::new(target, label, current, !from_value, &editor.text);
-            picker.failed = failed;
+            let picker = Picker::new(target, label, current, !from_value, &editor.text);
             Some((picker, load))
         });
         let Some((mut picker, load)) = made else {

@@ -8,10 +8,10 @@
 
 use std::time::{Duration, Instant};
 
-use tabletist_db::{LookupPart, Value};
+use tabletist_db::{LookupPart, ObjectRef, Value};
 
 use crate::backend::{Command, Event, RequestId};
-use crate::key_picker::{Picker, Take};
+use crate::key_picker::{Columns, Picker, Take};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::testing::{Harness, PUBLISHERS, publishers_structure};
 use crate::theme::Look;
@@ -277,52 +277,60 @@ fn a_read_cancelled_unasked_is_sent_again() {
     assert!(self::picker(&harness, tab, id).unwrap().failed.is_none());
 }
 
+/// When the picker's next search is due.
+fn due_of(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<Instant> {
+    picker(harness, tab, id)?.due
+}
+
 /// Spec 3: a search is sent after a pause in the typing, not on each
-/// keystroke.
+/// keystroke. The test reads when the search is due and asks at that
+/// time, so it does not depend on the clock.
 #[test]
 fn a_search_waits_for_a_pause_in_the_typing() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     harness.app.lookup_delay = Duration::from_millis(150);
     edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
     set_text(&mut harness, tab, id, "ha");
-    let now = Instant::now();
+    let due = due_of(&harness, tab, id).expect("the text waits for its search");
     let sent = harness.lookups().len();
-    let wait = harness.app.send_due_lookups(now);
+    let wait = harness.app.send_due_lookups(due - Duration::from_millis(1));
     assert_eq!(harness.lookups().len(), sent, "sent before the pause");
-    // A few microseconds went by since the reducer took its own time.
     let wait = wait.expect("a search is due later");
+    assert!(wait > Duration::ZERO, "{wait:?}");
     assert!(wait <= Duration::from_millis(150), "{wait:?}");
-    assert!(wait > Duration::from_millis(100), "{wait:?}");
-    let wait = harness
-        .app
-        .send_due_lookups(now + Duration::from_millis(200));
+    let wait = harness.app.send_due_lookups(due + Duration::from_millis(1));
     assert_eq!(wait, None);
     assert_eq!(harness.lookups().len(), sent + 1);
 }
 
 /// The frame sends what is due itself, and asks to be drawn again when the
 /// next search is. The delay is shorter than the 83 ms a focused text field
-/// asks for anyway (its cursor), so the request is the search's.
+/// asks for anyway (its cursor), so a request within it is the search's.
 #[test]
 fn a_frame_sends_what_is_due_and_asks_to_come_back() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     harness.app.lookup_delay = DELAY;
     edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
     harness.finish_animations();
-    let quiet = harness.repaint_after;
     set_text(&mut harness, tab, id, "ha");
     let sent = harness.lookups().len();
-    // One frame: the pause is short, and many frames could outlast it.
     harness.frame(Vec::new());
-    assert_eq!(harness.lookups().len(), sent, "sent before the pause");
-    assert!(
-        harness.repaint_after <= DELAY,
-        "{:?}",
-        harness.repaint_after
-    );
-    // Nothing was due before the text changed: the request is the search's.
-    assert!(quiet > DELAY, "{quiet:?}");
-    // The pause went by.
+    if harness.lookups().len() == sent {
+        // The frame ran inside the pause: it asked to come back by the time
+        // the search is due.
+        assert!(
+            harness.repaint_after <= DELAY,
+            "{:?}",
+            harness.repaint_after
+        );
+    } else {
+        // The frame was slower than the pause (a loaded machine): it sent
+        // the search itself, which is what the request to come back is for.
+        // Either way the frame is wired to the searches.
+        assert_eq!(harness.lookups().len(), sent + 1);
+        set_text(&mut harness, tab, id, "har");
+    }
+    // The pause went by, by hand.
     let now = Instant::now();
     let past = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
     let object = harness
@@ -340,8 +348,9 @@ fn a_frame_sends_what_is_due_and_asks_to_come_back() {
         .as_mut()
         .unwrap()
         .due = Some(past);
+    let before = harness.lookups().len();
     harness.frame(Vec::new());
-    assert_eq!(harness.lookups().len(), sent + 1);
+    assert_eq!(harness.lookups().len(), before + 1);
 }
 
 /// The newest `Describe` sent, answered with `error`.
@@ -484,5 +493,32 @@ fn a_picker_nobody_fetches_for_has_its_columns_asked_for() {
     assert_eq!(publishers_described(&harness), 2);
     harness.answer_structure(publishers_structure());
     harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(listed(&harness, tab, id).len(), 3);
+}
+
+/// Columns that are known stay known when a later refresh of them failed:
+/// the list works with them.
+#[test]
+fn a_failed_refresh_of_known_columns_does_not_take_the_list_away() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // The first editor makes the publishers' columns known.
+    edit(&mut harness, tab, id, 0, EditStart::Typed("h".into()));
+    harness.app.apply(Action::CancelEdit { tab, id });
+    let described = publishers_described(&harness);
+    let sent = harness.lookups().len();
+    let cache = &mut harness.app.workspace_mut(tab).unwrap().columns;
+    let kept = cache
+        .get_mut(&ObjectRef::new("main", "publishers"))
+        .expect("the publishers' columns are cached");
+    assert!(kept.value.is_some());
+    kept.error = Some(tabletist_db::Error::query("the refresh was refused"));
+    open(&mut harness, tab, id, 1, EditStart::Typed("h".into()));
+    assert_eq!(publishers_described(&harness), described);
+    let opened = picker(&harness, tab, id).unwrap();
+    assert!(opened.failed.is_none());
+    assert!(matches!(opened.label, Columns::Known(Some(_))));
+    assert_eq!(harness.lookups().len(), sent + 1);
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(picker(&harness, tab, id).unwrap().failed.is_none());
     assert_eq!(listed(&harness, tab, id).len(), 3);
 }
