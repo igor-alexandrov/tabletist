@@ -83,7 +83,14 @@ fn muted(look: &Look, palette: &Palette) -> egui::Color32 {
 }
 
 /// The one line the list says in place of options, or under them.
-fn state_line(picker: &Picker, typed: &str, table: &str, locale: Locale) -> Option<(String, bool)> {
+/// `hidden` is how many options the list holds that are not drawn.
+fn state_line(
+    picker: &Picker,
+    typed: &str,
+    table: &str,
+    hidden: usize,
+    locale: Locale,
+) -> Option<(String, bool)> {
     let table = display_safe(table);
     if let Some(error) = &picker.failed {
         return Some((display_safe(&error.to_string()).into_owned(), true));
@@ -103,9 +110,14 @@ fn state_line(picker: &Picker, typed: &str, table: &str, locale: Locale) -> Opti
         };
         return Some((said, false));
     }
-    picker.more.then(|| {
+    if picker.more {
         let text = gettext(locale, "First {count} shown. Keep typing to narrow.")
             .replace("{count}", &LIMIT.to_string());
+        return Some((text, false));
+    }
+    // The list goes on past the rows drawn: the arrows reach the rest.
+    (hidden > 0).then(|| {
+        let text = gettext(locale, "{count} more").replace("{count}", &hidden.to_string());
         (text, false)
     })
 }
@@ -157,6 +169,52 @@ fn label_text(label: &Value) -> Cow<'_, str> {
         Value::Text(text) => Cow::Borrowed(text),
         other => Cow::Owned(plain_text(other)),
     }
+}
+
+/// The text an option's label is drawn as, where it has one: a NULL one
+/// is the word `NULL`.
+fn label_shown(option: &LookupRow) -> Option<Cow<'_, str>> {
+    match option.label.as_ref()? {
+        Value::Null => Some(Cow::Borrowed("NULL")),
+        value => match label_text(value) {
+            Cow::Borrowed(text) => Some(display_safe(text)),
+            Cow::Owned(text) => Some(Cow::Owned(display_safe(&text).into_owned())),
+        },
+    }
+}
+
+/// The gap between a label and its key on the terminal's one line, and
+/// before its "current" mark.
+const LINE_GAP: f32 = 8.0;
+
+/// The widest line that the terminal look draws for `options` needs:
+/// inset, label, gap, key, the mark of the row the cell points at, inset.
+fn terminal_need(
+    ui: &Ui,
+    options: &[LookupRow],
+    picker: &Picker,
+    shape: &Shape,
+    (look, locale): (&Look, Locale),
+) -> f32 {
+    let mark_role = TextRole::pick(look, TextRole::Shortcut, TextRole::OCaption);
+    let word = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
+    let mark = format!("· {}", gettext(locale, "current"));
+    let mark = word(mark_role, &mark) + LINE_GAP;
+    options
+        .iter()
+        .map(|option| {
+            let key = plain_text(&option.key);
+            let key = word(TextRole::OCode, &display_safe(&key));
+            let label =
+                label_shown(option).map_or(0.0, |label| word(TextRole::OCode, &label) + LINE_GAP);
+            let current = if picker.is_current(&option.key) {
+                mark
+            } else {
+                0.0
+            };
+            2.0 * shape.inset + label + key + current
+        })
+        .fold(0.0, f32::max)
 }
 
 /// What an option is called for a screen reader: its label and its key,
@@ -230,6 +288,9 @@ pub fn hung_from(cell: Rect, body: Rect) -> Option<Rect> {
     (clear && seen.width() > 0.0 && seen.height() > 0.0).then_some(seen)
 }
 
+/// The widest the terminal look's list grows to fit its options.
+const TERMINAL_CAP: f32 = 560.0;
+
 /// The gap between the cell and its list.
 const GAP: f32 = 2.0;
 
@@ -293,21 +354,28 @@ pub fn show(
     let labelled = matches!(&picker.label, Columns::Known(Some(_)));
     let shape = Shape::of(look, labelled);
     let total = picker.options.len();
-    let state = state_line(picker, typed, names.table, locale);
+    // Whether there is a state line is decided before the list is placed,
+    // from the options there are: a list of more than `VISIBLE` says that
+    // it goes on. The rows that really fit are known only after it is
+    // placed, and the line is worded with them. A list that planned no
+    // line and is cut to fewer rows than `VISIBLE` by a short window
+    // draws none for this frame, rather than being placed again.
+    let planned = state_line(
+        picker,
+        typed,
+        names.table,
+        total.saturating_sub(VISIBLE),
+        locale,
+    );
     let head = !look.terminal;
     let foot = !look.terminal;
-    let lines = usize::from(head) + usize::from(foot) + usize::from(state.is_some());
+    let lines = usize::from(head) + usize::from(foot) + usize::from(planned.is_some());
     // As wide as the cell, and wide enough for a label and a key.
-    let width = anchor.width().max(280.0);
+    let base = anchor.width().max(280.0);
     let chrome = 2.0 * shape.pad.y + lines as f32 * shape.line;
-    let wide = vec2(width, chrome);
     let screen = ui.ctx().content_rect();
-    let placed = place(
-        anchor,
-        wide,
-        (chrome, shape.option, total.min(VISIBLE)),
-        screen,
-    );
+    let wanted = (chrome, shape.option, total.min(VISIBLE));
+    let placed = place(anchor, vec2(base, chrome), wanted, screen);
     let rows = placed.rows;
     // The list follows the highlight: the keys scroll it. By the rows
     // that fit, so the highlighted option is always drawn.
@@ -315,6 +383,22 @@ pub fn show(
         .highlight
         .map_or(0, |at| (at + 1).saturating_sub(rows))
         .min(total.saturating_sub(rows));
+    let state = planned
+        .is_some()
+        .then(|| state_line(picker, typed, names.table, total - rows, locale))
+        .flatten();
+    // The terminal look's options are one line, the key last and whole:
+    // the list is as wide as the widest it draws needs, up to a cap.
+    let width = if look.terminal {
+        let drawn = &picker.options[first..first + rows];
+        let need = terminal_need(ui, drawn, picker, &shape, (look, locale));
+        let cap = TERMINAL_CAP.min(screen.width() - 16.0);
+        base.max(need.min(cap))
+    } else {
+        base
+    };
+    // Placed again by the width it really has, which moves nothing down.
+    let placed = place(anchor, vec2(width, chrome), wanted, screen);
     let size = vec2(width, chrome + rows as f32 * shape.option);
     let mut shown = Shown::default();
     // One area for the lists of every table: only the table on screen
@@ -468,7 +552,7 @@ fn paint_option(
         let mark = format!("· {}", gettext(locale, "current"));
         let role = TextRole::pick(look, TextRole::Shortcut, TextRole::OCaption);
         let laid = Text::one(look, role, &mark, muted).layout(ui.ctx());
-        right -= laid.paint_right(ui.painter(), right, row.center().y) + 8.0;
+        right -= laid.paint_right(ui.painter(), right, row.center().y) + LINE_GAP;
     } else if current {
         // The look's check, not a character a font may lack.
         let place = Rect::from_center_size(
@@ -499,6 +583,15 @@ fn paint_option(
             .add(key_role, &key[end..], muted),
         None => Text::one(look, key_role, &key, muted),
     };
+    // On the terminal's one line the key and the mark come first: they
+    // are what Enter sets, and the label is cut to what is left of the
+    // room.
+    let label_room = if look.terminal {
+        let key_width = key_role.width(ui.ctx(), look.faces, &key);
+        (room - key_width - LINE_GAP).max(0.0)
+    } else {
+        room
+    };
     let label = match &option.label {
         None => None,
         Some(Value::Null) => Some(Text::one(look, plain, "NULL", muted)),
@@ -508,6 +601,7 @@ fn paint_option(
             let label = label_text(value);
             let label = display_safe(&label);
             let label = &*label;
+            let room = label_room;
             let whole = |shown: &str| match found_in(shown, text) {
                 Some(found) => Text::new(look)
                     .add(plain, &shown[..found.start], palette.text)
@@ -535,9 +629,11 @@ fn paint_option(
             let wide = label
                 .layout(ui.ctx())
                 .paint_left(&painter, left, row.center().y);
-            key_text()
-                .layout(ui.ctx())
-                .paint_left(&painter, left + wide + 8.0, row.center().y);
+            key_text().layout(ui.ctx()).paint_left(
+                &painter,
+                left + wide + LINE_GAP,
+                row.center().y,
+            );
         }
         (Some(label), false) => {
             let quarter = row.height() / 4.0;

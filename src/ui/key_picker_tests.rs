@@ -1922,3 +1922,183 @@ fn a_narrow_line_keeps_esc_close_when_the_keys_do_not_fit() {
     assert!(seen.contains(&(false, true)), "{seen:?}");
     assert!(!seen.contains(&(true, true)));
 }
+
+/// The terminal look's list for a search of `t`, answered by the table
+/// `names`, whose keys are 9100000000000000001 on.
+fn terminal_list(names: &[String]) -> (Harness, ConnTabId, TabId) {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    open(&mut harness, tab, id, 0, EditStart::Typed("t".into()));
+    harness.answer_structure(publishers_structure());
+    let rows: Vec<(i64, &str)> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (9_100_000_000_000_000_001 + index as i64, name.as_str()))
+        .collect();
+    harness.answer_lookups(&rows);
+    harness.settle();
+    (harness, tab, id)
+}
+
+/// The keys of the options a list of `count` draws, as the table above
+/// numbers them.
+fn first_keys(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|index| (9_100_000_000_000_000_001_i64 + index as i64).to_string())
+        .collect()
+}
+
+/// The terminal look's option is one line, and the key, which Enter
+/// sets, always shows whole: the list is as wide as its options need.
+#[test]
+fn the_terminal_looks_keys_show_whole() {
+    let names: Vec<String> = (1..=12)
+        .map(|index| format!("The Lighthouse Keeper's Daughter {index}"))
+        .collect();
+    let (mut harness, _, _) = terminal_list(&names);
+    let tree = harness.settle();
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    for key in first_keys(8) {
+        let (_, rect) = harness
+            .text_rects
+            .iter()
+            .find(|(text, _)| *text == key)
+            .unwrap_or_else(|| panic!("{key} is not painted: {:?}", harness.painted));
+        assert!(list.contains_rect(*rect), "{key} {rect:?} {list:?}");
+    }
+    // No wider than the cap, and wide enough that no label is cut.
+    assert!(list.width() <= 560.0, "{list:?}");
+    let labels: Vec<_> = harness
+        .text_rects
+        .iter()
+        .filter(|(text, _)| text.starts_with("The Lighthouse"))
+        .collect();
+    assert_eq!(labels.len(), 8, "{labels:?}");
+    assert!(
+        labels.iter().all(|(text, _)| !text.ends_with('…')),
+        "{labels:?}"
+    );
+}
+
+/// Where even the widest the list may grow is not enough, the label gives
+/// way, never the key.
+#[test]
+fn a_label_longer_than_the_list_may_be_is_cut_before_the_key() {
+    let long = "A publisher with a name that goes on and on past the end of any list ".repeat(2);
+    let names = vec![long.trim().to_owned(); 3];
+    let (mut harness, _, _) = terminal_list(&names);
+    let tree = harness.settle();
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    assert!(list.width() <= 560.0, "{list:?}");
+    let label = harness
+        .text_rects
+        .iter()
+        .find(|(text, _)| text.starts_with("A publisher with"))
+        .cloned()
+        .expect("the label is painted");
+    assert!(label.0.ends_with('…'), "{:?}", label.0);
+    assert!(list.contains_rect(label.1), "{label:?} {list:?}");
+    for key in first_keys(3) {
+        let (_, rect) = harness
+            .text_rects
+            .iter()
+            .find(|(text, _)| *text == key)
+            .unwrap_or_else(|| panic!("{key} is not painted"));
+        assert!(list.contains_rect(*rect), "{key} {rect:?} {list:?}");
+        // The key stands after the label, not over it.
+        assert!(rect.left() >= label.1.right(), "{rect:?} {label:?}");
+    }
+}
+
+/// The row the cell points at has its "current" mark after the key, and
+/// the key still shows whole.
+#[test]
+fn the_terminal_looks_current_mark_leaves_the_key_whole() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    // Row 1 points at Harbor Press.
+    open(&mut harness, tab, id, 1, EditStart::Value);
+    harness.answer_structure(publishers_structure());
+    let names: Vec<String> = [
+        "Northlight Books",
+        "Harbor Press with a rather long name",
+        "Harbor Lights",
+    ]
+    .iter()
+    .map(|name| (*name).to_owned())
+    .collect();
+    let rows = [
+        (9_100_000_000_000_000_001, names[0].as_str()),
+        (9_100_000_000_000_000_004, names[1].as_str()),
+        (9_100_000_000_000_000_007, names[2].as_str()),
+    ];
+    harness.answer_lookups(&rows);
+    harness.settle();
+    let tree = harness.settle();
+    let list =
+        crate::testing::bounds(&tree, "Matching publishers", Role::ListBox).expect("the list");
+    let key = harness
+        .text_rects
+        .iter()
+        // The field above the list holds the same key as its text.
+        .find(|(text, rect)| text == HARBOR_PRESS && rect.top() >= list.top())
+        .cloned()
+        .expect("the key is painted");
+    let mark = harness
+        .text_rects
+        .iter()
+        .find(|(text, _)| text == "· current")
+        .cloned()
+        .expect("the mark is painted");
+    assert!(
+        list.contains_rect(key.1) && list.contains_rect(mark.1),
+        "{key:?} {mark:?} {list:?}"
+    );
+    assert!(key.1.right() <= mark.1.left(), "{key:?} {mark:?}");
+}
+
+/// A list that goes on past the rows drawn says how far.
+#[test]
+fn a_list_that_goes_on_says_how_many_more() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    let names: Vec<String> = (0..20).map(|index| format!("Annex {index}")).collect();
+    search_annexes(&mut harness, &names);
+    assert_eq!(picker(&harness, tab, id).unwrap().options.len(), 20);
+    assert!(harness.has("12 more"));
+    // Fewer rows drawn in a short window: more are hidden.
+    let (mut harness, tab, id) = covers_sized(egui::vec2(1280.0, 500.0), 3);
+    select(&mut harness, tab, id, 0);
+    search_annexes(&mut harness, &names);
+    let tree = harness.settle();
+    let drawn = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == Role::ListBoxOption)
+        .count();
+    assert!(drawn < 8);
+    assert!(harness.has(&format!("{} more", 20 - drawn)));
+}
+
+/// A list of two has no such line, and one at the limit says so in the
+/// words it has.
+#[test]
+fn a_list_that_fits_or_is_at_its_limit_has_no_more_line() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    let tree = harness.settle();
+    let more = |tree: &egui::accesskit::TreeUpdate| {
+        crate::testing::labels(tree)
+            .into_iter()
+            .any(|label| label.ends_with(" more"))
+    };
+    assert!(!more(&tree));
+    harness.press(Key::Escape, Modifiers::NONE);
+
+    select(&mut harness, tab, id, 0);
+    search_annexes(&mut harness, &annexes());
+    assert!(harness.has("First 50 shown. Keep typing to narrow."));
+    let tree = harness.settle();
+    assert!(!more(&tree));
+}
