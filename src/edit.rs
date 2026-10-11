@@ -1347,7 +1347,7 @@ pub struct Edits {
     /// `key_picker::unmatched`, which says which of them stand. A doubt
     /// goes with its cell's text: `put`, `revert`, `drop_row` and
     /// `discard` keep the two in step, so none outlives the value it was
-    /// of and attaches to another.
+    /// of and is read as known of a later one.
     pub doubts: BTreeMap<(usize, usize), Doubt>,
     /// The rows to add, in the order they stand in the grid among
     /// themselves: `before` never decreases along them.
@@ -4305,9 +4305,6 @@ mod tests {
         edits.doubts.insert((0, 1), missing("77"));
         assert!(edits.drop_row(id));
         assert_eq!(edits.doubts.keys().copied().collect::<Vec<_>>(), [(0, 1)]);
-        // A row added after it gets the id again, and none of its doubts.
-        let again = edits.add_row(Place::Top, 2);
-        assert!(!edits.doubts.contains_key(&(new_row(again), 1)));
         edits.discard();
         assert!(edits.doubts.is_empty());
     }

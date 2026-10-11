@@ -3356,7 +3356,8 @@ fn the_panels_words_are_the_looks() {
 
 /// A save that runs holds every warning's views back together: the bar's
 /// count and its live region, the panel's words and name, the terminal's
-/// line. A failed save shows its failure, and none of them is back.
+/// line. A save that fails as a whole wrote nothing: the cell is ready as
+/// it was, and they are all back.
 #[test]
 fn a_save_that_runs_takes_every_view_of_the_warning_with_it() {
     let names_no_row = |tree: &egui::accesskit::TreeUpdate| {
@@ -3404,10 +3405,9 @@ fn a_save_that_runs_takes_every_view_of_the_warning_with_it() {
             "{name}"
         );
         assert!(names_no_row(&tree), "{name}: back after the failure");
-        assert!(
-            harness.has("1 value names no row") || look.terminal,
-            "{name}"
-        );
+        // The count too, which a screen reader is told: on the bar, and in
+        // the terminal look over the line under the grid.
+        assert!(harness.has("1 value names no row"), "{name}");
     }
 }
 

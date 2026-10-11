@@ -78,31 +78,36 @@ pub fn unmatched(table: &Table<'_>, own: &ObjectRef, edits: &Edits) -> Vec<Unmat
             }
             let column = table.page.columns.get(at.1)?;
             let (target, key) = self::target(structure, &column.name)?;
+            // The key that was asked about: a number without the white
+            // space around it.
+            let asked = key_text(table.class(at.1)?, &doubt.text);
             if target == *own {
                 // The referenced column's place in this page, and whether
-                // a new row sets it to this value.
+                // a new row sets it to this key, read as its own column
+                // reads it.
                 let place = table
                     .page
                     .columns
                     .iter()
                     .position(|column| column.name == key);
-                let made = place.is_some_and(|place| {
-                    edits.cells.iter().any(|(&(row, col), cell)| {
-                        col == place
-                            && new_id(row).is_some()
-                            && matches!(&cell.new, NewValue::Text(text) if *text == doubt.text)
-                    })
-                });
+                let made = place.zip(place.and_then(|place| table.class(place))).is_some_and(
+                    |(place, class)| {
+                        edits.cells.iter().any(|(&(row, col), cell)| {
+                            col == place
+                                && new_id(row).is_some()
+                                && matches!(&cell.new, NewValue::Text(text) if key_text(class, text) == asked)
+                        })
+                    },
+                );
                 if made {
                     return None;
                 }
             }
-            let class = table.class(at.1)?;
             Some(Unmatched {
                 at,
                 table: target.name,
                 key,
-                value: key_text(class, &doubt.text).to_owned(),
+                value: asked.to_owned(),
             })
         })
         .collect()
@@ -1362,5 +1367,18 @@ mod tests {
         // Another table's key of the same number is no row of this one.
         let other = ObjectRef::new("main", "books");
         assert_eq!(unmatched(&table, &other, &edits).len(), 1);
+        // The two are numbers: a space typed around either is none of
+        // the key, as the question about it had none.
+        for (parent, id) in [("99 ", "99"), ("99", " 99")] {
+            let mut edits = Edits::default();
+            edits.cells.insert((1, 1), ready(parent));
+            edits.doubts.insert((1, 1), missing(parent));
+            edits.cells.insert((NEW_ROWS, 0), ready(id));
+            let table = Table {
+                added: &edits.added,
+                ..table
+            };
+            assert!(unmatched(&table, &own, &edits).is_empty(), "{id:?}");
+        }
     }
 }
