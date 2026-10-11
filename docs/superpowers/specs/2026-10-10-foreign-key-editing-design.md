@@ -333,6 +333,12 @@ In every look:
   as it does for any cell, and never the highlighted option: a click
   outside the field and the list, Cmd/Ctrl+S, Review SQL, another cell, a
   new row.
+- **Another app taking the keyboard leaves no editor** (decided on
+  2026-10-11, after the hand test: the search text was kept as the cell's
+  value, to fix). The editor and its list stay open while the window is
+  not the one typed in, and the keys are the field's again when it is.
+  This holds for every editor: a cell's, the large one and the row
+  panel's.
 - **Esc in the Omarchy look** closes the picker without a change. On a
   text cell Esc keeps the edit; here the text is a search and not a value,
   and the Components sheet gives a picker "esc closes".

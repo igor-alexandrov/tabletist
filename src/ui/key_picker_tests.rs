@@ -2344,6 +2344,47 @@ fn the_row_panels_field_opens_the_same_list() {
     assert!(harness.has("publisher_id set to 9100000000000000004, Harbor Press"));
 }
 
+/// Spec 5: a window that gives the keyboard to another app is not an
+/// editor that was left. The search is kept as no value: the editor, its
+/// list and the cell are as they were, in the grid and in the row panel,
+/// and with the keyboard back Enter takes the option.
+#[test]
+fn a_search_stays_open_while_another_window_has_the_keyboard() {
+    for look in [Look::macos(), Look::omarchy()] {
+        for panel in [false, true] {
+            let (mut harness, tab, id) = covers_in(look);
+            let start = EditStart::Replace(String::new());
+            if panel {
+                edit_field(&mut harness, tab, id, 0, start);
+            } else {
+                edit(&mut harness, tab, id, 0, start);
+            }
+            type_text(&mut harness, tab, id, "harb");
+            harness.settle();
+            harness.window_focus(false);
+            let said = format!("{}, panel: {panel}", look.name);
+            assert!(editing(&harness, tab, id), "{said}");
+            assert_eq!(pending(&harness, tab, id, 0), None, "{said}");
+            assert_eq!(
+                listed(&harness, tab, id),
+                [HARBOR_PRESS, HARBOR_LIGHTS],
+                "{said}"
+            );
+            let tree = harness.settle();
+            let list = crate::testing::node(&tree, "Matching publishers", Role::ListBox);
+            assert!(list.is_some(), "{said}");
+            harness.window_focus(true);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(!editing(&harness, tab, id), "{said}");
+            assert_eq!(
+                pending(&harness, tab, id, 0).as_deref(),
+                Some(HARBOR_PRESS),
+                "{said}"
+            );
+        }
+    }
+}
+
 /// The keys reach the panel's list as they reach a cell's: Down moves the
 /// highlight and Enter takes the option it is on.
 #[test]

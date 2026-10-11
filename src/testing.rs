@@ -39,6 +39,9 @@ pub struct Harness {
     /// How many of the `Lookup` commands sent so far were answered by
     /// [`Harness::answer_lookups`].
     pub lookups_answered: usize,
+    /// Whether the window has the keyboard, which every frame is told:
+    /// [`Harness::window_focus`] changes it.
+    window_focused: bool,
     #[cfg(feature = "shots")]
     renderer: Option<egui_kittest::wgpu::WgpuTestRenderer>,
     #[cfg(feature = "shots")]
@@ -65,6 +68,7 @@ impl Harness {
         let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
             events,
+            focused: self.window_focused,
             ..Default::default()
         };
         input
@@ -134,6 +138,7 @@ impl Harness {
         let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
             events,
+            focused: self.window_focused,
             ..Default::default()
         };
         input
@@ -240,6 +245,14 @@ impl Harness {
                 data: None,
             },
         )]);
+        self.settle();
+    }
+
+    /// The window gives the keyboard to another app, or has it again, as
+    /// the window says it: an event, and the state of every frame after.
+    pub fn window_focus(&mut self, focused: bool) {
+        self.window_focused = focused;
+        self.frame(vec![egui::Event::WindowFocused(focused)]);
         self.settle();
     }
 
@@ -1275,6 +1288,7 @@ impl Harness {
             outlines: Vec::new(),
             repaint_after: std::time::Duration::MAX,
             lookups_answered: 0,
+            window_focused: true,
             #[cfg(feature = "shots")]
             renderer: None,
             #[cfg(feature = "shots")]

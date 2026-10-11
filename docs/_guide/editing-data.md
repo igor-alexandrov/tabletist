@@ -16,6 +16,9 @@ row. Pasting and deleting rows are not built yet.
 Select a cell and press Enter or F2, double-click it, or simply start
 typing. Tab moves to the next cell and keeps your change.
 
+Switching to another app leaves the editor open with what you typed, and
+you go on typing when you are back.
+
 To edit a long value, open the row panel and press Cmd/Ctrl+I, or
 double-click the value there.
 

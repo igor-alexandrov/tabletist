@@ -343,6 +343,14 @@ fn hold_keys(ctx: &egui::Context, id: Id) {
     });
 }
 
+/// Whether the field `id` has the keyboard among the window's widgets,
+/// whichever window is typed in. `Response::has_focus` is false for as
+/// long as another app has the keyboard, and a window that gave it away
+/// and has it back left no field: the edit is neither kept nor dropped.
+fn has_keyboard(ui: &Ui, id: Id) -> bool {
+    ui.memory(|memory| memory.has_focus(id))
+}
+
 /// Keeps the keyboard on a field that has it, for this frame. egui decides
 /// where Tab and the arrows move the keyboard when a pass begins, by what
 /// the widget that has it holds, and a field holds them only from the frame
@@ -521,7 +529,7 @@ pub fn field(
             .image(palette.secondary, SEARCH_ICON)
             .paint_at(ui, place);
     }
-    let has = response.has_focus();
+    let has = has_keyboard(ui, id);
     if has {
         hold_keys(ui.ctx(), id);
     }
@@ -694,7 +702,7 @@ pub fn in_panel(
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
-    let has = response.has_focus();
+    let has = has_keyboard(ui, id);
     if has {
         hold_keys(ui.ctx(), id);
     }
@@ -1067,7 +1075,7 @@ fn large_body(
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name);
     });
-    let mut has = response.has_focus();
+    let mut has = has_keyboard(ui, id);
     if !has && had && pressed {
         // The press landed outside the field, which gave the keys up:
         // they stay the editor's.

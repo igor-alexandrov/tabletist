@@ -15868,6 +15868,94 @@ mod tests {
         }
     }
 
+    /// The window gives the keyboard to another app and has it again: no
+    /// field was left. The editor is open with its text, nothing is
+    /// pending, and the next letter is its text's: on a cell, in the large
+    /// editor, and in the row panel's field, one line and tall.
+    #[test]
+    fn an_edit_stays_open_while_another_window_has_the_keyboard() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            open_editor(&mut harness, tab, id, (1, 1));
+            type_text(&mut harness, "x");
+            harness.window_focus(false);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.comx"),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            harness.window_focus(true);
+            type_text(&mut harness, "y");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.comxy"),
+                "{}",
+                look.name
+            );
+            // The large editor, which Alt+Enter moves the text into.
+            harness.press(Key::Enter, Modifiers::ALT);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            harness.window_focus(false);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            harness.window_focus(true);
+            type_text(&mut harness, "z");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.comxy\nz"),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+
+            let (mut harness, tab, id) = form_row(look, 1);
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: EditStart::Value,
+            });
+            harness.settle();
+            type_text(&mut harness, "x");
+            harness.window_focus(false);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            harness.window_focus(true);
+            type_text(&mut harness, "y");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.comxy"),
+                "{}",
+                look.name
+            );
+            // The same field made tall in its place.
+            harness.press(Key::Enter, Modifiers::ALT);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            harness.window_focus(false);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            harness.window_focus(true);
+            type_text(&mut harness, "z");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.comxy\nz"),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+        }
+    }
+
     /// A writable table with a whole number to edit: `id`, `email`, `qty`.
     fn with_quantities(look: Look) -> (Harness, ConnTabId, TabId) {
         let mut harness = Harness::new();
