@@ -146,6 +146,9 @@ pub enum When {
     NewRow,
     /// The list of a foreign key cell's picker is open under its field.
     KeyPicker,
+    /// The chooser of a table's label column is open: beside a picker's
+    /// list, which gives it the keys.
+    LabelChooser,
 }
 
 /// The mode a chord holds in: with the keyboard in a text field (insert),
@@ -362,6 +365,7 @@ commands! {
     PickPageDown,
     PickPageUp,
     ClosePicker,
+    ChangeLabelColumn,
     CancelEdit,
     OpenLargeEditor,
     ApplyLargeEditor,
@@ -454,6 +458,11 @@ commands! {
     QuickOpenMove,
     QuickOpenPick,
     QuickOpenClose,
+    NextLabel,
+    PreviousLabel,
+    ChooseLabel,
+    CloseLabelChooser,
+    AddLabelPart,
 }
 
 /// What is said of a command wherever it is listed.
@@ -574,6 +583,7 @@ impl Command {
             C::PickPageDown => info("A page down in a foreign key's list", "", Editing),
             C::PickPageUp => info("A page up in a foreign key's list", "", Editing),
             C::ClosePicker => info("Close a foreign key's list", "", Editing),
+            C::ChangeLabelColumn => info("Change label column", "", Editing),
             C::CancelEdit => info("Cancel cell edit", "Cancel cell edit", Editing),
             C::OpenLargeEditor => info("Open the large editor", "", Editing),
             C::ApplyLargeEditor => info("Apply large editor", LARGE, Editing),
@@ -687,6 +697,13 @@ impl Command {
             C::QuickOpenMove => info("Move in quick open", "", Prompts),
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
+            C::NextLabel => info("Next line of the label chooser", "", Prompts),
+            C::PreviousLabel => info("Previous line of the label chooser", "", Prompts),
+            C::ChooseLabel => info("Choose the label column", "", Prompts),
+            C::CloseLabelChooser => info("Close the label chooser", "", Prompts),
+            C::AddLabelPart => {
+                info("Add a column as the label's second part", "", Prompts).reserved()
+            }
         }
     }
 }
@@ -1110,6 +1127,16 @@ pub const BINDINGS: &[Binding] = {
             CELL_EDITOR,
             keys(&[k("esc")]),
             keys(&[k("esc")]),
+        )
+        .when(When::KeyPicker),
+        // What labels the list's rows is chosen from the list: the chord
+        // is the field's while the list is open, and insert mode's, where
+        // Omarchy's `ctrl+l` is no move to the pane on the right.
+        bind(
+            C::ChangeLabelColumn,
+            CELL_EDITOR,
+            keys(&[k("cmd+l")]),
+            keys(&[k("ctrl+l")]),
         )
         .when(When::KeyPicker),
         bind(
@@ -1536,6 +1563,44 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("esc")]),
         )
         .when(When::QuickOpen),
+        // The chooser of a table's label column. It has no field: a letter
+        // is a key of its own here. Shift with the key that chooses is
+        // kept for a label of two columns.
+        bind(
+            C::NextLabel,
+            PROMPT,
+            keys(&[k("down")]),
+            keys(&[k("j"), k("ctrl+n"), k("down")]),
+        )
+        .when(When::LabelChooser),
+        bind(
+            C::PreviousLabel,
+            PROMPT,
+            keys(&[k("up")]),
+            keys(&[k("k"), k("ctrl+p"), k("up")]),
+        )
+        .when(When::LabelChooser),
+        bind(
+            C::ChooseLabel,
+            PROMPT,
+            keys(&[k("enter")]),
+            keys(&[k("enter")]),
+        )
+        .when(When::LabelChooser),
+        bind(
+            C::CloseLabelChooser,
+            PROMPT,
+            keys(&[k("esc")]),
+            keys(&[k("esc")]),
+        )
+        .when(When::LabelChooser),
+        bind(
+            C::AddLabelPart,
+            PROMPT,
+            keys(&[claimed("shift+enter")]),
+            keys(&[claimed("shift+enter")]),
+        )
+        .when(When::LabelChooser),
     ]
 };
 
@@ -2748,6 +2813,69 @@ mod tests {
         // The Mac has no prompt.
         assert_eq!(keymap.ex(Layout::Mac, Scope::Grid, &nothing, "w"), Nothing);
     }
+    /// The keys of a foreign key's label, as its brief has them
+    /// (`docs/superpowers/specs/2026-10-12-foreign-key-label-design.md`,
+    /// test 15): the chord that opens the chooser from the picker, and the
+    /// chooser's own.
+    #[test]
+    fn the_label_choosers_keys_are_the_briefs() {
+        let keymap = Keymap::default();
+        let chords = |layout, command, scope| -> Vec<&str> {
+            keymap.chords(layout, command, scope).collect()
+        };
+        let (editor, prompt) = (Scope::CellEditor, Scope::Prompt);
+        use Command::{
+            ChangeLabelColumn, ChooseLabel, CloseLabelChooser, NextLabel, PreviousLabel,
+        };
+        for layout in [Layout::Mac, Layout::Windows] {
+            assert_eq!(chords(layout, ChangeLabelColumn, editor), ["cmd+l"]);
+            assert_eq!(chords(layout, NextLabel, prompt), ["down"]);
+            assert_eq!(chords(layout, PreviousLabel, prompt), ["up"]);
+        }
+        let omarchy = Layout::Omarchy;
+        assert_eq!(chords(omarchy, ChangeLabelColumn, editor), ["ctrl+l"]);
+        assert_eq!(chords(omarchy, NextLabel, prompt), ["j", "ctrl+n", "down"]);
+        assert_eq!(
+            chords(omarchy, PreviousLabel, prompt),
+            ["k", "ctrl+p", "up"]
+        );
+        for layout in Layout::ALL {
+            assert_eq!(chords(layout, ChooseLabel, prompt), ["enter"]);
+            assert_eq!(chords(layout, CloseLabelChooser, prompt), ["esc"]);
+            // Kept for a label of two columns: claimed, and no key yet.
+            assert!(chords(layout, Command::AddLabelPart, prompt).is_empty());
+        }
+        // The chord is insert mode's: with the keyboard out of a field
+        // Omarchy's `ctrl+l` is the pane on the right.
+        let now = |normal| -> Vec<&str> {
+            let command = ChangeLabelColumn;
+            keymap
+                .chords_now(omarchy, command, editor, normal)
+                .collect()
+        };
+        assert_eq!(now(false), ["ctrl+l"]);
+        assert!(now(true).is_empty());
+        // In the chooser `j` and `k` are keys. Under the picker alone
+        // they are letters of the search, and nothing here reads them.
+        let choosing = |when: When| when == When::LabelChooser;
+        let picking = |when: When| when == When::KeyPicker;
+        let command = Typed::Command;
+        assert_eq!(
+            keymap.typed(omarchy, prompt, &choosing, "j"),
+            command(NextLabel)
+        );
+        assert_eq!(
+            keymap.typed(omarchy, prompt, &choosing, "k"),
+            command(PreviousLabel)
+        );
+        assert_eq!(keymap.typed(omarchy, editor, &picking, "j"), Typed::Nothing);
+        assert_eq!(keymap.typed(omarchy, editor, &picking, "k"), Typed::Nothing);
+        assert_eq!(
+            keymap.typed(Layout::Mac, prompt, &choosing, "j"),
+            Typed::Nothing
+        );
+    }
+
     #[test]
     fn every_command_has_a_name_of_its_own() {
         let mut names: Vec<&str> = Vec::new();
