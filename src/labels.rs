@@ -83,11 +83,11 @@ pub fn excluded(dialect: Dialect, column: &ColumnInfo, keys: &[&str]) -> Option<
 }
 
 /// The column the app picks to read a row of a table by: its first text
-/// column that is not the key.
-pub fn automatic(dialect: Dialect, columns: &[ColumnInfo], key: &str) -> Option<String> {
+/// column that is not a key. `keys` as for [`excluded`].
+pub fn automatic(dialect: Dialect, columns: &[ColumnInfo], keys: &[&str]) -> Option<String> {
     columns
         .iter()
-        .filter(|column| column.name != key)
+        .filter(|column| !keys.contains(&column.name.as_str()))
         .find(|column| {
             matches!(
                 column_class(dialect, &column.type_name),
@@ -97,19 +97,47 @@ pub fn automatic(dialect: Dialect, columns: &[ColumnInfo], key: &str) -> Option<
         .map(|column| column.name.clone())
 }
 
-/// What `choice` comes to for a table of `columns`, in a picker whose
-/// foreign key references `key`. A column that was chosen and is not among
-/// them is `gone`, and the app's pick stands in for it. A chosen column
-/// that cannot be a label any more (it is this picker's key, or holds
-/// bytes now) labels nothing: the choice is still the user's.
+/// Why a column that was named for a table's label is not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// The table has no column of that name.
+    NoColumn,
+    /// It has, and the column cannot be a label.
+    Excluded(Excluded),
+}
+
+/// Whether the column `name` of a table of `columns` can label its rows.
+/// `keys` as for [`excluded`]. What a chooser's line offers needs no
+/// asking: this is for a column that was named by hand.
+pub fn choosable(
+    dialect: Dialect,
+    columns: &[ColumnInfo],
+    keys: &[&str],
+    name: &str,
+) -> Result<(), Refused> {
+    let column = columns.iter().find(|column| column.name == name);
+    let column = column.ok_or(Refused::NoColumn)?;
+    match excluded(dialect, column, keys) {
+        Some(why) => Err(Refused::Excluded(why)),
+        None => Ok(()),
+    }
+}
+
+/// What `choice` comes to for a table of `columns`. `keys` are the
+/// columns its rows are found by: the one a picker's foreign key
+/// references, or the table's primary key in its Structure view. A column
+/// that was chosen and is not among the columns is `gone`, and the app's
+/// pick stands in for it. A chosen column that cannot be a label any more
+/// (it is a key here, or holds bytes now) labels nothing: the choice is
+/// still the user's.
 pub fn resolve(
     choice: &LabelChoice,
     dialect: Dialect,
     columns: &[ColumnInfo],
-    key: &str,
+    keys: &[&str],
 ) -> Resolved {
-    let automatic = automatic(dialect, columns, key);
-    let allowed = |column: &ColumnInfo| excluded(dialect, column, &[key]).is_none();
+    let automatic = automatic(dialect, columns, keys);
+    let allowed = |column: &ColumnInfo| excluded(dialect, column, keys).is_none();
     let chosen = match choice {
         LabelChoice::Column(name) => Some(name),
         LabelChoice::Automatic | LabelChoice::NoLabel => None,
@@ -450,7 +478,7 @@ mod tests {
     }
 
     fn resolved(choice: &LabelChoice, columns: &[ColumnInfo]) -> Resolved {
-        resolve(choice, Dialect::Sqlite, columns, "id")
+        resolve(choice, Dialect::Sqlite, columns, &["id"])
     }
 
     #[test]
@@ -464,14 +492,14 @@ mod tests {
             column("email", "text"),
         ];
         assert_eq!(
-            automatic(Dialect::Postgres, &columns, "code"),
+            automatic(Dialect::Postgres, &columns, &["code"]),
             Some("name".into())
         );
         assert_eq!(
-            automatic(Dialect::Postgres, &columns, "founded"),
+            automatic(Dialect::Postgres, &columns, &["founded"]),
             Some("code".into())
         );
-        assert_eq!(automatic(Dialect::Postgres, &columns[1..2], "id"), None);
+        assert_eq!(automatic(Dialect::Postgres, &columns[1..2], &["id"]), None);
     }
 
     #[test]
@@ -502,7 +530,7 @@ mod tests {
     fn a_table_of_its_key_alone_has_nothing_to_choose() {
         let isbns = [column("isbn", "TEXT")];
         for choice in [LabelChoice::Automatic, LabelChoice::NoLabel, chosen("isbn")] {
-            let resolved = resolve(&choice, Dialect::Sqlite, &isbns, "isbn");
+            let resolved = resolve(&choice, Dialect::Sqlite, &isbns, &["isbn"]);
             assert_eq!(
                 (resolved.column, resolved.source),
                 (None, Source::KeysOnly),
@@ -564,7 +592,7 @@ mod tests {
         }
         // Chosen where another key references it: this picker lists keys,
         // and the choice stays the user's.
-        let resolved = resolve(&chosen("name"), Dialect::Sqlite, &genres(), "name");
+        let resolved = resolve(&chosen("name"), Dialect::Sqlite, &genres(), &["name"]);
         assert_eq!((resolved.column, resolved.source), (None, Source::User));
     }
 
@@ -671,6 +699,36 @@ mod tests {
             chooser.jump(&lines, letter);
             assert_eq!(chooser.at, 4, "{letter}");
         }
+    }
+
+    #[test]
+    fn a_column_named_by_hand_is_refused_with_its_reason() {
+        let columns = editions();
+        let asked = |name| choosable(Dialect::Postgres, &columns, &["id"], name);
+        assert_eq!(asked("title"), Ok(()));
+        assert_eq!(asked("published_on"), Ok(()));
+        assert_eq!(asked("id"), Err(Refused::Excluded(Excluded::Key)));
+        assert_eq!(asked("cover"), Err(Refused::Excluded(Excluded::Binary)));
+        assert_eq!(asked("legal_name"), Err(Refused::NoColumn));
+        // A name is a column's as it is written, and no other's.
+        assert_eq!(asked("Title"), Err(Refused::NoColumn));
+    }
+
+    #[test]
+    fn a_table_with_no_key_or_a_key_of_several_columns_excludes_them_all() {
+        let columns = editions();
+        // No key: nothing is the key, and the app's pick is its first text.
+        let none = resolve(&LabelChoice::Automatic, Dialect::Postgres, &columns, &[]);
+        assert_eq!(none.column.as_deref(), Some("title"));
+        assert_eq!(excluded(Dialect::Postgres, &columns[0], &[]), None);
+        // Two columns: neither labels, and the pick is the next text.
+        let keys = ["id", "title"];
+        let both = resolve(&LabelChoice::Automatic, Dialect::Postgres, &columns, &keys);
+        assert_eq!(both.column.as_deref(), Some("subtitle"));
+        assert_eq!(
+            choosable(Dialect::Postgres, &columns, &keys, "title"),
+            Err(Refused::Excluded(Excluded::Key))
+        );
     }
 
     fn publishers() -> ObjectRef {

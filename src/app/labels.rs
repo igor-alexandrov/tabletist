@@ -27,7 +27,7 @@ pub(super) fn resolved(
 ) -> Option<Resolved> {
     let columns = kept.value.as_deref()?;
     let choice = labels.choice(conn, table);
-    let resolved = labels::resolve(&choice, dialect, columns, key);
+    let resolved = labels::resolve(&choice, dialect, columns, &[key]);
     if resolved.gone.is_some() && kept.is_loading() {
         return None;
     }
