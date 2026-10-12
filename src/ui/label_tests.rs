@@ -1099,3 +1099,102 @@ fn a_press_that_closed_the_picker_too_swallows_no_later_click() {
     assert!(!editing(&harness, tab, id));
     assert!(pending(&harness, tab, id, 0));
 }
+
+// The Omarchy look's status line.
+
+/// The Omarchy look says it in its status line, in its own words.
+#[test]
+fn the_terminal_look_says_a_gone_column_in_its_status_line() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    keep(&mut harness, tab, &publishers(), column("legal_name"));
+    edit(&mut harness, tab, id, 1);
+    assert!(harness.has("legal_name is gone · labels use automatic (name)"));
+    // In place of the label and the keys, which come back after it.
+    assert!(!harness.has("label name · automatic"));
+}
+
+/// While the chooser is open the status line names it and its keys, as
+/// the keymap has them.
+#[test]
+fn the_terminal_looks_status_line_names_the_chooser_and_its_keys() {
+    let look = Look::omarchy();
+    let (mut harness, tab, id) = typed_in(look, "harb");
+    ask(&mut harness, look);
+    assert!(chooser(&harness, tab, id).is_some());
+    assert!(harness.has("label publishers by"));
+    let keys = "j/k or ctrl+n/p move · enter choose · esc back";
+    assert!(
+        harness.painted_rect(keys).is_some(),
+        "{:?}",
+        harness.painted
+    );
+    // In place of the label and the picker's keys.
+    assert!(!harness.has("label name · automatic"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(harness.has("label name · automatic"));
+    // Under the picker the chooser's key stands among the list's.
+    let keys = "ctrl+n/p move · enter set · ctrl+l label · esc close";
+    assert!(
+        harness.painted_rect(keys).is_some(),
+        "{:?}",
+        harness.painted
+    );
+}
+
+/// Test 10, in the Omarchy look: its key prints why there is no chooser.
+#[test]
+fn the_terminal_look_says_that_a_table_has_nothing_to_choose() {
+    let look = Look::omarchy();
+    let (mut harness, _, _) = isbn_picker(look);
+    assert!(harness.has("label keys only"));
+    // Its key is not offered: there is nothing for it to open.
+    let keys = "ctrl+n/p move · enter set · esc close";
+    assert!(
+        harness.painted_rect(keys).is_some(),
+        "{:?}",
+        harness.painted
+    );
+    ask(&mut harness, look);
+    assert!(harness.has("isbns has only its key column"));
+}
+
+/// A list that goes on says so in the line that confirms a choice, as the
+/// field counts it.
+#[test]
+fn the_terminal_look_counts_a_list_that_goes_on_as_fifty_and_more() {
+    let look = Look::omarchy();
+    let (mut harness, tab, id) = typed_in(look, "91");
+    ask(&mut harness, look);
+    let line = Some(2);
+    harness.app.apply(Action::ChooseLabel { tab, id, line });
+    harness.answer_lookups(&PUBLISHERS);
+    let object = harness.app.workspace_mut(tab).unwrap();
+    let object = object.object_tab_mut(id).unwrap();
+    let editor = object.edits.editor.as_mut().unwrap();
+    editor.picker.as_mut().unwrap().more = true;
+    assert!(harness.has("label name · 50+ matches"));
+}
+
+/// "Just changed", in the Omarchy look: the status line says what the
+/// list is labelled by now and how many it found, under the mark of a
+/// thing done, in place of its keys.
+#[test]
+fn the_terminal_look_confirms_a_choice_in_its_status_line() {
+    let look = Look::omarchy();
+    let (mut harness, tab, id) = typed_in(look, "91");
+    ask(&mut harness, look);
+    for _ in 0..2 {
+        harness.frame(vec![egui::Event::Text("j".into())]);
+        harness.settle();
+    }
+    harness.press(Key::Enter, Modifiers::NONE);
+    // Not before the answer.
+    assert!(!harness.has("label name · 3 matches"));
+    harness.answer_lookups(&PUBLISHERS);
+    assert!(harness.has("label name · 3 matches"));
+    assert!(picker(&harness, tab, id).changed.is_some());
+    // The next text typed is a new search: the line is the keys' again.
+    harness.frame(vec![egui::Event::Text("0".into())]);
+    harness.settle();
+    assert!(!harness.has("label name · 3 matches"));
+}

@@ -2181,6 +2181,30 @@ impl Keymap {
             })
     }
 
+    /// The `nth` keys that `first` and `second` have in `scope`, written
+    /// as one hint of two keys that do opposite things: either side of a
+    /// stroke (`j/k`), and what they hold written once where they hold
+    /// alike (`ctrl+n/p`). None where either has no such key.
+    pub fn pair(
+        &self,
+        layout: Layout,
+        (first, second): (Command, Command),
+        scope: Scope,
+        nth: usize,
+    ) -> Option<Written> {
+        let key = |command| {
+            let keys = self.chords(layout, command, scope).nth(nth)?;
+            Some(written(layout, keys))
+        };
+        let (first, second) = (key(first)?, key(second)?);
+        let held = first.rfind('+').map_or("", |plus| &first[..=plus]);
+        let pair = match second.strip_prefix(held) {
+            Some(rest) if !held.is_empty() => format!("{first}/{rest}"),
+            _ => format!("{first}/{second}"),
+        };
+        Some(Written(pair))
+    }
+
     /// The first keys of `commands` written as one hint: `[ ]` for the
     /// previous row and the next, `ctrl+n/p` where they are held alike.
     pub fn together(&self, layout: Layout, commands: &[Command]) -> Written {
@@ -2874,6 +2898,20 @@ mod tests {
             keymap.typed(Layout::Mac, prompt, &choosing, "j"),
             Typed::Nothing
         );
+    }
+
+    #[test]
+    fn two_keys_that_do_opposite_things_are_written_as_one_hint() {
+        let keymap = Keymap::default();
+        let moves = (Command::NextLabel, Command::PreviousLabel);
+        let pair = |layout, nth| keymap.pair(layout, moves, Scope::Prompt, nth);
+        // Letters either side of a stroke; what is held, once.
+        assert_eq!(pair(Layout::Omarchy, 0).as_deref(), Some("j/k"));
+        assert_eq!(pair(Layout::Omarchy, 1).as_deref(), Some("ctrl+n/p"));
+        assert_eq!(pair(Layout::Omarchy, 2).as_deref(), Some("down/up"));
+        // No such key: no hint.
+        assert_eq!(pair(Layout::Omarchy, 3), None);
+        assert_eq!(pair(Layout::Mac, 1), None);
     }
 
     #[test]

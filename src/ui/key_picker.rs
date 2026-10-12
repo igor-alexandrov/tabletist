@@ -322,6 +322,28 @@ pub fn changed_text(picker: &Picker, locale: Locale) -> Option<String> {
     Some(said)
 }
 
+/// The same for the terminal look's status line, which says it for a
+/// while under its own mark: "label legal_name · 2 matches".
+pub fn changed_line(picker: &Picker, look: &Look, locale: Locale) -> Option<String> {
+    let Columns::Known(label) = &picker.label else {
+        return None;
+    };
+    let fresh = picker.changed.is_some_and(|at| at.elapsed() < SAID);
+    if !fresh || !picker.answered_now() {
+        return None;
+    }
+    let words = match &label.column {
+        Some(_) => "Label {column} · {matches}",
+        None => "Label keys only · {matches}",
+    };
+    let column = label.column.as_deref().unwrap_or_default();
+    let said = look
+        .label(&gettext(locale, words))
+        .replace("{column}", &display_safe(column))
+        .replace("{matches}", &matches_text(picker, true, locale));
+    Some(said)
+}
+
 /// What is said, once, of a chosen column that is gone: the line the list
 /// draws ("legal_name is gone, so labels use Automatic (name)."), the
 /// terminal look's own form of it, and what a screen reader is told.

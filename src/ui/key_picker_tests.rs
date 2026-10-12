@@ -1934,7 +1934,7 @@ fn the_terminal_look_moves_with_ctrl_n_and_closes_with_esc() {
     // announced: the whole of it is one piece of text, and the window is
     // wide enough for the line to keep it.
     harness.settle();
-    let keys = "ctrl+n/p move · enter set · esc close";
+    let keys = "ctrl+n/p move · enter set · ctrl+l label · esc close";
     assert!(
         harness.painted.iter().any(|(piece, _)| piece == keys),
         "{:?}",
@@ -2035,7 +2035,7 @@ fn open_in_terminal(harness: &mut Harness, tab: ConnTabId, id: TabId) {
 
 /// The editor's own words at the bottom of the terminal look.
 const EDITOR_KEYS: &str = "esc normal · tab next cell";
-const PICKER_KEYS: &str = "ctrl+n/p move · enter set · esc close";
+const PICKER_KEYS: &str = "ctrl+n/p move · enter set · ctrl+l label · esc close";
 
 /// The Ctrl+C of a terminal: where Ctrl is the command key too it comes
 /// as a copy (`src/ui/mod.rs` presses it so).
@@ -2165,7 +2165,7 @@ fn a_column_that_is_no_foreign_key_keeps_the_terminal_editor() {
     }
 }
 
-/// In a window too narrow for the picker's three keys, the line falls back
+/// In a window too narrow for the picker's keys, the line falls back
 /// to the one key that differs from the editor's before it drops them all.
 #[test]
 fn a_narrow_line_keeps_esc_close_when_the_keys_do_not_fit() {
