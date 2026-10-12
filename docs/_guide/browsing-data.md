@@ -83,7 +83,7 @@ A foreign key has a link next to it that opens the row it points to.
 Switch a table from **Data** to **Structure** to read its columns, indexes
 and foreign keys.
 
-{% include shot.html file="macos-structure" alt="The Structure view of a table, listing its columns and indexes" %}
+{% include shot.html file="macos-structure" alt="The Structure view of a table: the label for foreign keys, then its columns, indexes and foreign keys" %}
 
 Above the columns, **Label for foreign keys** names the column that this
 table's rows are read by in the list of a foreign key that points at it,
