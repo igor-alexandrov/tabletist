@@ -149,6 +149,10 @@ pub enum When {
     /// The chooser of a table's label column is open: beside a picker's
     /// list, which gives it the keys.
     LabelChooser,
+    /// The Structure view of a table shows, in place of its rows: the
+    /// grid's keys that act on a row have nothing to act on, and the
+    /// view's own act on the line of a column.
+    Structure,
 }
 
 /// The mode a chord holds in: with the keyboard in a text field (insert),
@@ -390,6 +394,12 @@ commands! {
     DeleteRow,
     OpenReferencedRow,
     ShowSavedRow,
+    MoveInStructure,
+    OpenLabelChooser,
+    UseAsLabel,
+    LabelAutomatic,
+    LabelKeysOnly,
+    LabelColumn,
     ReviewSql,
     NextChange,
     CopyReviewSql,
@@ -623,6 +633,12 @@ impl Command {
                 Editing,
             )
             .reserved(),
+            C::MoveInStructure => info("Move by column in the Structure view", "", Editing),
+            C::OpenLabelChooser => info("Choose the label for foreign keys", "", Editing),
+            C::UseAsLabel => info("Use the column as the label", "", Editing),
+            C::LabelAutomatic => info("Label foreign keys automatically", "", Editing),
+            C::LabelKeysOnly => info("Label foreign keys by their keys alone", "", Editing),
+            C::LabelColumn => info("Label foreign keys by a column", "", Editing),
             C::ReviewSql => info("Review pending SQL", "Review pending SQL", Editing),
             C::NextChange => info("Next change", "Review pending SQL", Editing).reserved(),
             C::CopyReviewSql => info("Copy the pending SQL", "", Editing),
@@ -1223,6 +1239,53 @@ pub const BINDINGS: &[Binding] = {
         bind(C::AddRow, INSPECTOR, NONE, keys(&[k("o")])).when(When::NewRow),
         bind(C::OpenReferencedRow, GRID, NONE, keys(&[k("gd")])),
         bind(C::ShowSavedRow, GRID, NONE, keys(&[k("gs")])),
+        // The Structure view of a table, which is the grid's tab with its
+        // columns in the rows' place. Its cursor is on the line of a
+        // column, and what labels the table's rows for the foreign keys
+        // that point at it is chosen here: with the chooser, by the column
+        // under the cursor, or by a line of the prompt.
+        bind(
+            C::MoveInStructure,
+            GRID,
+            keys(&[k("up"), k("down")]),
+            keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
+        )
+        .when(When::Structure),
+        bind(
+            C::OpenLabelChooser,
+            GRID,
+            keys(&[k("cmd+l")]),
+            keys(&[k(":label")]),
+        )
+        .when(When::Structure),
+        bind(
+            C::UseAsLabel,
+            GRID,
+            keys(&[k("alt+cmd+l")]),
+            keys(&[k("gl")]),
+        )
+        .when(When::Structure),
+        bind(
+            C::LabelAutomatic,
+            GRID,
+            control("Use Automatic button"),
+            keys(&[k(":label auto")]),
+        )
+        .when(When::Structure),
+        bind(
+            C::LabelKeysOnly,
+            GRID,
+            control("label chooser"),
+            keys(&[k(":label none")]),
+        )
+        .when(When::Structure),
+        bind(
+            C::LabelColumn,
+            GRID,
+            control("label chooser"),
+            keys(&[k(":label {column}")]),
+        )
+        .when(When::Structure),
         bind(
             C::ReviewSql,
             GRID,
@@ -1603,6 +1666,20 @@ pub const BINDINGS: &[Binding] = {
         .when(When::LabelChooser),
     ]
 };
+
+/// What `line` of the `:` prompt gives the command spelled `name`, where
+/// the spelling ends in a word in braces (`label {column}`): what follows
+/// the command's own words and a space, without the white space round it.
+/// None for a spelling that takes nothing, for another command's line and
+/// for a line with nothing after the name.
+fn argument<'a>(name: &str, line: &'a str) -> Option<&'a str> {
+    let (head, word) = name.rsplit_once(' ')?;
+    if !(word.starts_with('{') && word.ends_with('}')) {
+        return None;
+    }
+    let given = line.strip_prefix(head)?.strip_prefix(' ')?.trim();
+    (!given.is_empty()).then_some(given)
+}
 
 /// The modifiers of a chord, as a spelling names them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2136,7 +2213,11 @@ impl Keymap {
     }
 
     /// What a line of the `:` prompt (`line`, without its colon) comes to
-    /// in `scope`. A line of digits is the one spelled `:N`.
+    /// in `scope`. A line of digits is the one spelled `:N`. A line that
+    /// is no command as it stands is read as one that takes a word after
+    /// its name, where a command is spelled so (`:label {column}`): the
+    /// lines spelled whole come first, so `:label auto` is never a column
+    /// called `auto`.
     pub fn ex(
         &self,
         layout: Layout,
@@ -2145,7 +2226,7 @@ impl Keymap {
         line: &str,
     ) -> Typed {
         let number = !line.is_empty() && line.chars().all(|char| char.is_ascii_digit());
-        self.read(
+        let whole = self.read(
             layout,
             scope,
             holds,
@@ -2154,7 +2235,35 @@ impl Keymap {
                 Spelled::Strokes(_) | Spelled::Digits(_) => false,
             },
             &|_| false,
+        );
+        if whole != Typed::Nothing {
+            return whole;
+        }
+        self.read(
+            layout,
+            scope,
+            holds,
+            &|spelled| match spelled {
+                Spelled::Ex(name) => argument(name, line).is_some(),
+                Spelled::Strokes(_) | Spelled::Digits(_) => false,
+            },
+            &|_| false,
         )
+    }
+
+    /// The word a line of the `:` prompt gives `command`, where the
+    /// command is spelled as taking one in `scope` (`:label {column}`) and
+    /// `line` is that command with something after its name.
+    pub fn ex_argument<'a>(
+        &self,
+        layout: Layout,
+        command: Command,
+        scope: Scope,
+        line: &'a str,
+    ) -> Option<&'a str> {
+        self.chords(layout, command, scope)
+            .filter_map(|keys| keys.strip_prefix(':'))
+            .find_map(|name| argument(name, line))
     }
 
     /// The first key of `command` as `layout` writes it, for a hint beside
@@ -2897,6 +3006,69 @@ mod tests {
         assert_eq!(
             keymap.typed(Layout::Mac, prompt, &choosing, "j"),
             Typed::Nothing
+        );
+    }
+
+    /// The keys of the Structure view's door to a foreign key's label, as
+    /// its brief has them
+    /// (`docs/superpowers/specs/2026-10-12-foreign-key-label-design.md`,
+    /// test 15). They are the grid's keys while the Structure view shows.
+    #[test]
+    fn the_structure_views_label_keys_are_the_briefs() {
+        let keymap = Keymap::default();
+        let grid = Scope::Grid;
+        let chords =
+            |layout, command| -> Vec<&str> { keymap.chords(layout, command, grid).collect() };
+        use Command::{
+            LabelAutomatic, LabelColumn, LabelKeysOnly, MoveInStructure, OpenLabelChooser,
+            UseAsLabel,
+        };
+        for layout in [Layout::Mac, Layout::Windows] {
+            assert_eq!(chords(layout, OpenLabelChooser), ["cmd+l"]);
+            assert_eq!(chords(layout, UseAsLabel), ["alt+cmd+l"]);
+            assert_eq!(chords(layout, MoveInStructure), ["up", "down"]);
+            // A button and the chooser do these: no key.
+            for command in [LabelAutomatic, LabelKeysOnly, LabelColumn] {
+                assert!(chords(layout, command).is_empty(), "{command:?}");
+            }
+        }
+        let omarchy = Layout::Omarchy;
+        assert_eq!(chords(omarchy, OpenLabelChooser), [":label"]);
+        assert_eq!(chords(omarchy, UseAsLabel), ["gl"]);
+        assert_eq!(chords(omarchy, LabelAutomatic), [":label auto"]);
+        assert_eq!(chords(omarchy, LabelKeysOnly), [":label none"]);
+        assert_eq!(chords(omarchy, LabelColumn), [":label {column}"]);
+        // Every one of them holds only while the Structure view shows.
+        let structure = |when: When| when == When::Structure;
+        let rows = |_: When| false;
+        let command = Typed::Command;
+        let typed = |holds: &dyn Fn(When) -> bool, keys| keymap.typed(omarchy, grid, holds, keys);
+        assert_eq!(typed(&structure, "gl"), command(UseAsLabel));
+        assert_eq!(typed(&rows, "gl"), Typed::Nothing);
+        // `j` and `k` are the view's there, and the rows' elsewhere.
+        assert_eq!(typed(&structure, "j"), command(MoveInStructure));
+        assert_eq!(typed(&rows, "j"), command(Command::MoveRow));
+        // The grid's own `g` keys stay.
+        assert_eq!(typed(&structure, "gd"), command(Command::OpenReferencedRow));
+        let ex = |holds: &dyn Fn(When) -> bool, line| keymap.ex(omarchy, grid, holds, line);
+        assert_eq!(ex(&structure, "label"), command(OpenLabelChooser));
+        assert_eq!(ex(&structure, "label auto"), command(LabelAutomatic));
+        assert_eq!(ex(&structure, "label none"), command(LabelKeysOnly));
+        assert_eq!(ex(&structure, "label legal_name"), command(LabelColumn));
+        assert_eq!(ex(&rows, "label"), Typed::Nothing);
+        assert_eq!(ex(&rows, "label legal_name"), Typed::Nothing);
+        // The grid's lines are still its own there.
+        assert_eq!(ex(&structure, "w"), command(Command::SaveChanges));
+        // The word a line gives the command that takes one.
+        let given = |line| keymap.ex_argument(omarchy, LabelColumn, grid, line);
+        assert_eq!(given("label legal_name"), Some("legal_name"));
+        assert_eq!(given("label  first name "), Some("first name"));
+        assert_eq!(given("label"), None);
+        assert_eq!(given("label "), None);
+        assert_eq!(given("labels x"), None);
+        assert_eq!(
+            keymap.ex_argument(omarchy, OpenLabelChooser, grid, "label x"),
+            None
         );
     }
 
