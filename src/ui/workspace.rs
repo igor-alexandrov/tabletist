@@ -1582,6 +1582,9 @@ struct Editing {
     /// Insert mode is in a foreign key cell's picker: the line names the
     /// list's keys in place of the editor's.
     picking: bool,
+    /// What the picker's options are labelled by, and where in the words
+    /// the column's name stands: "label name · automatic".
+    label: Option<(String, Option<std::ops::Range<usize>>)>,
     /// How much is pending, while anything is: "3 pending · 2 rows".
     pending: Option<String>,
     /// The rows to add, while there are any: "+1 new".
@@ -1793,11 +1796,19 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
                 .as_ref()
                 .is_some_and(|picker| picker.failed.is_none())
     });
+    // The list has no foot in this look: the line says what labels it.
+    let label = edits
+        .editor
+        .as_ref()
+        .filter(|_| picking)
+        .and_then(|editor| editor.picker.as_ref())
+        .and_then(|picker| super::key_picker::label_line(&picker.label, look, locale));
     Editing {
         can_edit,
         insert,
         walks,
         picking,
+        label,
         pending,
         added,
         can_add,
@@ -2158,6 +2169,20 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     let said = || Text::one(&look, role, needs, danger);
                     if x + widgets::measure(ui, said()) <= right {
                         x += widgets::paint_label(ui, x, y, said()) + gap;
+                    }
+                }
+                if let Some((said, column)) = &editing.label {
+                    // The column's name stands out of the words round it.
+                    // It gives way before the keys do.
+                    let at = column.clone().unwrap_or(said.len()..said.len());
+                    let label = || {
+                        Text::new(&look)
+                            .add(role, &said[..at.start], palette.dim)
+                            .add(role, &said[at.clone()], palette.text)
+                            .add(role, &said[at.end..], palette.dim)
+                    };
+                    if named && x + widgets::measure(ui, label()) + gap + keys_width <= right {
+                        x += widgets::paint_label(ui, x, y, label()) + gap;
                     }
                 }
                 if named && x + keys_width <= right {

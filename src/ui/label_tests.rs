@@ -322,3 +322,91 @@ fn deleting_a_connection_forgets_its_choices() {
     );
     assert_eq!(saved(&harness), [crate::labels::Labels::default()]);
 }
+
+/// The words that say what labels a picker, by what it resolved to: the
+/// notes board's, and in the Omarchy look its lower case round a name
+/// that is left as it is.
+#[test]
+fn the_label_is_worded_by_its_column_and_who_chose_it() {
+    use super::key_picker::label_line;
+    let locale = crate::i18n::Locale::default();
+    let said = |look: Look, label: Resolved| {
+        let (said, column) = label_line(&Columns::Known(label), &look, locale).unwrap();
+        // Where the name stands is where it reads.
+        (said.clone(), column.map(|at| said[at].to_owned()))
+    };
+    let named = |words: &str| (words.to_owned(), Some("Name".to_owned()));
+    let plain = |words: &str| (words.to_owned(), None);
+    let by_app = labelled(Some("Name"), Source::Automatic, Some("Name"));
+    let by_user = labelled(Some("Name"), Source::User, None);
+    let nothing = labelled(None, Source::KeysOnly, None);
+    assert_eq!(
+        said(Look::macos(), by_app.clone()),
+        named("Label Name · Automatic")
+    );
+    assert_eq!(
+        said(Look::macos(), by_user.clone()),
+        named("Label Name · Set by you")
+    );
+    assert_eq!(
+        said(Look::macos(), nothing.clone()),
+        plain("Label keys only")
+    );
+    assert_eq!(
+        said(Look::omarchy(), by_app),
+        named("label Name · automatic")
+    );
+    assert_eq!(
+        said(Look::omarchy(), by_user),
+        named("label Name · set by you")
+    );
+    assert_eq!(said(Look::omarchy(), nothing), plain("label keys only"));
+    // Two the board does not draw: no column, and something to choose.
+    let unpicked = labelled(None, Source::Automatic, None);
+    let unlabelled = labelled(None, Source::User, Some("Name"));
+    assert_eq!(
+        said(Look::macos(), unpicked),
+        plain("Label keys only · Automatic")
+    );
+    assert_eq!(
+        said(Look::macos(), unlabelled),
+        plain("Label keys only · Set by you")
+    );
+    // Nothing is said while the columns are not known.
+    assert!(label_line(&Columns::Waiting, &Look::macos(), locale).is_none());
+}
+
+/// The macOS look says it in the list's foot, after the foot's own words,
+/// which stay as they were.
+#[test]
+fn the_foot_names_the_label_and_who_chose_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    edit(&mut harness, tab, id, 1);
+    assert!(harness.has("Esc cancels"));
+    assert!(harness.has("Label name · Automatic"));
+    for (choice, said) in [
+        (column("name"), "Label name · Set by you"),
+        (LabelChoice::NoLabel, "Label keys only · Set by you"),
+    ] {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        keep(&mut harness, tab, &publishers(), choice);
+        edit(&mut harness, tab, id, 1);
+        assert!(harness.has("Esc cancels"), "{said}");
+        assert!(harness.has(said), "{said}");
+        assert!(!harness.has("Label name · Automatic"), "{said}");
+    }
+}
+
+/// The Omarchy look's list has no foot: the status line says it, in the
+/// look's lower case.
+#[test]
+fn the_terminal_looks_status_line_names_the_label() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    edit(&mut harness, tab, id, 1);
+    assert!(harness.has("label name · automatic"));
+    assert!(!harness.has("Esc cancels"));
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    keep(&mut harness, tab, &publishers(), column("name"));
+    edit(&mut harness, tab, id, 1);
+    assert!(harness.has("label name · set by you"));
+}

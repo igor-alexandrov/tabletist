@@ -10,7 +10,8 @@ use egui::{CornerRadius, Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType,
 use tabletist_db::{LookupRow, Value};
 
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::key_picker::{LIMIT, Picker, VISIBLE, found_in};
+use crate::key_picker::{Columns, LIMIT, Picker, VISIBLE, found_in};
+use crate::labels::Source;
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::{display_safe, plain_text};
@@ -183,6 +184,37 @@ fn head_line(
     }
 }
 
+/// What the picker says of its label column: "Label name · Automatic",
+/// and where in it the column's name stands. In the terminal look the
+/// app's own words are the look's lower case, and the column's name is as
+/// it is. None while the referenced table's columns are not known.
+pub fn label_line(
+    label: &Columns,
+    look: &Look,
+    locale: Locale,
+) -> Option<(String, Option<std::ops::Range<usize>>)> {
+    let Columns::Known(label) = label else {
+        return None;
+    };
+    let words = match (&label.column, label.source) {
+        (_, Source::KeysOnly) => "Label keys only",
+        (Some(_), Source::Automatic) => "Label {column} · Automatic",
+        (Some(_), Source::User) => "Label {column} · Set by you",
+        // The app found no column to read a row by, and one can be
+        // chosen; or the user chose none.
+        (None, Source::Automatic) => "Label keys only · Automatic",
+        (None, Source::User) => "Label keys only · Set by you",
+    };
+    let words = look.label(&gettext(locale, words));
+    let Some((column, at)) = label.column.as_deref().zip(words.find("{column}")) else {
+        return Some((words, None));
+    };
+    // A placeholder: a translation puts the name where it reads.
+    let column = display_safe(column);
+    let said = words.replacen("{column}", &column, 1);
+    Some((said, Some(at..at + column.len())))
+}
+
 /// A label as the text it is written in: a text is borrowed, any other
 /// value is written out.
 fn label_text(label: &Value) -> Cow<'_, str> {
@@ -342,6 +374,9 @@ pub fn doubts(
         .map(|found| (found.at, doubt_text(found, look, locale)))
         .collect()
 }
+
+/// The least room the foot gives the words that name the label column.
+const LABEL_ROOM: f32 = 48.0;
 
 /// The size of the check that marks the row the cell points at.
 const CHECK: f32 = 12.0;
@@ -566,6 +601,7 @@ pub fn show(
             }
             if foot {
                 let y = top + shape.line / 2.0;
+                // The label column stands after the key that cancels.
                 let cancels = gettext(locale, "Esc cancels");
                 // Set NULL stands at the foot's right end, and the words
                 // end before it.
@@ -580,6 +616,23 @@ pub fn show(
                 let taken = button.as_ref().map_or(0.0, |(_, wide)| wide + 8.0);
                 let args = (&*cancels, line_role, muted);
                 say(ui, (left, y), room - taken, args, inner, look);
+                // What labels the options stands after it, as words of
+                // its own, cut to the room there is. With too little for
+                // more than a mark it is not drawn.
+                if let Some((label, _)) = label_line(&picker.label, look, locale) {
+                    let width = |text: &str| line_role.width(ui.ctx(), look.faces, text);
+                    let dot = " · ";
+                    let from = left + width(&cancels);
+                    let label_left = from + width(dot);
+                    let label_room = left + room - taken - label_left;
+                    if label_room >= LABEL_ROOM {
+                        Text::one(look, line_role, dot, muted)
+                            .layout(ui.ctx())
+                            .paint_left(&ui.painter().with_clip_rect(inner), from, y);
+                        let args = (&*label, line_role, muted);
+                        say(ui, (label_left, y), label_room, args, inner, look);
+                    }
+                }
                 if let Some((button, wide)) = button {
                     let place = Rect::from_center_size(
                         pos2(inner.right() - shape.inset - wide / 2.0, y),
