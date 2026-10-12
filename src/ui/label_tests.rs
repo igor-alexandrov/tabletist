@@ -1926,3 +1926,79 @@ fn reload_in_the_structure_view_reloads_the_table() {
     harness.press(Key::R, Modifiers::COMMAND);
     assert_eq!(described(&harness), before + 1);
 }
+
+// The Structure door in the Omarchy look's status line.
+
+/// With the Structure view of a table in front the status line names
+/// that view's keys in the rows' place, as the board has them. What saves
+/// the table's rows stays.
+#[test]
+fn the_terminal_looks_status_line_names_the_structure_views_keys() {
+    let (mut harness, tab, _) = publishers_structure_in(Look::omarchy(), false);
+    let painted = |harness: &Harness, hint: &str| harness.painted_rect(hint).is_some();
+    let hints = [
+        "j/k column",
+        "gl use as label",
+        ":label choose",
+        ":label auto",
+        ":w write",
+    ];
+    for hint in hints {
+        assert!(painted(&harness, hint), "{hint}: {:?}", harness.painted);
+    }
+    // No key of the rows', which the view has none of.
+    assert!(!painted(&harness, "j/k row"));
+    // Over the rows the line is the rows' again.
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    let (view, object_tab) = (ObjectView::Data, id);
+    harness.app.apply(Action::SetView {
+        tab,
+        object_tab,
+        view,
+    });
+    harness.settle();
+    assert!(painted(&harness, "j/k row"));
+    assert!(!painted(&harness, "gl use as label"));
+    // A table of its key alone has a cursor on its one column and no
+    // label to choose: the line names the first, and not the keys of
+    // the second.
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    let tab = harness.connect_fake_as(false);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: ObjectRef::new("main", "isbns"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(crate::testing::isbns_structure());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, id);
+    assert!(painted(&harness, "j/k column"), "{:?}", harness.painted);
+    assert!(!painted(&harness, "j/k row"));
+    assert!(!painted(&harness, "gl use as label"));
+    assert!(!painted(&harness, ":label choose"));
+}
+
+/// Test 6, in the Omarchy look: the status line says why a column that
+/// was named is not taken, until the next key.
+#[test]
+fn the_terminal_look_says_why_a_named_column_is_refused() {
+    let (mut harness, tab, _) = editions_structure_in(Look::omarchy());
+    for (line, said) in [
+        ("label cover", "cover cannot be the label (binary)"),
+        ("label id", "id cannot be the label (the key)"),
+        ("label nope", "no column nope in editions"),
+    ] {
+        run(&mut harness, tab, line);
+        assert!(harness.has(said), "{line}");
+    }
+    // `gl` on the key's line says the same.
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert!(!harness.has("no column nope in editions"));
+    type_key(&mut harness, Key::G, "g");
+    type_key(&mut harness, Key::L, "l");
+    assert!(harness.has("id cannot be the label (the key)"));
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert!(!harness.has("id cannot be the label (the key)"));
+}

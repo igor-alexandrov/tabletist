@@ -1730,6 +1730,20 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
             tail: None,
             color: states::Tone::Danger.color(palette),
         })
+    } else if let Some((_, name, why)) = workspace
+        .label_refused
+        .as_ref()
+        .filter(|(of, _, _)| *of == object.id)
+    {
+        // A column that was named for this table's label and not taken,
+        // with why, until the next key.
+        let table = &object.object.name;
+        Some(Said {
+            mark: None,
+            text: super::structure::refused_text(name, *why, table, look, locale),
+            tail: None,
+            color: states::Tone::Danger.color(palette),
+        })
     } else if workspace.review_refused && !edits.pending() {
         // `:diff` found nothing to show. No mistake of the typing: it
         // reads as the keys do, until the next key. Never over a table
@@ -2006,6 +2020,22 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
     let editor = super::sql_editor::status_summary(app, tab);
     let on_editor = editor.is_some();
+    // The Structure view of the table in front shows: the line names
+    // that view's keys in the rows' place. The keys that choose what
+    // labels the table's rows are named where there is anything to
+    // choose: not for a view, nor for a table of its key alone.
+    let structure = workspace
+        .active_object_tab()
+        .filter(|object| object.view == ObjectView::Structure);
+    let labels = structure
+        .and_then(|object| app.structure_label(tab, object.id))
+        .is_some_and(|label| match label.source {
+            crate::labels::Source::Automatic | crate::labels::Source::User => true,
+            crate::labels::Source::KeysOnly => false,
+        });
+    let (column_key, use_key) = (key(Command::MoveInStructure), key(Command::UseAsLabel));
+    let (chooser_key, automatic_key) =
+        (key(Command::OpenLabelChooser), key(Command::LabelAutomatic));
     // The completion list's own key, while it is open with a row to put
     // in. One whose row is about to be inserted is not open any more: the
     // mode line is drawn before the editor inserts it.
@@ -2115,8 +2145,33 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if completing {
                 editor_hints.insert(0, (&complete_key, &*words[5], true));
             }
+            // The Structure view's keys: a row's do nothing on it.
+            let structure_words =
+                ["column", "use as label", "choose", "tables"].map(|word| gettext(locale, word));
+            let mut structure_hints: Vec<widgets::Hint<'_>> =
+                vec![(&column_key, &*structure_words[0], true)];
+            if labels {
+                // The line that hands the choice back says what it does
+                // by itself.
+                structure_hints.extend([
+                    (&use_key, &*structure_words[1], true),
+                    (&chooser_key, &*structure_words[2], true),
+                    (&automatic_key, "", true),
+                ]);
+            }
+            structure_hints.push((&sidebar_key, &*structure_words[3], true));
+            // What is pending in the table's rows is saved and reviewed
+            // from here too, as from the rows.
+            if !read_only {
+                structure_hints.push((&save_key, &*write, true));
+            }
+            if editing.pending.is_some() || editing.added.is_some() {
+                structure_hints.push((&review_key, &*review, true));
+            }
             let hints: &[widgets::Hint<'_>] = if on_editor {
                 &editor_hints
+            } else if structure.is_some() {
+                &structure_hints
             } else {
                 &table_hints
             };
