@@ -548,6 +548,20 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
     });
     let mut actions = Vec::new();
+    // The chooser of what labels that picker's list is open beside it.
+    // It has no field, and every key and letter of the frame is its own:
+    // they are taken here, before the shortcuts below and before the
+    // picker's field, whose text and cursor stay as they are.
+    let choosing = picking.filter(|&(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.edits.editor.as_ref())
+            .and_then(|editor| editor.picker.as_ref())
+            .is_some_and(|picker| picker.chooser.is_some())
+    });
+    if let Some(chooser) = choosing {
+        chooser_keys(ctx, chooser, (&app.keymap, layout), &mut actions);
+    }
     // The place of the tab asked for with its digit.
     let mut tab_asked = None;
     ctx.input_mut(|input| {
@@ -566,6 +580,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // The foreign key picker's keys, by the same rule.
         if let Some((tab, id)) = picking {
             picker_keys(input, (tab, id), (keymap, layout), &mut actions);
+            // The chooser of what labels the list. A fresh press only:
+            // held, the chord would open it and close it by turns.
+            let scope = Scope::CellEditor;
+            if choosing.is_none() && on(input, Command::ChangeLabelColumn, scope).fresh {
+                actions.push(Action::ToggleLabelChooser { tab, id });
+            }
         }
         if let Some((tab, sql_tab)) = sql {
             // Running works while typing: the editor never sees these. A
@@ -1024,6 +1044,79 @@ fn picker_keys(
             actions.extend((0..presses).map(|_| Action::PickerMove { tab, id, by }));
         }
     }
+}
+
+/// The keys of the chooser of a label column, open beside the list of the
+/// picker of the table `(tab, id)`, as the keymap has them for a prompt:
+/// the keys that move in it, the one that chooses and the one that closes.
+/// The chooser has no field. A letter is the key the keymap makes it
+/// (Omarchy's `j` and `k`), and in the looks whose keys are no letters it
+/// goes to the next column it begins. Every key and letter of the frame is
+/// taken: none reaches the picker's field, a shortcut or a pane under it.
+fn chooser_keys(
+    ctx: &egui::Context,
+    (tab, id): (ConnTabId, TabId),
+    (keymap, layout): (&Keymap, Layout),
+    actions: &mut Vec<Action>,
+) {
+    use crate::keymap::When;
+    let scope = Scope::Prompt;
+    // What was typed with nothing held, read before the keys are taken.
+    let typed = typed_chars(ctx);
+    ctx.input_mut(|input| {
+        for (command, by) in [(Command::NextLabel, 1), (Command::PreviousLabel, -1)] {
+            for keys in keymap.chords(layout, command, scope) {
+                // One line for each press: a frame may hold several.
+                let presses = presses(input, layout, keys).count;
+                actions.extend((0..presses).map(|_| Action::MoveLabelChooser { tab, id, by }));
+            }
+        }
+        // A fresh press only: a held Enter or Esc acts once. Every
+        // chord of the command is taken, whichever went down.
+        let mut fresh = |command: Command| {
+            let chords: Vec<&'static str> = keymap.chords(layout, command, scope).collect();
+            let mut any = false;
+            for keys in chords {
+                any |= presses(input, layout, keys).fresh;
+            }
+            any
+        };
+        let line = None;
+        if fresh(Command::ChooseLabel) {
+            actions.push(Action::ChooseLabel { tab, id, line });
+        } else if fresh(Command::CloseLabelChooser) {
+            actions.push(Action::CloseLabelChooser { tab, id });
+        }
+        for to in typed {
+            let letter = to.to_string();
+            match (
+                prompt_letter(keymap, layout, When::LabelChooser, &letter),
+                layout,
+            ) {
+                (Some(Command::NextLabel), _) => {
+                    actions.push(Action::MoveLabelChooser { tab, id, by: 1 });
+                }
+                (Some(Command::PreviousLabel), _) => {
+                    actions.push(Action::MoveLabelChooser { tab, id, by: -1 });
+                }
+                (_, Layout::Mac | Layout::Windows) => {
+                    actions.push(Action::JumpLabelChooser { tab, id, to });
+                }
+                (_, Layout::Omarchy) => {}
+            }
+        }
+        input.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::Key { pressed: true, .. }
+                    | egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::Copy
+                    | egui::Event::Cut
+                    | egui::Event::Ime(_)
+            )
+        });
+    });
 }
 
 /// The keys of the completion list of `editor`, which has the keyboard:

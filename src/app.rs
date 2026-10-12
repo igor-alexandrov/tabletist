@@ -1034,6 +1034,25 @@ impl App {
                 }
             }
             Action::PickerNull { tab, id } => self.picker_null(tab, id),
+            Action::ToggleLabelChooser { tab, id } => self.toggle_label_chooser(tab, id),
+            Action::MoveLabelChooser { tab, id, by } => {
+                self.in_label_chooser(tab, id, |chooser, lines| chooser.step(lines, by));
+            }
+            Action::PointLabelChooser { tab, id, line } => {
+                self.in_label_chooser(tab, id, |chooser, lines| chooser.to(lines, line));
+            }
+            Action::JumpLabelChooser { tab, id, to } => {
+                self.in_label_chooser(tab, id, |chooser, lines| chooser.jump(lines, to));
+            }
+            Action::ChooseLabel { tab, id, line } => self.choose_label(tab, id, line),
+            Action::CloseLabelChooser { tab, id } => {
+                if let Some(picker) = self
+                    .editor_mut(tab, id)
+                    .and_then(|editor| editor.picker.as_mut())
+                {
+                    picker.chooser = None;
+                }
+            }
             Action::EditorBreak { tab, id } => {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     // At the end of the text, where the cursor of a field

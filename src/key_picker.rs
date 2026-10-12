@@ -12,7 +12,7 @@ use tabletist_db::{
 
 use crate::backend::RequestId;
 use crate::edit::{DoubtState, Edits, State, Table, new_id};
-use crate::labels::Resolved;
+use crate::labels::{Chooser, Resolved};
 use crate::model::Advance;
 
 /// How many matches a list holds; more are said, not paged.
@@ -21,6 +21,9 @@ pub const LIMIT: u32 = 50;
 pub const DELAY: Duration = Duration::from_millis(150);
 /// How many options show at once; the list follows the highlight.
 pub const VISIBLE: usize = 8;
+/// How long a picker goes on saying what just happened to its label: that
+/// it changed, or that there is nothing to choose.
+pub const SAID: Duration = Duration::from_secs(4);
 
 /// The table and the column that the one-column foreign key of `column`
 /// points at. `None` for a column no such key names, and for a key whose
@@ -333,6 +336,25 @@ pub struct Picker {
     /// list: it was just read from the table, and is not asked about
     /// again.
     pub taken: bool,
+    /// The chooser of what labels the list, while it is open beside it.
+    /// It has the keys then: the field keeps the keyboard, and nothing
+    /// typed reaches its text.
+    pub chooser: Option<Chooser>,
+    /// The key of the option that was highlighted when the label changed,
+    /// and whether the user had moved to it: the answer of the search
+    /// that follows puts the highlight back on that row, if it holds it.
+    held: Option<(Value, bool)>,
+    /// When the label last changed under this picker. What says so shows
+    /// for [`SAID`], and goes with the next text typed.
+    pub changed: Option<Instant>,
+    /// The column that was chosen for the table and found gone, where
+    /// this is the first picker to open since, and when it was noted: the
+    /// list says so while it is open, and the terminal look's status line
+    /// for [`SAID`].
+    pub gone: Option<(String, Instant)>,
+    /// When the chooser was asked for and the table has nothing to
+    /// choose: said for [`SAID`].
+    pub nothing: Option<Instant>,
 }
 
 impl Picker {
@@ -365,7 +387,41 @@ impl Picker {
             failed: None,
             refused: false,
             taken: false,
+            chooser: None,
+            held: None,
+            changed: None,
+            gone: None,
+            nothing: None,
         }
+    }
+
+    /// The list is labelled by `label` from now on: the user chose, or
+    /// the column they had chosen is gone. `chosen` is when the user
+    /// chose, for what confirms a choice; none where nobody did. The
+    /// search for the text that shows is to be sent again (the reducer
+    /// sends it); until its answer the options stay as they are. A
+    /// failure was the old search's.
+    pub fn relabel(&mut self, label: Columns, chosen: Option<Instant>) {
+        self.held = self
+            .highlight
+            .and_then(|at| self.options.get(at))
+            .map(|option| (option.key.clone(), self.moved));
+        self.label = label;
+        self.changed = chosen;
+        self.nothing = None;
+        self.kept = None;
+        self.resends = 0;
+        if self.failed.take().is_some() {
+            self.listed = None;
+        }
+    }
+
+    /// Whether the list is the answer for the text that was last searched
+    /// for, with nothing of that search on its way.
+    pub fn answered_now(&self) -> bool {
+        self.asked.as_ref().is_some_and(|asked| {
+            asked.matching.is_none() && self.listed.as_deref() == Some(asked.text.as_str())
+        })
     }
 
     /// What is searched for while the editor holds `typed`.
@@ -394,6 +450,10 @@ impl Picker {
         self.refused = false;
         self.resends = 0;
         self.taken = false;
+        // What was said of the label was said of the list before this.
+        self.held = None;
+        self.changed = None;
+        self.nothing = None;
     }
 
     /// The editor's text was replaced by an option's key. It is the text
@@ -515,9 +575,20 @@ impl Picker {
                 self.options.clear();
                 self.more = false;
                 self.failed = Some(error);
+                // A search that failed has no list, and its keys are the
+                // field's again: no chooser stands beside nothing.
+                self.chooser = None;
             }
         }
         self.highlight = self.first_highlight();
+        // The label changed under the list: the highlight goes back to
+        // the row it was on, where the answer still holds that row.
+        if let Some((key, moved)) = self.held.take()
+            && let Some(at) = self.options.iter().position(|option| option.key == key)
+        {
+            self.highlight = Some(at);
+            self.moved = moved;
+        }
         Answered::Taken
     }
 

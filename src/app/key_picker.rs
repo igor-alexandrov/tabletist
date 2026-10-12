@@ -115,6 +115,7 @@ impl App {
         if load {
             self.load_columns(tab, table);
         }
+        self.tell_gone(tab, id);
         self.search(tab, id);
     }
 
@@ -230,6 +231,9 @@ impl App {
                 }
             } else if let Some(error) = &kept.error {
                 picker.failed = Some(error.clone());
+                // No list, and no chooser beside it: the keys are the
+                // field's.
+                picker.chooser = None;
                 // Nothing will answer: a kept Enter takes the text. Under
                 // a prompt about pending changes the commit is dropped
                 // (`App::apply`) and the key is lost: accepted, the next
@@ -244,6 +248,7 @@ impl App {
         }
         workspace.columns = columns;
         for id in ready {
+            self.tell_gone(tab, id);
             self.search(tab, id);
         }
         for (id, then) in commits {

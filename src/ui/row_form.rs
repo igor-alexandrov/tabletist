@@ -238,6 +238,7 @@ impl<'a> Form<'a> {
             let names = crate::ui::key_picker::Names {
                 table: &picker.target.name,
                 nullable: search.nullable,
+                chooser: search.chooser.as_ref(),
             };
             let shown = crate::ui::key_picker::show(
                 ui,
@@ -257,6 +258,10 @@ impl<'a> Form<'a> {
                 pick = Some(Action::PickOption { tab, id, index });
             } else if shown.null {
                 pick = Some(Action::PickerNull { tab, id });
+            }
+            // What was asked of the label's chooser ends no edit.
+            if let Some(asked) = shown.label {
+                self.ending.push(asked.action(tab, id));
             }
         }
         // The text is noted as typed before anything ends the edit, as for

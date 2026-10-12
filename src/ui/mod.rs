@@ -26,6 +26,7 @@ mod key_picker;
 #[cfg(test)]
 mod key_picker_tests;
 pub mod keys;
+pub mod label_chooser;
 #[cfg(test)]
 mod label_tests;
 pub mod menu;

@@ -6,15 +6,16 @@
 //! Only behaviour, names and words are checked. No colour, size or
 //! picture of the design is.
 
+use egui::accesskit::Role;
 use egui::{Key, Modifiers};
-use tabletist_db::ObjectRef;
+use tabletist_db::{LookupPart, ObjectRef};
 
 use crate::backend::{Command, Event, RequestId, StateFile};
 use crate::connections::ConnectionId;
 use crate::key_picker::{Columns, Picker};
-use crate::labels::{LabelChoice, Resolved, Source};
+use crate::labels::{Chooser, LabelChoice, Resolved, Source};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
-use crate::testing::{GENRES, Harness, PUBLISHERS, publishers_structure};
+use crate::testing::{GENRES, Harness, PUBLISHERS, node, publishers_structure};
 use crate::theme::Look;
 
 /// `publisher_id` in `book_covers`, and `parent_id` in `genres`, by their
@@ -215,12 +216,13 @@ fn a_number_column_can_label_a_table() {
     assert!(searched(&harness).iter().all(|label| *label == parent));
 }
 
-/// Test 9, what is kept: a chosen column the table no longer has is found
-/// when its columns are read. The choice goes back to Automatic, the
-/// picker is labelled by the app's pick, and the column's name is kept to
-/// be said once. (Saying it is run 2's.)
+/// Test 9: a chosen column the table no longer has is found when its
+/// columns are read. The choice goes back to Automatic, the picker is
+/// labelled by the app's pick, and the first picker to open says so: in
+/// the list, and to a screen reader. It is said once: the next picker
+/// says nothing, and the store holds nothing of it.
 #[test]
-fn a_chosen_column_that_is_gone_goes_back_to_automatic() {
+fn a_chosen_column_that_is_gone_is_said_once() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     // `publishers` has no such column: it was renamed since it was chosen.
     keep(&mut harness, tab, &publishers(), column("legal_name"));
@@ -232,9 +234,23 @@ fn a_chosen_column_that_is_gone_goes_back_to_automatic() {
     let conn = connection(&harness, tab);
     let labels = &harness.app.labels;
     assert_eq!(labels.choice(&conn, &publishers()), LabelChoice::Automatic);
-    assert_eq!(labels.gone(&conn, &publishers()), Some("legal_name"));
-    // Written once, with the choice dropped.
-    assert_eq!(saved(&harness), [harness.app.labels.clone()]);
+    // Told, so forgotten: the store is as if nothing had been chosen.
+    assert_eq!(labels.gone(&conn, &publishers()), None);
+    assert_eq!(*labels, crate::labels::Labels::default());
+    assert_eq!(saved(&harness).last(), Some(&harness.app.labels));
+    let said = "legal_name is gone, so labels use Automatic (name).";
+    let told = "legal_name is gone. Labels use Automatic, name.";
+    assert!(harness.has(said));
+    assert_eq!(live(&mut harness, told), Some(true));
+    // It stays for as long as this picker is open.
+    harness.frame(vec![egui::Event::Text("a".into())]);
+    assert!(harness.has(said));
+    // The next picker says nothing.
+    harness.app.apply(Action::CancelEdit { tab, id });
+    edit(&mut harness, tab, id, 1);
+    assert!(picker(&harness, tab, id).gone.is_none());
+    assert!(!harness.has(said));
+    assert_eq!(live(&mut harness, told), None);
 }
 
 /// A column is called gone only by columns that are fresh: while the
@@ -274,10 +290,10 @@ fn a_column_is_not_called_gone_while_the_columns_are_being_read_again() {
     let by_app = labelled(Some("name"), Source::Automatic, Some("name"));
     assert!(picker(&harness, tab, id).label == Columns::Known(by_app));
     assert!(harness.lookups().len() > sent);
-    assert_eq!(
-        harness.app.labels.gone(&conn, &publishers()),
-        Some("legal_name")
-    );
+    // The picker that waited is the one that says it.
+    let gone = picker(&harness, tab, id).gone.as_ref();
+    assert_eq!(gone.map(|(column, _)| column.as_str()), Some("legal_name"));
+    assert_eq!(harness.app.labels.gone(&conn, &publishers()), None);
 }
 
 /// Nor by a read that failed: the columns it leaves are the ones from
@@ -377,23 +393,36 @@ fn the_label_is_worded_by_its_column_and_who_chose_it() {
 }
 
 /// The macOS look says it in the list's foot, after the foot's own words,
-/// which stay as they were.
+/// which stay as they were: on a button, named for a screen reader as
+/// the notes board names it.
 #[test]
 fn the_foot_names_the_label_and_who_chose_it() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     edit(&mut harness, tab, id, 1);
     assert!(harness.has("Esc cancels"));
-    assert!(harness.has("Label name · Automatic"));
-    for (choice, said) in [
-        (column("name"), "Label name · Set by you"),
-        (LabelChoice::NoLabel, "Label keys only · Set by you"),
+    let tree = harness.settle();
+    assert!(node(&tree, "Label column: name, Automatic", Role::Button).is_some());
+    assert!(harness.painted_rect("Label name · Automatic").is_some());
+    for (choice, said, name) in [
+        (
+            column("name"),
+            "Label name · Set by you",
+            "Label column: name, Set by you",
+        ),
+        (
+            LabelChoice::NoLabel,
+            "Label keys only · Set by you",
+            "Label column: keys only, Set by you",
+        ),
     ] {
         let (mut harness, tab, id) = covers_in(Look::macos());
         keep(&mut harness, tab, &publishers(), choice);
         edit(&mut harness, tab, id, 1);
         assert!(harness.has("Esc cancels"), "{said}");
-        assert!(harness.has(said), "{said}");
-        assert!(!harness.has("Label name · Automatic"), "{said}");
+        let tree = harness.settle();
+        assert!(node(&tree, name, Role::Button).is_some(), "{name}");
+        assert!(harness.painted_rect(said).is_some(), "{said}");
+        assert!(harness.painted_rect("Label name · Automatic").is_none());
     }
 }
 
@@ -409,4 +438,664 @@ fn the_terminal_looks_status_line_names_the_label() {
     keep(&mut harness, tab, &publishers(), column("name"));
     edit(&mut harness, tab, id, 1);
     assert!(harness.has("label name · set by you"));
+}
+
+// The chooser: run 2.
+
+/// What a real Ctrl press reports: outside macOS Ctrl is the command key
+/// too.
+fn ctrl() -> Modifiers {
+    if cfg!(target_os = "macos") {
+        Modifiers::CTRL
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    }
+}
+
+/// The chord that asks for the chooser, as `look` has it.
+fn ask(harness: &mut Harness, look: Look) {
+    let held = if look.terminal {
+        ctrl()
+    } else {
+        Modifiers::COMMAND
+    };
+    harness.press(Key::L, held);
+}
+
+/// Selects the foreign key cell of the page's row `row`.
+fn select(harness: &mut Harness, tab: ConnTabId, id: TabId, row: usize) {
+    let cell = CellPos { row, col: KEY };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+    harness.settle();
+}
+
+/// Types `text` on the selected cell of `book_covers`, as a keyboard
+/// does, and answers what the picker asks of `publishers`.
+fn type_on_cell(harness: &mut Harness, text: &str) {
+    harness.frame(vec![egui::Event::Text(text.into())]);
+    harness.settle();
+    harness.answer_structure(publishers_structure());
+    harness.settle();
+    harness.answer_lookups(&PUBLISHERS);
+    harness.settle();
+}
+
+/// The covers in `look`, `text` typed on the first row's `publisher_id`
+/// and its list answered.
+fn typed_in(look: Look, text: &str) -> (Harness, ConnTabId, TabId) {
+    let (mut harness, tab, id) = covers_in(look);
+    select(&mut harness, tab, id, 0);
+    if look.terminal {
+        // Insert mode, on nothing.
+        let cell = CellPos { row: 0, col: KEY };
+        let start = EditStart::Replace(String::new());
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell,
+            start,
+        });
+        harness.settle();
+    }
+    type_on_cell(&mut harness, text);
+    (harness, tab, id)
+}
+
+fn chooser(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<&Chooser> {
+    picker(harness, tab, id).chooser.as_ref()
+}
+
+fn editing(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    object.edits.editor.is_some()
+}
+
+/// The text the tab's editor holds.
+fn text(harness: &Harness, tab: ConnTabId, id: TabId) -> String {
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    object.edits.editor.as_ref().unwrap().text.clone()
+}
+
+/// Where the cursor of the tab's field is, in characters.
+fn caret(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<usize> {
+    let field = crate::ui::cell_editor::field_id(tab, id);
+    let state = egui::text_edit::TextEditState::load(&harness.ctx, field)?;
+    Some(state.cursor.char_range()?.primary.index.into())
+}
+
+fn has_keyboard(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
+    let field = crate::ui::cell_editor::field_id(tab, id);
+    harness.ctx.memory(|memory| memory.has_focus(field))
+}
+
+/// Whether the cell of the page's row `row` has anything pending.
+fn pending(harness: &Harness, tab: ConnTabId, id: TabId, row: usize) -> bool {
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    object.edits.cells.contains_key(&(row, KEY))
+}
+
+/// Whether what is labelled `label` is in the tree, and a polite live
+/// region.
+fn live(harness: &mut Harness, label: &str) -> Option<bool> {
+    let tree = harness.settle();
+    let found = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label().or_else(|| node.value()) == Some(label))?;
+    Some(found.1.live() == Some(egui::accesskit::Live::Polite))
+}
+
+/// The key opens the chooser beside the list, on the line of what is
+/// chosen. It is a menu of radio items named as the notes board names
+/// them, and the field keeps the keyboard and its text.
+#[test]
+fn the_key_opens_the_chooser_and_the_field_keeps_the_keyboard() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    assert!(chooser(&harness, tab, id).is_none());
+    ask(&mut harness, Look::macos());
+    let open = chooser(&harness, tab, id).expect("the chooser is open");
+    assert_eq!((open.at, &open.choice), (0, &LabelChoice::Automatic));
+    assert!(!open.waited);
+    let tree = harness.settle();
+    assert!(node(&tree, "Label publishers by", Role::Menu).is_some());
+    for name in [
+        "Automatic, uses name",
+        "No label, keys only",
+        "name, TEXT",
+        // Listed, and not to be chosen.
+        "id, INTEGER, the key, unavailable",
+    ] {
+        assert!(node(&tree, name, Role::MenuItemRadio).is_some(), "{name}");
+    }
+    assert!(harness.has(
+        "For publishers in Fixture · dev, on this computer. Nothing is written to the database."
+    ));
+    assert!(has_keyboard(&harness, tab, id));
+    assert_eq!(text(&harness, tab, id), "harb");
+    // Nothing was chosen, and nothing asked of the database.
+    assert!(saved(&harness).is_empty());
+}
+
+/// Tests 2 and 4: choosing a column keeps the choice for the table on
+/// the saved connection, searches again for the text that was typed, and
+/// leaves the editor open with its text, its cursor and the cell's value
+/// as they were. The highlight stays on the row it was on. Nothing is
+/// sent to the database but that one search.
+#[test]
+fn choosing_a_column_keeps_the_edit_and_searches_once() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    // The cursor in the middle of the text, the highlight on the second
+    // of the two rows found.
+    harness.press(Key::ArrowLeft, Modifiers::NONE);
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(caret(&harness, tab, id), Some(3));
+    assert_eq!(picker(&harness, tab, id).highlight, Some(1));
+    let before = harness.app.backend.sent.len();
+    ask(&mut harness, Look::macos());
+    // Automatic, No label, then `name`.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(chooser(&harness, tab, id).map(|open| open.at), Some(2));
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(chooser(&harness, tab, id).is_none());
+    // The choice, kept and written.
+    let conn = connection(&harness, tab);
+    assert_eq!(
+        harness.app.labels.choice(&conn, &publishers()),
+        column("name")
+    );
+    assert_eq!(saved(&harness), [harness.app.labels.clone()]);
+    // The edit, as it was.
+    assert!(editing(&harness, tab, id));
+    assert!(has_keyboard(&harness, tab, id));
+    assert_eq!(text(&harness, tab, id), "harb");
+    assert_eq!(caret(&harness, tab, id), Some(3));
+    assert!(!pending(&harness, tab, id, 0));
+    // What was sent since the key: the file to be written, and one search
+    // for the same text by the chosen column. Nothing else.
+    let since = &harness.app.backend.sent[before..];
+    assert!(
+        matches!(
+            since,
+            [
+                Command::Save { file: StateFile::Labels(_), .. },
+                Command::Lookup { lookup, .. },
+            ] if lookup.label.as_deref() == Some("name")
+                && matches!(&lookup.part, LookupPart::Matching(text) if text == "harb")
+        ),
+        "{} commands",
+        since.len()
+    );
+    let by_user = labelled(Some("name"), Source::User, Some("name"));
+    assert!(picker(&harness, tab, id).label == Columns::Known(by_user));
+    // The answer: the highlight is on the row it was on.
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(picker(&harness, tab, id).highlight, Some(1));
+    let tree = harness.settle();
+    assert!(node(&tree, "Label column: name, Set by you", Role::Button).is_some());
+    // Enter still takes that row: the choice touched no value until now.
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(!editing(&harness, tab, id));
+    assert!(pending(&harness, tab, id, 0));
+}
+
+/// Test 13: what a screen reader is told once the list is searched again,
+/// in the notes board's words, with the count of what was found.
+#[test]
+fn a_choice_is_announced_with_the_count_of_its_matches() {
+    // Three publishers' keys begin with 91.
+    let (mut harness, tab, id) = typed_in(Look::macos(), "91");
+    let choose = |harness: &mut Harness, line: usize| {
+        ask(harness, Look::macos());
+        let line = Some(line);
+        harness.app.apply(Action::ChooseLabel { tab, id, line });
+        harness.answer_lookups(&PUBLISHERS);
+    };
+    choose(&mut harness, 2);
+    assert_eq!(
+        live(&mut harness, "Labelled by name. 3 matches."),
+        Some(true)
+    );
+    choose(&mut harness, 1);
+    assert_eq!(live(&mut harness, "Keys only. 3 matches."), Some(true));
+    assert_eq!(live(&mut harness, "Labelled by name. 3 matches."), None);
+    choose(&mut harness, 0);
+    let said = "Labelled by name, Automatic. 3 matches.";
+    assert_eq!(live(&mut harness, said), Some(true));
+    // Said of the list as it was: the next text typed ends it.
+    harness.frame(vec![egui::Event::Text("0".into())]);
+    assert_eq!(live(&mut harness, said), None);
+}
+
+/// Nothing is said before the search answers: the count is the answer's.
+#[test]
+fn a_choice_is_not_announced_before_its_search_answers() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "91");
+    ask(&mut harness, Look::macos());
+    let line = Some(2);
+    harness.app.apply(Action::ChooseLabel { tab, id, line });
+    assert_eq!(live(&mut harness, "Labelled by name. 3 matches."), None);
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(
+        live(&mut harness, "Labelled by name. 3 matches."),
+        Some(true)
+    );
+}
+
+/// Test 7: Esc with the chooser open closes the chooser alone, and the
+/// text stays. The next Esc closes the picker.
+#[test]
+fn esc_closes_the_chooser_first_and_then_the_picker() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, id) = typed_in(look, "harb");
+        ask(&mut harness, look);
+        assert!(chooser(&harness, tab, id).is_some(), "{}", look.name);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(editing(&harness, tab, id), "{}", look.name);
+        assert!(chooser(&harness, tab, id).is_none(), "{}", look.name);
+        assert_eq!(text(&harness, tab, id), "harb", "{}", look.name);
+        assert!(has_keyboard(&harness, tab, id), "{}", look.name);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!editing(&harness, tab, id), "{}", look.name);
+        assert!(!pending(&harness, tab, id, 0), "{}", look.name);
+        assert!(saved(&harness).is_empty(), "{}", look.name);
+    }
+}
+
+/// Test 8: under the picker every letter is the search's, `j` and `k`
+/// among them. In the chooser, which has no field, they move, and so do
+/// the terminal look's Ctrl+N and Ctrl+P. None of it reaches the text.
+#[test]
+fn letters_are_the_searchs_until_the_chooser_has_the_keys() {
+    let look = Look::omarchy();
+    let (mut harness, tab, id) = typed_in(look, "j");
+    harness.frame(vec![egui::Event::Text("k".into())]);
+    harness.settle();
+    assert_eq!(text(&harness, tab, id), "jk");
+    assert!(chooser(&harness, tab, id).is_none());
+    ask(&mut harness, look);
+    let at = |harness: &Harness| chooser(harness, tab, id).map(|open| open.at);
+    assert_eq!(at(&harness), Some(0));
+    for (typed, line) in [("j", 1), ("j", 2), ("j", 2), ("k", 1), ("x", 1), ("k", 0)] {
+        harness.frame(vec![egui::Event::Text(typed.into())]);
+        harness.settle();
+        assert_eq!(at(&harness), Some(line), "{typed}");
+    }
+    harness.press(Key::N, ctrl());
+    assert_eq!(at(&harness), Some(1));
+    harness.press(Key::P, ctrl());
+    assert_eq!(at(&harness), Some(0));
+    assert_eq!(text(&harness, tab, id), "jk");
+    // Enter chooses here, and commits nothing.
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(chooser(&harness, tab, id).is_none());
+    assert!(editing(&harness, tab, id));
+    assert_eq!(text(&harness, tab, id), "jk");
+}
+
+/// In the looks whose keys are no letters a letter goes to the next
+/// column it begins, and the arrows step over what cannot be chosen.
+#[test]
+fn a_letter_jumps_to_a_column_and_the_arrows_skip_the_key() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    ask(&mut harness, Look::macos());
+    let at = |harness: &Harness| chooser(harness, tab, id).map(|open| open.at);
+    harness.frame(vec![egui::Event::Text("n".into())]);
+    harness.settle();
+    assert_eq!(at(&harness), Some(2));
+    // `id` is the key: no letter and no arrow goes to it.
+    harness.frame(vec![egui::Event::Text("i".into())]);
+    harness.settle();
+    assert_eq!(at(&harness), Some(2));
+    for _ in 0..3 {
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+    }
+    assert_eq!(at(&harness), Some(2));
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert_eq!(at(&harness), Some(1));
+    assert_eq!(text(&harness, tab, id), "harb");
+    // The picker's own highlight did not move under it.
+    assert_eq!(picker(&harness, tab, id).highlight, Some(0));
+}
+
+/// Test 6, in the chooser: the key is listed and cannot be chosen, by a
+/// click or by asking for its line.
+#[test]
+fn the_key_cannot_be_chosen_in_the_chooser() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    ask(&mut harness, Look::macos());
+    harness.click("id, INTEGER, the key, unavailable");
+    let line = Some(3);
+    harness.app.apply(Action::ChooseLabel { tab, id, line });
+    assert!(chooser(&harness, tab, id).is_some());
+    assert!(saved(&harness).is_empty());
+    let conn = connection(&harness, tab);
+    assert_eq!(
+        harness.app.labels.choice(&conn, &publishers()),
+        LabelChoice::Automatic
+    );
+    // A line that can be chosen is chosen by a click.
+    harness.click("No label, keys only");
+    assert!(chooser(&harness, tab, id).is_none());
+    assert_eq!(
+        harness.app.labels.choice(&conn, &publishers()),
+        LabelChoice::NoLabel
+    );
+    assert!(editing(&harness, tab, id));
+    assert!(has_keyboard(&harness, tab, id));
+    assert_eq!(text(&harness, tab, id), "harb");
+}
+
+/// The foot's button opens the chooser and closes it, and says which.
+#[test]
+fn the_foots_button_opens_and_closes_the_chooser() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    let button = "Label column: name, Automatic";
+    let expanded = |harness: &mut Harness| {
+        let tree = harness.settle();
+        let id = node(&tree, button, Role::Button).expect("the button");
+        let found = tree.nodes.iter().find(|(node, _)| *node == id);
+        found.and_then(|(_, node)| node.is_expanded())
+    };
+    assert_eq!(expanded(&mut harness), Some(false));
+    harness.click(button);
+    assert!(chooser(&harness, tab, id).is_some());
+    assert_eq!(expanded(&mut harness), Some(true));
+    assert!(editing(&harness, tab, id));
+    assert!(has_keyboard(&harness, tab, id));
+    harness.click(button);
+    assert!(chooser(&harness, tab, id).is_none());
+    assert!(editing(&harness, tab, id));
+    assert_eq!(text(&harness, tab, id), "harb");
+}
+
+/// `editions` in `look`, the editor open on the first row's `isbn` and
+/// its list answered: a picker of `isbns`, a table of its key alone.
+fn isbn_picker(look: Look) -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let (tab, id) = harness.editions();
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    harness.settle();
+    // `isbn` stands where `publisher_id` does: second in its page.
+    open(&mut harness, tab, id, 0);
+    harness.answer_structure(crate::testing::isbns_structure());
+    harness.answer_lookups(&[]);
+    (harness, tab, id)
+}
+
+/// Test 10: a table of its key alone has nothing to choose. Its options
+/// are keys, the button is disabled and says why, and the key opens no
+/// chooser: the picker notes that it was asked, to say why for a while.
+#[test]
+fn a_table_of_its_key_alone_opens_no_chooser() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, tab, id) = isbn_picker(look);
+        let nothing = labelled(None, Source::KeysOnly, None);
+        assert!(picker(&harness, tab, id).label == Columns::Known(nothing));
+        assert!(searched(&harness).iter().all(Option::is_none));
+        assert!(picker(&harness, tab, id).nothing.is_none());
+        ask(&mut harness, look);
+        assert!(chooser(&harness, tab, id).is_none(), "{}", look.name);
+        assert!(picker(&harness, tab, id).nothing.is_some(), "{}", look.name);
+        assert!(editing(&harness, tab, id), "{}", look.name);
+        assert!(saved(&harness).is_empty(), "{}", look.name);
+    }
+    // The macOS look's button says it, to the eye and to a screen reader.
+    let (mut harness, _, _) = isbn_picker(Look::macos());
+    let name = "Label: keys only. isbns has only its key column.";
+    let tree = harness.settle();
+    assert!(node(&tree, name, Role::Button).is_some());
+    assert!(harness.painted_rect("Label keys only").is_some());
+    // Its key says why nothing opens, where the chooser would have.
+    let why = "isbns has only its key column";
+    assert!(harness.painted_rect(why).is_none());
+    ask(&mut harness, Look::macos());
+    harness.settle();
+    assert!(harness.painted_rect(why).is_some(), "{:?}", harness.painted);
+}
+
+/// Test 11: while the table's columns are on their way the chooser offers
+/// Automatic and No label, and a choice made then holds when they come.
+#[test]
+fn a_choice_can_be_made_before_the_columns_are_known() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // The editor is open, and nothing has answered for `publishers`.
+    open(&mut harness, tab, id, 0);
+    assert!(picker(&harness, tab, id).label == Columns::Waiting);
+    ask(&mut harness, Look::macos());
+    assert_eq!(
+        chooser(&harness, tab, id).map(|open| open.waited),
+        Some(true)
+    );
+    let tree = harness.settle();
+    assert!(node(&tree, "Automatic, checking…", Role::MenuItemRadio).is_some());
+    assert!(node(&tree, "No label, keys only", Role::MenuItemRadio).is_some());
+    assert!(harness.has("Loading columns…"));
+    assert!(harness.has("Automatic and No label work now"));
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    // Nothing to move to after No label yet.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(chooser(&harness, tab, id).is_none());
+    let conn = connection(&harness, tab);
+    assert_eq!(
+        harness.app.labels.choice(&conn, &publishers()),
+        LabelChoice::NoLabel
+    );
+    assert!(harness.lookups().is_empty());
+    // The columns come: the picker is labelled by the choice.
+    harness.answer_structure(publishers_structure());
+    let by_user = labelled(None, Source::User, Some("name"));
+    assert!(picker(&harness, tab, id).label == Columns::Known(by_user));
+    assert!(!searched(&harness).is_empty());
+    assert!(searched(&harness).iter().all(Option::is_none));
+}
+
+/// Columns that come while the chooser is open show in it, and a screen
+/// reader is told.
+#[test]
+fn columns_that_arrive_show_in_the_open_chooser() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 0);
+    ask(&mut harness, Look::macos());
+    assert_eq!(live(&mut harness, "Columns loaded."), None);
+    harness.answer_structure(publishers_structure());
+    let tree = harness.settle();
+    assert!(node(&tree, "Automatic, uses name", Role::MenuItemRadio).is_some());
+    assert!(node(&tree, "name, TEXT", Role::MenuItemRadio).is_some());
+    assert!(!harness.has("Loading columns…"));
+    assert_eq!(live(&mut harness, "Columns loaded."), Some(true));
+    assert!(chooser(&harness, tab, id).is_some());
+}
+
+/// A choice searches its own table's pickers again, and no other's.
+#[test]
+fn a_choice_for_another_table_searches_nothing() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    let sent = harness.lookups().len();
+    assert!(harness.app.set_label(tab, &genres(), LabelChoice::NoLabel));
+    assert_eq!(harness.lookups().len(), sent);
+    assert!(picker(&harness, tab, id).changed.is_none());
+    // Its own table's is searched once, and a choice that changes
+    // nothing not at all.
+    assert!(
+        harness
+            .app
+            .set_label(tab, &publishers(), LabelChoice::NoLabel)
+    );
+    assert_eq!(harness.lookups().len(), sent + 1);
+    assert!(
+        !harness
+            .app
+            .set_label(tab, &publishers(), LabelChoice::NoLabel)
+    );
+    assert_eq!(harness.lookups().len(), sent + 1);
+}
+
+/// A picker that is open on a chosen column when the table's columns are
+/// read again without it is labelled by what is left, searched again,
+/// and is the one that says the column is gone.
+#[test]
+fn an_open_picker_is_labelled_again_when_its_column_goes() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    keep(&mut harness, tab, &publishers(), column("name"));
+    edit(&mut harness, tab, id, 1);
+    let sent = harness.lookups().len();
+    // `name` was renamed to `title`, and the columns are read again.
+    let request = RequestId(u64::MAX);
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let session = workspace.session;
+    let kept = workspace.columns.get_mut(&publishers()).unwrap();
+    kept.start(request);
+    let mut renamed = publishers_structure();
+    renamed.columns[1].name = "title".into();
+    harness.app.apply(Action::Backend(Event::Structure {
+        session,
+        request,
+        result: Ok(renamed),
+    }));
+    let by_app = labelled(Some("title"), Source::Automatic, Some("title"));
+    assert!(picker(&harness, tab, id).label == Columns::Known(by_app));
+    let again = harness.lookups().split_off(sent);
+    assert!(!again.is_empty());
+    assert!(
+        again
+            .iter()
+            .all(|(_, _, lookup)| lookup.label.as_deref() == Some("title"))
+    );
+    assert!(harness.has("name is gone, so labels use Automatic (title)."));
+    // Nobody chose: nothing confirms a choice.
+    assert!(picker(&harness, tab, id).changed.is_none());
+    harness.answer_lookups(&PUBLISHERS);
+    assert_eq!(
+        live(&mut harness, "Labelled by title, Automatic. 3 matches."),
+        None
+    );
+}
+
+/// A list that holds only the first of its matches says so where it
+/// confirms a choice, as it does everywhere else.
+#[test]
+fn a_choice_counts_a_list_that_goes_on_as_fifty_or_more() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "91");
+    ask(&mut harness, Look::macos());
+    let line = Some(2);
+    harness.app.apply(Action::ChooseLabel { tab, id, line });
+    harness.answer_lookups(&PUBLISHERS);
+    let object = harness.app.workspace_mut(tab).unwrap();
+    let object = object.object_tab_mut(id).unwrap();
+    let editor = object.edits.editor.as_mut().unwrap();
+    editor.picker.as_mut().unwrap().more = true;
+    let said = "Labelled by name. 50 or more matches.";
+    assert_eq!(live(&mut harness, said), Some(true));
+    assert_eq!(live(&mut harness, "Labelled by name. 3 matches."), None);
+}
+
+/// A search that fails has no list: the chooser beside it closes, and
+/// the keys are the field's again.
+#[test]
+fn a_search_that_fails_closes_the_chooser() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    harness.frame(vec![egui::Event::Text("o".into())]);
+    harness.app.send_due_lookups(std::time::Instant::now());
+    ask(&mut harness, Look::macos());
+    assert!(chooser(&harness, tab, id).is_some());
+    harness.fail_lookup(tabletist_db::Error::query("the table is locked"));
+    assert!(picker(&harness, tab, id).failed.is_some());
+    assert!(chooser(&harness, tab, id).is_none());
+    // Nor does one open there: its keys would be the field's.
+    harness.app.apply(Action::ToggleLabelChooser { tab, id });
+    assert!(chooser(&harness, tab, id).is_none());
+    // So with columns that fail to come.
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    open(&mut harness, tab, id, 0);
+    ask(&mut harness, Look::macos());
+    assert!(chooser(&harness, tab, id).is_some());
+    let workspace = harness.app.workspace(tab).unwrap();
+    let session = workspace.session;
+    let request = workspace.columns[&publishers()].pending.unwrap();
+    harness.app.apply(Action::Backend(Event::Structure {
+        session,
+        request,
+        result: Err(tabletist_db::Error::query("no such table")),
+    }));
+    assert!(picker(&harness, tab, id).failed.is_some());
+    assert!(chooser(&harness, tab, id).is_none());
+}
+
+/// Clicks the node `label` of `role` with the pointer, as a mouse does:
+/// moved onto it, pressed and released in frames of their own.
+fn pointer_click(harness: &mut Harness, label: &str, role: Role) {
+    let tree = harness.settle();
+    let at = crate::testing::bounds(&tree, label, role)
+        .unwrap_or_else(|| panic!("nothing labelled {label:?}"))
+        .center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![button(true)]);
+    harness.frame(vec![button(false)]);
+    harness.settle();
+}
+
+/// A press beside the chooser closes it and does nothing else, as one
+/// beside a menu does: the option it landed on is not taken, and the
+/// edit goes on. The next click on that option takes it.
+#[test]
+fn a_press_beside_the_chooser_closes_it_and_picks_nothing() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    ask(&mut harness, Look::macos());
+    let option = "Harbor Lights, 9100000000000000007";
+    pointer_click(&mut harness, option, Role::ListBoxOption);
+    assert!(chooser(&harness, tab, id).is_none());
+    assert!(editing(&harness, tab, id));
+    assert!(has_keyboard(&harness, tab, id));
+    assert!(!pending(&harness, tab, id, 0));
+    assert_eq!(text(&harness, tab, id), "harb");
+    pointer_click(&mut harness, option, Role::ListBoxOption);
+    assert!(!editing(&harness, tab, id));
+    assert!(pending(&harness, tab, id, 0));
+}
+
+/// A press that closes the chooser and the picker with it (it landed on
+/// the grid) leaves nothing behind: the first click on an option of the
+/// next picker takes it.
+#[test]
+fn a_press_that_closed_the_picker_too_swallows_no_later_click() {
+    let (mut harness, tab, id) = typed_in(Look::macos(), "harb");
+    ask(&mut harness, Look::macos());
+    // The press, beside the chooser, with the button left down; then the
+    // editor is gone before the button comes up.
+    let tree = harness.settle();
+    let option = "Harbor Lights, 9100000000000000007";
+    let at = crate::testing::bounds(&tree, option, Role::ListBoxOption).unwrap();
+    let at = at.center();
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert!(chooser(&harness, tab, id).is_none());
+    harness.app.apply(Action::CancelEdit { tab, id });
+    harness.frame(vec![egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    harness.settle();
+    assert!(!editing(&harness, tab, id));
+    // The next picker: one click takes its option.
+    select(&mut harness, tab, id, 0);
+    type_on_cell(&mut harness, "harb");
+    pointer_click(&mut harness, option, Role::ListBoxOption);
+    assert!(!editing(&harness, tab, id));
+    assert!(pending(&harness, tab, id, 0));
 }

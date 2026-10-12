@@ -323,6 +323,46 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Open the chooser of what labels the options of the open editor's
+    /// foreign key picker, or close it where it is open: the picker's key
+    /// for it, and a click on its foot's button. Where the table has
+    /// nothing to choose the picker says so, and nothing opens.
+    ToggleLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Move that chooser's keys `by` lines: the arrows, the terminal
+    /// look's `j` and `k`.
+    MoveLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Put its keys on `line`: the pointer came over it.
+    PointLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+        line: usize,
+    },
+    /// A letter typed in it: go to the next column the letter begins.
+    JumpLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+        to: char,
+    },
+    /// Choose `line` of it, or the line its keys are on: a click, Enter.
+    /// The choice is kept, the chooser closes and the list is searched
+    /// again for the text that shows.
+    ChooseLabel {
+        tab: ConnTabId,
+        id: TabId,
+        line: Option<usize>,
+    },
+    /// Close it and choose nothing: Esc, a press beside it.
+    CloseLabelChooser {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Add a line break and move the text into the large editor.
     EditorBreak {
         tab: ConnTabId,
@@ -2944,6 +2984,15 @@ impl Workspace {
 
     pub fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
         self.tabs.iter_mut().find(|tab| tab.id() == id)
+    }
+
+    /// The lines of the chooser of what labels the rows of `table`, for
+    /// a foreign key that references its column `key`: by its columns as
+    /// the workspace knows them now.
+    pub fn label_lines(&self, table: &ObjectRef, key: &str) -> Vec<crate::labels::Line> {
+        let known = self.columns.get(table);
+        let columns = known.and_then(|kept| kept.value.as_deref());
+        crate::labels::lines(self.driver.dialect(), columns, &[key])
     }
 
     pub fn object_tab(&self, id: TabId) -> Option<&ObjectTab> {

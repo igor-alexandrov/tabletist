@@ -10,11 +10,13 @@ use egui::{CornerRadius, Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType,
 use tabletist_db::{LookupRow, Value};
 
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::key_picker::{Columns, LIMIT, Picker, VISIBLE, found_in};
+use crate::key_picker::{Columns, LIMIT, Picker, SAID, VISIBLE, found_in};
 use crate::labels::Source;
+use crate::model::{Action, ConnTabId, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::{display_safe, plain_text};
+use crate::ui::label_chooser;
 use crate::ui::{grid, sql_complete, widgets};
 
 /// What the pointer did to the list this frame.
@@ -27,6 +29,36 @@ pub struct Shown {
     pub picked: Option<usize>,
     /// Set NULL was clicked.
     pub null: bool,
+    /// What was asked of the chooser of the list's label.
+    pub label: Option<LabelAsked>,
+}
+
+/// What the pointer asked of the chooser of what labels the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelAsked {
+    /// The foot's button was clicked: open it, or close it.
+    Toggle,
+    /// The pointer came over this line of it.
+    Point(usize),
+    /// This line of it was clicked.
+    Choose(usize),
+    /// A press landed beside it.
+    Close,
+}
+
+impl LabelAsked {
+    /// What it asks of the reducer, for the editor of the tab `id`.
+    pub fn action(self, tab: ConnTabId, id: TabId) -> Action {
+        match self {
+            Self::Toggle => Action::ToggleLabelChooser { tab, id },
+            Self::Point(line) => Action::PointLabelChooser { tab, id, line },
+            Self::Choose(line) => {
+                let line = Some(line);
+                Action::ChooseLabel { tab, id, line }
+            }
+            Self::Close => Action::CloseLabelChooser { tab, id },
+        }
+    }
 }
 
 /// What the list is of.
@@ -35,6 +67,8 @@ pub struct Names<'a> {
     pub table: &'a str,
     /// The cell's column takes NULL: the foot offers Set NULL.
     pub nullable: bool,
+    /// The chooser of what labels the list, while it is open beside it.
+    pub chooser: Option<&'a label_chooser::Open>,
 }
 
 /// The list's measures in a look.
@@ -213,6 +247,228 @@ pub fn label_line(
     let column = display_safe(column);
     let said = words.replacen("{column}", &column, 1);
     Some((said, Some(at..at + column.len())))
+}
+
+/// What the foot's button is called for a screen reader: "Label column:
+/// name, Automatic". Of a table with nothing to choose it says so, and
+/// why: the button is disabled there.
+pub fn label_name(label: &Columns, table: &str, locale: Locale) -> Option<String> {
+    let Columns::Known(label) = label else {
+        return None;
+    };
+    let words = match (&label.column, label.source) {
+        (_, Source::KeysOnly) => {
+            let nothing = gettext(locale, "{table} has only its key column")
+                .replace("{table}", &display_safe(table));
+            return Some(format!(
+                "{} {nothing}.",
+                gettext(locale, "Label: keys only.")
+            ));
+        }
+        (Some(_), Source::Automatic) => "Label column: {column}, Automatic",
+        (Some(_), Source::User) => "Label column: {column}, Set by you",
+        (None, Source::Automatic) => "Label column: keys only, Automatic",
+        (None, Source::User) => "Label column: keys only, Set by you",
+    };
+    let column = label.column.as_deref().unwrap_or_default();
+    Some(gettext(locale, words).replace("{column}", &display_safe(column)))
+}
+
+/// What a picker says when its chooser is asked for and its table has
+/// nothing to choose: "isbns has only its key column".
+pub fn nothing_text(table: &str, look: &Look, locale: Locale) -> String {
+    look.label(&gettext(locale, "{table} has only its key column"))
+        .replace("{table}", &display_safe(table))
+}
+
+/// How many options the list holds, for what says the label changed:
+/// "2 matches". A list that holds only the first of them says so, in
+/// words for a screen reader ("50 or more matches") and, `terse`, as the
+/// terminal look's field counts them ("50+ matches").
+fn matches_text(picker: &Picker, terse: bool, locale: Locale) -> String {
+    if picker.more {
+        let words = if terse {
+            "{count}+ matches"
+        } else {
+            "{count} or more matches"
+        };
+        return gettext(locale, words).replace("{count}", &LIMIT.to_string());
+    }
+    let count = picker.options.len();
+    let plural = u32::try_from(count).unwrap_or(u32::MAX);
+    ngettext(locale, "{count} match", "{count} matches", plural)
+        .replace("{count}", &count.to_string())
+}
+
+/// What a screen reader is told once the list is searched again by the
+/// label just chosen: "Labelled by legal_name. 2 matches." None before
+/// the answer, and once a text is typed.
+pub fn changed_text(picker: &Picker, locale: Locale) -> Option<String> {
+    let Columns::Known(label) = &picker.label else {
+        return None;
+    };
+    if picker.changed.is_none() || !picker.answered_now() {
+        return None;
+    }
+    let words = match (&label.column, label.source) {
+        (None, _) => "Keys only. {matches}.",
+        (Some(_), Source::Automatic) => "Labelled by {column}, Automatic. {matches}.",
+        (Some(_), Source::User | Source::KeysOnly) => "Labelled by {column}. {matches}.",
+    };
+    let column = label.column.as_deref().unwrap_or_default();
+    let said = gettext(locale, words)
+        .replace("{column}", &display_safe(column))
+        .replace("{matches}", &matches_text(picker, false, locale));
+    Some(said)
+}
+
+/// What is said, once, of a chosen column that is gone: the line the list
+/// draws ("legal_name is gone, so labels use Automatic (name)."), the
+/// terminal look's own form of it, and what a screen reader is told.
+pub struct Gone {
+    pub line: String,
+    pub told: String,
+}
+
+pub fn gone_text(picker: &Picker, look: &Look, locale: Locale) -> Option<Gone> {
+    let (gone, _) = picker.gone.as_ref()?;
+    let Columns::Known(label) = &picker.label else {
+        return None;
+    };
+    // What the app picks in its place: a column, or the keys alone.
+    let keys_only = gettext(locale, "keys only");
+    let auto = label.automatic.as_deref().unwrap_or(&keys_only);
+    let (gone, auto) = (display_safe(gone), display_safe(auto));
+    let line = if look.terminal {
+        "{column} is gone · labels use Automatic ({auto})"
+    } else {
+        "{column} is gone, so labels use Automatic ({auto})."
+    };
+    let fill = |words: String| words.replace("{column}", &gone).replace("{auto}", &auto);
+    Some(Gone {
+        line: fill(look.label(&gettext(locale, line))),
+        told: fill(gettext(locale, "{column} is gone. Labels use Automatic, {auto}.").into_owned()),
+    })
+}
+
+/// How long the foot's button keeps the selection's fill once the label
+/// changed: one flash.
+const FLASH: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The room round the words of the foot's button, inside it.
+const BUTTON_PAD: f32 = 6.0;
+
+/// The size of the mark that says the button opens a menu.
+const CHEVRON: f32 = 10.0;
+
+/// The foot's button: what labels the options, who chose it, and the
+/// chooser it opens. `words` are its words with the column's name at
+/// `column` in them; they start at `left`, on the line at `y`, and have
+/// `room`. Disabled where the table has nothing to choose, when it says
+/// so under the pointer and, for a while, after its key was pressed.
+/// Clicked and never focused: the field keeps the keyboard. Returns its
+/// place and whether it was clicked.
+fn label_button(
+    ui: &Ui,
+    id: Id,
+    (picker, names): (&Picker, &Names<'_>),
+    (words, column): (&str, Option<std::ops::Range<usize>>),
+    (left, y, room, height): (f32, f32, f32, f32),
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> (egui::Response, bool) {
+    use crate::keymap::{Command, Scope};
+    let nothing =
+        matches!(&picker.label, Columns::Known(label) if label.source == Source::KeysOnly);
+    let enabled = !nothing;
+    let open = names.chooser.is_some();
+    let line_role = TextRole::pick(look, TextRole::Shortcut, TextRole::OCaption);
+    let name_role = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OCode);
+    let ink = if enabled {
+        muted(look, palette)
+    } else {
+        palette.dim
+    };
+    let mark = if enabled { 4.0 + CHEVRON } else { 0.0 };
+    let at = column.unwrap_or(words.len()..words.len());
+    let whole = || {
+        Text::new(look)
+            .add(line_role, &words[..at.start], ink)
+            .add(name_role, &words[at.clone()], palette.text)
+            .add(line_role, &words[at.end..], ink)
+    };
+    // Cut to the room there is, and then drawn plain: the name's place in
+    // a cut text is not the one it had.
+    let fits = widgets::measure(ui, whole()) + mark <= room;
+    let width = |text: &str| line_role.width(ui.ctx(), look.faces, text);
+    let cut = grid::ellipsize(words, (room - mark).max(0.0), false, width);
+    let text = if fits {
+        whole()
+    } else {
+        Text::one(look, line_role, &cut, ink)
+    };
+    let laid = text.layout(ui.ctx());
+    let wide = laid.width() + mark;
+    let rect = Rect::from_min_size(
+        pos2(left - BUTTON_PAD, y - height / 2.0),
+        vec2(wide + 2.0 * BUTTON_PAD, height),
+    );
+    let sense = if enabled {
+        Sense::CLICK
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, id.with("label"), sense);
+    let flashing = picker.changed.is_some_and(|at| at.elapsed() < FLASH);
+    if flashing {
+        ui.ctx().request_repaint_after(FLASH);
+    }
+    let fill = if flashing {
+        Some(palette.selection)
+    } else if enabled && (open || response.hovered()) {
+        Some(palette.surface_hover)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
+    }
+    laid.paint_left(ui.painter(), left, y);
+    if enabled {
+        let place = Rect::from_center_size(
+            pos2(left + laid.width() + 4.0 + CHEVRON / 2.0, y),
+            vec2(CHEVRON, CHEVRON),
+        );
+        Icon::ChevronDown.image(ink, CHEVRON).paint_at(ui, place);
+    }
+    // What the pointer reads over it, and a screen reader after its name.
+    let tip = if enabled {
+        let key = crate::ui::keys::written_in(
+            ui.ctx(),
+            look,
+            Command::ChangeLabelColumn,
+            Scope::CellEditor,
+        );
+        format!("{} {key}", gettext(locale, "Change label column"))
+    } else {
+        nothing_text(names.table, look, locale)
+    };
+    let name = label_name(&picker.label, names.table, locale).unwrap_or_default();
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &name));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_description(tip.as_str());
+        if enabled {
+            node.set_has_popup(egui::accesskit::HasPopup::Menu);
+            node.set_expanded(open);
+        }
+    });
+    // Its key was pressed and there is nothing to choose: it says why
+    // where the chooser would have opened, for a while.
+    if picker.nothing.is_some_and(|at| at.elapsed() < SAID) {
+        response.show_tooltip_text(tip.as_str());
+        ui.ctx().request_repaint_after(SAID);
+    }
+    let clicked = enabled && response.clicked();
+    (response.on_hover_text(tip), clicked)
 }
 
 /// A label as the text it is written in: a text is borrowed, any other
@@ -471,7 +727,15 @@ pub fn show(
     );
     let head = !look.terminal;
     let foot = !look.terminal;
-    let lines = usize::from(head) + usize::from(foot) + usize::from(planned.is_some());
+    // A chosen column that is gone is said in the list, under its head.
+    // The terminal look has no room in the list for words: its status
+    // line says it.
+    let gone = gone_text(picker, look, locale);
+    let notice = gone.as_ref().filter(|_| !look.terminal);
+    let lines = usize::from(head)
+        + usize::from(foot)
+        + usize::from(planned.is_some())
+        + usize::from(notice.is_some());
     // As wide as the cell, and wide enough for a label and a key.
     let base = anchor.width().max(280.0);
     let chrome = 2.0 * shape.pad.y + lines as f32 * shape.line;
@@ -503,6 +767,13 @@ pub fn show(
     let placed = place(anchor, vec2(width, chrome), wanted, screen);
     let size = vec2(width, chrome + rows as f32 * shape.option);
     let mut shown = Shown::default();
+    // Where the foot's label button stands, once it is drawn.
+    let mut button_rect = None;
+    // Where it is kept that a press beside the chooser closed it, until
+    // the button comes up: the frame the list was last drawn in with that
+    // press down.
+    let closed_by_press = Id::new("key-picker").with("closed-by-press");
+    let frame = ui.ctx().cumulative_frame_nr();
     // One area for the lists of every table: only the table on screen
     // has one, and egui keeps each area's place for good.
     let id = Id::new("key-picker");
@@ -538,6 +809,23 @@ pub fn show(
                 let text = head_line(ui, look, picker, typed, names.table, locale);
                 let y = top + shape.line / 2.0;
                 say(ui, (left, y), room, (&text, line_role, muted), inner, look);
+                top += shape.line;
+            }
+            if let Some(gone) = notice {
+                // On the warning's tint, a dot in its colour before the
+                // words.
+                let tone = crate::ui::states::Tone::Warning;
+                let place = Rect::from_min_size(
+                    pos2(inner.left() + 2.0, top + 1.0),
+                    vec2(inner.width() - 4.0, shape.line - 2.0),
+                );
+                let y = place.center().y;
+                ui.painter()
+                    .rect_filled(place, CornerRadius::same(6), tone.fill(look, palette));
+                ui.painter()
+                    .circle_filled(pos2(left + 4.0, y), 4.0, tone.color(palette));
+                let words = (gone.line.as_str(), line_role, palette.text);
+                say(ui, (left + 16.0, y), room - 16.0, words, inner, look);
                 top += shape.line;
             }
             let options = UiBuilder::new()
@@ -616,21 +904,28 @@ pub fn show(
                 let taken = button.as_ref().map_or(0.0, |(_, wide)| wide + 8.0);
                 let args = (&*cancels, line_role, muted);
                 say(ui, (left, y), room - taken, args, inner, look);
-                // What labels the options stands after it, as words of
-                // its own, cut to the room there is. With too little for
-                // more than a mark it is not drawn.
-                if let Some((label, _)) = label_line(&picker.label, look, locale) {
+                // What labels the options stands after it: a button that
+                // opens the chooser, cut to the room there is. With too
+                // little for more than a mark it is not drawn.
+                if let Some((label, column)) = label_line(&picker.label, look, locale) {
                     let width = |text: &str| line_role.width(ui.ctx(), look.faces, text);
                     let dot = " · ";
                     let from = left + width(&cancels);
                     let label_left = from + width(dot);
-                    let label_room = left + room - taken - label_left;
+                    let label_room = left + room - taken - label_left - BUTTON_PAD;
                     if label_room >= LABEL_ROOM {
                         Text::one(look, line_role, dot, muted)
                             .layout(ui.ctx())
                             .paint_left(&ui.painter().with_clip_rect(inner), from, y);
-                        let args = (&*label, line_role, muted);
-                        say(ui, (label_left, y), label_room, args, inner, look);
+                        let place = (label_left, y, label_room, shape.line - 4.0);
+                        let skin = (look, palette, locale);
+                        let (response, clicked) =
+                            label_button(ui, id, (picker, names), (&label, column), place, skin);
+                        shown.pressed |= response.is_pointer_button_down_on() || response.clicked();
+                        if clicked {
+                            shown.label = Some(LabelAsked::Toggle);
+                        }
+                        button_rect = Some(response.rect);
                     }
                 }
                 if let Some((button, wide)) = button {
@@ -646,8 +941,70 @@ pub fn show(
             if let Some(count) = count_line(picker, names.table, locale) {
                 widgets::announce_polite(ui, rect, &count);
             }
+            // What became of the label, said once each: the words are
+            // the node, and a node that stays is not read again.
+            if let Some(said) = changed_text(picker, locale) {
+                widgets::announce_polite(ui, rect, &said);
+            }
+            if let Some(gone) = &gone {
+                widgets::announce_polite(ui, rect, &gone.told);
+            }
+            // Behind its chooser the terminal look's list gives up its
+            // accent: the chooser has the keys.
+            let border = if look.terminal && names.chooser.is_some() {
+                let corner = CornerRadius::same(shape.corner);
+                let line = egui::Stroke::new(1.0, palette.border);
+                egui::Shape::rect_stroke(rect, corner, line, egui::StrokeKind::Inside)
+            } else {
+                border
+            };
             ui.painter().add(border);
         });
+    if let Some(open) = names.chooser {
+        let list = Rect::from_min_size(placed.pos, size);
+        let chooser = label_chooser::show(ui, open, list, field, (look, palette, locale));
+        shown.pressed |= chooser.pressed;
+        match chooser.asked {
+            Some(label_chooser::Asked::Choose(line)) => {
+                shown.label = Some(LabelAsked::Choose(line));
+            }
+            Some(label_chooser::Asked::Point(line)) if shown.label.is_none() => {
+                shown.label = Some(LabelAsked::Point(line));
+            }
+            Some(label_chooser::Asked::Point(_)) | None => {}
+        }
+        // A press beside the chooser closes it, as it closes a menu. Not
+        // one on the button that opened it, whose click closes it.
+        let pressed_at = ui.input(|input| {
+            let at = input.pointer.interact_pos();
+            at.filter(|_| input.pointer.any_pressed())
+        });
+        let beside = pressed_at.is_some_and(|at| {
+            !chooser.rect.contains(at) && !button_rect.is_some_and(|button| button.contains(at))
+        });
+        if beside && shown.label.is_none() {
+            shown.label = Some(LabelAsked::Close);
+            // The press closes the chooser and does nothing else, as one
+            // beside a menu does: what it landed on is not clicked when
+            // the button comes up, a frame or more from now.
+            ui.data_mut(|data| data.insert_temp(closed_by_press, frame));
+        }
+    }
+    if let Some(seen) = ui.data(|data| data.get_temp::<u64>(closed_by_press)) {
+        // Noted a frame ago at most: the press is the one still down, or
+        // just up. An older note is of a list that closed under its
+        // press, and is nothing to a click on this one.
+        let live = frame.saturating_sub(seen) <= 1;
+        if live {
+            shown.picked = None;
+            shown.null = false;
+        }
+        if live && ui.input(|input| input.pointer.any_down()) {
+            ui.data_mut(|data| data.insert_temp(closed_by_press, frame));
+        } else {
+            ui.data_mut(|data| data.remove_temp::<u64>(closed_by_press));
+        }
+    }
     shown
 }
 
