@@ -1424,11 +1424,28 @@ fn the_structure_views_key_opens_the_chooser() {
         view,
     });
     assert!(tab_chooser(&harness, tab, id).is_none());
-    // With the arrows on the tree the key is not the view's.
-    to_structure(&mut harness, tab, id);
+}
+
+/// The view's button names the chooser's key, so the key is the view's
+/// wherever the arrows go: a table opened with a click leaves them on
+/// the tree. The keys that need the view's cursor stay the tree's there.
+#[test]
+fn the_choosers_key_is_the_structure_views_with_the_arrows_on_the_tree() {
+    let (mut harness, tab, id) = publishers_structure_in(Look::macos(), false);
     harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+    harness.settle();
     harness.press(Key::L, Modifiers::COMMAND);
+    assert!(tab_chooser(&harness, tab, id).is_some());
+    // The chooser's own keys are read while it is open.
+    harness.press(Key::Escape, Modifiers::NONE);
     assert!(tab_chooser(&harness, tab, id).is_none());
+    // No cursor shows, and the key that uses the column under it keeps
+    // nothing.
+    harness.press(Key::L, Modifiers::COMMAND | Modifiers::ALT);
+    assert!(saved(&harness).is_empty());
+    assert_eq!(cursor(&harness, tab, id), 0);
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(cursor(&harness, tab, id), 0);
 }
 
 /// The view has a cursor on the lines of its columns: the arrows move it

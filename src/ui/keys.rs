@@ -732,19 +732,25 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if on(input, Command::ToggleSidebar, Scope::Global).count > 0 {
             actions.push(Action::ToggleSidebar(active));
         }
-        // The Structure view's keys: its cursor, one line for each press,
-        // the chooser of the table's label, and the column under the
-        // cursor as that label. Fresh presses only for the last two: held,
-        // the first would open the chooser and close it by turns.
+        // The key of the chooser of the table's label is the Structure
+        // view's wherever the arrows go: the view's button names it, and
+        // the tree has no use for it. A fresh press only: held, it would
+        // open the chooser and close it by turns.
+        let labelling = structure.filter(|_| !editing && !focused && app.dialog.is_none());
+        if let Some((tab, id)) = labelling
+            && on(input, Command::OpenLabelChooser, Scope::Grid).fresh
+        {
+            actions.push(Action::ToggleLabelChooser { tab, id });
+        }
+        // The keys that need the view's cursor, which shows while the view
+        // has the keys: the cursor itself, one line for each press, and
+        // the column under it as the label (a fresh press only).
         if let Some((tab, id)) = on_structure {
             let scope = Scope::Grid;
             for keys in keymap.chords_now(layout, Command::MoveInStructure, scope, normal) {
                 let by = if keys == "up" { -1 } else { 1 };
                 let presses = presses(input, layout, keys).count;
                 actions.extend((0..presses).map(|_| Action::MoveStructureCursor { tab, id, by }));
-            }
-            if on(input, Command::OpenLabelChooser, scope).fresh {
-                actions.push(Action::ToggleLabelChooser { tab, id });
             }
             if on(input, Command::UseAsLabel, scope).fresh {
                 let line = None;
