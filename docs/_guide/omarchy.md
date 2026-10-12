@@ -97,8 +97,27 @@ list instead.
 | `R` | Reload |
 | Ctrl+C | Cancel the running query |
 
-The Structure and Data views are clicked: they have no key. Nor has
-copying a whole row.
+The Structure and Data views are clicked: switching between them has no
+key. Nor has copying a whole row.
+
+### The Structure view
+
+Ctrl+L brings the keyboard to its columns, as it does to the rows.
+
+| Keys | Do |
+| --- | --- |
+| `j` `k`, Up, Down | Move by column |
+| `gl` | Use the column under the cursor as the label for foreign keys |
+| `:label` | Choose that label from a list. In it, `j` `k` move, Enter chooses and Esc closes |
+| `:label auto` | Back to the app's own pick |
+| `:label none` | No label: rows are listed by their keys alone |
+| `:label` and a column's name | Use that column |
+
+The label is the column that the table's rows are read by in the list of a
+foreign key that points at it:
+[Editing Data]({% link _guide/editing-data.md %}#the-label-column) says
+what it does. A key or a column of bytes is not taken, and the status line
+says why.
 
 ### The row panel
 
@@ -130,6 +149,7 @@ copying a whole row.
 | Ctrl+N, Ctrl+P, Down, Up, Page Down, Page Up | Move in a foreign key cell's list |
 | Enter, Tab | In that list: set the cell to the highlighted row |
 | Esc | In that list: close it and leave the cell as it was |
+| Ctrl+L | In that list: choose the column that labels it. In the chooser, `j` `k`, Ctrl+N, Ctrl+P and the arrows move, Enter chooses and Esc closes |
 | Alt+Enter | Open the large editor. In it, Ctrl+Enter applies, Esc keeps the text, Ctrl+C drops it and Ctrl+Shift+F formats JSON |
 | `x` | Set NULL. On a column that cannot be NULL, the status line says so |
 | `D` | Set DEFAULT, where the column has a default |
@@ -144,8 +164,8 @@ copying a whole row.
 A date or time cell has no key for the time of the save: type `now()`
 into it.
 
-The `:` prompt takes `w`, `e!` and `diff` on a table, `ro` and `rw` in a
-SQL editor, and nothing else.
+The `:` prompt takes `w`, `e!` and `diff` on a table, the `label` lines in
+its Structure view, `ro` and `rw` in a SQL editor, and nothing else.
 
 {% include shot.html file="omarchy-edit-review" alt="The :diff panel above the status line, showing the statement a save will run" %}
 
