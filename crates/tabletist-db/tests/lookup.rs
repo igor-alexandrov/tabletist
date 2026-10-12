@@ -141,6 +141,76 @@ async fn the_bookshop_is_searched(connection: &Connection, schema: &str, table: 
     assert_eq!(page.rows.len(), 5, "{on}");
 }
 
+/// A search of `schema.table`, the Bookshop's editions, by its `id` and by
+/// the column `label`.
+fn editions(schema: &str, table: &str, label: &str, text: &str) -> Lookup {
+    Lookup {
+        object: ObjectRef::new(schema, table),
+        key: "id".into(),
+        label: Some(label.into()),
+        part: matching(text),
+        limit: 50,
+    }
+}
+
+/// A label that is no text is searched by the text the database writes it
+/// as, which is what the list draws
+/// (`docs/superpowers/specs/2026-10-12-foreign-key-label-design.md`, test
+/// 14). The editions are the three of each module's `EDITIONS`. `price` is
+/// the first edition's price as this engine answers it, and `drawn` the
+/// text it is drawn as: a decimal keeps its scale on PostgreSQL and MySQL
+/// and is a number on SQLite.
+async fn labels_that_are_no_text_are_searched_as_drawn(
+    connection: &Connection,
+    (schema, table): (&str, &str),
+    (price, drawn): (Value, &str),
+    on: &str,
+) {
+    let read = |label: &'static str, text: &str| {
+        let lookup = editions(schema, table, label, text);
+        async move {
+            let page = connection
+                .lookup(&lookup)
+                .await
+                .unwrap_or_else(|error| panic!("{on}: {error}"));
+            let rows = page.rows.into_iter();
+            rows.map(|row| (row.key, row.label, row.matched))
+                .collect::<Vec<_>>()
+        }
+    };
+    let date = |text: &str| Some(Value::Text(text.into()));
+    // A date, by a part of it and by the whole.
+    assert_eq!(
+        read("published_on", "1998").await,
+        [
+            (Value::Int(1), date("1998-04-01"), Matched::Label),
+            (Value::Int(3), date("1998-12-24"), Matched::Label),
+        ],
+        "{on}"
+    );
+    assert_eq!(
+        read("published_on", "1998-04-01").await,
+        [(Value::Int(1), date("1998-04-01"), Matched::Label)],
+        "{on}"
+    );
+    // A whole number.
+    assert_eq!(
+        read("pages", "212").await,
+        [(Value::Int(1), Some(Value::Int(212)), Matched::Label)],
+        "{on}"
+    );
+    // A decimal, by the text it is drawn as.
+    assert_eq!(
+        read("price", drawn).await,
+        [(Value::Int(1), Some(price), Matched::Label)],
+        "{on}"
+    );
+    // What no label holds finds nothing, and is no error on a column of
+    // dates or of numbers.
+    assert!(read("published_on", "harb").await.is_empty(), "{on}");
+    assert!(read("pages", "harb").await.is_empty(), "{on}");
+}
+
 mod sqlite {
     use super::*;
 
@@ -157,6 +227,19 @@ mod sqlite {
             (9100000000000000007, 'Harbor Lights');
         CREATE TABLE shelves (id INTEGER PRIMARY KEY, floor INTEGER);
         INSERT INTO shelves VALUES (12, 1), (120, 1), (3, 2);";
+
+    const EDITIONS: &str = "
+        CREATE TABLE editions (
+            id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            pages INTEGER,
+            price NUMERIC(10,2),
+            published_on DATE
+        );
+        INSERT INTO editions VALUES
+            (1, 'The Lighthouse', 212, 12.50, '1998-04-01'),
+            (2, 'Harbor Nights', 96, 30.00, '2004-11-30'),
+            (3, 'Low Tide', 304, 9.99, '1998-12-24');";
 
     /// A database of its own, made with `sql`.
     async fn made_with(sql: &str, access: Access) -> (Connection, tempfile::TempDir) {
@@ -184,6 +267,18 @@ mod sqlite {
         the_bookshop_is_searched(&connection, "main", "publishers", "sqlite, ReadOnly").await;
         let (connection, _dir) = made_with(CREATE, Access::Writable).await;
         the_bookshop_is_searched(&connection, "main", "publishers", "sqlite, Writable").await;
+    }
+
+    #[tokio::test]
+    async fn labels_that_are_no_text_are_searched_as_drawn_on_sqlite() {
+        let (connection, _dir) = made_with(EDITIONS, Access::ReadOnly).await;
+        labels_that_are_no_text_are_searched_as_drawn(
+            &connection,
+            ("main", "editions"),
+            (Value::Float(12.5), "12.5"),
+            "sqlite",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -383,9 +478,53 @@ mod postgres {
             (9100000000000000004, 'Harbor Press'),
             (9100000000000000007, 'Harbor Lights')";
 
+    const DROP_EDITIONS: &str = "DROP TABLE IF EXISTS lookup_editions";
+
+    const EDITIONS: &str = "
+        CREATE TABLE lookup_editions (
+            id bigint PRIMARY KEY,
+            title text NOT NULL,
+            pages integer,
+            price numeric(10,2),
+            published_on date
+        );
+        INSERT INTO lookup_editions VALUES
+            (1, 'The Lighthouse', 212, 12.50, '1998-04-01'),
+            (2, 'Harbor Nights', 96, 30.00, '2004-11-30'),
+            (3, 'Low Tide', 304, 9.99, '1998-12-24')";
+
     fn url() -> Option<String> {
         let url = std::env::var("TABLETIST_TEST_PG_URL").ok();
         url.filter(|url| !url.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn labels_that_are_no_text_are_searched_as_drawn_on_postgres() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return;
+        };
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (admin, session) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(session);
+        admin.batch_execute(DROP_EDITIONS).await.unwrap();
+        admin.batch_execute(EDITIONS).await.unwrap();
+
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+                .await
+                .unwrap();
+        labels_that_are_no_text_are_searched_as_drawn(
+            &connection,
+            ("public", "lookup_editions"),
+            (Value::Text("12.50".into()), "12.50"),
+            "postgres",
+        )
+        .await;
+        admin.batch_execute(DROP_EDITIONS).await.unwrap();
     }
 
     #[tokio::test]
@@ -453,9 +592,54 @@ mod mysql {
              (9100000000000000007, 'Harbor Lights')",
     ];
 
+    const DROP_EDITIONS: &str = "DROP TABLE IF EXISTS lookup_editions";
+
+    const EDITIONS: [&str; 2] = [
+        "CREATE TABLE lookup_editions (
+             id BIGINT PRIMARY KEY,
+             title VARCHAR(64) NOT NULL,
+             pages INT,
+             price DECIMAL(10,2),
+             published_on DATE
+         )",
+        "INSERT INTO lookup_editions VALUES
+             (1, 'The Lighthouse', 212, 12.50, '1998-04-01'),
+             (2, 'Harbor Nights', 96, 30.00, '2004-11-30'),
+             (3, 'Low Tide', 304, 9.99, '1998-12-24')",
+    ];
+
     fn url() -> Option<String> {
         let url = std::env::var("TABLETIST_TEST_MYSQL_URL").ok();
         url.filter(|url| !url.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn labels_that_are_no_text_are_searched_as_drawn_on_mysql() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+            return;
+        };
+        let opts = mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+        admin.query_drop(DROP_EDITIONS).await.unwrap();
+        for statement in EDITIONS {
+            admin.query_drop(statement).await.unwrap();
+        }
+
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+                .await
+                .unwrap();
+        labels_that_are_no_text_are_searched_as_drawn(
+            &connection,
+            ("tabletist", "lookup_editions"),
+            (Value::Text("12.50".into()), "12.50"),
+            "mysql",
+        )
+        .await;
+        admin.query_drop(DROP_EDITIONS).await.unwrap();
     }
 
     #[tokio::test]
