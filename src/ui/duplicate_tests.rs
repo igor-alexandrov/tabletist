@@ -549,8 +549,8 @@ fn yy_puts_the_row_on_the_clipboard_and_says_so() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     select(&mut harness, tab, id, (1, 2));
     type_key(&mut harness, Key::Y, "y");
-    // The first is the cell's, as it was.
-    assert_eq!(harness.copied.as_deref(), Some("ebook"));
+    // The first is no key of its own: a cell is copied with `v y`.
+    assert_eq!(harness.copied, None);
     assert!(!yanked(&harness, tab, id));
     type_key(&mut harness, Key::Y, "y");
     let row = harness.app.copy_text(true).expect("the row");
@@ -625,10 +625,10 @@ fn p_puts_nothing_where_no_row_is_taken() {
     assert!(edits(&harness, tab, id).added.is_empty());
 }
 
-/// With the review open a `Y` is its SQL's, after a `y` too: it copies the
-/// statements and says so, and is no second `y` that yanks the row.
+/// With the review open a `Y` after a `y` is no second `y` that yanks the
+/// row. Pressed again it is the SQL's: it copies the statements and says so.
 #[test]
-fn y_then_capital_y_with_the_review_open_copies_the_sql_and_yanks_nothing() {
+fn y_then_capital_y_with_the_review_open_yanks_nothing_and_the_capital_copies_the_sql() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     set(&mut harness, tab, id, (1, 2), "audio");
     select(&mut harness, tab, id, (1, 2));
@@ -636,9 +636,13 @@ fn y_then_capital_y_with_the_review_open_copies_the_sql_and_yanks_nothing() {
     harness.app.apply(Action::ReviewEdits { tab, id, show });
     harness.settle();
     assert!(edits(&harness, tab, id).reviewing);
-    // The cell's still, with the panel open.
+    // The first waits and copies nothing, with the panel open too. The
+    // capital is no second `y`: it ends the wait, as any letter that is no
+    // part of a key does, and is the panel's own when it is pressed again.
     type_key(&mut harness, Key::Y, "y");
-    assert_eq!(harness.copied.as_deref(), Some("audio"));
+    type_key(&mut harness, Key::Y, "Y");
+    assert_eq!(harness.copied, None);
+    assert!(!yanked(&harness, tab, id));
     type_key(&mut harness, Key::Y, "Y");
     let sql = crate::ui::review::copy_text(&harness.app, tab, id).expect("the SQL");
     assert!(sql.contains("UPDATE"), "{sql:?}");
@@ -651,19 +655,18 @@ fn y_then_capital_y_with_the_review_open_copies_the_sql_and_yanks_nothing() {
 // A first key that waits, in the terminal look. A key another reader takes
 // before the letters are read (an arrow) ends its wait as a letter does.
 
-/// `y`, Down, `y` copies two cells: the second `y` is a first again, and
-/// no row is yanked or put on the clipboard.
+/// `y`, Down, `y` yanks nothing: the second `y` is a first again, and no
+/// row is put on the clipboard.
 #[test]
 fn an_arrow_between_two_ys_ends_the_wait_of_the_first() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
     // `kind` of the first cover is `print`, of the second `ebook`.
     select(&mut harness, tab, id, (0, 2));
     type_key(&mut harness, Key::Y, "y");
-    assert_eq!(harness.copied.as_deref(), Some("print"));
     harness.press(Key::ArrowDown, Modifiers::NONE);
     assert_eq!(selected(&harness, tab, id), Some((1, 2)));
     type_key(&mut harness, Key::Y, "y");
-    assert_eq!(harness.copied.as_deref(), Some("ebook"));
+    assert_eq!(harness.copied, None);
     assert!(!yanked(&harness, tab, id));
     assert_eq!(crate::ui::toast::said(&harness.ctx), None);
 }

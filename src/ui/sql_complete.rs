@@ -517,10 +517,14 @@ fn footer(ui: &Ui, rect: Rect, rows: usize, list: &Completion, style: &Style<'_>
         if has_row {
             let complete = format!(" {} · ", gettext(locale, "complete"));
             let moves = format!(" {}", gettext(locale, "move"));
+            use crate::keymap::Command;
+            let insert = crate::ui::keys::written(ui.ctx(), look, Command::InsertCompletion);
+            let rows = [Command::NextCompletion, Command::PreviousCompletion];
+            let moving = crate::ui::keys::written_together(ui.ctx(), look, &rows);
             text = text
-                .add(role, "tab", palette.text)
+                .add(role, &insert, palette.text)
                 .add(role, &complete, muted)
-                .add(role, "ctrl+n/p", palette.text)
+                .add(role, &moving, palette.text)
                 .add(role, &moves, muted);
         }
         if let Some(count) = &count {
@@ -533,8 +537,10 @@ fn footer(ui: &Ui, rect: Rect, rows: usize, list: &Completion, style: &Style<'_>
     } else {
         let role = TextRole::Shortcut;
         if has_row {
-            // Tab in a word: the bundled faces have no glyph for its key.
-            let keys = format!("↩ Tab {}", gettext(locale, "insert"));
+            // Every key that inserts, as the look writes them.
+            let insert = crate::keymap::Command::InsertCompletion;
+            let keys = crate::ui::keys::written_all(ui.ctx(), look, insert);
+            let keys = format!("{keys} {}", gettext(locale, "insert"));
             widgets::paint_text(ui, left, y, Text::one(look, role, &keys, muted));
         }
         if let Some(count) = &count {

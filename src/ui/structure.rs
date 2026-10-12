@@ -188,7 +188,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             let (text, name, keys) = (
                 look.label(&gettext(locale, "Loading structure…")),
                 look.label(&gettext(locale, "Cancel")),
-                super::data_view::cancel_keys(&look),
+                super::data_view::cancel_keys(&app.keymap, &look),
             );
             let cancel = super::states::key_button(&name, &keys, &look).label("Cancel query");
             if super::states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {

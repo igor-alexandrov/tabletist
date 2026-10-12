@@ -9,6 +9,7 @@ use egui::{
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
+use crate::keymap::{Command, Scope, Written};
 use crate::model::{Action, ConnTabId, NoWrites, RunMode, SqlTab, TabId};
 use crate::settings::Settings;
 use crate::theme::{Icon, Look, Palette};
@@ -230,27 +231,15 @@ fn timeout_text(secs: Option<u32>, short: bool, look: &Look, locale: Locale) -> 
 }
 
 /// The keys that run the statement at the cursor and the whole script, as
-/// the look spells shortcuts.
-pub(super) fn run_keys(look: &Look) -> (String, String) {
-    let command = look.command_key();
-    if look.terminal {
-        ("ctrl+enter".to_owned(), "ctrl+shift+enter".to_owned())
-    } else if command == "⌘" {
-        (format!("{command}↩"), format!("⇧{command}↩"))
-    } else {
-        (format!("{command}Enter"), format!("{command}Shift+Enter"))
-    }
+/// the keymap writes them for the look.
+pub(super) fn run_keys(ctx: &egui::Context, look: &Look) -> (Written, Written) {
+    let key = |command| crate::ui::keys::written(ctx, look, command);
+    (key(Command::RunStatement), key(Command::RunAll))
 }
 
-/// The keys that format the script, as the macOS and the standard look
-/// spell shortcuts.
-fn format_keys(look: &Look) -> String {
-    let command = look.command_key();
-    if command == "⌘" {
-        format!("⇧{command}F")
-    } else {
-        format!("{command}Shift+F")
-    }
+/// The key that formats the script, as the keymap writes it for the look.
+fn format_keys(ctx: &egui::Context, look: &Look) -> Written {
+    crate::ui::keys::written_in(ctx, look, Command::Format, Scope::SqlEditor)
 }
 
 /// How a toolbar menu's button reads: worked out once a frame.
@@ -739,8 +728,8 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
         gettext(locale, "Run all"),
         gettext(locale, "Format"),
     ];
-    let (run_keys, all_keys) = run_keys(look);
-    let format_keys = format_keys(look);
+    let (run_keys, all_keys) = run_keys(ui.ctx(), look);
+    let format_keys = format_keys(ui.ctx(), look);
     // Run: 14 at its sides, a 12 pt arrow, 8 apart. Run all: 12 and 6.
     // Format: 10, and no border.
     let buttons = |keys: bool| {
@@ -868,7 +857,7 @@ fn terminal_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Ac
     let (left, right) = (rect.left() + SIDE, rect.right() - SIDE);
     let labels = [gettext(locale, "Run"), gettext(locale, "Run all")];
     let texts = [look.label(&labels[0]), look.label(&labels[1])];
-    let (run_keys, all_keys) = run_keys(look);
+    let (run_keys, all_keys) = run_keys(ui.ctx(), look);
     // 10 at their sides inside a 1 pt border, and a space before the keys.
     let buttons = |keys: bool| {
         let run = ButtonSpec::new(&texts[0])
@@ -1404,7 +1393,12 @@ mod tests {
     #[test]
     fn mod_shift_m_switches_the_mode_of_the_editor_on_screen() {
         let chord = Modifiers::COMMAND | Modifiers::SHIFT;
-        for look in Look::ALL {
+        // Omarchy has no chord for it: its prompt sets the mode.
+        let (mut harness, tab, id) = editor(Look::omarchy(), "SELECT 1");
+        let before = mode_of(&harness, tab, id);
+        harness.press(Key::M, chord);
+        assert_eq!(mode_of(&harness, tab, id), before);
+        for look in [Look::standard(), Look::macos()] {
             let (mut harness, tab, id) = editor(look, "SELECT 1");
             // With the keyboard in the editor, where it is while typing.
             harness.press(Key::M, chord);
@@ -1431,11 +1425,48 @@ mod tests {
                 look.name
             );
         }
-        // The help lists it.
-        let listed = crate::ui::keys::SHORTCUTS.iter().any(|(keys, what, _)| {
-            *keys == "Mod+Shift+M" && *what == "Read-only or read-write runs in the SQL editor"
-        });
-        assert!(listed);
+        // The keymap has it for those looks, and none for Omarchy.
+        let keymap = crate::keymap::Keymap::default();
+        let key = |layout| keymap.label(layout, Command::ToggleSqlMode);
+        assert_eq!(key(crate::keymap::Layout::Mac), "⇧⌘M");
+        assert_eq!(key(crate::keymap::Layout::Windows), "Ctrl+Shift+M");
+        assert_eq!(key(crate::keymap::Layout::Omarchy), "");
+    }
+
+    #[test]
+    fn the_prompt_sets_a_sql_tabs_mode_with_ro_and_rw() {
+        use crate::ui::tests::type_key;
+        let (mut harness, tab, id) = editor(Look::omarchy(), "SELECT 1");
+        let line = |harness: &mut Harness, text: &str| {
+            type_key(harness, Key::Colon, ":");
+            harness.frame(vec![egui::Event::Text(text.into())]);
+            harness.settle();
+            harness.press(Key::Enter, Modifiers::NONE);
+        };
+        let refused = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.command_error.clone()
+        };
+        // In the text a colon is typed: the prompt is normal mode's.
+        type_key(&mut harness, Key::Colon, ":");
+        assert!(harness.app.workspace(tab).unwrap().command.is_none());
+        harness.press(Key::Backspace, Modifiers::NONE);
+        harness.press(Key::Escape, Modifiers::NONE);
+        // A tab of a connection that can write starts read-write.
+        assert_eq!(mode_of(&harness, tab, id), RunMode::ReadWrite);
+        line(&mut harness, "ro");
+        assert_eq!(mode_of(&harness, tab, id), RunMode::ReadOnly);
+        assert_eq!(refused(&harness), None);
+        line(&mut harness, "rw");
+        assert_eq!(mode_of(&harness, tab, id), RunMode::ReadWrite);
+        line(&mut harness, "ro");
+        // A table's lines are no commands of an editor's, and the lines
+        // of what is not built yet are claimed and do nothing.
+        for text in ["w", "e!", "diff", "commit", "rollback", "history", "12"] {
+            line(&mut harness, text);
+            assert_eq!(refused(&harness).as_deref(), Some(text));
+            assert_eq!(mode_of(&harness, tab, id), RunMode::ReadOnly, "{text}");
+        }
     }
 
     /// What a hover over the segment named `name` shows.

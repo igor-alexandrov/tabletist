@@ -194,9 +194,14 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, divider);
             let left = rect.left() + side(&look);
             let right = rect.right() - side(&look);
+            // The views have no key: `d` and `s` are the rows' letters.
             let views = [
-                (ObjectView::Data, gettext(locale, "Data"), "d"),
-                (ObjectView::Structure, gettext(locale, "Structure"), "s"),
+                (ObjectView::Data, gettext(locale, "Data"), "data"),
+                (
+                    ObjectView::Structure,
+                    gettext(locale, "Structure"),
+                    "structure",
+                ),
             ];
             let width = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
             if look.terminal {
@@ -204,7 +209,7 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 let role = TextRole::OBody;
                 let widths: Vec<f32> = views
                     .iter()
-                    .map(|(_, label, key)| width(role, &format!("{key} {}", label.to_lowercase())))
+                    .map(|(_, label, _)| width(role, &label.to_lowercase()))
                     .collect();
                 // The views keep their place at the right, 16 clear of
                 // their 4 pt hit margin; the summary gives way, then the
@@ -227,15 +232,15 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 {
                     paint_named(ui, x, center, sub(&shown, palette.dim), &summary);
                 }
-                // `d data  s structure`, the active one underlined.
+                // `data  structure`, the active one underlined.
                 let mut x = right;
-                for ((target, label, key), width) in views.iter().zip(widths).rev() {
+                for ((target, label, salt), width) in views.iter().zip(widths).rev() {
                     let label = label.to_lowercase();
                     let hit = Rect::from_min_size(
                         pos2(x - width - 4.0, rect.top()),
                         vec2(width + 8.0, rect.height()),
                     );
-                    let response = ui.interact(hit, ui.id().with(("view", *key)), Sense::click());
+                    let response = ui.interact(hit, ui.id().with(("view", *salt)), Sense::click());
                     let selected = view == *target;
                     if selected {
                         focus::claim(ui, focus::Region::Toolbar, &response);
@@ -253,15 +258,12 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     } else {
                         palette.dim
                     };
-                    // The key stays muted; the word takes the state's colour.
+                    // The word takes the state's colour.
                     widgets::paint_text(
                         ui,
                         x - width,
                         center,
-                        Text::new(&look)
-                            .add(role, key, palette.dim)
-                            .space(role, " ")
-                            .add(role, &label, color),
+                        Text::new(&look).add(role, &label, color),
                     );
                     if selected {
                         let y = center + line(ui, role, &look) / 2.0 + 2.0;
@@ -302,7 +304,8 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             // the summary gives way first, then Add row drops its text and
             // its key, then it goes, and only then is the title cut.
             let label = gettext(locale, "Add row");
-            let keys = format!("{}N", look.command_key());
+            let add = crate::keymap::Command::AddRow;
+            let keys = crate::ui::keys::written(ui.ctx(), &look, add);
             let add_row = |short: bool| {
                 let button = widgets::ButtonSpec::new(if short { "" } else { &label })
                     .label(&label)
@@ -920,6 +923,9 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    let filter_key = app
+        .keymap
+        .key(app.layout(), crate::keymap::Command::FilterBar);
     let Some(object) = app.workspace(tab).and_then(|w| w.object_tab(object_tab)) else {
         return;
     };
@@ -1054,7 +1060,10 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     }
                     if filtered {
                         note(ui, &gettext(locale, "Filtered"), palette.accent, &look)
-                            .on_hover_text(gettext(locale, "Cmd/Ctrl+F edits the filter"));
+                            .on_hover_text(
+                                gettext(locale, "{key} edits the filter")
+                                    .replace("{key}", &filter_key),
+                            );
                     }
                     if counting {
                         note(ui, &gettext(locale, "Counting…"), palette.secondary, &look);
@@ -1295,6 +1304,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let look = app.look;
     // An editor that is open has the keyboard, unless a dialog has it.
     let hold = app.dialog.is_none();
+    let editor_keys = cell_editor::Keys::of(&app.keymap, app.layout());
     if look.terminal {
         error_line(app, ui, tab, object_tab);
     }
@@ -1311,11 +1321,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // the tab is taken for its editor's text.
     let computed = computed_columns(workspace, object);
     let (unset, lacking) = new_row_columns(workspace, object);
-    let target = object
-        .edits
-        .editor
-        .as_ref()
-        .and_then(|editor| editor_target(workspace, object, tab, editor.cell, hold));
+    let target = object.edits.editor.as_ref().and_then(|editor| {
+        let how = (hold, &editor_keys);
+        editor_target(workspace, object, tab, editor.cell, how)
+    });
     // The cells whose foreign key names no row, with what each says.
     let doubts = key_picker::doubts(workspace, object, &look, locale);
     // The last pick of a foreign key's list, while its cell still holds
@@ -1401,6 +1410,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             computed,
             &ctx,
         );
+        let undo = crate::keymap::Command::UndoCell;
+        changes.undo_key = crate::ui::keys::written(&ctx, &look, undo);
         changes.doubts = doubts;
         // The column a new row's marker stands in: the first the database
         // assigns.
@@ -1660,7 +1671,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             let (text, name, keys) = (
                 look.label(&gettext(locale, "Running query…")),
                 look.label(&gettext(locale, "Cancel")),
-                cancel_keys(&look),
+                cancel_keys(&app.keymap, &look),
             );
             let cancel = states::key_button(&name, &keys, &look).label("Cancel query");
             if states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
@@ -1693,6 +1704,9 @@ struct Changes<'a> {
     unset: Vec<Unset>,
     /// The column a new row's marker stands in.
     marker: Option<usize>,
+    /// The key that puts a cell back, as the look writes it: a cell to
+    /// fix names it.
+    undo_key: crate::keymap::Written,
     /// The cells of new rows that are copies and were cleared there for
     /// holding what no other row may (`NewRow::cleared_unique`), by row
     /// and column.
@@ -1754,7 +1768,7 @@ pub(super) fn editor_target(
     object: &ObjectTab,
     tab: ConnTabId,
     cell: CellPos,
-    hold: bool,
+    (hold, keys): (bool, &cell_editor::Keys),
 ) -> Option<cell_editor::Target> {
     let table = Table::of(workspace, object)?;
     let column = table.page.columns.get(cell.col)?;
@@ -1775,6 +1789,7 @@ pub(super) fn editor_target(
         now: table
             .column(cell.col)
             .is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
+        keys: keys.clone(),
         search: object
             .edits
             .editor
@@ -1876,6 +1891,7 @@ impl<'a> Changes<'a> {
             why: None,
             unset: Vec::new(),
             marker: None,
+            undo_key: crate::keymap::Written::default(),
             unique: BTreeSet::new(),
             doubts: BTreeMap::new(),
         }
@@ -2000,9 +2016,9 @@ impl<'a> Changes<'a> {
                     message
                 } else {
                     format!(
-                        "{message}\n{} · {}Z {}",
+                        "{message}\n{} · {} {}",
                         gettext(locale, "Checked before saving"),
-                        look.command_key(),
+                        self.undo_key,
                         gettext(locale, "reverts")
                     )
                 });
@@ -2130,10 +2146,10 @@ pub(crate) fn failure_text(error: &tabletist_db::Error) -> String {
     }
 }
 
-/// The keys that cancel a query, as the look writes them: `⌘.`, `Ctrl+.`
-/// or the terminal's `ctrl+.`.
-pub fn cancel_keys(look: &Look) -> String {
-    format!("{}.", look.label(look.command_key()))
+/// The key that cancels a query, as the look writes it.
+pub fn cancel_keys(keymap: &crate::keymap::Keymap, look: &Look) -> crate::keymap::Written {
+    let layout = crate::keymap::Layout::of(look);
+    keymap.key(layout, crate::keymap::Command::CancelQuery)
 }
 
 /// What a page with no rows says under its column headers: that the table

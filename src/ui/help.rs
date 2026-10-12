@@ -1,11 +1,40 @@
-//! The keyboard shortcuts dialog (`?`).
+//! The keyboard shortcuts dialog (`?`): the keymap, as the look in use
+//! has it.
 
 use crate::app::App;
 use crate::i18n::gettext;
+use crate::keymap::{Command, Group, Keymap, Layout, Written};
 use crate::model::{Action, Dialog};
-use crate::typography::Text;
-use crate::ui::keys::{keys_label, shortcuts};
+use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
+
+/// The groups the list is in, in its order, as the Keyboard page of the
+/// design names them.
+const GROUPS: [(Group, &str); 6] = [
+    (Group::Window, "Window and connections"),
+    (Group::Navigation, "Navigation"),
+    (Group::Editing, "Grid and editing"),
+    (Group::Sql, "SQL editor"),
+    (Group::Ai, "AI assistant"),
+    (Group::Prompts, "Prompts and dialogs"),
+];
+
+/// What the list holds for `layout`: every command that is built and has
+/// a key there, with its keys as the layout writes them, in the keymap's
+/// order. None that is only claimed, and none the layout has no key for.
+pub(crate) fn rows(keymap: &Keymap, layout: Layout) -> Vec<(Group, Command, Written)> {
+    let mut rows = Vec::new();
+    for (group, _) in GROUPS {
+        for command in Command::ALL {
+            let info = command.info();
+            let keys = keymap.label(layout, *command);
+            if info.group == group && info.built && !keys.is_empty() {
+                rows.push((group, *command, keys));
+            }
+        }
+    }
+    rows
+}
 
 /// Space between the keys and what they do.
 const GAP: f32 = 16.0;
@@ -17,19 +46,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    let rows = rows(&app.keymap, app.layout());
+    let heading = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
     let mut actions = Vec::new();
     let modal = crate::ui::widgets::modal(egui::Id::new("help"), &look, &palette).show(ctx, |ui| {
         // As wide as its widest keys and description side by side, and no
         // wider or taller than the window leaves room for: the list scrolls
         // when the window is small, so the buttons stay on screen.
         let (mut keys_width, mut what_width) = (0.0_f32, 0.0_f32);
-        // The look's own shortcuts: none that only another look has.
-        for (keys, what) in shortcuts(&look) {
-            let keys = Text::one(&look, widgets::code(&look), &keys_label(keys), palette.text);
+        // The look's own keys: none that only another look has.
+        for (_, command, keys) in &rows {
+            let keys = Text::one(&look, widgets::code(&look), keys, palette.text);
             let what = Text::one(
                 &look,
                 widgets::body(&look),
-                &gettext(locale, what),
+                &gettext(locale, command.info().name),
                 palette.text,
             );
             keys_width = keys_width.max(widgets::measure(ui, keys));
@@ -54,18 +85,29 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .num_columns(2)
                     .spacing([GAP, 6.0])
                     .show(ui, |ui| {
-                        for (keys, what) in shortcuts(&look) {
+                        let mut last = None;
+                        for (group, command, keys) in &rows {
+                            // Each group under its name, in the first
+                            // column: the keys' own.
+                            if last != Some(*group) {
+                                last = Some(*group);
+                                let named = GROUPS.iter().find(|(of, _)| of == group);
+                                let name = named.map_or("", |(_, name)| name);
+                                let name = look.label(&gettext(locale, name));
+                                widgets::label(ui, heading, &name, palette.dim, &look);
+                                ui.end_row();
+                            }
                             widgets::label(
                                 ui,
                                 widgets::code(&look),
-                                &keys_label(keys),
+                                keys,
                                 palette.secondary,
                                 &look,
                             );
                             widgets::label(
                                 ui,
                                 widgets::body(&look),
-                                &gettext(locale, what),
+                                &gettext(locale, command.info().name),
                                 palette.text,
                                 &look,
                             );

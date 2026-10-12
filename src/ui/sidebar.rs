@@ -7,13 +7,14 @@ use tabletist_db::{ObjectKind, ObjectRef};
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
+use crate::keymap::{Command, Written};
 use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus;
 use crate::ui::format::display_safe;
 use crate::ui::menu;
-use crate::ui::widgets::{self, ButtonSpec, icon_button};
+use crate::ui::widgets::{self, ButtonSpec};
 
 /// The sidebar's width when it opens, per look: the design's 264 and 248
 /// and the 1 pt rule it draws outside them.
@@ -67,6 +68,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let palette = app.palette;
     let look = app.look;
     let show_system = app.settings.show_system_schemas;
+    // The keys under the tree, as the keymap writes them for the look.
+    let layout = app.layout();
+    let hints = HINTS.map(|(command, label)| (app.keymap.key(layout, command), label));
+    let sql_key = app.keymap.key(layout, Command::NewSqlTab);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -262,7 +267,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         );
                     }
                     ui.add_space(6.0);
-                    if widgets::button(ui, &gettext(locale, "Refresh"), &look).clicked() {
+                    if widgets::button(ui, &gettext(locale, "Reload"), &look).clicked() {
                         actions.push(Action::RefreshTree(tab));
                     }
                 });
@@ -356,9 +361,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     });
             });
             if look.terminal {
-                terminal_footer(ui, full, &look, &palette);
+                terminal_footer(ui, full, &hints, &look, &palette);
             } else {
-                sql_button(ui, full, tab, locale, &look, &palette, &mut actions);
+                let skin = (locale, &look, &palette);
+                sql_button(ui, full, tab, &sql_key, skin, &mut actions);
             }
             if lit {
                 focus::pane_border(ui, full, &look, &palette);
@@ -370,8 +376,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     app.actions.extend(actions);
 }
 
-/// The terminal look's key hints under the tree.
-const HINTS: [(&str, &str); 3] = [("ctrl+b", "hide"), ("t", "tree"), ("enter", "open")];
+/// The terminal look's key hints under the tree: what each key does, and
+/// the command whose key it is.
+const HINTS: [(Command, &str); 3] = [
+    (Command::ToggleSidebar, "hide"),
+    (Command::ToggleTree, "tree"),
+    (Command::OpenObject, "open"),
+];
 
 /// The terminal footer's padding (8 above and below, 12 at the sides), and
 /// its height for two lines.
@@ -379,17 +390,23 @@ const FOOTER: f32 = 8.0 + 2.0 * 15.0 + 8.0 + 1.0;
 
 /// The sidebar's key hints, with a rule above: keys in the text colour,
 /// the rest muted, wrapping as words do.
-fn terminal_footer(ui: &mut egui::Ui, full: Rect, look: &Look, palette: &Palette) {
+fn terminal_footer(
+    ui: &mut egui::Ui,
+    full: Rect,
+    hints: &[(Written, &str); 3],
+    look: &Look,
+    palette: &Palette,
+) {
     let top = full.bottom() - FOOTER;
     widgets::hline(ui, full.x_range(), top + 0.5, palette.outline);
     let role = TextRole::OCaption;
     let mut text = Text::new(look);
-    for (index, (key, label)) in HINTS.iter().enumerate() {
+    for (index, (key, label)) in hints.iter().enumerate() {
         if index > 0 {
             text = text.space(role, " ");
         }
         // Each action carries the dot that separates it from the next.
-        let label = if index + 1 < HINTS.len() {
+        let label = if index + 1 < hints.len() {
             format!("{label} ·")
         } else {
             (*label).to_owned()
@@ -414,9 +431,8 @@ fn sql_button(
     ui: &mut egui::Ui,
     full: Rect,
     tab: ConnTabId,
-    locale: Locale,
-    look: &Look,
-    palette: &Palette,
+    keys: &Written,
+    (locale, look, palette): (Locale, &Look, &Palette),
     actions: &mut Vec<Action>,
 ) {
     let top = full.bottom() - SQL_FOOTER;
@@ -426,7 +442,6 @@ fn sql_button(
         vec2(full.width() - 24.0, 34.0),
     );
     let label = gettext(locale, "SQL Editor");
-    let keys = format!("{}T", look.command_key());
     // 10 at its sides, a 14 pt plus, 8, the words; the keys at the right.
     let button = || {
         ButtonSpec::new(&label)
@@ -437,7 +452,7 @@ fn sql_button(
             .justified()
     };
     // In a sidebar too narrow for them the keys give way.
-    let with_keys = button().shortcut(&keys);
+    let with_keys = button().shortcut(keys);
     let button = if with_keys.width(ui, look) <= rect.width() {
         with_keys
     } else {
@@ -606,10 +621,15 @@ fn schema_header(
                 &child,
                 Rect::from_center_size(refresh.center(), vec2(14.0, 14.0)),
             );
-        } else if icon_button(
+        } else if widgets::icon_button_tipped(
             &mut child,
             Icon::RefreshCw,
-            &gettext(locale, "Refresh objects"),
+            // Named apart from a table's own Reload, which can be on
+            // screen with it. The tooltip is the command's name.
+            (
+                &gettext(locale, "Reload objects"),
+                &gettext(locale, "Reload"),
+            ),
             look,
             palette,
         )
@@ -731,7 +751,7 @@ fn tree_row(
             ui.spacing_mut().item_spacing.x = 6.0;
             let left = label_x(ui.max_rect(), 0, look, glyph_width(ui, look));
             ui.add_space(left - ui.max_rect().left());
-            let refresh = gettext(locale, "Refresh");
+            let refresh = gettext(locale, "Reload");
             let link_width = small.width(ui.ctx(), look.faces, &refresh);
             let room = ui.available_width() - link_width - ui.spacing().item_spacing.x;
             let note = gettext(locale, "No tables or views");

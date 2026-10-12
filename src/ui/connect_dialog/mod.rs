@@ -17,6 +17,7 @@ use crate::app::App;
 use crate::connections::PasswordMode;
 use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::i18n::{Locale, gettext};
+use crate::keymap::{Command, Scope};
 use crate::model::{Action, ConnectionForm, Dialog, SshAuthKind, SshHints, TestState};
 use crate::theme::{self, Faces, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -232,6 +233,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    // The form's own keys, as the keymap has them for the look.
+    let (keymap, layout) = (app.keymap.clone(), app.layout());
+    let on = |input: &mut egui::InputState, command: Command| {
+        crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, true)
+    };
     let Some(Dialog::Connection(form)) = &mut app.dialog else {
         ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
         return;
@@ -247,20 +253,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     form.focus_name &= measuring;
     let mut actions = Vec::new();
     // The dialog's own keys are taken before anything draws: a focused
-    // button would read Mod+Enter as a press of itself. An open list keeps
-    // them, as it keeps Escape.
+    // button would read the chord that saves and connects as a press of
+    // itself. An open list keeps them, as it keeps Escape. A press of its
+    // own each: a held chord saves once.
     if !egui::Popup::is_any_open(ctx) {
         // A Test that is running is not started again by its key.
         let testing = matches!(form.test, TestState::Running(_));
         ctx.input_mut(|input| {
-            use egui::Key;
-            if take_mod_key(input, Key::Enter) {
+            if on(input, Command::FormSaveAndConnect).fresh {
                 actions.push(Action::SaveConnection { connect: true });
             }
-            if take_mod_key(input, Key::S) {
+            if on(input, Command::FormSave).fresh {
                 actions.push(Action::SaveConnection { connect: false });
             }
-            if take_mod_key(input, Key::T) && !testing {
+            if on(input, Command::FormTest).fresh && !testing {
                 actions.push(Action::TestConnection);
             }
         });
@@ -345,14 +351,38 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     if modal.is_top_modal && !modal.any_popup_open {
         let typing = ctx.text_edit_focused();
         let toggle_url = ctx.input_mut(|input| {
-            use egui::{Key, Modifiers};
-            // Escape closes the dialog, unless it is closing an open list
-            // first.
-            if input.consume_key(Modifiers::NONE, Key::Escape) {
+            // The form's cancel closes the dialog, unless it is closing an
+            // open list first.
+            if on(input, Command::FormCancel).count > 0 {
                 actions.push(Action::CloseDialog);
             }
-            // The terminal look's `u`, when it is not a letter being typed.
-            look.terminal && !typing && input.consume_key(Modifiers::NONE, Key::U)
+            // The letter that shows the URL field, in the look that has
+            // one, when it is not a letter being typed.
+            let mut toggled = false;
+            if !typing {
+                let form = crate::keymap::When::ConnectionForm;
+                input.events.retain(|event| {
+                    let egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } = event
+                    else {
+                        return true;
+                    };
+                    let letter = crate::keymap::char_of(*key, modifiers.shift)
+                        .filter(|_| !(modifiers.command || modifiers.ctrl || modifiers.alt));
+                    let command = letter.and_then(|letter| {
+                        let typed = letter.to_string();
+                        crate::ui::keys::prompt_letter(&keymap, layout, form, &typed)
+                    });
+                    let pastes = command == Some(Command::FormPasteUrl);
+                    toggled |= pastes;
+                    !pastes
+                });
+            }
+            toggled
         });
         // After the input is released: showing the field writes to egui's
         // memory, which sits behind the same lock.
@@ -361,26 +391,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         }
     }
     app.actions.extend(actions);
-}
-
-/// Takes every press of Mod+`key` out of the input. True when one of them
-/// was the key going down, not the keyboard repeating it while it is held.
-fn take_mod_key(input: &mut egui::InputState, key: egui::Key) -> bool {
-    let mut pressed = false;
-    input.events.retain(|event| match event {
-        egui::Event::Key {
-            key: found,
-            pressed: true,
-            repeat,
-            modifiers,
-            ..
-        } if *found == key && modifiers.matches_logically(egui::Modifiers::COMMAND) => {
-            pressed |= !*repeat;
-            false
-        }
-        _ => true,
-    });
-    pressed
 }
 
 /// Shows or hides the URL field; shown, it takes the keyboard.

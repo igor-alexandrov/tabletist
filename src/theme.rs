@@ -475,16 +475,6 @@ impl Look {
         }
     }
 
-    /// The command modifier as shortcuts spell it: `⌘` on macOS, `Ctrl+`
-    /// elsewhere.
-    pub fn command_key(&self) -> &'static str {
-        if self.faces == Faces::Plex {
-            "⌘"
-        } else {
-            "Ctrl+"
-        }
-    }
-
     /// `text` as this look labels things: lower case in the terminal look.
     pub fn label(&self, text: &str) -> String {
         if self.terminal {

@@ -6,6 +6,7 @@ use tabletist_db::Driver;
 
 use crate::connections::PasswordMode;
 use crate::i18n::gettext;
+use crate::keymap::Command;
 use crate::model::{Action, ConnectionForm, SshAuthKind};
 use crate::typography::{Text, TextRole};
 use crate::ui::terminal_dialog::{self, Key};
@@ -26,7 +27,8 @@ pub(super) fn terminal_header(ui: &mut Ui, form: &mut ConnectionForm, skin: &Ski
     let rect = terminal_dialog::head(ui, skin.inner_radius(), skin.env.bar_bg(), palette);
     let y = terminal_dialog::head_line(rect);
     let label = skin.say("Paste URL");
-    let hint = [("u", label.as_str(), true)];
+    let key = crate::ui::keys::written(ui.ctx(), look, Command::FormPasteUrl);
+    let hint = [(&key, label.as_str(), true)];
     let width = widgets::key_hints_width(ui, &hint, 0.0, look, palette);
     let place = Rect::from_min_size(
         pos2(rect.right() - 14.0 - width, rect.top()),
@@ -75,22 +77,33 @@ pub(super) fn terminal_footer(
     let rect = terminal_dialog::foot(ui, skin.inner_radius(), palette);
     let y = terminal_dialog::foot_line(rect);
     let status = paint_status(ui, form, StatusAt::Left(rect.left() + 14.0), y, skin);
-    // The key, what it does, the button it stands for, and what that does.
+    // The command whose key it is, what it does, the button it stands
+    // for, and what that does.
+    let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
     let keys = [
-        ("tab", "next", None),
-        ("ctrl+t", "test", Some(("Test", Action::TestConnection))),
+        (Command::FormNextField, "next", None),
         (
-            "ctrl+s",
+            Command::FormTest,
+            "test",
+            Some(("Test", Action::TestConnection)),
+        ),
+        (
+            Command::FormSave,
             "save",
             Some(("Save", Action::SaveConnection { connect: false })),
         ),
         (
-            "ctrl+enter",
+            Command::FormSaveAndConnect,
             "connect",
             Some(("Save & Connect", Action::SaveConnection { connect: true })),
         ),
-        ("esc", "cancel", Some(("Cancel", Action::CloseDialog))),
+        (
+            Command::FormCancel,
+            "cancel",
+            Some(("Cancel", Action::CloseDialog)),
+        ),
     ];
+    let written: Vec<_> = keys.iter().map(|(command, ..)| key(*command)).collect();
     let names: Vec<_> = keys
         .iter()
         .map(|(_, _, button)| button.as_ref().map(|(name, _)| gettext(skin.locale, name)))
@@ -98,12 +111,13 @@ pub(super) fn terminal_footer(
     let hints: Vec<Key<'_>> = keys
         .iter()
         .zip(&names)
-        .map(|((key, label, _), name)| Key {
+        .zip(&written)
+        .map(|(((command, label, _), name), key)| Key {
             key,
             label,
             button: name.as_deref(),
             // Saving is what the dialog is for: its key takes the accent.
-            lead: *key == "ctrl+s",
+            lead: *command == Command::FormSave,
             disabled: None,
         })
         .collect();

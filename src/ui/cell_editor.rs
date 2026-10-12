@@ -3,16 +3,17 @@
 //! what a typed value fails and for why a cell cannot be edited.
 
 use egui::text::{CCursor, CCursorRange};
-use egui::{CornerRadius, Id, Key, Margin, Modifiers, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{CornerRadius, Id, Margin, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::edit::{Editor, Lock, MAX_EDIT_BYTES, Problem};
 use crate::i18n::{Locale, gettext, ngettext};
+use crate::keymap::{Command, Keymap, Layout, Scope, Written};
 use crate::model::{Advance, ConnTabId, TabId};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format::display_safe;
-use crate::ui::keys::{consume_press, copy_is_ctrl_c, is_press};
+use crate::ui::keys::{press_of, presses};
 use crate::ui::states::Tone;
 use crate::ui::{grid, sql_complete, widgets};
 
@@ -68,6 +69,8 @@ pub struct Target {
     pub hold: bool,
     /// The column keeps a date or a time: the editor offers now.
     pub now: bool,
+    /// The keys that end the edit, as the keymap has them.
+    pub keys: Keys,
     /// The cell is a foreign key's, and its editor searches the table the
     /// key points at.
     pub search: Option<Search>,
@@ -147,6 +150,76 @@ fn now_room(ui: &Ui, look: &Look, locale: Locale) -> (f32, f32) {
         .role(widgets::secondary(look))
         .width(ui, look);
     (width, 6.0)
+}
+
+/// The keys of an open editor, as the keymap has them for the look in use:
+/// the chords that end an edit, each by what it does, and what the large
+/// editor's band writes of its own.
+#[derive(Clone, Debug)]
+pub struct Keys {
+    layout: Layout,
+    /// Into the large editor.
+    large: Vec<&'static str>,
+    /// Commit, and move down, to the next or to the previous.
+    down: Vec<&'static str>,
+    next: Vec<&'static str>,
+    previous: Vec<&'static str>,
+    /// Drop the edit, and leave with the text kept, on a cell and in the
+    /// large editor.
+    cancel: Vec<&'static str>,
+    keep: Vec<&'static str>,
+    apply: Vec<&'static str>,
+    cancel_large: Vec<&'static str>,
+    keep_large: Vec<&'static str>,
+    /// Close the list of a foreign key cell's picker.
+    close_picker: Vec<&'static str>,
+    /// The band's keys: what applies the large editor, and what leaves it.
+    apply_key: Written,
+    leave_key: Written,
+}
+
+impl Keys {
+    pub fn of(keymap: &Keymap, layout: Layout) -> Self {
+        // An editor's keys are read while its text has the keyboard.
+        let chords = |command: Command| -> Vec<&'static str> {
+            keymap
+                .chords_now(layout, command, Scope::CellEditor, false)
+                .collect()
+        };
+        let keep_large = chords(Command::KeepLargeEditor);
+        // The band names the key that leaves: the one that keeps the text
+        // where the look has one, else the one that drops it.
+        let leaves = if keep_large.is_empty() {
+            Command::CancelLargeEditor
+        } else {
+            Command::KeepLargeEditor
+        };
+        Self {
+            layout,
+            large: chords(Command::OpenLargeEditor),
+            down: chords(Command::CommitDown),
+            next: chords(Command::CommitNext),
+            previous: chords(Command::CommitPrevious),
+            cancel: chords(Command::CancelEdit),
+            keep: chords(Command::KeepEdit),
+            apply: chords(Command::ApplyLargeEditor),
+            cancel_large: chords(Command::CancelLargeEditor),
+            keep_large,
+            close_picker: chords(Command::ClosePicker),
+            apply_key: keymap.key(layout, Command::ApplyLargeEditor),
+            leave_key: keymap.key(layout, leaves),
+        }
+    }
+
+    /// Whether a chord of `chords` went down fresh this frame. All of them
+    /// are taken.
+    fn fresh(&self, input: &mut egui::InputState, chords: &[&'static str]) -> bool {
+        let mut fresh = false;
+        for keys in chords {
+            fresh |= presses(input, self.layout, keys).fresh;
+        }
+        fresh
+    }
 }
 
 /// The id of the field that edits a cell of the table `id` shows.
@@ -230,98 +303,84 @@ fn caret_at(
 /// take Enter as giving the keyboard up, and Alt+Enter with it. Tab and
 /// Esc are egui's to move and drop the keyboard with, unless the field
 /// holds them (see `hold_keys`).
-fn ending_keys(
-    ui: &Ui,
-    has: bool,
-    had: bool,
-    terminal: bool,
-    picking: bool,
-    outcome: &mut Outcome,
-) {
+fn ending_keys(ui: &Ui, has: bool, had: bool, keys: &Keys, picking: bool, outcome: &mut Outcome) {
     ui.input_mut(|input| {
         if has {
-            // Alt first: a match lets an extra Alt and Shift through.
-            if consume_press(input, Modifiers::ALT, Key::Enter) {
+            // Each chord with exactly what it names held: none is taken
+            // for another.
+            if keys.fresh(input, &keys.large) {
                 outcome.large = true;
-            } else if consume_press(input, Modifiers::NONE, Key::Enter) {
+            } else if keys.fresh(input, &keys.down) {
                 outcome.commit = Some(Advance::Down);
-            } else if consume_press(input, Modifiers::SHIFT, Key::Tab) {
+            } else if keys.fresh(input, &keys.previous) {
                 outcome.commit = Some(Advance::Left);
-            } else if consume_press(input, Modifiers::NONE, Key::Tab) {
+            } else if keys.fresh(input, &keys.next) {
                 outcome.commit = Some(Advance::Right);
             }
         }
-        leaving_keys(input, has || had, terminal, picking, outcome);
+        let leaving = (keys.cancel.as_slice(), keys.keep.as_slice());
+        let closing = picking.then_some(keys.close_picker.as_slice());
+        leaving_keys(input, has || had, leaving, closing, keys.layout, outcome);
     });
 }
 
-/// Esc and, in the terminal look, Ctrl+C, for a field that has the
-/// keyboard or `had` it a frame ago: in the first frames of a field egui
-/// still drops the keyboard on Esc before any of this runs, and the key is
-/// the editor's all the same. Esc drops the edit. In the terminal look it
-/// leaves insert mode with the text kept, and Ctrl+C drops it. In a
-/// foreign key cell's picker (`picking`) the text is a search, not a
-/// value: Esc drops the edit in every look.
+/// The keys that leave a field that has the keyboard or `had` it a frame
+/// ago: in the first frames of a field egui still drops the keyboard on
+/// Esc before any of this runs, and the key is the editor's all the same.
+/// `cancel` drops the edit, and `keep` leaves with the text kept (the
+/// terminal look's Esc leaves insert mode so, and its Ctrl+C drops). In a
+/// foreign key cell's picker the text is a search, not a value: `closing`
+/// are the keys that close its list, and they drop the edit in every
+/// look, whatever they do in a plain editor.
+///
+/// Ctrl+C comes as a copy where Ctrl is the command key, and is taken
+/// before the field sees it: nothing is copied. A copy asked for any other
+/// way is the field's, and copies what is selected: a Copy key and a
+/// menu's Copy, which come with nothing held.
 fn leaving_keys(
     input: &mut egui::InputState,
     mine: bool,
-    terminal: bool,
-    picking: bool,
+    (cancel, keep): (&[&'static str], &[&'static str]),
+    closing: Option<&[&'static str]>,
+    layout: Layout,
     outcome: &mut Outcome,
 ) {
     if !mine {
         return;
     }
-    if !terminal {
-        outcome.cancel |= consume_press(input, Modifiers::NONE, Key::Escape);
-        return;
-    }
-    // Ctrl+C comes as a copy where Ctrl is the command key, and is taken
-    // before the field sees it: nothing is copied. Where Cmd is, the copy
-    // is Cmd+C and stays the field's, and Ctrl+C is a key. A copy asked
-    // for any other way is the field's too, and copies what is selected:
-    // Ctrl+Shift+C, a Copy key and a menu's Copy, which come with nothing
-    // held.
-    let copy = copy_is_ctrl_c(input);
+    let held = input.modifiers;
     let mut ended = false;
     input.events.retain(|event| {
         if ended {
             // What is typed after the key that left is not the text's:
-            // insert mode ended there. Nor is it normal mode's, whose keys
+            // the edit ended there. Nor is it normal mode's, whose keys
             // were read before the field was drawn.
             return !matches!(
                 event,
                 egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut
             );
         }
-        match event {
-            egui::Event::Copy if copy => outcome.cancel = true,
-            event if is_press(event, Modifiers::CTRL, Key::C) => outcome.cancel = true,
-            egui::Event::Key {
-                key: Key::Escape,
-                pressed: true,
-                repeat,
-                modifiers,
-                ..
-            } if modifiers.matches_logically(Modifiers::NONE) => {
-                // A held key's repeats are taken and end nothing.
-                if *repeat {
-                    return false;
-                }
-                if picking {
-                    // The text of a foreign key's picker is a search, not
-                    // a value: Esc closes it without a change, as the
-                    // Components sheet gives a picker.
-                    outcome.cancel = true;
-                } else {
-                    outcome.left = true;
-                    outcome.kept = true;
-                }
-            }
-            _ => return true,
+        let pressed = |chords: &[&'static str]| {
+            chords
+                .iter()
+                .find_map(|keys| press_of(layout, held, event, keys))
+        };
+        // The list's own key first: it is the plain editor's key that
+        // keeps the text, in the terminal look.
+        let closed = closing.and_then(&pressed);
+        // A held key's repeats are taken and end nothing.
+        if let Some(fresh) = closed.or_else(|| pressed(cancel)) {
+            outcome.cancel |= fresh;
+            ended = fresh;
+            false
+        } else if let Some(fresh) = pressed(keep) {
+            outcome.left |= fresh;
+            outcome.kept |= fresh;
+            ended = fresh;
+            false
+        } else {
+            true
         }
-        ended = true;
-        false
     });
 }
 
@@ -397,7 +456,7 @@ pub fn field(
     // A search that failed leaves the plain text editor, whose Esc keeps
     // the edit in the terminal look.
     let picking = target.search.as_ref().is_some_and(|search| !search.failed);
-    ending_keys(ui, has, had, look.terminal, picking, &mut outcome);
+    ending_keys(ui, has, had, &target.keys, picking, &mut outcome);
 
     // Over the cell: the row's fill would show through a field with none.
     ui.painter()
@@ -636,7 +695,7 @@ pub fn in_panel(
     // A search that failed leaves the plain text editor, whose Esc keeps
     // the edit in the terminal look.
     let picking = target.search.as_ref().is_some_and(|search| !search.failed);
-    ending_keys(ui, has, had, look.terminal, picking, &mut outcome);
+    ending_keys(ui, has, had, &target.keys, picking, &mut outcome);
     // In the panel a commit walks the row's fields, not the grid's cells.
     outcome.commit = outcome.commit.map(|then| match then {
         Advance::Stay => Advance::Stay,
@@ -853,7 +912,7 @@ pub fn large(
                 let before = if editor.top { "" } else { &editor.text };
                 take_keyboard(ui.ctx(), id, before);
             }
-            let had = large_keys(ui, id, look.terminal, &mut outcome);
+            let had = large_keys(ui, id, &target.keys, &mut outcome);
             let (rect, _) = ui.allocate_exact_size(LARGE, egui::Sense::hover());
             let corner = if look.terminal { 3 } else { 8 };
             // The panel's own border gives way to the editor's line.
@@ -891,7 +950,7 @@ pub fn tall(
     // A click on the value's text asked for it: the cursor goes under the
     // pointer, once the text is laid out.
     let at = opened.then(|| asked_at(ui.ctx(), id)).flatten();
-    let had = large_keys(ui, id, look.terminal, &mut outcome);
+    let had = large_keys(ui, id, &target.keys, &mut outcome);
     // As tall as the text is at the width it gets, within its bounds.
     let role = grid::data_role(look);
     let line = role.row_height(ui.ctx(), look.faces);
@@ -937,17 +996,18 @@ const TALL_ROWS: (usize, usize) = (3, 12);
 /// terminal look's Ctrl+C leave. No popup is open for the other owners of
 /// Esc to see: the key is taken here, so none of them acts on it. Returns
 /// whether the text had the keyboard when it was last drawn.
-fn large_keys(ui: &Ui, id: Id, terminal: bool, outcome: &mut Outcome) -> bool {
+fn large_keys(ui: &Ui, id: Id, keys: &Keys, outcome: &mut Outcome) -> bool {
     let has = ui.memory(|memory| memory.has_focus(id));
     let had = had_keyboard(ui.ctx(), id);
     if has {
         keep_keyboard(ui.ctx());
     }
     ui.input_mut(|input| {
-        if has && consume_press(input, Modifiers::COMMAND, Key::Enter) {
+        if has && keys.fresh(input, &keys.apply) {
             outcome.commit = Some(Advance::Stay);
         }
-        leaving_keys(input, has || had, terminal, false, outcome);
+        let leaving = (keys.cancel_large.as_slice(), keys.keep_large.as_slice());
+        leaving_keys(input, has || had, leaving, None, keys.layout, outcome);
     });
     had
 }
@@ -1159,22 +1219,18 @@ fn band(
     widgets::hline(ui, rect.x_range().shrink(1.0), top, line);
     let y = top + BAND / 2.0;
     let role = widgets::secondary(look);
-    // The terminal's Esc keeps the text, and its keys are spelled out.
-    let keys = if look.terminal {
-        format!(
-            "{}enter {} · esc {}",
-            look.label(look.command_key()),
-            gettext(locale, "apply"),
-            gettext(locale, "keep")
-        )
+    // The terminal's Esc keeps the text, where the others' drops it.
+    let leaves = if target.keys.keep_large.is_empty() {
+        gettext(locale, "cancel")
     } else {
-        format!(
-            "{}↩ {} · esc {}",
-            look.command_key(),
-            gettext(locale, "apply"),
-            gettext(locale, "cancel")
-        )
+        gettext(locale, "keep")
     };
+    let keys = format!(
+        "{} {} · {} {leaves}",
+        target.keys.apply_key,
+        gettext(locale, "apply"),
+        target.keys.leave_key,
+    );
     let right = rect.right() - LARGE_PAD;
     let taken = widgets::paint_text_right(ui, right, y, Text::one(look, role, &keys, palette.dim));
     let left = rect.left() + LARGE_PAD;
@@ -1671,6 +1727,7 @@ mod tests {
             json: false,
             hold: true,
             now: false,
+            keys: Keys::of(&Keymap::default(), Layout::of(look)),
             search: search.map(|(count, refused)| Search {
                 table: "publishers".into(),
                 count: count.map(str::to_owned),

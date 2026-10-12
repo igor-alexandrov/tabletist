@@ -147,10 +147,31 @@ fn count_line(picker: &Picker, table: &str, locale: Locale) -> Option<String> {
     })
 }
 
-/// The head line: what is listed, and the keys.
-fn head_line(picker: &Picker, typed: &str, table: &str, locale: Locale) -> String {
+/// The head line: what is listed, and the keys, as the keymap has them
+/// for the look.
+fn head_line(
+    ui: &Ui,
+    look: &Look,
+    picker: &Picker,
+    typed: &str,
+    table: &str,
+    locale: Locale,
+) -> String {
+    use crate::keymap::{Command, Scope};
     let table = display_safe(table);
-    let keys = gettext(locale, "↑↓ choose · ↩ set");
+    let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
+    let (up, down) = (key(Command::PreviousPick), key(Command::NextPick));
+    // Two arrows stand together. Two words have a stroke between them.
+    let glyphs = up.chars().count() == 1 && down.chars().count() == 1;
+    let moves = if glyphs {
+        format!("{up}{down}")
+    } else {
+        format!("{up}/{down}")
+    };
+    let set = crate::ui::keys::written_in(ui.ctx(), look, Command::CommitDown, Scope::CellEditor);
+    let keys = gettext(locale, "{move} choose · {set} set")
+        .replace("{move}", &moves)
+        .replace("{set}", &set);
     let text = picker.text(typed);
     if text.is_empty() {
         format!("{table} · {keys}")
@@ -479,7 +500,7 @@ pub fn show(
             // What a line of words has of the list's width.
             let room = inner.width() - 2.0 * shape.inset;
             if head {
-                let text = head_line(picker, typed, names.table, locale);
+                let text = head_line(ui, look, picker, typed, names.table, locale);
                 let y = top + shape.line / 2.0;
                 say(ui, (left, y), room, (&text, line_role, muted), inner, look);
                 top += shape.line;

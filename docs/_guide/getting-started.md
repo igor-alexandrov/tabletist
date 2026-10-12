@@ -21,7 +21,8 @@ never touches your saved connections or your keyring.
 ## Add a connection
 
 Open Tabletist. With nothing saved yet, the picker says
-**No connections yet**. Press Cmd/Ctrl+N for a new connection.
+**No connections yet**. Press Cmd/Ctrl+N for a new connection (`n` in the
+Omarchy look).
 
 {% include shot.html file="macos-connections" alt="The connection picker with five saved connections, each tagged with its environment and when it was last used" %}
 
@@ -47,14 +48,16 @@ TLS, SSH tunnels and where passwords are kept are covered in
 ## Find your way around
 
 - **The header** holds a chip for each open connection. Click one to
-  switch, or press Cmd/Ctrl+1 to 9.
+  switch, or press Cmd/Ctrl+1 to 9 (Ctrl+Shift+1 to 9 in the Omarchy
+  look).
 - **The sidebar** lists the tables and views of one schema. On macOS and
   Windows the ones you opened recently are on top. Cmd/Ctrl+B shows or
   hides it.
-- **Quick open** (Cmd/Ctrl+P) finds any table or view by name.
+- **Quick open** (Cmd/Ctrl+P, on macOS and Windows) finds any table or
+  view by name.
 - **Tabs** hold the tables and SQL editors you have open.
 - **The row panel** on the right shows every field of the selected row.
-  Space shows or hides it.
+  Cmd/Ctrl+Shift+R shows or hides it.
 
 Press `?` for a list of the keys, when no text field has the keyboard and
 no dialog is open. They are described in

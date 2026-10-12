@@ -6,6 +6,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType
 use crate::app::App;
 use crate::connections::{ConnectionId, SavedConnection};
 use crate::i18n::gettext;
+use crate::keymap::Command;
 use crate::model::{Action, ConnTabContent};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -219,12 +220,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     } else {
         gettext(locale, "New connection").into_owned()
     };
-    let command_n = format!("{}N", look.command_key());
+    // The picker's keys, as the keymap writes them for the look.
+    let key = |command: Command| app.keymap.key(app.layout(), command);
+    let new_key = key(Command::NewConnection);
+    let (connect, edit) = (key(Command::Connect), key(Command::EditConnection));
+    let (duplicate, delete) = (
+        key(Command::DuplicateConnection),
+        key(Command::DeleteConnection),
+    );
+    let (moves, filter) = (
+        key(Command::MoveInConnections),
+        key(Command::FilterConnections),
+    );
     let new = if look.terminal {
         ButtonSpec::new(&new_label)
             .primary()
             .role(TextRole::OGroup)
-            .shortcut("n")
+            .shortcut(&new_key)
             .shortcut_role(TextRole::OBody)
             // The design's 1 pt border and 10 of padding.
             .padding(11.0)
@@ -233,7 +245,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ButtonSpec::new(&new_label)
             .primary()
             .icon(Icon::Plus)
-            .shortcut(&command_n)
+            .shortcut(&new_key)
             .padding(14.0)
             .gap(8.0)
     };
@@ -319,17 +331,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     widgets::hline(ui, footer.x_range(), footer.top() + 0.5, palette.outline);
     let footer_y = footer.top() + 1.0 + (footer.height() - 1.0) / 2.0;
     let footer_side = if look.terminal { 12.0 } else { side };
-    let command = look.command_key();
     let small = widgets::secondary(&look);
     if look.terminal {
         let hints = [
-            ("j/k", "move", true),
-            ("enter", "connect / show", true),
-            ("e", "edit", true),
-            ("n", "new", true),
-            ("yy", "duplicate", true),
-            ("dd", "delete", true),
-            ("/", "filter", true),
+            (&moves, "move", true),
+            (&connect, "connect / show", true),
+            (&edit, "edit", true),
+            (&new_key, "new", true),
+            (&duplicate, "duplicate", true),
+            (&delete, "delete", true),
+            (&filter, "filter", true),
         ];
         widgets::key_hints(
             ui,
@@ -341,10 +352,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         );
     } else {
         let hints = [
-            "↩ connect".to_owned(),
-            format!("{command}E edit"),
-            format!("{command}D duplicate"),
-            format!("{command}⌫ delete"),
+            format!("{connect} connect"),
+            format!("{edit} edit"),
+            format!("{duplicate} duplicate"),
+            format!("{delete} delete"),
         ];
         let status = palette.secondary.lerp_to_gamma(palette.dim, 0.5);
         let mut x = footer.left() + footer_side;
@@ -405,8 +416,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             text: &text,
         };
         let name = look.label(&gettext(locale, "New connection"));
-        let keys = if look.terminal { "n" } else { &command_n };
-        let add = states::key_button(&name, keys, &look)
+        let add = states::key_button(&name, &new_key, &look)
             .label("New connection")
             .salt("empty");
         let add = if look.terminal {

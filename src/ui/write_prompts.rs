@@ -14,6 +14,7 @@ use egui::{
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
+use crate::keymap::{Command, Layout};
 use crate::model::{Action, Dialog, Held, LeavePrompt};
 use crate::review::{Line, Review, Values};
 use crate::theme::{Look, Palette};
@@ -50,9 +51,6 @@ const SHEET_REST: f32 = 220.0;
 
 /// The fewest lines a confirmation shows at once, however low the window.
 const FEWEST_ROWS: f32 = 3.0;
-
-/// The word the terminal's confirmation takes.
-const WORD: &str = "write";
 
 /// What the Leave prompt says of a save that is running when the window is
 /// asked to close.
@@ -320,6 +318,13 @@ fn leave_box(
     // it for the frame the box opens in, and what is typed then went into
     // its text.
     let typing = ctx.text_edit_focused();
+    // Which letter answers what is the keymap's to say.
+    let (keymap, layout) = (crate::ui::keys::published(ctx), Layout::of(look));
+    let letter = |text: &str| {
+        let leaving = crate::keymap::When::Leaving;
+        crate::ui::keys::prompt_letter(&keymap, layout, leaving, text)
+            .filter(|command| matches!(command, Command::LeaveWrite | Command::LeaveDiscard))
+    };
     let typed = ctx.input_mut(|input| {
         let held = input.events.iter().any(|event| {
             matches!(
@@ -333,17 +338,17 @@ fn leave_box(
         });
         let mut typed = None;
         input.events.retain(|event| match event {
-            egui::Event::Text(text) if matches!(text.as_str(), "w" | "d") => {
-                typed = typed.take().or_else(|| Some(text.clone()));
+            egui::Event::Text(text) if letter(text).is_some() => {
+                typed = typed.or(letter(text));
                 false
             }
             _ => true,
         });
         typed.filter(|_| !held && !typing)
     });
-    match typed.as_deref() {
-        Some("w") if prompt.can_save => actions.push(Action::LeaveSave),
-        Some("d") => actions.push(Action::LeaveDiscard),
+    match typed {
+        Some(Command::LeaveWrite) if prompt.can_save => actions.push(Action::LeaveSave),
+        Some(Command::LeaveDiscard) => actions.push(Action::LeaveDiscard),
         _ => {}
     }
     let mut line = format!(
@@ -402,19 +407,27 @@ fn leave_box(
                 lead,
                 disabled: None,
             };
+            // Each answer's key as the keymap writes it, in the box's
+            // brackets.
+            let bracketed = |command| crate::ui::keys::written(ui.ctx(), look, command).bracketed();
+            let (write_key, discard_key, stay_key) = (
+                bracketed(Command::LeaveWrite),
+                bracketed(Command::LeaveDiscard),
+                bracketed(Command::LeaveStay),
+            );
             let mut keys = vec![
                 (
-                    key("[d]", discard.as_str(), &*names[1], false),
+                    key(&discard_key, discard.as_str(), &*names[1], false),
                     Action::LeaveDiscard,
                 ),
                 (
-                    key("[esc]", stay.as_str(), &*names[2], false),
+                    key(&stay_key, stay.as_str(), &*names[2], false),
                     Action::LeaveStay,
                 ),
             ];
             // Saving is offered only where a save can run.
             if prompt.can_save {
-                let write = key("[w]", write.as_str(), &*names[0], true);
+                let write = key(&write_key, write.as_str(), &*names[0], true);
                 keys.insert(0, (write, Action::LeaveSave));
             }
             let (hints, mut answers): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
@@ -453,6 +466,11 @@ struct Facts {
     columns: Vec<String>,
     /// The environment as its tag says it.
     tag: &'static str,
+    /// What is typed to confirm, in the terminal look: the database this
+    /// save goes to, as its own connection names it (a SQLite file's
+    /// name), and never another tab's. The connection's name where it
+    /// names no database.
+    name: String,
 }
 
 /// Asks before a save to production, with every statement it would send.
@@ -522,6 +540,14 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         },
         columns,
         tag: workspace.environment.label(crate::env::Platform::of(&look)),
+        name: {
+            let target = super::workspace::target(workspace);
+            if target.is_empty() {
+                workspace.name.clone()
+            } else {
+                target
+            }
+        },
     };
     let dialect = workspace.driver.dialect();
     // What the tab's own panel shows: the box leaves its statements to no
@@ -819,12 +845,12 @@ fn one_row(ui: &mut egui::Ui, role: TextRole, text: &str, color: Color32, look: 
 
 /// The terminal look: the box in the danger colour, its head with the
 /// environment's tag and the question, what is saved and where, the
-/// statements, and the field that takes the word. Where the panel of its
+/// statements, and the field that takes the name. Where the panel of its
 /// own tab is on screen with room above it and shows its lines (`panel`,
 /// see [`pointed_at`]), the box stands in that room, says the panel shows
 /// the statements, and draws no backdrop over them; everywhere else it
 /// lists them itself. Of the keys `asked`, Enter confirms once the field
-/// holds the word, and cancels with the keyboard on Cancel; Page Up and
+/// holds the name, and cancels with the keyboard on Cancel; Page Up and
 /// Page Down move the statements the box lists (the panel's are moved by
 /// whoever read the keys). Returns whether the prompt is the dialog on
 /// top.
@@ -847,10 +873,20 @@ fn confirm_box(
     let (frame, _) = skin.frame();
     let frame = frame.stroke(Stroke::new(2.0, danger));
     let radius = look.dialog_radius.saturating_sub(2);
-    let armed = prompt.typed == WORD;
+    // The name as it is, character for character: another database's, or
+    // this one's in another case, confirms nothing. (A name with a
+    // character that cannot be shown is written without it below, and so
+    // cannot be typed from what the box says: a database named so is not
+    // one to write to by reflex.)
+    let armed = prompt.typed == facts.name;
     // What the field asks for, and why the button that sends cannot be
     // pressed before it has it.
-    let ask = format!("{} {WORD} {}", skin.say("type"), skin.say("to confirm"));
+    let ask = format!(
+        "{} {} {}",
+        skin.say("type"),
+        format::display_safe(&facts.name),
+        skin.say("to confirm")
+    );
     let id = Id::new("write-prompt");
     let modal = widgets::modal(id, look, palette).frame(frame);
     let modal = match panel {
@@ -946,7 +982,7 @@ fn confirm_box(
                 // Once: a frame that only sizes the box keeps no focus.
                 // And again whenever nothing has the keyboard: a click
                 // outside the box takes it, and what is typed next must
-                // still be the word.
+                // still be the name.
                 if prompt.focus || ui.memory(|memory| memory.focused().is_none()) {
                     field.request_focus();
                     prompt.focus = ui.is_sizing_pass();
@@ -962,18 +998,25 @@ fn confirm_box(
             gettext(locale, "Save to production"),
             gettext(locale, "Cancel"),
         ];
+        // The box's keys, as the keymap writes them. The one that confirms
+        // by its own key: the keymap also says what is typed before it.
+        let prompt_scope = crate::keymap::Scope::Prompt;
+        let confirms = Command::ConfirmProductionWrite;
+        let confirm_key = crate::ui::keys::written_in(ui.ctx(), look, confirms, prompt_scope);
+        let cancel_key = crate::ui::keys::written(ui.ctx(), look, Command::CancelProductionWrite);
+        let scroll_key = crate::ui::keys::written(ui.ctx(), look, Command::ScrollStatements);
         let mut keys = vec![
             terminal_dialog::Key {
-                key: "enter",
+                key: &confirm_key,
                 label: &confirm,
                 button: Some(&names[0]),
-                // Its key answers once the word is typed, and so does
+                // Its key answers once the name is typed, and so does
                 // its button.
                 lead: armed,
                 disabled: (!armed).then_some(ask.as_str()),
             },
             terminal_dialog::Key {
-                key: "esc",
+                key: &cancel_key,
                 label: &cancel,
                 button: Some(&names[1]),
                 lead: false,
@@ -984,7 +1027,7 @@ fn confirm_box(
         // Last, and no button: the two before it are told by their place.
         if panel.is_some() {
             keys.push(terminal_dialog::Key {
-                key: "pgup/pgdn",
+                key: &scroll_key,
                 label: &scroll,
                 button: None,
                 lead: false,
@@ -1265,9 +1308,9 @@ mod tests {
                     && harness.copied.is_none()
             };
             let names: &[&str] = if look.terminal {
-                // The field holds the word: a plain Enter would confirm,
+                // The field holds the name: a plain Enter would confirm,
                 // from the field and from the button that sends.
-                harness.frame(vec![egui::Event::Text("write".into())]);
+                harness.frame(vec![egui::Event::Text("fixture.db".into())]);
                 &["Cancel", "Save to production"]
             } else {
                 &["Copy SQL", "Save to production", "Cancel"]
@@ -1285,7 +1328,7 @@ mod tests {
             }
             // The plain Enter is what it was, with the keyboard where the
             // last of them left it: it confirms in the box, whose field
-            // holds the word, and cancels on the sheet's Cancel.
+            // holds the name, and cancels on the sheet's Cancel.
             harness.press(Key::Enter, Modifiers::NONE);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
             assert_eq!(
@@ -1344,7 +1387,7 @@ mod tests {
     /// The fixture's table in `look` on a production connection with one
     /// change, its tab asked to close and the Leave prompt answered with
     /// Save: the confirmation that answer opened is up, in its first
-    /// moment. The terminal's field holds the word, typed in that moment.
+    /// moment. The terminal's field holds the name, typed in that moment.
     fn confirming_after_an_answer(look: Look) -> (Harness, (ConnTabId, TabId)) {
         let mut harness = Harness::new();
         harness.set_look(look);
@@ -1356,7 +1399,7 @@ mod tests {
         harness.finish_animations();
         opened(&mut harness, false);
         if look.terminal {
-            harness.frame(vec![egui::Event::Text("write".into())]);
+            harness.frame(vec![egui::Event::Text("fixture.db".into())]);
         }
         (harness, (tab, id))
     }
@@ -1402,7 +1445,7 @@ mod tests {
         for look in Look::ALL {
             let (mut harness, _) = confirming(look);
             if look.terminal {
-                harness.frame(vec![egui::Event::Text("write".into())]);
+                harness.frame(vec![egui::Event::Text("fixture.db".into())]);
             }
             for (name, at) in answers_at(&mut harness, look) {
                 let said = format!("{}: {name}", look.name);
@@ -1412,7 +1455,7 @@ mod tests {
                 };
                 assert!(prompt.after_answer.is_none(), "{said}");
                 if look.terminal {
-                    harness.frame(vec![egui::Event::Text("write".into())]);
+                    harness.frame(vec![egui::Event::Text("fixture.db".into())]);
                 }
                 // No moment to wait out: the user asked for this save, and
                 // the first click on an answer gives it.
@@ -1448,7 +1491,7 @@ mod tests {
             if look.terminal {
                 // The field has the keyboard, and what is typed into it in
                 // that moment stays typed. Enter and Esc are no answers.
-                harness.frame(vec![egui::Event::Text("write".into())]);
+                harness.frame(vec![egui::Event::Text("fixture.db".into())]);
                 harness.press(egui::Key::Enter, egui::Modifiers::NONE);
                 harness.press(egui::Key::Escape, egui::Modifiers::NONE);
             } else {
@@ -1504,14 +1547,14 @@ mod tests {
             assert!(up(&harness), "{said}");
             // What it repeats confirms nothing: not with the keyboard where
             // the confirmation puts it, nor on the button that sends, nor,
-            // in the terminal's box, once the field holds the word.
+            // in the terminal's box, once the field holds the name.
             for _ in 0..40 {
                 held(&mut harness, key);
                 assert!(up(&harness), "{said}");
             }
             if look.terminal {
                 opened(&mut harness, true);
-                harness.frame(vec![egui::Event::Text("write".into())]);
+                harness.frame(vec![egui::Event::Text("fixture.db".into())]);
             }
             focus_dialog(&mut harness, "Save to production");
             for _ in 0..40 {

@@ -9,12 +9,12 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, Widget
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
+use crate::keymap::Command;
 use crate::model::Action;
 use crate::settings::{OptionId, OptionValue, Settings};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
-use crate::ui::keys::keys_label;
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -169,7 +169,7 @@ fn header(ui: &mut Ui, skin: &Skin) {
     let note = format!("{} · ", skin.say("Changes apply right away"));
     let note = Text::new(look)
         .add(role, &note, palette.dim)
-        .add(role, &look.label(&keys_label("Mod+,")), palette.accent)
+        .add(role, &key(ui, look, Command::Settings), palette.accent)
         .space(role, " ")
         .add(role, &skin.say("opens this"), palette.dim)
         .layout(ui.ctx());
@@ -647,20 +647,33 @@ fn footer(
         .replace("{editor}", "$EDITOR");
     // The key, what it does, the button it stands for, and what that does.
     let keys = [
-        ("j/k", skin.say("move"), None),
-        ("h/l", skin.say("change"), None),
-        ("space", skin.say("toggle"), Some(("Toggle", flip))),
-        ("ctrl+e", in_editor, Some(("Open file in editor", edit))),
-        ("R", skin.say("reset option"), Some(("Reset option", reset))),
+        (Command::SettingsMove, skin.say("move"), None),
+        (Command::SettingsChange, skin.say("change"), None),
         (
-            "esc",
+            Command::SettingsToggle,
+            skin.say("toggle"),
+            Some(("Toggle", flip)),
+        ),
+        (
+            Command::SettingsOpenFile,
+            in_editor,
+            Some(("Open file in editor", edit)),
+        ),
+        (
+            Command::SettingsReset,
+            skin.say("reset option"),
+            Some(("Reset option", reset)),
+        ),
+        (
+            Command::SettingsClose,
             skin.say("close"),
             Some(("Close", Some(Action::CloseDialog))),
         ),
     ];
     let mut left = rect.left() + 12.0;
-    for (key, what, button) in keys {
-        let hint = [(key, what.as_str(), true)];
+    for (command, what, button) in keys {
+        let key = key(ui, look, command);
+        let hint = [(&key, what.as_str(), true)];
         let width = widgets::key_hints(ui, (left, y), &hint, 0.0, look, palette);
         // In from the window's edge by a focus ring's reach, or the ring
         // would be cut there.
@@ -676,4 +689,9 @@ fn footer(
             }
         }
     }
+}
+
+/// A key of the screen, as the keymap writes it for the look.
+fn key(ui: &Ui, look: &Look, command: Command) -> crate::keymap::Written {
+    crate::ui::keys::written(ui.ctx(), look, command)
 }

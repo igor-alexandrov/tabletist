@@ -41,6 +41,7 @@ struct Env<'a> {
     look: &'a Look,
     palette: &'a Palette,
     locale: Locale,
+    keymap: &'a crate::keymap::Keymap,
 }
 
 /// Our own words as a look writes them: lower case in the terminal's. What
@@ -200,6 +201,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         look: &look,
         palette: &palette,
         locale: app.locale,
+        keymap: &app.keymap,
     };
     let Some(workspace) = app.workspace(tab) else {
         return;
@@ -224,7 +226,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
     body.set_clip_rect(rest.intersect(ui.clip_rect()));
     match (state, sql.pane) {
         (State::Idle, _) => {
-            let (keys, _) = super::sql_editor::run_keys(&look);
+            let (keys, _) = super::sql_editor::run_keys(ui.ctx(), &look);
             let hint = env.said(|words| format!("{} {keys}", words.say("Run a statement with")));
             note(&body, rest, &hint, palette.secondary, &env);
         }
@@ -404,6 +406,7 @@ fn pane_tabs(
         look,
         palette,
         locale,
+        ..
     } = *env;
     let (strong, plain) = tab_roles(look);
     let width = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
@@ -525,6 +528,7 @@ fn run_state(ui: &mut Ui, spot: &Spot, running: Duration, env: &Env<'_>) -> bool
         look,
         palette,
         locale,
+        ..
     } = *env;
     let Spot {
         start,
@@ -536,7 +540,7 @@ fn run_state(ui: &mut Ui, spot: &Spot, running: Duration, env: &Env<'_>) -> bool
         env.said(|words| format!("{} · {:.1} s", words.say("Running"), running.as_secs_f64()));
     let label = gettext(locale, "Cancel query");
     let cancel = look.label(&gettext(locale, "Cancel"));
-    let keys = format!("{}.", look.label(look.command_key()));
+    let keys = super::data_view::cancel_keys(env.keymap, look);
     let button = |with_keys: bool| {
         let button = ButtonSpec::new(&cancel).label(&label);
         let button = if look.terminal {
@@ -1148,6 +1152,7 @@ fn messages(
         look,
         palette,
         locale,
+        ..
     } = *env;
     let role = widgets::code(look);
     // 3 above and below each line; 8 above the first.
@@ -1250,13 +1255,17 @@ enum Offer {
 }
 
 impl Offer {
-    /// The button's name, and the letter that presses it in the terminal
-    /// look.
-    fn names(self) -> (&'static str, &'static str, egui::Key) {
+    /// The button's name, and the command whose key presses it in the
+    /// look that has one.
+    fn names(self) -> (&'static str, crate::keymap::Command) {
+        use crate::keymap::Command;
         match self {
-            Self::EditConnection => ("Edit connection", "e", egui::Key::E),
-            Self::AllowWrites => ("Allow writes in this tab", "w", egui::Key::W),
-            Self::RunAgain => ("Run in a read-write transaction", "w", egui::Key::W),
+            Self::EditConnection => ("Edit connection", Command::EditRefusedConnection),
+            Self::AllowWrites => ("Allow writes in this tab", Command::AllowRefusedWrite),
+            Self::RunAgain => (
+                "Run in a read-write transaction",
+                Command::AllowRefusedWrite,
+            ),
         }
     }
 }
@@ -1437,7 +1446,7 @@ impl Blocked<'_> {
 /// And only while the Messages show the card: not under the opening
 /// screen a switch of database puts over the editor, which keeps the tab
 /// and its last run.
-pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(egui::Key, Action)> {
+pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(crate::keymap::Command, Action)> {
     if !app.look.terminal {
         return None;
     }
@@ -1448,7 +1457,7 @@ pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(egui::Key, Action)>
     }
     let blocked = blocked(workspace, sql)?;
     let offer = blocked.offer()?;
-    Some((offer.names().2, blocked.action(offer, tab, sql.id)))
+    Some((offer.names().1, blocked.action(offer, tab, sql.id)))
 }
 
 /// The card of a refused write, at the head of the Messages: said as what
@@ -1467,6 +1476,7 @@ fn blocked_card(
         look,
         palette,
         locale,
+        ..
     } = *env;
     let pad = side(look) as i8;
     egui::Frame::new()
@@ -1512,10 +1522,11 @@ fn blocked_card(
             let Some(offer) = blocked.offer() else {
                 return;
             };
-            let (name, key, _) = offer.names();
+            let (name, command) = offer.names();
             let painted = look.label(&gettext(locale, name));
+            let key = crate::ui::keys::written(column.ctx(), look, command);
             let button = if look.terminal {
-                states::key_button(&painted, key, look)
+                states::key_button(&painted, &key, look)
             } else {
                 states::button(&painted, look)
             };
@@ -1561,6 +1572,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         look,
         palette,
         locale,
+        ..
     } = *env;
     let rect = ui.max_rect();
     let Place {
@@ -1781,7 +1793,7 @@ mod tests {
 
     /// The hint an editor that has run nothing shows.
     fn hint(look: &Look) -> String {
-        let (keys, _) = crate::ui::sql_editor::run_keys(look);
+        let (keys, _) = crate::ui::sql_editor::run_keys(&egui::Context::default(), look);
         format!("Run a statement with {keys}")
     }
 
@@ -2706,7 +2718,10 @@ mod tests {
         let (harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
         assert!(matches!(
             card_key(&harness.app, tab),
-            Some((Key::W, Action::SetSqlMode { .. }))
+            Some((
+                crate::keymap::Command::AllowRefusedWrite,
+                Action::SetSqlMode { .. }
+            ))
         ));
     }
 

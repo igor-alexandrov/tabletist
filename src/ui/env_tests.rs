@@ -2,8 +2,6 @@
 //! `env_colors()` gives it, for every environment, on macOS (light and dark)
 //! and Omarchy. These check the colours a frame paints, never pixels.
 
-use egui::{Key, Modifiers};
-
 use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::model::{Action, Dialog};
 use crate::testing::Harness;
@@ -84,7 +82,8 @@ fn a_connections_chip_takes_its_environments_colour() {
             } else {
                 Environment::None
             };
-            harness.press(Key::O, Modifiers::COMMAND);
+            // Not by its key, which is each look's own.
+            harness.app.apply(crate::model::Action::ShowConnections);
             let second = harness.connect_fake();
             harness.app.workspace_mut(second).unwrap().environment = other;
             harness.settle();
