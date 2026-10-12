@@ -801,6 +801,12 @@ mod tests {
             pinned("DE", text, "text", true),
             Some(Value::Text("DE".into()))
         );
+        // A `citext` key is a text key.
+        let folded = tabletist_db::column_class(tabletist_db::Dialect::Postgres, "citext");
+        assert_eq!(
+            pinned("DE", folded, "citext", true),
+            Some(Value::Text("DE".into()))
+        );
         let uuid = "123e4567-e89b-12d3-a456-426614174000";
         assert_eq!(
             pinned(uuid, ColumnClass::Other, "uuid", true),

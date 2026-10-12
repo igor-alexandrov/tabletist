@@ -525,6 +525,22 @@ mod tests {
         assert_eq!(automatic(Dialect::Postgres, &columns[1..2], &["id"]), None);
     }
 
+    /// PostgreSQL's `citext` is text: an email kept in one is the app's
+    /// pick, before a text column that comes after it.
+    #[test]
+    fn the_apps_pick_takes_text_that_compares_without_case() {
+        let authors = [
+            column("id", "bigint"),
+            column("email", "citext"),
+            column("born_on", "date"),
+            column("pen_name", "character varying"),
+        ];
+        assert_eq!(
+            automatic(Dialect::Postgres, &authors, &["id"]),
+            Some("email".into())
+        );
+    }
+
     #[test]
     fn automatic_resolves_to_the_apps_pick() {
         assert_eq!(

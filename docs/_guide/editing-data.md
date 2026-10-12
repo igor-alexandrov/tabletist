@@ -59,11 +59,11 @@ after. Review SQL shows the keyword as it is sent.
 
 - In a text column these are text: `NULL` there is four letters. Use
   Cmd/Ctrl+Backspace for NULL and Cmd/Ctrl+' for DEFAULT (`x` and `D` in
-  the Omarchy look).
+  the Omarchy look). PostgreSQL's `citext` is a text column.
 - In a JSON column `null` is a JSON document. `NULL` and `DEFAULT` in
   capitals are the database's.
 - The same goes for a type that is no number, boolean, date or time and
-  may keep text: an enum, `citext`, a UUID, a SQLite column with no type.
+  may keep text: an enum, a UUID, a SQLite column with no type.
   `null` there is four letters, and only the capitals are the database's.
 - An array of dates is no date: `now()` there is text.
 - A word the column cannot take stays text, and is checked like any other:
