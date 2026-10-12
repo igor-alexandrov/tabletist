@@ -10,7 +10,7 @@ use egui::{CornerRadius, Id, Rect, Sense, Ui, UiBuilder, WidgetInfo, WidgetType,
 use tabletist_db::{LookupRow, Value};
 
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::key_picker::{Columns, LIMIT, Picker, VISIBLE, found_in};
+use crate::key_picker::{LIMIT, Picker, VISIBLE, found_in};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::{display_safe, plain_text};
@@ -418,7 +418,7 @@ pub fn show(
     names: &Names<'_>,
     (look, palette, locale): (&Look, &Palette, Locale),
 ) -> Shown {
-    let labelled = matches!(&picker.label, Columns::Known(Some(_)));
+    let labelled = picker.label.column().is_some();
     let shape = Shape::of(look, labelled);
     let total = picker.options.len();
     // Whether there is a state line is decided before the list is placed,

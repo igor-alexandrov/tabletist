@@ -26,6 +26,8 @@ mod key_picker;
 #[cfg(test)]
 mod key_picker_tests;
 pub mod keys;
+#[cfg(test)]
+mod label_tests;
 pub mod menu;
 pub mod object_tabs;
 pub mod password_prompt;

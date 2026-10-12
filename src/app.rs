@@ -27,6 +27,7 @@ use crate::theme::{self, Catalog, Palette};
 
 mod editing;
 mod key_picker;
+mod labels;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -82,6 +83,9 @@ pub struct App {
     pub actions: Vec<Action>,
     pub backend: Backend,
     pub connections: SavedConnections,
+    /// The label columns chosen for the tables foreign keys point at, from
+    /// labels.json. Read through `App::label_of` only.
+    pub labels: crate::labels::Labels,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -135,6 +139,7 @@ impl App {
                 (HostKeys::default(), Some(problem))
             }
         };
+        let labels = crate::labels::Labels::load(&dirs.labels_file());
         let mut app = Self {
             dirs,
             settings,
@@ -149,6 +154,7 @@ impl App {
             actions: Vec::new(),
             backend,
             connections,
+            labels,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -1671,6 +1677,11 @@ impl App {
             Action::DeleteConnection(id) => {
                 if let Some(removed) = self.connections.remove(&id) {
                     self.save_connections();
+                    // Its label choices go with it. A tab that is still
+                    // open on it falls back to Automatic.
+                    if self.labels.forget(&id) {
+                        self.save_labels();
+                    }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
                     }
@@ -2503,6 +2514,8 @@ impl App {
                 let Some(workspace) = self.workspace_mut(tab) else {
                     return;
                 };
+                // The table whose columns this answer brought, if any.
+                let mut read = None;
                 let waiting = workspace
                     .object_tabs_mut()
                     .find(|o| o.structure.pending == Some(request));
@@ -2517,22 +2530,32 @@ impl App {
                     // one, its key and its types: it is made again.
                     object.edits.review = None;
                     if let Some(columns) = columns {
-                        let kept = workspace.columns.entry(named).or_default();
+                        let kept = workspace.columns.entry(named.clone()).or_default();
                         // One being fetched gets its own answer.
                         if !kept.is_loading() {
                             kept.value = Some(columns);
                             kept.error = None;
+                            read = Some(named);
                         }
                         workspace.catalog_changed();
                     }
-                } else if let Some(kept) = workspace
+                } else if let Some((named, kept)) = workspace
                     .columns
-                    .values_mut()
-                    .find(|kept| kept.pending == Some(request))
+                    .iter_mut()
+                    .find(|(_, kept)| kept.pending == Some(request))
                 {
-                    // Asked for by a completion list.
+                    // Asked for by a completion list. A read that failed
+                    // leaves the columns it had: they are not fresh.
+                    let fresh = result.is_ok();
                     kept.finish(request, result.map(|structure| structure.columns));
+                    read = fresh.then(|| named.clone());
                     workspace.catalog_changed();
+                }
+                // A column chosen as the table's label may be gone from
+                // the columns just read. Before the pickers: they label
+                // by what is left.
+                if let Some(table) = read {
+                    self.check_label(tab, &table);
                 }
                 // A picker that waited for these columns learns them.
                 self.picker_columns(tab);
@@ -2820,6 +2843,14 @@ impl App {
         }
         self.connections.mark_used(&conn, crate::util::now_secs());
         self.save_connections();
+    }
+
+    /// Saves the label choices on the backend, as the connections are.
+    pub(crate) fn save_labels(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.labels_file(),
+            file: StateFile::Labels(self.labels.clone()),
+        });
     }
 
     /// Saves the connections on the backend (writing syncs the disk, which

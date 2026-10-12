@@ -79,6 +79,7 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `connections.json` | Settings | Your saved connections. It never holds a password |
 | `known_hosts.json` | Settings | The SSH host keys you trusted |
 | `themes/` | Settings | Palette files |
+| `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection |
 | `tabletist.log`, `panic.log` | State | Logs |
 
 Passwords are kept in the system keyring, never in these files.

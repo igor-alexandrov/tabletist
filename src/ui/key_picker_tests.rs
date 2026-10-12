@@ -14,7 +14,7 @@ use tabletist_db::{LookupPart, NewValue, ObjectRef, Value};
 
 use crate::backend::{Command, Event, RequestId};
 use crate::edit::{Doubt, DoubtState};
-use crate::key_picker::{Columns, Picker, Take};
+use crate::key_picker::{Picker, Take};
 use crate::model::{Action, Advance, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::testing::{Harness, PUBLISHERS, publishers_structure};
 use crate::theme::Look;
@@ -596,7 +596,7 @@ fn a_failed_refresh_of_known_columns_does_not_take_the_list_away() {
     assert_eq!(publishers_described(&harness), described);
     let opened = picker(&harness, tab, id).unwrap();
     assert!(opened.failed.is_none());
-    assert!(matches!(opened.label, Columns::Known(Some(_))));
+    assert_eq!(opened.label.column(), Some("name"));
     assert_eq!(harness.lookups().len(), sent + 1);
     harness.answer_lookups(&PUBLISHERS);
     assert!(picker(&harness, tab, id).unwrap().failed.is_none());

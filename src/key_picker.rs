@@ -6,12 +6,13 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    ColumnClass, ColumnInfo, Dialect, Error, Lookup, LookupPage, LookupPart, LookupRow, Matched,
-    NewValue, ObjectRef, Structure, Value, column_class,
+    ColumnClass, Error, Lookup, LookupPage, LookupPart, LookupRow, Matched, NewValue, ObjectRef,
+    Structure, Value,
 };
 
 use crate::backend::RequestId;
 use crate::edit::{DoubtState, Edits, State, Table, new_id};
+use crate::labels::Resolved;
 use crate::model::Advance;
 
 /// How many matches a list holds; more are said, not paged.
@@ -111,21 +112,6 @@ pub fn unmatched(table: &Table<'_>, own: &ObjectRef, edits: &Edits) -> Vec<Unmat
             })
         })
         .collect()
-}
-
-/// The column a person reads a row of the referenced table by: its first
-/// text column that is not the key.
-pub fn label_column(dialect: Dialect, columns: &[ColumnInfo], key: &str) -> Option<String> {
-    columns
-        .iter()
-        .filter(|column| column.name != key)
-        .find(|column| {
-            matches!(
-                column_class(dialect, &column.type_name),
-                ColumnClass::Text { .. }
-            )
-        })
-        .map(|column| column.name.clone())
 }
 
 /// A UUID as it is written: 36 characters with their hyphens, or 32 hex
@@ -246,8 +232,20 @@ pub fn found_in(label: &str, text: &str) -> Option<Range<usize>> {
 pub enum Columns {
     /// Its columns are being fetched.
     Waiting,
-    /// The label column, or none: the table is searched by its key alone.
-    Known(Option<String>),
+    /// What labels its rows, and who picked it (`labels::resolve`). With
+    /// no column the table is searched by its key alone.
+    Known(Resolved),
+}
+
+impl Columns {
+    /// The column the options are labelled by, once it is known and where
+    /// there is one.
+    pub fn column(&self) -> Option<&str> {
+        match self {
+            Self::Waiting => None,
+            Self::Known(label) => label.column.as_deref(),
+        }
+    }
 }
 
 /// The search that was last sent.
@@ -617,6 +615,8 @@ mod tests {
 
     use std::collections::BTreeSet;
 
+    use tabletist_db::{ColumnInfo, Dialect};
+
     use crate::edit::{Doubt, DoubtState, Edits, NEW_ROWS, Pending, State, Table};
     use tabletist_db::{Access, ColumnMeta, ForeignKeyInfo, ObjectKind, RowPage, ValueKind};
 
@@ -638,7 +638,12 @@ mod tests {
     fn picker(searching: bool, text: &str) -> Picker {
         Picker::new(
             (ObjectRef::new("main", "publishers"), "id".into()),
-            Columns::Known(Some("name".into())),
+            Columns::Known(crate::labels::Resolved {
+                column: Some("name".into()),
+                source: crate::labels::Source::Automatic,
+                automatic: Some("name".into()),
+                gone: None,
+            }),
             None,
             searching,
             text,
@@ -689,32 +694,6 @@ mod tests {
         assert_eq!(target(&structure, "a"), None);
         assert_eq!(target(&structure, "unnamed_id"), None);
         assert_eq!(target(&structure, "kind"), None);
-    }
-
-    #[test]
-    fn the_label_is_the_first_text_column_that_is_not_the_key() {
-        let column = |name: &str, type_name: &str| ColumnInfo {
-            name: name.into(),
-            type_name: type_name.into(),
-            ..ColumnInfo::default()
-        };
-        // As the structure names PostgreSQL's types, which is how
-        // `column_class` reads them.
-        let columns = [
-            column("code", "text"),
-            column("founded", "integer"),
-            column("name", "character varying(64)"),
-            column("email", "text"),
-        ];
-        assert_eq!(
-            label_column(Dialect::Postgres, &columns, "code"),
-            Some("name".to_owned())
-        );
-        assert_eq!(
-            label_column(Dialect::Postgres, &columns, "founded"),
-            Some("code".to_owned())
-        );
-        assert_eq!(label_column(Dialect::Postgres, &columns[1..2], "id"), None);
     }
 
     #[test]
