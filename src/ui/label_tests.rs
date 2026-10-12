@@ -1656,6 +1656,60 @@ fn the_structure_view_of_a_table_of_its_key_alone_says_so() {
     assert_eq!(kept(&harness, tab, &isbns), LabelChoice::Automatic);
 }
 
+/// A table with no primary key is pointed at through a column that is
+/// unique alone. Its Structure view takes that column for the key, as a
+/// picker of such a foreign key does: the app's pick is the next text
+/// column, and the unique column is not taken as the label.
+#[test]
+fn the_structure_view_of_a_table_with_no_primary_key_keeps_out_its_unique_column() {
+    use tabletist_db::{ColumnInfo, IndexInfo};
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let tab = harness.connect_fake_as(false);
+    let isbns = ObjectRef::new("main", "isbns");
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: isbns.clone(),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    // The isbns, with a note beside the isbn and no primary key: the isbn
+    // is unique, as a foreign key to it needs.
+    let mut structure = crate::testing::isbns_structure();
+    structure.primary_key.clear();
+    structure.columns.push(ColumnInfo {
+        name: "note".into(),
+        type_name: "TEXT".into(),
+        ..ColumnInfo::default()
+    });
+    structure.indexes.push(IndexInfo {
+        name: "isbns_isbn".into(),
+        columns: vec!["isbn".into()],
+        key_columns: Some(vec!["isbn".into()]),
+        unique: true,
+        ..IndexInfo::default()
+    });
+    harness.answer_structure(structure);
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, id);
+    assert!(harness.has("Label for foreign keys: note, Automatic"));
+    assert!(harness.has("note, label column"));
+    // The cursor is on the isbn's line: the view's key does not take it.
+    harness.press(Key::L, Modifiers::COMMAND | Modifiers::ALT);
+    let key = Refused::Excluded(Excluded::Key);
+    assert_eq!(refused(&harness, tab), Some(("isbn".to_owned(), key)));
+    assert_eq!(kept(&harness, tab, &isbns), LabelChoice::Automatic);
+    // The note can be: it is no key.
+    harness
+        .app
+        .apply(Action::MoveStructureCursor { tab, id, by: 1 });
+    harness.press(Key::L, Modifiers::COMMAND | Modifiers::ALT);
+    assert_eq!(
+        kept(&harness, tab, &isbns),
+        LabelChoice::Column("note".into())
+    );
+}
+
 /// A view labels nothing: no foreign key points at one. Its Structure
 /// view has no label line, and the prompt's lines do nothing there.
 #[test]

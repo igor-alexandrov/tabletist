@@ -3,7 +3,7 @@
 //! happens to a choice whose column is gone. The choice and the rule are
 //! in `crate::labels`. Nothing else reads the store.
 
-use tabletist_db::{ColumnInfo, Dialect, ObjectKind, ObjectRef, Structure};
+use tabletist_db::{ColumnInfo, Dialect, ObjectKind, ObjectRef};
 
 use std::time::Instant;
 
@@ -100,7 +100,11 @@ impl App {
             ObjectView::Structure => {
                 let structure = object.structure.value.as_ref()?;
                 let dialect = workspace.driver.dialect();
-                let lines = labels::lines(dialect, Some(&structure.columns), &keys_of(structure));
+                let lines = labels::lines(
+                    dialect,
+                    Some(&structure.columns),
+                    &labels::own_keys(structure),
+                );
                 Some((object.object.clone(), lines))
             }
             ObjectView::Data => {
@@ -126,7 +130,7 @@ impl App {
         let structure = object.structure.value.as_ref()?;
         let choice = self.labels.choice(&workspace.conn_id, &object.object);
         let dialect = workspace.driver.dialect();
-        let keys = keys_of(structure);
+        let keys = labels::own_keys(structure);
         Some(labels::resolve(&choice, dialect, &structure.columns, &keys))
     }
 
@@ -339,7 +343,7 @@ impl App {
             let object = workspace.object_tab(id)?;
             let structure = object.structure.value.as_ref()?;
             let dialect = workspace.driver.dialect();
-            let keys = keys_of(structure);
+            let keys = labels::own_keys(structure);
             Some(labels::choosable(dialect, &structure.columns, &keys, name))
         });
         let (Some(table), Some(asked)) = (self.own_table(tab, id), asked) else {
@@ -454,10 +458,4 @@ impl App {
             self.save_labels();
         }
     }
-}
-
-/// The columns a table's rows are found by, for its own Structure view:
-/// its primary key.
-fn keys_of(structure: &Structure) -> Vec<&str> {
-    structure.primary_key.iter().map(String::as_str).collect()
 }

@@ -460,8 +460,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         // puts the cursor on one and gives the view the
                         // keys, and a line has a menu. Clicked and never
                         // focused: Tab passes them by.
-                        let keys: Vec<&str> =
-                            structure.primary_key.iter().map(String::as_str).collect();
+                        let keys = labels::own_keys(structure);
                         // The line the cursor was last brought into view
                         // on. Forgotten while the view has no keys: the
                         // view may be scrolled meanwhile, and the cursor
@@ -656,7 +655,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         asked.anchor,
         &object.structure.value,
     ) {
-        let keys: Vec<&str> = structure.primary_key.iter().map(String::as_str).collect();
+        let keys = labels::own_keys(structure);
         let open = label_chooser::Open {
             at: chooser.at,
             lines: labels::lines(dialect, Some(&structure.columns), &keys),

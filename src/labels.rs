@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tabletist_db::{ColumnClass, ColumnInfo, Dialect, ObjectRef, column_class};
+use tabletist_db::{ColumnClass, ColumnInfo, Dialect, ObjectRef, Structure, column_class};
 
 use crate::connections::ConnectionId;
 
@@ -80,6 +80,29 @@ pub fn excluded(dialect: Dialect, column: &ColumnInfo, keys: &[&str]) -> Option<
         | ColumnClass::Json
         | ColumnClass::Other => None,
     }
+}
+
+/// The columns a table's rows are found by, for the table's own Structure
+/// view, which knows no foreign key that points at the table: its primary
+/// key. A table with none can be pointed at only through a column that is
+/// unique alone, so there those are its keys.
+///
+/// A picker asks the rule about the one column its foreign key references
+/// instead. Where that is a unique column beside a primary key, the two
+/// differ for that key, and the picker's own line says what labels it.
+pub fn own_keys(structure: &Structure) -> Vec<&str> {
+    if !structure.primary_key.is_empty() {
+        return structure.primary_key.iter().map(String::as_str).collect();
+    }
+    let mut keys: Vec<&str> = Vec::new();
+    for index in structure.indexes.iter().filter(|index| index.unique) {
+        if let Some([column]) = index.key_columns.as_deref()
+            && !keys.contains(&column.as_str())
+        {
+            keys.push(column);
+        }
+    }
+    keys
 }
 
 /// The column the app picks to read a row of a table by: its first text
@@ -712,6 +735,83 @@ mod tests {
         assert_eq!(asked("legal_name"), Err(Refused::NoColumn));
         // A name is a column's as it is written, and no other's.
         assert_eq!(asked("Title"), Err(Refused::NoColumn));
+    }
+
+    /// A table's label is asked for a key: the column a foreign key
+    /// references. Where that is a unique column and not the primary key,
+    /// the app's pick for that key leaves it out, and a choice of it lists
+    /// that key's rows by the key alone, still as the user's.
+    #[test]
+    fn a_key_to_a_unique_column_is_labelled_without_that_column() {
+        let isbns = [
+            column("id", "INTEGER"),
+            column("isbn", "TEXT"),
+            column("note", "TEXT"),
+        ];
+        let label = |choice: &LabelChoice, key: &'static str| {
+            let resolved = resolve(choice, Dialect::Sqlite, &isbns, &[key]);
+            (resolved.column, resolved.source)
+        };
+        let auto = LabelChoice::Automatic;
+        assert_eq!(label(&auto, "id"), (Some("isbn".into()), Source::Automatic));
+        assert_eq!(
+            label(&auto, "isbn"),
+            (Some("note".into()), Source::Automatic)
+        );
+        let chosen = chosen("isbn");
+        assert_eq!(label(&chosen, "id"), (Some("isbn".into()), Source::User));
+        assert_eq!(label(&chosen, "isbn"), (None, Source::User));
+    }
+
+    /// The keys of a table's own Structure view: its primary key, and for
+    /// a table with none the columns that are unique alone, which are all
+    /// a foreign key can reference there.
+    #[test]
+    fn a_table_with_no_primary_key_is_found_by_its_unique_columns() {
+        use tabletist_db::{IndexInfo, Structure};
+        let unique = |name: &str, columns: &[&str]| IndexInfo {
+            name: name.into(),
+            columns: columns.iter().map(|column| (*column).to_owned()).collect(),
+            key_columns: Some(columns.iter().map(|column| (*column).to_owned()).collect()),
+            unique: true,
+            ..IndexInfo::default()
+        };
+        let mut isbns = Structure {
+            columns: vec![
+                column("isbn", "TEXT"),
+                column("note", "TEXT"),
+                column("shelf", "TEXT"),
+            ],
+            indexes: vec![
+                unique("isbns_isbn", &["isbn"]),
+                // Two columns together name a row; neither does alone.
+                unique("isbns_place", &["note", "shelf"]),
+                IndexInfo {
+                    unique: false,
+                    ..unique("isbns_shelf", &["shelf"])
+                },
+                // An index over an expression names no column.
+                IndexInfo {
+                    key_columns: None,
+                    ..unique("isbns_lower", &["<expression>"])
+                },
+            ],
+            ..Structure::default()
+        };
+        assert_eq!(own_keys(&isbns), ["isbn"]);
+        let keys = own_keys(&isbns);
+        let resolved = resolve(
+            &LabelChoice::Automatic,
+            Dialect::Sqlite,
+            &isbns.columns,
+            &keys,
+        );
+        assert_eq!(resolved.column.as_deref(), Some("note"));
+        // With a primary key, that alone: a unique column beside it can
+        // label the rows a key to the primary key lists.
+        isbns.columns.insert(0, column("id", "INTEGER"));
+        isbns.primary_key = vec!["id".into()];
+        assert_eq!(own_keys(&isbns), ["id"]);
     }
 
     #[test]
