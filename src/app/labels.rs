@@ -3,7 +3,7 @@
 //! happens to a choice whose column is gone. The choice and the rule are
 //! in `crate::labels`. Nothing else reads the store.
 
-use tabletist_db::{ColumnInfo, Dialect, ObjectRef};
+use tabletist_db::{ColumnInfo, Dialect, ObjectKind, ObjectRef, Structure};
 
 use std::time::Instant;
 
@@ -11,7 +11,7 @@ use super::App;
 use crate::connections::ConnectionId;
 use crate::key_picker::Columns;
 use crate::labels::{self, Chooser, LabelChoice, Labels, Line, Resolved, Source};
-use crate::model::{ConnTabId, Fetch, TabId};
+use crate::model::{ConnTabId, Fetch, ObjectView, TabId};
 
 /// What labels the rows of `table`, whose columns the workspace of the
 /// saved connection `conn` keeps as `kept`, in a picker whose foreign key
@@ -74,96 +74,288 @@ impl App {
         self.relabel(&conn, table, false);
     }
 
-    /// Opens the chooser of what labels the options of the picker of the
-    /// tab's editor, on the line of the choice kept for its table; closes
-    /// it where it is open. Where the table has nothing to choose no
-    /// chooser opens, and the picker says so for a while.
-    pub(super) fn toggle_label_chooser(&mut self, tab: ConnTabId, id: TabId) {
-        let planned = self.workspace(tab).and_then(|workspace| {
-            let editor = workspace.object_tab(id)?.edits.editor.as_ref()?;
-            let picker = editor.picker.as_ref()?;
-            if picker.chooser.is_some() {
-                return Some(None);
-            }
-            // A search that failed has no list, and its keys are the
-            // field's: a chooser there would get none of them.
-            if picker.failed.is_some() {
-                return None;
-            }
-            let lines = workspace.label_lines(&picker.target, &picker.key);
-            let choice = self.labels.choice(&workspace.conn_id, &picker.target);
-            // The columns are still on their way: Automatic and No label
-            // can be chosen at once, and the rest shows when it comes.
-            let waited = picker.label == Columns::Waiting;
-            let nothing = matches!(
-                &picker.label,
-                Columns::Known(label) if label.source == Source::KeysOnly
-            );
-            Some(Some((Chooser::open(&lines, choice, waited), nothing)))
-        });
-        let picker = self
-            .editor_mut(tab, id)
-            .and_then(|editor| editor.picker.as_mut());
-        let (Some(planned), Some(picker)) = (planned, picker) else {
-            return;
-        };
-        match planned {
-            None => picker.chooser = None,
-            Some((_, true)) => picker.nothing = Some(Instant::now()),
-            Some((chooser, false)) => {
-                picker.chooser = Some(chooser);
-                picker.nothing = None;
+    /// The chooser of the tab `id`, where it has a place for one: its
+    /// Structure view's, on the tab itself, while that view shows, and
+    /// else the one of its editor's picker.
+    fn chooser_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut Option<Chooser>> {
+        let object = self.object_tab_mut(tab, id)?;
+        match object.view {
+            ObjectView::Structure => Some(&mut object.label_chooser),
+            ObjectView::Data => {
+                let picker = object.edits.editor.as_mut()?.picker.as_mut()?;
+                Some(&mut picker.chooser)
             }
         }
     }
 
-    /// Lets `act` move the keys of the chooser that is open beside the
-    /// picker of the tab's editor, among its lines as they are now.
+    /// The table that the chooser of the tab `id` chooses for, and its
+    /// lines as they are now: the tab's own table by its structure, with
+    /// its primary key as the key, in the Structure view; the table its
+    /// picker searches, with the column the foreign key references, under
+    /// an editor.
+    fn chooser_lines(&self, tab: ConnTabId, id: TabId) -> Option<(ObjectRef, Vec<Line>)> {
+        let workspace = self.workspace(tab)?;
+        let object = workspace.object_tab(id)?;
+        match object.view {
+            ObjectView::Structure => {
+                let structure = object.structure.value.as_ref()?;
+                let dialect = workspace.driver.dialect();
+                let lines = labels::lines(dialect, Some(&structure.columns), &keys_of(structure));
+                Some((object.object.clone(), lines))
+            }
+            ObjectView::Data => {
+                let picker = object.edits.editor.as_ref()?.picker.as_ref()?;
+                let lines = workspace.label_lines(&picker.target, &[&picker.key]);
+                Some((picker.target.clone(), lines))
+            }
+        }
+    }
+
+    /// What labels the rows of the table the tab `id` shows, as its
+    /// Structure view says it: the choice kept for the table against its
+    /// own columns, its primary key being the key. None while the
+    /// structure is not known, and for what is no table: no foreign key
+    /// points at a view.
+    pub fn structure_label(&self, tab: ConnTabId, id: TabId) -> Option<Resolved> {
+        let workspace = self.workspace(tab)?;
+        let object = workspace.object_tab(id)?;
+        match object.kind {
+            ObjectKind::Table => {}
+            ObjectKind::View | ObjectKind::MaterializedView => return None,
+        }
+        let structure = object.structure.value.as_ref()?;
+        let choice = self.labels.choice(&workspace.conn_id, &object.object);
+        let dialect = workspace.driver.dialect();
+        let keys = keys_of(structure);
+        Some(labels::resolve(&choice, dialect, &structure.columns, &keys))
+    }
+
+    /// Opens the chooser of the tab `id` on the line of the choice kept
+    /// for its table, and closes it where it is open: beside the picker
+    /// of its editor, or in its Structure view. Where the table has
+    /// nothing to choose no chooser opens: a picker says so for a while,
+    /// and the Structure view's line says it as long as it shows.
+    pub(super) fn toggle_label_chooser(&mut self, tab: ConnTabId, id: TabId) {
+        // What the key does: nothing, close, say there is nothing to
+        // choose, or open.
+        enum Asked {
+            Close,
+            Nothing,
+            Open(Chooser),
+        }
+        let asked = self.workspace(tab).and_then(|workspace| {
+            let object = workspace.object_tab(id)?;
+            match object.view {
+                ObjectView::Structure => {
+                    if object.label_chooser.is_some() {
+                        return Some(Asked::Close);
+                    }
+                    let label = self.structure_label(tab, id)?;
+                    let (table, lines) = self.chooser_lines(tab, id)?;
+                    let choice = self.labels.choice(&workspace.conn_id, &table);
+                    Some(match label.source {
+                        Source::KeysOnly => Asked::Nothing,
+                        Source::Automatic | Source::User => {
+                            Asked::Open(Chooser::open(&lines, choice, false))
+                        }
+                    })
+                }
+                ObjectView::Data => {
+                    let picker = object.edits.editor.as_ref()?.picker.as_ref()?;
+                    if picker.chooser.is_some() {
+                        return Some(Asked::Close);
+                    }
+                    // A search that failed has no list, and its keys are
+                    // the field's: a chooser there would get none of them.
+                    if picker.failed.is_some() {
+                        return None;
+                    }
+                    let (table, lines) = self.chooser_lines(tab, id)?;
+                    let choice = self.labels.choice(&workspace.conn_id, &table);
+                    // The columns are still on their way: Automatic and
+                    // No label can be chosen at once, and the rest shows
+                    // when it comes.
+                    let waited = picker.label == Columns::Waiting;
+                    Some(match &picker.label {
+                        Columns::Known(label) if label.source == Source::KeysOnly => Asked::Nothing,
+                        Columns::Known(_) | Columns::Waiting => {
+                            Asked::Open(Chooser::open(&lines, choice, waited))
+                        }
+                    })
+                }
+            }
+        });
+        let Some(asked) = asked else {
+            return;
+        };
+        // A picker notes that it was asked, to say why nothing opens.
+        if let Asked::Nothing = asked {
+            if let Some(picker) = self
+                .editor_mut(tab, id)
+                .and_then(|editor| editor.picker.as_mut())
+            {
+                picker.nothing = Some(Instant::now());
+            }
+            return;
+        }
+        if let Some(picker) = self
+            .editor_mut(tab, id)
+            .and_then(|editor| editor.picker.as_mut())
+        {
+            picker.nothing = None;
+        }
+        if let Some(home) = self.chooser_mut(tab, id) {
+            *home = match asked {
+                Asked::Open(chooser) => Some(chooser),
+                Asked::Close | Asked::Nothing => None,
+            };
+        }
+    }
+
+    /// Closes the chooser of the tab `id` and chooses nothing.
+    pub(super) fn close_label_chooser(&mut self, tab: ConnTabId, id: TabId) {
+        if let Some(home) = self.chooser_mut(tab, id) {
+            *home = None;
+        }
+    }
+
+    /// Lets `act` move the keys of the chooser that is open in the tab
+    /// `id`, among its lines as they are now.
     pub(super) fn in_label_chooser(
         &mut self,
         tab: ConnTabId,
         id: TabId,
         act: impl FnOnce(&mut Chooser, &[Line]),
     ) {
-        let lines = self.workspace(tab).and_then(|workspace| {
-            let editor = workspace.object_tab(id)?.edits.editor.as_ref()?;
-            let picker = editor.picker.as_ref()?;
-            picker.chooser.as_ref()?;
-            Some(workspace.label_lines(&picker.target, &picker.key))
-        });
-        let chooser = self
-            .editor_mut(tab, id)
-            .and_then(|editor| editor.picker.as_mut())
-            .and_then(|picker| picker.chooser.as_mut());
-        if let (Some(lines), Some(chooser)) = (lines, chooser) {
+        let Some((_, lines)) = self.chooser_lines(tab, id) else {
+            return;
+        };
+        let chooser = self.chooser_mut(tab, id).and_then(Option::as_mut);
+        if let Some(chooser) = chooser {
             act(chooser, &lines);
         }
     }
 
-    /// Chooses `line` of the chooser that is open beside the picker of
-    /// the tab's editor, or the line its keys are on. A line that cannot
-    /// be chosen (the key, a column of bytes) chooses nothing, and the
-    /// chooser stays. The editor stays open with its text as it is: no
-    /// value of the cell is touched.
+    /// Chooses `line` of the chooser that is open in the tab `id`, or the
+    /// line its keys are on. A line that cannot be chosen (the key, a
+    /// column of bytes) chooses nothing, and the chooser stays. Under an
+    /// editor the editor stays open with its text as it is: no value of
+    /// the cell is touched.
     pub(super) fn choose_label(&mut self, tab: ConnTabId, id: TabId, line: Option<usize>) {
-        let planned = self.workspace(tab).and_then(|workspace| {
-            let editor = workspace.object_tab(id)?.edits.editor.as_ref()?;
-            let picker = editor.picker.as_ref()?;
-            let chooser = picker.chooser.as_ref()?;
-            let lines = workspace.label_lines(&picker.target, &picker.key);
-            let choice = lines.get(line.unwrap_or(chooser.at))?.choice()?;
-            Some((picker.target.clone(), choice))
-        });
-        let Some((table, choice)) = planned else {
+        let Some((table, lines)) = self.chooser_lines(tab, id) else {
             return;
         };
-        if let Some(picker) = self
-            .editor_mut(tab, id)
-            .and_then(|editor| editor.picker.as_mut())
-        {
-            picker.chooser = None;
-        }
+        let at = self
+            .chooser_mut(tab, id)
+            .and_then(|home| home.as_ref())
+            .map(|chooser| line.unwrap_or(chooser.at));
+        let choice = at.and_then(|at| lines.get(at)).and_then(Line::choice);
+        let Some(choice) = choice else {
+            return;
+        };
+        self.close_label_chooser(tab, id);
         self.set_label(tab, &table, choice);
+    }
+
+    /// Moves the cursor of the Structure view's columns `by` lines,
+    /// stopping at the first and at the last.
+    pub(super) fn move_structure_cursor(&mut self, tab: ConnTabId, id: TabId, by: isize) {
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let last = object
+            .structure
+            .value
+            .as_ref()
+            .map_or(0, |structure| structure.columns.len().saturating_sub(1));
+        object.structure_cursor = object.structure_cursor.saturating_add_signed(by).min(last);
+        self.forget_refusal(tab);
+    }
+
+    /// What was said of a column that was not taken was said of the line
+    /// the cursor was on, or of the name that was typed: it goes when the
+    /// cursor moves, a label is kept or the view changes.
+    pub(super) fn forget_refusal(&mut self, tab: ConnTabId) {
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.label_refused = None;
+        }
+    }
+
+    /// Puts that cursor on `line`, where there is such a line.
+    pub(super) fn set_structure_cursor(&mut self, tab: ConnTabId, id: TabId, line: usize) {
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let columns = object
+            .structure
+            .value
+            .as_ref()
+            .map_or(0, |structure| structure.columns.len());
+        if line < columns {
+            object.structure_cursor = line;
+        }
+        self.forget_refusal(tab);
+    }
+
+    /// The table the tab `id` shows, where it is a table and its
+    /// structure is known: what the Structure view's door chooses for.
+    fn own_table(&self, tab: ConnTabId, id: TabId) -> Option<ObjectRef> {
+        self.structure_label(tab, id)?;
+        let object = self.workspace(tab)?.object_tab(id)?;
+        Some(object.object.clone())
+    }
+
+    /// Keeps `choice` for the table the tab `id` shows: the Structure
+    /// view's Use Automatic, and the prompt's lines that name no column.
+    pub(super) fn set_tab_label(&mut self, tab: ConnTabId, id: TabId, choice: LabelChoice) {
+        let Some(table) = self.own_table(tab, id) else {
+            return;
+        };
+        self.close_label_chooser(tab, id);
+        self.set_label(tab, &table, choice);
+    }
+
+    /// Uses the column on `line` of the Structure view of the tab `id` as
+    /// what labels its table's rows, or the column under the cursor.
+    pub(super) fn use_as_label(&mut self, tab: ConnTabId, id: TabId, line: Option<usize>) {
+        let name = self.workspace(tab).and_then(|workspace| {
+            let object = workspace.object_tab(id)?;
+            let structure = object.structure.value.as_ref()?;
+            let line = line.unwrap_or(object.structure_cursor);
+            Some(structure.columns.get(line)?.name.clone())
+        });
+        if let Some(name) = name {
+            self.label_by_name(tab, id, &name);
+        }
+    }
+
+    /// Labels the table the tab `id` shows by its column `name`, named by
+    /// hand: a line of the prompt, the key on a line of the Structure
+    /// view, a column's menu. A name that is no column's, the key and a
+    /// column of bytes are refused, and the workspace keeps why to say it
+    /// until the next key.
+    pub(super) fn label_by_name(&mut self, tab: ConnTabId, id: TabId, name: &str) {
+        let asked = self.workspace(tab).and_then(|workspace| {
+            let object = workspace.object_tab(id)?;
+            let structure = object.structure.value.as_ref()?;
+            let dialect = workspace.driver.dialect();
+            let keys = keys_of(structure);
+            Some(labels::choosable(dialect, &structure.columns, &keys, name))
+        });
+        let (Some(table), Some(asked)) = (self.own_table(tab, id), asked) else {
+            return;
+        };
+        match asked {
+            Ok(()) => {
+                self.close_label_chooser(tab, id);
+                self.set_label(tab, &table, LabelChoice::Column(name.to_owned()));
+            }
+            Err(why) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.label_refused = Some((id, name.to_owned(), why));
+                }
+            }
+        }
     }
 
     /// Keeps `choice` as what labels the rows of `table` on the saved
@@ -176,6 +368,7 @@ impl App {
             return false;
         };
         let conn = workspace.conn_id.clone();
+        self.forget_refusal(tab);
         if !self.labels.choose(&conn, table, choice) {
             return false;
         }
@@ -261,4 +454,10 @@ impl App {
             self.save_labels();
         }
     }
+}
+
+/// The columns a table's rows are found by, for its own Structure view:
+/// its primary key.
+fn keys_of(structure: &Structure) -> Vec<&str> {
+    structure.primary_key.iter().map(String::as_str).collect()
 }

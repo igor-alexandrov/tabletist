@@ -401,7 +401,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         .map_or((false, false), |workspace| {
             let prompt = workspace.command.is_some();
             let save = workspace.save_refused && !prompt;
-            let said = workspace.command_error.is_some() || workspace.review_refused;
+            let said = workspace.command_error.is_some()
+                || workspace.review_refused
+                || workspace.label_refused.is_some();
             (prompt, said || save)
         });
     // An editor that just opened takes the keyboard when its field is
@@ -451,10 +453,22 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // Arrows go to the tree when the user last worked there (or no grid is
     // showing), else to the grid.
     let any_grid = grid || sql_grid;
+    // The Structure view of the table on screen: its columns stand where
+    // the rows do, and have a cursor of their own.
+    let structure = object.filter(|&(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.view == crate::model::ObjectView::Structure)
+    });
     let tree_arrows = !editing
-        && app
-            .workspace(active)
-            .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree || !any_grid);
+        && app.workspace(active).is_some_and(|workspace| {
+            let nowhere_else = !any_grid && structure.is_none();
+            workspace.pane == crate::model::Pane::Tree || nowhere_else
+        });
+    // That view has the keys: the tree does not, nor a field, a button or
+    // a dialog.
+    let on_structure =
+        structure.filter(|_| !editing && !tree_arrows && !focused && app.dialog.is_none());
     // The SQL editor on screen, while it has the keyboard: the completion
     // list's keys are its keys, and no other pane's. (A text field then
     // has the keyboard: no need to ask `editing` as well.)
@@ -552,13 +566,22 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // It has no field, and every key and letter of the frame is its own:
     // they are taken here, before the shortcuts below and before the
     // picker's field, whose text and cursor stay as they are.
-    let choosing = picking.filter(|&(tab, id)| {
+    let beside_picker = picking.filter(|&(tab, id)| {
         app.workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
             .and_then(|object| object.edits.editor.as_ref())
             .and_then(|editor| editor.picker.as_ref())
             .is_some_and(|picker| picker.chooser.is_some())
     });
+    // Or it is open in the Structure view, which has no field at all.
+    let in_structure = structure.filter(|&(tab, id)| {
+        app.dialog.is_none()
+            && app
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id))
+                .is_some_and(|object| object.label_chooser.is_some())
+    });
+    let choosing = beside_picker.or(in_structure);
     if let Some(chooser) = choosing {
         chooser_keys(ctx, chooser, (&app.keymap, layout), &mut actions);
     }
@@ -708,6 +731,25 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
         if on(input, Command::ToggleSidebar, Scope::Global).count > 0 {
             actions.push(Action::ToggleSidebar(active));
+        }
+        // The Structure view's keys: its cursor, one line for each press,
+        // the chooser of the table's label, and the column under the
+        // cursor as that label. Fresh presses only for the last two: held,
+        // the first would open the chooser and close it by turns.
+        if let Some((tab, id)) = on_structure {
+            let scope = Scope::Grid;
+            for keys in keymap.chords_now(layout, Command::MoveInStructure, scope, normal) {
+                let by = if keys == "up" { -1 } else { 1 };
+                let presses = presses(input, layout, keys).count;
+                actions.extend((0..presses).map(|_| Action::MoveStructureCursor { tab, id, by }));
+            }
+            if on(input, Command::OpenLabelChooser, scope).fresh {
+                actions.push(Action::ToggleLabelChooser { tab, id });
+            }
+            if on(input, Command::UseAsLabel, scope).fresh {
+                let line = None;
+                actions.push(Action::UseAsLabel { tab, id, line });
+            }
         }
         if tree_arrows && !focused {
             use crate::model::TreeKey;
@@ -1685,6 +1727,8 @@ fn letters(
     // The rows of the table show: where the letters that edit a cell and
     // the one that drops a row are read, and not in the Structure view.
     let rows_show = object.is_some_and(|object| object.view == crate::model::ObjectView::Data);
+    let structure_shows =
+        object.is_some_and(|object| object.view == crate::model::ObjectView::Structure);
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
@@ -1826,6 +1870,9 @@ fn letters(
         crate::keymap::When::Note => note.is_some(),
         crate::keymap::When::RefusedWrite => has_card,
         crate::keymap::When::NewRow => on_new,
+        // The Structure view shows where the rows would: its own keys
+        // come before the rows' there.
+        crate::keymap::When::Structure => structure_shows,
         _ => false,
     };
     let review_only = |when: crate::keymap::When| when == crate::keymap::When::Review;
@@ -1991,6 +2038,16 @@ fn letters(
             }
             (Some(Command::OpenReferencedRow), Some(object_tab)) => {
                 actions.push(Action::FollowSelectedKey { tab, object_tab });
+            }
+            // The Structure view's cursor, and the column under it as
+            // what labels the table's rows.
+            (Some(Command::MoveInStructure), Some(id)) => {
+                let by = if char == 'k' { -1 } else { 1 };
+                actions.push(Action::MoveStructureCursor { tab, id, by });
+            }
+            (Some(Command::UseAsLabel), Some(id)) => {
+                let line = None;
+                actions.push(Action::UseAsLabel { tab, id, line });
             }
             (Some(Command::CopyCells), Some(_)) => {
                 if let Some(text) = app.copy_text(false) {

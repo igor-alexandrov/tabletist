@@ -37,6 +37,17 @@ pub struct Open {
     pub connection: (String, Environment),
 }
 
+/// Where the chooser stands.
+#[derive(Debug, Clone, Copy)]
+pub enum Place {
+    /// Beside a picker's list: to its right where the window has the
+    /// room, else to its left.
+    Beside(Rect),
+    /// Under what opened it in the Structure view, their left edges
+    /// together.
+    Under(Rect),
+}
+
 /// What was asked of the chooser this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Asked {
@@ -122,7 +133,7 @@ fn keys_line(ui: &Ui, look: &Look) -> String {
 }
 
 /// Why a column cannot be chosen, in the look's words.
-fn reason(excluded: Excluded, look: &Look, locale: Locale) -> String {
+pub fn reason(excluded: Excluded, look: &Look, locale: Locale) -> String {
     let words = match excluded {
         Excluded::Key => "the key",
         Excluded::Binary => "binary",
@@ -220,34 +231,49 @@ fn words(ui: &mut Ui, text: &str, color: egui::Color32, look: &Look) {
         .label(ui);
 }
 
-/// Draws the chooser beside the list at `beside`, on the side that has
-/// the room. `field` is the picker's field, which has the keyboard: its
-/// node says which line the keys are on.
+/// Draws the chooser at `place`. `field` is the picker's field, which
+/// has the keyboard: its node says which line the keys are on. The
+/// Structure view has no field, and the keys are the view's.
 pub fn show(
     ui: &Ui,
     open: &Open,
-    beside: Rect,
-    field: Id,
+    place: Place,
+    field: Option<Id>,
     (look, palette, locale): (&Look, &Palette, Locale),
 ) -> Shown {
     let frame = menu::frame(look, palette);
     let (wanted, gap) = (width(look), gap(look));
     let screen = ui.ctx().content_rect();
-    // To the list's right where the window has the room, else to its
-    // left. Where neither side has it, on the side with more, as wide as
-    // that side lets it be and no narrower than a menu reads at: then it
-    // stands over the list's edge.
-    let right = screen.right() - beside.right() - gap;
-    let before = beside.left() - gap - screen.left();
-    let (left, width) = if right >= wanted {
-        (beside.right() + gap, wanted)
-    } else if before >= wanted {
-        (beside.left() - gap - wanted, wanted)
-    } else if right >= before {
-        (beside.right() + gap, right.clamp(NARROW, wanted))
-    } else {
-        let width = before.clamp(NARROW, wanted);
-        (beside.left() - gap - width, width)
+    let (left, top, width) = match place {
+        Place::Beside(beside) => {
+            // To the list's right where the window has the room, else to
+            // its left. Where neither side has it, on the side with more,
+            // as wide as that side lets it be and no narrower than a menu
+            // reads at: then it stands over the list's edge.
+            let right = screen.right() - beside.right() - gap;
+            let before = beside.left() - gap - screen.left();
+            let (left, width) = if right >= wanted {
+                (beside.right() + gap, wanted)
+            } else if before >= wanted {
+                (beside.left() - gap - wanted, wanted)
+            } else if right >= before {
+                (beside.right() + gap, right.clamp(NARROW, wanted))
+            } else {
+                let width = before.clamp(NARROW, wanted);
+                (beside.left() - gap - width, width)
+            };
+            (left, beside.top(), width)
+        }
+        // From the anchor's left edge, or from its right where that would
+        // pass the window's: a button that ends its line.
+        Place::Under(anchor) => {
+            let left = if anchor.left() + wanted > screen.right() {
+                anchor.right() - wanted
+            } else {
+                anchor.left()
+            };
+            (left, anchor.bottom() + gap, wanted)
+        }
     };
     let id = Id::new("label-chooser");
     let menu_id = id.with("menu");
@@ -265,7 +291,7 @@ pub fn show(
         .order(egui::Order::Foreground)
         .fade_in(false)
         .constrain(true)
-        .fixed_pos(pos2(left, beside.top()))
+        .fixed_pos(pos2(left, top))
         .show(ui.ctx(), |ui| {
             frame.show(ui, |ui| {
                 ui.set_width(width - frame.total_margin().sum().x);
@@ -323,7 +349,7 @@ pub fn show(
                             ui.ctx().accesskit_node_builder(response.id, |node| {
                                 node.set_role(Role::MenuItemRadio);
                             });
-                            if lit {
+                            if let (true, Some(field)) = (lit, field) {
                                 // The keyboard stays in the field: its node
                                 // says which line is the current one.
                                 ui.ctx().accesskit_node_builder(field, |node| {

@@ -858,8 +858,9 @@ pub fn isbns_structure() -> tabletist_db::Structure {
     }
 }
 
-/// The Bookshop's `editions`, cut to what a key to `isbns` needs: `isbn`
-/// is a foreign key to `isbns.isbn`.
+/// The Bookshop's `editions`, cut to what a key to `isbns` and the chooser
+/// of a label need: `isbn` is a foreign key to `isbns.isbn`, and `cover`
+/// holds bytes.
 pub fn editions_structure() -> tabletist_db::Structure {
     use tabletist_db::ColumnInfo;
     let column = |name: &str, type_name: &str| ColumnInfo {
@@ -872,6 +873,7 @@ pub fn editions_structure() -> tabletist_db::Structure {
             column("id", "INTEGER"),
             column("isbn", "TEXT"),
             column("title", "TEXT"),
+            column("cover", "BLOB"),
         ],
         primary_key: vec!["id".into()],
         foreign_keys: vec![tabletist_db::ForeignKeyInfo {
@@ -897,6 +899,7 @@ pub fn editions_page() -> RowPage {
             Value::Int(id),
             Value::Text(isbn.into()),
             Value::Text(title.into()),
+            Value::Null,
         ]
     };
     RowPage {
@@ -904,6 +907,7 @@ pub fn editions_page() -> RowPage {
             meta("id", "INTEGER", ValueKind::Numeric),
             meta("isbn", "TEXT", ValueKind::Text),
             meta("title", "TEXT", ValueKind::Text),
+            meta("cover", "BLOB", ValueKind::Binary),
         ],
         rows: vec![
             edition(1, "978-1-4028-9462-6", "The Lighthouse"),

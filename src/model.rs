@@ -363,6 +363,42 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Move the cursor of the Structure view's columns `by` lines.
+    MoveStructureCursor {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Put that cursor on `line`: a click on it.
+    SetStructureCursor {
+        tab: ConnTabId,
+        id: TabId,
+        line: usize,
+    },
+    /// Use the column on `line` of the Structure view as what labels the
+    /// table's rows, or the one under the cursor: a column's menu, the
+    /// view's key. A column that cannot be a label is refused, and the
+    /// workspace says why.
+    UseAsLabel {
+        tab: ConnTabId,
+        id: TabId,
+        line: Option<usize>,
+    },
+    /// Keep `choice` as what labels the rows of the table the tab shows:
+    /// the Structure view's Use Automatic, the prompt's lines.
+    SetLabel {
+        tab: ConnTabId,
+        id: TabId,
+        choice: crate::labels::LabelChoice,
+    },
+    /// Label the table the tab shows by its column `name`, as a line of
+    /// the prompt names it. Refused, with why, where no column is called
+    /// that or the column cannot be a label.
+    LabelByName {
+        tab: ConnTabId,
+        id: TabId,
+        name: String,
+    },
     /// Add a line break and move the text into the large editor.
     EditorBreak {
         tab: ConnTabId,
@@ -767,6 +803,10 @@ pub struct Workspace {
     /// `:diff` was run with nothing pending. The terminal's line says so,
     /// until the next key.
     pub review_refused: bool,
+    /// A column was named for a table's label and was not taken: the
+    /// tab whose table it was named for, its name as it was given, and
+    /// why. Said there, and nowhere else, until the next key.
+    pub label_refused: Option<(TabId, String, crate::labels::Refused)>,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
     pub fold_documents: Option<TabId>,
     /// When the session last connected, in seconds since the Unix epoch
@@ -1997,6 +2037,14 @@ pub struct ObjectTab {
     /// values by column. It is the tab's own and goes with the tab. A
     /// reload, a save and a discard leave it.
     pub yanked: Option<crate::edit::Yank>,
+    /// The line of the Structure view's columns the cursor is on: the
+    /// column its keys act on. Held inside the columns there are, where
+    /// it moves and where a structure arrives.
+    pub structure_cursor: usize,
+    /// The chooser of what labels this table's rows, while it is open in
+    /// the Structure view. A picker's chooser is the picker's own
+    /// (`key_picker::Picker::chooser`).
+    pub label_chooser: Option<crate::labels::Chooser>,
 }
 
 /// The row panel's text for one row, formatted once when the selection or
@@ -2128,6 +2176,8 @@ impl ObjectTab {
             focus_field: None,
             edits: crate::edit::Edits::default(),
             yanked: None,
+            structure_cursor: 0,
+            label_chooser: None,
         }
     }
 
@@ -2973,6 +3023,7 @@ impl Workspace {
             command_error: None,
             save_refused: false,
             review_refused: false,
+            label_refused: None,
             fold_documents: None,
             connected_at: None,
         }
@@ -2986,13 +3037,14 @@ impl Workspace {
         self.tabs.iter_mut().find(|tab| tab.id() == id)
     }
 
-    /// The lines of the chooser of what labels the rows of `table`, for
-    /// a foreign key that references its column `key`: by its columns as
-    /// the workspace knows them now.
-    pub fn label_lines(&self, table: &ObjectRef, key: &str) -> Vec<crate::labels::Line> {
+    /// The lines of the chooser of what labels the rows of `table`, by
+    /// its columns as the workspace knows them now. `keys` are the
+    /// columns its rows are found by: the one a picker's foreign key
+    /// references, or the table's primary key.
+    pub fn label_lines(&self, table: &ObjectRef, keys: &[&str]) -> Vec<crate::labels::Line> {
         let known = self.columns.get(table);
         let columns = known.and_then(|kept| kept.value.as_deref());
-        crate::labels::lines(self.driver.dialect(), columns, &[key])
+        crate::labels::lines(self.driver.dialect(), columns, keys)
     }
 
     pub fn object_tab(&self, id: TabId) -> Option<&ObjectTab> {

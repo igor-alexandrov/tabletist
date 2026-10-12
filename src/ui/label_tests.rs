@@ -13,8 +13,8 @@ use tabletist_db::{LookupPart, ObjectRef};
 use crate::backend::{Command, Event, RequestId, StateFile};
 use crate::connections::ConnectionId;
 use crate::key_picker::{Columns, Picker};
-use crate::labels::{Chooser, LabelChoice, Resolved, Source};
-use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
+use crate::labels::{Chooser, Excluded, LabelChoice, Refused, Resolved, Source};
+use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectView, Pane, TabId};
 use crate::testing::{GENRES, Harness, PUBLISHERS, node, publishers_structure};
 use crate::theme::Look;
 
@@ -1197,4 +1197,732 @@ fn the_terminal_look_confirms_a_choice_in_its_status_line() {
     harness.frame(vec![egui::Event::Text("0".into())]);
     harness.settle();
     assert!(!harness.has("label name · 3 matches"));
+}
+
+// The Structure door: run 3.
+
+fn editions() -> ObjectRef {
+    ObjectRef::new("main", "editions")
+}
+
+/// Shows the Structure view of the tab `id` and gives it the keys.
+fn to_structure(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+    let view = ObjectView::Structure;
+    let object_tab = id;
+    harness.app.apply(Action::SetView {
+        tab,
+        object_tab,
+        view,
+    });
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
+    harness.settle();
+}
+
+/// `publishers` open in a tab of its own, in its Structure view, on a
+/// connection that is read-only or is not. No cell is edited, and its
+/// rows never came: the view needs none.
+fn publishers_structure_in(look: Look, read_only: bool) -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let tab = harness.connect_fake_as(read_only);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: publishers(),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(publishers_structure());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, id);
+    (harness, tab, id)
+}
+
+/// `editions` in its Structure view: a key, a key to `isbns`, a title
+/// and bytes.
+fn editions_structure_in(look: Look) -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let (tab, id) = harness.editions();
+    to_structure(&mut harness, tab, id);
+    (harness, tab, id)
+}
+
+/// The chooser that is open in the Structure view of the tab.
+fn tab_chooser(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<&Chooser> {
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    object.label_chooser.as_ref()
+}
+
+fn cursor(harness: &Harness, tab: ConnTabId, id: TabId) -> usize {
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    object.structure_cursor
+}
+
+/// What is kept for `table` on the connection of `tab`.
+fn kept(harness: &Harness, tab: ConnTabId, table: &ObjectRef) -> LabelChoice {
+    harness.app.labels.choice(&connection(harness, tab), table)
+}
+
+/// Why the last column named for a label was not taken.
+fn refused(harness: &Harness, tab: ConnTabId) -> Option<(String, Refused)> {
+    let noted = harness.app.workspace(tab).unwrap().label_refused.clone();
+    noted.map(|(_, name, why)| (name, why))
+}
+
+/// Runs `line` at the terminal look's prompt.
+fn run(harness: &mut Harness, tab: ConnTabId, line: &str) {
+    harness.app.apply(Action::OpenCommand(tab));
+    harness.app.workspace_mut(tab).unwrap().command = Some(line.to_owned());
+    harness.app.apply(Action::RunCommand(tab));
+    harness.settle();
+}
+
+/// A key that types `text`, as a keyboard sends it: the press with its
+/// text, then the release.
+fn type_key(harness: &mut Harness, key: Key, text: &str) {
+    harness.settle();
+    harness.frame(vec![
+        crate::testing::key(key, Modifiers::NONE),
+        egui::Event::Text(text.into()),
+    ]);
+    harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+    harness.settle();
+}
+
+/// Clicks the text `label` with the pointer's `button`, as a mouse does.
+fn click_text(harness: &mut Harness, label: &str, button: egui::PointerButton) {
+    let tree = harness.settle();
+    let at = crate::testing::bounds(&tree, label, Role::Label)
+        .unwrap_or_else(|| panic!("nothing reads {label:?}"))
+        .center();
+    let event = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![event(true)]);
+    harness.frame(vec![event(false)]);
+    harness.settle();
+}
+
+/// Whether the tree has a node `label` that cannot be acted on.
+fn disabled(harness: &mut Harness, label: &str) -> Option<bool> {
+    let tree = harness.settle();
+    let mut nodes = tree.nodes.iter();
+    let found = nodes.find(|(_, node)| node.label() == Some(label))?;
+    Some(found.1.is_disabled())
+}
+
+/// What a screen reader reads after the name of the node `label`.
+fn described(harness: &mut Harness, label: &str) -> Option<String> {
+    let tree = harness.settle();
+    let mut nodes = tree.nodes.iter();
+    let found = nodes.find(|(_, node)| node.label() == Some(label))?;
+    found.1.description().map(str::to_owned)
+}
+
+/// A press and a release of the pointer's first button at `at`.
+fn click_at(harness: &mut Harness, at: egui::Pos2) {
+    let event = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![event(true)]);
+    harness.frame(vec![event(false)]);
+    harness.settle();
+}
+
+/// Test 5: the Structure view of the table a key points at sets its
+/// label, on a connection that opens read-only and with no cell edited.
+/// The chooser is the picker's. Nothing is sent to the database: the
+/// file is written, and that is all.
+#[test]
+fn the_structure_view_sets_the_label_on_a_read_only_connection() {
+    let (mut harness, tab, id) = publishers_structure_in(Look::macos(), true);
+    let access = harness.app.workspace(tab).unwrap().access;
+    assert_eq!(access, tabletist_db::Access::ReadOnly);
+    // The line is one thing for a screen reader.
+    let tree = harness.settle();
+    let line = "Label for foreign keys: name, Automatic";
+    assert!(node(&tree, line, Role::Group).is_some());
+    let help = "Fields that point at publishers show and search this column. \
+                On this computer only; nothing is written to the database.";
+    assert!(harness.has(help));
+    // The column that labels is marked on its line.
+    assert!(harness.has("name, label column"));
+    let before = harness.app.backend.sent.len();
+    harness.click("Change label column");
+    let open = tab_chooser(&harness, tab, id).expect("the chooser is open");
+    assert_eq!((open.at, &open.choice), (0, &LabelChoice::Automatic));
+    let tree = harness.settle();
+    assert!(node(&tree, "Label publishers by", Role::Menu).is_some());
+    for name in [
+        "Automatic, uses name",
+        "No label, keys only",
+        "name, TEXT",
+        "id, INTEGER, the key, unavailable",
+    ] {
+        assert!(node(&tree, name, Role::MenuItemRadio).is_some(), "{name}");
+    }
+    assert!(harness.has(
+        "For publishers in Fixture · dev, on this computer. Nothing is written to the database."
+    ));
+    // Its keys are the chooser's, with no field anywhere.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(tab_chooser(&harness, tab, id).is_none());
+    assert_eq!(kept(&harness, tab, &publishers()), column("name"));
+    assert!(harness.has("Label for foreign keys: name, Set by you"));
+    // The way back stands before what changes it, as the board has them.
+    let tree = harness.settle();
+    let left = |name| {
+        let button = crate::testing::bounds(&tree, name, Role::Button);
+        button.unwrap_or_else(|| panic!("no button {name}")).left()
+    };
+    assert!(left("Use Automatic") < left("Change label column"));
+    let since = &harness.app.backend.sent[before..];
+    let written = |command: &Command| {
+        matches!(
+            command,
+            Command::Save {
+                file: StateFile::Labels(_),
+                ..
+            }
+        )
+    };
+    assert!(since.iter().all(written), "{} commands", since.len());
+    assert_eq!(saved(&harness), [harness.app.labels.clone()]);
+    // And the way back.
+    harness.click("Use Automatic");
+    assert_eq!(kept(&harness, tab, &publishers()), LabelChoice::Automatic);
+    assert!(harness.has("Label for foreign keys: name, Automatic"));
+    assert!(!harness.has("Use Automatic"));
+}
+
+/// The view's key opens the chooser and closes nothing else; Esc and a
+/// change of view close it.
+#[test]
+fn the_structure_views_key_opens_the_chooser() {
+    let (mut harness, tab, id) = publishers_structure_in(Look::macos(), false);
+    harness.press(Key::L, Modifiers::COMMAND);
+    assert!(tab_chooser(&harness, tab, id).is_some());
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(tab_chooser(&harness, tab, id).is_none());
+    assert!(saved(&harness).is_empty());
+    harness.press(Key::L, Modifiers::COMMAND);
+    assert!(tab_chooser(&harness, tab, id).is_some());
+    let (view, object_tab) = (ObjectView::Data, id);
+    harness.app.apply(Action::SetView {
+        tab,
+        object_tab,
+        view,
+    });
+    assert!(tab_chooser(&harness, tab, id).is_none());
+    // With the arrows on the tree the key is not the view's.
+    to_structure(&mut harness, tab, id);
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+    harness.press(Key::L, Modifiers::COMMAND);
+    assert!(tab_chooser(&harness, tab, id).is_none());
+}
+
+/// The view has a cursor on the lines of its columns: the arrows move it
+/// in every look and `j` and `k` in the Omarchy look, it stops at the
+/// first line and the last, and a click puts it on a line.
+#[test]
+fn the_structure_view_has_a_cursor_on_its_columns() {
+    let (mut harness, tab, id) = editions_structure_in(Look::omarchy());
+    assert_eq!(cursor(&harness, tab, id), 0);
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::J, "j");
+    assert_eq!(cursor(&harness, tab, id), 2);
+    type_key(&mut harness, Key::K, "k");
+    assert_eq!(cursor(&harness, tab, id), 1);
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(cursor(&harness, tab, id), 2);
+    for _ in 0..5 {
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+    }
+    assert_eq!(cursor(&harness, tab, id), 3);
+    for _ in 0..5 {
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+    }
+    assert_eq!(cursor(&harness, tab, id), 0);
+    // The rows' selection did not move under it.
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert_eq!(object.selection, None);
+    // A click on a line, with the keys on the tree: the line has the
+    // cursor and the view the keys.
+    let (mut harness, tab, id) = editions_structure_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+    click_text(&mut harness, "title", egui::PointerButton::Primary);
+    assert_eq!(cursor(&harness, tab, id), 2);
+    assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert_eq!(cursor(&harness, tab, id), 1);
+}
+
+/// Test 6: the key and a column of bytes cannot be chosen, in the
+/// chooser, from a column's menu, with the view's key or by a line of
+/// the prompt, and each says why.
+#[test]
+fn the_key_and_bytes_are_refused_with_their_reason() {
+    // The chooser lists them, and they answer no click.
+    let (mut harness, tab, id) = editions_structure_in(Look::macos());
+    harness.click("Change label column");
+    let tree = harness.settle();
+    for name in [
+        "id, INTEGER, the key, unavailable",
+        "cover, BLOB, binary, unavailable",
+    ] {
+        assert!(node(&tree, name, Role::MenuItemRadio).is_some(), "{name}");
+        harness.click(name);
+        assert!(tab_chooser(&harness, tab, id).is_some(), "{name}");
+    }
+    harness.press(Key::Escape, Modifiers::NONE);
+    // A column's menu offers it, and says why not on those two.
+    let why = |harness: &mut Harness| described(harness, "Use as label");
+    click_text(&mut harness, "cover", egui::PointerButton::Secondary);
+    assert_eq!(disabled(&mut harness, "Use as label"), Some(true));
+    assert_eq!(why(&mut harness).as_deref(), Some("binary"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    click_text(&mut harness, "id", egui::PointerButton::Secondary);
+    assert_eq!(why(&mut harness).as_deref(), Some("the key"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    click_text(&mut harness, "title", egui::PointerButton::Secondary);
+    assert_eq!(disabled(&mut harness, "Use as label"), Some(false));
+    harness.press(Key::Escape, Modifiers::NONE);
+    // The view's key on the key's line: refused, and the view says why
+    // until the cursor moves.
+    assert_eq!(cursor(&harness, tab, id), 2);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    harness.press(Key::L, Modifiers::COMMAND | Modifiers::ALT);
+    let key = Refused::Excluded(Excluded::Key);
+    assert_eq!(refused(&harness, tab), Some(("id".to_owned(), key)));
+    assert!(harness.has("id cannot be the label (the key)"));
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(refused(&harness, tab), None);
+    assert!(!harness.has("id cannot be the label (the key)"));
+    assert_eq!(kept(&harness, tab, &editions()), LabelChoice::Automatic);
+    assert!(saved(&harness).is_empty());
+    // A line of the prompt that names one, and one that names none.
+    let (mut harness, tab, _) = editions_structure_in(Look::omarchy());
+    for (line, why) in [
+        ("label cover", Refused::Excluded(Excluded::Binary)),
+        ("label id", Refused::Excluded(Excluded::Key)),
+        ("label nope", Refused::NoColumn),
+    ] {
+        run(&mut harness, tab, line);
+        let name = line.trim_start_matches("label ").to_owned();
+        assert_eq!(refused(&harness, tab), Some((name, why)), "{line}");
+        assert_eq!(kept(&harness, tab, &editions()), LabelChoice::Automatic);
+    }
+    // Until the next key.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(refused(&harness, tab), None);
+    assert!(saved(&harness).is_empty());
+}
+
+/// Test 12: the Omarchy look's `gl` and the prompt's three lines keep
+/// what the other looks' controls keep.
+#[test]
+fn the_terminal_looks_keys_keep_what_the_buttons_keep() {
+    let (mut omarchy, tab, id) = editions_structure_in(Look::omarchy());
+    let (mut macos, mac_tab, mac_id) = editions_structure_in(Look::macos());
+    let same = |omarchy: &Harness, macos: &Harness, choice: LabelChoice| {
+        assert_eq!(kept(omarchy, tab, &editions()), choice, "omarchy");
+        assert_eq!(kept(macos, mac_tab, &editions()), choice, "macos");
+    };
+    // The column under the cursor: `gl`, and a column's menu.
+    type_key(&mut omarchy, Key::J, "j");
+    type_key(&mut omarchy, Key::J, "j");
+    type_key(&mut omarchy, Key::G, "g");
+    type_key(&mut omarchy, Key::L, "l");
+    click_text(&mut macos, "title", egui::PointerButton::Secondary);
+    macos.click("Use as label");
+    same(&omarchy, &macos, column("title"));
+    assert!(omarchy.has("title, label column"));
+    assert!(macos.has("title, label column"));
+    // Back to Automatic: `:label auto`, and the button.
+    run(&mut omarchy, tab, "label auto");
+    macos.click("Use Automatic");
+    same(&omarchy, &macos, LabelChoice::Automatic);
+    // Keys only: `:label none`, and the chooser's line.
+    run(&mut omarchy, tab, "label none");
+    macos.click("Change label column");
+    macos.click("No label, keys only");
+    same(&omarchy, &macos, LabelChoice::NoLabel);
+    // A column by its name: `:label isbn`, and the chooser's line. `isbn`
+    // is a foreign key here and no key of this table's.
+    run(&mut omarchy, tab, "label isbn");
+    macos.click("Change label column");
+    macos.click("isbn, TEXT");
+    same(&omarchy, &macos, column("isbn"));
+    // `:label` alone opens the chooser, whose keys are `j`, `k` and Enter.
+    run(&mut omarchy, tab, "label");
+    assert!(tab_chooser(&omarchy, tab, id).is_some());
+    assert!(tab_chooser(&macos, mac_tab, mac_id).is_none());
+    type_key(&mut omarchy, Key::K, "k");
+    type_key(&mut omarchy, Key::K, "k");
+    omarchy.press(Key::Enter, Modifiers::NONE);
+    assert!(tab_chooser(&omarchy, tab, id).is_none());
+    assert_eq!(kept(&omarchy, tab, &editions()), LabelChoice::Automatic);
+}
+
+/// The Omarchy look's view says the label in its own words, and names
+/// its keys where the other looks have buttons.
+#[test]
+fn the_terminal_looks_structure_view_says_the_label_in_its_words() {
+    let (mut harness, tab, _) = publishers_structure_in(Look::omarchy(), true);
+    assert!(harness.has("Label for foreign keys: name, automatic"));
+    let help = "fields that point at publishers show and search the label column · \
+                on this computer only, nothing is written to the database";
+    assert!(harness.has(help));
+    assert!(harness.painted_rect("fk label").is_some());
+    let keys = ":label choose · gl use the column under the cursor";
+    assert!(
+        harness.painted_rect(keys).is_some(),
+        "{:?}",
+        harness.painted
+    );
+    assert!(!harness.has("Change label column"));
+    // The column that labels has the look's mark at its name: an arrow,
+    // in whichever form the font draws.
+    let marks = ["◂ label", "< label"];
+    let marked = marks
+        .iter()
+        .any(|mark| harness.painted_rect(mark).is_some());
+    assert!(marked, "{:?}", harness.painted);
+    // Once the user chose, the line names the way back in the keys' place.
+    run(&mut harness, tab, "label name");
+    assert!(harness.has("Label for foreign keys: name, set by you"));
+    let back = ":label auto back to automatic";
+    assert!(
+        harness.painted_rect(back).is_some(),
+        "{:?}",
+        harness.painted
+    );
+    assert!(harness.painted_rect(keys).is_none());
+}
+
+/// A table of its key alone: the line says so, the button is disabled,
+/// and nothing opens.
+#[test]
+fn the_structure_view_of_a_table_of_its_key_alone_says_so() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let tab = harness.connect_fake_as(false);
+    let isbns = ObjectRef::new("main", "isbns");
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: isbns.clone(),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(crate::testing::isbns_structure());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, id);
+    assert!(harness.has("Label for foreign keys: isbns has only its key column"));
+    assert_eq!(disabled(&mut harness, "Change label column"), Some(true));
+    harness.press(Key::L, Modifiers::COMMAND);
+    assert!(tab_chooser(&harness, tab, id).is_none());
+    // Its one column is the key: the view's key says so.
+    harness.press(Key::L, Modifiers::COMMAND | Modifiers::ALT);
+    let key = Refused::Excluded(Excluded::Key);
+    assert_eq!(refused(&harness, tab), Some(("isbn".to_owned(), key)));
+    assert_eq!(kept(&harness, tab, &isbns), LabelChoice::Automatic);
+}
+
+/// A view labels nothing: no foreign key points at one. Its Structure
+/// view has no label line, and the prompt's lines do nothing there.
+#[test]
+fn a_views_structure_has_no_label() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    let tab = harness.connect_fake_as(false);
+    let view = ObjectRef::new("main", "active_users");
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: view.clone(),
+        kind: tabletist_db::ObjectKind::View,
+        pin: true,
+    });
+    harness.answer_structure(publishers_structure());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, id);
+    assert!(!harness.has("Label for foreign keys: name, automatic"));
+    run(&mut harness, tab, "label name");
+    run(&mut harness, tab, "label");
+    assert!(tab_chooser(&harness, tab, id).is_none());
+    assert_eq!(kept(&harness, tab, &view), LabelChoice::Automatic);
+    assert!(saved(&harness).is_empty());
+}
+
+/// The lines of the prompt are the Structure view's: over the rows
+/// `:label` is no command.
+#[test]
+fn the_label_lines_are_no_commands_over_the_rows() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    let (tab, id) = harness.editions();
+    for line in ["label", "label auto", "label title"] {
+        run(&mut harness, tab, line);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.command_error.as_deref(), Some(line));
+        assert!(tab_chooser(&harness, tab, id).is_none());
+    }
+    assert!(saved(&harness).is_empty());
+}
+
+/// A choice made in the Structure view labels the pickers of every key
+/// that points at the table: the next one opened searches by it.
+#[test]
+fn a_choice_made_in_the_structure_view_labels_the_pickers() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // `publishers` in a tab of its own, beside the covers'.
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: publishers(),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(publishers_structure());
+    let other = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, other);
+    harness.click("Change label column");
+    harness.click("No label, keys only");
+    assert_eq!(kept(&harness, tab, &publishers()), LabelChoice::NoLabel);
+    // Back on the covers: the picker lists keys alone.
+    harness.app.apply(Action::ActivateTab { tab, id });
+    harness.settle();
+    open(&mut harness, tab, id, 1);
+    let by_user = labelled(None, Source::User, Some("name"));
+    assert!(picker(&harness, tab, id).label == Columns::Known(by_user));
+    assert!(!searched(&harness).is_empty());
+    assert!(searched(&harness).iter().all(Option::is_none));
+}
+
+/// The view is a pane for the keyboard, as the rows are whose place it
+/// stands in: the Omarchy look's key for the pane to the right brings
+/// the keys to it from the tree, and its cursor's keys then answer.
+#[test]
+fn the_pane_keys_give_the_structure_view_the_keys() {
+    let (mut harness, tab, id) = editions_structure_in(Look::omarchy());
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+    harness.settle();
+    // On the tree `j` is the tree's.
+    type_key(&mut harness, Key::J, "j");
+    assert_eq!(cursor(&harness, tab, id), 0);
+    harness.press(Key::L, ctrl());
+    assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+    // With the keyboard on the view's one stop its chords answer too: the
+    // stop is a pane, and no control that would take the arrows itself.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(cursor(&harness, tab, id), 1);
+    type_key(&mut harness, Key::J, "j");
+    assert_eq!(cursor(&harness, tab, id), 2);
+    type_key(&mut harness, Key::G, "g");
+    type_key(&mut harness, Key::L, "l");
+    assert_eq!(kept(&harness, tab, &editions()), column("title"));
+}
+
+/// What was said of a column that was not taken is said of its table,
+/// in its tab: another table's Structure view does not say it.
+#[test]
+fn a_refusal_is_said_in_its_own_tab_alone() {
+    let (mut harness, tab, _) = editions_structure_in(Look::macos());
+    harness.press(Key::L, Modifiers::COMMAND | Modifiers::ALT);
+    let said = "id cannot be the label (the key)";
+    assert!(harness.has(said));
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: publishers(),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(publishers_structure());
+    let other = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, other);
+    assert!(harness.has("Label for foreign keys: name, Automatic"));
+    assert!(!harness.has(said));
+}
+
+/// A press beside the view's chooser closes it, as it closes a menu.
+#[test]
+fn a_press_beside_the_structure_views_chooser_closes_it() {
+    let (mut harness, tab, id) = publishers_structure_in(Look::macos(), false);
+    harness.click("Change label column");
+    assert!(tab_chooser(&harness, tab, id).is_some());
+    // Far from the chooser, which hangs under its button at the card's
+    // end: the middle of the window, near its foot.
+    let at = egui::pos2(harness.size.x / 2.0, harness.size.y - 120.0);
+    click_at(&mut harness, at);
+    assert!(tab_chooser(&harness, tab, id).is_none());
+    assert!(saved(&harness).is_empty());
+}
+
+/// The cursor stays on a line there is when the table's structure comes
+/// again with fewer columns.
+#[test]
+fn the_structure_views_cursor_stays_inside_the_columns() {
+    let (mut harness, tab, id) = editions_structure_in(Look::macos());
+    let line = 3;
+    harness
+        .app
+        .apply(Action::SetStructureCursor { tab, id, line });
+    assert_eq!(cursor(&harness, tab, id), 3);
+    let object_tab = id;
+    harness
+        .app
+        .apply(Action::RetryStructure { tab, object_tab });
+    harness.answer_structure(publishers_structure());
+    assert_eq!(cursor(&harness, tab, id), 1);
+}
+
+/// The editions with eighty columns after their own, in their Structure
+/// view: more lines than the window shows.
+fn wide_structure() -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let tab = harness.connect_fake_as(false);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: editions(),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    let mut wide = crate::testing::editions_structure();
+    for number in 0..80 {
+        wide.columns.push(tabletist_db::ColumnInfo {
+            name: format!("extra_{number:02}"),
+            type_name: "TEXT".into(),
+            ..tabletist_db::ColumnInfo::default()
+        });
+    }
+    harness.answer_structure(wide);
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    to_structure(&mut harness, tab, id);
+    (harness, tab, id)
+}
+
+/// Whether the words `name` are painted inside the window.
+fn in_sight(harness: &Harness, name: &str) -> bool {
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+    let painted = harness.painted_rect(name);
+    painted.is_some_and(|painted| window.contains_rect(painted))
+}
+
+/// Moves the Structure view's cursor and waits for the view: the jump is
+/// asked for where the line is drawn, and the view has it two frames
+/// after.
+fn move_cursor(harness: &mut Harness, tab: ConnTabId, id: TabId, by: isize) {
+    harness
+        .app
+        .apply(Action::MoveStructureCursor { tab, id, by });
+    harness.settle();
+    harness.settle();
+}
+
+/// A table with more columns than the window shows: the cursor's line
+/// is brought into view as the cursor moves, so the view's keys never
+/// act on a line that is out of sight.
+#[test]
+fn the_structure_views_cursor_is_scrolled_into_view() {
+    let (mut harness, tab, id) = wide_structure();
+    assert!(in_sight(&harness, "title"));
+    assert!(!in_sight(&harness, "extra_70"));
+    move_cursor(&mut harness, tab, id, 74);
+    assert_eq!(cursor(&harness, tab, id), 74);
+    assert!(
+        in_sight(&harness, "extra_70"),
+        "the cursor's line is out of sight"
+    );
+    // And back: the first line shows again.
+    move_cursor(&mut harness, tab, id, -74);
+    assert!(in_sight(&harness, "title"));
+    assert!(!in_sight(&harness, "extra_70"));
+}
+
+/// The view may be scrolled while the tree has the keys. When the keys
+/// come back to it, the cursor's line is brought into view again.
+#[test]
+fn the_structure_views_cursor_is_in_view_when_the_keys_come_back() {
+    let (mut harness, tab, id) = wide_structure();
+    move_cursor(&mut harness, tab, id, 74);
+    assert!(in_sight(&harness, "extra_70"));
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+    // The wheel, over the view, back to its top.
+    let over = egui::pos2(harness.size.x / 2.0, harness.size.y / 2.0);
+    harness.frame(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..10 {
+        harness.frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }]);
+    }
+    harness.finish_animations();
+    assert!(!in_sight(&harness, "extra_70"));
+    harness.app.apply(Action::GridKeys(tab));
+    harness.settle();
+    harness.settle();
+    assert!(
+        in_sight(&harness, "extra_70"),
+        "the cursor's line is out of sight"
+    );
+}
+
+/// Each table's Structure view keeps its own place: after another
+/// table's view was looked at, the cursor's line is where it was left.
+#[test]
+fn each_structure_view_keeps_its_own_place() {
+    let (mut harness, tab, id) = wide_structure();
+    move_cursor(&mut harness, tab, id, 74);
+    assert!(in_sight(&harness, "extra_70"));
+    // Another table, whose few columns need no scrolling.
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: publishers(),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(publishers_structure());
+    let other = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    assert_ne!(other, id);
+    to_structure(&mut harness, tab, other);
+    harness.settle();
+    assert!(!in_sight(&harness, "extra_70"));
+    harness.app.apply(Action::ActivateTab { tab, id });
+    harness.settle();
+    harness.settle();
+    assert!(
+        in_sight(&harness, "extra_70"),
+        "the cursor's line is out of sight"
+    );
+}
+
+/// What the keys do in a Structure view that has them: Reload reloads
+/// the table, where with the keys on the tree it reloads the tree.
+#[test]
+fn reload_in_the_structure_view_reloads_the_table() {
+    let (mut harness, tab, _) = publishers_structure_in(Look::macos(), false);
+    let described = |harness: &Harness| {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| matches!(command, Command::Describe { .. }))
+            .count()
+    };
+    let before = described(&harness);
+    harness.press(Key::R, Modifiers::COMMAND);
+    assert_eq!(described(&harness), before + 1);
+    // The tree's own reload asks for no table's structure.
+    harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+    harness.press(Key::R, Modifiers::COMMAND);
+    assert_eq!(described(&harness), before + 1);
 }

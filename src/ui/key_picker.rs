@@ -984,7 +984,9 @@ pub fn show(
         });
     if let Some(open) = names.chooser {
         let list = Rect::from_min_size(placed.pos, size);
-        let chooser = label_chooser::show(ui, open, list, field, (look, palette, locale));
+        let place = label_chooser::Place::Beside(list);
+        let skin = (look, palette, locale);
+        let chooser = label_chooser::show(ui, open, place, Some(field), skin);
         shown.pressed |= chooser.pressed;
         match chooser.asked {
             Some(label_chooser::Asked::Choose(line)) => {

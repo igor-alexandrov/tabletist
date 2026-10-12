@@ -1835,7 +1835,7 @@ pub(super) fn search_of(
             };
             super::label_chooser::Open {
                 at: chooser.at,
-                lines: workspace.label_lines(&picker.target, &picker.key),
+                lines: workspace.label_lines(&picker.target, &[&picker.key]),
                 choice: chooser.choice.clone(),
                 automatic: known.and_then(|label| label.automatic.clone()),
                 loading: known.is_none(),

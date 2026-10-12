@@ -643,6 +643,7 @@ impl App {
                     workspace.command_error = None;
                     workspace.save_refused = false;
                     workspace.review_refused = false;
+                    workspace.label_refused = None;
                 }
             }
             Action::CloseCommand(tab) => {
@@ -652,6 +653,7 @@ impl App {
                     workspace.command_error = None;
                     workspace.save_refused = false;
                     workspace.review_refused = false;
+                    workspace.label_refused = None;
                 }
             }
             Action::RunCommand(tab) => self.run_command(tab),
@@ -753,11 +755,15 @@ impl App {
                 }
                 let describe = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     object.view = view;
+                    // A chooser that was open in the Structure view was
+                    // that view's.
+                    object.label_chooser = None;
                     view == ObjectView::Structure && object.structure.needs_load()
                 });
                 if describe {
                     self.describe(tab, object_tab);
                 }
+                self.forget_refusal(tab);
             }
             Action::NextPage { tab, object_tab } => {
                 let moved = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
@@ -1045,14 +1051,16 @@ impl App {
                 self.in_label_chooser(tab, id, |chooser, lines| chooser.jump(lines, to));
             }
             Action::ChooseLabel { tab, id, line } => self.choose_label(tab, id, line),
-            Action::CloseLabelChooser { tab, id } => {
-                if let Some(picker) = self
-                    .editor_mut(tab, id)
-                    .and_then(|editor| editor.picker.as_mut())
-                {
-                    picker.chooser = None;
-                }
+            Action::CloseLabelChooser { tab, id } => self.close_label_chooser(tab, id),
+            Action::MoveStructureCursor { tab, id, by } => {
+                self.move_structure_cursor(tab, id, by);
             }
+            Action::SetStructureCursor { tab, id, line } => {
+                self.set_structure_cursor(tab, id, line);
+            }
+            Action::UseAsLabel { tab, id, line } => self.use_as_label(tab, id, line),
+            Action::SetLabel { tab, id, choice } => self.set_tab_label(tab, id, choice),
+            Action::LabelByName { tab, id, name } => self.label_by_name(tab, id, &name),
             Action::EditorBreak { tab, id } => {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     // At the end of the text, where the cursor of a field
@@ -1513,6 +1521,8 @@ impl App {
                     // From the Structure view: show the data, with the bar.
                     let from_structure = object.view != ObjectView::Data;
                     object.view = ObjectView::Data;
+                    // A chooser that was open in that view was the view's.
+                    object.label_chooser = None;
                     let bar = &mut object.filter;
                     bar.open = !bar.open || from_structure;
                     bar.focus = bar.open;
@@ -2545,6 +2555,12 @@ impl App {
                     let columns = columns.map(|structure| structure.columns.clone());
                     let named = object.object.clone();
                     object.structure.finish(request, result);
+                    // The Structure view's cursor stays on a line there
+                    // is: the table may have fewer columns now.
+                    if let Some(structure) = &object.structure.value {
+                        let last = structure.columns.len().saturating_sub(1);
+                        object.structure_cursor = object.structure_cursor.min(last);
+                    }
                     // The review was made of the structure before this
                     // one, its key and its types: it is made again.
                     object.edits.review = None;
