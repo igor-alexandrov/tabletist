@@ -147,6 +147,148 @@ pub fn resolve(
     }
 }
 
+/// One line of the chooser of a table's label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Line {
+    /// The app picks.
+    Automatic,
+    /// The rows are listed by their keys alone.
+    NoLabel,
+    /// A column of the table, with its type as the catalog names it.
+    /// `excluded` says why it cannot be chosen, where it cannot: it is
+    /// listed all the same, so the chooser says what the table holds.
+    Column {
+        name: String,
+        type_name: String,
+        excluded: Option<Excluded>,
+    },
+}
+
+impl Line {
+    /// What choosing the line keeps. None for a column that cannot be a
+    /// label.
+    pub fn choice(&self) -> Option<LabelChoice> {
+        match self {
+            Self::Automatic => Some(LabelChoice::Automatic),
+            Self::NoLabel => Some(LabelChoice::NoLabel),
+            Self::Column {
+                name,
+                excluded: None,
+                ..
+            } => Some(LabelChoice::Column(name.clone())),
+            Self::Column {
+                excluded: Some(_), ..
+            } => None,
+        }
+    }
+}
+
+/// The chooser's lines for a table of `columns`: Automatic, No label, the
+/// columns that can be chosen in the table's order, then the ones that
+/// cannot. While the columns are not known (`None`) the first two are all
+/// there is, and both can be chosen. `keys` as for [`excluded`].
+pub fn lines(dialect: Dialect, columns: Option<&[ColumnInfo]>, keys: &[&str]) -> Vec<Line> {
+    let mut lines = vec![Line::Automatic, Line::NoLabel];
+    let columns = columns.unwrap_or_default();
+    let line = |column: &ColumnInfo| Line::Column {
+        name: column.name.clone(),
+        type_name: column.type_name.clone(),
+        excluded: excluded(dialect, column, keys),
+    };
+    let (allowed, refused): (Vec<Line>, Vec<Line>) = columns
+        .iter()
+        .map(line)
+        .partition(|line| line.choice().is_some());
+    lines.extend(allowed);
+    lines.extend(refused);
+    lines
+}
+
+/// The chooser of a table's label, while it is open: where its keys are.
+/// Its lines are made from the table's columns each time they are read
+/// ([`lines`]), so columns that arrive while it is open show in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chooser {
+    /// The line the keys are on, among [`lines`].
+    pub at: usize,
+    /// What was chosen when it opened: the line that is marked.
+    pub choice: LabelChoice,
+    /// It opened before the table's columns were known.
+    pub waited: bool,
+}
+
+impl Chooser {
+    /// A chooser that opens on the line of `choice`, or on Automatic where
+    /// no line is the choice's (its column cannot be chosen any more).
+    pub fn open(lines: &[Line], choice: LabelChoice, waited: bool) -> Self {
+        let chosen = |line: &Line| line.choice().as_ref() == Some(&choice);
+        Self {
+            at: lines.iter().position(chosen).unwrap_or(0),
+            choice,
+            waited,
+        }
+    }
+
+    /// Moves `by` lines that can be chosen, stopping at the last of them
+    /// either way: a line that cannot be chosen is stepped over.
+    pub fn step(&mut self, lines: &[Line], by: isize) {
+        let open = |at: &usize| lines.get(*at).is_some_and(|line| line.choice().is_some());
+        for _ in 0..by.unsigned_abs() {
+            let next = if by > 0 {
+                (self.at + 1..lines.len()).find(open)
+            } else {
+                (0..self.at).rev().find(open)
+            };
+            match next {
+                Some(at) => self.at = at,
+                None => break,
+            }
+        }
+    }
+
+    /// Goes to the line at `index`, if it can be chosen: the pointer came
+    /// over it.
+    pub fn to(&mut self, lines: &[Line], index: usize) {
+        if lines.get(index).is_some_and(|line| line.choice().is_some()) {
+            self.at = index;
+        }
+    }
+
+    /// Goes to the next column after the line the keys are on whose name
+    /// begins with `typed`, whatever its case, and round from the last to
+    /// the first: typing a letter again goes on to the next such column.
+    /// Only a column that can be chosen is gone to.
+    pub fn jump(&mut self, lines: &[Line], typed: char) {
+        let begins = |line: &Line| match line {
+            Line::Column {
+                name,
+                excluded: None,
+                ..
+            } => name
+                .chars()
+                .next()
+                .is_some_and(|first| first.to_lowercase().eq(typed.to_lowercase())),
+            Line::Column {
+                excluded: Some(_), ..
+            }
+            | Line::Automatic
+            | Line::NoLabel => false,
+        };
+        let count = lines.len();
+        let found = (1..=count)
+            .map(|step| (self.at + step) % count)
+            .find(|at| begins(&lines[*at]));
+        if let Some(at) = found {
+            self.at = at;
+        }
+    }
+
+    /// What Enter keeps: the choice of the line the keys are on.
+    pub fn chosen(&self, lines: &[Line]) -> Option<LabelChoice> {
+        lines.get(self.at).and_then(Line::choice)
+    }
+}
+
 /// The file's format.
 pub const VERSION: u32 = 1;
 
@@ -424,6 +566,111 @@ mod tests {
         // and the choice stays the user's.
         let resolved = resolve(&chosen("name"), Dialect::Sqlite, &genres(), "name");
         assert_eq!((resolved.column, resolved.source), (None, Source::User));
+    }
+
+    /// The Bookshop's `editions` as the screenshot scenes have it, cut to
+    /// what matters: a key, two texts, bytes and a date.
+    fn editions() -> Vec<ColumnInfo> {
+        vec![
+            column("id", "bigint"),
+            column("title", "text"),
+            column("subtitle", "text"),
+            column("cover", "bytea"),
+            column("published_on", "date"),
+        ]
+    }
+
+    fn named(lines: &[Line]) -> Vec<(&str, Option<Excluded>)> {
+        lines
+            .iter()
+            .map(|line| match line {
+                Line::Automatic => ("Automatic", None),
+                Line::NoLabel => ("No label", None),
+                Line::Column { name, excluded, .. } => (name.as_str(), *excluded),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_chooser_lists_what_can_be_chosen_then_what_cannot() {
+        let lines = lines(Dialect::Postgres, Some(&editions()), &["id"]);
+        assert_eq!(
+            named(&lines),
+            [
+                ("Automatic", None),
+                ("No label", None),
+                ("title", None),
+                ("subtitle", None),
+                ("published_on", None),
+                ("id", Some(Excluded::Key)),
+                ("cover", Some(Excluded::Binary)),
+            ]
+        );
+        // A column's type is the catalog's word for it.
+        assert!(matches!(&lines[4], Line::Column { type_name, .. } if type_name == "date"));
+        // What a line keeps, and that a key and bytes keep nothing.
+        assert_eq!(lines[0].choice(), Some(LabelChoice::Automatic));
+        assert_eq!(lines[1].choice(), Some(LabelChoice::NoLabel));
+        assert_eq!(lines[3].choice(), Some(chosen("subtitle")));
+        assert_eq!(lines[5].choice(), None);
+        assert_eq!(lines[6].choice(), None);
+    }
+
+    #[test]
+    fn a_chooser_without_columns_offers_automatic_and_no_label() {
+        let waiting = lines(Dialect::Postgres, None, &["id"]);
+        assert_eq!(named(&waiting), [("Automatic", None), ("No label", None)]);
+        let mut chooser = Chooser::open(&waiting, LabelChoice::Automatic, true);
+        assert!(chooser.waited);
+        chooser.step(&waiting, 1);
+        assert_eq!(chooser.chosen(&waiting), Some(LabelChoice::NoLabel));
+        // The columns came: the keys are where they were.
+        let known = lines(Dialect::Postgres, Some(&editions()), &["id"]);
+        assert_eq!(chooser.chosen(&known), Some(LabelChoice::NoLabel));
+    }
+
+    #[test]
+    fn a_chooser_opens_on_the_choice_and_steps_over_what_cannot_be_chosen() {
+        let lines = lines(Dialect::Postgres, Some(&editions()), &["id"]);
+        let mut chooser = Chooser::open(&lines, chosen("subtitle"), false);
+        assert_eq!(chooser.at, 3);
+        // Down to the last column that can be chosen, and no further.
+        chooser.step(&lines, 1);
+        assert_eq!(chooser.chosen(&lines), Some(chosen("published_on")));
+        chooser.step(&lines, 5);
+        assert_eq!(chooser.at, 4);
+        // Up to Automatic, and no further.
+        chooser.step(&lines, -9);
+        assert_eq!(chooser.chosen(&lines), Some(LabelChoice::Automatic));
+        // The pointer goes to a line that can be chosen, and to no other.
+        chooser.to(&lines, 2);
+        assert_eq!(chooser.at, 2);
+        chooser.to(&lines, 6);
+        chooser.to(&lines, 60);
+        assert_eq!(chooser.at, 2);
+        // A choice no line is (the column is bytes now) opens on Automatic.
+        assert_eq!(Chooser::open(&lines, chosen("cover"), false).at, 0);
+    }
+
+    #[test]
+    fn a_letter_jumps_to_the_next_column_it_begins() {
+        let lines = lines(Dialect::Postgres, Some(&editions()), &["id"]);
+        let mut chooser = Chooser::open(&lines, LabelChoice::Automatic, false);
+        chooser.jump(&lines, 's');
+        assert_eq!(chooser.chosen(&lines), Some(chosen("subtitle")));
+        // Whatever its case, and on to the next and round again.
+        chooser.jump(&lines, 'T');
+        assert_eq!(chooser.chosen(&lines), Some(chosen("title")));
+        chooser.jump(&lines, 't');
+        assert_eq!(chooser.chosen(&lines), Some(chosen("title")));
+        chooser.jump(&lines, 'p');
+        assert_eq!(chooser.chosen(&lines), Some(chosen("published_on")));
+        // Never to a column that cannot be chosen, nor to the first two
+        // lines: `a` is no Automatic, `c` no cover.
+        for letter in ['a', 'n', 'c', 'i', 'z'] {
+            chooser.jump(&lines, letter);
+            assert_eq!(chooser.at, 4, "{letter}");
+        }
     }
 
     fn publishers() -> ObjectRef {
