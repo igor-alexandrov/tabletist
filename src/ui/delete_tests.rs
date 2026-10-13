@@ -5,11 +5,20 @@
 //! Only behaviour, names and words are checked here, on the Bookshop's
 //! `book_covers`. No colour, size or picture of the design is.
 
-use super::insert_audit_tests::{add, covers_as, covers_in, edits, select, selected, set};
+use egui::{Key, Modifiers};
+
+use super::insert_audit_tests::{
+    add, covers_as, covers_in, edits, painted, select, selected, set, type_key,
+};
 use crate::backend::Command;
 use crate::model::{Action, ConnTabId, TabId};
 use crate::testing::Harness;
 use crate::theme::Look;
+
+/// The desktop looks: the keys and the buttons are the same in both.
+fn desktop() -> [Look; 2] {
+    [Look::standard(), Look::macos()]
+}
 
 /// The last save that was sent.
 fn sent(harness: &Harness) -> &tabletist_db::ChangeSet {
@@ -228,4 +237,135 @@ fn a_refused_delete_stays_marked_with_its_error() {
     assert_eq!(failed, Some(error));
     assert_eq!(edits.counts().changes, 1);
     assert_eq!(page_ids(&harness, tab, id).len(), 3);
+}
+
+/// Spec 1 and test 1, in the desktop looks: Backspace and Delete mark the
+/// row, again restore it, and the key that puts a cell back restores it
+/// too.
+#[test]
+fn backspace_marks_the_row_and_again_restores_it() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        select(&mut harness, tab, id, (1, 2));
+        harness.press(Key::Backspace, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).deleted.contains_key(&1));
+        assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+        harness.press(Key::Backspace, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).deleted.is_empty());
+        harness.press(Key::Delete, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).deleted.contains_key(&1));
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert!(edits(&harness, tab, id).deleted.is_empty());
+    }
+}
+
+/// The same in the Omarchy look: `dd`, `dd` again, and `u`.
+#[test]
+fn dd_marks_the_row_and_again_restores_it() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::D, "d");
+    // One d waits for the other.
+    assert!(edits(&harness, tab, id).deleted.is_empty());
+    type_key(&mut harness, Key::D, "d");
+    assert!(edits(&harness, tab, id).deleted.contains_key(&1));
+    type_key(&mut harness, Key::D, "d");
+    type_key(&mut harness, Key::D, "d");
+    assert!(edits(&harness, tab, id).deleted.is_empty());
+    type_key(&mut harness, Key::D, "d");
+    type_key(&mut harness, Key::D, "d");
+    assert!(edits(&harness, tab, id).deleted.contains_key(&1));
+    type_key(&mut harness, Key::U, "u");
+    assert!(edits(&harness, tab, id).deleted.is_empty());
+}
+
+/// Test 2: with a cell's editor open the key edits its text.
+#[test]
+fn backspace_in_an_open_editor_never_marks_the_row() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        let cell = crate::model::CellPos { row: 1, col: 2 };
+        let start = crate::model::EditStart::Replace("audio".into());
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell,
+            start,
+        });
+        harness.settle();
+        harness.press(Key::Backspace, Modifiers::NONE);
+        let edits = edits(&harness, tab, id);
+        assert!(edits.deleted.is_empty());
+        assert!(edits.editor.is_some());
+    }
+}
+
+/// Spec 2 and test 6: the key says why a row cannot be deleted, in the
+/// spec's words, and marks nothing.
+#[test]
+fn the_key_says_why_a_row_cannot_be_deleted() {
+    let cases = [
+        (
+            tabletist_db::ObjectKind::Table,
+            true,
+            "Read-only connection",
+        ),
+        (
+            tabletist_db::ObjectKind::View,
+            false,
+            "book_covers can't be deleted from",
+        ),
+    ];
+    for (kind, read_only, reason) in cases {
+        let (mut harness, tab, id) = covers_as(Look::macos(), kind, read_only);
+        select(&mut harness, tab, id, (1, 2));
+        harness.press(Key::Backspace, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).deleted.is_empty());
+        assert_eq!(
+            crate::ui::toast::said(&harness.ctx).as_deref(),
+            Some(reason)
+        );
+    }
+}
+
+/// The Omarchy look says it in its own lower case, and keeps the table's
+/// name.
+#[test]
+fn dd_says_why_a_row_cannot_be_deleted() {
+    let view = tabletist_db::ObjectKind::View;
+    let (mut harness, tab, id) = covers_as(Look::omarchy(), view, false);
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::D, "d");
+    type_key(&mut harness, Key::D, "d");
+    assert!(edits(&harness, tab, id).deleted.is_empty());
+    assert_eq!(
+        crate::ui::toast::said(&harness.ctx).as_deref(),
+        Some("book_covers can't be deleted from")
+    );
+}
+
+#[test]
+fn a_table_without_a_key_says_its_rows_cannot_be_deleted_here() {
+    let locale = crate::i18n::Locale::default();
+    assert_eq!(
+        crate::ui::cell_editor::delete_text(crate::edit::Lock::NoKey, "book_imports", locale),
+        "book_imports has no primary key, so rows can't be deleted here"
+    );
+    // What holds for a while is said as an edit's reason is.
+    assert_eq!(
+        crate::ui::cell_editor::delete_text(crate::edit::Lock::Saving, "book_covers", locale),
+        "A save is running"
+    );
+}
+
+/// Spec 3: the Omarchy look says in its status line why a marked row's
+/// cell takes no edit.
+#[test]
+fn a_marked_rows_cell_says_restore_the_row_to_edit_it() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    mark(&mut harness, tab, id, 1);
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::I, "i");
+    assert!(edits(&harness, tab, id).editor.is_none());
+    assert!(painted(&harness, "restore the row to edit it."));
 }

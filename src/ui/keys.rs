@@ -1230,6 +1230,9 @@ fn editing_keys(
     // The field the keys were given back from: it gives up the keyboard
     // once the input is read.
     let mut left = None;
+    // Why the row's delete was refused: said once the input is read, since
+    // a toast asks the context for what this closure holds.
+    let mut refused = None;
     ctx.input_mut(|input| {
         // Each chord with exactly what it names held: the one that drops
         // every change is not the one that touches one cell.
@@ -1279,12 +1282,12 @@ fn editing_keys(
         let Some(selected) = object.selection else {
             return;
         };
-        // The row's delete drops a new row: nothing of it is in the
-        // table. On a row of the page it does nothing yet.
-        let on_new = crate::edit::new_id(selected.row).is_some() && field.is_none();
+        // The row's delete: a new row is dropped, a row of the page is
+        // marked for deletion, or restored where it is marked. With the
+        // keys on a field of the row panel nothing is deleted here.
         let deletes = on(input, Command::DeleteRow, Scope::Grid, true).count;
-        if on_new && deletes > 0 {
-            actions.push(Action::DropRow { tab, id });
+        if deletes > 0 && field.is_none() {
+            refused = delete_row(app, tab, id, actions);
             return;
         }
         let cell = crate::model::CellPos {
@@ -1368,6 +1371,28 @@ fn editing_keys(
     if let Some(stop) = left {
         ctx.memory_mut(|memory| memory.surrender_focus(stop));
     }
+    if let Some(why) = refused {
+        crate::ui::toast::say(ctx, &why);
+    }
+}
+
+/// Asks for the selected row of the tab `id` to be deleted, or hands back
+/// why it cannot be, for the caller to say: a toast in the desktop looks,
+/// the status line's message in the Omarchy look.
+fn delete_row(app: &App, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) -> Option<String> {
+    let refused = app.workspace(tab).and_then(|workspace| {
+        let object = workspace.object_tab(id)?;
+        let row = object.selection?.row;
+        let lock = crate::edit::Table::of(workspace, object)?.no_delete(row)?;
+        let table = crate::ui::format::display_safe(&object.object.name);
+        Some(crate::ui::cell_editor::delete_said(
+            lock, &table, &app.look, app.locale,
+        ))
+    });
+    if refused.is_none() {
+        actions.push(Action::DeleteRow { tab, id });
+    }
+    refused
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
@@ -1889,12 +1914,15 @@ fn letters(
                 let above = command == Command::PutRowAbove;
                 actions.push(Action::PutRow { tab, id, above });
             }
-            // The row under the cursor is dropped where it is a new one,
-            // with the keys on the rows or on a field of its form.
+            // The row under the cursor is deleted: dropped where it is a
+            // new one, marked or restored where it is the page's. With
+            // the keys on a field, only a new row's form has the key.
             (Some(Command::DeleteRow), Some(id))
                 if rows_show && !tree && (field.is_none() || on_new) =>
             {
-                actions.push(Action::DropRow { tab, id });
+                if let Some(why) = delete_row(app, tab, id, actions) {
+                    crate::ui::toast::say(ctx, &why);
+                }
             }
             (Some(Command::OpenReferencedRow), Some(object_tab)) => {
                 actions.push(Action::FollowSelectedKey { tab, object_tab });

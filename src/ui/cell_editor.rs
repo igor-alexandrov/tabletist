@@ -1469,6 +1469,47 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
     }
 }
 
+/// Why a row cannot be deleted, as Delete and its key say it. `table` is
+/// the table's name as it is shown. What holds only for a while, or for
+/// the one row, is said as an edit's reason is.
+pub fn delete_text(lock: Lock, table: &str, locale: Locale) -> String {
+    let say = |text: &'static str| gettext(locale, text).into_owned();
+    match lock {
+        Lock::ReadOnly => say("Read-only connection"),
+        Lock::NotATable => format!("{table} {}", say("can't be deleted from")),
+        Lock::NoKey => format!(
+            "{table} {}",
+            say("has no primary key, so rows can't be deleted here")
+        ),
+        Lock::StructureLoading
+        | Lock::KeyType
+        | Lock::Saving
+        | Lock::Refreshing
+        | Lock::NoSuchCell
+        | Lock::Gone
+        | Lock::Deleting
+        | Lock::KeyIsNull
+        | Lock::KeyInexact
+        | Lock::UnknownColumn
+        | Lock::Generated
+        | Lock::Assigned
+        | Lock::KeyColumn
+        | Lock::Binary
+        | Lock::TooLarge
+        | Lock::NotNull => lock_text(lock, table, locale),
+    }
+}
+
+/// [`delete_text`] as `look` says it: the terminal's in its lower case,
+/// but for the table's name, which is its own.
+pub fn delete_said(lock: Lock, table: &str, look: &Look, locale: Locale) -> String {
+    let text = delete_text(lock, table, locale);
+    match text.strip_prefix(table) {
+        Some(rest) if !table.is_empty() => format!("{table}{}", look.label(rest)),
+        _ => look.label(&text),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

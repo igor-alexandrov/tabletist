@@ -11917,10 +11917,13 @@ mod tests {
             // Delete drops the new row the selection is on, and no other.
             harness.press(Key::Delete, Modifiers::NONE);
             assert!(edits(&harness, tab, id).added.is_empty(), "{}", look.name);
+            // On a row of the page it marks the row for deletion: the page
+            // keeps it until a save.
             harness.press(Key::Delete, Modifiers::NONE);
             let workspace = harness.app.workspace(tab).unwrap();
             let rows = workspace.object_tab(id).unwrap().page().unwrap().rows.len();
             assert_eq!(rows, 3, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).deleted.len(), 1, "{}", look.name);
         }
     }
 
@@ -12460,12 +12463,14 @@ mod tests {
         assert_eq!(edits(&harness, tab, id).added.len(), 1, "one d waits");
         type_key(&mut harness, Key::D, "d");
         assert!(edits(&harness, tab, id).added.is_empty());
-        // On a field of a row of the page the key drops nothing.
+        // On a field of a row of the page the key drops nothing, and
+        // marks nothing: it is the rows' key there.
         select(&mut harness, tab, id, (1, 1));
         open_inspector(&mut harness);
         harness.settle();
         type_key(&mut harness, Key::D, "d");
         type_key(&mut harness, Key::D, "d");
+        assert!(edits(&harness, tab, id).deleted.is_empty());
         assert_eq!(
             harness
                 .app
