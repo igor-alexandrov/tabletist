@@ -566,6 +566,7 @@ impl App {
             request,
             rows: sent.rows,
             inserts: sent.inserts,
+            deletes: sent.deletes,
             started: std::time::Instant::now(),
             then,
         });
@@ -1613,6 +1614,7 @@ impl App {
                         rows: counts.rows,
                         added: counts.added,
                         elapsed,
+                        deleted: 0,
                     });
                 } else {
                     // The table is not the one the page was read from, or a

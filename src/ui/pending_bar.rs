@@ -159,6 +159,9 @@ fn note_said(
             say("Nothing was saved. 1 new row failed, so the whole transaction rolled back."),
             database_said(error)
         ),
+        // Worded with the rest of what a save that deletes says.
+        Note::FailedDelete { error, .. } => format!("{} {nothing}", database_said(error)),
+        Note::AlreadyDeleted(_) => String::new(),
         Note::Lost => say("The connection was lost while saving. Reload to see what was written."),
         Note::NotSent => say("Not connected. Nothing was sent."),
         Note::Cancelled => format!("{} {nothing}", say("Save cancelled.")),

@@ -14191,6 +14191,7 @@ mod tests {
                     rows: 1,
                     added: 0,
                     elapsed: std::time::Duration::ZERO,
+                    deleted: 0,
                 });
             }
             // From the Leave prompt, so a close is held for the save.

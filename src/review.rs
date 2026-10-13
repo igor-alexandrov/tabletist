@@ -596,6 +596,7 @@ mod tests {
             saving: false,
             gone: &NONE_GONE,
             added: &[],
+            deleted: &crate::edit::NONE_DELETED,
         }
     }
 

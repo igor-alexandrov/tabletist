@@ -1455,6 +1455,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
         Lock::Saving => say("A save is running"),
         Lock::Refreshing => say("The page is loading"),
         Lock::Gone => say("This row no longer exists on the server"),
+        Lock::Deleting => say("Restore the row to edit it."),
         Lock::KeyIsNull => say("This row's key is NULL"),
         Lock::KeyInexact => say("This row's key holds text that was not read exactly"),
         Lock::UnknownColumn => say("This column cannot be told apart in the table"),

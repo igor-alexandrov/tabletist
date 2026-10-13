@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use tabletist_db::{
     Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, InsertValue,
-    NewValue, ObjectKind, ObjectRef, RowChange, RowInsert, RowPage, Structure, Value, column_class,
-    temporal,
+    NewValue, ObjectKind, ObjectRef, RowChange, RowDelete, RowInsert, RowPage, Structure, Value,
+    column_class, temporal,
 };
 
 use crate::backend::RequestId;
@@ -41,6 +41,8 @@ pub enum Lock {
     NoSuchCell,
     /// A save found the row gone from the server.
     Gone,
+    /// The row is marked for deletion: it is restored before it is edited.
+    Deleting,
     /// The row's key holds a NULL.
     KeyIsNull,
     /// The row's key holds text that may not have been read exactly.
@@ -77,6 +79,8 @@ pub struct Table<'a> {
     pub gone: &'a BTreeSet<usize>,
     /// The rows to add (`Edits::added`).
     pub added: &'a [NewRow],
+    /// The page's rows marked for deletion (`Edits::deleted`).
+    pub deleted: &'a BTreeMap<usize, Doomed>,
 }
 
 impl<'a> Table<'a> {
@@ -95,6 +99,7 @@ impl<'a> Table<'a> {
             saving: object.edits.saving.is_some(),
             gone: &object.edits.gone,
             added: &object.edits.added,
+            deleted: &object.edits.deleted,
         })
     }
 }
@@ -171,6 +176,10 @@ impl Table<'_> {
         // longer there.
         if self.gone.contains(&row) {
             return Some(Lock::Gone);
+        }
+        // After a row that is gone: such a row cannot be marked.
+        if self.deleted.contains_key(&row) {
+            return Some(Lock::Deleting);
         }
         // A row narrower than the page has no key to read.
         let held = |col: &usize| values.get(*col);
@@ -275,6 +284,17 @@ impl Table<'_> {
             return Some(Lock::Refreshing);
         }
         None
+    }
+
+    /// Why the page's row `row` cannot be deleted, or `None` when it can:
+    /// what keeps it from being edited, for the whole table, for a while,
+    /// or by its own key. A row that is marked can be asked again, which
+    /// restores it. A new row is dropped, not deleted, and has no reason.
+    pub fn no_delete(&self, row: usize) -> Option<Lock> {
+        if new_id(row).is_some() {
+            return None;
+        }
+        self.row_lock(row).filter(|lock| *lock != Lock::Deleting)
     }
 
     /// Why the column `col` takes no value in a new row, or `None` when it
@@ -1370,6 +1390,13 @@ pub struct Edits {
     /// rows to edit until the page is loaded again, and nothing of the
     /// user's: they do not hold the page.
     pub gone: BTreeSet<usize>,
+    /// The page's rows marked for deletion. A marked row has no cell in
+    /// `cells` and no doubt in `doubts`: `mark` takes them out and keeps
+    /// them with the mark, and `restore` puts them back.
+    pub deleted: BTreeMap<usize, Doomed>,
+    /// The last row that was marked or restored, for a screen reader to
+    /// be told.
+    pub told: Option<Told>,
     /// Review SQL is open: the drawer on macOS and Windows, the terminal
     /// look's `:diff` panel.
     pub reviewing: bool,
@@ -1393,6 +1420,38 @@ pub struct Picked {
     pub label: Option<String>,
 }
 
+/// A row of the page that is marked for deletion. No `Debug`: it holds
+/// what the user typed.
+#[derive(Default)]
+pub struct Doomed {
+    /// What its `DELETE` failed with in the last save.
+    pub failed: Option<Error>,
+    /// The row's pending cells as they stood when it was marked, by
+    /// column: kept for its restoring, and no part of the set until then.
+    cells: Vec<(usize, Pending)>,
+    /// The warnings that stood on those cells.
+    doubts: Vec<(usize, Doubt)>,
+}
+
+/// No row is marked: for a table that is looked at without its tab's set.
+#[cfg(test)]
+pub static NONE_DELETED: BTreeMap<usize, Doomed> = BTreeMap::new();
+
+/// What a screen reader is told of the last row that was marked for
+/// deletion or restored. The row by its key (`id 9`), as the row panel's
+/// title names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Told {
+    /// With how many rows are marked now.
+    Marked {
+        row: String,
+        deleted: usize,
+    },
+    Restored {
+        row: String,
+    },
+}
+
 /// How much is pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {
@@ -1402,6 +1461,8 @@ pub struct Counts {
     pub failed: usize,
     /// The new rows.
     pub added: usize,
+    /// The rows to delete.
+    pub deleted: usize,
 }
 
 /// What a row's cells come to, for its mark.
@@ -1414,6 +1475,8 @@ pub enum RowMark {
     New,
     /// One of its cells is to fix or failed.
     Trouble,
+    /// A row of the page that is marked for deletion.
+    Deleted,
 }
 
 impl Edits {
@@ -1422,14 +1485,15 @@ impl Edits {
     pub fn holds(&self) -> bool {
         !self.cells.is_empty()
             || !self.added.is_empty()
+            || !self.deleted.is_empty()
             || self.editor.is_some()
             || self.saving.is_some()
     }
 
-    /// Whether anything waits for a save: a changed cell, or a new row.
-    /// An open editor alone is not that yet.
+    /// Whether anything waits for a save: a changed cell, a new row, or a
+    /// row to delete. An open editor alone is not that yet.
     pub fn pending(&self) -> bool {
-        !self.cells.is_empty() || !self.added.is_empty()
+        !self.cells.is_empty() || !self.added.is_empty() || !self.deleted.is_empty()
     }
 
     /// Drops what is pending, the open editor and what the last save left.
@@ -1444,6 +1508,7 @@ impl Edits {
     pub fn counts(&self) -> Counts {
         let mut counts = Counts {
             added: self.added.len(),
+            deleted: self.deleted.len(),
             ..Counts::default()
         };
         let mut last = None;
@@ -1467,6 +1532,12 @@ impl Edits {
             .added
             .iter()
             .filter(|new| new.failed.is_some() && self.unset_all(new.id))
+            .count();
+        // A row whose `DELETE` failed has no cell to say so.
+        counts.failed += self
+            .deleted
+            .values()
+            .filter(|doomed| doomed.failed.is_some())
             .count();
         counts
     }
@@ -1560,6 +1631,84 @@ impl Edits {
         true
     }
 
+    /// Marks the page's row `row` for deletion. What was made of the set,
+    /// its review, is stale. Says whether the row was not marked before.
+    pub fn mark(&mut self, row: usize) -> bool {
+        if self.deleted.contains_key(&row) {
+            return false;
+        }
+        // The row's own changes go with the mark: they are not the set's
+        // while the row is to be deleted.
+        let cols: Vec<usize> = self
+            .cells
+            .range((row, 0)..=(row, usize::MAX))
+            .map(|(&(_, col), _)| col)
+            .collect();
+        let cells = cols
+            .into_iter()
+            .filter_map(|col| Some((col, self.cells.remove(&(row, col))?)))
+            .collect();
+        let doubted: Vec<usize> = self
+            .doubts
+            .range((row, 0)..=(row, usize::MAX))
+            .map(|(&(_, col), _)| col)
+            .collect();
+        let doubts = doubted
+            .into_iter()
+            .filter_map(|col| Some((col, self.doubts.remove(&(row, col))?)))
+            .collect();
+        let doomed = Doomed {
+            failed: None,
+            cells,
+            doubts,
+        };
+        self.deleted.insert(row, doomed);
+        // No editor stays open on a row that is not edited, and what was
+        // refused of it is no longer the reason.
+        let edited = self.editor.as_ref().map(|editor| editor.cell.row);
+        if edited == Some(row) {
+            self.editor = None;
+        }
+        if self.why.is_some_and(|(cell, _)| cell.row == row) {
+            self.why = None;
+        }
+        self.review = None;
+        true
+    }
+
+    /// Takes the mark off the page's row `row`: its cells are the set's
+    /// again. Says whether the row was marked.
+    pub fn restore(&mut self, row: usize) -> bool {
+        let Some(doomed) = self.deleted.remove(&row) else {
+            return false;
+        };
+        for (col, pending) in doomed.cells {
+            self.cells.insert((row, col), pending);
+        }
+        for (col, doubt) in doomed.doubts {
+            self.doubts.insert((row, col), doubt);
+        }
+        if self.why.is_some_and(|(cell, _)| cell.row == row) {
+            self.why = None;
+        }
+        self.review = None;
+        true
+    }
+
+    /// The `DELETE` of the page's row `row` failed with `error`: the row
+    /// says so until it is restored or the next save sends it again. With
+    /// no such row the save is refused with the error.
+    pub fn fail_delete(&mut self, row: Option<usize>, error: Error) {
+        let Some((row, doomed)) =
+            row.and_then(|row| self.deleted.get_mut(&row).map(|doomed| (row, doomed)))
+        else {
+            self.note = Some(Note::Refused(error));
+            return;
+        };
+        doomed.failed = Some(error.clone());
+        self.note = Some(Note::FailedDelete { row, error });
+    }
+
     /// A value of the new row whose cells are under `row` changed: it is
     /// no longer the row the last save failed on.
     fn mended(&mut self, row: usize) {
@@ -1606,7 +1755,11 @@ impl Edits {
     }
 
     pub fn row_mark(&self, row: usize) -> RowMark {
-        row_mark(&self.cells, row)
+        match self.deleted.get(&row) {
+            Some(doomed) if doomed.failed.is_some() => RowMark::Trouble,
+            Some(_) => RowMark::Deleted,
+            None => row_mark(&self.cells, row),
+        }
     }
 
     /// Makes `pending` the new value of the cell at `at` (row, column).
@@ -1652,9 +1805,10 @@ impl std::fmt::Debug for Edits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Edits {{ cells: {}, added: {}, editor: {:?}, why: {:?}, saving: {}, gone: {:?} }}",
+            "Edits {{ cells: {}, added: {}, deleted: {}, editor: {:?}, why: {:?}, saving: {}, gone: {:?} }}",
             self.cells.len(),
             self.added.len(),
+            self.deleted.len(),
             self.editor.as_ref().map(|editor| editor.cell),
             self.why,
             self.saving.is_some(),
@@ -1672,6 +1826,8 @@ pub struct Saving {
     pub rows: Vec<usize>,
     /// The id of the new row of each of the set's inserts, in its order.
     pub inserts: Vec<usize>,
+    /// The page's row of each of the set's deletes, in its order.
+    pub deletes: Vec<usize>,
     pub started: Instant,
     /// What to do once everything is written.
     pub then: Option<crate::model::Held>,
@@ -1689,6 +1845,8 @@ pub struct Saved {
     pub rows: usize,
     /// How many rows it added.
     pub added: usize,
+    /// How many rows it deleted.
+    pub deleted: usize,
     pub elapsed: Duration,
 }
 
@@ -1709,7 +1867,8 @@ pub fn answers_taken(shown: Instant) -> bool {
     Instant::now().saturating_duration_since(shown) >= ANSWER_AFTER
 }
 
-/// What a save came to when it wrote nothing. The view words it.
+/// What a save came to when it wrote nothing, or what it has to say
+/// beside what it wrote. The view words it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Note {
     /// The page's row `row` changed on the server, or is `gone`; `others`
@@ -1724,6 +1883,11 @@ pub enum Note {
     /// The `INSERT` of a new row failed. The row says so itself: it has no
     /// place in the page to be named by.
     FailedInsert { error: Error },
+    /// The `DELETE` of the page's row `row` failed.
+    FailedDelete { row: usize, error: Error },
+    /// The save wrote, and found these rows already deleted: each by its
+    /// key (`id 9`), named before the save took them out of the page.
+    AlreadyDeleted(Vec<String>),
     /// What was written is not known: the connection was lost while
     /// saving, or the answer is about a row the save did not send.
     Lost,
@@ -2048,10 +2212,13 @@ pub struct Sent {
     pub inserts: Vec<usize>,
     /// The page's row of each of the set's `rows`.
     pub rows: Vec<usize>,
+    /// The page's row of each of the set's `deletes`.
+    pub deletes: Vec<usize>,
 }
 
-/// The change set a save sends for the table's new rows and the pending
-/// `cells`, and where each part of it came from. `None` when nothing is
+/// The change set a save sends for the table's new rows, the pending
+/// `cells` and the rows marked for deletion, and where each part of it
+/// came from. `None` when nothing is
 /// pending, or a row is changed in a table that has no key.
 pub fn change_set(
     object: &ObjectRef,
@@ -2077,12 +2244,24 @@ pub fn change_set(
         inserts.push(RowInsert { set });
         sent.inserts.push(new.id);
     }
-    // The cells of the page's rows: every row below the new ones'.
+    // The cells of the page's rows: every row below the new ones'. A row
+    // marked for deletion has none here.
     let changed = cells.range(..(NEW_ROWS, 0));
-    // The key only where a row is changed: a new row is found by none.
-    let key = match changed.clone().next() {
-        Some(_) => table.key()?,
-        None => Vec::new(),
+    // The key only where a row is changed or deleted: a new row is found
+    // by none.
+    let key = if changed.clone().next().is_some() || !table.deleted.is_empty() {
+        table.key()?
+    } else {
+        Vec::new()
+    };
+    // What finds the row whose values are `values`.
+    let key_of = |values: &Vec<Value>| -> Option<Vec<(String, Value)>> {
+        key.iter()
+            .map(|&place| {
+                let name = table.page.columns.get(place)?.name.clone();
+                Some((name, values.get(place)?.clone()))
+            })
+            .collect()
     };
     let mut rows: Vec<RowChange> = Vec::new();
     // The map is ordered by row, then column, so a row's cells are together.
@@ -2092,13 +2271,7 @@ pub fn change_set(
         if sent.rows.last() != Some(&row) {
             sent.rows.push(row);
             rows.push(RowChange {
-                key: key
-                    .iter()
-                    .map(|&place| {
-                        let name = table.page.columns.get(place)?.name.clone();
-                        Some((name, values.get(place)?.clone()))
-                    })
-                    .collect::<Option<_>>()?,
+                key: key_of(values)?,
                 set: Vec::new(),
             });
         }
@@ -2109,13 +2282,21 @@ pub fn change_set(
             new: pending.new.clone(),
         });
     }
-    (!rows.is_empty() || !inserts.is_empty()).then(|| {
+    // The rows to delete, in the page's order.
+    let mut deletes = Vec::new();
+    for &row in table.deleted.keys() {
+        deletes.push(RowDelete {
+            key: key_of(table.page.rows.get(row)?)?,
+        });
+        sent.deletes.push(row);
+    }
+    (!rows.is_empty() || !inserts.is_empty() || !deletes.is_empty()).then(|| {
         (
             ChangeSet {
                 object: object.clone(),
                 inserts,
                 rows,
-                deletes: Vec::new(),
+                deletes,
             },
             sent,
         )
@@ -2295,6 +2476,174 @@ mod tests {
             );
         }
         assert!(same_changes(&base, &base.clone()));
+    }
+
+    /// The Bookshop's covers as editing sees them, with `edits`' rows.
+    fn marked_covers<'a>(
+        structure: &'a tabletist_db::Structure,
+        page: &'a RowPage,
+        edits: &'a Edits,
+    ) -> Table<'a> {
+        Table {
+            access: Access::Writable,
+            kind: ObjectKind::Table,
+            dialect: Dialect::Sqlite,
+            structure: Some(structure),
+            page,
+            refreshing: false,
+            saving: false,
+            gone: &edits.gone,
+            added: &edits.added,
+            deleted: &edits.deleted,
+        }
+    }
+
+    fn pending_text(text: &str) -> Pending {
+        Pending {
+            new: NewValue::Text(text.into()),
+            state: State::Ready,
+        }
+    }
+
+    /// Spec 1 and test 1: a mark, and the mark taken back.
+    #[test]
+    fn a_row_is_marked_and_restored() {
+        let mut edits = Edits::default();
+        assert!(edits.mark(1));
+        // A second mark is none: the row is marked already.
+        assert!(!edits.mark(1));
+        assert!(edits.pending() && edits.holds());
+        assert_eq!(edits.counts().deleted, 1);
+        assert_eq!(edits.row_mark(1), RowMark::Deleted);
+        assert!(edits.restore(1));
+        assert!(!edits.restore(1));
+        assert!(!edits.pending());
+        assert_eq!(edits.row_mark(1), RowMark::None);
+    }
+
+    /// Spec 1, "Existing edits", and test 4: the edits of a marked row stay
+    /// in the set, are not counted and are not sent. They are back with
+    /// the row.
+    #[test]
+    fn a_marked_rows_edits_are_kept_and_hidden() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let object = ObjectRef::new("main", "book_covers");
+        let mut edits = Edits::default();
+        edits.put((1, 2), pending_text("audio"));
+        // One that would hold a save back, were it counted.
+        edits.put(
+            (1, 1),
+            Pending {
+                new: NewValue::Text("x".into()),
+                state: State::ToFix(Problem::WholeNumber),
+            },
+        );
+        edits.mark(1);
+        // Set aside with the mark: nothing that reads the cells sees them.
+        assert!(edits.cells.is_empty());
+        let counts = edits.counts();
+        assert_eq!((counts.changes, counts.rows, counts.to_fix), (0, 0, 0));
+        assert_eq!(counts.deleted, 1);
+        let table = marked_covers(&structure, &page, &edits);
+        let (changes, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        assert!(changes.rows.is_empty() && changes.inserts.is_empty());
+        assert_eq!(
+            changes.deletes,
+            [tabletist_db::RowDelete {
+                key: vec![("id".to_owned(), Value::Int(2))],
+            }]
+        );
+        assert_eq!(sent.deletes, [1]);
+        // Restored, the row is a changed row again.
+        edits.restore(1);
+        assert_eq!(edits.cells.len(), 2);
+        assert_eq!(edits.counts().changes, 2);
+        assert_eq!(edits.counts().to_fix, 1);
+    }
+
+    /// Spec 3: no cell of a marked row is edited, and the row says why.
+    #[test]
+    fn a_marked_row_is_locked_until_it_is_restored() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let mut edits = Edits::default();
+        edits.mark(1);
+        let table = marked_covers(&structure, &page, &edits);
+        assert_eq!(table.row_lock(1), Some(Lock::Deleting));
+        assert_eq!(table.lock(CellPos { row: 1, col: 2 }), Some(Lock::Deleting));
+        assert_eq!(table.row_lock(0), None);
+        // A marked row can be asked to be deleted again: that restores it.
+        assert_eq!(table.no_delete(1), None);
+    }
+
+    /// Spec 2 and test 6, as far as the set knows: what keeps a row from
+    /// being edited keeps it from being deleted.
+    #[test]
+    fn a_row_that_cannot_be_edited_cannot_be_deleted() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let edits = Edits::default();
+        let table = marked_covers(&structure, &page, &edits);
+        assert_eq!(table.no_delete(1), None);
+        let read_only = Table {
+            access: Access::ReadOnly,
+            ..table
+        };
+        assert_eq!(read_only.no_delete(1), Some(Lock::ReadOnly));
+        let view = Table {
+            kind: ObjectKind::View,
+            ..table
+        };
+        assert_eq!(view.no_delete(1), Some(Lock::NotATable));
+        let keyless = tabletist_db::Structure {
+            primary_key: Vec::new(),
+            ..structure.clone()
+        };
+        let no_key = Table {
+            structure: Some(&keyless),
+            ..table
+        };
+        assert_eq!(no_key.no_delete(1), Some(Lock::NoKey));
+        let saving = Table {
+            saving: true,
+            ..table
+        };
+        assert_eq!(saving.no_delete(1), Some(Lock::Saving));
+        // A new row is dropped, and has no reason of its own.
+        assert_eq!(read_only.no_delete(new_row(0)), None);
+    }
+
+    /// Spec 5: a delete that failed says so on its row until the row is
+    /// restored or marked again.
+    #[test]
+    fn a_failed_delete_stands_on_its_row() {
+        let mut edits = Edits::default();
+        edits.mark(1);
+        let error = Error::query("FOREIGN KEY constraint failed");
+        edits.fail_delete(Some(1), error.clone());
+        let failed = edits
+            .deleted
+            .get(&1)
+            .and_then(|doomed| doomed.failed.clone());
+        assert_eq!(failed, Some(error.clone()));
+        assert_eq!(edits.counts().failed, 1);
+        assert_eq!(edits.row_mark(1), RowMark::Trouble);
+        assert_eq!(
+            edits.note,
+            Some(Note::FailedDelete {
+                row: 1,
+                error: error.clone()
+            })
+        );
+        // Restored and marked again, the row is as any marked row.
+        edits.restore(1);
+        edits.mark(1);
+        assert_eq!(edits.row_mark(1), RowMark::Deleted);
+        // A row the save did not send has no place to say it.
+        let mut other = Edits::default();
+        other.fail_delete(None, error.clone());
+        assert_eq!(other.note, Some(Note::Refused(error)));
     }
 
     #[test]
@@ -2823,6 +3172,7 @@ mod tests {
                 to_fix: 1,
                 failed: 0,
                 added: 1,
+                deleted: 0
             }
         );
         // The set says how many rows it adds, and none of their values.
@@ -3311,6 +3661,7 @@ mod tests {
             saving: false,
             gone: &NONE_GONE,
             added: &[],
+            deleted: &NONE_DELETED,
         }
     }
 

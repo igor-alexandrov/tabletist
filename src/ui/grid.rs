@@ -748,7 +748,7 @@ pub fn show<'a>(
                 let row_tone = match mark {
                     RowMark::None => None,
                     RowMark::Changed => Some(Tone::Warning),
-                    RowMark::Trouble => Some(Tone::Danger),
+                    RowMark::Trouble | RowMark::Deleted => Some(Tone::Danger),
                     RowMark::New => Some(Tone::Success),
                 };
                 let new = mark == RowMark::New;
@@ -841,6 +841,7 @@ pub fn show<'a>(
                                 let sign = match mark {
                                     RowMark::Trouble => "!",
                                     RowMark::New => "+",
+                                    RowMark::Deleted => "-",
                                     RowMark::None | RowMark::Changed => "~",
                                 };
                                 Text::one(look, TextRole::OGroup, sign, tone.color(palette))

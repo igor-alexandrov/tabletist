@@ -3968,6 +3968,7 @@ mod tests {
             inserts: Vec::new(),
             started: std::time::Instant::now(),
             then: None,
+            deletes: Vec::new(),
         });
         assert_eq!(
             tab.pending(),
