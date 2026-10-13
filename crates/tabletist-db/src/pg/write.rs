@@ -9,10 +9,13 @@ use super::{Conn, column, column_metas, query_error, row_values};
 use crate::dialect::{InsertStatement, RowDeletion, RowUpdate};
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
-    read_by, same_row_twice,
+    Applied, RELEASE, ROLLBACK_TO, SAVEPOINT, Stored, changed_since_loaded, conflicts_of,
+    deleted_instead, more_than_one, not_read_back, not_stopped, read_by, same_row_twice,
 };
-use crate::{ChangeSet, ColumnMeta, Dialect, Error, Result, StopFlag, Value, WriteOutcome};
+use crate::{
+    ChangeSet, ColumnMeta, Dialect, Error, Result, RowDelete, StopFlag, Value, WriteOutcome,
+    delete_runs,
+};
 
 impl Conn {
     /// See [`crate::Connection::write`]. Rows are read through the
@@ -136,6 +139,163 @@ async fn rows(
         }
     }
     Ok(rows)
+}
+
+/// How many of the table's own rows a statement touched, without those
+/// a foreign key took with them.
+fn touched(messages: &[SimpleQueryMessage]) -> u64 {
+    let count = messages.iter().find_map(|message| match message {
+        SimpleQueryMessage::CommandComplete(count) => Some(*count),
+        _ => None,
+    });
+    count.unwrap_or(0)
+}
+
+/// Deletes one row of the save by its own statement. `Ok(Some(..))` is
+/// how the save ends where the row is not deleted; `Err` is a cancel, a
+/// stop or a lost session.
+async fn delete_one(
+    client: &tokio_postgres::Client,
+    changes: &ChangeSet,
+    columns: &[ColumnMeta],
+    deletion: &RowDeletion,
+    delete: usize,
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    not_stopped(stop)?;
+    let messages = match client
+        .simple_query(&deletion.sql.text)
+        .await
+        .map_err(query_error)
+    {
+        Ok(messages) => messages,
+        // A cancel or a lost session ends the save; anything else is the
+        // statement's own failure: a foreign key that holds the row, most
+        // often.
+        Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+        Err(error) => return Ok(Some(Applied::FailedDelete { delete, error })),
+    };
+    let touched = touched(&messages);
+    // None: a row deleted before this one took it along (a key of the
+    // table that points at the table), which is what the save meant, or a
+    // trigger or a rule kept it, which is not. The row says which.
+    if touched == 0 && !still_there(client, changes, columns, delete, stop).await? {
+        return Ok(None);
+    }
+    Ok((touched != 1).then(|| Applied::FailedDelete {
+        delete,
+        error: deleted_instead(touched, 1),
+    }))
+}
+
+/// Whether the row of the save's delete `delete` is still in the table.
+async fn still_there(
+    client: &tokio_postgres::Client,
+    changes: &ChangeSet,
+    columns: &[ColumnMeta],
+    delete: usize,
+    stop: &StopFlag,
+) -> Result<bool> {
+    let Some(row) = changes.deletes.get(delete) else {
+        return Ok(false);
+    };
+    let select = Dialect::Postgres.select_row(&changes.object, &row.key, false);
+    not_stopped(stop)?;
+    Ok(!rows(client, &select.text, columns).await?.is_empty())
+}
+
+/// Deletes the rows `live` of the save (places among its deletes, each
+/// found by its read, two or more) in one statement. A run the server
+/// refuses is undone to the savepoint before it, and its rows go one at a
+/// time, so the error is its row's.
+async fn delete_many(
+    client: &tokio_postgres::Client,
+    changes: &ChangeSet,
+    columns: &[ColumnMeta],
+    deletions: &[RowDeletion],
+    live: &[usize],
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    let Some(&first) = live.first() else {
+        return Ok(None);
+    };
+    let rows: Vec<&RowDelete> = live
+        .iter()
+        .filter_map(|&delete| changes.deletes.get(delete))
+        .collect();
+    // Each row was built, so the run is: were it not, the rows go as ever.
+    let run = Dialect::Postgres.delete_run(&changes.object, &rows).ok();
+    // What the run's statement came to: how many rows it touched, or
+    // `None` where its rows are to go one at a time (it could not be
+    // spelled, or it was refused and undone).
+    let touched = match &run {
+        None => None,
+        Some(run) => {
+            not_stopped(stop)?;
+            execute(client, SAVEPOINT).await?;
+            match client
+                .simple_query(&run.sql.text)
+                .await
+                .map_err(query_error)
+            {
+                Ok(messages) => Some(touched(&messages)),
+                Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+                // Busy: sent again row by row, each row could wait as
+                // long.
+                Err(error) if Dialect::Postgres.busy(&error) => {
+                    return Ok(Some(Applied::FailedDelete {
+                        delete: first,
+                        error,
+                    }));
+                }
+                // Undone, the transaction stands again as it did before
+                // the run, its rows still locked. A rollback that fails
+                // here is a lost session or a cancel that came late:
+                // either ends the save.
+                Err(_) => {
+                    execute(client, ROLLBACK_TO).await?;
+                    None
+                }
+            }
+        }
+    };
+    let Some(touched) = touched else {
+        for &delete in live {
+            let Some(deletion) = deletions.get(delete) else {
+                continue;
+            };
+            let failed = delete_one(client, changes, columns, deletion, delete, stop).await?;
+            if failed.is_some() {
+                return Ok(failed);
+            }
+        }
+        if run.is_some() {
+            execute(client, RELEASE).await?;
+        }
+        return Ok(None);
+    };
+    let meant = live.len() as u64;
+    if touched > meant {
+        return Ok(Some(Applied::FailedDelete {
+            delete: first,
+            error: deleted_instead(touched, live.len()),
+        }));
+    }
+    if touched < meant {
+        // A row of the run that a delete of this save took along (a key
+        // of the table that points at the table) is what the save meant.
+        // One a trigger or a rule kept is not.
+        for &delete in live {
+            if still_there(client, changes, columns, delete, stop).await? {
+                return Ok(Some(Applied::FailedDelete {
+                    delete,
+                    error: deleted_instead(0, 1),
+                }));
+            }
+        }
+    }
+    execute(client, RELEASE).await?;
+    Ok(None)
 }
 
 /// The steps of a save inside its transaction: lock and compare every row,
@@ -270,55 +430,27 @@ async fn apply(
             });
         }
     }
-    // The rows to delete, last: the order a review shows them in. One
-    // that was not there is said and not sent.
+    // The rows to delete, last: the order a review shows them in, in runs
+    // of neighbours. One that was not there is said and not sent.
     let mut gone = Vec::new();
-    let found = changes.deletes.iter().zip(deletions).zip(&doomed);
-    for (delete, ((row, deletion), found)) in found.enumerate() {
-        if found.is_none() {
-            gone.push(delete);
-            continue;
-        }
-        not_stopped(stop)?;
-        let messages = match client
-            .simple_query(&deletion.sql.text)
-            .await
-            .map_err(query_error)
-        {
-            Ok(messages) => messages,
-            // A cancel or a lost session ends the save; anything else is
-            // the statement's own failure: a foreign key that holds the
-            // row, most often.
-            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
-            Err(error) => return Ok(Applied::FailedDelete { delete, error }),
+    // Every row's statement was built: the save does not begin otherwise.
+    let built = vec![true; changes.deletes.len()];
+    for run in delete_runs(&changes.deletes, &built) {
+        let found = |delete: &usize| doomed.get(*delete).is_some_and(Option::is_some);
+        let (live, missing): (Vec<usize>, Vec<usize>) = run.partition(found);
+        gone.extend(missing);
+        let failed = match live.as_slice() {
+            [] => None,
+            [delete] => match deletions.get(*delete) {
+                Some(deletion) => {
+                    delete_one(client, changes, &columns, deletion, *delete, stop).await?
+                }
+                None => None,
+            },
+            _ => delete_many(client, changes, &columns, deletions, &live, stop).await?,
         };
-        // The count is of the table's own rows, without those a foreign
-        // key took with them.
-        let touched = messages
-            .iter()
-            .find_map(|message| match message {
-                SimpleQueryMessage::CommandComplete(count) => Some(*count),
-                _ => None,
-            })
-            .unwrap_or(0);
-        // None: a row deleted before this one took it along (a key of the
-        // table that points at the table), which is what the save meant,
-        // or a trigger or a rule kept it, which is not. The row says
-        // which.
-        if touched == 0 {
-            let select = dialect.select_row(&changes.object, &row.key, false);
-            not_stopped(stop)?;
-            if rows(client, &select.text, &columns).await?.is_empty() {
-                continue;
-            }
-        }
-        if touched != 1 {
-            return Ok(Applied::FailedDelete {
-                delete,
-                error: Error::query(format!(
-                    "the save would have deleted {touched} rows where it meant one"
-                )),
-            });
+        if let Some(failed) = failed {
+            return Ok(failed);
         }
     }
     let mut saved = Vec::with_capacity(changes.rows.len());

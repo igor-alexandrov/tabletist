@@ -601,9 +601,12 @@ mod postgres {
     use super::*;
 
     /// Written for the tables that begin with `shop`: each test has a
-    /// Bookshop of its own, whose tables begin with its own word.
-    const DROP: &str =
-        "DROP TABLE IF EXISTS shop_shelves, shop_book_authors, shop_book_covers, shop_publishers";
+    /// Bookshop of its own, whose tables begin with its own word. The
+    /// table and the function of the one test that counts statements go
+    /// with the rest.
+    const DROP: &str = "DROP TABLE IF EXISTS shop_seen, shop_genres, shop_stock, shop_shelves, \
+        shop_book_authors, shop_book_covers, shop_publishers;
+        DROP FUNCTION IF EXISTS shop_note()";
 
     const CREATE: &str = "
         CREATE TABLE shop_publishers (
@@ -635,6 +638,21 @@ mod postgres {
             parent_id bigint REFERENCES shop_shelves (id) ON DELETE CASCADE
         );
         INSERT INTO shop_shelves VALUES (1, NULL), (2, 1), (3, NULL)";
+
+    /// The Bookshop, with its stock of 300 rows and its genres.
+    fn create() -> String {
+        format!(
+            "{CREATE};
+             CREATE TABLE shop_stock (id bigint PRIMARY KEY);
+             INSERT INTO shop_stock VALUES {};
+             CREATE TABLE shop_genres (
+                 id bigint PRIMARY KEY,
+                 parent_id bigint REFERENCES shop_genres (id)
+             );
+             INSERT INTO shop_genres VALUES (1, NULL), (2, 1), (3, NULL)",
+            stock_values()
+        )
+    }
 
     fn named(sql: &str, prefix: &str) -> String {
         sql.replace("shop_", &format!("{prefix}_"))
@@ -672,7 +690,10 @@ mod postgres {
         let (admin, session) = config.connect(tokio_postgres::NoTls).await.unwrap();
         tokio::spawn(session);
         admin.batch_execute(&named(DROP, prefix)).await.unwrap();
-        admin.batch_execute(&named(CREATE, prefix)).await.unwrap();
+        admin
+            .batch_execute(&named(&create(), prefix))
+            .await
+            .unwrap();
         let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
         spec.tls = TlsMode::Disable;
         let connection =
@@ -762,6 +783,75 @@ mod postgres {
         };
         a_row_the_save_took_with_another_is_deleted(&connection, &shop("pgtree")).await;
         admin.batch_execute(&named(DROP, "pgtree")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_deletes_many_rows_in_runs() {
+        let Some((admin, connection)) = bookshop("pgruns").await else {
+            return;
+        };
+        many_rows_go_in_runs(&connection, &shop("pgruns")).await;
+        admin.batch_execute(&named(DROP, "pgruns")).await.unwrap();
+    }
+
+    /// Many-rows spec 4: the rows of a run go in one statement. A trigger
+    /// that fires once for each statement counts them: three for 250
+    /// rows, where one statement a row would make 250.
+    #[tokio::test]
+    async fn postgres_sends_a_run_as_one_statement() {
+        let Some((admin, connection)) = bookshop("pgstmts").await else {
+            return;
+        };
+        let made = named(
+            "CREATE TABLE shop_seen (at bigint GENERATED ALWAYS AS IDENTITY);
+             CREATE FUNCTION shop_note() RETURNS trigger LANGUAGE plpgsql AS
+                 $$ BEGIN INSERT INTO shop_seen DEFAULT VALUES; RETURN NULL; END $$;
+             CREATE TRIGGER shop_noted AFTER DELETE ON shop_stock
+                 FOR EACH STATEMENT EXECUTE FUNCTION shop_note()",
+            "pgstmts",
+        );
+        admin.batch_execute(&made).await.unwrap();
+        many_rows_go_in_runs(&connection, &shop("pgstmts")).await;
+        let seen = admin
+            .query_one(&named("SELECT count(*) FROM shop_seen", "pgstmts"), &[])
+            .await
+            .unwrap();
+        assert_eq!(seen.get::<_, i64>(0), 3);
+        admin.batch_execute(&named(DROP, "pgstmts")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_says_which_rows_of_a_run_were_gone() {
+        let Some((admin, connection)) = bookshop("pgrungone").await else {
+            return;
+        };
+        admin
+            .batch_execute("DELETE FROM pgrungone_stock WHERE id IN (5, 7)")
+            .await
+            .unwrap();
+        rows_already_gone_leave_the_rest_of_their_run(&connection, &shop("pgrungone")).await;
+        admin
+            .batch_execute(&named(DROP, "pgrungone"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_deletes_a_run_by_a_key_of_two_columns() {
+        let Some((admin, connection)) = bookshop("pgruntwo").await else {
+            return;
+        };
+        a_run_by_a_key_of_two_columns_finds_its_rows(&connection, &shop("pgruntwo")).await;
+        admin.batch_execute(&named(DROP, "pgruntwo")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_deletes_a_row_and_the_row_it_points_at_in_one_run() {
+        let Some((admin, connection)) = bookshop("pgkin").await else {
+            return;
+        };
+        a_row_and_the_row_it_points_at_go_in_one_run(&connection, &shop("pgkin")).await;
+        admin.batch_execute(&named(DROP, "pgkin")).await.unwrap();
     }
 }
 
