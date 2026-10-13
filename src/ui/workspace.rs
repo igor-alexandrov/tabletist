@@ -1575,6 +1575,8 @@ struct Editing {
     can_edit: bool,
     /// Insert mode: the column being edited and its type.
     insert: Option<String>,
+    /// A visual selection of rows is on, with this many rows.
+    visual: Option<usize>,
     /// Where Tab moves on to: the next cell from an editor on a cell, the
     /// next field from one in the row panel. Nowhere from the large
     /// editor, in either place: Tab is its text's own.
@@ -1680,6 +1682,8 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
     let can_add = data
         && crate::edit::Table::of(workspace, object).is_some_and(|table| table.no_rows().is_none());
+    // The rows of a visual selection, while one is on and the rows show.
+    let visual = (data && object.visual()).then(|| object.selected_rows().len());
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
     // What a new row still needs, by its column: said while a value is
@@ -1828,6 +1832,7 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         can_add,
         deleted,
         can_delete,
+        visual,
         errors,
         needs,
         said,
@@ -1945,6 +1950,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
     let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
+    let (visual_delete_key, leave_visual_key) =
+        (key(Command::DeleteSelection), key(Command::LeaveVisual));
     // The keys of a foreign key's list, while one is open under the field.
     let pick_keys = app
         .keymap
@@ -2135,6 +2142,49 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 x
             };
+            if let Some(rows) = editing.visual {
+                // A visual selection of rows: the mode, how many rows it
+                // holds and the counts. Its keys, at the right, give way.
+                let mode = gettext(locale, "-- VISUAL --");
+                let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
+                let held = crate::ui::pending_bar::counted(locale, rows, "row", "rows");
+                let deletes = gettext(locale, "delete");
+                let normal = gettext(locale, "normal");
+                let keys = || {
+                    Text::new(&look)
+                        .add(role, &visual_delete_key, palette.text)
+                        .space(role, " ")
+                        .add(role, &deletes, palette.dim)
+                        .add(role, " · ", palette.dim)
+                        .add(role, &leave_visual_key, palette.text)
+                        .space(role, " ")
+                        .add(role, &normal, palette.dim)
+                };
+                let right = rect.right() - 12.0;
+                let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
+                let text = Text::one(&look, role, &held, palette.secondary);
+                x += widgets::paint_label(ui, x, y, text) + gap;
+                x = counts(ui, x);
+                if let Some(said) = &editing.said {
+                    // What the line has to say, in place of the keys: why
+                    // the selection's delete was refused, most of all. The
+                    // selection stays on then, and this look has no toast
+                    // but the line.
+                    let room = (right - x).max(0.0);
+                    let shown = crate::ui::grid::ellipsize(&said.text, room, false, measure);
+                    let text = Text::one(&look, role, &shown, said.color);
+                    let width = widgets::paint_text_right(ui, right, y, text);
+                    // The whole of it for a screen reader, cut or not.
+                    let place = Rect::from_min_size(
+                        pos2(right - width, y - 8.0),
+                        vec2(width.max(1.0), 16.0),
+                    );
+                    widgets::announce(ui, place, &said.text);
+                } else if x + widgets::measure(ui, keys()) <= right {
+                    widgets::paint_text_right(ui, right, y, keys());
+                }
+                return;
+            }
             if let Some(column) = &editing.insert {
                 // Insert mode. The keys at the right give way first, then
                 // the column: the mode and the counts stay.

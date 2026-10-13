@@ -546,3 +546,51 @@ fn esc_leaves_a_visual_selection_before_it_closes_anything() {
     harness.press(Key::Escape, Modifiers::NONE);
     assert!(edits(&harness, tab, id).note.is_none());
 }
+
+/// Spec 1 (Omarchy), spec 2 and test 3: the status line says the mode, how
+/// many rows the selection holds and its two keys, and a screen reader is
+/// told the same as it grows.
+#[test]
+fn a_visual_selection_shows_in_the_status_line_and_is_told() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    select(&mut harness, tab, id, (1, 2));
+    assert!(!painted(&harness, "-- VISUAL --"));
+    type_key(&mut harness, Key::V, "V");
+    assert!(painted(&harness, "-- VISUAL --"));
+    assert!(painted(&harness, "1 row"));
+    assert!(polite(&mut harness, "Visual. 1 row selected."));
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::J, "j");
+    assert!(painted(&harness, "3 rows"));
+    assert!(polite(&mut harness, "Visual. 3 rows selected."));
+    // The mode is in the palette's magenta, as the board's is.
+    let magenta = harness.app.palette.magenta;
+    let mode =
+        |(text, color): &(String, egui::Color32)| text == "-- VISUAL --" && *color == magenta;
+    assert!(harness.painted.iter().any(mode), "{:?}", harness.painted);
+    // Its keys, one piece, in place of the grid's.
+    assert!(painted(&harness, "d delete · esc normal"));
+    assert!(!painted(&harness, "dd delete"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!painted(&harness, "-- VISUAL --"));
+    assert!(painted(&harness, "dd delete"));
+}
+
+/// A delete the table refuses leaves the visual selection on, and the
+/// status line says why in place of its keys.
+#[test]
+fn a_refused_delete_is_said_on_the_visual_line() {
+    let table = tabletist_db::ObjectKind::Table;
+    let (mut harness, tab, id) = covers_as(Look::omarchy(), table, true);
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    select(&mut harness, tab, id, (0, 1));
+    type_key(&mut harness, Key::V, "V");
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::D, "d");
+    assert!(visual(&harness, tab, id));
+    assert!(marked(&harness, tab, id).is_empty());
+    assert!(painted(&harness, "-- VISUAL --"));
+    assert!(painted(&harness, "read-only connection"));
+    assert!(!painted(&harness, "d delete · esc normal"));
+}

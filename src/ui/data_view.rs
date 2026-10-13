@@ -1429,6 +1429,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         )),
         (None, _) => None,
     };
+    // A visual selection of rows, and how many it holds: said when it
+    // starts and each time it grows or shrinks.
+    let visual = (look.terminal && object.visual()).then(|| {
+        let rows = object.selected_rows().len();
+        let held = super::pending_bar::counted(locale, rows, "row selected", "rows selected");
+        format!("{} {held}.", gettext(locale, "Visual."))
+    });
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
     // changed.
@@ -1661,6 +1668,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         if let Some(words) = &told {
             // On a point of its own: two live nodes do not share one.
             let at = Rect::from_min_size(ui.max_rect().min + vec2(2.0, 0.0), vec2(1.0, 1.0));
+            widgets::announce_polite(ui, at, words);
+        }
+        if let Some(words) = &visual {
+            // On a point of its own, as the others are.
+            let at = Rect::from_min_size(ui.max_rect().min + vec2(4.0, 0.0), vec2(1.0, 1.0));
             widgets::announce_polite(ui, at, words);
         }
         // A foreign key cell's list, under the cell its field is on. A
