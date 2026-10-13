@@ -192,6 +192,8 @@ pub enum StateFile {
     Connections(SavedConnections),
     /// When each saved connection last connected, by its id.
     LastUsed(std::collections::BTreeMap<String, u64>),
+    /// The note that the connections are kept in `connections.toml`.
+    ConnectionsMoved,
     KnownHosts(HostKeys),
     Settings(crate::settings::Settings),
     Labels(crate::labels::Labels),
@@ -202,6 +204,9 @@ impl StateFile {
         match self {
             Self::Connections(connections) => connections.save(path),
             Self::LastUsed(times) => crate::util::save_json(path, times),
+            Self::ConnectionsMoved => {
+                crate::util::write_atomic(path, crate::connections::MOVED.as_bytes())
+            }
             Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
             Self::Settings(settings) => settings.save(path),
             Self::Labels(labels) => labels.save(path),
@@ -4240,6 +4245,7 @@ mod tests {
                 "last_used.json",
                 StateFile::LastUsed(std::collections::BTreeMap::new()),
             ),
+            ("connections.moved", StateFile::ConnectionsMoved),
             (
                 "known_hosts.json",
                 StateFile::KnownHosts(HostKeys::default()),

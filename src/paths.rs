@@ -101,6 +101,14 @@ impl AppDirs {
         self.state.join("last_used.json")
     }
 
+    /// The note that the connections are kept in `connections.toml`: made
+    /// at the first start that finds that file. Once it is there, what an
+    /// older version kept in `connections.json` is never read again,
+    /// whatever becomes of the new file.
+    pub fn connections_moved_file(&self) -> PathBuf {
+        self.state.join("connections.moved")
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.state.join("tabletist.log")
     }
@@ -136,6 +144,10 @@ mod tests {
         assert_eq!(
             dirs.last_used_file(),
             PathBuf::from("/root/state/last_used.json")
+        );
+        assert_eq!(
+            dirs.connections_moved_file(),
+            PathBuf::from("/root/state/connections.moved")
         );
         assert_eq!(
             dirs.known_hosts_file(),

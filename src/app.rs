@@ -196,6 +196,14 @@ impl App {
         if loaded_connections.save_last_used {
             app.save_last_used();
         }
+        // And that the connections have moved, at the first start that
+        // finds them in their new file.
+        if loaded_connections.mark_moved {
+            app.backend.send(Command::Save {
+                path: app.dirs.connections_moved_file(),
+                file: StateFile::ConnectionsMoved,
+            });
+        }
         if adopted {
             app.save_labels();
         }
@@ -4518,6 +4526,12 @@ mod tests {
         assert_eq!(again.notice, None);
         assert_eq!(again.connections, app.connections);
         assert_eq!((saves_of(&again, &new), saves_of(&again, &used)), (0, 0));
+        // That start found the new file, and has the move noted: the old
+        // file is not read again, whatever becomes of the new one.
+        let moved = dirs.connections_moved_file();
+        assert_eq!((saves_of(&app, &moved), saves_of(&again, &moved)), (0, 1));
+        std::fs::write(&moved, crate::connections::MOVED).unwrap();
+        assert_eq!(saves_of(&start(), &moved), 0);
         assert_eq!(std::fs::read_to_string(&old).unwrap(), fixture);
     }
 

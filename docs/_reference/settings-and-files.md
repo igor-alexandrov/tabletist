@@ -80,6 +80,7 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `known_hosts.json` | Settings | The SSH host keys you trusted |
 | `themes/` | Settings | Palette files |
 | `last_used.json` | State | When each saved connection last connected |
+| `connections.moved` | State | A note that your connections are kept in `connections.toml` |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 
@@ -160,10 +161,16 @@ there, and loads no connection.
 Versions before this one kept the connections in `connections.json`.
 Tabletist reads that file once, at the first start that finds no
 `connections.toml`, writes the two files above from it, tells you, and
-leaves it where it is. It is not read in place of a `connections.toml`
-that was kept aside. If the old file itself cannot be read, it is kept
+leaves it where it is. If the old file itself cannot be read, it is kept
 aside in the same way and nothing is written for it, so it is read again
 once it is mended.
+
+At the next start, which finds `connections.toml`, Tabletist notes in its
+state folder that the connections have moved (`connections.moved`). From
+then on `connections.json` is not read again, whatever becomes of the new
+file: the connections of the day they moved do not come back in place of a
+`connections.toml` that was kept aside or removed. To have the old file
+read once more, remove `connections.moved` as well.
 
 ## Command-line options
 
