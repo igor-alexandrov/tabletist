@@ -763,7 +763,8 @@ fn delete_many(
     let touched = match connection.execute(&run.sql.text, params).map_err(map_error) {
         Ok(touched) => touched,
         Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
-        // Busy: sent again row by row, each row could wait as long.
+        // Busy: not sent again row by row, since each row could wait as
+        // long. The save ends on the run's first row.
         Err(error) if Dialect::Sqlite.busy(&error) => {
             return Ok(Some(Applied::FailedDelete {
                 delete: first,
@@ -984,8 +985,8 @@ async fn delete_many(
             match client.simple_query(&run.sql.text).await.map_err(query_error) {
                 Ok(messages) => Some(touched(&messages)),
                 Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
-                // Busy: sent again row by row, each row could wait as
-                // long.
+                // Busy: not sent again row by row, since each row could
+                // wait as long. The save ends on the run's first row.
                 Err(error) if Dialect::Postgres.busy(&error) => {
                     return Ok(Some(Applied::FailedDelete {
                         delete: first,
@@ -1182,8 +1183,8 @@ async fn delete_many(
             execute(conn, SAVEPOINT).await?;
             match delete(conn, sql, stop).await? {
                 Ok(deleted) => Some(deleted),
-                // Busy: sent again row by row, each row could wait as
-                // long.
+                // Busy: not sent again row by row, since each row could
+                // wait as long. The save ends on the run's first row.
                 Err(error) if Dialect::MySql.busy(&error) => {
                     return Ok(Some(Applied::FailedDelete {
                         delete: first,
