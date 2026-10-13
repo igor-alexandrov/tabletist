@@ -465,6 +465,187 @@ mod postgres {
         assert_eq!(connection.dialect(), Dialect::Postgres);
         the_bookshop_is_stocked(&connection, "postgres").await;
     }
+
+    #[tokio::test]
+    async fn an_agent_reads_the_bookshop_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        an_agent_reads_the_bookshop(&connection, "postgres").await;
+    }
+
+    #[tokio::test]
+    async fn postgres_reads_a_value_as_the_type_of_its_placeholder() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let on = "postgres";
+        // The ends of a 64-bit integer come back as they went.
+        let ends = read(
+            &connection,
+            "SELECT ?::bigint, ?::bigint",
+            &[Param::Int(i64::MAX), Param::Int(i64::MIN)],
+            on,
+        )
+        .await;
+        assert_eq!(ends, [[Value::Int(i64::MAX), Value::Int(i64::MIN)]]);
+        // A placeholder with no type to take is text.
+        let sent = read(&connection, "SELECT ? AS sent", &[Param::Int(42)], on).await;
+        assert_eq!(sent, [[text("42")]]);
+        // Text fills a placeholder of any type the server reads from text:
+        // an array here.
+        let found = read(
+            &connection,
+            "SELECT count(*) FROM books WHERE id = ANY(?)",
+            &[Param::Text("{1, 2, 3}".into())],
+            on,
+        )
+        .await;
+        assert_eq!(found, [[Value::Int(3)]]);
+        // One value for a placeholder written twice.
+        let twice = "SELECT title FROM books WHERE id = $1 OR author_id = $1 ORDER BY id";
+        let read_twice = agent::check_read(Dialect::Postgres, twice, &[Param::Int(3)]).unwrap();
+        let found = connection
+            .run_agent_read(&read_twice, LIMITS, &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(found.rows, [[text("Lanterns")], [text("Ninety-One Doors")]]);
+        // A value its placeholder's type does not take is the server's
+        // error, and the session goes on.
+        let error = asked(
+            &connection,
+            "SELECT title FROM books WHERE id = ?",
+            &[Param::Text("three".into())],
+            LIMITS,
+        )
+        .await
+        .unwrap_err();
+        let Error::Query { code, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(code.as_deref(), Some("22P02"), "{error}");
+        the_bookshop_is_stocked(&connection, on).await;
+    }
+
+    #[tokio::test]
+    async fn a_placeholder_in_a_string_is_text_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let sql = "SELECT '$1', $q$ $1 $q$, title FROM books WHERE id = $1";
+        let read = agent::check_read(Dialect::Postgres, sql, &[Param::Int(3)]).unwrap();
+        let found = connection
+            .run_agent_read(&read, LIMITS, &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(found.rows, [[text("$1"), text(" $1 "), text("Lanterns")]]);
+    }
+
+    #[tokio::test]
+    async fn a_plan_takes_values_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let on = "postgres";
+        let one = [Param::Int(3)];
+        let plan = read(
+            &connection,
+            "EXPLAIN SELECT title FROM books WHERE id = ?",
+            &one,
+            on,
+        )
+        .await;
+        let Some(Value::Text(first)) = plan.first().and_then(|line| line.first()) else {
+            panic!("{plan:?}");
+        };
+        assert!(first.contains("books"), "{first}");
+        // A plan as JSON is one value of another type.
+        let plan = read(
+            &connection,
+            "EXPLAIN (FORMAT JSON) SELECT title FROM books WHERE id = ?",
+            &one,
+            on,
+        )
+        .await;
+        let [line] = plan.as_slice() else {
+            panic!("{plan:?}");
+        };
+        let [Value::Text(json)] = line.as_slice() else {
+            panic!("{line:?}");
+        };
+        assert!(json.trim_start().starts_with('['), "{json}");
+        // A long plan is cut at the limit like any answer.
+        let cut = asked(
+            &connection,
+            "EXPLAIN (VERBOSE) SELECT * FROM books b JOIN authors a ON a.id = b.author_id \
+             WHERE b.id = ?",
+            &one,
+            Limits { rows: 2, ..LIMITS },
+        )
+        .await
+        .unwrap();
+        assert_eq!(cut.rows.len(), 2);
+        assert!(cut.truncated);
+    }
+
+    /// A statement's time includes its wait for a lock, so the one timeout
+    /// ends a read that waits behind another session's `ALTER TABLE`.
+    #[tokio::test]
+    async fn the_timeout_ends_a_wait_for_a_lock_on_postgres() {
+        let (Some(connection), Some(url)) = (bookshop().await, url()) else {
+            return;
+        };
+        let holder = admin(&url, Some("bookshop")).await;
+        holder
+            .batch_execute("BEGIN; LOCK TABLE book_covers IN ACCESS EXCLUSIVE MODE")
+            .await
+            .unwrap();
+        let short = Limits {
+            timeout: Duration::from_millis(200),
+            ..LIMITS
+        };
+        let started = Instant::now();
+        let ended = asked(&connection, "SELECT count(*) FROM book_covers", &[], short).await;
+        let took = started.elapsed();
+        holder.batch_execute("ROLLBACK").await.unwrap();
+        assert_eq!(ended.unwrap_err(), Error::Timeout);
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        // The lock is gone, and the session reads on.
+        let covers = read(
+            &connection,
+            "SELECT count(*) FROM book_covers",
+            &[],
+            "postgres",
+        )
+        .await;
+        assert_eq!(covers, [[Value::Int(3)]]);
+    }
+
+    /// The timeout is the transaction's: after a run, one that ran out of
+    /// time or not, the session has none, as the SQL editor expects.
+    #[tokio::test]
+    async fn the_timeout_ends_with_its_run_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let on = "postgres";
+        let none = [[text("0")]];
+        read(&connection, "SELECT count(*) FROM books", &[], on).await;
+        assert_eq!(
+            rows_of(&connection, "SHOW statement_timeout", on).await,
+            none
+        );
+        let short = Limits {
+            timeout: Duration::from_millis(50),
+            ..LIMITS
+        };
+        let ended = asked(&connection, &slow(5), &[], short).await;
+        assert_eq!(ended.unwrap_err(), Error::Timeout);
+        assert_eq!(
+            rows_of(&connection, "SHOW statement_timeout", on).await,
+            none
+        );
+    }
 }
 
 mod mysql {

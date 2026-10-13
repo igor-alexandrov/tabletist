@@ -51,6 +51,17 @@ pub(crate) struct Sent<'a> {
     pub timeout: Duration,
 }
 
+impl Sent<'_> {
+    /// The timeout in whole milliseconds: never 0, which PostgreSQL and
+    /// MySQL read as no limit, and never more than PostgreSQL's setting
+    /// holds.
+    pub fn timeout_ms(&self) -> u32 {
+        u32::try_from(self.timeout.as_millis())
+            .unwrap_or(u32::MAX)
+            .clamp(1, i32::MAX as u32)
+    }
+}
+
 /// The error of a statement the database counts another number of
 /// placeholders in than values were sent for. The check counted them too
 /// ([`super::check_read`]), by its own reading: where the two disagree the
@@ -187,6 +198,20 @@ mod tests {
             error.to_string(),
             "the statement answered no rows, so it is not a read"
         );
+    }
+
+    #[test]
+    fn a_timeout_is_whole_milliseconds_and_never_none() {
+        let sent = |timeout: Duration| Sent {
+            params: &[],
+            timeout,
+        };
+        assert_eq!(sent(Duration::from_secs(10)).timeout_ms(), 10_000);
+        assert_eq!(sent(Duration::from_micros(1_999)).timeout_ms(), 1);
+        // 0 would lift the limit.
+        assert_eq!(sent(Duration::ZERO).timeout_ms(), 1);
+        assert_eq!(sent(Duration::from_micros(10)).timeout_ms(), 1);
+        assert_eq!(sent(Duration::MAX).timeout_ms(), 2_147_483_647);
     }
 
     #[test]
