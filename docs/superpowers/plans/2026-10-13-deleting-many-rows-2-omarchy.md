@@ -10,6 +10,13 @@
 
 Line numbers are of head `1a9cdf3`. Two commits since (`4acd417`, `3d887c2`) moved lines of `src/edit.rs` and `src/app/editing.rs` by a few dozen: find a place there by the text the plan quotes.
 
+Status: built on 2026-10-13, one commit per task, each test written and seen to fail before its code. Each task's blocks are the plan's as written, but for these:
+
+- Task 1: the tests gained a helper, `move_rows`, for a move by rows.
+- Task 3: what the line has to say is painted with `widgets::paint_text_right`, which gives the width the plan measured apart. The scene that was looked at (Omarchy, light and dark): three rows in the selection's fill, the gutter's cursor on the cursor's row, `-- VISUAL -- 3 rows`, the counts, and the two keys at the right.
+- Task 4: built in two steps, to see the view's tests fail on behaviour and not on a missing name: first the keymap's count and the rows it names, with the view dropping the count, then the action, the reducer and the view.
+- Task 5: `docs/_guide/omarchy.md` has no table of the grid's keys near line 55 (that one is the connections list's), so only its editing table changed. The keyboard reference sends the reader to that page for the Omarchy look and did not change.
+
 ---
 
 ## Where the plan leaves the spec, for a yes

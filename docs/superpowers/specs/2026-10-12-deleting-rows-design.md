@@ -189,11 +189,12 @@ otherwise than this asks, each agreed with the user before it was built:
 
 - **Undo.** ⌘Z and `u` on a marked row restore it. There is no redo: the
   app has no undo stack, only the key that puts one cell back.
-- **One row at a time.** The app has no selection of several rows, no
-  visual mode and no count before a key. `d` on a visual selection,
-  `{count}dd`, the cap of 1,000 and the `IN (…)` batches wait for those
-  (a run 4, or a spec of their own). Tests 3 and the batching of test 7
-  with them.
+- **Several rows.** Runs 1 to 3 marked one row at a time. Several
+  selected rows, `d` on a visual selection, `{count}dd` and the cap of
+  1,000 are built to a spec of their own,
+  `2026-10-13-deleting-many-rows-design.md` (its slices 1 and 2), which
+  finishes test 3. The `IN (…)` batches, and with them the batching of
+  test 7, are its slice 3 and are not built yet.
 - **Privileges.** The app reads no DELETE privilege, so the command is
   not disabled for want of one: the server's refusal is the row's error
   after the save.

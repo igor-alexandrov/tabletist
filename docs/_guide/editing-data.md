@@ -266,6 +266,10 @@ it restores them all, and where only some of them were marked it marks the
 rest. New rows among them are dropped. One press takes up to 1,000 rows:
 for more, delete with a statement in the SQL editor.
 
+In the Omarchy look, press `V` on a row, move to the last row with `j` or
+`k`, and press `d`. A count does the same from the cursor down: `3dd`
+marks three rows.
+
 Save writes the deletes with everything else that is pending, in one
 transaction: new rows first, then changed rows, then deleted rows.
 **Review SQL** shows each row's `DELETE` before you save. After the save
@@ -291,7 +295,7 @@ count is in a line stands without its number.
 
 Rows cannot be deleted on a read-only connection, in a view, or in a
 table without a primary key or unique index. The key and the button say
-why. In the Omarchy look a press marks one row.
+why.
 
 ## When someone else changed the row
 
