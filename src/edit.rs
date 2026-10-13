@@ -994,7 +994,7 @@ pub fn typed_as(dialect: Dialect, column: &ColumnInfo, text: &str) -> NewValue {
         ColumnClass::Other if temporal(&column.type_name).is_some() => {
             typed.eq_ignore_ascii_case(word)
         }
-        // The rest may: an enum, `citext`, a SQLite column with no type.
+        // The rest may: an enum, a `uuid`, a SQLite column with no type.
         // `null` is four letters there, and only the capitals are SQL's.
         ColumnClass::Other => typed == word.to_ascii_uppercase(),
     };
@@ -4059,11 +4059,15 @@ mod tests {
         let flag = column("boolean", true, None);
         assert_eq!(typed_as(pg, &flag, "true"), typed("true"));
         assert_eq!(typed_as(pg, &flag, "null"), NewValue::Null);
+        // `citext` is text: its words are its letters, the capitals too.
+        let folded = column("citext", true, Some("'a'"));
+        for word in ["null", "NULL", "DEFAULT", "now()"] {
+            assert_eq!(typed_as(pg, &folded, word), typed(word), "{word}");
+        }
         // A type the app has no class for may keep text: the words are
         // text there but in capitals, as in JSON.
         let lite = Dialect::Sqlite;
         let kept = [
-            (pg, "citext"),
             (pg, "mood"),
             (pg, "uuid"),
             (Dialect::MySql, "enum('a','b')"),

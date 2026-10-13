@@ -942,6 +942,81 @@ pub fn genres_page() -> RowPage {
 /// The genres, as (id, name), for [`Harness::answer_lookups`].
 pub const GENRES: [(i64, &str); 2] = [(1, "Fiction"), (2, "Crime")];
 
+/// The Bookshop's `isbns`: a table of its key alone, with nothing to
+/// label a row by.
+pub fn isbns_structure() -> tabletist_db::Structure {
+    tabletist_db::Structure {
+        columns: vec![tabletist_db::ColumnInfo {
+            name: "isbn".into(),
+            type_name: "TEXT".into(),
+            ..tabletist_db::ColumnInfo::default()
+        }],
+        primary_key: vec!["isbn".into()],
+        ..tabletist_db::Structure::default()
+    }
+}
+
+/// The Bookshop's `editions`, cut to what a key to `isbns` and the chooser
+/// of a label need: `isbn` is a foreign key to `isbns.isbn`, and `cover`
+/// holds bytes.
+pub fn editions_structure() -> tabletist_db::Structure {
+    use tabletist_db::ColumnInfo;
+    let column = |name: &str, type_name: &str| ColumnInfo {
+        name: name.into(),
+        type_name: type_name.into(),
+        ..ColumnInfo::default()
+    };
+    tabletist_db::Structure {
+        columns: vec![
+            column("id", "INTEGER"),
+            column("isbn", "TEXT"),
+            column("title", "TEXT"),
+            column("cover", "BLOB"),
+        ],
+        primary_key: vec!["id".into()],
+        foreign_keys: vec![tabletist_db::ForeignKeyInfo {
+            columns: vec!["isbn".into()],
+            ref_schema: "main".into(),
+            ref_table: "isbns".into(),
+            ref_columns: vec!["isbn".into()],
+            ..tabletist_db::ForeignKeyInfo::default()
+        }],
+        ..tabletist_db::Structure::default()
+    }
+}
+
+/// Two editions, each with its ISBN.
+pub fn editions_page() -> RowPage {
+    let meta = |name: &str, type_name: &str, kind: ValueKind| ColumnMeta {
+        name: name.into(),
+        type_name: type_name.into(),
+        kind,
+    };
+    let edition = |id: i64, isbn: &str, title: &str| {
+        vec![
+            Value::Int(id),
+            Value::Text(isbn.into()),
+            Value::Text(title.into()),
+            Value::Null,
+        ]
+    };
+    RowPage {
+        columns: vec![
+            meta("id", "INTEGER", ValueKind::Numeric),
+            meta("isbn", "TEXT", ValueKind::Text),
+            meta("title", "TEXT", ValueKind::Text),
+            meta("cover", "BLOB", ValueKind::Binary),
+        ],
+        rows: vec![
+            edition(1, "978-1-4028-9462-6", "The Lighthouse"),
+            edition(2, "978-1-4028-9463-3", "Low Tide"),
+        ],
+        has_more: false,
+        ordered_by_key: true,
+        elapsed: std::time::Duration::from_millis(2),
+    }
+}
+
 /// A page of `book_covers` whose three rows point at the three
 /// publishers in turn: Northlight Books, Harbor Press, Harbor Lights.
 /// [`book_covers_page`] numbers its publishers on from the first, and
@@ -1157,6 +1232,26 @@ impl Harness {
         });
         self.answer_structure(genres_structure());
         self.answer_rows(genres_page());
+        let id = self
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_tab)
+            .expect("the table's tab is open");
+        (tab, id)
+    }
+
+    /// `editions` open, writable, its structure and its two rows loaded:
+    /// a table whose `isbn` cells open a picker of `isbns`.
+    pub fn editions(&mut self) -> (ConnTabId, TabId) {
+        let tab = self.connect_fake_as(false);
+        self.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "editions"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        self.answer_structure(editions_structure());
+        self.answer_rows(editions_page());
         let id = self
             .app
             .workspace(tab)

@@ -68,6 +68,19 @@ impl Environment {
         }
     }
 
+    /// What the environment is called in a sentence that names a
+    /// connection (`Bookshop · dev`): its label in lower case, in every
+    /// look. None for a connection that is none of them, which is named
+    /// by its name alone.
+    pub fn named(self, platform: Platform) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Local | Self::Dev | Self::Staging | Self::Production => {
+                Some(self.label(platform).to_lowercase())
+            }
+        }
+    }
+
     /// The badge text: the lower-case name in a macOS or Windows pill, the
     /// terminal's upper-case tag on Omarchy.
     pub fn label(self, platform: Platform) -> &'static str {

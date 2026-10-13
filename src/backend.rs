@@ -192,6 +192,7 @@ pub enum StateFile {
     Connections(SavedConnections),
     KnownHosts(HostKeys),
     Settings(crate::settings::Settings),
+    Labels(crate::labels::Labels),
 }
 
 impl StateFile {
@@ -200,6 +201,7 @@ impl StateFile {
             Self::Connections(connections) => connections.save(path),
             Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
             Self::Settings(settings) => settings.save(path),
+            Self::Labels(labels) => labels.save(path),
         }
     }
 }

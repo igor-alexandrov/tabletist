@@ -9,6 +9,7 @@
 //! [`ScriptMode::ReadOnly`] cannot write.
 
 mod adapter;
+pub mod agent;
 mod catalog;
 mod check;
 mod class;

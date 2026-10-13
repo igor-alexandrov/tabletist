@@ -12,9 +12,10 @@ pub struct Lookup {
     pub object: ObjectRef,
     /// The column the foreign key references.
     pub key: String,
-    /// The column a person reads a row by. `None`: the table has no text
-    /// column but its key, and rows are found by the key alone. Never the
-    /// key column: the statement names both in one select list.
+    /// The column a person reads a row by, of any type: it is searched as
+    /// the text the database writes it as. `None`: rows are found by the
+    /// key alone. Never the key column: the statement names both in one
+    /// select list.
     pub label: Option<String>,
     pub part: LookupPart,
     /// The most rows wanted. One more is read, to learn whether there are

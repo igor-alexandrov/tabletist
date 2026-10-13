@@ -100,6 +100,8 @@ pub struct Search {
     pub count: Option<String>,
     /// The cell's column takes NULL: the list's foot offers Set NULL.
     pub nullable: bool,
+    /// The chooser of what labels the list, while it is open beside it.
+    pub chooser: Option<crate::ui::label_chooser::Open>,
     /// The search failed: the field goes on as the plain text editor it
     /// was, Esc keeping the edit in the terminal look.
     pub failed: bool,
@@ -1798,6 +1800,7 @@ mod tests {
                 table: "publishers".into(),
                 count: count.map(str::to_owned),
                 nullable: false,
+                chooser: None,
                 failed: false,
                 refused,
             }),

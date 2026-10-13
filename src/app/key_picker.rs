@@ -81,12 +81,15 @@ impl App {
                 }),
             };
             let kept = workspace.columns.get(&target.0);
-            let label = match kept.and_then(|kept| kept.value.as_deref()) {
-                Some(columns) => {
-                    Columns::Known(key_picker::label_column(table.dialect, columns, &target.1))
-                }
-                None => Columns::Waiting,
-            };
+            // What labels the table's rows: the user's choice, or the
+            // app's pick.
+            let place = workspace.label_place();
+            let of = (&place, table.dialect);
+            let label = kept
+                .and_then(|kept| {
+                    super::labels::resolved(&self.labels, of, kept, &target.0, &target.1)
+                })
+                .map_or(Columns::Waiting, Columns::Known);
             // A fetch that failed is asked for again: the completion list
             // asks once per keystroke and so lets a failure stand, while
             // this asks once per editor opened. A cached error is never
@@ -113,6 +116,7 @@ impl App {
         if load {
             self.load_columns(tab, table);
         }
+        self.tell_gone(tab, id);
         self.search(tab, id);
     }
 
@@ -143,7 +147,7 @@ impl App {
                 let passes = crate::edit::problem(table.dialect, column, key).is_none();
                 key_picker::pinned(key, class, &column.type_name, passes)
             };
-            let reads = picker.lookups(label.clone(), &text, pin);
+            let reads = picker.lookups(label.column.clone(), &text, pin);
             Some((workspace.session, reads, text, picker.serial))
         });
         let Some((session, (pinned, matching), text, serial)) = planned else {
@@ -191,10 +195,14 @@ impl App {
     /// search, or says why it has no list.
     pub(super) fn picker_columns(&mut self, tab: ConnTabId) {
         let shown = self.active_workspace_tab();
+        // Read beside the workspace, which is borrowed to be changed: a
+        // line for each table a column was chosen for.
+        let labels = self.labels.clone();
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
         let dialect = workspace.driver.dialect();
+        let place = workspace.label_place();
         let mut ready = Vec::new();
         let mut commits = Vec::new();
         // Split, so the tabs and the cache are borrowed side by side.
@@ -213,12 +221,20 @@ impl App {
             let Some(kept) = columns.get(&picker.target) else {
                 continue;
             };
-            if let Some(known) = kept.value.as_deref() {
-                picker.label =
-                    Columns::Known(key_picker::label_column(dialect, known, &picker.key));
-                ready.push(id);
+            if kept.value.is_some() {
+                let of = (&place, dialect);
+                let label = super::labels::resolved(&labels, of, kept, &picker.target, &picker.key);
+                // None: its chosen column is missing from columns that
+                // are being read again. Their answer comes here too.
+                if let Some(label) = label {
+                    picker.label = Columns::Known(label);
+                    ready.push(id);
+                }
             } else if let Some(error) = &kept.error {
                 picker.failed = Some(error.clone());
+                // No list, and no chooser beside it: the keys are the
+                // field's.
+                picker.chooser = None;
                 // Nothing will answer: a kept Enter takes the text. Under
                 // a prompt about pending changes the commit is dropped
                 // (`App::apply`) and the key is lost: accepted, the next
@@ -233,6 +249,7 @@ impl App {
         }
         workspace.columns = columns;
         for id in ready {
+            self.tell_gone(tab, id);
             self.search(tab, id);
         }
         for (id, then) in commits {

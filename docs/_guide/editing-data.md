@@ -59,11 +59,11 @@ after. Review SQL shows the keyword as it is sent.
 
 - In a text column these are text: `NULL` there is four letters. Use
   Cmd/Ctrl+Backspace for NULL and Cmd/Ctrl+' for DEFAULT (`x` and `D` in
-  the Omarchy look).
+  the Omarchy look). PostgreSQL's `citext` is a text column.
 - In a JSON column `null` is a JSON document. `NULL` and `DEFAULT` in
   capitals are the database's.
 - The same goes for a type that is no number, boolean, date or time and
-  may keep text: an enum, `citext`, a UUID, a SQLite column with no type.
+  may keep text: an enum, a UUID, a SQLite column with no type.
   `null` there is four letters, and only the capitals are the database's.
 - An array of dates is no date: `now()` there is text.
 - A word the column cannot take stays text, and is checked like any other:
@@ -90,10 +90,11 @@ the rows that match are listed under the cell with their ids.
 | Move in the list | Up, Down, Page Up, Page Down |
 | Set the cell to the highlighted row | Enter, or Tab to move on |
 | Take a row with the pointer | Click it |
+| Choose the column that labels the list | Cmd/Ctrl+L, or click the label at the list's foot |
 | Leave the cell as it was | Esc |
 
-The list is searched by the table's first text column and by its key. An id
-you type or paste in full is taken as it is.
+The list is searched by the table's [label column](#the-label-column) and
+by its key. An id you type or paste in full is taken as it is.
 
 The first row is highlighted when what you typed is in its name or is its
 id. When the rows only begin with what you typed in their ids, none is, and
@@ -108,6 +109,46 @@ NULL, **Set NULL** under the list sets it, as Cmd/Ctrl+Backspace does.
 
 The picker is on the cells of the grid and on the fields of the row panel,
 in a new row and in a copy too. A key of several columns is edited as text.
+
+#### The label column
+
+The label column is what a row of the other table is read by: each line of
+the list shows it beside the row's id, and it is what your text is searched
+in. The foot of the list names it, **Label name · Automatic**. The Omarchy
+look names it in the status line.
+
+Automatic is the table's first text column that is not a key. To pick
+another, press Cmd/Ctrl+L or click the label at the foot. A chooser opens
+beside the list. The cell stays in edit, with your text as you left it.
+
+| To | Press |
+| --- | --- |
+| Move in the chooser | Up, Down (`j` and `k` too in the Omarchy look) |
+| Jump to a column | Type the letter its name begins with (not in the Omarchy look, where letters are keys) |
+| Choose the highlighted line | Enter, or click it |
+| Close the chooser and keep the label | Esc |
+
+**Automatic** hands the pick back to the app, and **No label** lists the
+rows by their keys alone. A key and a column of bytes are listed, but
+cannot be chosen. A date or a number can: it is searched as the text the
+list shows.
+
+The list is searched again by the new label at once, and its foot says
+**Set by you** where you picked a column or No label. The choice is the
+table's: every foreign key that points at it uses it. It is kept for that
+saved connection (on PostgreSQL, for the database the tab is on), in
+`labels.json` among
+[the app's files]({% link _reference/settings-and-files.md %}) on this
+computer. Nothing is written to the database.
+
+The same choice can be made with no cell open, in the table's
+[Structure view]({% link _guide/browsing-data.md %}#structure). On a
+read-only connection, where no cell opens, that is where it is made.
+
+When a column you chose is renamed or dropped, the label goes back to
+Automatic and the list says so once (the status line does, in the Omarchy
+look). A table that has only its key column has nothing to choose, and
+says so.
 
 An id you type yourself is looked up when you leave the cell. If no row
 has it, the cell gets an outline and says so under the pointer, the row

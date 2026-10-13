@@ -83,7 +83,24 @@ A foreign key has a link next to it that opens the row it points to.
 Switch a table from **Data** to **Structure** to read its columns, indexes
 and foreign keys.
 
-{% include shot.html file="macos-structure" alt="The Structure view of a table, listing its columns and indexes" %}
+{% include shot.html file="macos-structure" alt="The Structure view of a table: the label for foreign keys, then its columns, indexes and foreign keys" %}
+
+Above the columns, **Label for foreign keys** names the column that this
+table's rows are read by in the list of a foreign key that points at it,
+and says whether the app picked it (**Automatic**) or you did (**Set by
+you**). The column itself is tagged **label**.
+[Editing Data]({% link _guide/editing-data.md %}#the-label-column) says
+what the label does.
+
+- **Change…** (Cmd/Ctrl+L) opens the chooser of columns.
+- Click a column's line and press Cmd/Ctrl+Alt+L to use that column, or
+  right-click the line for **Use as label**. With the keyboard, Tab or F6
+  comes to the columns, and Up and Down move between them.
+- **Use Automatic** hands the pick back to the app.
+
+No cell is edited and nothing is written to the database, so this works on
+a read-only connection. The Omarchy look does the same with `gl` and the
+`:label` lines of [its Structure view]({% link _guide/omarchy.md %}#the-structure-view).
 
 ## Copying
 

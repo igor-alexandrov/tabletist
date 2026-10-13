@@ -110,6 +110,17 @@ a Mac keyboard labels Delete.
 | Cmd+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
 | Cmd+Shift+R | Show or hide the row panel |
 
+In its Structure view:
+
+| Keys | Do |
+| --- | --- |
+| Cmd+L | Choose the column that labels the table's rows for foreign keys |
+| Up, Down | Move by column |
+| Cmd+Option+L | Use the column under the cursor as that label |
+
+The last two work with the keyboard on the view's columns: click a
+column's line, or come to them with Tab or F6.
+
 ### Editing
 
 | Keys | Do |
@@ -121,6 +132,7 @@ a Mac keyboard labels Delete.
 | Shift+Up, Shift+Down | Select the row above or below with the selected rows. Backspace then deletes them all |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |
+| Cmd+L | In a foreign key cell's list: choose the column that labels it. In the chooser, Up and Down move, Return chooses and Esc closes |
 | Option+Return | Open the large editor. In it, Cmd+Return applies and Esc cancels |
 | Cmd+Backspace | Set NULL |
 | Cmd+' | Set DEFAULT, where the column has a default |
