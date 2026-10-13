@@ -541,3 +541,31 @@ fn a_row_already_deleted_is_said_by_its_key() {
         "2 rows were already deleted: id 2, id 3."
     );
 }
+
+/// Spec 4, "Production confirm": the deletes are counted with the rest.
+#[test]
+fn the_production_confirm_counts_the_rows_to_delete() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+    set(&mut harness, tab, id, (0, 2), "audio");
+    // A new row needs its publisher before a save is offered.
+    let new = add(&mut harness, tab, id);
+    let publisher = (crate::edit::new_row(new), 1);
+    set(&mut harness, tab, id, publisher, "9100000000000000004");
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.settle();
+    assert!(harness.has("Save 1 new row, 1 change and 1 deleted row to production?"));
+}
+
+/// A save that only deletes says only that.
+#[test]
+fn the_production_confirm_of_deletes_alone_names_no_change() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+    mark(&mut harness, tab, id, 0);
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.settle();
+    assert!(harness.has("Save 2 deleted rows to production?"));
+}

@@ -513,13 +513,22 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
             columns.push(name.into_owned());
         }
     }
-    // What the save comes to: "1 new row and 2 changes".
-    let changed = counted(locale, prompt.changes, "change", "changes");
-    let added = counted(locale, prompt.added, "new row", "new rows");
-    let what = match (prompt.added, prompt.changes) {
-        (0, _) => changed,
-        (_, 0) => added,
-        _ => format!("{added} {} {changed}", gettext(locale, "and")),
+    // What the save comes to: "1 new row, 2 changes and 1 deleted row".
+    let mut parts = Vec::new();
+    if prompt.added > 0 {
+        parts.push(counted(locale, prompt.added, "new row", "new rows"));
+    }
+    if prompt.changes > 0 || (prompt.added == 0 && prompt.deleted == 0) {
+        parts.push(counted(locale, prompt.changes, "change", "changes"));
+    }
+    if prompt.deleted > 0 {
+        let deleted = counted(locale, prompt.deleted, "deleted row", "deleted rows");
+        parts.push(deleted);
+    }
+    let what = match parts.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first @ .., last] => format!("{} {} {last}", first.join(", "), gettext(locale, "and")),
     };
     let facts = Facts {
         connection: format!(
@@ -528,8 +537,9 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
             format::display_safe(&super::workspace::target(workspace))
         ),
         changes: what,
-        // A save that only adds rows changes none of the table's.
-        rows: if prompt.rows == 0 && prompt.added > 0 {
+        // A save that only adds or deletes rows changes none of the
+        // table's.
+        rows: if prompt.rows == 0 && (prompt.added > 0 || prompt.deleted > 0) {
             table.clone()
         } else {
             format!(
