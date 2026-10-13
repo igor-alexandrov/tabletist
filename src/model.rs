@@ -448,6 +448,14 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Delete the cursor's row and the rows after it, `count` in all, as
+    /// far as the grid goes, and put the cursor after them: the terminal
+    /// look's `{count}dd`.
+    DeleteCount {
+        tab: ConnTabId,
+        id: TabId,
+        count: u32,
+    },
     /// Take the mark for deletion off the selected row.
     RestoreRow {
         tab: ConnTabId,
@@ -2226,6 +2234,21 @@ impl ObjectTab {
         }
     }
 
+    /// The cursor's row and the rows after it in the grid's order, `count`
+    /// in all, as far as the grid goes: what `{count}dd` names.
+    pub fn rows_from_cursor(&self, count: u32) -> Vec<usize> {
+        let Some(cell) = self.selection else {
+            return Vec::new();
+        };
+        let height = self.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&self.edits.added, height);
+        let Some(from) = order.place(cell.row) else {
+            return Vec::new();
+        };
+        let to = from.saturating_add(count as usize).min(order.len());
+        (from..to).filter_map(|place| order.row(place)).collect()
+    }
+
     pub fn new(
         id: TabId,
         object: ObjectRef,
@@ -3458,6 +3481,20 @@ mod tests {
         assert!(tab.visual());
         tab.set_cursor(at(3), Reach::Move);
         assert_eq!(tab.selected_rows(), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_count_names_the_cursors_row_and_the_rows_after_it() {
+        let mut tab = covers(5);
+        assert!(tab.rows_from_cursor(3).is_empty());
+        tab.set_cursor(at(1), Reach::End);
+        assert_eq!(tab.rows_from_cursor(1), [1]);
+        assert_eq!(tab.rows_from_cursor(3), [1, 2, 3]);
+        // It stops at the grid's last row.
+        assert_eq!(tab.rows_from_cursor(999_999), [1, 2, 3, 4]);
+        // A new row counts where it stands.
+        let new = crate::edit::new_row(tab.edits.add_row(crate::edit::Place::Below(1), 5));
+        assert_eq!(tab.rows_from_cursor(3), [1, new, 2]);
     }
 
     fn info(name: &str, kind: ObjectKind) -> ObjectInfo {

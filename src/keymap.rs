@@ -1891,11 +1891,44 @@ impl PartialEq<&str> for Written {
     }
 }
 
+impl Command {
+    /// Whether a count before the command's keys says of how many rows it
+    /// is. Before any other command's keys a count is dropped.
+    pub fn takes_count(self) -> bool {
+        matches!(self, Self::DeleteRow)
+    }
+}
+
+/// The count typed before a key, and what follows it: `12dd` is 12 and
+/// `dd`. A count begins with a digit that is not nought, and more than six
+/// digits read as 999,999.
+pub fn count_of(typed: &str) -> (Option<u32>, &str) {
+    let digits = typed.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || typed.starts_with('0') {
+        return (None, typed);
+    }
+    let (count, rest) = typed.split_at(digits);
+    let count = if digits > 6 {
+        999_999
+    } else {
+        count.parse().unwrap_or(999_999)
+    };
+    (Some(count), rest)
+}
+
+/// Whether `typed` is a count with no key after it yet.
+pub fn is_count(typed: &str) -> bool {
+    matches!(count_of(typed), (Some(_), ""))
+}
+
 /// What typed characters, or a line of the `:` prompt, come to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Typed {
     /// They are this command's keys.
     Command(Command),
+    /// They are this command's keys with a count before them (`3dd`), and
+    /// the command takes one.
+    Counted(Command, u32),
     /// They are the keys of something that is not built yet: taken, and
     /// nothing happens.
     Claimed,
@@ -2069,6 +2102,16 @@ impl Keymap {
         holds: &dyn Fn(When) -> bool,
         typed: &str,
     ) -> Typed {
+        // A count before the key, where one is read: on a table's rows, in
+        // the terminal look.
+        let (count, typed) = if layout == Layout::Omarchy && scope == Scope::Grid {
+            count_of(typed)
+        } else {
+            (None, typed)
+        };
+        if count.is_some() && typed.is_empty() {
+            return Typed::Waiting;
+        }
         let letters = |spelled: &Spelled| -> Option<String> {
             let Spelled::Strokes(strokes) = spelled else {
                 return None;
@@ -2081,13 +2124,19 @@ impl Keymap {
                 })
                 .collect()
         };
-        self.read(
+        let read = self.read(
             layout,
             scope,
             holds,
             &|spelled| letters(spelled).is_some_and(|letters| letters == typed),
             &|spelled| letters(spelled).is_some_and(|letters| letters.starts_with(typed)),
-        )
+        );
+        match (read, count) {
+            (Typed::Command(command), Some(count)) if command.takes_count() => {
+                Typed::Counted(command, count)
+            }
+            _ => read,
+        }
     }
 
     /// What a line of the `:` prompt (`line`, without its colon) comes to
@@ -2750,6 +2799,34 @@ mod tests {
         assert_eq!(grid(&nothing, "dd"), Typed::Command(Command::DeleteRow));
         assert_eq!(keymap.label(Layout::Omarchy, Command::LeaveVisual), "esc");
         assert_eq!(keymap.label(Layout::Mac, Command::SelectRows), "");
+    }
+
+    #[test]
+    fn a_count_is_read_before_the_key_that_takes_one() {
+        let keymap = Keymap::default();
+        let nothing = |_: When| false;
+        let read = |layout, scope, typed: &str| keymap.typed(layout, scope, &nothing, typed);
+        let grid = |typed: &str| read(Layout::Omarchy, Scope::Grid, typed);
+        assert_eq!(grid("3"), Typed::Waiting);
+        assert_eq!(grid("3d"), Typed::Waiting);
+        assert_eq!(grid("3dd"), Typed::Counted(Command::DeleteRow, 3));
+        assert_eq!(grid("12dd"), Typed::Counted(Command::DeleteRow, 12));
+        assert_eq!(
+            grid("1234567dd"),
+            Typed::Counted(Command::DeleteRow, 999_999)
+        );
+        // Before any other key the count is dropped, and the key acts once.
+        assert_eq!(grid("3j"), Typed::Command(Command::MoveRow));
+        // Nought begins no count.
+        assert_eq!(grid("0"), Typed::Nothing);
+        assert_eq!(grid("0dd"), Typed::Nothing);
+        // Only the terminal look's grid of a table reads one.
+        assert_eq!(read(Layout::Omarchy, Scope::Results, "3"), Typed::Nothing);
+        assert_eq!(read(Layout::Omarchy, Scope::Inspector, "3"), Typed::Nothing);
+        assert_eq!(read(Layout::Mac, Scope::Grid, "3"), Typed::Nothing);
+        assert_eq!(count_of("12dd"), (Some(12), "dd"));
+        assert_eq!(count_of("dd"), (None, "dd"));
+        assert!(is_count("12") && !is_count("12d") && !is_count("") && !is_count("0"));
     }
 
     #[test]

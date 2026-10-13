@@ -55,6 +55,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::DropRow { .. }
             | Action::DeleteRow { .. }
             | Action::DeleteSelected { .. }
+            | Action::DeleteCount { .. }
             | Action::RestoreRow { .. }
             | Action::RevertCell { .. }
             | Action::DiscardEdits { .. }
@@ -1123,6 +1124,56 @@ impl App {
         match first {
             Some(row) => object.set_cursor(Some(CellPos { row, col }), Reach::End),
             // None of them is left: the cursor is where the drop put it.
+            None => object.range = None,
+        }
+    }
+
+    /// Deletes the cursor's row and the rows after it, `count` in all
+    /// ([`ObjectTab::rows_from_cursor`]). A range that stands is ended,
+    /// and the cursor goes to the row after the last one named, or stays
+    /// on that row where the grid ends with it.
+    pub(super) fn delete_count(&mut self, tab: ConnTabId, id: TabId, count: u32) {
+        let found = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .map(|object| {
+                let rows = object.rows_from_cursor(count);
+                let height = object.page().map_or(0, |page| page.rows.len());
+                let order = Order::of(&object.edits.added, height);
+                // The row after the last one named: no action names it, so
+                // it is there afterwards.
+                let after = rows
+                    .last()
+                    .and_then(|last| order.place(*last))
+                    .and_then(|place| order.row(place + 1));
+                (rows, after)
+            });
+        let Some((rows, after)) = found else {
+            return;
+        };
+        let acted = match rows.len() {
+            0 => false,
+            1 => {
+                self.delete_row(tab, id);
+                true
+            }
+            _ => self.sweep_rows(tab, id, &rows),
+        };
+        if !acted {
+            return;
+        }
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let last = rows.last().copied().filter(|row| match new_id(*row) {
+            Some(new) => object.edits.added.iter().any(|added| added.id == new),
+            None => true,
+        });
+        let col = object.selection.map_or(0, |cell| cell.col);
+        match after.or(last) {
+            Some(row) => object.set_cursor(Some(CellPos { row, col }), Reach::End),
+            // The grid ended with new rows that were dropped: the cursor
+            // is where the drop put it.
             None => object.range = None,
         }
     }

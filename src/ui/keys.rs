@@ -52,7 +52,8 @@ pub(crate) fn prompt_letter(
 ) -> Option<Command> {
     match keymap.typed(layout, Scope::Prompt, &|holds| holds == when, typed) {
         Typed::Command(command) => Some(command),
-        Typed::Claimed | Typed::Waiting | Typed::Nothing => None,
+        // A line of the prompt has no count.
+        Typed::Claimed | Typed::Waiting | Typed::Nothing | Typed::Counted(..) => None,
     }
 }
 
@@ -1448,6 +1449,35 @@ fn delete_selected(
     said
 }
 
+/// Asks for the cursor's row and the rows after it, `count` in all, to be
+/// deleted, or hands back what there is to say where a refusal is said.
+fn delete_count(
+    app: &App,
+    tab: ConnTabId,
+    id: TabId,
+    count: u32,
+    actions: &mut Vec<Action>,
+) -> Option<String> {
+    let (sweep, said) = app.workspace(tab).and_then(|workspace| {
+        let object = workspace.object_tab(id)?;
+        let rows = object.rows_from_cursor(count);
+        if rows.is_empty() {
+            return None;
+        }
+        let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
+        let table = crate::ui::format::display_safe(&object.object.name);
+        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
+        Some((sweep, said))
+    })?;
+    if !matches!(
+        sweep,
+        crate::edit::Sweep::TooMany | crate::edit::Sweep::Refused(_)
+    ) {
+        actions.push(Action::DeleteCount { tab, id, count });
+    }
+    said
+}
+
 /// Whether a visual selection of rows holds `command` back: what changes,
 /// copies or follows one cell or one row. The moves, the inspector's
 /// show and hide, a save, a discard, Review SQL, a reload, the filters and
@@ -1660,7 +1690,7 @@ fn letters(
                 Typed::Command(command) => Some(command),
                 // Nobody's, or the key of something not built yet. A
                 // character that ends a wait is not read again as a first.
-                Typed::Claimed | Typed::Nothing => None,
+                Typed::Claimed | Typed::Nothing | Typed::Counted(..) => None,
             };
             let step = if char == 'k' { -1 } else { 1 };
             match (command, &selected) {
@@ -1888,7 +1918,9 @@ fn letters(
     let only_edits = {
         let mut waiting = waiting.clone();
         typed.iter().all(|char| {
-            if *char == ':' && waiting.is_empty() {
+            if *char == ':' && (waiting.is_empty() || crate::keymap::is_count(&waiting)) {
+                // A count before the colon goes with it.
+                waiting.clear();
                 return true;
             }
             waiting.push(*char);
@@ -1925,7 +1957,9 @@ fn letters(
         // The colon opens the prompt, wherever a tab of the workspace is
         // in front: a table's or a SQL editor's, with the keys on the tree
         // too. It is no key of the keymap's: its lines are.
-        if char == ':' && waiting.is_empty() {
+        if char == ':' && (waiting.is_empty() || crate::keymap::is_count(&waiting)) {
+            // A count before the colon goes with it.
+            waiting.clear();
             take_char(ctx, char);
             if alone {
                 opened = true;
@@ -1934,7 +1968,7 @@ fn letters(
             continue;
         }
         waiting.push(char);
-        let command = match read(&waiting) {
+        let (command, count) = match read(&waiting) {
             // Nobody's: left in the frame, as any other text is.
             Typed::Nothing => {
                 waiting.clear();
@@ -1945,8 +1979,9 @@ fn letters(
                 continue;
             }
             // The key of something that is not built yet: taken.
-            Typed::Claimed => None,
-            Typed::Command(command) => Some(command),
+            Typed::Claimed => (None, None),
+            Typed::Command(command) => (Some(command), None),
+            Typed::Counted(command, count) => (Some(command), Some(count)),
         };
         take_char(ctx, char);
         waiting.clear();
@@ -2036,11 +2071,12 @@ fn letters(
             (Some(Command::DeleteRow), Some(id))
                 if rows_show && !tree && (field.is_none() || on_new) =>
             {
-                // From a field of a new row's form, the row it is of.
-                let why = if field.is_none() {
-                    delete_selected(app, tab, id, actions)
-                } else {
-                    delete_row(app, tab, id, actions)
+                // A count names its own rows. From a field of a new
+                // row's form, the row it is of.
+                let why = match count {
+                    Some(count) if field.is_none() => delete_count(app, tab, id, count, actions),
+                    _ if field.is_none() => delete_selected(app, tab, id, actions),
+                    _ => delete_row(app, tab, id, actions),
                 };
                 if let Some(why) = why {
                     crate::ui::toast::say(ctx, &why);

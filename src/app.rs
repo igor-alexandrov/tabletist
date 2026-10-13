@@ -1071,6 +1071,7 @@ impl App {
             Action::DropRow { tab, id } => self.drop_row(tab, id),
             Action::DeleteRow { tab, id } => self.delete_row(tab, id),
             Action::DeleteSelected { tab, id } => self.delete_selected(tab, id),
+            Action::DeleteCount { tab, id, count } => self.delete_count(tab, id, count),
             Action::RestoreRow { tab, id } => self.restore_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
                 // Not under a save: its answer is put into this set.

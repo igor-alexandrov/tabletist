@@ -594,3 +594,77 @@ fn a_refused_delete_is_said_on_the_visual_line() {
     assert!(painted(&harness, "read-only connection"));
     assert!(!painted(&harness, "d delete · esc normal"));
 }
+
+/// Types `text` on the grid, a key at a time, as digits and letters come.
+fn type_keys(harness: &mut Harness, text: &str) {
+    for char in text.chars() {
+        let key = Key::from_name(&char.to_uppercase().to_string()).expect("a key of that name");
+        type_key(harness, key, &char.to_string());
+    }
+}
+
+/// Spec 2 and 3, M10 and test 5: a count before `dd` marks the cursor's
+/// row and the rows after it, stops at the last row, and puts the cursor
+/// after the last row it named.
+#[test]
+fn a_count_before_dd_marks_that_many_rows_down() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(6));
+    select(&mut harness, tab, id, (1, 2));
+    type_keys(&mut harness, "3dd");
+    assert_eq!(marked(&harness, tab, id), [1, 2, 3]);
+    assert_eq!(selected(&harness, tab, id), Some((4, 2)));
+    assert_eq!(rows(&harness, tab, id), [4]);
+    // Two rows from the end, five asked for: two are marked, and the
+    // cursor stays on the last.
+    type_keys(&mut harness, "5dd");
+    assert_eq!(marked(&harness, tab, id), [1, 2, 3, 4, 5]);
+    assert_eq!(selected(&harness, tab, id), Some((5, 2)));
+    // The same rows again are all marked: the count restores them.
+    select(&mut harness, tab, id, (4, 2));
+    type_keys(&mut harness, "2dd");
+    assert_eq!(marked(&harness, tab, id), [1, 2, 3]);
+    // A count of one moves on, where plain `dd` stays.
+    select(&mut harness, tab, id, (0, 2));
+    type_keys(&mut harness, "1dd");
+    assert_eq!(marked(&harness, tab, id), [0, 1, 2, 3]);
+    assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+}
+
+/// Spec 3 and test 5: nought is no count, a count before another key is
+/// dropped, and `:` after one opens the prompt. But for the prompt this
+/// holds what was so before a count was read: a digit was nobody's.
+#[test]
+fn a_count_is_dropped_before_any_key_but_dd() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(6));
+    select(&mut harness, tab, id, (1, 2));
+    type_keys(&mut harness, "0dd");
+    assert_eq!(marked(&harness, tab, id), [1]);
+    assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+    type_keys(&mut harness, "3j");
+    assert_eq!(selected(&harness, tab, id), Some((2, 2)));
+    assert_eq!(marked(&harness, tab, id), [1]);
+    type_key(&mut harness, Key::Num3, "3");
+    type_key(&mut harness, Key::Colon, ":");
+    assert!(harness.app.workspace(tab).unwrap().command.is_some());
+    harness.press(Key::Escape, Modifiers::NONE);
+    // The count went with the prompt: `dd` marks one row.
+    type_keys(&mut harness, "dd");
+    assert_eq!(marked(&harness, tab, id), [1, 2]);
+}
+
+/// Spec 2 and test 6, by count: one action takes 1,000 rows and no more.
+#[test]
+fn a_count_over_a_thousand_rows_is_refused_with_the_message() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(1_001));
+    select(&mut harness, tab, id, (0, 1));
+    type_keys(&mut harness, "1001dd");
+    assert!(marked(&harness, tab, id).is_empty());
+    assert_eq!(selected(&harness, tab, id), Some((0, 1)));
+    assert_eq!(
+        said(&harness).as_deref(),
+        Some("select fewer rows, or delete in the sql editor.")
+    );
+    type_keys(&mut harness, "1000dd");
+    assert_eq!(marked(&harness, tab, id).len(), 1_000);
+    assert_eq!(selected(&harness, tab, id), Some((1_000, 1)));
+}
