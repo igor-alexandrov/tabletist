@@ -21,7 +21,7 @@ use std::fmt;
 use sqlparser::ast::{Query, SetExpr, Statement, UtilityOption};
 use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
-use sqlparser::tokenizer::{Token, Tokenizer};
+use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
 use crate::sql::TokenKind;
 use crate::{Dialect, sql};
@@ -331,6 +331,7 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
     let tokens = Tokenizer::new(parser, text)
         .tokenize()
         .map_err(|_| unread())?;
+    hints_read(dialect, &tokens, text)?;
     let statements = Parser::new(parser)
         .with_tokens(tokens.clone())
         .parse_statements()
@@ -376,6 +377,30 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
     words_read(dialect, &own_words(dialect, text))?;
     params_match(dialect, &placeholders, params)?;
     Ok(explains)
+}
+
+/// Refuses a MySQL statement with an optimizer hint, in either reading of
+/// its comments. A comment that begins `/*+` is one to MySQL, and three
+/// hints undo what a run sets for its session: `SET_VAR(sql_select_limit =
+/// …)` lifts the row limit, and `MAX_EXECUTION_TIME(…)` and
+/// `SET_VAR(max_execution_time = …)` the timeout. Seen on MySQL 8.4. The
+/// same text is a comment and nothing more to PostgreSQL and SQLite.
+fn hints_read(dialect: Dialect, tokens: &[Token], text: &str) -> Result<(), Refusal> {
+    match dialect {
+        Dialect::MySql => {}
+        Dialect::Postgres | Dialect::Sqlite => return Ok(()),
+    }
+    let parsed = tokens.iter().any(|token| match token {
+        Token::Whitespace(Whitespace::MultiLineComment(body)) => body.starts_with('+'),
+        _ => false,
+    });
+    let own = sql::tokenize(dialect, text).iter().any(|token| {
+        matches!(token.kind, TokenKind::Comment) && text[token.range.clone()].starts_with("/*+")
+    });
+    if parsed || own {
+        return Err(Refusal::NotAllowed("a /*+ */ optimizer hint".into()));
+    }
+    Ok(())
 }
 
 /// Text the parser could not read. What does not even begin as a query is
@@ -1024,6 +1049,41 @@ mod tests {
             format!("{read:?}"),
             "Read { dialect: MySql, params: 2, explains: false, .. }"
         );
+    }
+
+    #[test]
+    fn a_mysql_optimizer_hint_is_refused() {
+        // Each of the first three undoes what a run sets for its session.
+        for sql in [
+            "SELECT /*+ MAX_EXECUTION_TIME(600000) */ title FROM books",
+            "SELECT /*+ SET_VAR(max_execution_time = 0) */ title FROM books",
+            "SELECT /*+SET_VAR(sql_select_limit=100000)*/ title FROM books",
+            "SELECT title FROM books WHERE id IN (SELECT /*+ NO_MERGE() */ book_id FROM order_items)",
+            "SELECT title FROM books /*+ not where MySQL reads one */",
+            "EXPLAIN SELECT /*+ MAX_EXECUTION_TIME(600000) */ title FROM books",
+        ] {
+            let refusal = refused(Dialect::MySql, sql);
+            assert_eq!(refusal, not_allowed("a /*+ */ optimizer hint"), "{sql}");
+            assert_eq!(
+                refusal.to_string(),
+                "a /*+ */ optimizer hint is not available to agents."
+            );
+        }
+        // No hint: a comment that only looks like one, and the same
+        // characters in a string and in a line comment.
+        for sql in [
+            "SELECT title FROM books /* + a note */",
+            "SELECT title FROM books /* a note /*+ */",
+            "SELECT '/*+ MAX_EXECUTION_TIME(1) */' FROM books",
+            "SELECT title FROM books -- /*+ MAX_EXECUTION_TIME(1) */",
+        ] {
+            assert!(read(Dialect::MySql, sql).is_ok(), "{sql}");
+        }
+        // To the other two it is a comment.
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let sql = "SELECT /*+ SeqScan(books) */ title FROM books";
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}");
+        }
     }
 
     #[test]
