@@ -75,7 +75,8 @@ fn selection_note(
     Some(format!("{new} · {missing} {fields}"))
 }
 
-/// The parts of "13 rows · 6 columns · public", as far as it is known.
+/// The parts of "13 rows · 1 to delete · 6 columns · public", as far as
+/// it is known.
 fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec<String> {
     let mut parts = Vec::new();
     let page = object.page();
@@ -102,6 +103,11 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
         (Some(rows), Some(new)) => parts.push(format!("{rows} + {new}")),
         (Some(one), None) | (None, Some(one)) => parts.push(one),
         (None, None) => {}
+    }
+    // The rows to delete, beside them: "13 rows · 1 to delete".
+    let deleted = object.edits.deleted.len();
+    if deleted > 0 {
+        parts.push(format!("{deleted} {}", gettext(locale, "to delete")));
     }
     if let Some(page) = page {
         let count = page.columns.len();

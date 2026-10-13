@@ -421,3 +421,49 @@ fn a_marked_rows_edit_is_drawn_as_the_row_is() {
     assert!(harness.struck.iter().any(|piece| piece == "ebook"));
     assert!(!painted(&harness, "audio"));
 }
+
+/// Spec 3: the row count and the pending bar's summary.
+#[test]
+fn a_marked_row_is_counted_where_the_pending_changes_are() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    set(&mut harness, tab, id, (0, 2), "audio");
+    add(&mut harness, tab, id);
+    mark(&mut harness, tab, id, 1);
+    assert!(harness.has("3 rows + 1 new · 1 to delete · 5 columns · main"));
+    assert!(harness.has("1 new row · 1 change in 1 row · 1 to delete"));
+}
+
+/// The Omarchy status line counts the rows to delete, and its key is one
+/// of the keys that work.
+#[test]
+fn the_terminals_status_line_counts_the_rows_to_delete() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    // The row panel's footer names the key too: only the line's is asked.
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    mark(&mut harness, tab, id, 1);
+    assert!(painted(&harness, "-1 to delete"));
+    let palette = harness.app.palette;
+    // A hint is one piece, its key and its word, in the colour of a key
+    // that works.
+    let works =
+        |(text, color): &(String, egui::Color32)| text == "dd delete" && *color == palette.text;
+    assert!(harness.painted.iter().any(works), "{:?}", harness.painted);
+}
+
+#[test]
+fn a_save_that_deleted_says_how_many_rows() {
+    let locale = crate::i18n::Locale::default();
+    let saved = crate::edit::Saved {
+        at: std::time::Instant::now(),
+        cells: Vec::new(),
+        changes: 0,
+        rows: 0,
+        added: 0,
+        deleted: 2,
+        elapsed: std::time::Duration::from_millis(14),
+    };
+    assert_eq!(
+        crate::ui::pending_bar::written_text(&saved, locale),
+        "written 2 rows deleted · 14 ms"
+    );
+}

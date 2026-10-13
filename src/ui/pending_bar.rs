@@ -50,8 +50,8 @@ pub fn doubts_text(doubts: usize, locale: Locale) -> String {
     counted(locale, doubts, "value names no row", "values name no row")
 }
 
-/// "1 new row · 3 changes in 2 rows · 1 value names no row", each part
-/// where there is any. Short, the changes go without their rows and the
+/// "1 new row · 3 changes in 2 rows · 1 to delete · 1 value names no
+/// row", each part where there is any. Short, the changes go without their rows and the
 /// warnings are left to the part that says them alone.
 fn counts_text(counts: crate::edit::Counts, doubts: usize, short: bool, locale: Locale) -> String {
     let mut parts = Vec::new();
@@ -69,6 +69,10 @@ fn counts_text(counts: crate::edit::Counts, doubts: usize, short: bool, locale: 
                 counted(locale, counts.rows, "row", "rows")
             )
         });
+    }
+    if counts.deleted > 0 {
+        let to_delete = gettext(locale, "to delete");
+        parts.push(format!("{} {to_delete}", counts.deleted));
     }
     if doubts > 0 && !short {
         parts.push(doubts_text(doubts, locale));
@@ -179,10 +183,18 @@ pub fn written_text(saved: &Saved, locale: Locale) -> String {
     if saved.added > 0 {
         parts.push(counted(locale, saved.added, "new row", "new rows"));
     }
-    // A save of new rows alone changed none.
-    if saved.changes > 0 || saved.added == 0 {
+    // A save of new rows or of deleted rows alone changed none.
+    if saved.changes > 0 || (saved.added == 0 && saved.deleted == 0) {
         parts.push(counted(locale, saved.changes, "change", "changes"));
         parts.push(counted(locale, saved.rows, "row", "rows"));
+    }
+    if saved.deleted > 0 {
+        parts.push(counted(
+            locale,
+            saved.deleted,
+            "row deleted",
+            "rows deleted",
+        ));
     }
     parts.push(format::elapsed(saved.elapsed));
     format!("{} {}", gettext(locale, "written"), parts.join(" · "))
@@ -464,7 +476,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let dot = Rect::from_min_size(pos2(x, y - DOT / 2.0), vec2(DOT, DOT));
             // Green while nothing but new rows is pending, as a new row
             // is: amber once a value of a loaded row is changed too.
-            let dot_color = if counts.added > 0 && counts.changes == 0 {
+            let dot_color = if counts.added > 0 && counts.changes == 0 && counts.deleted == 0 {
                 crate::env::new_row_colors(crate::env::Platform::of(&look), &palette).bar
             } else {
                 Tone::Warning.color(&palette)

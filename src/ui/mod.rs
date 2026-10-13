@@ -16476,10 +16476,13 @@ mod tests {
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         harness.settle();
         let palette = harness.app.palette;
-        // No row of the table is deleted yet.
-        assert!(painted(&harness, "dd delete"), "{:?}", harness.painted);
-        assert!(!painted_in(&harness, "dd delete", palette.text));
-        // `i edit` and `o new row` are live now, and the struck `e edit`
+        // The row under the cursor can be deleted: its key works.
+        assert!(
+            painted_in(&harness, "dd delete", palette.text),
+            "{:?}",
+            harness.painted
+        );
+        // `i edit` and `o new row` are live too, and the struck `e edit`
         // is gone.
         assert!(!painted(&harness, "e edit"));
         assert!(painted(&harness, "i edit"));
@@ -16497,6 +16500,9 @@ mod tests {
         harness.settle();
         assert!(painted(&harness, "o new row"));
         assert!(!painted_in(&harness, "o new row", palette.text));
+        // Nor is one deleted there.
+        assert!(painted(&harness, "dd delete"));
+        assert!(!painted_in(&harness, "dd delete", palette.text));
     }
 
     #[test]
