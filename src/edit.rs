@@ -1664,6 +1664,29 @@ impl Taken {
     }
 }
 
+/// Whether `schema`.`table`, as the catalog names the table of a foreign
+/// key, is `object`, as `dialect` matches names. A key that names no
+/// schema names a table of the object's own.
+pub fn names_table(dialect: Dialect, schema: &str, table: &str, object: &ObjectRef) -> bool {
+    let same = |a: &str, b: &str| match dialect {
+        // Names are matched as they are spelled: `genres` and `"Genres"`
+        // are two tables.
+        Dialect::Postgres => a == b,
+        // Whether the server tells names apart by case is a setting of
+        // its own (`lower_case_table_names`). Where it does not, it keeps
+        // the table a key points at folded and a table's own name as it
+        // was written, so the two spellings of one table can differ, and
+        // no two tables differ by case alone. Where it does, a table's
+        // key to itself spells both alike. So case is not looked at: what
+        // that gets wrong is two tables that differ by case alone, one
+        // pointing at the other, on a server that tells them apart.
+        Dialect::MySql => a.eq_ignore_ascii_case(b),
+        // A name is matched without regard to ASCII case.
+        Dialect::Sqlite => a.eq_ignore_ascii_case(b),
+    };
+    (schema.is_empty() || same(schema, &object.schema)) && same(table, &object.name)
+}
+
 /// What to count for the rows of `table` (`object`) that are marked for
 /// deletion: each key that points at the table and acts on a delete, as
 /// the effect it has, with the counts that say how many rows it reaches,
@@ -1697,7 +1720,7 @@ pub fn taken_by(object: &ObjectRef, table: &Table<'_>) -> Vec<(Effect, Vec<RowQu
             };
             // No row can point at a NULL: such a key takes nothing, and
             // has no line.
-            let own = key.schema == object.schema && key.table.eq_ignore_ascii_case(&object.name);
+            let own = names_table(table.dialect, &key.schema, &key.table, object);
             let own = if own { own_among(table, key, &rows) } else { 0 };
             match pointing_at(table, key, &rows) {
                 Some(queries) if queries.is_empty() => None,
@@ -2697,12 +2720,9 @@ fn delete_order(object: &ObjectRef, table: &Table<'_>) -> Vec<usize> {
         .map(|structure| structure.foreign_keys.as_slice())
         .unwrap_or_default()
         .iter()
-        // SQLite matches a table's name without regard to ASCII case, and
-        // a key that names another schema's table is not the table's own.
-        .filter(|key| {
-            key.ref_table.eq_ignore_ascii_case(&object.name)
-                && (key.ref_schema.is_empty() || key.ref_schema == object.schema)
-        })
+        // The table's own keys, as its engine matches names: a key that
+        // names another schema's table is not one of them.
+        .filter(|key| names_table(table.dialect, &key.ref_schema, &key.ref_table, object))
         .filter_map(|key| {
             let place = |name: &String| {
                 let mut columns = table.page.columns.iter();
@@ -3340,6 +3360,45 @@ mod tests {
         // Nothing marked, nothing asked.
         let none = Edits::default();
         assert!(taken_by(&object, &marked_covers(&structure, &page, &none)).is_empty());
+    }
+
+    /// A name of the catalog is the table's own as its engine matches
+    /// names: PostgreSQL exactly, the two others without regard to ASCII
+    /// case. On PostgreSQL a table whose name differs by case alone is
+    /// another table: its key orders no delete and takes nothing off a
+    /// count.
+    #[test]
+    fn a_key_names_the_table_as_its_engine_matches_names() {
+        let object = ObjectRef::new("main", "genres");
+        assert!(names_table(Dialect::Postgres, "main", "genres", &object));
+        assert!(!names_table(Dialect::Postgres, "main", "Genres", &object));
+        assert!(!names_table(Dialect::Postgres, "Main", "genres", &object));
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            assert!(names_table(dialect, "main", "Genres", &object));
+            assert!(names_table(dialect, "MAIN", "genres", &object));
+            assert!(!names_table(dialect, "main", "genre", &object));
+            assert!(!names_table(dialect, "other", "genres", &object));
+        }
+        // A key that names no schema names a table of the object's own.
+        assert!(names_table(Dialect::Postgres, "", "genres", &object));
+        // Fiction (1) and under it Crime (2), by a key the catalog spells
+        // with a capital.
+        let (mut structure, page) = genres(&[(1, None), (2, Some(1))]);
+        structure.foreign_keys[0].ref_table = "Genres".into();
+        structure.referenced_by[0].table = "Genres".into();
+        structure.referenced_by[0].on_delete = "CASCADE".into();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        edits.mark(1);
+        let mut table = marked_covers(&structure, &page, &edits);
+        // SQLite: the same table. The child goes first, and is the save's
+        // own among what the key takes.
+        assert_eq!(delete_order(&object, &table), [1, 0]);
+        assert_eq!(taken_by(&object, &table)[0].2, 1);
+        // PostgreSQL: another table.
+        table.dialect = Dialect::Postgres;
+        assert_eq!(delete_order(&object, &table), [0, 1]);
+        assert_eq!(taken_by(&object, &table)[0].2, 0);
     }
 
     /// Many-rows spec 5 and test 17: a key counted with `IN` takes a

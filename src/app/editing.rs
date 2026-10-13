@@ -1938,6 +1938,7 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
+        let dialect = workspace.driver.dialect();
         let Some(object) = workspace.object_tabs_mut().find(|object| {
             object
                 .edits
@@ -2001,9 +2002,13 @@ impl App {
                 let reaches_its_own = !saving.deletes.is_empty()
                     && object.structure.value.as_ref().is_some_and(|structure| {
                         structure.referenced_by.iter().any(|key| {
-                            key.schema == object.object.schema
-                                && key.table.eq_ignore_ascii_case(&object.object.name)
-                                && key.acts().is_some()
+                            let own = crate::edit::names_table(
+                                dialect,
+                                &key.schema,
+                                &key.table,
+                                &object.object,
+                            );
+                            own && key.acts().is_some()
                         })
                     });
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
