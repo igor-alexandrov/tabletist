@@ -40,7 +40,8 @@ pub use catalog::{
 };
 pub use class::{ColumnClass, Temporal, column_class, temporal};
 pub use dialect::{
-    Dialect, InsertParts, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
+    DeleteParts, Dialect, InsertParts, InsertStatement, RowDeletion, RowUpdate, Sql, UpdateParts,
+    escape_like, quote_literal,
 };
 pub use error::{Error, Named, Result, SshStage};
 pub use lookup::{Lookup, LookupPage, LookupPart, LookupRow, Matched};

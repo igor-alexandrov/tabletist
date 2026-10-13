@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use crate::{
     ColumnClass, Error, Filter, FilterOp, Lookup, LookupPart, Matched, NewValue, ObjectRef, Result,
-    RowChange, RowInsert, RowQuery, SortDir, Temporal, Value, column_class, temporal,
+    RowChange, RowDelete, RowInsert, RowQuery, SortDir, Temporal, Value, column_class, temporal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,32 @@ pub struct UpdateParts {
     pub columns: Vec<usize>,
     /// Each value's place: the new ones in the order they are set, then
     /// the key's.
+    pub values: Vec<std::ops::Range<usize>>,
+}
+
+/// A row's `DELETE`, as a user reads it and as the driver runs it. Both
+/// come from the same key, as a [`RowUpdate`]'s do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowDeletion {
+    /// The statement with its key's values as literals.
+    pub shown: String,
+    /// What the driver sends: for PostgreSQL the shown text, for MySQL and
+    /// SQLite the same statement with the values bound.
+    pub sql: Sql,
+    /// Where the parts of `shown` stand.
+    pub parts: DeleteParts,
+}
+
+/// Where the parts of a shown `DELETE` stand, as byte offsets into its
+/// text, noted as the builder writes it: as [`UpdateParts`], so a name or
+/// a value that holds ` WHERE ` cannot move them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeleteParts {
+    /// Where `WHERE` begins: the table's name ends a space before it.
+    pub filter: usize,
+    /// Where each key column begins: one for each of `values`.
+    pub columns: Vec<usize>,
+    /// Each key value's place.
     pub values: Vec<std::ops::Range<usize>>,
 }
 
@@ -813,6 +839,46 @@ impl Dialect {
         })
     }
 
+    /// The `DELETE` of one row of a save, by the row's key and nothing
+    /// else: no other column is compared. `Err` says why no save sends
+    /// the row at all, as [`Dialect::update_row`] does: a SQLite key that
+    /// may not be the row's, PostgreSQL text that holds a NUL. Refused
+    /// here and nowhere after it, so what a review shows of a row is what
+    /// a save does with it.
+    pub fn delete_row(self, object: &ObjectRef, row: &RowDelete) -> Result<RowDeletion> {
+        self.key_read_exactly(&row.key)?;
+        let mut params = Vec::new();
+        let lead = format!("DELETE FROM {}", self.qualified(object));
+        let clause = self.key_clause(&row.key, &mut params);
+        let base = lead.len();
+        let parts = DeleteParts {
+            // The clause begins with the space before its word.
+            filter: base + 1,
+            columns: clause.columns.iter().map(|column| base + column).collect(),
+            values: clause
+                .values
+                .iter()
+                .map(|value| base + value.start..base + value.end)
+                .collect(),
+        };
+        let shown = format!("{lead}{}", clause.shown);
+        let text = format!("{lead}{}", clause.sent);
+        // PostgreSQL text cannot hold a NUL, and the driver cannot put one
+        // in a message: see `update_row`.
+        let refused = match self {
+            Self::Postgres => text.contains('\0'),
+            Self::MySql | Self::Sqlite => false,
+        };
+        if refused {
+            return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
+        }
+        Ok(RowDeletion {
+            shown,
+            sql: Sql { text, params },
+            parts,
+        })
+    }
+
     /// The row of `key`, whole. With `lock` it is held until the
     /// transaction ends, where the database has row locks. Two rows at
     /// most: a caller only needs to tell none, one and more than one
@@ -1517,6 +1583,112 @@ mod tests {
             type_name: type_name.into(),
             new,
         }
+    }
+
+    fn doomed(key: Vec<(&str, Value)>) -> RowDelete {
+        RowDelete {
+            key: key
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+        }
+    }
+
+    /// Spec 4 and test 7: one statement for a row, by its key.
+    #[test]
+    fn the_same_delete_on_each_engine() {
+        let row = doomed(vec![("id", Value::Int(9))]);
+        let delete = Dialect::Postgres
+            .delete_row(&covers("public"), &row)
+            .unwrap();
+        assert_eq!(
+            delete.shown,
+            r#"DELETE FROM "public"."book_covers" WHERE "id" = 9"#
+        );
+        // PostgreSQL runs exactly what it shows.
+        assert_eq!(delete.sql.text, delete.shown);
+        assert!(delete.sql.params.is_empty());
+
+        let delete = Dialect::MySql
+            .delete_row(&covers("bookshop"), &row)
+            .unwrap();
+        assert_eq!(
+            delete.shown,
+            "DELETE FROM `bookshop`.`book_covers` WHERE `id` = 9"
+        );
+        assert_eq!(
+            delete.sql.text,
+            "DELETE FROM `bookshop`.`book_covers` WHERE `id` = ?"
+        );
+        assert_eq!(delete.sql.params, [Value::Int(9)]);
+
+        let delete = Dialect::Sqlite.delete_row(&covers("main"), &row).unwrap();
+        assert_eq!(
+            delete.shown,
+            r#"DELETE FROM "main"."book_covers" WHERE "id" = 9"#
+        );
+        assert_eq!(
+            delete.sql.text,
+            r#"DELETE FROM "main"."book_covers" WHERE "id" = ?"#
+        );
+        assert_eq!(delete.sql.params, [Value::Int(9)]);
+    }
+
+    /// Spec 4: a key of several columns uses every one of them.
+    #[test]
+    fn a_delete_names_every_column_of_its_rows_key() {
+        let authors = ObjectRef::new("public", "book_authors");
+        let row = doomed(vec![
+            ("book_id", Value::Int(101)),
+            ("author", text("Sam O'Neil")),
+        ]);
+        let delete = Dialect::Postgres.delete_row(&authors, &row).unwrap();
+        assert_eq!(
+            delete.shown,
+            r#"DELETE FROM "public"."book_authors" WHERE "book_id" = 101 AND "author" = 'Sam O''Neil'"#
+        );
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            let delete = dialect.delete_row(&authors, &row).unwrap();
+            assert_eq!(delete.sql.params, [Value::Int(101), text("Sam O'Neil")]);
+            // What is shown is what is bound.
+            assert_eq!(inlined(dialect, &delete.sql), delete.shown);
+        }
+    }
+
+    #[test]
+    fn a_delete_says_where_its_parts_stand() {
+        let authors = ObjectRef::new("public", "book_authors");
+        let row = doomed(vec![
+            ("book_id", Value::Int(101)),
+            ("author", text("Sam O'Neil")),
+        ]);
+        let delete = Dialect::Postgres.delete_row(&authors, &row).unwrap();
+        let parts = &delete.parts;
+        assert!(delete.shown[parts.filter..].starts_with("WHERE "));
+        assert_eq!(
+            &delete.shown[..parts.filter],
+            r#"DELETE FROM "public"."book_authors" "#
+        );
+        assert!(delete.shown[parts.columns[0]..].starts_with(r#""book_id" = "#));
+        assert!(delete.shown[parts.columns[1]..].starts_with(r#""author" = "#));
+        assert_eq!(&delete.shown[parts.values[0].clone()], "101");
+        assert_eq!(&delete.shown[parts.values[1].clone()], "'Sam O''Neil'");
+    }
+
+    /// A key that may not be the row's deletes no row: it could be
+    /// another's.
+    #[test]
+    fn a_delete_is_refused_where_its_key_is_not_known_to_be_the_rows() {
+        let lossy = doomed(vec![("isbn", text("978\u{FFFD}"))]);
+        assert!(Dialect::Sqlite.delete_row(&books(), &lossy).is_err());
+        // The other engines read a key exactly.
+        assert!(Dialect::Postgres.delete_row(&books(), &lossy).is_ok());
+        assert!(Dialect::MySql.delete_row(&books(), &lossy).is_ok());
+        let nul = doomed(vec![("isbn", text("978\0"))]);
+        assert_eq!(
+            Dialect::Postgres.delete_row(&books(), &nul),
+            Err(Error::query("PostgreSQL text cannot hold a NUL character"))
+        );
     }
 
     /// The canvas' new row: a cover of the publisher Harbor Press.
