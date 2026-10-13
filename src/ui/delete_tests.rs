@@ -759,6 +759,40 @@ fn a_row_already_deleted_is_said_where_the_page_is_read_again() {
     assert!(harness.has("Row id 2 was already deleted."));
 }
 
+/// A save whose page is read again leaves no count from before it. A new
+/// row that came back unknown says the table may not be what the save
+/// took it for (a trigger's), so how many rows it has is asked anew, and
+/// the estimate moves by what the save sent.
+#[test]
+fn a_save_whose_page_is_read_again_drops_the_count_from_before_it() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let object = |harness: &mut Harness| {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        (object.count.value, object.estimated_rows)
+    };
+    {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        object.count.value = Some(40);
+        object.estimated_rows = Some(40);
+    }
+    // One new row, and two rows to delete.
+    let new = add(&mut harness, tab, id);
+    let publisher = (crate::edit::new_row(new), 1);
+    set(&mut harness, tab, id, publisher, "9100000000000000004");
+    mark(&mut harness, tab, id, 1);
+    mark(&mut harness, tab, id, 2);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        inserted: vec![None],
+        rows: Vec::new(),
+        gone: Vec::new(),
+        elapsed: std::time::Duration::from_millis(14),
+    }));
+    assert_eq!(object(&mut harness), (None, Some(39)));
+}
+
 /// The Bookshop's publishers, writable, the grid holding the keyboard:
 /// `book_covers` loses its covers with a publisher, and `books` is
 /// cleared of it.

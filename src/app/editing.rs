@@ -2127,8 +2127,17 @@ impl App {
                     // reached rows the save did not name: read it again. A
                     // new row is nowhere until the page says where.
                     object.off_new_rows();
-                    // How many rows the table lost is not known either.
-                    if reaches_its_own {
+                    // How many rows the table has now is not known for
+                    // sure on this path: a trigger may have written too, a
+                    // delete may have reached rows the save did not name.
+                    // The estimate moves by what the save sent, and the
+                    // exact count from before it goes: it is asked anew.
+                    let more = saving.inserts.len() as u64;
+                    let fewer = saving.deletes.len() as u64;
+                    if let Some(estimate) = object.estimated_rows.as_mut() {
+                        *estimate = (*estimate + more).saturating_sub(fewer);
+                    }
+                    if more > 0 || fewer > 0 {
                         self.reset_count(tab, id);
                     }
                     self.fetch_rows(tab, id);
