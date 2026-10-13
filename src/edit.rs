@@ -3,7 +3,7 @@
 //! is decided from the page and the structure alone; the reducer
 //! (`app.rs`, `app/editing.rs`) owns every transition.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
@@ -2657,41 +2657,97 @@ fn delete_order(object: &ObjectRef, table: &Table<'_>) -> Vec<usize> {
     if own.is_empty() || marked.len() < 2 {
         return marked;
     }
-    let values = |row: usize, cols: &[usize]| -> Option<Vec<&Value>> {
+    // What `row` holds in `cols`, as a key of a map. `None` where one of
+    // them is NULL: a key with a NULL in it points at no row.
+    let parts = |row: usize, cols: &[usize]| -> Option<Vec<KeyPart<'_>>> {
         let held = table.page.rows.get(row)?;
-        let values: Vec<&Value> = cols.iter().filter_map(|&col| held.get(col)).collect();
-        // A key with a NULL in it points at no row.
-        (values.len() == cols.len() && values.iter().all(|value| !value.is_null()))
-            .then_some(values)
+        cols.iter()
+            .map(|&col| KeyPart::of(held.get(col)?))
+            .collect()
     };
-    // Whether `child` points at `parent`.
-    let points_at = |child: usize, parent: usize| {
-        child != parent
-            && own.iter().any(|(from, to)| {
-                matches!(
-                    (values(child, from), values(parent, to)),
-                    (Some(a), Some(b)) if a.iter().zip(&b).all(|(a, b)| same_value(a, b))
-                )
-            })
-    };
-    // A row is taken once no row still waiting points at it. A pass that
-    // takes none has found a circle: what is left keeps its order.
-    let mut order = Vec::with_capacity(marked.len());
-    let mut waiting = marked;
-    while !waiting.is_empty() {
-        let free: Vec<usize> = waiting
-            .iter()
-            .copied()
-            .filter(|&row| !waiting.iter().any(|&other| points_at(other, row)))
-            .collect();
-        if free.is_empty() {
-            order.append(&mut waiting);
-            break;
+    // The graph, made once. The marked rows by what each of the table's
+    // own keys points at in them: a row is found by the values a child
+    // holds, not by trying every pair.
+    let mut pointed_at: HashMap<(usize, Vec<KeyPart<'_>>), Vec<usize>> = HashMap::new();
+    for (index, &row) in marked.iter().enumerate() {
+        for (key, (_, to)) in own.iter().enumerate() {
+            if let Some(values) = parts(row, to) {
+                pointed_at.entry((key, values)).or_default().push(index);
+            }
         }
-        waiting.retain(|row| !free.contains(row));
-        order.extend(free);
     }
+    // The rows each row points at, once each and never itself, and how
+    // many rows still waiting point at each row.
+    let mut parents: Vec<Vec<usize>> = Vec::with_capacity(marked.len());
+    let mut children = vec![0_usize; marked.len()];
+    for (index, &row) in marked.iter().enumerate() {
+        let mut found: Vec<usize> = own
+            .iter()
+            .enumerate()
+            .filter_map(|(key, (from, _))| pointed_at.get(&(key, parts(row, from)?)))
+            .flatten()
+            .copied()
+            .filter(|parent| *parent != index)
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        for &parent in &found {
+            children[parent] += 1;
+        }
+        parents.push(found);
+    }
+    // A row is taken once no row still waiting points at it, pass by
+    // pass, each pass in the page's order.
+    let mut order = Vec::with_capacity(marked.len());
+    let mut taken = vec![false; marked.len()];
+    let mut free: Vec<usize> = (0..marked.len())
+        .filter(|&index| children[index] == 0)
+        .collect();
+    while !free.is_empty() {
+        let mut next = Vec::new();
+        for &index in &free {
+            taken[index] = true;
+            order.push(marked[index]);
+            for &parent in &parents[index] {
+                children[parent] -= 1;
+                if children[parent] == 0 {
+                    next.push(parent);
+                }
+            }
+        }
+        next.sort_unstable();
+        free = next;
+    }
+    // What is left points in a circle, or is pointed at from one: it
+    // keeps the page's order.
+    let left = (0..marked.len()).filter(|&index| !taken[index]);
+    order.extend(left.map(|index| marked[index]));
     order
+}
+
+/// A value of a key as a key of a map: alike where [`same_value`] says two
+/// values are, a float by its bits.
+#[derive(PartialEq, Eq, Hash)]
+enum KeyPart<'a> {
+    Bool(bool),
+    Int(i64),
+    Float(u64),
+    Text(&'a str),
+    Bytes(&'a [u8]),
+}
+
+impl<'a> KeyPart<'a> {
+    /// `None` for a NULL, which is no value of a key.
+    fn of(value: &'a Value) -> Option<Self> {
+        Some(match value {
+            Value::Null => return None,
+            Value::Bool(value) => Self::Bool(*value),
+            Value::Int(value) => Self::Int(*value),
+            Value::Float(value) => Self::Float(value.to_bits()),
+            Value::Text(value) => Self::Text(value),
+            Value::Bytes(value) => Self::Bytes(value),
+        })
+    }
 }
 
 /// Where each part of a change set came from. An answer names a part by
@@ -3138,6 +3194,50 @@ mod tests {
         let table = marked_covers(&structure, &page, &edits);
         let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
         assert_eq!(sent.deletes, [0, 1]);
+    }
+
+    /// A long chain is ordered in one walk of it, each row before the row
+    /// it points at: a thousand rows that each stand under the one before.
+    #[test]
+    fn a_long_chain_is_ordered_child_before_parent() {
+        let rows: Vec<(i64, Option<i64>)> = (1..=1_000)
+            .map(|id| (id, (id > 1).then_some(id - 1)))
+            .collect();
+        let (structure, page) = genres(&rows);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        for row in 0..rows.len() {
+            edits.mark(row);
+        }
+        let table = marked_covers(&structure, &page, &edits);
+        let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        let last_first: Vec<usize> = (0..rows.len()).rev().collect();
+        assert_eq!(sent.deletes, last_first);
+    }
+
+    /// A row a circle points at waits with the circle, in the page's
+    /// order, and the rows clear of it are ordered as ever.
+    #[test]
+    fn rows_behind_a_circle_keep_the_pages_order() {
+        // 1 and 2 point at each other, and 2's twin 3 points at 1 too; 4
+        // stands under 5, clear of them.
+        let (structure, page) = genres(&[
+            (1, Some(2)),
+            (2, Some(1)),
+            (3, Some(1)),
+            (5, None),
+            (4, Some(5)),
+        ]);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        for row in 0..5 {
+            edits.mark(row);
+        }
+        let table = marked_covers(&structure, &page, &edits);
+        let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        // Nothing points at 3 and 4: they go first, then 5, then the
+        // circle as the page has it.
+        assert_eq!(sent.deletes, [2, 4, 3, 0, 1]);
     }
 
     /// One count for a key of one column, `IN` the marked rows' values
