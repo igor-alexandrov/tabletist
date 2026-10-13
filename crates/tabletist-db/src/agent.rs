@@ -64,18 +64,32 @@ impl fmt::Debug for Param {
     }
 }
 
-/// A statement that passed [`check_read`]. Its `Debug` output leaves the
-/// text out, as [`sql::Statement`]'s does.
-#[derive(Clone, PartialEq, Eq)]
+/// A statement that passed [`check_read`], with what it was checked
+/// against: [`crate::Connection::run_agent_read`] runs these values on a
+/// database of this dialect, and no others. Its `Debug` output leaves the
+/// text and the values out, as [`sql::Statement`]'s does.
+#[derive(Clone, PartialEq)]
 pub struct Read {
+    dialect: Dialect,
     text: String,
+    params: Vec<Param>,
     explains: bool,
 }
 
 impl Read {
+    /// The dialect the statement was checked for.
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
     /// The statement, without the white space and the `;` around it.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The values for its placeholders, in the placeholders' order.
+    pub fn params(&self) -> &[Param] {
+        &self.params
     }
 
     /// Whether it is an `EXPLAIN` of a query, which answers with a plan
@@ -88,6 +102,8 @@ impl Read {
 impl fmt::Debug for Read {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Read")
+            .field("dialect", &self.dialect)
+            .field("params", &self.params.len())
             .field("explains", &self.explains)
             .finish_non_exhaustive()
     }
@@ -280,7 +296,9 @@ pub fn check_read(dialect: Dialect, sql: &str, params: &[Param]) -> Result<Read,
     let text = statement.text.as_str();
     let explains = on_a_deep_stack(|| read_parsed(dialect, text, params))??;
     Ok(Read {
+        dialect,
         text: text.to_owned(),
+        params: params.to_vec(),
         explains,
     })
 }
@@ -984,7 +1002,28 @@ mod tests {
     #[test]
     fn what_passed_prints_without_its_text() {
         let read = read(Dialect::Postgres, "SELECT title FROM books").unwrap();
-        assert_eq!(format!("{read:?}"), "Read { explains: false, .. }");
+        assert_eq!(
+            format!("{read:?}"),
+            "Read { dialect: Postgres, params: 0, explains: false, .. }"
+        );
+    }
+
+    #[test]
+    fn what_passed_keeps_what_it_was_checked_against() {
+        let sent = [Param::Int(4), Param::Text("Lanterns".into())];
+        let read = check_read(
+            Dialect::MySql,
+            "SELECT title FROM books WHERE id = ? OR title = ?",
+            &sent,
+        )
+        .unwrap();
+        assert_eq!(read.dialect(), Dialect::MySql);
+        assert_eq!(read.params(), sent);
+        // Its values are counted when it is printed, and not shown.
+        assert_eq!(
+            format!("{read:?}"),
+            "Read { dialect: MySql, params: 2, explains: false, .. }"
+        );
     }
 
     #[test]
