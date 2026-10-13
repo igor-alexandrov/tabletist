@@ -498,6 +498,17 @@ misses still runs in the read-only transaction, under the timeout, as the
 connection's user. On SQLite the authorizer sees every function call after
 SQLite's own parse, so there the list does not depend on our parser.
 
+**Corrected on 2026-10-13, from the draft of Phase 1a's third run**
+(`2026-10-13-mcp-server-1a-3-sqlite-fence.md`). The checker looked for a
+table-valued `pragma_*` as it looks for a function, by a name with a
+parenthesis after it. SQLite asks for none: `SELECT * FROM pragma_table_info
+WHERE arg = 'customers'` reads the pragma as a table, and passed. The
+checker now refuses the name wherever it stands, and SQLite's `Fence::Agent`
+refuses every pragma but the one its own full-text tables ask for. A view
+is no way around either: every session has `trusted_schema = OFF`, under
+which SQLite lets a view neither read a pragma as a table nor call a
+function that is not marked harmless.
+
 **When our parser and the engine disagree.** They will, somewhere. Three
 things do not depend on the parser: the engine prepares the statement alone
 and refuses a second one; the engine is asked what the statement reads
@@ -1428,8 +1439,8 @@ off until the person turns it on.
 - Runs: three, each its own plan and pull request. The read checker
   (`2026-10-13-mcp-server-1a-1-read-checker.md`), then the drivers
   (`2026-10-13-mcp-server-1a-2-agent-read.md`), then SQLite's
-  `Fence::Agent`. The check for writes moves to Phase 2, and the size cap
-  on an answer to 1b.
+  `Fence::Agent` (`2026-10-13-mcp-server-1a-3-sqlite-fence.md`). The check
+  for writes moves to Phase 2, and the size cap on an answer to 1b.
 - Files: `crates/tabletist-db/src/agent.rs` and `agent/` (the checker, the
   function lists, the run's limits and answer), `pg/script.rs`,
   `mysql/script.rs`, `sqlite.rs` (parameters, the statement timeout),
