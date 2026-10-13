@@ -6,10 +6,10 @@ use std::time::Instant;
 use rusqlite::types::ValueRef;
 
 use super::{end_transaction, from_sqlite, map_error};
-use crate::dialect::{InsertStatement, RowUpdate};
+use crate::dialect::{InsertStatement, RowDeletion, RowUpdate};
 use crate::write::{
-    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
-    not_stopped, read_by, same_row_twice, spelled_otherwise,
+    Applied, Stored, changed_since_loaded, conflicts_of, key_spelled_otherwise, more_than_one,
+    named_twice, not_read_back, not_stopped, read_by, same_row_twice, spelled_otherwise,
 };
 use crate::{
     ChangeSet, Dialect, Error, ObjectRef, Result, RowChange, Sql, StopFlag, Value, WriteOutcome,
@@ -44,11 +44,18 @@ pub(super) fn write(
             Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
         }
     }
+    let mut deletions = Vec::with_capacity(changes.deletes.len());
+    for (delete, row) in changes.deletes.iter().enumerate() {
+        match Dialect::Sqlite.delete_row(&changes.object, row) {
+            Ok(built) => deletions.push(built),
+            Err(error) => return Ok(WriteOutcome::FailedDelete { delete, error }),
+        }
+    }
     // Stopped before it began: the session is not touched.
     not_stopped(stop)?;
     let started = Instant::now();
     let applied = begin(connection, journal_mode, stop)
-        .and_then(|()| apply(connection, changes, &inserts, &updates, stop));
+        .and_then(|()| apply(connection, changes, &inserts, &updates, &deletions, stop));
     // Before the COMMIT is the last moment a stop is heard. Once it runs
     // the save is written, whatever arrives after it.
     let committed = match &applied {
@@ -185,25 +192,29 @@ fn unreadable<'a>(change: &'a RowChange, columns: &[String], server: &Found) -> 
         })
 }
 
+/// Whether more than one of the row's `columns` reads as `name`. SQLite
+/// matches a name without regard to ASCII case, so that is how they are
+/// counted.
+fn reads_as_several(name: &str, columns: &[String]) -> bool {
+    columns
+        .iter()
+        .filter(|column| column.eq_ignore_ascii_case(name))
+        .count()
+        > 1
+}
+
 /// A name `change` uses, in its key or its set, that more than one of the
 /// row's `columns` reads as. A name that is not UTF-8 reads with U+FFFD for
 /// those bytes, and so can read as another column's name; the statement
 /// would then name that other column, while the row was compared in this
-/// one. SQLite matches a name without regard to ASCII case, so that is how
-/// they are counted.
+/// one.
 fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
     change
         .key
         .iter()
         .map(|(name, _)| name.as_str())
         .chain(change.set.iter().map(|cell| cell.column.as_str()))
-        .find(|name| {
-            columns
-                .iter()
-                .filter(|column| column.eq_ignore_ascii_case(name))
-                .count()
-                > 1
-        })
+        .find(|name| reads_as_several(name, columns))
 }
 
 /// Whether a trigger stands on the table, in the file or among the
@@ -240,15 +251,31 @@ fn follows_updates(connection: &rusqlite::Connection, object: &ObjectRef) -> Res
         .map_err(map_error)
 }
 
+/// Whether a row of the table follows a row that is deleted: whether one
+/// of the table's foreign keys acts when what it refers to is deleted
+/// (`CASCADE`, `SET NULL`, `SET DEFAULT`). The table can refer to itself,
+/// or to a table that refers back to it.
+fn follows_deletes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM pragma_foreign_key_list(?1, ?2) \
+                            WHERE upper(on_delete) NOT IN ('NO ACTION', 'RESTRICT'))",
+            [&object.name, &object.schema],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_error)
+}
+
 /// The steps of a save inside its transaction: read and compare every row,
-/// update every row, read every row back. `stop` is asked before each
-/// statement, and a save it ends is undone like every other end but
-/// `Rows`.
+/// write the new rows, update every row, delete the rows to delete, read
+/// every changed row back. `stop` is asked before each statement, and a
+/// save it ends is undone like every other end but `Rows`.
 fn apply(
     connection: &rusqlite::Connection,
     changes: &ChangeSet,
     inserts: &[InsertStatement],
     updates: &[RowUpdate],
+    deletions: &[RowDeletion],
     stop: &StopFlag,
 ) -> Result<Applied> {
     let dialect = Dialect::Sqlite;
@@ -303,10 +330,41 @@ fn apply(
         rows_read.push(server.map(|server| server.values));
         names = columns;
     }
+    // The rows to delete are found now too, while nothing is written: a
+    // key that names two rows, or a column the table spells otherwise,
+    // ends the save before it changes anything. `None` is a row that is
+    // already gone.
+    let mut doomed = Vec::with_capacity(changes.deletes.len());
+    for delete in &changes.deletes {
+        let select = dialect.select_row(&changes.object, &delete.key, true);
+        not_stopped(stop)?;
+        let (columns, mut found) = read(connection, &select)?;
+        if let Some((name, _)) = delete
+            .key
+            .iter()
+            .find(|(name, _)| reads_as_several(name, &columns))
+        {
+            return Err(Error::query(format!(
+                "{name} names more than one column of the table, so the save cannot tell which \
+                 it means"
+            )));
+        }
+        if let Some(name) = key_spelled_otherwise(&delete.key, &columns) {
+            return Err(Error::query(format!(
+                "the table spells {name} another way, so the save cannot be sure which column \
+                 it names"
+            )));
+        }
+        if found.len() > 1 {
+            return Err(more_than_one());
+        }
+        doomed.push(found.pop().map(|server| server.values));
+        names = columns;
+    }
     // Before a conflict is answered too: a set that names a row twice is
     // not one to offer writing over what the file holds.
     {
-        let (keys, found) = read_by(changes, &rows_read, &[]);
+        let (keys, found) = read_by(changes, &rows_read, &doomed);
         same_row_twice(&keys, &names, &found)?;
     }
     if !conflicts.is_empty() {
@@ -352,6 +410,50 @@ fn apply(
             });
         }
     }
+    // The rows to delete, last: the order a review shows them in. One
+    // that was not there is said and not sent.
+    let mut gone = Vec::new();
+    let found = changes.deletes.iter().zip(deletions).zip(&doomed);
+    for (delete, ((row, deletion), found)) in found.enumerate() {
+        if found.is_none() {
+            gone.push(delete);
+            continue;
+        }
+        not_stopped(stop)?;
+        let params = rusqlite::params_from_iter(deletion.sql.params.iter().map(exact));
+        let touched = match connection
+            .execute(&deletion.sql.text, params)
+            .map_err(map_error)
+        {
+            Ok(touched) => touched,
+            // A cancel or a lost session ends the save; anything else is
+            // the statement's own failure: a foreign key that holds the
+            // row, most often.
+            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+            Err(error) => return Ok(Applied::FailedDelete { delete, error }),
+        };
+        // The count is of the table's own rows, without those a foreign
+        // key took with them. None: a row deleted before this one took it
+        // along (a key of the table that points at the table), which is
+        // what the save meant, or a trigger kept it, which is not. The
+        // row says which.
+        if touched == 0 {
+            let select = dialect.select_row(&changes.object, &row.key, false);
+            not_stopped(stop)?;
+            let (_, still) = read(connection, &select)?;
+            if still.is_empty() {
+                continue;
+            }
+        }
+        if touched != 1 {
+            return Ok(Applied::FailedDelete {
+                delete,
+                error: Error::query(format!(
+                    "the save would have deleted {touched} rows where it meant one"
+                )),
+            });
+        }
+    }
     let mut rows = Vec::with_capacity(changes.rows.len());
     for change in &changes.rows {
         let select = dialect.select_row(&changes.object, &change.key, false);
@@ -359,7 +461,9 @@ fn apply(
         let (_, mut found) = read(connection, &select)?;
         // One row still: a trigger the update fired can have made another
         // that the key also finds, and then which one was saved is not
-        // known.
+        // known. None: a row the save deleted took this one with it (a
+        // key of the table that points at the table), and the save is
+        // undone.
         if found.len() > 1 {
             return Err(more_than_one());
         }
@@ -373,9 +477,14 @@ fn apply(
     // A foreign key of the table whose ON UPDATE acts does the same without
     // a trigger: a row changed after the inserts can carry a new row with
     // it. Only a save that changes rows has such an update.
+    //
+    // A row the save deleted can do the same to a new one, where a key of
+    // the table acts on a delete: the new row can name the deleted one,
+    // straight or through another table.
     let known = returned.is_empty()
         || !(triggered(connection, &changes.object)?
-            || (!updates.is_empty() && follows_updates(connection, &changes.object)?));
+            || (!updates.is_empty() && follows_updates(connection, &changes.object)?)
+            || (!deletions.is_empty() && follows_deletes(connection, &changes.object)?));
     let inserted = returned
         .into_iter()
         .map(|row| row.filter(|_| known))
@@ -383,6 +492,6 @@ fn apply(
     Ok(Applied::Rows(Stored {
         inserted,
         rows,
-        gone: Vec::new(),
+        gone,
     }))
 }

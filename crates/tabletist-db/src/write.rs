@@ -274,6 +274,7 @@ pub(crate) enum Applied {
     Conflicts(Vec<Conflict>),
     Failed { row: usize, error: Error },
     FailedInsert { insert: usize, error: Error },
+    FailedDelete { delete: usize, error: Error },
 }
 
 impl Applied {
@@ -294,6 +295,7 @@ impl Applied {
             Self::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
             Self::Failed { row, error } => WriteOutcome::Failed { row, error },
             Self::FailedInsert { insert, error } => WriteOutcome::FailedInsert { insert, error },
+            Self::FailedDelete { delete, error } => WriteOutcome::FailedDelete { delete, error },
         }
     }
 }
@@ -342,6 +344,15 @@ pub(crate) fn spelled_otherwise<'a>(change: &'a RowChange, columns: &[String]) -
         .iter()
         .map(|(name, _)| name.as_str())
         .chain(change.set.iter().map(|cell| cell.column.as_str()))
+        .find(|name| !columns.iter().any(|column| column == name))
+}
+
+/// A column of `key` that is not one of the row's `columns` as the table
+/// spells them: [`spelled_otherwise`] for a row that is found and not
+/// changed, which has a key and no set.
+pub(crate) fn key_spelled_otherwise<'a>(key: &'a Key, columns: &[String]) -> Option<&'a str> {
+    key.iter()
+        .map(|(name, _)| name.as_str())
         .find(|name| !columns.iter().any(|column| column == name))
 }
 
@@ -887,6 +898,14 @@ mod tests {
         // A column the table does not have is an error, not a conflict.
         let gone = row(vec![("id", Value::Int(1))], vec![cell("nick")]);
         assert!(changed_since_loaded(&gone, &columns, &server("old", "a@x")).is_err());
+    }
+
+    #[test]
+    fn a_key_is_spelled_as_the_table_spells_it() {
+        let columns = ["id".to_owned(), "name".to_owned()];
+        let key = |name: &str| vec![(name.to_owned(), Value::Int(1))];
+        assert_eq!(key_spelled_otherwise(&key("id"), &columns), None);
+        assert_eq!(key_spelled_otherwise(&key("ID"), &columns), Some("ID"));
     }
 
     #[test]
