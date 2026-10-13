@@ -10,6 +10,15 @@
 
 Line numbers are of head `ac63a1b`.
 
+Status: built on 2026-10-13, one commit per task, each test written and seen to fail before its code where it could fail. Each task's blocks are the plan's as written, but for these:
+
+- The order: Tasks 1 and 2, the hardening below, Tasks 3 and 4, then 5 and 6.
+- Task 2: only the test of a trigger that rolls the save back failed before the driver changed (`delete == 2`). The four scenarios and the test of a trigger that keeps a row pass on one statement a row too, as the plan says.
+- Tasks 3 and 4 did not run here: no Docker. They are the compiler's, clippy's and CI's.
+- Task 3: PostgreSQL's `DROP` takes the counting test's table and function too, so that test needs no cleanup of its own.
+- Task 5: no existing test changed its expectation: none marked two neighbouring rows and read their SQL.
+- The drivers read their rows with `get`, not by index, so no place among the deletes can panic.
+
 From the review of this plan, built with it:
 
 - The savepoint's statements and `deleted_instead` are written in Task 2, with their first user, not in Task 1.

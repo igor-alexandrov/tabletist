@@ -1,5 +1,10 @@
 # Deleting many rows at once
 
+Status: built on 2026-10-13, in three slices, each to a plan of its own
+in `docs/superpowers/plans/`: `2026-10-13-deleting-many-rows-1-desktop.md`,
+`…-2-omarchy.md` and `…-3-runs.md`. Each plan lists where it left this
+spec.
+
 Run 4 of [deleting rows](2026-10-12-deleting-rows-design.md). Runs 1 to 3
 built the delete of one row at a time: the mark, the save, what a delete
 takes with it and who holds a row. This spec covers what that spec asked

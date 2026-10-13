@@ -193,8 +193,9 @@ otherwise than this asks, each agreed with the user before it was built:
   selected rows, `d` on a visual selection, `{count}dd` and the cap of
   1,000 are built to a spec of their own,
   `2026-10-13-deleting-many-rows-design.md` (its slices 1 and 2), which
-  finishes test 3. The `IN (…)` batches, and with them the batching of
-  test 7, are its slice 3 and are not built yet.
+  finishes test 3. The `IN (…)` batches are its slice 3, and with them
+  the batching of test 7: rows next to each other go in one `DELETE`, up
+  to 100 rows each.
 - **Privileges.** The app reads no DELETE privilege, so the command is
   not disabled for want of one: the server's refusal is the row's error
   after the save.

@@ -272,9 +272,11 @@ marks three rows.
 
 Save writes the deletes with everything else that is pending, in one
 transaction: new rows first, then changed rows, then deleted rows.
-**Review SQL** shows each row's `DELETE` before you save. After the save
-the rows are gone from the grid, and the selection is on the row that
-stood after them.
+**Review SQL** shows the `DELETE`s before you save. Rows next to each
+other go in one statement, up to 100 rows each. If the database refuses
+one of those, the save still names the row it could not delete. After the
+save the rows are gone from the grid, and the selection is on the row
+that stood after them.
 
 Where another table's foreign key points at the rows you delete, Review
 SQL says what the save does there, under its statements: how many rows
