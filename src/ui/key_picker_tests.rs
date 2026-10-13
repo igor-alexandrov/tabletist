@@ -2780,6 +2780,49 @@ fn a_typed_key_that_names_no_row_is_warned_about() {
     assert!(doubt(&harness, tab, id, 0).is_none());
 }
 
+/// A row marked for deletion while the question about its key is still
+/// out: the question goes with the mark, since its answer would find no
+/// doubt to answer, and is asked again when the row is restored. The
+/// warning then stands, and holds through a second mark and restore.
+#[test]
+fn a_question_out_when_its_row_is_marked_is_asked_again_on_its_restoring() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // The value is kept as typed, and its question is left unanswered.
+    edit(&mut harness, tab, id, 0, EditStart::Replace(String::new()));
+    type_text(&mut harness, tab, id, NO_PUBLISHER);
+    commit(&mut harness, tab, id, Advance::Stay);
+    let first = questions(&harness).last().unwrap().0;
+    let state = |harness: &Harness| doubt(harness, tab, id, 0).map(|doubt| doubt.state);
+    assert_eq!(state(&harness), Some(DoubtState::Asked(first)));
+    let cell = CellPos {
+        row: 0,
+        col: PUBLISHER,
+    };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+    harness.app.apply(Action::DeleteRow { tab, id });
+    assert_eq!(state(&harness), None);
+    // The answer comes while the row is marked: there is nothing to say
+    // it of.
+    answer_request(&mut harness, first, &PUBLISHERS);
+    assert!(warned(&harness, tab, id).is_empty());
+    // Restored, the value is asked about again, and the answer warns.
+    harness.app.apply(Action::RestoreRow { tab, id });
+    let again = questions(&harness).last().unwrap().0;
+    assert_ne!(again, first);
+    assert_eq!(state(&harness), Some(DoubtState::Asked(again)));
+    answer_request(&mut harness, again, &PUBLISHERS);
+    let warning = [((0, PUBLISHER), NO_PUBLISHER.to_owned())];
+    assert_eq!(warned(&harness, tab, id), warning);
+    // A warning that stands is kept with the mark and comes back with the
+    // row, without a third question.
+    let asked = questions(&harness).len();
+    harness.app.apply(Action::DeleteRow { tab, id });
+    assert!(warned(&harness, tab, id).is_empty());
+    harness.app.apply(Action::RestoreRow { tab, id });
+    assert_eq!(warned(&harness, tab, id), warning);
+    assert_eq!(questions(&harness).len(), asked);
+}
+
 /// Test 21: a value taken from the list is not asked about, and neither
 /// is one that is to fix.
 #[test]

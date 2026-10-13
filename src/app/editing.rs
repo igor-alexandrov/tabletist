@@ -1032,10 +1032,25 @@ impl App {
         if object.edits.saving.is_some() || !object.edits.restore(row) {
             return;
         }
-        let row = crate::ui::pending_bar::row_name(object, row);
-        object.edits.told = Some(Told::Restored { row });
+        // The row's cells that came back without a warning: a question
+        // about one may have been out when the row was marked, and was
+        // dropped with the mark.
+        let unasked: Vec<CellPos> = object
+            .edits
+            .cells
+            .range((row, 0)..=(row, usize::MAX))
+            .filter(|(at, _)| !object.edits.doubts.contains_key(at))
+            .map(|(&(row, col), _)| CellPos { row, col })
+            .collect();
+        let name = crate::ui::pending_bar::row_name(object, row);
+        object.edits.told = Some(Told::Restored { row: name });
         object.edits.note = None;
         object.fields = None;
+        // Asked of a foreign key's typed value only: every other cell has
+        // nothing to ask.
+        for cell in unasked {
+            self.ask_row(tab, id, cell);
+        }
     }
 
     /// Shows the row panel and asks it to give the keyboard to the selected

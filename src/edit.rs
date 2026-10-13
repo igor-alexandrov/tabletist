@@ -1429,7 +1429,9 @@ pub struct Doomed {
     /// The row's pending cells as they stood when it was marked, by
     /// column: kept for its restoring, and no part of the set until then.
     cells: Vec<(usize, Pending)>,
-    /// The warnings that stood on those cells.
+    /// The warnings that stood on those cells: the answered ones. A
+    /// question that was still out is asked again when the row is
+    /// restored.
     doubts: Vec<(usize, Doubt)>,
 }
 
@@ -1653,9 +1655,17 @@ impl Edits {
             .range((row, 0)..=(row, usize::MAX))
             .map(|(&(_, col), _)| col)
             .collect();
+        // Only a warning that stands is kept. A question that is still
+        // out goes: its answer would look for it among the set's doubts
+        // and find none, and nothing would answer it once it was put
+        // back. The row's restoring asks again.
         let doubts = doubted
             .into_iter()
             .filter_map(|col| Some((col, self.doubts.remove(&(row, col))?)))
+            .filter(|(_, doubt)| match doubt.state {
+                DoubtState::Missing => true,
+                DoubtState::Asked(_) => false,
+            })
             .collect();
         let doomed = Doomed {
             failed: None,
