@@ -1,4 +1,5 @@
-//! Changing rows: what a save asks for, and what came of it.
+//! Changing, adding and deleting rows: what a save asks for, and what came
+//! of it.
 
 use std::time::{Duration, Instant};
 
