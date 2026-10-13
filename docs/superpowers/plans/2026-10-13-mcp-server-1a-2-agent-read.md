@@ -994,7 +994,7 @@ Skip this where the database is there (Igor's machine, since 2026-10-13) or wher
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cargo test --locked -p tabletist-db --lib fixtures --test agent`
+Run: `cargo test --locked -p tabletist-db --lib fixtures`, then `cargo test --locked -p tabletist-db --test agent`. Two runs: in one, the word `fixtures` would filter the tests of `tests/agent.rs` away.
 
 Expected, with both servers: `1 passed` for the library's `fixtures::tests::the_bookshop_is_written_to_a_new_file_only`, and `3 passed` for `tests/agent.rs`, one `the_bookshop_is_stocked_on_…` for each engine. Without a server its test prints "skipped" and passes.
 
@@ -4006,3 +4006,10 @@ No website page changes: no behaviour, setting, file or key a user sees is touch
 - **Names.** `Limits { rows, timeout }`, `Answer { columns, rows, truncated, elapsed }`, `Sent { params, timeout }`, `count_mismatch`, `answer`, `Adapter::run_read`, `Connection::run_agent_read`, `Conn::agent_read` and `read_only` (PostgreSQL and MySQL) are spelled the same in every task. `Sent::timeout_ms` arrives with its first caller in Task 5, and `timed_out` with MySQL in Task 6.
 - **Reviewed before it was written.** A reviewer was given the draft and both servers, and asked to break it: to outlast the timeout, to lift the row limit, to send a value that is read as SQL or ends the session, to leave something on the session, and to find where the SQL editor's run changed. Nothing it tried went through. What it ran beyond these tests: on MySQL, the timeout against a correlated subquery, a `HAVING`, an `ORDER BY` and a window function; on PostgreSQL, values at the ends of what a float and an integer hold, a 200 kB text and letters of other scripts, each answered or refused by the server with the session reading on. It suspected one thing by reading: that MySQL's limit does not cover a wait for a lock. That was then tried, and it does: `the_time_limit_ends_a_wait_for_a_lock_on_mysql` is the test, with PostgreSQL's beside it.
 - **Every commit stands.** After Task 4, PostgreSQL and MySQL answer `not supported` to an agent's read, and nothing calls it. The SQL editor's run is unchanged at each commit: the existing suites were run at Tasks 4, 5 and 6.
+
+## After the run
+
+Run on 2026-10-13, inline, one commit for each task, with both servers reachable. Every step showed what it says above, with two things to note.
+
+- **Task 1, Step 5 was one command and is now two.** `cargo test --lib fixtures --test agent` gives the word `fixtures` to both test binaries, so `tests/agent.rs` ran none of its three tests and passed. The step above is corrected. The failing run of Step 2 is unaffected: it does not compile either way.
+- **`main` moved while the plan was written.** It gained the foreign key label's second database (`class.rs`, `lookup.rs`, `tests/lookup.rs`), none of which this run touches. The branch was put on top of it before Task 1, the diffs applied as they are, and the counts above held. `tests/lookup.rs` has 12 tests now, where the draft ran against 9.
