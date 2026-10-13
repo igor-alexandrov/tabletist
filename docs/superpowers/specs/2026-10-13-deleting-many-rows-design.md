@@ -20,11 +20,12 @@ headless tests, UI copy is short and plain with no em dashes.
 - The grid selects one cell: `ObjectTab.selection: Option<CellPos>`. The
   grid reports a click and a double click, with no modifiers. The footer
   of the desktop looks says `1 row selected`.
-- The Omarchy grid has no visual mode and reads no count. `v y` and `v p`
-  are two-key spellings of copy and paste for one cell. Digits typed on
-  the grid do nothing.
-- `Action::DeleteRow { tab, id }` marks the selected row, restores it when
-  it is marked, and drops it when it is new (`App::delete_row`).
+- The Omarchy grid has no visual mode and reads no count. `v y` is a
+  two-key spelling of the copy of one cell, and `v p` is claimed and not
+  built. Digits typed on the grid do nothing.
+- `Action::DeleteRow { tab, id }` marks the cursor's row, restores it when
+  it is marked, and drops it when it is new (`App::delete_row`). The grid's
+  keys, the inspector's Delete and `dd` on a new row's form all send it.
 - A save reads each row to delete with its own locking `SELECT`, then sends
   one `DELETE` per row. A row the database refuses is named
   (`WriteOutcome::FailedDelete { delete, error }`), and the app counts who
@@ -46,17 +47,18 @@ spec is written to. Say which to change.
 |---|---|---|---|
 | M1 | What several selected rows are | A run of neighbouring rows, from an anchor row to the cursor's row | Scattered rows (⌘-click) too: a set of rows instead of a run. Not in this run |
 | M2 | How the desktop looks select them | Shift+click and Shift+↑ / Shift+↓ | Also Select all (⌘A) and dragging over rows. Not in this run |
-| M3 | Omarchy's visual row selection | `V` starts it, as vim's linewise visual. The mode line reads `-- VISUAL --` with the row count. `v y` and `v p` stay as built | `v` starts it, and the copy and paste of one cell move to other keys |
-| M4 | Keys while it is on | `j` `k` and the arrows extend, `d` marks, `esc` or `V` leaves. Other letters do nothing | Other letters leave visual and act on the cursor's row |
-| M5 | A press on rows of both kinds | It marks when any row of the selection is unmarked. It restores only when all are marked | Always mark, and restore one row at a time |
-| M6 | Rows of the selection that cannot be deleted (a key that is NULL, a row that is gone) | Skipped, and the message counts them | Nothing is marked, and the first such row's reason is said |
+| M3 | Omarchy's visual row selection | `V` starts it, as vim's linewise visual. The mode line reads `-- VISUAL --` with the row count. `v y` stays as built | `v` starts it, and the copy of one cell moves to another key |
+| M4 | Keys while it is on | Moves extend, `d` marks, `esc` or `V` leaves. The grid's other commands do nothing | Another command leaves visual and acts on the cursor's row |
+| M5 | A press on rows of both kinds | It marks when any row named is unmarked. It restores only when all are marked | Always mark, and restore one row at a time |
+| M6 | Rows named that cannot be deleted (a key that is NULL, a row that is gone) | Skipped, and the message counts them | Nothing is marked, and the first such row's reason is said |
 | M7 | Which keys take a count | `dd` only. A count before any other key is dropped | `j` and `k` too |
 | M8 | The inspector with several rows selected | It shows the cursor's row. Its Delete and Restore act on that row alone | Its Delete acts on the selection |
 | M9 | Other commands with several rows selected (copy row, duplicate, set NULL, yank) | They act on the cursor's row, as today | Copy and duplicate act on every row. That is D3 of the duplication spec, a run of its own |
-| M10 | A batch the database refuses | A savepoint before each batch. On a refusal the batch is undone and its rows are sent one at a time, so the error lands on its row | Batches only on PostgreSQL, whose error names the row |
-| M11 | Reading the rows before they are deleted | In batches of 100 too. This is an addition: the first spec batches only the `DELETE` | One locking `SELECT` per row, as today. 1,000 marked rows are then 1,000 round trips before the first delete |
-| M12 | Cascade counts for a key of several columns, with many rows marked | Above 100 marked rows the line stands without a number | One count per marked row, as today, however many |
-| M13 | Where this lands | On this branch, in PR #120: it is the rest of the same spec | A PR of its own, after #120 merges |
+| M10 | The cursor after `{count}dd` | It moves to the row after the last row named, which is how I read the first spec's "moves down the way vim does". Plain `dd` leaves it, as built | It stays, so the same `{count}dd` again restores the same rows |
+| M11 | A batch the database refuses | A savepoint before each batch. On a refusal the batch is undone and its rows are sent one at a time, so the error lands on its row | Batches only on PostgreSQL, whose error names the row |
+| M12 | Reading the rows before they are deleted | One locking `SELECT` per row, as today. 1,000 marked rows are 1,000 short reads before ten deletes | Read in batches of 100 too. It is not in the first spec and is the riskiest part: see Out of scope |
+| M13 | Cascade counts that are asked once per marked row, with many rows marked | Above 100 marked rows the line stands without a number | One count per marked row, as today, however many |
+| M14 | Where this lands | On this branch, in PR #120: it is the rest of the same spec | A PR of its own, after #120 merges |
 
 ## 1. Selecting several rows
 
@@ -80,6 +82,22 @@ pub range: Option<Range>,
 `ObjectTab::selected_rows()` gives the rows in the grid's order, and is the
 one place the rest of the app asks. A SQL result has no range.
 
+**One rule for every place that sets the cursor.** The cursor is set
+through one function of `ObjectTab`, which is told what becomes of the
+range:
+
+| What set the cursor | The range |
+|---|---|
+| An extend (Shift+click, Shift+arrow) | Runs from its anchor, or from the row the cursor was on, to the new row. Not held |
+| A move by key (an arrow, `j` `k` `h` `l`, a page up or down, the first or last row, `:N`, the row before or after from the inspector) | Kept when held, and so follows the cursor. Ended otherwise |
+| Anything else (a click, a followed foreign key, a new or duplicated row, an editor that opens, a save, a jump from the pending bar) | Ended |
+
+A move along the row (`h`, `l`, ←, →, Tab) changes the cursor's cell and
+not the rows.
+
+A range does not outlive its page: a reload, a sort, a filter, another
+page and a save that removes rows end it, as they forget the cursor.
+
 Slice 4 of the value editing spec (a block of cells, pasted over) will add
 an anchor cell on the same footing. Nothing here stands in its way.
 
@@ -87,25 +105,20 @@ an anchor cell on the same footing. Nothing here stands in its way.
 
 | Gesture | What it does |
 |---|---|
-| Shift+click a row | The range runs from the cursor's row to the clicked row. The cursor moves to the clicked cell. The anchor is the row the cursor was on, or the anchor already set |
-| Shift+↓, Shift+↑ | The cursor moves one row and the range follows. The first press sets the anchor on the cursor's row |
-| A click, an arrow, Tab, a jump to a row | One row is selected again |
+| Shift+click a cell | An extend to that cell's row. The cursor moves to the clicked cell. With no cursor yet, it is a plain click |
+| Shift+↓, Shift+↑ | An extend by one row |
 
 - The footer counts: `3 rows selected`, and `3 rows selected · read-only`.
 - Each row of the range is painted as the selected row of its kind is
   today (a new row stays green, a marked row stays struck). Only the
   cursor's cell is the active cell.
-- Opening a cell editor, adding a row or duplicating one ends the range:
-  they work on the cursor's row.
-- A range does not outlive its page. A reload, a sort, a filter, another
-  page and a save that removes rows all end it.
 
 ### Omarchy look
 
 | Key | What it does |
 |---|---|
-| `V` | Starts a visual row selection on the cursor's row (`held`). `V` again leaves it |
-| `j` `k` `↓` `↑` | Extend it |
+| `V` | Starts a visual row selection on the cursor's row: a held range whose anchor is that row. `V` again leaves it |
+| Any move by key | Extends it |
 | `d` | Marks its rows (section 2), leaves visual, and puts the cursor on the first row of the range |
 | `esc` | Leaves it. The cursor stays |
 
@@ -115,9 +128,17 @@ an anchor cell on the same footing. Nothing here stands in its way.
   the board draws the mode alone.
 - The rows of the range take the selection background of the components
   board. The cursor's row and cell keep their own look.
-- While it is on, the other letters of the grid do nothing (`i`, `o`, `x`,
-  `yy`, `p`, `gd`, a count). The `:` prompt and the chords work as ever.
-- A click ends it, as a click ends the wait of a key of several.
+- While it is on, the grid's other commands do nothing, by whatever key:
+  editing a cell (`i`, Enter), a new row (`o`), set NULL (`x`), yank and
+  paste (`yy`, `p`), `gd`, a count. Moves, the `:` prompt and the commands
+  that are not the grid's (tabs, the tree, save, Review SQL) work as ever.
+  This is a gate on commands in `src/ui/keys.rs`: the keymap has no way to
+  say "nothing else".
+- `esc` leaves visual before it does anything else it does in the grid:
+  with the review open, a note showing or the inspector open, the first
+  `esc` leaves visual and the next does what it does today. In the keymap
+  its line stands after those, since the last line that holds wins.
+- A click ends it.
 - Shift+click works here too and makes a range that is not held. `dd`
   acts on it.
 
@@ -140,16 +161,18 @@ draw them: they are additions to both boards.
 
 ## 2. Marking several rows
 
-One action covers the **rows it names**:
+Three actions, by the rows they name:
 
-- ⌫, the Omarchy `dd`, and the grid's Delete command: the selected rows.
-- `d` in visual: the range.
-- `{count}dd`: the cursor's row and the `count - 1` rows after it in the
-  grid's order, stopping at the last row, as vim does. A range, if one
-  stands, is ended.
-- Delete and Restore in the inspector: the cursor's row alone (M8).
+| Action | Sent by | Rows named |
+|---|---|---|
+| `DeleteRow { tab, id }`, as today | The inspector's Delete, `dd` on a new row's form | The cursor's row alone (M8). A range is left as it is |
+| `DeleteSelected { tab, id }` | ⌫, the grid's `dd`, `d` in visual, the grid's Delete command | The selected rows |
+| `DeleteCount { tab, id, count }` | `{count}dd` | The cursor's row and the `count - 1` rows after it in the grid's order, stopping at the last row, as vim does. A range, if one stands, is ended |
 
-What it does, in this order:
+`RestoreRow` is unchanged: the cursor's row alone.
+
+What an action on several rows does, in this order. An action that names
+one row does what it does today, and says what it says today.
 
 1. **The cap.** More than 1,000 rows named: nothing changes, and the app
    says `Select fewer rows, or delete in the SQL editor.` The count is of
@@ -174,55 +197,64 @@ restore, an open cell editor closes and keeps its text, the tab is pinned,
 the last save's note goes, and the counts of what the deletes take are
 stopped once and asked again when Review SQL next opens.
 
-**Where the cursor goes.** Desktop: nowhere, and the range stays, so a
-second ⌫ restores the same rows. `{count}dd`: nowhere. `d` in visual: to
-the first row of the range. Where the cursor's row was a new row that was
-dropped, the cursor goes to the nearest row of the range that is left.
+**The cursor and the range afterwards.**
 
-**What is said.** For one row, today's words. For several:
+| Action | Cursor | Range |
+|---|---|---|
+| `DeleteSelected`, desktop | Stays | Stays, so a second ⌫ restores the same rows |
+| `d` in visual | The first row of the range | Ended |
+| `{count}dd` | The row after the last row named. On the last row of the grid it stays there (M10) | Ended |
 
-| Case | Announcement (and toast or status line where one shows today) |
+Where new rows were dropped, the cursor and the anchor each go to the
+nearest row of the range that is left, if theirs was dropped. Where none
+is left, the range ends and the cursor goes where dropping one new row
+puts it today.
+
+**What is said.**
+
+| Case | Words |
 |---|---|
 | Marked | `12 rows marked for deletion. 15 to delete.` |
 | Marked, some left out | `11 rows marked for deletion. 1 can't be deleted. 14 to delete.` |
 | Restored | `12 rows restored.` |
 | New rows dropped with them | The sentence above, then `2 new rows dropped.` |
+| Only new rows | `2 new rows dropped.` |
 | The cap | `Select fewer rows, or delete in the SQL editor.` |
 
-The sentence about rows left out also shows where a refusal shows: a toast
-in the desktop looks, the status line's message in the Omarchy look. The
-others are for assistive technology only, as the announcement of one
-marked row is.
+The cap and the sentence with rows left out show where a refusal shows: a
+toast in the desktop looks, the status line's message in the Omarchy
+look. The others are for assistive technology only, as the announcement
+of one marked row is.
 
 Rows of a range are exposed as selected to assistive technology. Entering
-visual says `Visual. 1 row selected.` and each move says the count.
-
-`Told` grows to carry a count:
+visual says `Visual. 1 row selected.` and each extend says the count.
 
 ```rust
 pub enum Told {
     Marked { row: String, deleted: usize },
     Restored { row: String },
-    /// Several rows in one action.
+    /// Several rows in one action. `deleted` is how many stand marked.
     MarkedRows { marked: usize, skipped: usize, dropped: usize, deleted: usize },
     RestoredRows { restored: usize },
 }
 ```
 
-`Action::DeleteRow { tab, id }` acts on the selected rows.
-`Action::DeleteRows { tab, id, count }` is `{count}dd`.
 `Edits::mark` and `Edits::restore` stay as they are and are called once
 for each row.
 
 ## 3. Counts
 
-- In the Omarchy grid, digits typed before a key are its count. `0` as the
-  first digit is not a count. More than six digits are read as 999,999.
+- In the Omarchy look, on a table's grid, digits typed before a key are
+  its count. `0` as the first digit is not a count. More than six digits
+  are read as 999,999. No count is read on a SQL result, in the inspector
+  or on a new row's form.
 - Only `dd` takes one (M7). Before any other key the count is dropped and
-  the key acts once, which is what digits do today.
-- The count is read where the letters of a key of several are
-  (`Keymap::typed`), which hands the command back with its count. No digit
-  is spelled outside `src/keymap.rs`.
+  the key acts once, which is what digits do today. `:` after digits
+  drops the count and opens the prompt.
+- The count is read where the letters of a key of several are:
+  `Keymap::typed` hands back `Typed::Counted(Command, u32)` for a command
+  that takes a count and was given one. No digit is spelled outside
+  `src/keymap.rs`.
 - A count waits as the first `d` of `dd` waits, and ends with it: on a
   key that types nothing, a click, a field that takes the keyboard.
 - The keyboard reference writes it `{count}dd`. Settings > Keyboard keeps
@@ -231,22 +263,28 @@ for each row.
 ## 4. Deletes in batches
 
 The app sends what it sends today: `ChangeSet.deletes`, one `RowDelete`
-for each marked row, in `delete_order`. The batches are made in
+for each marked row, in `delete_order`. Each row is read first with its
+own locking `SELECT`, as today (M12). The batches are made in
 `tabletist-db`.
 
-### The batches
+### The runs
 
-`write::delete_batches(&[RowDelete]) -> Vec<Range<usize>>` cuts the
-deletes, in their order, into runs of at most 100 whose keys name the same
-columns in the same order. It is pure, and both the review and the drivers
-call it, so Review SQL shows the statements a save sends.
+Each row's own statement is built first, with `Dialect::delete_row`, as
+today. A row whose statement cannot be built is refused by itself, as
+today (`DeleteRefused` in the review, `FailedDelete` in a save), and
+joins no run.
+
+`write::delete_runs(&[RowDelete], built: &[bool]) -> Vec<Range<usize>>`
+cuts the deletes, in their order, into runs of at most 100 neighbours that
+were built and whose keys name the same columns in the same order. It is
+pure, and both the review and the drivers call it.
 
 A run of one row is today's statement, unchanged. A marked row has no
 NULL in its key (`Lock::KeyIsNull` keeps such a row from being marked), so
 `IN` finds every row `=` does.
 
-`Dialect::delete_rows(object, &[&RowDelete]) -> Result<RowDeletion>` spells
-a run, matching on every dialect by name:
+`Dialect::delete_run(object, &[&RowDelete]) -> Result<RowDeletion>` spells
+a run of two or more, matching on every dialect by name:
 
 | Engine | One key column | Several |
 |---|---|---|
@@ -258,53 +296,56 @@ Each value is spelled as `delete_row` spells it today (a literal on
 PostgreSQL, a bound value on the others). SQLite takes a list of rows on
 the right of `IN` only as `VALUES`.
 
+`DeleteParts` of a run: `columns` holds each key column once, and `values`
+each value's place, row by row, so its length is the rows times the
+columns.
+
 ### What a driver does with a run
 
-Rows the read found gone are left out and reported `gone`, as today. What
-is left of the run, when it is more than one row:
+Rows the read found gone are left out and reported `gone`, as today, and
+the statement is spelled for the rows that are left. Where one row is
+left, it is today's statement. Where more are:
 
 1. `SAVEPOINT`, then the run's `DELETE`.
 2. **It touched every row:** release the savepoint, go on.
-3. **It touched fewer:** the rows are read again. Those that are gone were
-   taken by an earlier delete of this save (a key of the table that points
-   at the table), which is what the save meant. One that is still there is
-   `FailedDelete` for that row, in today's words.
+3. **It touched fewer:** the run's rows are read again. Those that are
+   gone were taken by an earlier delete of this save (a key of the table
+   that points at the table), which is what the save meant. One that is
+   still there (a trigger kept it) is `FailedDelete` for that row, in
+   today's words.
 4. **It touched more:** `FailedDelete` for the run's first row: `the save
    would have deleted 101 rows where it meant 100`.
-5. **The database refused it:** roll back to the savepoint, then send the
-   run's rows one statement each, as today. The row that fails is
-   `FailedDelete` with its own error, so the grid marks the right row and
-   the count of who holds it is of that row. If every row goes through,
-   the save goes on. MySQL checks a foreign key row by row, so a run that
-   holds a row and the row it points at can be refused whole and still go
-   through one at a time, child first.
-6. **The rollback to the savepoint fails:** the transaction is no longer
-   there (a deadlock, a trigger that rolled back). Nothing more is sent.
-   The run's error is `FailedDelete` for its first row.
+5. **The database was busy** (a lock wait or a deadlock: MySQL 1205 and
+   1213, PostgreSQL 40P01, 55P03 and 40001, SQLite busy or locked):
+   `FailedDelete` for the run's first row with that error. Nothing is
+   sent again: each row could wait as long once more.
+6. **The database refused it otherwise:** roll back to the savepoint,
+   then send the run's rows one statement each, as today. The row that
+   fails is `FailedDelete` with its own error, so the grid marks the
+   right row and the count of who holds it is of that row. If every row
+   goes through, the save goes on. MySQL checks a foreign key row by row,
+   so a run that holds a row and the row it points at can be refused
+   whole and still go through one at a time, child first.
+7. **The rollback to the savepoint fails:** a cancel or a lost session
+   ends the save as it does anywhere. Anything else means the transaction
+   is no longer there (on MySQL a deadlock, on SQLite a trigger that
+   rolled back). Nothing more is sent, and the run's error is
+   `FailedDelete` for its first row.
 
 A cancel and a lost session end the save at any step, as today.
 
 The savepoint is on every engine, so no driver has to know which errors
-leave a transaction standing. It costs two statements for each 100 rows.
+leave a transaction standing. It costs two statements for each run.
 
-### Reading the rows first (M11)
+Two things a run gives up, knowingly:
 
-Today each row to delete is read with its own locking `SELECT`. A run is
-read with one: `SELECT … WHERE "id" IN (…) FOR UPDATE`, in the same shapes
-as the table above (SQLite has no `FOR UPDATE`, as today).
-
-- Each row of the answer is matched to a key of the run by its key
-  columns' values, with the comparison `same_row_twice` uses.
-- A key no row matches is a row that is gone.
-- An answer that does not match one to one (a row that matches no key
-  exactly, or two rows for one key, which a collation that ignores case
-  can give) is not trusted: the run is read again one row at a time, as
-  today, and that read says what is wrong.
-- The checks on the answer's columns (`reads_as_several`,
-  `key_spelled_otherwise`) run once for the run.
-
-This is the last slice. Without it everything above works, with one read
-for each row.
+- Today each statement is checked to have touched one row. A run is
+  checked by its sum. Each row was read and found once just before, in
+  the same transaction and locked where the engine has locks, so the sum
+  is off only where a trigger or a cascade stepped in, which steps 3 and
+  4 look at.
+- A trigger that fires once per statement fires once for a run, not once
+  for each row.
 
 ## 5. Review SQL, and what a delete takes
 
@@ -316,18 +357,24 @@ for each row.
   ```
 
   A run of one keeps `-- delete row id 9`. `Line::Delete` carries the
-  comment it is given. The `also deletes` and `also clears` lines and
-  `Line::DeleteRefused` are unchanged.
+  comment it is given. The statement is laid out as one row's is: the
+  table, then the `WHERE`, with each key column and each value inked as
+  they are today and each value shortened as it is today. `lay_delete`
+  takes a `values` that is a whole number of rows.
+- The review shows the runs a save starts with. A save sends other
+  statements where it finds a row gone or sends a refused run one row at
+  a time. The review does not show the reads either, as today.
 - Copies of the review hold the same statements.
 - The production confirm counts rows, as today: `Save 12 deleted rows to
   production?`
 - **Counts with many rows marked** (`pointing_at`):
-  - a key of one column is counted with `IN`, at most 1,000 values to a
-    count. More values are counted in parts and added: the rows that
-    point at different rows are different rows;
-  - a key of several columns is counted once for each marked row, up to
-    100 marked rows. Above that its line stands without a number (M12),
-    as a line does while its count is out.
+  - a key counted with one `IN` (one column, values `IN` can list) takes
+    at most 1,000 values to a count. More are counted in parts and added:
+    the rows that point at different rows are different rows;
+  - a key counted once for each marked row (several columns, or values
+    `IN` cannot list) is counted up to 100 marked rows. Above that its
+    line stands without a number (M13), as a line does while its count is
+    out.
 - The count of who holds a refused row is of one row, as today.
 
 ## 6. After the save, and errors
@@ -344,17 +391,21 @@ rest: `12 rows were already deleted: id 1, id 2, id 3 and 9 more.`
 
 | Where | What changes |
 |---|---|
-| `src/model.rs` | `Range`, `ObjectTab.range`, `ObjectTab::selected_rows`. `Action::ExtendTo { tab, id, cell }`, `ExtendBy { tab, id, rows }`, `SelectRows { tab, id }`, `LeaveVisual { tab, id }`, `DeleteRows { tab, id, count }`. Every place that clears `selection` clears `range` |
-| `src/app.rs`, `src/app/editing.rs` | The reducers of those. `delete_row` becomes the marking of a list of rows (section 2). A move keeps a held range and ends another |
-| `src/edit.rs` | `Told::MarkedRows`, `Told::RestoredRows`. `pointing_at` counts in parts and stops at 100 rows for a key of several columns |
-| `src/keymap.rs` | The commands above, `When::Visual`, the count in `typed` |
-| `src/ui/keys.rs` | Shift+arrows, `V`, `d`, the count handed to `DeleteRows`. The refusal and the cap said outside `input_mut`, as one row's is |
+| `src/model.rs` | `Range`, `ObjectTab.range`, `ObjectTab::selected_rows`, the one function that sets the cursor. `Action::ExtendTo { tab, id, cell }`, `ExtendBy { tab, id, rows }`, `SelectRows { tab, id }`, `LeaveVisual { tab, id }`, `DeleteSelected { tab, id }`, `DeleteCount { tab, id, count }` |
+| `src/app.rs`, `src/app/editing.rs` | The reducers of those. The marking of a list of rows (section 2), which `delete_row` calls with one row |
+| `src/edit.rs` | `Told::MarkedRows`, `Told::RestoredRows`. `pointing_at` counts in parts and stops at 100 rows where it counts per row |
+| `src/keymap.rs` | The commands above, `When::Visual`, `Typed::Counted` |
+| `src/ui/keys.rs` | Shift+arrows, `V`, `d`, the count, the gate on the grid's commands in visual. The refusal and the cap said outside `input_mut`, as one row's is |
 | `src/ui/grid.rs` | The click reports whether Shift was down. A row takes `selected` from the range. Rows of a range are exposed as selected |
 | `src/ui/data_view.rs`, `src/ui/workspace.rs` | The footer's count, the `-- VISUAL --` mode line, the announcements |
-| `src/review.rs` | Lines from `delete_batches` |
-| `crates/tabletist-db/src/write.rs` | `delete_batches` |
-| `crates/tabletist-db/src/dialect.rs` | `delete_rows`, and `select_rows` for the batched read |
-| `crates/tabletist-db/src/{sqlite,pg,mysql}/write.rs` | The run with its savepoint, and the batched read |
+| `src/ui/row_panel.rs` | Nothing: its Delete sends `DeleteRow`, the cursor's row |
+| `src/ui/pending_bar.rs` | The shorter note of rows already gone |
+| `src/review.rs` | Lines from `delete_runs`, `lay_delete` for a run |
+| `src/testing.rs` | A click with Shift held: pointer events at a cell's place with the modifier, since a click by AccessKit carries none |
+| `crates/tabletist-db/src/write.rs` | `delete_runs` |
+| `crates/tabletist-db/src/dialect.rs` | `delete_run`, `DeleteParts` for a run |
+| `crates/tabletist-db/src/{sqlite,pg,mysql}/write.rs` | The run with its savepoint |
+| `crates/tabletist-db/tests/delete_rows.rs` | A `genres` table on each engine with a key to itself that does not cascade, the parent's id the lower |
 | `docs/_guide/editing-data.md`, `macos.md`, `omarchy.md`, `docs/_reference/keyboard-shortcuts.md` | Selecting several rows, `V`, `{count}dd`, the cap |
 | `docs/superpowers/specs/2026-10-12-deleting-rows-design.md` | "As built" points here for tests 3 and 7 |
 
@@ -362,50 +413,70 @@ rest: `12 rows were already deleted: id 1, id 2, id 3 and 9 more.`
 
 ## Tests
 
-Headless, on the Bookshop fixtures. Numbers continue the first spec's
-where they finish one of its tests.
+Headless, on the Bookshop fixtures. "(Test 3)" and "(Test 7)" finish
+those tests of the first spec.
 
 1. (Test 3) Shift+click and Shift+arrows select a run of rows. The footer
-   counts them. A plain click selects one again.
-2. (Test 3) ⌫ on several selected rows marks them all. A second ⌫ restores
-   them. A selection with one unmarked row marks that row and restores
-   none.
+   counts them. A plain click selects one again. Shift+click with no
+   cursor selects one row.
+2. (Test 3) ⌫ on several selected rows marks them all and keeps the
+   range. A second ⌫ restores them. A selection with one unmarked row
+   marks that row and restores none.
 3. (Test 3) `V`, `j`, `j`, `d` marks three rows, leaves visual and puts
    the cursor on the first. `esc` leaves visual and marks nothing. The
-   mode line shows `-- VISUAL --` while it is on, and `i` does nothing.
-4. (Test 3) `3dd` marks the cursor's row and the two after it. `5dd` two
-   rows from the end marks two. `0` is not a count. `3j` moves one row.
-5. (Test 3) An action on 1,001 rows marks nothing and says `Select fewer
+   mode line shows `-- VISUAL --` and the count while it is on. `i`, `o`
+   and Enter do nothing in it, `l` moves the cell and keeps the rows.
+4. With the review open and visual on, the first `esc` leaves visual and
+   the second closes the review. The same with a note and with the
+   inspector.
+5. (Test 3) `3dd` marks the cursor's row and the two after it and puts
+   the cursor on the fourth. `5dd` two rows from the end marks two and
+   stays on the last. `0` is not a count. `3j` moves one row. `3:` opens
+   the prompt. A count on a SQL result does nothing.
+6. (Test 3) An action on 1,001 rows marks nothing and says `Select fewer
    rows, or delete in the SQL editor.`, by selection and by `1001dd`. On
    1,000 rows it marks them.
-6. A range with a new row in it: marking drops the new row, restoring
-   leaves it. A range with a row whose key is NULL marks the others and
-   says one can't be deleted. A read-only connection marks none and says
-   why.
-7. Each marked row keeps its pending cells under the mark, and a restore
+7. A range with new rows in it: marking drops them, restoring leaves
+   them, and a range of new rows alone drops them and says so. With the
+   anchor on a dropped row, the range that is left is still selected.
+8. A range with a row whose key is NULL marks the others and says one
+   can't be deleted. A read-only connection marks none and says why.
+9. Each marked row keeps its pending cells under the mark, and a restore
    of the range gives them back.
-8. The announcements of section 2, and rows of a range exposed as
-   selected.
-9. The inspector's Delete with a range marks the cursor's row alone.
-10. (Test 7) `delete_rows` on PostgreSQL, MySQL and SQLite gives the
-    strings of section 4, for one key column and for two.
-    `delete_batches` cuts 250 rows into 100, 100 and 50, and starts a new
-    run where the key's columns change.
-11. Review SQL shows `-- delete 3 rows` over one statement, and `-- delete
-    row id 9` for a row alone.
-12. On each engine (`tests/delete_rows.rs`): 250 rows deleted in one save
-    are gone; a run with one row a foreign key holds rolls the save back
-    and names that row; a run with a row and the row it points at, in a
-    table with a key to itself, goes through; a row that was already gone
-    is reported and the rest of its run deleted.
-13. On each engine: the batched read finds the rows of a run, reports the
-    ones that are gone, and on SQLite and MySQL falls back to one read a
-    row where a key matches a row in another case.
-14. Cascade counts: 1,500 marked rows are counted in two parts and
+10. A range ends on a reload, a sort, a filter, another page, a save that
+    removes rows, a new row and an editor that opens.
+11. The announcements of section 2, and rows of a range exposed as
+    selected.
+12. The inspector's Delete with a range marks the cursor's row alone and
+    leaves the range.
+13. (Test 7) `delete_run` on PostgreSQL, MySQL and SQLite gives the
+    strings of section 4, for one key column and for two. `delete_runs`
+    cuts 250 rows into 100, 100 and 50, starts a new run where the key's
+    columns change, and leaves a row that was not built out of any run.
+14. Review SQL shows `-- delete 3 rows` over one statement with its
+    values inked, and `-- delete row id 9` for a row alone. A row whose
+    statement cannot be built shows as refused between two runs.
+15. On each engine (`tests/delete_rows.rs`): 250 rows deleted in one save
+    are gone. A run with one row a foreign key holds rolls the save back
+    and names that row. A parent and its child in `genres`, in one run,
+    go through. A row that was already gone is reported and the rest of
+    its run deleted. A run after which an earlier cascade left fewer rows
+    goes through (`shelves`).
+16. On SQLite: a trigger that keeps one row of a run (`RAISE(IGNORE)`)
+    fails the save on that row. A trigger that rolls the transaction back
+    (`RAISE(ROLLBACK)`) fails the save on the run's first row and sends
+    nothing more.
+17. Cascade counts: 1,500 marked rows are counted in two parts and
     added. A key of two columns with 101 marked rows shows its line
     without a number.
-15. Five rows that were already gone: the note names three and says `and
+18. Five rows that were already gone: the note names three and says `and
     2 more`.
+
+Step 4 of a run (more rows touched than meant) and step 5 (a busy
+database) have no test of their own on a server: the first cannot be made
+once each row was read and found once, the second needs two sessions that
+wait on each other. Each driver's sorting of an error into busy or not is
+tested as a function.
 
 PostgreSQL and MySQL scenarios run in CI only: the integration jobs
 already name `--test delete_rows`.
@@ -416,10 +487,9 @@ Each ends in something that can ship, in this order:
 
 | # | Slice | Ends with |
 |---|---|---|
-| 1 | A range of rows in the desktop looks, and marking it: sections 1 (desktop) and 2, the cap | Tests 1, 2, 5 (by selection), 6 to 9 |
-| 2 | Omarchy: `V`, `d`, the mode line, `{count}dd`: sections 1 (Omarchy) and 3 | Tests 3, 4, 5 (by count) |
-| 3 | Batches of deletes, the review's lines, counts in parts, the shorter note: sections 4 to 6 | Tests 10, 11, 12, 14, 15 |
-| 4 | The batched read | Test 13 |
+| 1 | A range of rows in the desktop looks, and marking it: sections 1 (desktop) and 2, the cap | Tests 1, 2, 6 (by selection), 7 to 12 |
+| 2 | Omarchy: `V`, `d`, the mode line, `{count}dd`: sections 1 (Omarchy) and 3 | Tests 3, 4, 5, 6 (by count) |
+| 3 | Runs of deletes, the review's lines, counts in parts, the shorter note: sections 4 to 6 | Tests 13 to 18 |
 
 ## Out of scope
 
@@ -430,6 +500,13 @@ Each ends in something that can ship, in this order:
   E3 of the inserting spec). The range makes them possible. They are not
   built here.
 - A count before any key but `dd`. `y`, `o` and `x` in visual.
+- **Reading the rows to delete in batches** (M12). What it would have to
+  keep, for whoever builds it: `select_row` stops at two rows because a
+  SQLite key can match a whole table, so a batched read needs a limit of
+  its rows and one; MySQL's `inexact_key` check; and two keys of one run
+  that the database takes for one row (`1` and `'1'`), which
+  `same_row_twice` catches today and a read that matches rows to keys by
+  value would call one row found and one gone.
 - Inserts and updates in batches.
 - A selection of rows in a SQL result.
 - Everything the first spec left out.
