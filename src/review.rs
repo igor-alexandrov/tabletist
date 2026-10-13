@@ -6,10 +6,10 @@
 use std::collections::BTreeMap;
 
 use tabletist_db::{
-    ChangeSet, Dialect, Error, InsertStatement, ObjectRef, RowChange, RowUpdate, Value,
+    ChangeSet, Dialect, Error, InsertStatement, ObjectRef, RowDeletion, RowUpdate, Value,
 };
 
-use crate::edit::{NEW_ROWS, Pending, State, Table, change_set, new_row};
+use crate::edit::{Effect, NEW_ROWS, Pending, State, Table, change_set, new_row};
 use crate::ui::format;
 
 /// The most characters of a value that are shown: a longer one is cut, with
@@ -63,6 +63,15 @@ pub enum Line {
     NewRequired(Vec<String>),
     /// The builder refuses a value of the new row, in its own words.
     NewRefused(String),
+    /// `-- delete row id 9`: the row the `DELETE` under it removes.
+    Delete(String),
+    /// `-- delete 3 rows`: the rows the one `DELETE` under it removes.
+    DeleteRun(usize),
+    /// The builder refuses the row's `DELETE`, in its own words.
+    DeleteRefused { row: String, reason: String },
+    /// `-- also deletes 3 rows in book_covers (ON DELETE CASCADE)`: what
+    /// the deletes above take with them in another table.
+    Also(Effect),
     /// A line of a statement.
     Sql(Vec<Piece>),
 }
@@ -89,12 +98,13 @@ pub enum Values {
     Whole,
 }
 
-/// A part of a change set: a new row or a changed one, by its place among
-/// its kind.
+/// A part of a change set: a new row, a changed one or one to delete, by
+/// its place among its kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
     Insert(usize),
     Row(usize),
+    Delete(usize),
 }
 
 /// What holds a new row's statement back, by its columns' names.
@@ -122,9 +132,29 @@ pub struct Review {
     pub rows: usize,
     /// How many rows the set adds.
     pub added: usize,
+    /// How many rows the set deletes.
+    pub deleted: usize,
     pub lines: Vec<Line>,
     /// The first part whose statement the builder refused, and why.
     pub refused: Option<(Part, Error)>,
+}
+
+impl Review {
+    /// Puts what the set's deletes take with them after its statements,
+    /// in place of what it said of that before.
+    pub fn also(&mut self, effects: &[Effect]) {
+        self.lines.retain(|line| !matches!(line, Line::Also(_)));
+        self.lines.extend(effects.iter().cloned().map(Line::Also));
+    }
+
+    /// What the review says its deletes take with them.
+    pub fn effects(&self) -> Vec<Effect> {
+        let also = |line: &Line| match line {
+            Line::Also(effect) => Some(effect.clone()),
+            _ => None,
+        };
+        self.lines.iter().filter_map(also).collect()
+    }
 }
 
 /// Without the lines: they hold what the user typed, which stays out of
@@ -133,24 +163,25 @@ impl std::fmt::Debug for Review {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Review {{ changes: {}, rows: {}, added: {}, lines: {} }}",
+            "Review {{ changes: {}, rows: {}, added: {}, deleted: {}, lines: {} }}",
             self.changes,
             self.rows,
             self.added,
+            self.deleted,
             self.lines.len()
         )
     }
 }
 
-/// The review of the table's new rows and the pending `cells`. `None`
-/// when nothing is pending.
+/// The review of the table's new rows, the pending `cells` and the rows
+/// marked for deletion. `None` when nothing is pending.
 pub fn build(
     object: &ObjectRef,
     table: &Table<'_>,
     cells: &BTreeMap<(usize, usize), Pending>,
     values: Values,
 ) -> Option<Review> {
-    if cells.is_empty() && table.added.is_empty() {
+    if cells.is_empty() && table.added.is_empty() && table.deleted.is_empty() {
         return None;
     }
     let Some((changes, sent)) = change_set(object, table, cells) else {
@@ -166,6 +197,7 @@ pub fn build(
             changes,
             rows: rows.len(),
             added: table.added.len(),
+            deleted: table.deleted.len(),
             lines: vec![Line::Unsendable],
             refused: None,
         });
@@ -233,7 +265,7 @@ pub fn of(dialect: Dialect, changes: &ChangeSet, blocked: Blocked<'_>, values: V
         }
     }
     for (index, row) in changes.rows.iter().enumerate() {
-        let name = row_name(row);
+        let name = row_name(&row.key);
         let stuck = blocked.rows.get(index);
         if let Some(columns) = stuck.filter(|columns| !columns.is_empty()) {
             lines.push(Line::Blocked {
@@ -262,10 +294,57 @@ pub fn of(dialect: Dialect, changes: &ChangeSet, blocked: Blocked<'_>, values: V
             }
         }
     }
+    // The rows to delete, last, as a save deletes them last, in the runs
+    // a save sends them in. No cell holds one back: a marked row's cells
+    // are not the set's. Each row's own statement first: a row no save
+    // sends is refused by itself, and is in no run.
+    let built: Vec<_> = changes
+        .deletes
+        .iter()
+        .map(|row| dialect.delete_row(&changes.object, row))
+        .collect();
+    let sent: Vec<bool> = built.iter().map(Result::is_ok).collect();
+    let mut built: Vec<_> = built.into_iter().map(Some).collect();
+    for run in tabletist_db::delete_runs(&changes.deletes, &sent) {
+        let rows: Vec<&tabletist_db::RowDelete> = changes
+            .deletes
+            .get(run.clone())
+            .unwrap_or_default()
+            .iter()
+            .collect();
+        // Two rows or more, each built: one statement, where it can be
+        // spelled. It always can; were it not, each row has its own.
+        if rows.len() > 1
+            && let Ok(deletion) = dialect.delete_run(&changes.object, &rows)
+        {
+            lines.push(Line::DeleteRun(rows.len()));
+            lines.extend(delete_statement(&deletion, values));
+            continue;
+        }
+        for (index, row) in run.zip(rows) {
+            let name = row_name(&row.key);
+            match built.get_mut(index).and_then(Option::take) {
+                Some(Ok(deletion)) => {
+                    lines.push(Line::Delete(name));
+                    lines.extend(delete_statement(&deletion, values));
+                }
+                Some(Err(error)) => {
+                    let reason = format::capped(&error.to_string()).into_owned();
+                    lines.push(Line::DeleteRefused {
+                        row: name,
+                        reason: format::escape_hidden(&reason).into_owned(),
+                    });
+                    refused.get_or_insert((Part::Delete(index), error));
+                }
+                None => {}
+            }
+        }
+    }
     Review {
         changes: changes.rows.iter().map(|row| row.set.len()).sum(),
         rows: changes.rows.len(),
         added: changes.inserts.len(),
+        deleted: changes.deletes.len(),
         lines,
         refused,
     }
@@ -273,9 +352,8 @@ pub fn of(dialect: Dialect, changes: &ChangeSet, blocked: Blocked<'_>, values: V
 
 /// A row by its key, as the row panel's title names one: `id 2`, several
 /// columns joined by a comma. From the key the statement finds the row by.
-fn row_name(row: &RowChange) -> String {
-    let parts: Vec<String> = row
-        .key
+fn row_name(key: &[(String, Value)]) -> String {
+    let parts: Vec<String> = key
         .iter()
         .map(|(column, value)| {
             format!(
@@ -372,6 +450,92 @@ fn lay(update: &RowUpdate, set: usize, values: Values) -> Option<Vec<Line>> {
         }
         lines.push(Line::Sql(pieces));
     }
+    Some(lines)
+}
+
+/// A row's `DELETE` in lines: on one where its key is one column, as the
+/// design writes it, and with a line for each further column, as an
+/// `UPDATE`'s key is laid out.
+fn delete_statement(deletion: &RowDeletion, values: Values) -> Vec<Line> {
+    lay_delete(deletion, values)
+        .or_else(|| lay_run(deletion, values))
+        .unwrap_or_else(|| {
+            // Not the parts this was written for: the statement on one line.
+            vec![Line::Sql(vec![
+                plain(&deletion.shown, values),
+                fixed(Ink::Plain, ";"),
+            ])]
+        })
+}
+
+/// A run's `DELETE`: on one line where its key is one column, as a row's
+/// is, and on two where it is several, the table and then the rows. Each
+/// value is a piece of its own, shortened and coloured as a value is.
+/// `None` where the parts are not a run's: fewer values than two rows of
+/// its columns, or not a whole number of rows.
+fn lay_run(deletion: &RowDeletion, values: Values) -> Option<Vec<Line>> {
+    let RowDeletion { shown, parts, .. } = deletion;
+    let columns = parts.columns.len();
+    if columns == 0
+        || parts.values.len() < 2 * columns
+        || !parts.values.len().is_multiple_of(columns)
+    {
+        return None;
+    }
+    let table = shown
+        .get(..parts.filter)?
+        .strip_prefix("DELETE FROM")?
+        .trim_end();
+    let mut head = vec![fixed(Ink::Keyword, "DELETE FROM"), plain(table, values)];
+    let mut clause = vec![fixed(Ink::Plain, " "), fixed(Ink::Keyword, "WHERE")];
+    let mut at = parts.filter + "WHERE".len();
+    for range in &parts.values {
+        clause.push(plain(shown.get(at..range.start)?, values));
+        clause.push(value(shown.get(range.clone())?, values));
+        at = range.end;
+    }
+    clause.push(plain(shown.get(at..)?, values));
+    clause.push(fixed(Ink::Plain, ";"));
+    if columns == 1 {
+        head.append(&mut clause);
+        return Some(vec![Line::Sql(head)]);
+    }
+    Some(vec![Line::Sql(head), Line::Sql(clause)])
+}
+
+fn lay_delete(deletion: &RowDeletion, values: Values) -> Option<Vec<Line>> {
+    let RowDeletion { shown, parts, .. } = deletion;
+    let last = parts.values.len().checked_sub(1)?;
+    if parts.columns.len() != parts.values.len() {
+        return None;
+    }
+    let table = shown
+        .get(..parts.filter)?
+        .strip_prefix("DELETE FROM")?
+        .trim_end();
+    let mut head = vec![fixed(Ink::Keyword, "DELETE FROM"), plain(table, values)];
+    let mut lines = Vec::new();
+    for (index, (column, range)) in parts.columns.iter().zip(&parts.values).enumerate() {
+        // What stands before the value: its column and `=`.
+        let lead = shown.get(*column..range.start)?;
+        let literal = shown.get(range.clone())?;
+        let mut pieces = match index {
+            0 => vec![fixed(Ink::Plain, " "), fixed(Ink::Keyword, "WHERE")],
+            _ => vec![fixed(Ink::Plain, "   "), fixed(Ink::Keyword, "AND")],
+        };
+        pieces.push(plain(&format!(" {lead}"), values));
+        pieces.push(value(literal, values));
+        if index == last {
+            pieces.push(fixed(Ink::Plain, ";"));
+        }
+        if last == 0 {
+            // One column: the whole statement on the table's line.
+            head.append(&mut pieces);
+        } else {
+            lines.push(Line::Sql(pieces));
+        }
+    }
+    lines.insert(0, Line::Sql(head));
     Some(lines)
 }
 
@@ -576,7 +740,7 @@ mod tests {
     use crate::edit::Problem;
     use crate::testing::{fixture_structure, page};
     use std::collections::BTreeSet;
-    use tabletist_db::{Access, CellChange, NewValue, ObjectKind, RowPage, Structure};
+    use tabletist_db::{Access, CellChange, NewValue, ObjectKind, RowChange, RowPage, Structure};
 
     fn users() -> ObjectRef {
         ObjectRef::new("main", "users")
@@ -596,6 +760,7 @@ mod tests {
             saving: false,
             gone: &NONE_GONE,
             added: &[],
+            deleted: &crate::edit::NONE_DELETED,
         }
     }
 
@@ -615,13 +780,221 @@ mod tests {
         review.lines.iter().filter_map(Line::sql).collect()
     }
 
+    fn deleting(keys: Vec<Vec<(&str, Value)>>) -> ChangeSet {
+        ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: keys
+                .into_iter()
+                .map(|key| tabletist_db::RowDelete {
+                    key: key
+                        .into_iter()
+                        .map(|(name, value)| (name.to_owned(), value))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Spec 4, as the full-width board's card has it: a row to delete is
+    /// its comment and its statement, on one line where its key is one
+    /// column.
+    #[test]
+    fn a_row_to_delete_is_its_comment_and_its_statement() {
+        let changes = deleting(vec![vec![("id", Value::Int(9))]]);
+        let review = of(
+            Dialect::Postgres,
+            &changes,
+            Blocked::default(),
+            Values::Shown,
+        );
+        assert_eq!(review.lines[0], Line::Delete("id 9".into()));
+        assert_eq!(
+            sql(&review),
+            [r#"DELETE FROM "public"."book_covers" WHERE "id" = 9;"#]
+        );
+        assert_eq!((review.deleted, review.changes, review.added), (1, 0, 0));
+        assert_eq!(review.refused, None);
+    }
+
+    /// A key of several columns is a line for each after the first, as an
+    /// `UPDATE`'s is.
+    #[test]
+    fn a_delete_by_a_key_of_two_columns_is_laid_out_in_lines() {
+        let changes = deleting(vec![vec![
+            ("book_id", Value::Int(101)),
+            ("author", Value::Text("Ada Quill".into())),
+        ]]);
+        let review = of(Dialect::Sqlite, &changes, Blocked::default(), Values::Shown);
+        assert_eq!(
+            sql(&review),
+            [
+                r#"DELETE FROM "public"."book_covers""#,
+                r#" WHERE "book_id" = 101"#,
+                r#"   AND "author" = 'Ada Quill';"#,
+            ]
+        );
+    }
+
+    /// The lines stand after the statements, and a later answer takes the
+    /// earlier one's place.
+    #[test]
+    fn what_the_deletes_take_stands_after_the_statements() {
+        let changes = deleting(vec![vec![("id", Value::Int(9))]]);
+        let mut review = of(Dialect::Sqlite, &changes, Blocked::default(), Values::Shown);
+        let statements = review.lines.len();
+        let effect = |rows| Effect::Deletes {
+            table: "book_covers".into(),
+            rows,
+        };
+        review.also(&[effect(None)]);
+        assert_eq!(review.lines.len(), statements + 1);
+        assert_eq!(review.lines.last(), Some(&Line::Also(effect(None))));
+        review.also(&[effect(Some(3))]);
+        assert_eq!(review.lines.len(), statements + 1);
+        assert_eq!(review.lines.last(), Some(&Line::Also(effect(Some(3)))));
+        assert_eq!(review.effects(), [effect(Some(3))]);
+        // Nothing taken: no line.
+        review.also(&[]);
+        assert_eq!(review.lines.len(), statements);
+        assert!(review.effects().is_empty());
+    }
+
+    /// Many-rows spec 5 and test 14: a run of rows is one comment and one
+    /// statement, and a row alone keeps its own.
+    #[test]
+    fn a_run_of_rows_to_delete_is_one_comment_and_one_statement() {
+        let ids = |ids: &[i64]| -> Vec<Vec<(&str, Value)>> {
+            ids.iter().map(|id| vec![("id", Value::Int(*id))]).collect()
+        };
+        let changes = deleting(ids(&[9, 10, 11]));
+        let review = of(
+            Dialect::Postgres,
+            &changes,
+            Blocked::default(),
+            Values::Shown,
+        );
+        assert_eq!(review.lines[0], Line::DeleteRun(3));
+        assert_eq!(
+            sql(&review),
+            [r#"DELETE FROM "public"."book_covers" WHERE "id" IN (9, 10, 11);"#]
+        );
+        assert_eq!(review.deleted, 3);
+        // Each value is a value of its own, to shorten and to colour.
+        let Line::Sql(pieces) = &review.lines[1] else {
+            panic!("a statement");
+        };
+        let values: Vec<&str> = pieces
+            .iter()
+            .filter(|piece| piece.ink == Ink::Number)
+            .map(|piece| piece.text.as_str())
+            .collect();
+        assert_eq!(values, ["9", "10", "11"]);
+        // 250 rows: three statements.
+        let many: Vec<i64> = (1..=250).collect();
+        let review = of(
+            Dialect::Sqlite,
+            &deleting(ids(&many)),
+            Blocked::default(),
+            Values::Shown,
+        );
+        let runs = |line: &&Line| matches!(line, Line::DeleteRun(_));
+        let comments: Vec<&Line> = review.lines.iter().filter(runs).collect();
+        assert_eq!(
+            comments,
+            [
+                &Line::DeleteRun(100),
+                &Line::DeleteRun(100),
+                &Line::DeleteRun(50)
+            ]
+        );
+        assert_eq!(sql(&review).len(), 3);
+    }
+
+    /// A key of several columns: the table, then the rows.
+    #[test]
+    fn a_run_by_a_key_of_two_columns_is_two_lines() {
+        let row = |book: i64, author: &str| {
+            vec![
+                ("book_id", Value::Int(book)),
+                ("author", Value::Text(author.into())),
+            ]
+        };
+        let changes = deleting(vec![row(101, "Ada Quill"), row(102, "Ada Quill")]);
+        let review = of(
+            Dialect::Postgres,
+            &changes,
+            Blocked::default(),
+            Values::Shown,
+        );
+        assert_eq!(
+            sql(&review),
+            [
+                r#"DELETE FROM "public"."book_covers""#,
+                r#" WHERE ("book_id", "author") IN ((101, 'Ada Quill'), (102, 'Ada Quill'));"#
+            ]
+        );
+    }
+
+    /// A row no save sends is refused by itself, between the runs of its
+    /// neighbours.
+    #[test]
+    fn a_refused_row_stands_between_two_runs() {
+        let fine = |id: &str| vec![("id", Value::Text(id.into()))];
+        let changes = deleting(vec![
+            fine("a"),
+            fine("b"),
+            fine("c\u{FFFD}"),
+            fine("d"),
+            fine("e"),
+        ]);
+        let review = of(Dialect::Sqlite, &changes, Blocked::default(), Values::Shown);
+        let kinds: Vec<&str> = review
+            .lines
+            .iter()
+            .map(|line| match line {
+                Line::DeleteRun(_) => "run",
+                Line::DeleteRefused { .. } => "refused",
+                Line::Sql(_) => "sql",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["run", "sql", "refused", "run", "sql"]);
+        assert!(matches!(review.refused, Some((Part::Delete(2), _))));
+        assert_eq!(review.deleted, 5);
+    }
+
+    /// Spec 4: inserts, then updates, then deletes. And a delete the
+    /// builder refuses is a comment, and the review's first refusal.
+    #[test]
+    fn the_deletes_come_last_and_a_refused_one_says_why() {
+        let mut changes = deleting(vec![
+            vec![("id", Value::Int(9))],
+            vec![("id", Value::Text("a\u{FFFD}".into()))],
+        ]);
+        changes.inserts = vec![tabletist_db::RowInsert { set: Vec::new() }];
+        let review = of(Dialect::Sqlite, &changes, Blocked::default(), Values::Shown);
+        assert_eq!(review.lines[0], Line::New);
+        assert!(matches!(
+            review.lines.last(),
+            Some(Line::DeleteRefused { .. })
+        ));
+        assert!(matches!(review.refused, Some((Part::Delete(1), _))));
+        assert_eq!(review.deleted, 2);
+    }
+
     /// The statements of `review` with the layout's white space taken back:
     /// each as the builder wrote it, and its semicolon.
     fn unlaid(review: &Review) -> Vec<String> {
         let mut statements: Vec<String> = Vec::new();
         for line in sql(review) {
             match statements.last_mut() {
-                Some(statement) if !line.starts_with("UPDATE") && !line.starts_with("INSERT") => {
+                Some(statement)
+                    if !line.starts_with("UPDATE")
+                        && !line.starts_with("INSERT")
+                        && !line.starts_with("DELETE") =>
+                {
                     statement.push(' ');
                     statement.push_str(line.trim_start_matches(' '));
                 }
@@ -1174,6 +1547,7 @@ mod tests {
             object: users(),
             inserts: Vec::new(),
             rows: vec![row],
+            deletes: Vec::new(),
         };
         let review = of(
             Dialect::Postgres,
@@ -1254,6 +1628,7 @@ mod tests {
                     text("quotes", &"'".repeat(70)),
                 ],
             }],
+            deletes: Vec::new(),
         };
         for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
             // All of it but the NUL where the database's text holds none:
@@ -1346,6 +1721,7 @@ mod tests {
                 object: users(),
                 inserts: Vec::new(),
                 rows: vec![row(text("a"), "fine"), refused],
+                deletes: Vec::new(),
             };
             for values in [Values::Shown, Values::Whole] {
                 let review = of(dialect, &changes, Blocked::default(), values);
@@ -1413,6 +1789,7 @@ mod tests {
                     change("price", Value::Float(12.5), "13"),
                 ],
             }],
+            deletes: Vec::new(),
         };
         let review = of(
             Dialect::Postgres,
@@ -1462,7 +1839,7 @@ mod tests {
         let printed = format!("{review:?}");
         assert_eq!(
             printed,
-            "Review { changes: 2, rows: 1, added: 0, lines: 7 }"
+            "Review { changes: 2, rows: 1, added: 0, deleted: 0, lines: 7 }"
         );
     }
 }

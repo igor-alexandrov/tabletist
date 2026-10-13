@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use crate::{
     ColumnClass, Error, Filter, FilterOp, Lookup, LookupPart, Matched, NewValue, ObjectRef, Result,
-    RowChange, RowInsert, RowQuery, SortDir, Temporal, Value, column_class, temporal,
+    RowChange, RowDelete, RowInsert, RowQuery, SortDir, Temporal, Value, column_class, temporal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,34 @@ pub struct UpdateParts {
     pub columns: Vec<usize>,
     /// Each value's place: the new ones in the order they are set, then
     /// the key's.
+    pub values: Vec<std::ops::Range<usize>>,
+}
+
+/// A row's `DELETE`, as a user reads it and as the driver runs it. Both
+/// come from the same key, as a [`RowUpdate`]'s do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowDeletion {
+    /// The statement with its key's values as literals.
+    pub shown: String,
+    /// What the driver sends: for PostgreSQL the shown text, for MySQL and
+    /// SQLite the same statement with the values bound.
+    pub sql: Sql,
+    /// Where the parts of `shown` stand.
+    pub parts: DeleteParts,
+}
+
+/// Where the parts of a shown `DELETE` stand, as byte offsets into its
+/// text, noted as the builder writes it: as [`UpdateParts`], so a name or
+/// a value that holds ` WHERE ` cannot move them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeleteParts {
+    /// Where `WHERE` begins: the table's name ends a space before it.
+    pub filter: usize,
+    /// Where each key column begins: one for each of `values`. A run's
+    /// ([`Dialect::delete_run`]) has each key column once.
+    pub columns: Vec<usize>,
+    /// Each key value's place. A run's row by row: as many as its rows
+    /// times its columns.
     pub values: Vec<std::ops::Range<usize>>,
 }
 
@@ -813,6 +841,164 @@ impl Dialect {
         })
     }
 
+    /// The `DELETE` of one row of a save, by the row's key and nothing
+    /// else: no other column is compared. `Err` says why no save sends
+    /// the row at all, as [`Dialect::update_row`] does: a SQLite key that
+    /// may not be the row's, PostgreSQL text that holds a NUL. Refused
+    /// here and nowhere after it, so what a review shows of a row is what
+    /// a save does with it.
+    pub fn delete_row(self, object: &ObjectRef, row: &RowDelete) -> Result<RowDeletion> {
+        self.key_read_exactly(&row.key)?;
+        let mut params = Vec::new();
+        let lead = format!("DELETE FROM {}", self.qualified(object));
+        let clause = self.key_clause(&row.key, &mut params);
+        let base = lead.len();
+        let parts = DeleteParts {
+            // The clause begins with the space before its word.
+            filter: base + 1,
+            columns: clause.columns.iter().map(|column| base + column).collect(),
+            values: clause
+                .values
+                .iter()
+                .map(|value| base + value.start..base + value.end)
+                .collect(),
+        };
+        let shown = format!("{lead}{}", clause.shown);
+        let text = format!("{lead}{}", clause.sent);
+        // PostgreSQL text cannot hold a NUL, and the driver cannot put one
+        // in a message: see `update_row`.
+        let refused = match self {
+            Self::Postgres => text.contains('\0'),
+            Self::MySql | Self::Sqlite => false,
+        };
+        if refused {
+            return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
+        }
+        Ok(RowDeletion {
+            shown,
+            sql: Sql { text, params },
+            parts,
+        })
+    }
+
+    /// One `DELETE` for a run of a save's rows ([`crate::delete_runs`]):
+    /// `WHERE "id" IN (..)`, or `WHERE ("a", "b") IN ((..), (..))` for a
+    /// key of several columns. `Err` where it is no run (fewer than two
+    /// rows, or keys that do not name the same columns in the same order
+    /// with values of one kind),
+    /// and where one of its rows is one no save sends
+    /// ([`Dialect::delete_row`]). The rows it finds are the rows its
+    /// rows' own statements find: each value is spelled as there, and
+    /// compared as `=` compares it.
+    pub fn delete_run(self, object: &ObjectRef, rows: &[&RowDelete]) -> Result<RowDeletion> {
+        let [first, _, ..] = rows else {
+            return Err(Error::query("a run of deletes is two rows or more"));
+        };
+        let same = |row: &&RowDelete| crate::write::same_key_shape(&row.key, &first.key);
+        if first.key.is_empty() || !rows.iter().all(same) {
+            return Err(Error::query(
+                "the rows of a run have the same key columns, with values of one kind",
+            ));
+        }
+        for row in rows {
+            self.key_read_exactly(&row.key)?;
+        }
+        let several = first.key.len() > 1;
+        let mut params = Vec::new();
+        let mut shown = format!("DELETE FROM {}", self.qualified(object));
+        let mut parts = DeleteParts {
+            // The clause begins with the space before its word.
+            filter: shown.len() + 1,
+            ..DeleteParts::default()
+        };
+        shown.push_str(" WHERE ");
+        let mut sent = shown.clone();
+        if several {
+            shown.push('(');
+            sent.push('(');
+        }
+        for (index, (column, _)) in first.key.iter().enumerate() {
+            let column = self.quote_ident(column);
+            let lead = if index == 0 { "" } else { ", " };
+            shown.push_str(lead);
+            parts.columns.push(shown.len());
+            shown.push_str(&column);
+            let _ = write!(sent, "{lead}{column}");
+        }
+        // A list of rows on the right of `IN`: SQLite takes one only as
+        // `VALUES`.
+        let open = match (self, several) {
+            (Self::Postgres | Self::MySql | Self::Sqlite, false) => " IN (",
+            (Self::Postgres | Self::MySql, true) => ") IN (",
+            (Self::Sqlite, true) => ") IN (VALUES ",
+        };
+        shown.push_str(open);
+        sent.push_str(open);
+        for (row, delete) in rows.iter().enumerate() {
+            let lead = match (row, several) {
+                (0, false) => "",
+                (_, false) => ", ",
+                (0, true) => "(",
+                (_, true) => ", (",
+            };
+            shown.push_str(lead);
+            sent.push_str(lead);
+            for (index, (_, value)) in delete.key.iter().enumerate() {
+                let operand = self.key_operand(value);
+                let lead = if index == 0 { "" } else { ", " };
+                shown.push_str(lead);
+                let literal = self.shown(&operand);
+                let at = shown.len();
+                parts.values.push(at..at + literal.len());
+                shown.push_str(&literal);
+                let bound = self.sent(&operand, &mut params);
+                let _ = write!(sent, "{lead}{bound}");
+            }
+            if several {
+                shown.push(')');
+                sent.push(')');
+            }
+        }
+        shown.push(')');
+        sent.push(')');
+        // PostgreSQL text cannot hold a NUL: see `delete_row`.
+        let refused = match self {
+            Self::Postgres => sent.contains('\0'),
+            Self::MySql | Self::Sqlite => false,
+        };
+        if refused {
+            return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
+        }
+        Ok(RowDeletion {
+            shown,
+            sql: Sql { text: sent, params },
+            parts,
+        })
+    }
+
+    /// Whether `error` says the database was busy, not that a statement
+    /// was wrong: a lock that was waited for too long, a deadlock, a
+    /// transaction it could not put in order with another. A run of
+    /// deletes that ends so is not sent again row by row: each row could
+    /// wait as long once more.
+    pub fn busy(self, error: &Error) -> bool {
+        let Error::Query { code, named, .. } = error else {
+            return false;
+        };
+        match self {
+            // Deadlock detected, lock not available, serialization failure.
+            Self::Postgres => matches!(code.as_deref(), Some("40P01" | "55P03" | "40001")),
+            // Lock wait timeout, deadlock.
+            Self::MySql => matches!(named.number, Some(1205 | 1213)),
+            // SQLITE_BUSY and SQLITE_LOCKED, under whatever the extended
+            // code adds above its low byte.
+            Self::Sqlite => code
+                .as_deref()
+                .and_then(|code| code.parse::<u32>().ok())
+                .is_some_and(|code| matches!(code & 0xff, 5 | 6)),
+        }
+    }
+
     /// The row of `key`, whole. With `lock` it is held until the
     /// transaction ends, where the database has row locks. Two rows at
     /// most: a caller only needs to tell none, one and more than one
@@ -1517,6 +1703,251 @@ mod tests {
             type_name: type_name.into(),
             new,
         }
+    }
+
+    fn doomed(key: Vec<(&str, Value)>) -> RowDelete {
+        RowDelete {
+            key: key
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+        }
+    }
+
+    /// Spec 4 and test 7: one statement for a row, by its key.
+    #[test]
+    fn the_same_delete_on_each_engine() {
+        let row = doomed(vec![("id", Value::Int(9))]);
+        let delete = Dialect::Postgres
+            .delete_row(&covers("public"), &row)
+            .unwrap();
+        assert_eq!(
+            delete.shown,
+            r#"DELETE FROM "public"."book_covers" WHERE "id" = 9"#
+        );
+        // PostgreSQL runs exactly what it shows.
+        assert_eq!(delete.sql.text, delete.shown);
+        assert!(delete.sql.params.is_empty());
+
+        let delete = Dialect::MySql
+            .delete_row(&covers("bookshop"), &row)
+            .unwrap();
+        assert_eq!(
+            delete.shown,
+            "DELETE FROM `bookshop`.`book_covers` WHERE `id` = 9"
+        );
+        assert_eq!(
+            delete.sql.text,
+            "DELETE FROM `bookshop`.`book_covers` WHERE `id` = ?"
+        );
+        assert_eq!(delete.sql.params, [Value::Int(9)]);
+
+        let delete = Dialect::Sqlite.delete_row(&covers("main"), &row).unwrap();
+        assert_eq!(
+            delete.shown,
+            r#"DELETE FROM "main"."book_covers" WHERE "id" = 9"#
+        );
+        assert_eq!(
+            delete.sql.text,
+            r#"DELETE FROM "main"."book_covers" WHERE "id" = ?"#
+        );
+        assert_eq!(delete.sql.params, [Value::Int(9)]);
+    }
+
+    /// Spec 4: a key of several columns uses every one of them.
+    #[test]
+    fn a_delete_names_every_column_of_its_rows_key() {
+        let authors = ObjectRef::new("public", "book_authors");
+        let row = doomed(vec![
+            ("book_id", Value::Int(101)),
+            ("author", text("Sam O'Neil")),
+        ]);
+        let delete = Dialect::Postgres.delete_row(&authors, &row).unwrap();
+        assert_eq!(
+            delete.shown,
+            r#"DELETE FROM "public"."book_authors" WHERE "book_id" = 101 AND "author" = 'Sam O''Neil'"#
+        );
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            let delete = dialect.delete_row(&authors, &row).unwrap();
+            assert_eq!(delete.sql.params, [Value::Int(101), text("Sam O'Neil")]);
+            // What is shown is what is bound.
+            assert_eq!(inlined(dialect, &delete.sql), delete.shown);
+        }
+    }
+
+    #[test]
+    fn a_delete_says_where_its_parts_stand() {
+        let authors = ObjectRef::new("public", "book_authors");
+        let row = doomed(vec![
+            ("book_id", Value::Int(101)),
+            ("author", text("Sam O'Neil")),
+        ]);
+        let delete = Dialect::Postgres.delete_row(&authors, &row).unwrap();
+        let parts = &delete.parts;
+        assert!(delete.shown[parts.filter..].starts_with("WHERE "));
+        assert_eq!(
+            &delete.shown[..parts.filter],
+            r#"DELETE FROM "public"."book_authors" "#
+        );
+        assert!(delete.shown[parts.columns[0]..].starts_with(r#""book_id" = "#));
+        assert!(delete.shown[parts.columns[1]..].starts_with(r#""author" = "#));
+        assert_eq!(&delete.shown[parts.values[0].clone()], "101");
+        assert_eq!(&delete.shown[parts.values[1].clone()], "'Sam O''Neil'");
+    }
+
+    /// Spec 4 and test 13 of the many-rows spec: a run of rows is one
+    /// statement, `IN` its keys.
+    #[test]
+    fn a_run_of_deletes_on_each_engine() {
+        let rows = [9, 10, 11].map(|id| doomed(vec![("id", Value::Int(id))]));
+        let rows: Vec<&RowDelete> = rows.iter().collect();
+        let run = Dialect::Postgres
+            .delete_run(&covers("public"), &rows)
+            .unwrap();
+        assert_eq!(
+            run.shown,
+            r#"DELETE FROM "public"."book_covers" WHERE "id" IN (9, 10, 11)"#
+        );
+        assert_eq!(run.sql.text, run.shown);
+        assert!(run.sql.params.is_empty());
+        let run = Dialect::MySql
+            .delete_run(&covers("bookshop"), &rows)
+            .unwrap();
+        assert_eq!(
+            run.sql.text,
+            "DELETE FROM `bookshop`.`book_covers` WHERE `id` IN (?, ?, ?)"
+        );
+        assert_eq!(run.sql.params, [9, 10, 11].map(Value::Int));
+        assert_eq!(inlined(Dialect::MySql, &run.sql), run.shown);
+        let run = Dialect::Sqlite.delete_run(&covers("main"), &rows).unwrap();
+        assert_eq!(
+            run.sql.text,
+            r#"DELETE FROM "main"."book_covers" WHERE "id" IN (?, ?, ?)"#
+        );
+        assert_eq!(inlined(Dialect::Sqlite, &run.sql), run.shown);
+    }
+
+    /// A key of several columns: rows on the right of `IN`, which SQLite
+    /// takes only as `VALUES`.
+    #[test]
+    fn a_run_by_a_key_of_two_columns_on_each_engine() {
+        let authors = ObjectRef::new("public", "book_authors");
+        let row =
+            |author: &str| doomed(vec![("book_id", Value::Int(101)), ("author", text(author))]);
+        let rows = [row("Ada Quill"), row("Sam O'Neil")];
+        let rows: Vec<&RowDelete> = rows.iter().collect();
+        let run = Dialect::Postgres.delete_run(&authors, &rows).unwrap();
+        assert_eq!(
+            run.shown,
+            r#"DELETE FROM "public"."book_authors" WHERE ("book_id", "author") IN ((101, 'Ada Quill'), (101, 'Sam O''Neil'))"#
+        );
+        // Its parts: each column once, each value in the rows' order.
+        let parts = &run.parts;
+        assert!(run.shown[parts.filter..].starts_with("WHERE "));
+        assert_eq!(parts.columns.len(), 2);
+        assert!(run.shown[parts.columns[0]..].starts_with(r#""book_id""#));
+        assert!(run.shown[parts.columns[1]..].starts_with(r#""author""#));
+        let values: Vec<&str> = parts
+            .values
+            .iter()
+            .map(|at| &run.shown[at.clone()])
+            .collect();
+        assert_eq!(values, ["101", "'Ada Quill'", "101", "'Sam O''Neil'"]);
+        let run = Dialect::MySql.delete_run(&authors, &rows).unwrap();
+        assert_eq!(
+            run.sql.text,
+            "DELETE FROM `public`.`book_authors` WHERE (`book_id`, `author`) IN ((?, ?), (?, ?))"
+        );
+        assert_eq!(inlined(Dialect::MySql, &run.sql), run.shown);
+        let run = Dialect::Sqlite.delete_run(&authors, &rows).unwrap();
+        assert_eq!(
+            run.sql.text,
+            r#"DELETE FROM "public"."book_authors" WHERE ("book_id", "author") IN (VALUES (?, ?), (?, ?))"#
+        );
+        assert_eq!(inlined(Dialect::Sqlite, &run.sql), run.shown);
+    }
+
+    /// A run of rows whose keys differ, or of fewer than two, is no run.
+    #[test]
+    fn a_run_needs_two_rows_with_the_same_key_columns() {
+        let one = doomed(vec![("id", Value::Int(9))]);
+        let other = doomed(vec![("isbn", Value::Int(9))]);
+        let covers = covers("public");
+        assert!(Dialect::Postgres.delete_run(&covers, &[&one]).is_err());
+        assert!(
+            Dialect::Postgres
+                .delete_run(&covers, &[&one, &other])
+                .is_err()
+        );
+        // A row no save sends refuses the run it is in.
+        let lossy = doomed(vec![("id", text("a\u{FFFD}"))]);
+        let fine = doomed(vec![("id", text("a"))]);
+        assert!(
+            Dialect::Sqlite
+                .delete_run(&covers, &[&fine, &lossy])
+                .is_err()
+        );
+        assert!(Dialect::Sqlite.delete_run(&covers, &[&fine, &fine]).is_ok());
+        // Nor do a number and a text in one column make a run.
+        let number = doomed(vec![("id", Value::Int(9))]);
+        let words = doomed(vec![("id", text("18446744073709551615"))]);
+        assert!(
+            Dialect::MySql
+                .delete_run(&covers, &[&number, &words])
+                .is_err()
+        );
+    }
+
+    /// Spec 4, step 5: what each engine says when it was busy, not when a
+    /// row was wrong.
+    #[test]
+    fn each_engine_says_it_was_busy_in_its_own_codes() {
+        let coded = |code: &str, number: Option<u32>| Error::Query {
+            code: Some(code.into()),
+            message: "no".into(),
+            detail: None,
+            hint: None,
+            named: Box::new(crate::Named {
+                number,
+                constraint: None,
+                columns: Vec::new(),
+            }),
+        };
+        for code in ["40P01", "55P03", "40001"] {
+            assert!(Dialect::Postgres.busy(&coded(code, None)), "{code}");
+        }
+        assert!(!Dialect::Postgres.busy(&coded("23503", None)));
+        for number in [1205, 1213] {
+            assert!(
+                Dialect::MySql.busy(&coded("HY000", Some(number))),
+                "{number}"
+            );
+        }
+        assert!(!Dialect::MySql.busy(&coded("23000", Some(1451))));
+        // SQLite's code is the extended one: busy (5) and locked (6) under
+        // whatever stands above them.
+        for code in ["5", "6", "261", "517", "262"] {
+            assert!(Dialect::Sqlite.busy(&coded(code, None)), "{code}");
+        }
+        assert!(!Dialect::Sqlite.busy(&coded("787", None)));
+        assert!(!Dialect::Sqlite.busy(&coded("1811", None)));
+        assert!(!Dialect::Sqlite.busy(&Error::query("no")));
+    }
+
+    /// A key that may not be the row's deletes no row: it could be
+    /// another's.
+    #[test]
+    fn a_delete_is_refused_where_its_key_is_not_known_to_be_the_rows() {
+        let lossy = doomed(vec![("isbn", text("978\u{FFFD}"))]);
+        assert!(Dialect::Sqlite.delete_row(&books(), &lossy).is_err());
+        // The other engines read a key exactly.
+        assert!(Dialect::Postgres.delete_row(&books(), &lossy).is_ok());
+        assert!(Dialect::MySql.delete_row(&books(), &lossy).is_ok());
+        let nul = doomed(vec![("isbn", text("978\0"))]);
+        assert_eq!(
+            Dialect::Postgres.delete_row(&books(), &nul),
+            Err(Error::query("PostgreSQL text cannot hold a NUL character"))
+        );
     }
 
     /// The canvas' new row: a cover of the publisher Harbor Press.

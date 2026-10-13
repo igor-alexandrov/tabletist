@@ -846,6 +846,7 @@ fn a_page_loaded_again_after_a_save_says_so() {
         inserted: vec![None],
         rows: Vec::new(),
         elapsed: std::time::Duration::from_millis(5),
+        gone: Vec::new(),
     }));
     assert_eq!(fetches(&harness), before + 1, "the page is asked for again");
     harness.answer_rows(crate::testing::book_covers_page(4));
@@ -908,6 +909,7 @@ fn a_saved_row_can_be_shown_where_the_sort_puts_it() {
         ])],
         rows: Vec::new(),
         elapsed: std::time::Duration::from_millis(5),
+        gone: Vec::new(),
     }));
     harness.settle();
     assert!(harness.has("Show in sorted position"));

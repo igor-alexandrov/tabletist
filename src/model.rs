@@ -170,6 +170,15 @@ pub enum Action {
         column: String,
         value: String,
     },
+    /// Open a table filtered to the rows that hold each value of `by` in
+    /// its column: what following a key comes to, held while the table's
+    /// tab has changes to ask about. The rows that hold a row are found by
+    /// a key of any number of columns.
+    OpenFiltered {
+        tab: ConnTabId,
+        object: ObjectRef,
+        by: Vec<(String, String)>,
+    },
     RefreshTree(ConnTabId),
     OpenObject {
         tab: ConnTabId,
@@ -230,6 +239,31 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
         cell: CellPos,
+    },
+    /// Select the rows from the cursor's row, or from the range's anchor,
+    /// to `cell`'s row, and put the cursor on `cell`: Shift with a click.
+    /// With no cursor it selects the cell.
+    ExtendTo {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+    },
+    /// The same by rows from the cursor: Shift with an arrow.
+    ExtendBy {
+        tab: ConnTabId,
+        id: TabId,
+        rows: isize,
+    },
+    /// Start a visual selection of rows on the cursor's row, or leave the
+    /// one that is on: the terminal look's `V`.
+    SelectRows {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Leave a visual selection of rows. The cursor stays.
+    LeaveVisual {
+        tab: ConnTabId,
+        id: TabId,
     },
     /// Open the editor on a cell of a table's grid, or say why it cannot
     /// be edited.
@@ -475,6 +509,40 @@ pub enum Action {
     DropRow {
         tab: ConnTabId,
         id: TabId,
+    },
+    /// Delete the selected row: a new one is dropped with what was set in
+    /// it, a row of the page is marked for deletion, and one that is
+    /// marked is restored.
+    DeleteRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Delete the selected rows. One row is `DeleteRow`'s. Of several, the
+    /// unmarked are marked and the new ones dropped, or, where every one
+    /// is marked, all are restored (`edit::Table::sweep`).
+    DeleteSelected {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Delete the cursor's row and the rows after it, `count` in all, as
+    /// far as the grid goes, and put the cursor after them: the terminal
+    /// look's `{count}dd`.
+    DeleteCount {
+        tab: ConnTabId,
+        id: TabId,
+        count: u32,
+    },
+    /// Take the mark for deletion off the selected row.
+    RestoreRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Open the rows that hold the page's row `row`, whose delete a
+    /// foreign key refused: their table, filtered to them.
+    OpenHolders {
+        tab: ConnTabId,
+        id: TabId,
+        row: usize,
     },
     /// Put back a cell's loaded value: `cell`, or the active cell where
     /// none is named, as the keys ask.
@@ -1451,7 +1519,9 @@ pub struct WritePrompt {
     pub rows: usize,
     /// How many rows the save adds.
     pub added: usize,
-    /// What the Omarchy box's field holds: `write` confirms.
+    /// How many rows the save deletes.
+    pub deleted: usize,
+    /// What the Omarchy box's field holds: the database's name confirms.
     pub typed: String,
     pub focus: bool,
     /// What the statements are of: a save is sent only while the tab's
@@ -2006,6 +2076,34 @@ pub enum SaveBlock {
     Unsendable,
 }
 
+/// The rows selected with the cursor's: from `anchor` to the cursor's row,
+/// in the order the grid shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowRange {
+    /// A row as [`CellPos::row`] names it: of the page, or a new row.
+    pub anchor: usize,
+    /// Moves keep the range until it is left: the terminal look's visual
+    /// selection.
+    pub held: bool,
+}
+
+/// What becomes of the range when the cursor is set
+/// ([`ObjectTab::set_cursor`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// Shift with a click or an arrow: the range runs from its anchor, or
+    /// from the row the cursor was on, to the new row.
+    Extend,
+    /// A move by key: a held range follows, another ends.
+    Move,
+    /// Anything else ends it: a click, an editor that opens, a new row, a
+    /// page that goes.
+    End,
+    /// The rows under the cursor changed, not what is selected: a new row
+    /// was dropped.
+    Keep,
+}
+
 /// One open table or view.
 #[derive(Debug)]
 pub struct ObjectTab {
@@ -2019,6 +2117,9 @@ pub struct ObjectTab {
     pub rows: Fetch<RowPage>,
     pub structure: Fetch<Structure>,
     pub selection: Option<CellPos>,
+    /// The rows selected with the cursor's, where there are several.
+    /// Written with the cursor, by [`ObjectTab::set_cursor`].
+    pub range: Option<RowRange>,
     pub estimated_rows: Option<u64>,
     /// The exact row count for the current filters, when asked for.
     pub count: Fetch<u64>,
@@ -2151,6 +2252,91 @@ impl ObjectTab {
         }
     }
 
+    /// Puts the cursor on `cell`, or takes it away. The one place the
+    /// app's own code writes `selection`: what becomes of the range is
+    /// said here, by `reach`.
+    pub fn set_cursor(&mut self, cell: Option<CellPos>, reach: Reach) {
+        let was = self.selection;
+        self.selection = cell;
+        let Some(cell) = cell else {
+            self.range = None;
+            return;
+        };
+        let range = match reach {
+            Reach::Extend => self.range.or_else(|| {
+                was.map(|was| RowRange {
+                    anchor: was.row,
+                    held: false,
+                })
+            }),
+            Reach::Move => self.range.filter(|range| range.held),
+            Reach::End => None,
+            Reach::Keep => self.range,
+        };
+        // One row that is not held is no range.
+        self.range = range.filter(|range| range.held || range.anchor != cell.row);
+    }
+
+    /// The places of the grid the range covers, the first and the last,
+    /// where a range stands.
+    pub fn selected_span(&self) -> Option<(usize, usize)> {
+        let (cell, range) = (self.selection?, self.range?);
+        let height = self.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&self.edits.added, height);
+        let (from, to) = (order.place(range.anchor)?, order.place(cell.row)?);
+        Some((from.min(to), from.max(to)))
+    }
+
+    /// The selected rows, in the grid's order: the cursor's, and with a
+    /// range every row from its anchor to the cursor's.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        let Some(cell) = self.selection else {
+            return Vec::new();
+        };
+        let Some((first, last)) = self.selected_span() else {
+            return vec![cell.row];
+        };
+        let height = self.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&self.edits.added, height);
+        (first..=last)
+            .filter_map(|place| order.row(place))
+            .collect()
+    }
+
+    /// Whether a visual selection of rows is on: a range that moves keep.
+    pub fn visual(&self) -> bool {
+        self.range.is_some_and(|range| range.held)
+    }
+
+    /// Starts a visual selection of rows on the cursor's row, or leaves
+    /// the one that is on. A range that stands becomes it, from its
+    /// anchor. With no cursor there is none to start.
+    pub fn toggle_visual(&mut self) {
+        if self.visual() {
+            self.range = None;
+            return;
+        }
+        if let Some(cell) = self.selection {
+            let anchor = self.range.map_or(cell.row, |range| range.anchor);
+            self.range = Some(RowRange { anchor, held: true });
+        }
+    }
+
+    /// The cursor's row and the rows after it in the grid's order, `count`
+    /// in all, as far as the grid goes: what `{count}dd` names.
+    pub fn rows_from_cursor(&self, count: u32) -> Vec<usize> {
+        let Some(cell) = self.selection else {
+            return Vec::new();
+        };
+        let height = self.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&self.edits.added, height);
+        let Some(from) = order.place(cell.row) else {
+            return Vec::new();
+        };
+        let to = from.saturating_add(count as usize).min(order.len());
+        (from..to).filter_map(|place| order.row(place)).collect()
+    }
+
     pub fn new(
         id: TabId,
         object: ObjectRef,
@@ -2169,6 +2355,7 @@ impl ObjectTab {
             rows: Fetch::default(),
             structure: Fetch::default(),
             selection: None,
+            range: None,
             estimated_rows,
             count: Fetch::default(),
             filter: FilterBar::default(),
@@ -2199,6 +2386,8 @@ impl ObjectTab {
         ]
         .into_iter()
         .flatten()
+        // And the counts of what its deletes take with them.
+        .chain(self.edits.counts_out())
     }
 
     pub fn page(&self) -> Option<&RowPage> {
@@ -2211,7 +2400,7 @@ impl ObjectTab {
         if let Some(page) = self.page() {
             self.filter.columns = page.columns.iter().map(|c| c.name.clone()).collect();
         }
-        self.selection = None;
+        self.set_cursor(None, Reach::End);
         self.rows.value = None;
     }
 
@@ -2221,7 +2410,15 @@ impl ObjectTab {
             .selection
             .is_some_and(|cell| crate::edit::new_id(cell.row).is_some())
         {
-            self.selection = None;
+            self.set_cursor(None, Reach::End);
+        }
+        // A range that began on a new row, the cursor on a row of the
+        // page: the set that held its anchor was dropped.
+        if self
+            .range
+            .is_some_and(|range| crate::edit::new_id(range.anchor).is_some())
+        {
+            self.range = None;
         }
     }
 
@@ -3215,6 +3412,10 @@ impl Workspace {
                 crate::edit::DoubtState::Asked(_) => false,
                 crate::edit::DoubtState::Missing => true,
             });
+            // Nor will a count of what the tab's deletes take, or of who
+            // holds a row: the next review asks the first again.
+            object.edits.taken = None;
+            object.edits.holders.clear();
         }
         self.server_version = Fetch::default();
         // Fetches the old session will never answer, and names that may
@@ -3283,6 +3484,128 @@ impl std::fmt::Debug for PasswordPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Bookshop's covers, `rows` of them, as a tab holds them.
+    fn covers(rows: usize) -> ObjectTab {
+        let object = ObjectRef::new("main", "book_covers");
+        let mut tab = ObjectTab::new(TabId(1), object, ObjectKind::Table, true, 300, None);
+        tab.rows.value = Some(crate::testing::book_covers_page(rows));
+        tab
+    }
+
+    fn at(row: usize) -> Option<CellPos> {
+        Some(CellPos { row, col: 1 })
+    }
+
+    #[test]
+    fn an_extend_selects_the_rows_from_the_anchor_to_the_cursor() {
+        let mut tab = covers(5);
+        tab.set_cursor(at(1), Reach::End);
+        assert_eq!(tab.selected_rows(), [1]);
+        tab.set_cursor(at(3), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        // The anchor stays where the range began.
+        tab.set_cursor(at(0), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [0, 1]);
+        // Back on the anchor one row is selected, and no range stands.
+        tab.set_cursor(at(1), Reach::Extend);
+        assert_eq!((tab.selected_rows(), tab.range), (vec![1], None));
+    }
+
+    #[test]
+    fn with_no_cursor_an_extend_selects_one_row() {
+        let mut tab = covers(5);
+        tab.set_cursor(at(2), Reach::Extend);
+        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+    }
+
+    #[test]
+    fn a_move_ends_a_range_unless_it_is_held() {
+        let mut tab = covers(5);
+        tab.set_cursor(at(1), Reach::End);
+        tab.set_cursor(at(2), Reach::Extend);
+        tab.set_cursor(at(3), Reach::Move);
+        assert_eq!((tab.selected_rows(), tab.range), (vec![3], None));
+        // A held range follows the cursor, along the row too.
+        tab.range = Some(RowRange {
+            anchor: 3,
+            held: true,
+        });
+        tab.set_cursor(at(1), Reach::Move);
+        assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        tab.set_cursor(Some(CellPos { row: 1, col: 4 }), Reach::Move);
+        assert_eq!(tab.selected_rows(), [1, 2, 3]);
+        // On its anchor it is still a range: it is held.
+        tab.set_cursor(at(3), Reach::Move);
+        assert!(tab.range.is_some());
+        // Anything else ends it, and so does a cursor that goes.
+        tab.set_cursor(at(2), Reach::End);
+        assert_eq!(tab.range, None);
+        tab.set_cursor(at(1), Reach::Extend);
+        tab.set_cursor(None, Reach::Keep);
+        assert_eq!((tab.selected_rows(), tab.range), (Vec::new(), None));
+    }
+
+    #[test]
+    fn a_range_counts_a_new_row_where_it_stands() {
+        let mut tab = covers(3);
+        let new = tab.edits.add_row(crate::edit::Place::Below(0), 3);
+        tab.set_cursor(at(0), Reach::End);
+        tab.set_cursor(at(1), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [0, crate::edit::new_row(new), 1]);
+        assert_eq!(tab.selected_span(), Some((0, 2)));
+    }
+
+    #[test]
+    fn a_range_anchored_on_a_new_row_ends_when_the_new_rows_go() {
+        let mut tab = covers(3);
+        let new = crate::edit::new_row(tab.edits.add_row(crate::edit::Place::Below(0), 3));
+        tab.set_cursor(at(new), Reach::End);
+        tab.set_cursor(at(2), Reach::Extend);
+        assert_eq!(tab.selected_rows(), [new, 1, 2]);
+        tab.edits = crate::edit::Edits::default();
+        tab.off_new_rows();
+        assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+    }
+
+    #[test]
+    fn a_visual_selection_is_started_and_left_on_the_cursors_row() {
+        let mut tab = covers(5);
+        // With no cursor there is none to start.
+        tab.toggle_visual();
+        assert!(!tab.visual());
+        tab.set_cursor(at(2), Reach::End);
+        tab.toggle_visual();
+        assert!(tab.visual());
+        assert_eq!(tab.selected_rows(), [2]);
+        // Moves extend it, up and down.
+        tab.set_cursor(at(4), Reach::Move);
+        assert_eq!(tab.selected_rows(), [2, 3, 4]);
+        tab.set_cursor(at(0), Reach::Move);
+        assert_eq!(tab.selected_rows(), [0, 1, 2]);
+        tab.toggle_visual();
+        assert_eq!((tab.visual(), tab.selected_rows()), (false, vec![0]));
+        // A range made with Shift becomes the visual one, from its anchor.
+        tab.set_cursor(at(1), Reach::Extend);
+        tab.toggle_visual();
+        assert!(tab.visual());
+        tab.set_cursor(at(3), Reach::Move);
+        assert_eq!(tab.selected_rows(), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_count_names_the_cursors_row_and_the_rows_after_it() {
+        let mut tab = covers(5);
+        assert!(tab.rows_from_cursor(3).is_empty());
+        tab.set_cursor(at(1), Reach::End);
+        assert_eq!(tab.rows_from_cursor(1), [1]);
+        assert_eq!(tab.rows_from_cursor(3), [1, 2, 3]);
+        // It stops at the grid's last row.
+        assert_eq!(tab.rows_from_cursor(999_999), [1, 2, 3, 4]);
+        // A new row counts where it stands.
+        let new = crate::edit::new_row(tab.edits.add_row(crate::edit::Place::Below(1), 5));
+        assert_eq!(tab.rows_from_cursor(3), [1, new, 2]);
+    }
 
     fn info(name: &str, kind: ObjectKind) -> ObjectInfo {
         ObjectInfo {
@@ -4078,6 +4401,7 @@ mod tests {
             inserts: Vec::new(),
             started: std::time::Instant::now(),
             then: None,
+            deletes: Vec::new(),
         });
         assert_eq!(
             tab.pending(),

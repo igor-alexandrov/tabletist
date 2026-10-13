@@ -57,6 +57,7 @@ fn adding(schema: &str, table: &str, inserts: Vec<Vec<InsertValue>>) -> ChangeSe
         object: ObjectRef::new(schema, table),
         inserts: inserts.into_iter().map(|set| RowInsert { set }).collect(),
         rows: Vec::new(),
+        deletes: Vec::new(),
     }
 }
 

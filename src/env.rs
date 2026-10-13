@@ -249,6 +249,53 @@ pub fn new_row_colors(platform: Platform, palette: &Palette) -> NewRow {
     }
 }
 
+/// A row marked for deletion, in the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeletedRow {
+    /// Behind the row, for as long as it is marked.
+    pub fill: Color32,
+    /// The bar at its left.
+    pub bar: Color32,
+    /// What its values are written and struck through in.
+    pub text: Color32,
+    /// What its marker, the minus before its key, is written in.
+    pub marker: Color32,
+}
+
+/// The colours of a row marked for deletion on `platform` with `palette`.
+///
+/// Provisional: no board of the design draws such a row in the desktop
+/// looks. The light ones are the three its spec names from the design's
+/// own (`docs/superpowers/specs/2026-10-12-deleting-rows-design.md`): the
+/// fill of a field that failed, the production red, and the grey of what
+/// is disabled. In the dark, and in the terminal look, the palette's red
+/// is mixed into what the rows stand on, as a new row's green is. This is
+/// the one place to change when a board exists.
+pub fn deleted_row_colors(platform: Platform, palette: &Palette) -> DeletedRow {
+    let (base, _, text) = native_table(Environment::Production);
+    match platform {
+        Platform::Native if !palette.dark => DeletedRow {
+            fill: Color32::from_rgb(0xfd, 0xf6, 0xf5),
+            bar: base,
+            text: Color32::from_rgb(0x9a, 0x98, 0x92),
+            marker: text,
+        },
+        Platform::Native => DeletedRow {
+            fill: mix(palette.window, palette.danger, 0.10),
+            bar: palette.danger,
+            text: palette.faint,
+            marker: palette.danger,
+        },
+        // As a new row's green: 14% of the theme's red.
+        Platform::Omarchy => DeletedRow {
+            fill: mix(palette.panel, palette.danger, 0.14),
+            bar: palette.danger,
+            text: palette.dim,
+            marker: palette.danger,
+        },
+    }
+}
+
 /// The design's fixed colours: base, badge fill, badge text.
 fn native_table(env: Environment) -> (Color32, Color32, Color32) {
     let rgb = Color32::from_rgb;
@@ -363,6 +410,25 @@ mod tests {
     fn hex(value: u32) -> Color32 {
         let [_, r, g, b] = value.to_be_bytes();
         Color32::from_rgb(r, g, b)
+    }
+
+    /// The provisional style of a row marked for deletion: the spec's
+    /// three colours in the light, the palette's in the dark and in the
+    /// terminal look.
+    #[test]
+    fn a_deleted_rows_colours_are_the_specs_in_the_light() {
+        let light = deleted_row_colors(Platform::Native, &Palette::light());
+        assert_eq!(light.fill, hex(0xfdf6f5));
+        assert_eq!(light.bar, hex(0xc2261f));
+        assert_eq!(light.text, hex(0x9a9892));
+        let palette = Palette::dark();
+        let dark = deleted_row_colors(Platform::Native, &palette);
+        assert_eq!(dark.bar, palette.danger);
+        assert_eq!(dark.text, palette.faint);
+        assert_ne!(dark.fill, palette.window);
+        let terminal = deleted_row_colors(Platform::Omarchy, &palette);
+        assert_eq!(terminal.text, palette.dim);
+        assert_ne!(terminal.fill, palette.panel);
     }
 
     #[test]

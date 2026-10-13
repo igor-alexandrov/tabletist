@@ -12,12 +12,13 @@ use super::{
 };
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
-    not_stopped, same_row_twice, spelled_otherwise,
+    Applied, RELEASE, ROLLBACK_TO, SAVEPOINT, Stored, changed_since_loaded, conflicts_of,
+    deleted_instead, key_spelled_otherwise, more_than_one, named_twice, not_read_back, not_stopped,
+    read_by, same_row_twice, spelled_otherwise,
 };
 use crate::{
     ChangeSet, ColumnClass, ColumnMeta, Dialect, Error, InsertValue, NewValue, ObjectRef, Result,
-    RowChange, RowInsert, Sql, StopFlag, Value, WriteOutcome, column_class,
+    RowChange, RowDelete, RowInsert, Sql, StopFlag, Value, WriteOutcome, column_class, delete_runs,
 };
 
 /// One row's statements, built before anything is sent.
@@ -27,6 +28,13 @@ struct Statements {
     update: Sql,
     /// The row by its key again, after the updates.
     read_back: Sql,
+}
+
+/// The statements of one row to delete, built before anything is sent.
+struct Deletion {
+    /// The row by its key, locked.
+    lock: Sql,
+    delete: Sql,
 }
 
 /// Ends a transaction and starts no other, whatever the server's
@@ -63,9 +71,16 @@ impl Conn {
                 Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
             }
         }
-        // A save that changes no row reads none, and takes its table with
-        // a read of its own (see `hold`).
-        let hold = if changes.rows.is_empty() {
+        let mut deletes = Vec::with_capacity(changes.deletes.len());
+        for (delete, row) in changes.deletes.iter().enumerate() {
+            match build_delete(&changes.object, row) {
+                Ok(built) => deletes.push(built),
+                Err(error) => return Ok(WriteOutcome::FailedDelete { delete, error }),
+            }
+        }
+        // A save that changes and deletes no row reads none, and takes its
+        // table with a read of its own (see `hold`).
+        let hold = if changes.rows.is_empty() && changes.deletes.is_empty() {
             Some(hold(&changes.object)?)
         } else {
             None
@@ -73,6 +88,7 @@ impl Conn {
         let written = Written {
             statements: &statements,
             inserts: &inserts,
+            deletes: &deletes,
             hold: hold.as_ref(),
         };
         let mut conn = self.conn.lock().await;
@@ -195,8 +211,28 @@ fn build_insert(object: &ObjectRef, row: &RowInsert) -> Result<Sql> {
     Ok(sql)
 }
 
-/// A read that takes the table and no row of it. A save that changes rows
-/// holds its table from its first locking read on; one of new rows alone
+/// The statements of one row to delete, as the driver would send them as
+/// they stand (see [`build`]).
+fn build_delete(object: &ObjectRef, row: &RowDelete) -> Result<Deletion> {
+    let dialect = Dialect::MySql;
+    let deletion = Deletion {
+        lock: dialect.select_row(object, &row.key, true),
+        delete: dialect.delete_row(object, row)?.sql,
+    };
+    for sql in [&deletion.lock, &deletion.delete] {
+        if driver_parameter(&sql.text).is_err() {
+            return Err(Error::query(
+                "the MySQL driver would read part of a name as a parameter, so the save cannot \
+                 be sent",
+            ));
+        }
+    }
+    Ok(deletion)
+}
+
+/// A read that takes the table and no row of it. A save that changes or
+/// deletes rows holds its table from its first locking read on; one of new
+/// rows alone
 /// reads nothing before it asks for the table's engine, and without this
 /// someone could still change the engine, or the key, before the first
 /// `INSERT` (see the comment in [`apply`]). A locking read, so it takes no
@@ -225,6 +261,8 @@ struct Written<'a> {
     statements: &'a [Statements],
     /// The `INSERT` of each new row.
     inserts: &'a [Sql],
+    /// Of each row to delete.
+    deletes: &'a [Deletion],
     /// What takes the table, for a save that changes no row.
     hold: Option<&'a Sql>,
 }
@@ -589,10 +627,13 @@ fn inexact(type_name: &str) -> Option<&str> {
     matches!(name, "timestamp" | "bit" | "float").then_some(name)
 }
 
-/// A key column of `change` that cannot be matched exactly, and its type,
-/// among the row's `columns`.
-fn inexact_key<'a>(change: &'a RowChange, columns: &'a [ColumnMeta]) -> Option<(&'a str, &'a str)> {
-    change.key.iter().find_map(|(name, _)| {
+/// A column of `key` that cannot be matched exactly, and its type, among
+/// the row's `columns`.
+fn inexact_key<'a>(
+    key: &'a [(String, Value)],
+    columns: &'a [ColumnMeta],
+) -> Option<(&'a str, &'a str)> {
+    key.iter().find_map(|(name, _)| {
         let column = columns.iter().find(|column| column.name == *name)?;
         Some((name.as_str(), inexact(&column.type_name)?))
     })
@@ -642,6 +683,168 @@ async fn update(conn: &mut mysql_async::Conn, sql: &Sql, stop: &StopFlag) -> Res
     Ok(None)
 }
 
+/// Runs one row's `DELETE` and says how many rows it deleted: the table's
+/// own, without those a foreign key took with them. The inner `Err` is
+/// the statement's own failure, a foreign key that holds the row most
+/// often. The outer one is a cancel, a stop or a lost session. A warning
+/// fails no delete: an update fails on one because what was stored may
+/// not be what was typed, and a delete stores nothing.
+async fn delete(
+    conn: &mut mysql_async::Conn,
+    sql: &Sql,
+    stop: &StopFlag,
+) -> Result<std::result::Result<u64, Error>> {
+    let statement = match prepare(conn, sql, stop).await {
+        Ok(statement) => statement,
+        Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+        Err(error) => return Ok(Err(error)),
+    };
+    not_stopped(stop)?;
+    match conn
+        .exec_drop(&statement, params(&sql.params))
+        .await
+        .map_err(query_error)
+    {
+        Ok(()) => Ok(Ok(conn.affected_rows())),
+        Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => Err(error),
+        Err(error) => Ok(Err(error)),
+    }
+}
+
+/// Deletes one row of the save by its own statement. `Ok(Some(..))` is
+/// how the save ends where the row is not deleted; `Err` is a cancel, a
+/// stop or a lost session.
+async fn delete_one(
+    conn: &mut mysql_async::Conn,
+    deletion: &Deletion,
+    place: usize,
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    let deleted = match delete(conn, &deletion.delete, stop).await? {
+        Ok(deleted) => deleted,
+        Err(error) => {
+            return Ok(Some(Applied::FailedDelete {
+                delete: place,
+                error,
+            }));
+        }
+    };
+    // None: a row deleted before this one took it along (a key of the
+    // table that points at the table), which is what the save meant, or a
+    // trigger kept it, which is not. The row says which: its locking read
+    // once more.
+    if deleted == 0 && rows(conn, &deletion.lock, stop).await?.1.is_empty() {
+        return Ok(None);
+    }
+    Ok((deleted != 1).then(|| Applied::FailedDelete {
+        delete: place,
+        error: deleted_instead(deleted, 1),
+    }))
+}
+
+/// Deletes the rows `live` of the save (places among its deletes, each
+/// found by its read, two or more) in one statement. A run the server
+/// refuses is undone to the savepoint before it, and its rows go one at a
+/// time, so the error is its row's. The server checks a foreign key row
+/// by row: a run that holds a row and the row it points at is refused
+/// whole, and goes through one at a time, child first.
+async fn delete_many(
+    conn: &mut mysql_async::Conn,
+    changes: &ChangeSet,
+    deletes: &[Deletion],
+    live: &[usize],
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    let Some(&first) = live.first() else {
+        return Ok(None);
+    };
+    let keys: Vec<&RowDelete> = live
+        .iter()
+        .filter_map(|&place| changes.deletes.get(place))
+        .collect();
+    // Each row was built, so the run is: were it not, or were part of a
+    // name read as a parameter, the rows go as ever.
+    let run = Dialect::MySql
+        .delete_run(&changes.object, &keys)
+        .ok()
+        .map(|run| run.sql)
+        .filter(|sql| driver_parameter(&sql.text).is_ok());
+    // What the run's statement came to: how many rows it deleted, or
+    // `None` where its rows are to go one at a time (it is no run, or it
+    // was refused and undone).
+    let deleted = match &run {
+        None => None,
+        Some(sql) => {
+            not_stopped(stop)?;
+            execute(conn, SAVEPOINT).await?;
+            match delete(conn, sql, stop).await? {
+                Ok(deleted) => Some(deleted),
+                // Busy: not sent again row by row, since each row could
+                // wait as long. The save ends on the run's first row.
+                Err(error) if Dialect::MySql.busy(&error) => {
+                    return Ok(Some(Applied::FailedDelete {
+                        delete: first,
+                        error,
+                    }));
+                }
+                Err(error) => match execute(conn, ROLLBACK_TO).await {
+                    Ok(()) => None,
+                    Err(lost @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(lost),
+                    // No savepoint to come back to: the transaction is
+                    // gone, and a row sent now would be written for good.
+                    // The run's error ends the save.
+                    Err(_) => {
+                        return Ok(Some(Applied::FailedDelete {
+                            delete: first,
+                            error,
+                        }));
+                    }
+                },
+            }
+        }
+    };
+    let Some(deleted) = deleted else {
+        for &place in live {
+            let Some(deletion) = deletes.get(place) else {
+                continue;
+            };
+            let failed = delete_one(conn, deletion, place, stop).await?;
+            if failed.is_some() {
+                return Ok(failed);
+            }
+        }
+        if run.is_some() {
+            execute(conn, RELEASE).await?;
+        }
+        return Ok(None);
+    };
+    let meant = live.len() as u64;
+    if deleted > meant {
+        return Ok(Some(Applied::FailedDelete {
+            delete: first,
+            error: deleted_instead(deleted, live.len()),
+        }));
+    }
+    if deleted < meant {
+        // A row of the run that a delete of this save took along (a key
+        // of the table that points at the table) is what the save meant.
+        // One a trigger kept is not.
+        for &place in live {
+            let Some(deletion) = deletes.get(place) else {
+                continue;
+            };
+            if !rows(conn, &deletion.lock, stop).await?.1.is_empty() {
+                return Ok(Some(Applied::FailedDelete {
+                    delete: place,
+                    error: deleted_instead(0, 1),
+                }));
+            }
+        }
+    }
+    execute(conn, RELEASE).await?;
+    Ok(None)
+}
+
 /// The first warning of the statement that just ran, as its error.
 async fn warning(conn: &mut mysql_async::Conn) -> Result<Error> {
     let rows: Vec<mysql_async::Row> = conn.query("SHOW WARNINGS").await.map_err(query_error)?;
@@ -661,9 +864,10 @@ async fn warning(conn: &mut mysql_async::Conn) -> Result<Error> {
 }
 
 /// The steps of a save inside its transaction: lock and compare every row,
-/// update every row, read every row back. `Err` leaves the transaction to
-/// be rolled back like every other end but `Rows`, and a `stop` found
-/// before any of its statements is such an end.
+/// write the new rows, update every row, delete the rows to delete, read
+/// every changed row back. `Err` leaves the transaction to be rolled back
+/// like every other end but `Rows`, and a `stop` found before any of its
+/// statements is such an end.
 async fn apply(
     conn: &mut mysql_async::Conn,
     changes: &ChangeSet,
@@ -673,6 +877,7 @@ async fn apply(
     let Written {
         statements,
         inserts,
+        deletes,
         hold,
     } = written;
     // Every row is locked and compared before any is changed. The lock is
@@ -694,7 +899,7 @@ async fn apply(
         }
         // Known only now: a key comes without its columns' types, and the
         // read's answer is the first to carry them.
-        if let Some((name, type_name)) = inexact_key(change, &columns) {
+        if let Some((name, type_name)) = inexact_key(&change.key, &columns) {
             return Err(Error::query(format!(
                 "{name} is a {type_name} column, and a key of that type cannot be matched \
                  exactly, so the save cannot be sure which row it names"
@@ -713,9 +918,37 @@ async fn apply(
         }
         read.push(server);
     }
+    // The rows to delete are locked now too, while nothing is written.
+    // `None` is a row that is already gone. A key that cannot be matched
+    // exactly is an error here, never a row that is gone: it finds no row
+    // whether the row is there or not.
+    let mut doomed = Vec::with_capacity(deletes.len());
+    for (delete, deletion) in changes.deletes.iter().zip(deletes) {
+        let (columns, mut found) = rows(conn, &deletion.lock, stop).await?;
+        names = columns.iter().map(|column| column.name.clone()).collect();
+        if let Some(name) = key_spelled_otherwise(&delete.key, &names) {
+            return Err(Error::query(format!(
+                "the table spells {name} another way, so the save cannot be sure which column \
+                 it names"
+            )));
+        }
+        if let Some((name, type_name)) = inexact_key(&delete.key, &columns) {
+            return Err(Error::query(format!(
+                "{name} is a {type_name} column, and a key of that type cannot be matched \
+                 exactly, so the save cannot be sure which row it names"
+            )));
+        }
+        if found.len() > 1 {
+            return Err(more_than_one());
+        }
+        doomed.push(found.pop());
+    }
     // Before a conflict is answered too: a set that names a row twice is
     // not one to offer writing over what the server holds.
-    same_row_twice(&changes.rows, &names, &read)?;
+    {
+        let (keys, found) = read_by(changes, &read, &doomed);
+        same_row_twice(&keys, &names, &found)?;
+    }
     // Asked again now that the reads hold the table: its metadata lock
     // lasts until the transaction ends, so an `ALTER TABLE` waits, and the
     // engine found here is the engine the updates run on. Before the reads
@@ -761,13 +994,35 @@ async fn apply(
             return Ok(Applied::Failed { row, error });
         }
     }
+    // The rows to delete, last: the order a review shows them in, in runs
+    // of neighbours. One that was not there is said and not sent.
+    let mut gone = Vec::new();
+    // Every row's statements were built: the save does not begin otherwise.
+    let built = vec![true; changes.deletes.len()];
+    for run in delete_runs(&changes.deletes, &built) {
+        let found = |place: &usize| doomed.get(*place).is_some_and(Option::is_some);
+        let (live, missing): (Vec<usize>, Vec<usize>) = run.partition(found);
+        gone.extend(missing);
+        let failed = match live.as_slice() {
+            [] => None,
+            [place] => match deletes.get(*place) {
+                Some(deletion) => delete_one(conn, deletion, *place, stop).await?,
+                None => None,
+            },
+            _ => delete_many(conn, changes, deletes, &live, stop).await?,
+        };
+        if let Some(failed) = failed {
+            return Ok(failed);
+        }
+    }
     let mut saved = Vec::with_capacity(statements.len());
     for statement in statements {
         let (_, mut found) = rows(conn, &statement.read_back, stop).await?;
         // A change can give a second row the key (a trigger, a column the
         // database works out from another), or take it from the first.
         // Either way the row to hand back is no longer known, and the
-        // save is undone.
+        // save is undone. None can also be a row the save deleted taking
+        // this one with it.
         if found.len() > 1 {
             return Err(more_than_one());
         }
@@ -797,6 +1052,7 @@ async fn apply(
     Ok(Applied::Rows(Stored {
         inserted,
         rows: saved,
+        gone,
     }))
 }
 
@@ -928,15 +1184,15 @@ mod tests {
             column("ratio", "float unsigned"),
             column("name", "varchar"),
         ];
-        assert_eq!(inexact_key(&change(&["id"], &["name"]), &columns), None);
+        assert_eq!(inexact_key(&change(&["id"], &["name"]).key, &columns), None);
         // Only a key's column: a save may set one of such a type.
-        assert_eq!(inexact_key(&change(&["id"], &["at"]), &columns), None);
+        assert_eq!(inexact_key(&change(&["id"], &["at"]).key, &columns), None);
         assert_eq!(
-            inexact_key(&change(&["id", "at"], &["name"]), &columns),
+            inexact_key(&change(&["id", "at"], &["name"]).key, &columns),
             Some(("at", "timestamp"))
         );
         assert_eq!(
-            inexact_key(&change(&["ratio"], &["name"]), &columns),
+            inexact_key(&change(&["ratio"], &["name"]).key, &columns),
             Some(("ratio", "float"))
         );
     }
@@ -1029,6 +1285,7 @@ mod tests {
                     new: NewValue::Text(new.into()),
                 }],
             }],
+            deletes: Vec::new(),
         }
     }
 
@@ -1388,6 +1645,7 @@ mod tests {
                         new: NewValue::Text("after".into()),
                     }],
                 }],
+                deletes: Vec::new(),
             };
             let outcome = conn.write(&changes, &StopFlag::new()).await;
             assert!(

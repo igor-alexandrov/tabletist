@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::app::App;
-use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Unset};
+use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Told, Unset};
 use crate::i18n::{gettext, ngettext};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
@@ -61,6 +61,11 @@ fn selection_note(
     locale: crate::i18n::Locale,
 ) -> Option<String> {
     let cell = object.selection?;
+    // Several rows: how many, whatever kind each is.
+    let rows = object.selected_rows().len();
+    if rows > 1 {
+        return Some(format!("{rows} {}", gettext(locale, "rows selected")));
+    }
     let Some(id) = crate::edit::new_id(cell.row) else {
         return Some(gettext(locale, "1 row selected").into_owned());
     };
@@ -75,7 +80,8 @@ fn selection_note(
     Some(format!("{new} · {missing} {fields}"))
 }
 
-/// The parts of "13 rows · 6 columns · public", as far as it is known.
+/// The parts of "13 rows · 1 to delete · 6 columns · public", as far as
+/// it is known.
 fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec<String> {
     let mut parts = Vec::new();
     let page = object.page();
@@ -102,6 +108,11 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
         (Some(rows), Some(new)) => parts.push(format!("{rows} + {new}")),
         (Some(one), None) | (None, Some(one)) => parts.push(one),
         (None, None) => {}
+    }
+    // The rows to delete, beside them: "13 rows · 1 to delete".
+    let deleted = object.edits.deleted.len();
+    if deleted > 0 {
+        parts.push(format!("{deleted} {}", gettext(locale, "to delete")));
     }
     if let Some(page) = page {
         let count = page.columns.len();
@@ -1194,6 +1205,36 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
         .and_then(|workspace| workspace.object_tab(object_tab))
         .and_then(|object| {
             let page = object.page()?;
+            // A row whose delete failed has no cell to say it: the row,
+            // by its number, and the database's words.
+            let refused = object
+                .edits
+                .deleted
+                .iter()
+                .find_map(|(&row, doomed)| Some((row, doomed.failed.as_ref()?)));
+            if let Some((row, error)) = refused {
+                let number = object.query.offset + row as u64 + 1;
+                let failure = failure_text(error);
+                // Who holds the row, once it was counted.
+                let doomed = object.edits.deleted.get(&row);
+                let held = doomed
+                    .and_then(|doomed| doomed.holder.as_ref())
+                    .map(|holder| {
+                        let own = |words: &str| look.label(words);
+                        super::pending_bar::holder_said(holder, locale, own)
+                    });
+                // With the key that opens those rows.
+                let key = crate::ui::keys::written(
+                    ui.ctx(),
+                    &look,
+                    crate::keymap::Command::OpenReferencedRow,
+                );
+                let open = look.label(&gettext(locale, "open rows"));
+                return Some(match held {
+                    Some(held) => format!("! {number}:  {failure} · {held} · {key} {open}"),
+                    None => format!("! {number}:  {failure}"),
+                });
+            }
             // The set is in the page's order: by row, then by column.
             let (&(row, col), pending) = object
                 .edits
@@ -1320,6 +1361,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // What editing asks of the workspace and the tab together, read before
     // the tab is taken for its editor's text.
     let computed = computed_columns(workspace, object);
+    // A deleted row's minus stands where the row's key begins.
+    let delete_marker = crate::edit::Table::of(workspace, object)
+        .and_then(|table| table.key())
+        .and_then(|key| key.into_iter().min());
     let (unset, lacking) = new_row_columns(workspace, object);
     let target = object.edits.editor.as_ref().and_then(|editor| {
         let how = (hold, &editor_keys);
@@ -1334,6 +1379,62 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         let holds = matches!(&pending.new, NewValue::Text(text) if *text == picked.key);
         let column = object.rows.value.as_ref()?.columns.get(picked.at.1)?;
         holds.then(|| key_picker::picked_text(&column.name, picked, locale))
+    });
+    // The last row that was marked for deletion or restored, or what the
+    // last save deleted: said to a screen reader.
+    let told = match (&object.edits.told, &object.edits.saved) {
+        (Some(Told::Marked { row, deleted }), _) => Some(format!(
+            "{} {row} {} {deleted} {}",
+            gettext(locale, "Row"),
+            gettext(locale, "marked for deletion."),
+            gettext(locale, "to delete.")
+        )),
+        (Some(Told::Restored { row }), _) => Some(format!(
+            "{} {row} {}",
+            gettext(locale, "Row"),
+            gettext(locale, "restored.")
+        )),
+        (
+            Some(Told::MarkedRows {
+                marked,
+                skipped,
+                dropped,
+                deleted,
+            }),
+            _,
+        ) => {
+            let mut parts = Vec::new();
+            if *marked > 0 {
+                parts.push(super::pending_bar::marked_text(*marked, *skipped, locale));
+                parts.push(format!("{deleted} {}", gettext(locale, "to delete.")));
+            }
+            if *dropped > 0 {
+                let rows = super::pending_bar::counted(
+                    locale,
+                    *dropped,
+                    "new row dropped",
+                    "new rows dropped",
+                );
+                parts.push(format!("{rows}."));
+            }
+            Some(parts.join(" "))
+        }
+        (Some(Told::RestoredRows { restored }), _) => Some(format!(
+            "{}.",
+            super::pending_bar::counted(locale, *restored, "row restored", "rows restored")
+        )),
+        (None, Some(saved)) if saved.deleted > 0 => Some(format!(
+            "{}.",
+            super::pending_bar::counted(locale, saved.deleted, "row deleted", "rows deleted")
+        )),
+        (None, _) => None,
+    };
+    // A visual selection of rows, and how many it holds: said when it
+    // starts and each time it grows or shrinks.
+    let visual = (look.terminal && object.visual()).then(|| {
+        let rows = object.selected_rows().len();
+        let held = super::pending_bar::counted(locale, rows, "row selected", "rows selected");
+        format!("{} {held}.", gettext(locale, "Visual."))
     });
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
@@ -1407,9 +1508,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             object.edits.saving.is_some(),
             object.edits.saved.as_ref(),
             &object.edits.gone,
+            &object.edits.deleted,
             computed,
             &ctx,
         );
+        changes.delete_marker = delete_marker;
         let undo = crate::keymap::Command::UndoCell;
         changes.undo_key = crate::ui::keys::written(&ctx, &look, undo);
         changes.doubts = doubts;
@@ -1438,6 +1541,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         // among them. A place is the grid's; a row is the set's and the
         // page's, and the reducer's.
         let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
+        // The rows selected with the cursor's, as places of the grid. Read
+        // here, before the tab is taken for its editor's text.
+        let span = object.selected_span();
+        let ranged =
+            |place: usize| span.is_some_and(|(first, last)| (first..=last).contains(&place));
         let placed = |cell: CellPos| {
             let row = order.place(cell.row)?;
             Some(CellPos { row, col: cell.col })
@@ -1504,11 +1612,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                             _ => RowMark::New,
                         },
                         number: None,
+                        deleted: false,
+                        ranged: ranged(place),
                     },
-                    None => grid::Row {
-                        mark: crate::edit::row_mark(changes.cells, row),
-                        number: Some(object.query.offset + row as u64 + 1),
-                    },
+                    None => {
+                        let doomed = object.edits.deleted.get(&row);
+                        grid::Row {
+                            mark: match doomed {
+                                Some(doomed) if doomed.failed.is_some() => RowMark::Trouble,
+                                Some(_) => RowMark::Deleted,
+                                None => crate::edit::row_mark(changes.cells, row),
+                            },
+                            number: Some(object.query.offset + row as u64 + 1),
+                            deleted: doomed.is_some(),
+                            ranged: ranged(place),
+                        }
+                    }
                 },
                 None => grid::Row::default(),
             },
@@ -1544,6 +1663,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             // On a point of the grid: a larger node would take the pointer
             // from the cells under it.
             let at = Rect::from_min_size(ui.max_rect().min, vec2(1.0, 1.0));
+            widgets::announce_polite(ui, at, words);
+        }
+        if let Some(words) = &told {
+            // On a point of its own: two live nodes do not share one.
+            let at = Rect::from_min_size(ui.max_rect().min + vec2(2.0, 0.0), vec2(1.0, 1.0));
+            widgets::announce_polite(ui, at, words);
+        }
+        if let Some(words) = &visual {
+            // On a point of its own, as the others are.
+            let at = Rect::from_min_size(ui.max_rect().min + vec2(4.0, 0.0), vec2(1.0, 1.0));
             widgets::announce_polite(ui, at, words);
         }
         // A foreign key cell's list, under the cell its field is on. A
@@ -1621,7 +1750,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             });
         }
         if let Some(cell) = output.clicked.and_then(held) {
-            actions.push(Action::SelectCell { tab, id, cell });
+            // With Shift held the click takes the rows up to its own into
+            // the selection.
+            actions.push(if output.shift {
+                Action::ExtendTo { tab, id, cell }
+            } else {
+                Action::SelectCell { tab, id, cell }
+            });
         }
         // A second click edits the cell.
         if let Some(cell) = output.double_clicked.and_then(held) {
@@ -1702,6 +1837,11 @@ struct Changes<'a> {
     saved: &'a [CellPos],
     /// The page's rows a save found gone from the server.
     gone: &'a BTreeSet<usize>,
+    /// The page's rows marked for deletion.
+    deleted: &'a BTreeMap<usize, crate::edit::Doomed>,
+    /// The column a deleted row's minus stands in, in the desktop looks:
+    /// the first of the row's key.
+    delete_marker: Option<usize>,
     /// The cell that was asked for and cannot be edited, and why.
     why: Option<(CellPos, String)>,
     /// What each column holds in a new row nothing is set in, by the
@@ -1894,6 +2034,7 @@ impl<'a> Changes<'a> {
         saving: bool,
         saved: Option<&'a crate::edit::Saved>,
         gone: &'a BTreeSet<usize>,
+        deleted: &'a BTreeMap<usize, crate::edit::Doomed>,
         computed: Vec<bool>,
         ctx: &egui::Context,
     ) -> Self {
@@ -1909,6 +2050,8 @@ impl<'a> Changes<'a> {
             saving,
             saved: saved.unwrap_or_default(),
             gone,
+            deleted,
+            delete_marker: None,
             why: None,
             unset: Vec::new(),
             marker: None,
@@ -1948,6 +2091,37 @@ impl<'a> Changes<'a> {
         // nothing here walks it.
         if self.gone.contains(&row) {
             cell.mark = Mark::Gone;
+            return;
+        }
+        // A row marked for deletion is that and nothing else. Every value
+        // is plain text, so one way of striking it through serves every
+        // column: a NULL is its word, a tag and a chip their text.
+        if let Some(doomed) = self.deleted.get(&row) {
+            if cell.null {
+                cell.text = "NULL".into();
+            }
+            cell.null = false;
+            cell.slanted = false;
+            // What the database said of a delete it refused, under the
+            // pointer on any of the row's cells.
+            cell.hint = doomed.failed.as_ref().map(|error| {
+                let failure = failure_text(error);
+                match &doomed.holder {
+                    Some(holder) => {
+                        let own = |words: &str| look.label(words);
+                        let held = super::pending_bar::holder_said(holder, locale, own);
+                        format!("{failure} · {held}")
+                    }
+                    None => failure,
+                }
+            });
+            cell.style = grid::Style::Plain;
+            let marker = !look.terminal && self.delete_marker == Some(col);
+            cell.mark = if marker {
+                Mark::Deleting
+            } else {
+                Mark::Deleted
+            };
             return;
         }
         let Some(pending) = self.cells.get(&at) else {
@@ -2580,7 +2754,8 @@ mod tests {
         let ctx = egui::Context::default();
         let words = "No book with id 999";
         for saving in [false, true] {
-            let mut changes = Changes::of(&cells, saving, None, &gone, Vec::new(), &ctx);
+            let none = BTreeMap::new();
+            let mut changes = Changes::of(&cells, saving, None, &gone, &none, Vec::new(), &ctx);
             changes.doubts = BTreeMap::from([(at, words.to_owned())]);
             let look = Look::macos();
             let locale = crate::i18n::Locale::default();

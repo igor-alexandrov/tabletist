@@ -28,6 +28,8 @@ pub struct Harness {
     pub text_rects: Vec<(String, egui::Rect)>,
     /// Every piece of text the last frame painted slanted.
     pub slanted: Vec<String>,
+    /// Every piece of text the last frame painted struck through.
+    pub struck: Vec<String>,
     /// Every rectangle, circle and outline the last frame filled, and where.
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
@@ -172,12 +174,14 @@ impl Harness {
         self.painted.clear();
         self.text_rects.clear();
         self.slanted.clear();
+        self.struck.clear();
         self.fills.clear();
         self.strokes.clear();
         self.outlines.clear();
         for clipped in &output.shapes {
             collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
             collect_slanted(&clipped.shape, &mut self.slanted);
+            collect_struck(&clipped.shape, &mut self.struck);
             collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
             collect_outlines(&clipped.shape, &mut self.outlines);
         }
@@ -245,6 +249,31 @@ impl Harness {
                 data: None,
             },
         )]);
+        self.settle();
+    }
+
+    /// Clicks the row labelled `label` with Shift held, by the pointer: a
+    /// click through AccessKit carries no modifier. The frame is told of
+    /// Shift as a window tells it, before the pointer moves.
+    pub fn shift_click(&mut self, label: &str) {
+        let tree = self.settle();
+        let row = bounds(&tree, label, Role::Button)
+            .unwrap_or_else(|| panic!("no row labelled {label:?}: {:?}", labels(&tree)));
+        let pos = row.left_center() + egui::vec2(40.0, 0.0);
+        let shift = egui::Modifiers::SHIFT;
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: shift,
+        };
+        self.frame(vec![
+            egui::Event::ModifiersChanged(shift),
+            egui::Event::PointerMoved(pos),
+        ]);
+        self.frame(vec![press(true)]);
+        self.frame(vec![press(false)]);
+        self.frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)]);
         self.settle();
     }
 
@@ -323,6 +352,27 @@ fn collect_slanted(shape: &egui::Shape, into: &mut Vec<String>) {
             let sections = &text.galley.job.sections;
             if !sections.is_empty() && sections.iter().all(|section| section.format.italics) {
                 into.push(text.galley.text().to_owned());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The pieces of `shape`'s texts that are written struck through: each
+/// run of a text that is, without what stands beside it unstruck.
+fn collect_struck(shape: &egui::Shape, into: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_struck(shape, into)),
+        egui::Shape::Text(text) => {
+            let job = &text.galley.job;
+            for section in &job.sections {
+                if section.format.strikethrough != egui::Stroke::NONE
+                    && let Some(piece) = job
+                        .text
+                        .get(section.byte_range.start.0..section.byte_range.end.0)
+                {
+                    into.push(piece.to_owned());
+                }
             }
         }
         _ => {}
@@ -767,10 +817,48 @@ pub fn publishers_structure() -> tabletist_db::Structure {
         type_name: type_name.into(),
         ..ColumnInfo::default()
     };
+    // The keys that point at the table: `book_covers` loses its covers
+    // with a publisher, `books` is cleared of it, and `book_reviews`
+    // holds it.
+    let key = |table: &str, on_delete: &str| tabletist_db::ReferencingKey {
+        name: Some(format!("{table}_publisher_id_fkey")),
+        schema: "main".into(),
+        table: table.into(),
+        columns: vec!["publisher_id".into()],
+        ref_columns: vec!["id".into()],
+        on_delete: on_delete.into(),
+    };
     tabletist_db::Structure {
         columns: vec![column("id", "INTEGER"), column("name", "TEXT")],
         primary_key: vec!["id".into()],
+        referenced_by: vec![
+            key("book_covers", "CASCADE"),
+            key("books", "SET NULL"),
+            key("book_reviews", "NO ACTION"),
+        ],
         ..tabletist_db::Structure::default()
+    }
+}
+
+/// A page of `publishers`: the three of [`PUBLISHERS`].
+pub fn publishers_page() -> RowPage {
+    let meta = |name: &str, type_name: &str, kind: ValueKind| ColumnMeta {
+        name: name.into(),
+        type_name: type_name.into(),
+        kind,
+    };
+    RowPage {
+        columns: vec![
+            meta("id", "INTEGER", ValueKind::Numeric),
+            meta("name", "TEXT", ValueKind::Text),
+        ],
+        rows: PUBLISHERS
+            .iter()
+            .map(|(id, name)| vec![Value::Int(*id), Value::Text((*name).into())])
+            .collect(),
+        has_more: false,
+        ordered_by_key: true,
+        elapsed: std::time::Duration::from_millis(2),
     }
 }
 
@@ -813,6 +901,16 @@ pub fn genres_structure() -> tabletist_db::Structure {
             ref_table: "genres".into(),
             ref_columns: vec!["id".into()],
             ..tabletist_db::ForeignKeyInfo::default()
+        }],
+        // The same key, seen from the row it points at: it holds a genre
+        // that has genres under it.
+        referenced_by: vec![tabletist_db::ReferencingKey {
+            name: None,
+            schema: "main".into(),
+            table: "genres".into(),
+            columns: vec!["parent_id".into()],
+            ref_columns: vec!["id".into()],
+            on_delete: "NO ACTION".into(),
         }],
         ..tabletist_db::Structure::default()
     }
@@ -1378,6 +1476,7 @@ impl Harness {
             painted: Vec::new(),
             text_rects: Vec::new(),
             slanted: Vec::new(),
+            struck: Vec::new(),
             fills: Vec::new(),
             strokes: Vec::new(),
             outlines: Vec::new(),

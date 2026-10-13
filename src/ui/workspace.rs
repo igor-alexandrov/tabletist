@@ -1575,6 +1575,8 @@ struct Editing {
     can_edit: bool,
     /// Insert mode: the column being edited and its type.
     insert: Option<String>,
+    /// A visual selection of rows is on, with this many rows.
+    visual: Option<usize>,
     /// Where Tab moves on to: the next cell from an editor on a cell, the
     /// next field from one in the row panel. Nowhere from the large
     /// editor, in either place: Tab is its text's own.
@@ -1602,6 +1604,10 @@ struct Editing {
     added: Option<String>,
     /// `o` would add a row.
     can_add: bool,
+    /// The rows to delete, while there are any: "-1 to delete".
+    deleted: Option<String>,
+    /// `dd` would delete the row under the cursor, drop it or restore it.
+    can_delete: bool,
     /// The cells to fix and the ones a save failed on: "1 error".
     errors: Option<String>,
     /// What the tab's new rows still need, for insert mode, which has no
@@ -1682,8 +1688,16 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         )
     });
     let added = (counts.added > 0).then(|| format!("+{} {}", counts.added, say("new")));
+    let deleted = (counts.deleted > 0).then(|| format!("-{} {}", counts.deleted, say("to delete")));
+    let can_delete = data
+        && object.selection.is_some_and(|cell| {
+            crate::edit::Table::of(workspace, object)
+                .is_some_and(|table| table.no_delete(cell.row).is_none())
+        });
     let can_add = data
         && crate::edit::Table::of(workspace, object).is_some_and(|table| table.no_rows().is_none());
+    // The rows of a visual selection, while one is on and the rows show.
+    let visual = (data && object.visual()).then(|| object.selected_rows().len());
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
     // What a new row still needs, by its column: said while a value is
@@ -1790,6 +1804,21 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
                 )),
                 color: back,
             },
+            // The banner says that everything rolled back: the tail says
+            // what is left on screen.
+            Note::FailedDelete { .. } => Said {
+                mark: Some((FAILED, states::Tone::Danger)),
+                text,
+                tail: Some(say("the row stays marked").into_owned()),
+                color: back,
+            },
+            // Of a save that wrote.
+            Note::AlreadyDeleted(_) => Said {
+                mark: Some((WROTE, states::Tone::Success)),
+                text,
+                tail: None,
+                color: back,
+            },
             _ => Said {
                 mark: Some((FAILED, states::Tone::Danger)),
                 text,
@@ -1876,6 +1905,9 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         pending,
         added,
         can_add,
+        deleted,
+        can_delete,
+        visual,
         errors,
         needs,
         said,
@@ -1917,6 +1949,7 @@ fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let mut right = rect.right() - 12.0;
             for (text, tone) in [
                 (&editing.errors, states::Tone::Danger),
+                (&editing.deleted, states::Tone::Danger),
                 (&editing.pending, states::Tone::Warning),
                 (&editing.added, states::Tone::Success),
             ] {
@@ -1992,6 +2025,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
     let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
+    let (visual_delete_key, leave_visual_key) =
+        (key(Command::DeleteSelection), key(Command::LeaveVisual));
     // The keys of a foreign key's list, while one is open under the field.
     let pick_keys = app
         .keymap
@@ -2108,6 +2143,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if editing.can_add {
                 table_hints.push((&add_key, &*new_row, true));
             }
+            // The row under the cursor is deleted, where it can be.
+            let delete = gettext(locale, "delete");
+            if editing.can_delete {
+                table_hints.push((&delete_key, &*delete, true));
+            }
             table_hints.extend([
                 (&filter_key, "filter", true),
                 (&sidebar_key, "tables", true),
@@ -2121,7 +2161,9 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // And the one that shows what a save would run, while there is
             // anything to show.
             let review = gettext(locale, "review");
-            if editing.pending.is_some() || editing.added.is_some() {
+            let reviewed =
+                editing.pending.is_some() || editing.added.is_some() || editing.deleted.is_some();
+            if reviewed {
                 table_hints.push((&review_key, &*review, true));
             }
             // An editor's keys: a table's do nothing on it.
@@ -2212,12 +2254,14 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // What is pending is never dropped for width: everything else
             // on the line gives way to it.
             // The new rows stand with the pending changes, before them.
-            let pending_room = room(&editing.added) + room(&editing.pending);
+            let pending_room =
+                room(&editing.added) + room(&editing.pending) + room(&editing.deleted);
             let errors_room = room(&editing.errors);
             let counts = |ui: &egui::Ui, mut x: f32| {
                 for (text, tone) in [
                     (&editing.added, states::Tone::Success),
                     (&editing.pending, states::Tone::Warning),
+                    (&editing.deleted, states::Tone::Danger),
                     (&editing.errors, states::Tone::Danger),
                 ] {
                     if let Some(text) = text {
@@ -2227,6 +2271,49 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 x
             };
+            if let Some(rows) = editing.visual {
+                // A visual selection of rows: the mode, how many rows it
+                // holds and the counts. Its keys, at the right, give way.
+                let mode = gettext(locale, "-- VISUAL --");
+                let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.magenta);
+                let held = crate::ui::pending_bar::counted(locale, rows, "row", "rows");
+                let deletes = gettext(locale, "delete");
+                let normal = gettext(locale, "normal");
+                let keys = || {
+                    Text::new(&look)
+                        .add(role, &visual_delete_key, palette.text)
+                        .space(role, " ")
+                        .add(role, &deletes, palette.dim)
+                        .add(role, " · ", palette.dim)
+                        .add(role, &leave_visual_key, palette.text)
+                        .space(role, " ")
+                        .add(role, &normal, palette.dim)
+                };
+                let right = rect.right() - 12.0;
+                let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
+                let text = Text::one(&look, role, &held, palette.secondary);
+                x += widgets::paint_label(ui, x, y, text) + gap;
+                x = counts(ui, x);
+                if let Some(said) = &editing.said {
+                    // What the line has to say, in place of the keys: why
+                    // the selection's delete was refused, most of all. The
+                    // selection stays on then, and this look has no toast
+                    // but the line.
+                    let room = (right - x).max(0.0);
+                    let shown = crate::ui::grid::ellipsize(&said.text, room, false, measure);
+                    let text = Text::one(&look, role, &shown, said.color);
+                    let width = widgets::paint_text_right(ui, right, y, text);
+                    // The whole of it for a screen reader, cut or not.
+                    let place = Rect::from_min_size(
+                        pos2(right - width, y - 8.0),
+                        vec2(width.max(1.0), 16.0),
+                    );
+                    widgets::announce(ui, place, &said.text);
+                } else if x + widgets::measure(ui, keys()) <= right {
+                    widgets::paint_text_right(ui, right, y, keys());
+                }
+                return;
+            }
             if let Some(column) = &editing.insert {
                 // Insert mode. The keys at the right give way first, then
                 // the column: the mode and the counts stay.
@@ -2427,19 +2514,23 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if !editing.can_add {
                 disabled.push(format!("{add_key} new row"));
             }
-            disabled.push(format!("{delete_key} delete"));
+            if !editing.can_delete {
+                disabled.push(format!("{delete_key} delete"));
+            }
             if read_only {
                 disabled.push(format!("{save_key} write"));
             }
+            // None where the table takes every key: nothing is struck.
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
-                + 14.0 * (disabled.len() - 1) as f32;
+                + 14.0 * disabled.len().saturating_sub(1) as f32;
             let mut x = left;
             let shown = fit(limit);
             if shown > 0 {
                 x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
             }
             let separator = measure("│");
-            if shown == hints.len() && x + separator + gap + disabled_width <= limit {
+            let struck = !disabled.is_empty();
+            if struck && shown == hints.len() && x + separator + gap + disabled_width <= limit {
                 x += widgets::paint_text(ui, x, y, Text::one(&look, role, "│", palette.outline))
                     + gap;
                 // Editing's keys, struck through at half strength.

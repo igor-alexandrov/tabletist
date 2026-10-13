@@ -19,10 +19,12 @@ const MAY: [&str; 2] = ["src/keymap.rs", "src/typography/fonts.rs"];
 
 /// The files that are tests and nothing else, or scenes for screenshots: a
 /// test says what the user presses and sees, in its own words.
-const TESTS: [&str; 8] = [
+const TESTS: [&str; 10] = [
     "src/testing.rs",
     "src/shots.rs",
     "src/ui/complete_tests.rs",
+    "src/ui/delete_many_tests.rs",
+    "src/ui/delete_tests.rs",
     "src/ui/duplicate_tests.rs",
     "src/ui/env_tests.rs",
     "src/ui/insert_audit_tests.rs",

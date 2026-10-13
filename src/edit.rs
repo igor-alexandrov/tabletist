@@ -3,13 +3,13 @@
 //! is decided from the page and the structure alone; the reducer
 //! (`app.rs`, `app/editing.rs`) owns every transition.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, InsertValue,
-    NewValue, ObjectKind, ObjectRef, RowChange, RowInsert, RowPage, Structure, Value, column_class,
-    temporal,
+    Access, Acts, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, Filter,
+    FilterOp, InsertValue, NewValue, ObjectKind, ObjectRef, ReferencingKey, RowChange, RowDelete,
+    RowInsert, RowPage, RowQuery, Structure, Value, column_class, temporal,
 };
 
 use crate::backend::RequestId;
@@ -41,6 +41,8 @@ pub enum Lock {
     NoSuchCell,
     /// A save found the row gone from the server.
     Gone,
+    /// The row is marked for deletion: it is restored before it is edited.
+    Deleting,
     /// The row's key holds a NULL.
     KeyIsNull,
     /// The row's key holds text that may not have been read exactly.
@@ -62,6 +64,47 @@ pub enum Lock {
     NotNull,
 }
 
+impl Lock {
+    /// Whether the reason holds for every row of the table, and not for
+    /// one row by what it holds.
+    pub fn of_table(self) -> bool {
+        matches!(
+            self,
+            Self::ReadOnly
+                | Self::NotATable
+                | Self::StructureLoading
+                | Self::NoKey
+                | Self::KeyType
+                | Self::Saving
+                | Self::Refreshing
+        )
+    }
+}
+
+/// How many rows one action marks for deletion, at most.
+pub const MAX_ROWS_DELETED: usize = 1_000;
+
+/// What a delete of several rows comes to ([`Table::sweep`]). Rows are as
+/// [`CellPos::row`] names them, in the order they were given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sweep {
+    /// More rows than one action takes.
+    TooMany,
+    /// None is deleted: no row of the table can be now, or none of these.
+    Refused(Lock),
+    /// The page's rows to mark and the new rows to drop. `skipped` rows
+    /// cannot be deleted on their own account.
+    Mark {
+        rows: Vec<usize>,
+        new: Vec<usize>,
+        skipped: usize,
+    },
+    /// Every row that can be deleted is marked already: they are restored.
+    Restore { rows: Vec<usize> },
+    /// Only new rows: they are dropped.
+    Drop { new: Vec<usize> },
+}
+
 /// A table's page as editing sees it.
 #[derive(Clone, Copy)]
 pub struct Table<'a> {
@@ -77,6 +120,8 @@ pub struct Table<'a> {
     pub gone: &'a BTreeSet<usize>,
     /// The rows to add (`Edits::added`).
     pub added: &'a [NewRow],
+    /// The page's rows marked for deletion (`Edits::deleted`).
+    pub deleted: &'a BTreeMap<usize, Doomed>,
 }
 
 impl<'a> Table<'a> {
@@ -95,6 +140,7 @@ impl<'a> Table<'a> {
             saving: object.edits.saving.is_some(),
             gone: &object.edits.gone,
             added: &object.edits.added,
+            deleted: &object.edits.deleted,
         })
     }
 }
@@ -171,6 +217,10 @@ impl Table<'_> {
         // longer there.
         if self.gone.contains(&row) {
             return Some(Lock::Gone);
+        }
+        // After a row that is gone: such a row cannot be marked.
+        if self.deleted.contains_key(&row) {
+            return Some(Lock::Deleting);
         }
         // A row narrower than the page has no key to read.
         let held = |col: &usize| values.get(*col);
@@ -275,6 +325,65 @@ impl Table<'_> {
             return Some(Lock::Refreshing);
         }
         None
+    }
+
+    /// Why the page's row `row` cannot be deleted, or `None` when it can:
+    /// what keeps it from being edited, for the whole table, for a while,
+    /// or by its own key. A row that is marked can be asked again, which
+    /// restores it. A new row is dropped, not deleted, and has no reason.
+    pub fn no_delete(&self, row: usize) -> Option<Lock> {
+        if new_id(row).is_some() {
+            return None;
+        }
+        self.row_lock(row).filter(|lock| *lock != Lock::Deleting)
+    }
+
+    /// What deleting `rows` in one action comes to: the selected rows, as
+    /// the grid orders them. A press marks when any of them is unmarked,
+    /// and restores only when all are marked.
+    pub fn sweep(&self, rows: &[usize]) -> Sweep {
+        if rows.len() > MAX_ROWS_DELETED {
+            return Sweep::TooMany;
+        }
+        // Under a save nothing is marked, restored or dropped: its answer
+        // names the rows it sent.
+        if self.saving {
+            return Sweep::Refused(Lock::Saving);
+        }
+        let (new, saved): (Vec<usize>, Vec<usize>) =
+            rows.iter().partition(|row| new_id(**row).is_some());
+        let mut free = Vec::with_capacity(saved.len());
+        let mut skipped = 0;
+        let mut why = None;
+        for row in saved {
+            match self.no_delete(row) {
+                None => free.push(row),
+                Some(lock) if lock.of_table() => return Sweep::Refused(lock),
+                Some(lock) => {
+                    skipped += 1;
+                    why.get_or_insert(lock);
+                }
+            }
+        }
+        let unmarked: Vec<usize> = free
+            .iter()
+            .copied()
+            .filter(|row| !self.deleted.contains_key(row))
+            .collect();
+        if !unmarked.is_empty() {
+            return Sweep::Mark {
+                rows: unmarked,
+                new,
+                skipped,
+            };
+        }
+        if !free.is_empty() {
+            return Sweep::Restore { rows: free };
+        }
+        if !new.is_empty() {
+            return Sweep::Drop { new };
+        }
+        Sweep::Refused(why.unwrap_or(Lock::NoSuchCell))
     }
 
     /// Why the column `col` takes no value in a new row, or `None` when it
@@ -1370,6 +1479,20 @@ pub struct Edits {
     /// rows to edit until the page is loaded again, and nothing of the
     /// user's: they do not hold the page.
     pub gone: BTreeSet<usize>,
+    /// The page's rows marked for deletion. A marked row has no cell in
+    /// `cells` and no doubt in `doubts`: `mark` takes them out and keeps
+    /// them with the mark, and `restore` puts them back.
+    pub deleted: BTreeMap<usize, Doomed>,
+    /// The last row that was marked or restored, for a screen reader to
+    /// be told.
+    pub told: Option<Told>,
+    /// What the marked rows' deletes take with them in other tables, once
+    /// a review asked. `None` until one does, and again when the marks
+    /// change.
+    pub taken: Option<Taken>,
+    /// The counts out for a row whose delete was refused: the request,
+    /// the page's row, and who would hold it.
+    pub holders: Vec<(RequestId, usize, Holder)>,
     /// Review SQL is open: the drawer on macOS and Windows, the terminal
     /// look's `:diff` panel.
     pub reviewing: bool,
@@ -1393,6 +1516,409 @@ pub struct Picked {
     pub label: Option<String>,
 }
 
+/// A row of the page that is marked for deletion. No `Debug`: it holds
+/// what the user typed.
+#[derive(Default)]
+pub struct Doomed {
+    /// What its `DELETE` failed with in the last save.
+    pub failed: Option<Error>,
+    /// Who holds the row, where its delete was refused by a foreign key
+    /// and the rows that point at it were counted. It goes with the
+    /// error it explains.
+    pub holder: Option<Holder>,
+    /// The row's pending cells as they stood when it was marked, by
+    /// column: kept for its restoring, and no part of the set until then.
+    cells: Vec<(usize, Pending)>,
+    /// The warnings that stood on those cells: the answered ones. A
+    /// question that was still out is asked again when the row is
+    /// restored.
+    doubts: Vec<(usize, Doubt)>,
+}
+
+/// No row is marked: for a table that is looked at without its tab's set.
+#[cfg(test)]
+pub static NONE_DELETED: BTreeMap<usize, Doomed> = BTreeMap::new();
+
+/// What a screen reader is told of the last row that was marked for
+/// deletion or restored. The row by its key (`id 9`), as the row panel's
+/// title names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Told {
+    /// With how many rows are marked now.
+    Marked {
+        row: String,
+        deleted: usize,
+    },
+    Restored {
+        row: String,
+    },
+    /// Several rows in one action: how many were marked, how many of the
+    /// rows named cannot be deleted, how many new rows were dropped with
+    /// them, and how many rows are marked now.
+    MarkedRows {
+        marked: usize,
+        skipped: usize,
+        dropped: usize,
+        deleted: usize,
+    },
+    RestoredRows {
+        restored: usize,
+    },
+}
+
+/// What a save's deletes do in a table whose foreign key points at the
+/// rows: its name as it is shown, and how many of its rows, once counted.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Effect {
+    /// `ON DELETE CASCADE`: the rows go with the deleted ones.
+    Deletes { table: String, rows: Option<u64> },
+    /// `ON DELETE SET NULL`: `columns` are cleared in them.
+    Clears {
+        table: String,
+        columns: Vec<String>,
+        rows: Option<u64>,
+    },
+}
+
+/// What a tab's deletes take with them in other tables, as far as it was
+/// counted. Dropped when the marks change.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Taken {
+    /// One for each key that acts, in the structure's order. `rows` is
+    /// `None` until every count of the key is in, and where one failed.
+    pub effects: Vec<Effect>,
+    /// The counts still out: the request, and the effect it is of.
+    pub pending: Vec<(RequestId, usize)>,
+    /// What was counted for each effect so far.
+    counted: Vec<u64>,
+    /// The effects one of whose counts failed.
+    failed: Vec<usize>,
+    /// How many of the rows each effect's counts find are the save's own
+    /// deletes: taken off what the effect is said to take.
+    own: Vec<u64>,
+}
+
+impl Taken {
+    /// What is waited for: `asked` are the effects with the requests sent
+    /// for each, and how many of the rows they will find the save deletes
+    /// itself ([`taken_by`]). An effect with no request is one nothing can
+    /// count: it stays without a number.
+    pub fn asked(asked: Vec<(Effect, Vec<RequestId>, u64)>) -> Self {
+        let mut taken = Self::default();
+        for (place, (effect, requests, own)) in asked.into_iter().enumerate() {
+            taken.effects.push(effect);
+            taken.counted.push(0);
+            taken.own.push(own);
+            if requests.is_empty() {
+                taken.failed.push(place);
+            }
+            taken
+                .pending
+                .extend(requests.into_iter().map(|request| (request, place)));
+        }
+        taken
+    }
+
+    /// Takes the answer of `request`: how many rows, or `None` where the
+    /// count failed. Says whether the request was one of these.
+    pub fn answer(&mut self, request: RequestId, rows: Option<u64>) -> bool {
+        let Some(at) = self.pending.iter().position(|(asked, _)| *asked == request) else {
+            return false;
+        };
+        let (_, place) = self.pending.remove(at);
+        match rows {
+            Some(rows) => {
+                if let Some(counted) = self.counted.get_mut(place) {
+                    *counted += rows;
+                }
+            }
+            None => self.failed.push(place),
+        }
+        // Said once the last count of the key is in.
+        let waits = self.pending.iter().any(|(_, of)| *of == place);
+        // Without the rows the save deletes itself: the key takes those
+        // nowhere.
+        let own = self.own.get(place).copied().unwrap_or(0);
+        let total = (!waits && !self.failed.contains(&place))
+            .then(|| self.counted.get(place).copied())
+            .flatten()
+            .map(|counted| counted.saturating_sub(own));
+        if let Some(effect) = self.effects.get_mut(place) {
+            match effect {
+                Effect::Deletes { rows, .. } | Effect::Clears { rows, .. } => *rows = total,
+            }
+        }
+        true
+    }
+
+    /// The lines a review shows: every effect but one that was counted
+    /// and takes nothing.
+    pub fn lines(&self) -> Vec<Effect> {
+        let takes = |effect: &&Effect| {
+            !matches!(
+                effect,
+                Effect::Deletes { rows: Some(0), .. } | Effect::Clears { rows: Some(0), .. }
+            )
+        };
+        self.effects.iter().filter(takes).cloned().collect()
+    }
+}
+
+/// Whether `schema`.`table`, as the catalog names the table of a foreign
+/// key, is `object`, as `dialect` matches names. A key that names no
+/// schema names a table of the object's own.
+pub fn names_table(dialect: Dialect, schema: &str, table: &str, object: &ObjectRef) -> bool {
+    let same = |a: &str, b: &str| match dialect {
+        // Names are matched as they are spelled: `genres` and `"Genres"`
+        // are two tables.
+        Dialect::Postgres => a == b,
+        // Whether the server tells names apart by case is a setting of
+        // its own (`lower_case_table_names`). Where it does not, it keeps
+        // the table a key points at folded and a table's own name as it
+        // was written, so the two spellings of one table can differ, and
+        // no two tables differ by case alone. Where it does, a table's
+        // key to itself spells both alike. So case is not looked at: what
+        // that gets wrong is two tables that differ by case alone, one
+        // pointing at the other, on a server that tells them apart.
+        Dialect::MySql => a.eq_ignore_ascii_case(b),
+        // A name is matched without regard to ASCII case.
+        Dialect::Sqlite => a.eq_ignore_ascii_case(b),
+    };
+    (schema.is_empty() || same(schema, &object.schema)) && same(table, &object.name)
+}
+
+/// What to count for the rows of `table` (`object`) that are marked for
+/// deletion: each key that points at the table and acts on a delete, as
+/// the effect it has, with the counts that say how many rows it reaches,
+/// and how many of those rows the save deletes itself. Empty where
+/// nothing is marked or no such key is known.
+///
+/// The last is for a key of the table that points at the table: a marked
+/// row under a marked row is one of the save's own deletes, sent before
+/// the row it points at, and the key takes it nowhere. The count finds it
+/// all the same.
+pub fn taken_by(object: &ObjectRef, table: &Table<'_>) -> Vec<(Effect, Vec<RowQuery>, u64)> {
+    let rows: Vec<usize> = table.deleted.keys().copied().collect();
+    let Some(structure) = table.structure.filter(|_| !rows.is_empty()) else {
+        return Vec::new();
+    };
+    let shown = |name: &String| crate::ui::format::display_safe(name).into_owned();
+    structure
+        .referenced_by
+        .iter()
+        .filter_map(|key| {
+            let effect = match key.acts()? {
+                Acts::Deletes => Effect::Deletes {
+                    table: shown(&key.table),
+                    rows: None,
+                },
+                Acts::Clears => Effect::Clears {
+                    table: shown(&key.table),
+                    columns: key.columns.iter().map(shown).collect(),
+                    rows: None,
+                },
+            };
+            // No row can point at a NULL: such a key takes nothing, and
+            // has no line.
+            let own = names_table(table.dialect, &key.schema, &key.table, object);
+            let own = if own { own_among(table, key, &rows) } else { 0 };
+            match pointing_at(table, key, &rows) {
+                Some(queries) if queries.is_empty() => None,
+                Some(queries) => Some((effect, queries, own)),
+                // The page does not hold what the key points at: said
+                // without a number.
+                None => Some((effect, Vec::new(), own)),
+            }
+        })
+        .collect()
+}
+
+/// How many of the page's `rows` point, by `key`, at one of them: where
+/// `key` is the table's own, rows the save deletes itself. None where the
+/// page does not hold the key's columns: nothing is taken off then.
+fn own_among(table: &Table<'_>, key: &ReferencingKey, rows: &[usize]) -> u64 {
+    let place = |name: &String| {
+        let mut columns = table.page.columns.iter();
+        columns.position(|column| column.name == *name)
+    };
+    let from: Option<Vec<usize>> = key.columns.iter().map(place).collect();
+    let to: Option<Vec<usize>> = key.ref_columns.iter().map(place).collect();
+    let (Some(from), Some(to)) = (from, to) else {
+        return 0;
+    };
+    if from.is_empty() || from.len() != to.len() {
+        return 0;
+    }
+    let pointed_at: HashSet<Vec<KeyPart<'_>>> = rows
+        .iter()
+        .filter_map(|&row| key_parts(table.page, row, &to))
+        .collect();
+    let points = |row: &&usize| {
+        key_parts(table.page, **row, &from).is_some_and(|values| pointed_at.contains(&values))
+    };
+    rows.iter().filter(points).count() as u64
+}
+
+/// The rows of another table that still point at a row whose delete a
+/// foreign key refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holder {
+    /// The table that has the key, and the key's columns.
+    pub table: ObjectRef,
+    pub columns: Vec<String>,
+    /// The row's values those columns hold, as a filter reads them.
+    pub values: Vec<String>,
+    /// How many rows hold them.
+    pub rows: u64,
+}
+
+/// Whether `error` is a foreign key's refusal of a delete, as `dialect`
+/// says one.
+pub fn is_held(dialect: Dialect, error: &Error) -> bool {
+    let Error::Query {
+        code,
+        message,
+        named,
+        ..
+    } = error
+    else {
+        return false;
+    };
+    let code = code.as_deref();
+    match dialect {
+        // 23001 is `RESTRICT`'s own from version 18 on; before it, and
+        // for `NO ACTION`, 23503.
+        Dialect::Postgres => matches!(code, Some("23503" | "23001")),
+        // Its state, 23000, is other failures' too: the number says it.
+        Dialect::MySql => named.number == Some(1451),
+        // `NO ACTION` is SQLITE_CONSTRAINT_FOREIGNKEY. `RESTRICT` is
+        // raised as a trigger's failure, SQLITE_CONSTRAINT_TRIGGER, which
+        // is every trigger's: told from the others by SQLite's own words,
+        // which no setting translates.
+        Dialect::Sqlite => {
+            code == Some("787")
+                || (code == Some("1811") && message == "FOREIGN KEY constraint failed")
+        }
+    }
+}
+
+/// What to count to learn who holds the page's row `row`, whose delete
+/// failed with `error`: for each key that could be the one, who would be
+/// held (`rows` not counted yet) and the count. The key the error names,
+/// where it names one. Else every key that holds.
+pub fn held_by(table: &Table<'_>, row: usize, error: &Error) -> Vec<(Holder, RowQuery)> {
+    let Some(structure) = table.structure.filter(|_| is_held(table.dialect, error)) else {
+        return Vec::new();
+    };
+    let named = match error {
+        Error::Query { named, .. } => named.constraint.as_deref(),
+        _ => None,
+    };
+    structure
+        .referenced_by
+        .iter()
+        .filter(|key| match named {
+            Some(name) => key.name.as_deref() == Some(name),
+            None => key.holds(),
+        })
+        .filter_map(|key| {
+            let mut queries = pointing_at(table, key, &[row])?;
+            let query = queries.pop().filter(|_| queries.is_empty())?;
+            let values = query.filters.iter().map(|filter| filter.value.clone());
+            let holder = Holder {
+                table: query.object.clone(),
+                columns: key.columns.clone(),
+                values: values.collect(),
+                rows: 0,
+            };
+            Some((holder, query))
+        })
+        .collect()
+}
+
+/// How many values one count's `IN` lists, at most. More are counted in
+/// parts and added: the rows that point at different rows are different
+/// rows.
+const MAX_IN_VALUES: usize = 1_000;
+
+/// How many counts one key is asked, at most, where it is counted once
+/// for each marked row. Above it the key's line stands without a number.
+const MAX_ROW_COUNTS: usize = 100;
+
+/// The counts of the rows of `key`'s table that point at the page's
+/// `rows`: one where the key is one column ([`MAX_IN_VALUES`] values to a
+/// count), one for each row where it is several, since the app's filters
+/// are ANDed. `None` where the page does not hold what the key points at,
+/// and where a key counted row by row would take more than
+/// [`MAX_ROW_COUNTS`] counts; no count where every row holds a NULL
+/// there, which no row points at.
+fn pointing_at(table: &Table<'_>, key: &ReferencingKey, rows: &[usize]) -> Option<Vec<RowQuery>> {
+    let object = ObjectRef::new(key.schema.clone(), key.table.clone());
+    let places: Option<Vec<usize>> = key
+        .ref_columns
+        .iter()
+        .map(|name| {
+            let mut columns = table.page.columns.iter();
+            columns.position(|column| column.name == *name)
+        })
+        .collect();
+    let places = places.filter(|places| !places.is_empty() && places.len() == key.columns.len())?;
+    // Each marked row's values of the columns the key points at, as a
+    // filter reads them. A row with a NULL there is pointed at by none.
+    let values: Vec<Vec<String>> = rows
+        .iter()
+        .filter_map(|&row| {
+            let held = table.page.rows.get(row)?;
+            places
+                .iter()
+                .map(|&col| held.get(col).filter(|value| !value.is_null()))
+                .map(|value| value.map(crate::ui::format::plain_text))
+                .collect::<Option<Vec<String>>>()
+        })
+        .collect();
+    let filter = |column: &String, op: FilterOp, value: String| Filter {
+        column: column.clone(),
+        op,
+        value,
+    };
+    let count = |filters: Vec<Filter>| {
+        let mut query = RowQuery::new(object.clone(), 1);
+        query.filters = filters;
+        query
+    };
+    // What the filter's `IN` reads back as it is: it splits at commas,
+    // trims each value and drops an empty one.
+    let listable = |row: &Vec<String>| {
+        row.first().is_some_and(|value| {
+            !value.is_empty() && !value.contains(',') && value.trim() == value.as_str()
+        })
+    };
+    Some(match key.columns.as_slice() {
+        // One column and values `IN` can list: one count for each
+        // thousand of them.
+        [column] if values.len() > 1 && values.iter().all(listable) => values
+            .chunks(MAX_IN_VALUES)
+            .map(|part| {
+                let list: Vec<&str> = part.iter().flatten().map(String::as_str).collect();
+                count(vec![filter(column, FilterOp::In, list.join(","))])
+            })
+            .collect(),
+        // A count for each row: too many to ask for.
+        _ if values.len() > MAX_ROW_COUNTS => return None,
+        columns => values
+            .into_iter()
+            .map(|row| {
+                let filters = columns.iter().zip(row);
+                count(
+                    filters
+                        .map(|(column, value)| filter(column, FilterOp::Eq, value))
+                        .collect(),
+                )
+            })
+            .collect(),
+    })
+}
+
 /// How much is pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {
@@ -1402,6 +1928,8 @@ pub struct Counts {
     pub failed: usize,
     /// The new rows.
     pub added: usize,
+    /// The rows to delete.
+    pub deleted: usize,
 }
 
 /// What a row's cells come to, for its mark.
@@ -1414,6 +1942,8 @@ pub enum RowMark {
     New,
     /// One of its cells is to fix or failed.
     Trouble,
+    /// A row of the page that is marked for deletion.
+    Deleted,
 }
 
 impl Edits {
@@ -1422,14 +1952,15 @@ impl Edits {
     pub fn holds(&self) -> bool {
         !self.cells.is_empty()
             || !self.added.is_empty()
+            || !self.deleted.is_empty()
             || self.editor.is_some()
             || self.saving.is_some()
     }
 
-    /// Whether anything waits for a save: a changed cell, or a new row.
-    /// An open editor alone is not that yet.
+    /// Whether anything waits for a save: a changed cell, a new row, or a
+    /// row to delete. An open editor alone is not that yet.
     pub fn pending(&self) -> bool {
-        !self.cells.is_empty() || !self.added.is_empty()
+        !self.cells.is_empty() || !self.added.is_empty() || !self.deleted.is_empty()
     }
 
     /// Drops what is pending, the open editor and what the last save left.
@@ -1444,6 +1975,7 @@ impl Edits {
     pub fn counts(&self) -> Counts {
         let mut counts = Counts {
             added: self.added.len(),
+            deleted: self.deleted.len(),
             ..Counts::default()
         };
         let mut last = None;
@@ -1467,6 +1999,12 @@ impl Edits {
             .added
             .iter()
             .filter(|new| new.failed.is_some() && self.unset_all(new.id))
+            .count();
+        // A row whose `DELETE` failed has no cell to say so.
+        counts.failed += self
+            .deleted
+            .values()
+            .filter(|doomed| doomed.failed.is_some())
             .count();
         counts
     }
@@ -1560,6 +2098,120 @@ impl Edits {
         true
     }
 
+    /// The counts that are out for this tab: of what its deletes take
+    /// with them. They are the tab's reads, as its page's is.
+    pub fn counts_out(&self) -> Vec<RequestId> {
+        let taken = self.taken.iter().flat_map(|taken| &taken.pending);
+        let holders = self.holders.iter().map(|(request, ..)| *request);
+        taken.map(|(request, _)| *request).chain(holders).collect()
+    }
+
+    /// Marks the page's row `row` for deletion. What was made of the set,
+    /// its review, is stale. Says whether the row was not marked before.
+    pub fn mark(&mut self, row: usize) -> bool {
+        if self.deleted.contains_key(&row) {
+            return false;
+        }
+        // The row's own changes go with the mark: they are not the set's
+        // while the row is to be deleted.
+        let cols: Vec<usize> = self
+            .cells
+            .range((row, 0)..=(row, usize::MAX))
+            .map(|(&(_, col), _)| col)
+            .collect();
+        let cells = cols
+            .into_iter()
+            .filter_map(|col| Some((col, self.cells.remove(&(row, col))?)))
+            .collect();
+        let doubted: Vec<usize> = self
+            .doubts
+            .range((row, 0)..=(row, usize::MAX))
+            .map(|(&(_, col), _)| col)
+            .collect();
+        // Only a warning that stands is kept. A question that is still
+        // out goes: its answer would look for it among the set's doubts
+        // and find none, and nothing would answer it once it was put
+        // back. The row's restoring asks again.
+        let doubts = doubted
+            .into_iter()
+            .filter_map(|col| Some((col, self.doubts.remove(&(row, col))?)))
+            .filter(|(_, doubt)| match doubt.state {
+                DoubtState::Missing => true,
+                DoubtState::Asked(_) => false,
+            })
+            .collect();
+        let doomed = Doomed {
+            failed: None,
+            holder: None,
+            cells,
+            doubts,
+        };
+        self.deleted.insert(row, doomed);
+        // No editor stays open on a row that is not edited, and what was
+        // refused of it is no longer the reason.
+        let edited = self.editor.as_ref().map(|editor| editor.cell.row);
+        if edited == Some(row) {
+            self.editor = None;
+        }
+        if self.why.is_some_and(|(cell, _)| cell.row == row) {
+            self.why = None;
+        }
+        self.review = None;
+        // The counts were of the rows that were marked.
+        self.taken = None;
+        true
+    }
+
+    /// Takes the mark off the page's row `row`: its cells are the set's
+    /// again. Says whether the row was marked.
+    pub fn restore(&mut self, row: usize) -> bool {
+        let Some(doomed) = self.deleted.remove(&row) else {
+            return false;
+        };
+        for (col, pending) in doomed.cells {
+            self.cells.insert((row, col), pending);
+        }
+        for (col, doubt) in doomed.doubts {
+            self.doubts.insert((row, col), doubt);
+        }
+        self.holders.retain(|(_, of, _)| *of != row);
+        if self.why.is_some_and(|(cell, _)| cell.row == row) {
+            self.why = None;
+        }
+        self.review = None;
+        // The counts were of the rows that were marked.
+        self.taken = None;
+        true
+    }
+
+    /// The `DELETE` of the page's row `row` failed with `error`: the row
+    /// says so until it is restored or the next save sends it again. With
+    /// no such row the save is refused with the error.
+    pub fn fail_delete(&mut self, row: Option<usize>, error: Error) {
+        let Some((row, doomed)) =
+            row.and_then(|row| self.deleted.get_mut(&row).map(|doomed| (row, doomed)))
+        else {
+            self.note = Some(Note::Refused(error));
+            return;
+        };
+        doomed.failed = Some(error.clone());
+        // Who held the row was of the refusal before this one.
+        doomed.holder = None;
+        self.note = Some(Note::FailedDelete { row, error });
+    }
+
+    /// A save is sent: what the last one said of a row to delete is no
+    /// longer what stands against it. The answer says it again where it
+    /// still holds.
+    pub fn resend_deletes(&mut self) {
+        for doomed in self.deleted.values_mut() {
+            doomed.failed = None;
+            doomed.holder = None;
+        }
+        // Nor is a count of who held one of them waited for.
+        self.holders.clear();
+    }
+
     /// A value of the new row whose cells are under `row` changed: it is
     /// no longer the row the last save failed on.
     fn mended(&mut self, row: usize) {
@@ -1606,7 +2258,11 @@ impl Edits {
     }
 
     pub fn row_mark(&self, row: usize) -> RowMark {
-        row_mark(&self.cells, row)
+        match self.deleted.get(&row) {
+            Some(doomed) if doomed.failed.is_some() => RowMark::Trouble,
+            Some(_) => RowMark::Deleted,
+            None => row_mark(&self.cells, row),
+        }
     }
 
     /// Makes `pending` the new value of the cell at `at` (row, column).
@@ -1652,9 +2308,10 @@ impl std::fmt::Debug for Edits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Edits {{ cells: {}, added: {}, editor: {:?}, why: {:?}, saving: {}, gone: {:?} }}",
+            "Edits {{ cells: {}, added: {}, deleted: {}, editor: {:?}, why: {:?}, saving: {}, gone: {:?} }}",
             self.cells.len(),
             self.added.len(),
+            self.deleted.len(),
             self.editor.as_ref().map(|editor| editor.cell),
             self.why,
             self.saving.is_some(),
@@ -1672,6 +2329,8 @@ pub struct Saving {
     pub rows: Vec<usize>,
     /// The id of the new row of each of the set's inserts, in its order.
     pub inserts: Vec<usize>,
+    /// The page's row of each of the set's deletes, in its order.
+    pub deletes: Vec<usize>,
     pub started: Instant,
     /// What to do once everything is written.
     pub then: Option<crate::model::Held>,
@@ -1689,6 +2348,8 @@ pub struct Saved {
     pub rows: usize,
     /// How many rows it added.
     pub added: usize,
+    /// How many rows it deleted.
+    pub deleted: usize,
     pub elapsed: Duration,
 }
 
@@ -1709,7 +2370,8 @@ pub fn answers_taken(shown: Instant) -> bool {
     Instant::now().saturating_duration_since(shown) >= ANSWER_AFTER
 }
 
-/// What a save came to when it wrote nothing. The view words it.
+/// What a save came to when it wrote nothing, or what it has to say
+/// beside what it wrote. The view words it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Note {
     /// The page's row `row` changed on the server, or is `gone`; `others`
@@ -1724,6 +2386,11 @@ pub enum Note {
     /// The `INSERT` of a new row failed. The row says so itself: it has no
     /// place in the page to be named by.
     FailedInsert { error: Error },
+    /// The `DELETE` of the page's row `row` failed.
+    FailedDelete { row: usize, error: Error },
+    /// The save wrote, and found these rows already deleted: each by its
+    /// key (`id 9`), named before the save took them out of the page.
+    AlreadyDeleted(Vec<String>),
     /// What was written is not known: the connection was lost while
     /// saving, or the answer is about a row the save did not send.
     Lost,
@@ -2040,6 +2707,131 @@ pub fn shown_lines(
         .collect()
 }
 
+/// The page's rows marked for deletion, in the order a save deletes them:
+/// a row before the row it points at, where a foreign key of the table
+/// points at the table itself (`object`). A key that holds would refuse
+/// the parent while its child is there, though the save deletes both.
+/// Rows that point at each other in a circle, and rows nothing orders,
+/// keep the page's order.
+fn delete_order(object: &ObjectRef, table: &Table<'_>) -> Vec<usize> {
+    let marked: Vec<usize> = table.deleted.keys().copied().collect();
+    let own: Vec<(Vec<usize>, Vec<usize>)> = table
+        .structure
+        .map(|structure| structure.foreign_keys.as_slice())
+        .unwrap_or_default()
+        .iter()
+        // The table's own keys, as its engine matches names: a key that
+        // names another schema's table is not one of them.
+        .filter(|key| names_table(table.dialect, &key.ref_schema, &key.ref_table, object))
+        .filter_map(|key| {
+            let place = |name: &String| {
+                let mut columns = table.page.columns.iter();
+                columns.position(|column| column.name == *name)
+            };
+            let from: Option<Vec<usize>> = key.columns.iter().map(place).collect();
+            let to: Option<Vec<usize>> = key.ref_columns.iter().map(place).collect();
+            let (from, to) = (from?, to?);
+            (!from.is_empty() && from.len() == to.len()).then_some((from, to))
+        })
+        .collect();
+    if own.is_empty() || marked.len() < 2 {
+        return marked;
+    }
+    let parts = |row: usize, cols: &[usize]| key_parts(table.page, row, cols);
+    // The graph, made once. The marked rows by what each of the table's
+    // own keys points at in them: a row is found by the values a child
+    // holds, not by trying every pair.
+    let mut pointed_at: HashMap<(usize, Vec<KeyPart<'_>>), Vec<usize>> = HashMap::new();
+    for (index, &row) in marked.iter().enumerate() {
+        for (key, (_, to)) in own.iter().enumerate() {
+            if let Some(values) = parts(row, to) {
+                pointed_at.entry((key, values)).or_default().push(index);
+            }
+        }
+    }
+    // The rows each row points at, once each and never itself, and how
+    // many rows still waiting point at each row.
+    let mut parents: Vec<Vec<usize>> = Vec::with_capacity(marked.len());
+    let mut children = vec![0_usize; marked.len()];
+    for (index, &row) in marked.iter().enumerate() {
+        let mut found: Vec<usize> = own
+            .iter()
+            .enumerate()
+            .filter_map(|(key, (from, _))| pointed_at.get(&(key, parts(row, from)?)))
+            .flatten()
+            .copied()
+            .filter(|parent| *parent != index)
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        for &parent in &found {
+            children[parent] += 1;
+        }
+        parents.push(found);
+    }
+    // A row is taken once no row still waiting points at it, pass by
+    // pass, each pass in the page's order.
+    let mut order = Vec::with_capacity(marked.len());
+    let mut taken = vec![false; marked.len()];
+    let mut free: Vec<usize> = (0..marked.len())
+        .filter(|&index| children[index] == 0)
+        .collect();
+    while !free.is_empty() {
+        let mut next = Vec::new();
+        for &index in &free {
+            taken[index] = true;
+            order.push(marked[index]);
+            for &parent in &parents[index] {
+                children[parent] -= 1;
+                if children[parent] == 0 {
+                    next.push(parent);
+                }
+            }
+        }
+        next.sort_unstable();
+        free = next;
+    }
+    // What is left points in a circle, or is pointed at from one: it
+    // keeps the page's order.
+    let left = (0..marked.len()).filter(|&index| !taken[index]);
+    order.extend(left.map(|index| marked[index]));
+    order
+}
+
+/// What the page's `row` holds in `cols`, as a key of a map. `None` where
+/// one of them is NULL: a key with a NULL in it points at no row.
+fn key_parts<'a>(page: &'a RowPage, row: usize, cols: &[usize]) -> Option<Vec<KeyPart<'a>>> {
+    let held = page.rows.get(row)?;
+    cols.iter()
+        .map(|&col| KeyPart::of(held.get(col)?))
+        .collect()
+}
+
+/// A value of a key as a key of a map: alike where [`same_value`] says two
+/// values are, a float by its bits.
+#[derive(PartialEq, Eq, Hash)]
+enum KeyPart<'a> {
+    Bool(bool),
+    Int(i64),
+    Float(u64),
+    Text(&'a str),
+    Bytes(&'a [u8]),
+}
+
+impl<'a> KeyPart<'a> {
+    /// `None` for a NULL, which is no value of a key.
+    fn of(value: &'a Value) -> Option<Self> {
+        Some(match value {
+            Value::Null => return None,
+            Value::Bool(value) => Self::Bool(*value),
+            Value::Int(value) => Self::Int(*value),
+            Value::Float(value) => Self::Float(value.to_bits()),
+            Value::Text(value) => Self::Text(value),
+            Value::Bytes(value) => Self::Bytes(value),
+        })
+    }
+}
+
 /// Where each part of a change set came from. An answer names a part by
 /// its place in the set.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -2048,10 +2840,13 @@ pub struct Sent {
     pub inserts: Vec<usize>,
     /// The page's row of each of the set's `rows`.
     pub rows: Vec<usize>,
+    /// The page's row of each of the set's `deletes`.
+    pub deletes: Vec<usize>,
 }
 
-/// The change set a save sends for the table's new rows and the pending
-/// `cells`, and where each part of it came from. `None` when nothing is
+/// The change set a save sends for the table's new rows, the pending
+/// `cells` and the rows marked for deletion, and where each part of it
+/// came from. `None` when nothing is
 /// pending, or a row is changed in a table that has no key.
 pub fn change_set(
     object: &ObjectRef,
@@ -2077,12 +2872,24 @@ pub fn change_set(
         inserts.push(RowInsert { set });
         sent.inserts.push(new.id);
     }
-    // The cells of the page's rows: every row below the new ones'.
+    // The cells of the page's rows: every row below the new ones'. A row
+    // marked for deletion has none here.
     let changed = cells.range(..(NEW_ROWS, 0));
-    // The key only where a row is changed: a new row is found by none.
-    let key = match changed.clone().next() {
-        Some(_) => table.key()?,
-        None => Vec::new(),
+    // The key only where a row is changed or deleted: a new row is found
+    // by none.
+    let key = if changed.clone().next().is_some() || !table.deleted.is_empty() {
+        table.key()?
+    } else {
+        Vec::new()
+    };
+    // What finds the row whose values are `values`.
+    let key_of = |values: &Vec<Value>| -> Option<Vec<(String, Value)>> {
+        key.iter()
+            .map(|&place| {
+                let name = table.page.columns.get(place)?.name.clone();
+                Some((name, values.get(place)?.clone()))
+            })
+            .collect()
     };
     let mut rows: Vec<RowChange> = Vec::new();
     // The map is ordered by row, then column, so a row's cells are together.
@@ -2092,13 +2899,7 @@ pub fn change_set(
         if sent.rows.last() != Some(&row) {
             sent.rows.push(row);
             rows.push(RowChange {
-                key: key
-                    .iter()
-                    .map(|&place| {
-                        let name = table.page.columns.get(place)?.name.clone();
-                        Some((name, values.get(place)?.clone()))
-                    })
-                    .collect::<Option<_>>()?,
+                key: key_of(values)?,
                 set: Vec::new(),
             });
         }
@@ -2109,12 +2910,22 @@ pub fn change_set(
             new: pending.new.clone(),
         });
     }
-    (!rows.is_empty() || !inserts.is_empty()).then(|| {
+    // The rows to delete: a row before the row it points at, else in the
+    // page's order.
+    let mut deletes = Vec::new();
+    for row in delete_order(object, table) {
+        deletes.push(RowDelete {
+            key: key_of(table.page.rows.get(row)?)?,
+        });
+        sent.deletes.push(row);
+    }
+    (!rows.is_empty() || !inserts.is_empty() || !deletes.is_empty()).then(|| {
         (
             ChangeSet {
                 object: object.clone(),
                 inserts,
                 rows,
+                deletes,
             },
             sent,
         )
@@ -2142,13 +2953,21 @@ pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
             object,
             inserts,
             rows,
+            deletes,
         },
         ChangeSet {
             object: other,
             inserts: other_inserts,
             rows: others,
+            deletes: other_deletes,
         },
     ) = (a, b);
+    let same_key = |a: &[(String, Value)], b: &[(String, Value)]| {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|((name, value), (other, with))| name == other && same_value(value, with))
+    };
     let same_cell = |a: &CellChange, b: &CellChange| {
         let CellChange {
             column,
@@ -2163,11 +2982,7 @@ pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
     };
     let same_row = |a: &RowChange, b: &RowChange| {
         let RowChange { key, set } = a;
-        key.len() == b.key.len()
-            && key
-                .iter()
-                .zip(&b.key)
-                .all(|((name, value), (other, with))| name == other && same_value(value, with))
+        same_key(key, &b.key)
             && set.len() == b.set.len()
             && set.iter().zip(&b.set).all(|(a, b)| same_cell(a, b))
     };
@@ -2176,6 +2991,11 @@ pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
         && inserts == other_inserts
         && rows.len() == others.len()
         && rows.iter().zip(others).all(|(a, b)| same_row(a, b))
+        && deletes.len() == other_deletes.len()
+        && deletes
+            .iter()
+            .zip(other_deletes)
+            .all(|(a, b)| same_key(&a.key, &b.key))
 }
 
 #[cfg(test)]
@@ -2196,6 +3016,7 @@ mod tests {
                 }],
             }],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         assert!(same_changes(&with("print"), &with("print")));
         assert!(!same_changes(&with("print"), &with("ebook")));
@@ -2217,6 +3038,7 @@ mod tests {
             object: ObjectRef::new("main", "readings"),
             inserts: Vec::new(),
             rows,
+            deletes: Vec::new(),
         };
         let nan = || Value::Float(f64::NAN);
         // Not a number is itself, as a changed cell's loaded value and as a
@@ -2283,6 +3105,651 @@ mod tests {
             );
         }
         assert!(same_changes(&base, &base.clone()));
+    }
+
+    /// The Bookshop's covers as editing sees them, with `edits`' rows.
+    fn marked_covers<'a>(
+        structure: &'a tabletist_db::Structure,
+        page: &'a RowPage,
+        edits: &'a Edits,
+    ) -> Table<'a> {
+        Table {
+            access: Access::Writable,
+            kind: ObjectKind::Table,
+            dialect: Dialect::Sqlite,
+            structure: Some(structure),
+            page,
+            refreshing: false,
+            saving: false,
+            gone: &edits.gone,
+            added: &edits.added,
+            deleted: &edits.deleted,
+        }
+    }
+
+    /// What deleting `rows` of `page` comes to, with `edits` pending.
+    fn swept(page: &RowPage, edits: &Edits, rows: &[usize]) -> Sweep {
+        let structure = crate::testing::book_covers_structure();
+        marked_covers(&structure, page, edits).sweep(rows)
+    }
+
+    fn mark_rows(rows: Vec<usize>, new: Vec<usize>, skipped: usize) -> Sweep {
+        Sweep::Mark { rows, new, skipped }
+    }
+
+    #[test]
+    fn a_sweep_marks_what_is_unmarked_and_restores_only_when_all_are_marked() {
+        let page = crate::testing::book_covers_page(5);
+        let mut edits = Edits::default();
+        assert_eq!(
+            swept(&page, &edits, &[1, 2, 3]),
+            mark_rows(vec![1, 2, 3], Vec::new(), 0)
+        );
+        // One of them marked already: the others are marked, none restored.
+        edits.mark(2);
+        assert_eq!(
+            swept(&page, &edits, &[1, 2, 3]),
+            mark_rows(vec![1, 3], Vec::new(), 0)
+        );
+        // All marked: they are restored.
+        edits.mark(1);
+        edits.mark(3);
+        let rows = vec![1, 2, 3];
+        assert_eq!(swept(&page, &edits, &[1, 2, 3]), Sweep::Restore { rows });
+    }
+
+    #[test]
+    fn a_sweep_drops_new_rows_with_a_mark_and_leaves_them_at_a_restore() {
+        let page = crate::testing::book_covers_page(5);
+        let mut edits = Edits::default();
+        let new = new_row(edits.add_row(Place::Below(1), 5));
+        assert_eq!(
+            swept(&page, &edits, &[1, new, 2]),
+            mark_rows(vec![1, 2], vec![new], 0)
+        );
+        assert_eq!(swept(&page, &edits, &[new]), Sweep::Drop { new: vec![new] });
+        edits.mark(1);
+        edits.mark(2);
+        let rows = vec![1, 2];
+        assert_eq!(swept(&page, &edits, &[1, new, 2]), Sweep::Restore { rows });
+    }
+
+    #[test]
+    fn a_sweep_leaves_out_a_row_that_cannot_be_deleted_and_counts_it() {
+        let mut page = crate::testing::book_covers_page(5);
+        page.rows[2][0] = Value::Null;
+        let edits = Edits::default();
+        assert_eq!(
+            swept(&page, &edits, &[1, 2, 3]),
+            mark_rows(vec![1, 3], Vec::new(), 1)
+        );
+        // Alone, its own reason is the answer.
+        assert_eq!(swept(&page, &edits, &[2]), Sweep::Refused(Lock::KeyIsNull));
+    }
+
+    #[test]
+    fn a_sweep_is_refused_for_the_table_and_over_the_cap() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(MAX_ROWS_DELETED + 1);
+        let edits = Edits::default();
+        let all: Vec<usize> = (0..=MAX_ROWS_DELETED).collect();
+        assert_eq!(swept(&page, &edits, &all), Sweep::TooMany);
+        assert!(matches!(
+            swept(&page, &edits, &all[..MAX_ROWS_DELETED]),
+            Sweep::Mark { rows, .. } if rows.len() == MAX_ROWS_DELETED
+        ));
+        let mut read_only = marked_covers(&structure, &page, &edits);
+        read_only.access = Access::ReadOnly;
+        assert_eq!(read_only.sweep(&[1, 2]), Sweep::Refused(Lock::ReadOnly));
+        let mut saving = marked_covers(&structure, &page, &edits);
+        saving.saving = true;
+        assert_eq!(saving.sweep(&[1, 2]), Sweep::Refused(Lock::Saving));
+    }
+
+    fn pending_text(text: &str) -> Pending {
+        Pending {
+            new: NewValue::Text(text.into()),
+            state: State::Ready,
+        }
+    }
+
+    /// The Bookshop's `genres`, which point at themselves, with these
+    /// rows: (id, the genre it stands under).
+    fn genres(rows: &[(i64, Option<i64>)]) -> (Structure, RowPage) {
+        let mut page = crate::testing::genres_page();
+        page.rows = rows
+            .iter()
+            .map(|(id, parent)| {
+                vec![
+                    Value::Int(*id),
+                    parent.map_or(Value::Null, Value::Int),
+                    Value::Text(format!("genre {id}").into()),
+                ]
+            })
+            .collect();
+        (crate::testing::genres_structure(), page)
+    }
+
+    /// A row is deleted before the row it points at.
+    #[test]
+    fn a_child_is_deleted_before_its_parent() {
+        // Fiction (1), under it Crime (2), under that Noir (3); Poetry (4).
+        let (structure, page) = genres(&[(1, None), (2, Some(1)), (3, Some(2)), (4, None)]);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        for row in [0, 1, 2, 3] {
+            edits.mark(row);
+        }
+        let table = marked_covers(&structure, &page, &edits);
+        let (changes, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        let ids: Vec<&Value> = changes.deletes.iter().map(|row| &row.key[0].1).collect();
+        // Each child before its parent: what must hold.
+        let at = |id: i64| {
+            let mut ids = ids.iter();
+            ids.position(|value| **value == Value::Int(id)).unwrap()
+        };
+        assert!(at(3) < at(2) && at(2) < at(1));
+        // The rows nothing points at go first, in the page's order: Noir
+        // and Poetry, then Crime, then Fiction.
+        assert_eq!(
+            ids,
+            [
+                &Value::Int(3),
+                &Value::Int(4),
+                &Value::Int(2),
+                &Value::Int(1)
+            ]
+        );
+        // What the answer names by its place is the page's row.
+        assert_eq!(sent.deletes, [2, 3, 1, 0]);
+    }
+
+    /// Rows that point at each other keep the page's order: no order
+    /// deletes them, and the database says so.
+    #[test]
+    fn rows_in_a_circle_keep_the_pages_order() {
+        let (structure, page) = genres(&[(1, Some(2)), (2, Some(1))]);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        edits.mark(0);
+        edits.mark(1);
+        let table = marked_covers(&structure, &page, &edits);
+        let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        assert_eq!(sent.deletes, [0, 1]);
+    }
+
+    /// A long chain is ordered in one walk of it, each row before the row
+    /// it points at: a thousand rows that each stand under the one before.
+    #[test]
+    fn a_long_chain_is_ordered_child_before_parent() {
+        let rows: Vec<(i64, Option<i64>)> = (1..=1_000)
+            .map(|id| (id, (id > 1).then_some(id - 1)))
+            .collect();
+        let (structure, page) = genres(&rows);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        for row in 0..rows.len() {
+            edits.mark(row);
+        }
+        let table = marked_covers(&structure, &page, &edits);
+        let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        let last_first: Vec<usize> = (0..rows.len()).rev().collect();
+        assert_eq!(sent.deletes, last_first);
+    }
+
+    /// A row a circle points at waits with the circle, in the page's
+    /// order, and the rows clear of it are ordered as ever.
+    #[test]
+    fn rows_behind_a_circle_keep_the_pages_order() {
+        // 1 and 2 point at each other, and 2's twin 3 points at 1 too; 4
+        // stands under 5, clear of them.
+        let (structure, page) = genres(&[
+            (1, Some(2)),
+            (2, Some(1)),
+            (3, Some(1)),
+            (5, None),
+            (4, Some(5)),
+        ]);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        for row in 0..5 {
+            edits.mark(row);
+        }
+        let table = marked_covers(&structure, &page, &edits);
+        let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        // Nothing points at 3 and 4: they go first, then 5, then the
+        // circle as the page has it.
+        assert_eq!(sent.deletes, [2, 4, 3, 0, 1]);
+    }
+
+    /// One count for a key of one column, `IN` the marked rows' values
+    /// where there are several.
+    #[test]
+    fn what_a_delete_takes_is_asked_once_for_each_key() {
+        let structure = crate::testing::publishers_structure();
+        let page = crate::testing::publishers_page();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        let object = ObjectRef::new("main", "publishers");
+        let table = marked_covers(&structure, &page, &edits);
+        let asked = taken_by(&object, &table);
+        assert_eq!(asked.len(), 2);
+        let (effect, queries, _) = &asked[0];
+        assert_eq!(
+            *effect,
+            Effect::Deletes {
+                table: "book_covers".into(),
+                rows: None
+            }
+        );
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].object, ObjectRef::new("main", "book_covers"));
+        let filter = &queries[0].filters[0];
+        assert_eq!(
+            (filter.column.as_str(), filter.op, filter.value.as_str()),
+            ("publisher_id", FilterOp::Eq, "9100000000000000001")
+        );
+        assert!(matches!(&asked[1].0, Effect::Clears { table, .. } if table == "books"));
+        // Two rows: one count still, by their two values.
+        edits.mark(2);
+        let table = marked_covers(&structure, &page, &edits);
+        let asked = taken_by(&object, &table);
+        let filter = &asked[0].1[0].filters[0];
+        assert_eq!(filter.op, FilterOp::In);
+        assert_eq!(filter.value, "9100000000000000001,9100000000000000007");
+        // Nothing marked, nothing asked.
+        let none = Edits::default();
+        assert!(taken_by(&object, &marked_covers(&structure, &page, &none)).is_empty());
+    }
+
+    /// A name of the catalog is the table's own as its engine matches
+    /// names: PostgreSQL exactly, the two others without regard to ASCII
+    /// case. On PostgreSQL a table whose name differs by case alone is
+    /// another table: its key orders no delete and takes nothing off a
+    /// count.
+    #[test]
+    fn a_key_names_the_table_as_its_engine_matches_names() {
+        let object = ObjectRef::new("main", "genres");
+        assert!(names_table(Dialect::Postgres, "main", "genres", &object));
+        assert!(!names_table(Dialect::Postgres, "main", "Genres", &object));
+        assert!(!names_table(Dialect::Postgres, "Main", "genres", &object));
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            assert!(names_table(dialect, "main", "Genres", &object));
+            assert!(names_table(dialect, "MAIN", "genres", &object));
+            assert!(!names_table(dialect, "main", "genre", &object));
+            assert!(!names_table(dialect, "other", "genres", &object));
+        }
+        // A key that names no schema names a table of the object's own.
+        assert!(names_table(Dialect::Postgres, "", "genres", &object));
+        // Fiction (1) and under it Crime (2), by a key the catalog spells
+        // with a capital.
+        let (mut structure, page) = genres(&[(1, None), (2, Some(1))]);
+        structure.foreign_keys[0].ref_table = "Genres".into();
+        structure.referenced_by[0].table = "Genres".into();
+        structure.referenced_by[0].on_delete = "CASCADE".into();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        edits.mark(1);
+        let mut table = marked_covers(&structure, &page, &edits);
+        // SQLite: the same table. The child goes first, and is the save's
+        // own among what the key takes.
+        assert_eq!(delete_order(&object, &table), [1, 0]);
+        assert_eq!(taken_by(&object, &table)[0].2, 1);
+        // PostgreSQL: another table.
+        table.dialect = Dialect::Postgres;
+        assert_eq!(delete_order(&object, &table), [0, 1]);
+        assert_eq!(taken_by(&object, &table)[0].2, 0);
+    }
+
+    /// Many-rows spec 5 and test 17: a key counted with `IN` takes a
+    /// thousand values to a count, and a key counted row by row is not
+    /// counted for more than a hundred rows.
+    #[test]
+    fn counts_stay_bounded_with_many_rows_marked() {
+        let structure = crate::testing::publishers_structure();
+        let mut page = crate::testing::publishers_page();
+        let row = page.rows[0].clone();
+        page.rows = (0..1_500)
+            .map(|id| {
+                let mut row = row.clone();
+                row[0] = Value::Int(id);
+                row
+            })
+            .collect();
+        let object = ObjectRef::new("main", "publishers");
+        let mut edits = Edits::default();
+        for row in 0..1_500 {
+            edits.mark(row);
+        }
+        let asked = taken_by(&object, &marked_covers(&structure, &page, &edits));
+        // The key of one column: two counts, of 1,000 values and of 500.
+        let (_, queries, _) = &asked[0];
+        let listed: Vec<usize> = queries
+            .iter()
+            .map(|query| query.filters[0].value.split(',').count())
+            .collect();
+        assert_eq!(listed, [1_000, 500]);
+        assert!(
+            queries
+                .iter()
+                .all(|query| query.filters[0].op == FilterOp::In)
+        );
+        // A key of two columns: one count a row up to a hundred rows, and
+        // none above, which leaves its line without a number.
+        let mut two = structure.clone();
+        two.referenced_by[0].columns = vec!["publisher_id".into(), "kind".into()];
+        two.referenced_by[0].ref_columns = vec!["id".into(), "name".into()];
+        let mut edits = Edits::default();
+        for row in 0..100 {
+            edits.mark(row);
+        }
+        let asked = taken_by(&object, &marked_covers(&two, &page, &edits));
+        assert_eq!(asked[0].1.len(), 100);
+        edits.mark(100);
+        let asked = taken_by(&object, &marked_covers(&two, &page, &edits));
+        assert!(asked[0].1.is_empty());
+        let effect = asked[0].0.clone();
+        let taken = Taken::asked(vec![(effect.clone(), Vec::new(), 0)]);
+        assert_eq!(taken.lines(), [effect]);
+    }
+
+    /// A key of the table that points at the table: a marked row under a
+    /// marked row is the save's own delete, which the count finds too. It
+    /// is taken off what the key is said to take.
+    #[test]
+    fn a_marked_row_under_a_marked_row_is_not_counted_as_taken() {
+        // Fiction (1), under it Crime (2) and Essays (3); Poetry (4).
+        let (mut structure, page) = genres(&[(1, None), (2, Some(1)), (3, Some(1)), (4, None)]);
+        let object = ObjectRef::new("main", "genres");
+        let deletes = |rows| Effect::Deletes {
+            table: "genres".into(),
+            rows,
+        };
+        for on_delete in ["CASCADE", "SET NULL"] {
+            structure.referenced_by[0].on_delete = on_delete.into();
+            // Fiction and Crime marked: Crime is the save's own.
+            let mut edits = Edits::default();
+            edits.mark(0);
+            edits.mark(1);
+            let asked = taken_by(&object, &marked_covers(&structure, &page, &edits));
+            assert_eq!(asked.len(), 1, "{on_delete}");
+            assert_eq!(asked[0].2, 1, "{on_delete}");
+            // Fiction alone: nothing of the save's own under it.
+            let mut edits = Edits::default();
+            edits.mark(0);
+            let asked = taken_by(&object, &marked_covers(&structure, &page, &edits));
+            assert_eq!(asked[0].2, 0, "{on_delete}");
+        }
+        // Another table's key takes nothing off.
+        let publishers = crate::testing::publishers_structure();
+        let page = crate::testing::publishers_page();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        edits.mark(2);
+        let object = ObjectRef::new("main", "publishers");
+        let asked = taken_by(&object, &marked_covers(&publishers, &page, &edits));
+        assert!(asked.iter().all(|(_, _, own)| *own == 0));
+        // The count finds Crime and Essays: Essays alone is taken.
+        let request = RequestId(1);
+        let mut taken = Taken::asked(vec![(deletes(None), vec![request], 1)]);
+        assert!(taken.answer(request, Some(2)));
+        assert_eq!(taken.lines(), [deletes(Some(1))]);
+        // Every row that points is marked: the key takes nothing, and has
+        // no line.
+        let mut taken = Taken::asked(vec![(deletes(None), vec![request], 1)]);
+        assert!(taken.answer(request, Some(1)));
+        assert!(taken.lines().is_empty());
+    }
+
+    /// A key's count is its counts added up, said once the last is in.
+    /// One that takes nothing has no line, and one that failed none with
+    /// a number.
+    #[test]
+    fn what_was_counted_is_said_once_every_count_of_a_key_is_in() {
+        let deletes = |rows| Effect::Deletes {
+            table: "book_covers".into(),
+            rows,
+        };
+        let clears = |rows| Effect::Clears {
+            table: "books".into(),
+            columns: vec!["publisher_id".into()],
+            rows,
+        };
+        let (a, b, c) = (RequestId(1), RequestId(2), RequestId(3));
+        let mut taken = Taken::asked(vec![
+            (deletes(None), vec![a, b], 0),
+            (clears(None), vec![c], 0),
+        ]);
+        assert_eq!(taken.lines(), [deletes(None), clears(None)]);
+        assert!(taken.answer(a, Some(2)));
+        // One count of the key is still out.
+        assert_eq!(taken.lines(), [deletes(None), clears(None)]);
+        assert!(taken.answer(b, Some(1)));
+        assert_eq!(taken.lines(), [deletes(Some(3)), clears(None)]);
+        // Nothing to clear: no line.
+        assert!(taken.answer(c, Some(0)));
+        assert_eq!(taken.lines(), [deletes(Some(3))]);
+        // Not one of these.
+        assert!(!taken.answer(RequestId(9), Some(1)));
+        // A count that failed leaves its line without a number.
+        let mut failed = Taken::asked(vec![(deletes(None), vec![a], 0)]);
+        assert!(failed.answer(a, None));
+        assert_eq!(failed.lines(), [deletes(None)]);
+    }
+
+    /// A refusal that names its constraint is counted for that key; one
+    /// that names none, for every key that holds.
+    #[test]
+    fn a_refused_delete_is_asked_who_holds_its_row() {
+        let structure = crate::testing::publishers_structure();
+        let page = crate::testing::publishers_page();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        let table = marked_covers(&structure, &page, &edits);
+        let refusal = |code: &str, constraint: Option<&str>| Error::Query {
+            code: Some(code.into()),
+            message: "refused".into(),
+            detail: None,
+            hint: None,
+            named: Box::new(tabletist_db::Named {
+                constraint: constraint.map(str::to_owned),
+                ..tabletist_db::Named::default()
+            }),
+        };
+        // SQLite (the fixture's engine) names no key: every key that
+        // holds. NO ACTION is 787, RESTRICT 1811 with the same words.
+        let asked = held_by(&table, 0, &refusal("787", None));
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0.table, ObjectRef::new("main", "book_reviews"));
+        assert_eq!(asked[0].0.columns, ["publisher_id"]);
+        assert_eq!(asked[0].0.values, ["9100000000000000001"]);
+        let restrict = Error::Query {
+            code: Some("1811".into()),
+            message: "FOREIGN KEY constraint failed".into(),
+            detail: None,
+            hint: None,
+            named: Box::default(),
+        };
+        assert_eq!(held_by(&table, 0, &restrict).len(), 1);
+        // 1811 is every trigger's failure: another message is not a key's.
+        assert!(held_by(&table, 0, &refusal("1811", None)).is_empty());
+        // PostgreSQL names the key: that one. 23001 is its RESTRICT from
+        // version 18 on.
+        let postgres = Table {
+            dialect: Dialect::Postgres,
+            ..table
+        };
+        for code in ["23503", "23001"] {
+            let named = refusal(code, Some("book_reviews_publisher_id_fkey"));
+            assert_eq!(held_by(&postgres, 0, &named).len(), 1, "{code}");
+        }
+        let other = refusal("23503", Some("no_such_key"));
+        assert!(held_by(&postgres, 0, &other).is_empty());
+        // Another failure is no foreign key's, and one engine's code is
+        // not another's.
+        assert!(held_by(&postgres, 0, &refusal("23514", None)).is_empty());
+        assert!(held_by(&postgres, 0, &refusal("787", None)).is_empty());
+        assert!(held_by(&table, 0, &Error::query("no")).is_empty());
+    }
+
+    /// Spec 1 and test 1: a mark, and the mark taken back.
+    #[test]
+    fn a_row_is_marked_and_restored() {
+        let mut edits = Edits::default();
+        assert!(edits.mark(1));
+        // A second mark is none: the row is marked already.
+        assert!(!edits.mark(1));
+        assert!(edits.pending() && edits.holds());
+        assert_eq!(edits.counts().deleted, 1);
+        assert_eq!(edits.row_mark(1), RowMark::Deleted);
+        assert!(edits.restore(1));
+        assert!(!edits.restore(1));
+        assert!(!edits.pending());
+        assert_eq!(edits.row_mark(1), RowMark::None);
+    }
+
+    /// Spec 1, "Existing edits", and test 4: the edits of a marked row stay
+    /// in the set, are not counted and are not sent. They are back with
+    /// the row.
+    #[test]
+    fn a_marked_rows_edits_are_kept_and_hidden() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let object = ObjectRef::new("main", "book_covers");
+        let mut edits = Edits::default();
+        edits.put((1, 2), pending_text("audio"));
+        // One that would hold a save back, were it counted.
+        edits.put(
+            (1, 1),
+            Pending {
+                new: NewValue::Text("x".into()),
+                state: State::ToFix(Problem::WholeNumber),
+            },
+        );
+        edits.mark(1);
+        // Set aside with the mark: nothing that reads the cells sees them.
+        assert!(edits.cells.is_empty());
+        let counts = edits.counts();
+        assert_eq!((counts.changes, counts.rows, counts.to_fix), (0, 0, 0));
+        assert_eq!(counts.deleted, 1);
+        let table = marked_covers(&structure, &page, &edits);
+        let (changes, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        assert!(changes.rows.is_empty() && changes.inserts.is_empty());
+        assert_eq!(
+            changes.deletes,
+            [tabletist_db::RowDelete {
+                key: vec![("id".to_owned(), Value::Int(2))],
+            }]
+        );
+        assert_eq!(sent.deletes, [1]);
+        // Restored, the row is a changed row again.
+        edits.restore(1);
+        assert_eq!(edits.cells.len(), 2);
+        assert_eq!(edits.counts().changes, 2);
+        assert_eq!(edits.counts().to_fix, 1);
+    }
+
+    /// Spec 3: no cell of a marked row is edited, and the row says why.
+    #[test]
+    fn a_marked_row_is_locked_until_it_is_restored() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let mut edits = Edits::default();
+        edits.mark(1);
+        let table = marked_covers(&structure, &page, &edits);
+        assert_eq!(table.row_lock(1), Some(Lock::Deleting));
+        assert_eq!(table.lock(CellPos { row: 1, col: 2 }), Some(Lock::Deleting));
+        assert_eq!(table.row_lock(0), None);
+        // A marked row can be asked to be deleted again: that restores it.
+        assert_eq!(table.no_delete(1), None);
+    }
+
+    /// Spec 2 and test 6, as far as the set knows: what keeps a row from
+    /// being edited keeps it from being deleted.
+    #[test]
+    fn a_row_that_cannot_be_edited_cannot_be_deleted() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(3);
+        let edits = Edits::default();
+        let table = marked_covers(&structure, &page, &edits);
+        assert_eq!(table.no_delete(1), None);
+        let read_only = Table {
+            access: Access::ReadOnly,
+            ..table
+        };
+        assert_eq!(read_only.no_delete(1), Some(Lock::ReadOnly));
+        let view = Table {
+            kind: ObjectKind::View,
+            ..table
+        };
+        assert_eq!(view.no_delete(1), Some(Lock::NotATable));
+        let keyless = tabletist_db::Structure {
+            primary_key: Vec::new(),
+            ..structure.clone()
+        };
+        let no_key = Table {
+            structure: Some(&keyless),
+            ..table
+        };
+        assert_eq!(no_key.no_delete(1), Some(Lock::NoKey));
+        let saving = Table {
+            saving: true,
+            ..table
+        };
+        assert_eq!(saving.no_delete(1), Some(Lock::Saving));
+        // A new row is dropped, and has no reason of its own.
+        assert_eq!(read_only.no_delete(new_row(0)), None);
+    }
+
+    /// Spec 5: a delete that failed says so on its row until the row is
+    /// restored or marked again.
+    #[test]
+    fn a_failed_delete_stands_on_its_row() {
+        let mut edits = Edits::default();
+        edits.mark(1);
+        let error = Error::query("FOREIGN KEY constraint failed");
+        edits.fail_delete(Some(1), error.clone());
+        let failed = edits
+            .deleted
+            .get(&1)
+            .and_then(|doomed| doomed.failed.clone());
+        assert_eq!(failed, Some(error.clone()));
+        assert_eq!(edits.counts().failed, 1);
+        assert_eq!(edits.row_mark(1), RowMark::Trouble);
+        assert_eq!(
+            edits.note,
+            Some(Note::FailedDelete {
+                row: 1,
+                error: error.clone()
+            })
+        );
+        // Restored and marked again, the row is as any marked row.
+        edits.restore(1);
+        edits.mark(1);
+        assert_eq!(edits.row_mark(1), RowMark::Deleted);
+        // A row the save did not send has no place to say it.
+        let mut other = Edits::default();
+        other.fail_delete(None, error.clone());
+        assert_eq!(other.note, Some(Note::Refused(error)));
+    }
+
+    #[test]
+    fn two_saves_that_delete_other_rows_are_not_the_same_save() {
+        let deleting = |id: i64| ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: vec![tabletist_db::RowDelete {
+                key: vec![("id".to_owned(), Value::Int(id))],
+            }],
+        };
+        assert!(same_changes(&deleting(9), &deleting(9)));
+        assert!(!same_changes(&deleting(9), &deleting(10)));
+        let none = ChangeSet {
+            deletes: Vec::new(),
+            ..deleting(9)
+        };
+        assert!(!same_changes(&deleting(9), &none));
     }
 
     #[test]
@@ -2796,6 +4263,7 @@ mod tests {
                 to_fix: 1,
                 failed: 0,
                 added: 1,
+                deleted: 0
             }
         );
         // The set says how many rows it adds, and none of their values.
@@ -3284,6 +4752,7 @@ mod tests {
             saving: false,
             gone: &NONE_GONE,
             added: &[],
+            deleted: &NONE_DELETED,
         }
     }
 
@@ -4151,6 +5620,7 @@ mod tests {
             changes: 1,
             rows: 1,
             added: 0,
+            deleted: 0,
             lines: Vec::new(),
             refused: None,
         };

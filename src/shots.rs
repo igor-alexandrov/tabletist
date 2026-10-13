@@ -220,6 +220,7 @@ fn structure() -> Structure {
             on_update: "NO ACTION".into(),
             on_delete: "CASCADE".into(),
         }],
+        referenced_by: Vec::new(),
     }
 }
 
@@ -395,11 +396,12 @@ const DELETED: &str = "2026-10-04 09:30:00";
 /// user reaches it, through the model, so it is the same state in every
 /// look: the bar, the tints and the dialogs on macOS and Windows; the mode
 /// line, the gutter and the error line on Omarchy.
-const EDITING: [(&str, Scene); 16] = [
+const EDITING: [(&str, Scene); 17] = [
     ("edit-new-row", edit_new_row),
     ("edit-new-row-filled", edit_new_row_filled),
     ("edit-new-row-failed", edit_new_row_failed),
     ("edit-pending", edit_pending),
+    ("edit-delete-row", edit_delete_row),
     ("edit-review", edit_review),
     ("edit-field", edit_field),
     ("edit-key-picker", edit_key_picker),
@@ -622,6 +624,18 @@ fn edit_pending(harness: &mut Harness) {
     step_aside(harness, tab, id);
 }
 
+/// A row marked for deletion beside a changed one: the row's own fill and
+/// bar, its values struck through, the minus before its key (the
+/// terminal's `-` in the gutter), and the bar that counts it.
+fn edit_delete_row(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    let cell = CellPos { row: 2, col: 0 };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+    harness.app.apply(Action::DeleteRow { tab, id });
+    step_aside(harness, tab, id);
+}
+
 /// Review SQL open on those three cells: the statement of the row a save
 /// can send, under its two comments, and the row whose book is no number
 /// as a comment alone. The drawer above the bar on macOS and Windows, the
@@ -751,6 +765,7 @@ fn edit_saved(harness: &mut Harness) {
         inserted: Vec::new(),
         rows: vec![row],
         elapsed: Duration::from_millis(14),
+        gone: Vec::new(),
     }));
 }
 
@@ -2148,6 +2163,7 @@ mod mock {
             primary_key: vec!["id".into()],
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         }
     }
 
@@ -2182,6 +2198,7 @@ mod mock {
                 on_update: "NO ACTION".into(),
                 on_delete: "CASCADE".into(),
             }],
+            referenced_by: Vec::new(),
         }
     }
 

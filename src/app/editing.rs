@@ -7,13 +7,14 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Answer, Duplicate, Editor, EditorPlace, Lock, NEW_ROWS, Note, Order, Pending, Place, Problem,
-    Saved, Saving, Sent, State, Table, change_set, check, conflicting, is_change, new_id, new_row,
-    opens_large, same_changes, settled, shown_lines, start_text,
+    Answer, Duplicate, Editor, EditorPlace, Effect, Holder, Lock, NEW_ROWS, Note, Order, Pending,
+    Place, Problem, Saved, Saving, Sent, State, Sweep, Table, Taken, Told, change_set, check,
+    conflicting, is_change, new_id, new_row, opens_large, same_changes, settled, shown_lines,
+    start_text,
 };
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
-    ObjectTab, ObjectView, Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
+    ObjectTab, ObjectView, Pane, Reach, SaveBlock, SessionStatus, TabId, WritePrompt,
 };
 use crate::review::{Part, Values};
 
@@ -52,11 +53,18 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::DuplicateRow { .. }
             | Action::PutRow { .. }
             | Action::DropRow { .. }
+            | Action::DeleteRow { .. }
+            | Action::DeleteSelected { .. }
+            | Action::DeleteCount { .. }
+            | Action::RestoreRow { .. }
             | Action::RevertCell { .. }
             | Action::DiscardEdits { .. }
             | Action::WriteEdits { .. }
             | Action::ReviewEdits { .. }
             | Action::SelectCell { .. }
+            | Action::ExtendTo { .. }
+            | Action::ExtendBy { .. }
+            | Action::SelectRows { .. }
             | Action::MoveSelection { .. }
             // Closing the row panel closes the editor it draws, and the
             // text of that editor joins the set.
@@ -67,6 +75,56 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::CancelPassword
             | Action::TrustHostKey
     )
+}
+
+/// Drops the new rows `new` of `object`, which an action named among
+/// `named` (the grid's order, before the drop). The cursor and the range's
+/// anchor, where theirs went, go to the nearest row of `named` that is
+/// left; with none left, the range ends and the cursor is on the row that
+/// stands where its own stood. Says how many were dropped.
+fn drop_named(object: &mut ObjectTab, named: &[usize], new: &[usize]) -> usize {
+    if new.is_empty() {
+        return 0;
+    }
+    let height = object.page().map_or(0, |page| page.rows.len());
+    // Where the cursor's row stood, for when no row named is left.
+    let stood = object
+        .selection
+        .and_then(|cell| Order::of(&object.edits.added, height).place(cell.row));
+    let dropped = new
+        .iter()
+        .filter_map(|row| new_id(*row))
+        .filter(|id| object.edits.drop_row(*id))
+        .count();
+    // The rows named that are left, each with its place among them.
+    let left: Vec<(usize, usize)> = named
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, row)| !new.contains(row))
+        .collect();
+    let nearest = |row: usize| {
+        let at = named.iter().position(|named| *named == row)?;
+        let near = left.iter().min_by_key(|(place, _)| place.abs_diff(at));
+        near.map(|(_, row)| *row)
+    };
+    if let Some(anchor) = object.range.map(|range| range.anchor)
+        && new.contains(&anchor)
+    {
+        match (nearest(anchor), object.range.as_mut()) {
+            (Some(row), Some(range)) => range.anchor = row,
+            _ => object.range = None,
+        }
+    }
+    if let Some(cell) = object.selection.filter(|cell| new.contains(&cell.row)) {
+        let row = nearest(cell.row).or_else(|| {
+            let order = Order::of(&object.edits.added, height);
+            order.row(stood?.min(order.len().saturating_sub(1)))
+        });
+        let cell = row.map(|row| CellPos { row, col: cell.col });
+        object.set_cursor(cell, Reach::Keep);
+    }
+    dropped
 }
 
 /// What the text of an editor that was typed into comes to once the editor
@@ -277,7 +335,7 @@ impl App {
             (Some(false), true) => counts.changes.saturating_sub(1),
             _ => counts.changes,
         };
-        (changes + counts.added).max(1)
+        (changes + counts.added + counts.deleted).max(1)
     }
 
     /// Does what was held, now that nothing is in its way. It passes the
@@ -448,7 +506,17 @@ impl App {
             // its row fails here as it would in the save, with the
             // builder's reason. No cell is to fix: Save was not disabled.
             let blocked = crate::review::Blocked::default();
-            let review = crate::review::of(dialect, &changes, blocked, Values::Shown);
+            let mut review = crate::review::of(dialect, &changes, blocked, Values::Shown);
+            // What was counted already, before the review goes to the
+            // panel and to the prompt: the two are then the same review.
+            let counted = self
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id))
+                .and_then(|object| object.edits.taken.as_ref())
+                .map(Taken::lines);
+            if let Some(lines) = counted {
+                review.also(&lines);
+            }
             if let Some((part, error)) = review.refused.clone() {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.saved = None;
@@ -457,6 +525,10 @@ impl App {
                         Part::Insert(index) => {
                             let new = sent.inserts.get(index).copied();
                             object.edits.fail_insert(new, error);
+                        }
+                        Part::Delete(index) => {
+                            let row = sent.deletes.get(index).copied();
+                            object.edits.fail_delete(row, error);
                         }
                     }
                     // The row panel says what stands against a cell.
@@ -481,12 +553,16 @@ impl App {
                 changes: cells,
                 rows: sent.rows.len(),
                 added: changes.inserts.len(),
+                deleted: changes.deletes.len(),
                 typed: String::new(),
                 focus: true,
                 changeset: changes,
                 then,
                 after_answer: None,
             })));
+            // What the deletes take with them, where it was not counted
+            // yet: the prompt says it as the answers come.
+            self.count_taken(tab, id);
             return;
         }
         self.send_write(tab, id, changes, sent, then);
@@ -562,10 +638,14 @@ impl App {
         };
         object.edits.note = None;
         object.edits.saved = None;
+        // A delete the last save was refused is sent again: its error is
+        // that save's, and would stand before what this one comes to.
+        object.edits.resend_deletes();
         object.edits.saving = Some(Saving {
             request,
             rows: sent.rows,
             inserts: sent.inserts,
+            deletes: sent.deletes,
             started: std::time::Instant::now(),
             then,
         });
@@ -752,7 +832,7 @@ impl App {
         let is_open = opened.is_ok();
         match opened {
             Ok(editor) => {
-                object.selection = Some(cell);
+                object.set_cursor(Some(cell), Reach::End);
                 object.edits.editor = Some(editor);
                 object.edits.why = None;
                 // The keyboard is the editor's: a field that was owed it
@@ -766,7 +846,7 @@ impl App {
             // Typing on a cell that cannot be edited does nothing.
             Err(_) if !asked => return,
             Err(lock) => {
-                object.selection = Some(cell);
+                object.set_cursor(Some(cell), Reach::End);
                 object.edits.why = Some((cell, lock));
                 object.edits.why_place = place;
             }
@@ -803,7 +883,7 @@ impl App {
             return;
         }
         if let Some(object) = self.object_tab_mut(tab, id) {
-            object.selection = Some(cell);
+            object.set_cursor(Some(cell), Reach::End);
             object.focus_field = None;
         }
         if let Some(workspace) = self.workspace_mut(tab) {
@@ -950,9 +1030,271 @@ impl App {
         object.fields = None;
         let order = Order::of(&object.edits.added, height);
         let last = order.len().saturating_sub(1);
-        object.selection = stood
+        let stays = stood
             .and_then(|place| order.row(place.min(last)))
             .map(|row| CellPos { row, col: cell.col });
+        // The rows selected with it stay selected, unless they began on
+        // the row that went.
+        if object.range.is_some_and(|range| range.anchor == cell.row) {
+            object.range = None;
+        }
+        object.set_cursor(stays, Reach::Keep);
+    }
+
+    /// Deletes the selected row: drops it where it is a new one, marks it
+    /// for deletion where it is a row of the page, and restores it where
+    /// it is marked. A row that cannot be deleted stays as it is: the
+    /// keys and the button say why before they ask.
+    pub(super) fn delete_row(&mut self, tab: ConnTabId, id: TabId) {
+        let selected = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.selection);
+        let Some(cell) = selected else {
+            return;
+        };
+        if new_id(cell.row).is_some() {
+            return self.drop_row(tab, id);
+        }
+        let marked = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.edits.deleted.contains_key(&cell.row));
+        if marked {
+            return self.restore(tab, id, cell.row);
+        }
+        // The text being typed is part of the row's edits, which are kept
+        // under the mark.
+        self.close_editor(tab, id, true);
+        let free = self.table(tab, id, |table, _| table.no_delete(cell.row).is_none());
+        if free != Some(true) {
+            return;
+        }
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        // The counts of the rows that were marked are of another set now.
+        let stale = object.edits.counts_out();
+        if !object.edits.mark(cell.row) {
+            return;
+        }
+        let row = crate::ui::pending_bar::row_name(object, cell.row);
+        let deleted = object.edits.deleted.len();
+        object.edits.told = Some(Told::Marked { row, deleted });
+        // A tab that holds a change stays, as it does for a cell's.
+        object.pinned = true;
+        // What the last save said was of another set.
+        object.edits.note = None;
+        // The row panel shows the row as marked.
+        object.fields = None;
+        self.stop_counts(tab, stale);
+    }
+
+    /// Deletes the selected rows. One row is [`Self::delete_row`]'s. A
+    /// visual selection is left once its rows were acted on, the cursor on
+    /// the first of them that is left.
+    pub(super) fn delete_selected(&mut self, tab: ConnTabId, id: TabId) {
+        let found = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .map(|object| (object.selected_rows(), object.visual()));
+        let Some((rows, visual)) = found else {
+            return;
+        };
+        let acted = if rows.len() < 2 {
+            self.delete_row(tab, id);
+            true
+        } else {
+            self.sweep_rows(tab, id, &rows)
+        };
+        if !(visual && acted) {
+            return;
+        }
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        // A row of the page is there still, and a new row where the mark
+        // did not drop it.
+        let left = |row: &&usize| match new_id(**row) {
+            Some(new) => object.edits.added.iter().any(|added| added.id == new),
+            None => true,
+        };
+        let first = rows.iter().find(left).copied();
+        let col = object.selection.map_or(0, |cell| cell.col);
+        match first {
+            Some(row) => object.set_cursor(Some(CellPos { row, col }), Reach::End),
+            // None of them is left: the cursor is where the drop put it.
+            None => object.range = None,
+        }
+    }
+
+    /// Deletes the cursor's row and the rows after it, `count` in all
+    /// ([`ObjectTab::rows_from_cursor`]). A range that stands is ended,
+    /// and the cursor goes to the row after the last one named, or stays
+    /// on that row where the grid ends with it.
+    pub(super) fn delete_count(&mut self, tab: ConnTabId, id: TabId, count: u32) {
+        let found = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .map(|object| {
+                let rows = object.rows_from_cursor(count);
+                let height = object.page().map_or(0, |page| page.rows.len());
+                let order = Order::of(&object.edits.added, height);
+                // The row after the last one named: no action names it, so
+                // it is there afterwards.
+                let after = rows
+                    .last()
+                    .and_then(|last| order.place(*last))
+                    .and_then(|place| order.row(place + 1));
+                (rows, after)
+            });
+        let Some((rows, after)) = found else {
+            return;
+        };
+        let acted = match rows.len() {
+            0 => false,
+            1 => {
+                self.delete_row(tab, id);
+                true
+            }
+            _ => self.sweep_rows(tab, id, &rows),
+        };
+        if !acted {
+            return;
+        }
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let last = rows.last().copied().filter(|row| match new_id(*row) {
+            Some(new) => object.edits.added.iter().any(|added| added.id == new),
+            None => true,
+        });
+        let col = object.selection.map_or(0, |cell| cell.col);
+        match after.or(last) {
+            Some(row) => object.set_cursor(Some(CellPos { row, col }), Reach::End),
+            // The grid ended with new rows that were dropped: the cursor
+            // is where the drop put it.
+            None => object.range = None,
+        }
+    }
+
+    /// Deletes `rows` in one action, as [`Table::sweep`] has it: marks
+    /// them and drops the new ones among them, or restores them. A row is
+    /// marked and restored as one row is. Says whether it did any of it.
+    fn sweep_rows(&mut self, tab: ConnTabId, id: TabId, rows: &[usize]) -> bool {
+        // The text being typed is part of its row's edits, which are kept
+        // under the mark.
+        self.close_editor(tab, id, true);
+        let Some(sweep) = self.table(tab, id, |table, _| table.sweep(rows)) else {
+            return false;
+        };
+        let told = match sweep {
+            // The view said why.
+            Sweep::TooMany | Sweep::Refused(_) => return false,
+            Sweep::Restore { rows } => {
+                for row in &rows {
+                    self.restore(tab, id, *row);
+                }
+                Told::RestoredRows {
+                    restored: rows.len(),
+                }
+            }
+            Sweep::Mark {
+                rows: marks,
+                new,
+                skipped,
+            } => {
+                let Some(object) = self.object_tab_mut(tab, id) else {
+                    return false;
+                };
+                // The counts of the rows that were marked are of another
+                // set now.
+                let stale = object.edits.counts_out();
+                let marked = marks.iter().filter(|row| object.edits.mark(**row)).count();
+                let dropped = drop_named(object, rows, &new);
+                let deleted = object.edits.deleted.len();
+                self.stop_counts(tab, stale);
+                Told::MarkedRows {
+                    marked,
+                    skipped,
+                    dropped,
+                    deleted,
+                }
+            }
+            Sweep::Drop { new } => {
+                let Some(object) = self.object_tab_mut(tab, id) else {
+                    return false;
+                };
+                let dropped = drop_named(object, rows, &new);
+                Told::MarkedRows {
+                    marked: 0,
+                    skipped: 0,
+                    dropped,
+                    deleted: object.edits.deleted.len(),
+                }
+            }
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return false;
+        };
+        object.edits.told = Some(told);
+        // A tab that holds a change stays, as it does for a cell's.
+        object.pinned = true;
+        // What the last save said was of another set.
+        object.edits.note = None;
+        // The row panel shows the cursor's row as it is now.
+        object.fields = None;
+        true
+    }
+
+    /// Stops counts a tab no longer waits for.
+    pub(super) fn stop_counts(&mut self, tab: ConnTabId, requests: Vec<RequestId>) {
+        if let Some(session) = self.workspace(tab).map(|workspace| workspace.session) {
+            self.cancel(session, requests);
+        }
+    }
+
+    /// Takes the mark for deletion off the selected row.
+    pub(super) fn restore_row(&mut self, tab: ConnTabId, id: TabId) {
+        let selected = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.selection);
+        if let Some(cell) = selected {
+            self.restore(tab, id, cell.row);
+        }
+    }
+
+    /// Takes the mark for deletion off the page's row `row`.
+    pub(super) fn restore(&mut self, tab: ConnTabId, id: TabId, row: usize) {
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        // Not under a save: its answer names the rows it sent.
+        let stale = object.edits.counts_out();
+        if object.edits.saving.is_some() || !object.edits.restore(row) {
+            return;
+        }
+        // The row's cells that came back without a warning: a question
+        // about one may have been out when the row was marked, and was
+        // dropped with the mark.
+        let unasked: Vec<CellPos> = object
+            .edits
+            .cells
+            .range((row, 0)..=(row, usize::MAX))
+            .filter(|(at, _)| !object.edits.doubts.contains_key(at))
+            .map(|(&(row, col), _)| CellPos { row, col })
+            .collect();
+        let name = crate::ui::pending_bar::row_name(object, row);
+        object.edits.told = Some(Told::Restored { row: name });
+        object.edits.note = None;
+        object.fields = None;
+        self.stop_counts(tab, stale);
+        // Asked of a foreign key's typed value only: every other cell has
+        // nothing to ask.
+        for cell in unasked {
+            self.ask_row(tab, id, cell);
+        }
     }
 
     /// Shows the row panel and asks it to give the keyboard to the selected
@@ -1492,7 +1834,15 @@ impl App {
             if let Some(object) = self.object_tab_mut(tab, id) {
                 object.edits.reviewing = review.is_some();
                 object.edits.review = review;
+                // What was counted since the marks last changed is the
+                // review's too.
+                let lines = object.edits.taken.as_ref().map(Taken::lines);
+                if let (Some(review), Some(lines)) = (object.edits.review.as_mut(), lines) {
+                    review.also(&lines);
+                }
             }
+            // And what was not is asked now.
+            self.count_taken(tab, id);
         }
     }
 
@@ -1502,9 +1852,104 @@ impl App {
     /// characters of each.
     pub fn review_whole(&self, tab: ConnTabId, id: TabId) -> Option<crate::review::Review> {
         self.table(tab, id, |table, object| {
-            crate::review::build(&object.object, table, &object.edits.cells, Values::Whole)
+            let mut review =
+                crate::review::build(&object.object, table, &object.edits.cells, Values::Whole)?;
+            // What the deletes take with them is copied as it is shown.
+            if let Some(taken) = &object.edits.taken {
+                review.also(&taken.lines());
+            }
+            Some(review)
         })
         .flatten()
+    }
+
+    /// Asks how many rows the tab's deletes take with them in other
+    /// tables, where rows are marked, a key that acts points at the table,
+    /// and nothing was asked since the marks last changed. The answers
+    /// come as counts (`taken_counted`).
+    pub(super) fn count_taken(&mut self, tab: ConnTabId, id: TabId) {
+        let asked = self
+            .table(tab, id, |table, object| {
+                let unasked = object.edits.taken.is_none();
+                unasked.then(|| crate::edit::taken_by(&object.object, table))
+            })
+            .flatten()
+            .unwrap_or_default();
+        if asked.is_empty() {
+            return;
+        }
+        let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
+            return;
+        };
+        let mut sent = Vec::with_capacity(asked.len());
+        for (effect, queries, own) in asked {
+            let mut requests = Vec::with_capacity(queries.len());
+            for query in queries {
+                let request = RequestId(self.next_id());
+                self.backend.send(Command::CountRows {
+                    session,
+                    request,
+                    query,
+                });
+                requests.push(request);
+            }
+            sent.push((effect, requests, own));
+        }
+        let taken = Taken::asked(sent);
+        let lines = taken.lines();
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.taken = Some(taken);
+            if let Some(review) = object.edits.review.as_mut() {
+                review.also(&lines);
+            }
+        }
+        self.also_in_prompt(tab, id, &lines);
+    }
+
+    /// The production confirmation of the tab `id`, where one is up: its
+    /// review says what the deletes take too.
+    fn also_in_prompt(&mut self, tab: ConnTabId, id: TabId, lines: &[Effect]) {
+        if let Some(Dialog::ConfirmWrite(prompt)) = self.dialog.as_mut()
+            && prompt.tab == tab
+            && prompt.id == id
+        {
+            prompt.review.also(lines);
+        }
+    }
+
+    /// A count came back: one of a tab's counts of what its deletes take,
+    /// where it is one. `rows` is `None` where the count failed. Says
+    /// whether it was one of them.
+    pub(super) fn taken_counted(
+        &mut self,
+        session: SessionId,
+        request: RequestId,
+        rows: Option<u64>,
+    ) -> bool {
+        let Some(tab) = self.tab_for_session(session) else {
+            return false;
+        };
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return false;
+        };
+        let found = workspace.object_tabs_mut().find_map(|object| {
+            let taken = object.edits.taken.as_mut()?;
+            if !taken.answer(request, rows) {
+                return None;
+            }
+            let lines = taken.lines();
+            if let Some(review) = object.edits.review.as_mut() {
+                review.also(&lines);
+            }
+            Some((object.id, lines))
+        });
+        match found {
+            Some((id, lines)) => {
+                self.also_in_prompt(tab, id, &lines);
+                true
+            }
+            None => false,
+        }
     }
 
     /// A save was answered: `Event::Written`.
@@ -1525,6 +1970,7 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
+        let dialect = workspace.driver.dialect();
         let Some(object) = workspace.object_tabs_mut().find(|object| {
             object
                 .edits
@@ -1544,14 +1990,26 @@ impl App {
         // The page's row of the set's row `index`. None for a row the save
         // did not send: no row is named for want of it.
         let place = |index: usize| saving.rows.get(index).copied();
+        // The row a delete was refused for, to ask who holds it once the
+        // tab is let go of.
+        let mut refused = None;
         match result {
             Ok(WriteOutcome::Written {
                 inserted,
                 rows,
+                gone,
                 elapsed,
             }) => {
                 let counts = object.edits.counts();
-                // The changed cells, by the page's rows they were of.
+                // The rows the save found already deleted, by their keys,
+                // while the page still holds them.
+                let already: Vec<String> = gone
+                    .iter()
+                    .filter_map(|&index| saving.deletes.get(index))
+                    .map(|&row| crate::ui::pending_bar::row_name(object, row))
+                    .collect();
+                // The changed cells, by the page's rows they were of. A
+                // row marked for deletion has none among them.
                 let changed: Vec<CellPos> = object
                     .edits
                     .cells
@@ -1563,11 +2021,35 @@ impl App {
                 // The rows an earlier save found gone are still gone.
                 object.edits.discard();
                 object.fields = None;
+                // Written, and these were not there to delete: said
+                // whether the page is patched or read again.
+                let gone_before = already.len();
+                if !already.is_empty() {
+                    object.edits.note = Some(Note::AlreadyDeleted(already));
+                }
+                // A key of the table that points at the table and acts on
+                // a delete: the database deleted rows the save did not
+                // name, or cleared their key, and some may be on this
+                // page. Only a read says which.
+                let reaches_its_own = !saving.deletes.is_empty()
+                    && object.structure.value.as_ref().is_some_and(|structure| {
+                        structure.referenced_by.iter().any(|key| {
+                            let own = crate::edit::names_table(
+                                dialect,
+                                &key.schema,
+                                &key.table,
+                                &object.object,
+                            );
+                            own && key.acts().is_some()
+                        })
+                    });
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
                     let wide = |row: &Vec<tabletist_db::Value>| row.len() == page.columns.len();
-                    rows.len() == saving.rows.len()
+                    !reaches_its_own
+                        && rows.len() == saving.rows.len()
                         && rows.iter().all(wide)
                         && saving.rows.iter().all(|&at| at < page.rows.len())
+                        && saving.deletes.iter().all(|&at| at < page.rows.len())
                         // Every new row is known, and is one the set held.
                         && inserted.len() == saving.inserts.len()
                         && inserted.iter().all(|row| row.as_ref().is_some_and(wide))
@@ -1586,6 +2068,15 @@ impl App {
                     // are the page's from here on, in the order they were
                     // shown, so a row's number is where it was shown.
                     let order = Order::of(&added, page.rows.len());
+                    let doomed: std::collections::BTreeSet<usize> =
+                        saving.deletes.iter().copied().collect();
+                    // The rows as they stand once the save is done, in the
+                    // order they were shown, without the deleted ones: a
+                    // row's number is where it was shown among them.
+                    let kept: Vec<usize> = (0..order.len())
+                        .filter_map(|place| order.row(place))
+                        .filter(|row| !doomed.contains(row))
+                        .collect();
                     let stored = inserted.into_iter().flatten();
                     let mut stored: std::collections::BTreeMap<usize, Vec<tabletist_db::Value>> =
                         saving.inserts.iter().copied().zip(stored).collect();
@@ -1594,17 +2085,20 @@ impl App {
                             .into_iter()
                             .map(Some)
                             .collect();
-                    page.rows = (0..order.len())
-                        .filter_map(|place| {
-                            let row = order.row(place)?;
-                            match new_id(row) {
-                                Some(id) => stored.remove(&id),
-                                None => loaded.get_mut(row)?.take(),
-                            }
+                    page.rows = kept
+                        .iter()
+                        .filter_map(|&row| match new_id(row) {
+                            Some(id) => stored.remove(&id),
+                            None => loaded.get_mut(row)?.take(),
                         })
                         .collect();
                     let width = page.columns.len();
-                    let now = |row: usize| order.place(row);
+                    let places: std::collections::BTreeMap<usize, usize> = kept
+                        .iter()
+                        .enumerate()
+                        .map(|(place, &row)| (row, place))
+                        .collect();
+                    let now = |row: usize| places.get(&row).copied();
                     // What the save wrote, where it is now: each changed
                     // cell, and every cell of a new row.
                     let mut cells: Vec<CellPos> = changed
@@ -1623,18 +2117,36 @@ impl App {
                     cells.sort_unstable_by_key(|cell| (cell.row, cell.col));
                     let gone = std::mem::take(&mut object.edits.gone);
                     object.edits.gone = gone.into_iter().filter_map(now).collect();
-                    object.selection = object.selection.and_then(|cell| {
-                        let row = now(cell.row)?;
+                    let moved = object.selection.and_then(|cell| {
+                        let row = match now(cell.row) {
+                            Some(row) => row,
+                            // Its row was deleted: the row that stood
+                            // after it, or the last where it was the last.
+                            None => {
+                                let stood = order.place(cell.row)?;
+                                let before = kept
+                                    .iter()
+                                    .filter(|&&row| order.place(row).is_some_and(|at| at < stood))
+                                    .count();
+                                before.min(kept.len().checked_sub(1)?)
+                            }
+                        };
                         Some(CellPos { row, col: cell.col })
                     });
-                    // The table has that many rows more, where it is known
-                    // how many it had.
+                    // The rows are others now: a range was of the page
+                    // the save found.
+                    object.set_cursor(moved, Reach::End);
+                    // The table has that many rows more and that many
+                    // fewer, where it is known how many it had. A row
+                    // found already deleted was counted when the page was
+                    // read.
                     let more = saving.inserts.len() as u64;
+                    let fewer = saving.deletes.len() as u64;
                     if let Some(count) = object.count.value.as_mut() {
-                        *count += more;
+                        *count = (*count + more).saturating_sub(fewer);
                     }
                     if let Some(estimate) = object.estimated_rows.as_mut() {
-                        *estimate += more;
+                        *estimate = (*estimate + more).saturating_sub(fewer);
                     }
                     object.edits.saved = Some(Saved {
                         at: std::time::Instant::now(),
@@ -1642,14 +2154,29 @@ impl App {
                         changes: counts.changes,
                         rows: counts.rows,
                         added: counts.added,
+                        deleted: saving.deletes.len().saturating_sub(gone_before),
                         elapsed,
                     });
                 } else {
-                    // The table is not the one the page was read from, or a
+                    // The table is not the one the page was read from, a
                     // new row came back unknown (a table with a trigger,
-                    // MySQL without a key to find it by): read it again. A
+                    // MySQL without a key to find it by), or a delete
+                    // reached rows the save did not name: read it again. A
                     // new row is nowhere until the page says where.
                     object.off_new_rows();
+                    // How many rows the table has now is not known for
+                    // sure on this path: a trigger may have written too, a
+                    // delete may have reached rows the save did not name.
+                    // The estimate moves by what the save sent, and the
+                    // exact count from before it goes: it is asked anew.
+                    let more = saving.inserts.len() as u64;
+                    let fewer = saving.deletes.len() as u64;
+                    if let Some(estimate) = object.estimated_rows.as_mut() {
+                        *estimate = (*estimate + more).saturating_sub(fewer);
+                    }
+                    if more > 0 || fewer > 0 {
+                        self.reset_count(tab, id);
+                    }
                     self.fetch_rows(tab, id);
                 }
                 // Written either way, and the set is empty: what was held
@@ -1705,6 +2232,13 @@ impl App {
                 // The row panel says what stands against a cell.
                 object.fields = None;
             }
+            Ok(WriteOutcome::FailedDelete { delete, error }) => {
+                let row = saving.deletes.get(delete).copied();
+                object.edits.fail_delete(row, error);
+                // The row panel says what stands against the row.
+                object.fields = None;
+                refused = row;
+            }
             Err(error) => {
                 object.edits.note = Some(if error.is_connection_lost() {
                     Note::Lost
@@ -1715,6 +2249,76 @@ impl App {
                 });
             }
         }
+        if let Some(row) = refused {
+            self.count_holders(tab, id, row);
+        }
+    }
+
+    /// Asks who holds the page's row `row`, whose delete was refused: a
+    /// count for each key that could be the one, now that the save is
+    /// undone. Nothing is asked where the refusal was no foreign key's.
+    fn count_holders(&mut self, tab: ConnTabId, id: TabId, row: usize) {
+        let asked = self
+            .table(tab, id, |table, object| {
+                let error = object.edits.deleted.get(&row)?.failed.as_ref()?;
+                Some(crate::edit::held_by(table, row, error))
+            })
+            .flatten()
+            .unwrap_or_default();
+        let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
+            return;
+        };
+        let mut out = Vec::with_capacity(asked.len());
+        for (holder, query) in asked {
+            let request = RequestId(self.next_id());
+            self.backend.send(Command::CountRows {
+                session,
+                request,
+                query,
+            });
+            out.push((request, row, holder));
+        }
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.holders = out;
+        }
+    }
+
+    /// A count came back: one of a refused delete's, where it is one. The
+    /// first key that holds rows is the row's holder. Says whether it was
+    /// one of them.
+    pub(super) fn held_counted(
+        &mut self,
+        session: SessionId,
+        request: RequestId,
+        rows: Option<u64>,
+    ) -> bool {
+        let Some(tab) = self.tab_for_session(session) else {
+            return false;
+        };
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return false;
+        };
+        for object in workspace.object_tabs_mut() {
+            let edits = &mut object.edits;
+            let mut out = edits.holders.iter();
+            let Some(at) = out.position(|(asked, ..)| *asked == request) else {
+                continue;
+            };
+            let (_, row, holder) = edits.holders.remove(at);
+            // Only of the refusal it was asked about: a row that was sent
+            // again since has no error for this to explain.
+            if let Some(rows) = rows.filter(|rows| *rows > 0)
+                && let Some(doomed) = edits.deleted.get_mut(&row)
+                && doomed.failed.is_some()
+                && doomed.holder.is_none()
+            {
+                doomed.holder = Some(Holder { rows, ..holder });
+                // The row panel says it under the row's line.
+                object.fields = None;
+            }
+            return true;
+        }
+        false
     }
 
     /// Answers the question about the row a save found changed, and asks

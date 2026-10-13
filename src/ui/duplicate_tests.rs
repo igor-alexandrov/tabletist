@@ -695,7 +695,7 @@ fn an_arrow_between_two_ds_ends_the_wait_of_the_first() {
 
 /// Whether the control named `name`, of the kind `role`, can be used, and
 /// what it says of itself where it cannot.
-fn control(harness: &mut Harness, name: &str, role: Role) -> (bool, Option<String>) {
+pub(super) fn control(harness: &mut Harness, name: &str, role: Role) -> (bool, Option<String>) {
     let tree = harness.settle();
     let found = crate::testing::node(&tree, name, role);
     let found = found.unwrap_or_else(|| panic!("no {name}"));
@@ -705,21 +705,24 @@ fn control(harness: &mut Harness, name: &str, role: Role) -> (bool, Option<Strin
 
 /// Whether the button `name` can be pressed, and what it says of itself
 /// where it cannot.
-fn button(harness: &mut Harness, name: &str) -> (bool, Option<String>) {
+pub(super) fn button(harness: &mut Harness, name: &str) -> (bool, Option<String>) {
     control(harness, name, Role::Button)
 }
 
-/// Test 14: Duplicate makes a copy of the panel's row. Delete waits, and
-/// says so.
+/// Test 14: Duplicate makes a copy of the panel's row. Delete can be
+/// pressed beside it (`delete_tests.rs` holds what it does).
 #[test]
-fn the_panels_duplicate_makes_a_copy_and_delete_waits() {
+fn the_panels_duplicate_makes_a_copy() {
     for look in [Look::standard(), Look::macos()] {
         let (mut harness, tab, id) = covers_in(look);
         select(&mut harness, tab, id, (1, 2));
         assert!(button(&mut harness, "Duplicate").0, "{}", look.name);
-        let later = "Deleting rows arrives in a later version";
-        let delete = button(&mut harness, "Delete");
-        assert_eq!(delete, (false, Some(later.to_owned())), "{}", look.name);
+        assert_eq!(
+            button(&mut harness, "Delete"),
+            (true, None),
+            "{}",
+            look.name
+        );
         harness.click("Duplicate");
         assert_eq!(edits(&harness, tab, id).added.len(), 1, "{}", look.name);
         let row = newest(&harness, tab, id);
@@ -752,20 +755,19 @@ fn a_row_that_cannot_be_edited_can_still_be_copied() {
     let (mut harness, tab, id) = covers(Look::macos(), keyless);
     select(&mut harness, tab, id, (1, 2));
     assert!(button(&mut harness, "Duplicate").0);
-    // Delete has the row's own reason.
+    // Delete has its own words for the row's reason.
     let (pressable, why) = button(&mut harness, "Delete");
     assert!(!pressable);
-    let no_key =
-        "book_covers has no primary key or unique index, so a row can't be targeted safely";
+    let no_key = "book_covers has no primary key, so rows can't be deleted here";
     assert_eq!(why.as_deref(), Some(no_key));
     harness.click("Duplicate");
     assert_eq!(edits(&harness, tab, id).added.len(), 1);
 }
 
 /// Spec 2: the terminal look's footer names `yy p` as a key that works
-/// where a copy can be made, and `dd` as one that waits. A key that works
-/// is text, not a button: the cell is nothing to press. One that waits
-/// says why, in the terminal's lower case.
+/// where a copy can be made, and `dd` beside it where the row can be
+/// deleted. A key that works is text, not a button: the cell is nothing
+/// to press. One that waits says why, in the terminal's lower case.
 #[test]
 fn the_terminals_footer_names_yy_p_as_a_key_that_works() {
     let (mut harness, tab, id) = covers_in(Look::omarchy());
@@ -776,8 +778,8 @@ fn the_terminals_footer_names_yy_p_as_a_key_that_works() {
     let pressed = crate::testing::node(&tree, "yy p duplicate", Role::Button);
     assert_eq!(pressed, None, "no button to press");
     let said = |why: &str| (false, Some(why.to_owned()));
-    let delete = button(&mut harness, "dd delete");
-    assert_eq!(delete, said("deleting rows arrives in a later version"));
+    let delete = control(&mut harness, "dd delete", Role::Label);
+    assert_eq!(delete, (true, None));
     let (mut harness, tab, id) = covers_as(Look::omarchy(), ObjectKind::Table, true);
     select(&mut harness, tab, id, (1, 2));
     let duplicate = button(&mut harness, "yy p duplicate");

@@ -1457,6 +1457,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
         Lock::Saving => say("A save is running"),
         Lock::Refreshing => say("The page is loading"),
         Lock::Gone => say("This row no longer exists on the server"),
+        Lock::Deleting => say("Restore the row to edit it."),
         Lock::KeyIsNull => say("This row's key is NULL"),
         Lock::KeyInexact => say("This row's key holds text that was not read exactly"),
         Lock::UnknownColumn => say("This column cannot be told apart in the table"),
@@ -1467,6 +1468,71 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
         Lock::TooLarge => say("Values over 256 KiB cannot be edited yet"),
         Lock::NotNull => say("This column cannot be NULL"),
         Lock::NoSuchCell => String::new(),
+    }
+}
+
+/// Why a row cannot be deleted, as Delete and its key say it. `table` is
+/// the table's name as it is shown. What holds only for a while, or for
+/// the one row, is said as an edit's reason is.
+pub fn delete_text(lock: Lock, table: &str, locale: Locale) -> String {
+    let say = |text: &'static str| gettext(locale, text).into_owned();
+    match lock {
+        Lock::ReadOnly => say("Read-only connection"),
+        Lock::NotATable => format!("{table} {}", say("can't be deleted from")),
+        Lock::NoKey => format!(
+            "{table} {}",
+            say("has no primary key, so rows can't be deleted here")
+        ),
+        Lock::StructureLoading
+        | Lock::KeyType
+        | Lock::Saving
+        | Lock::Refreshing
+        | Lock::NoSuchCell
+        | Lock::Gone
+        | Lock::Deleting
+        | Lock::KeyIsNull
+        | Lock::KeyInexact
+        | Lock::UnknownColumn
+        | Lock::Generated
+        | Lock::Assigned
+        | Lock::KeyColumn
+        | Lock::Binary
+        | Lock::TooLarge
+        | Lock::NotNull => lock_text(lock, table, locale),
+    }
+}
+
+/// [`delete_text`] as `look` says it: the terminal's in its lower case,
+/// but for the table's name, which is its own.
+pub fn delete_said(lock: Lock, table: &str, look: &Look, locale: Locale) -> String {
+    let text = delete_text(lock, table, locale);
+    match text.strip_prefix(table) {
+        Some(rest) if !table.is_empty() => format!("{table}{}", look.label(rest)),
+        _ => look.label(&text),
+    }
+}
+
+/// What a delete of several rows says where a refusal is said: why none
+/// of them is deleted, or how many it left out. `None` where every row it
+/// named is marked, restored or dropped.
+pub fn sweep_said(
+    sweep: &crate::edit::Sweep,
+    table: &str,
+    look: &Look,
+    locale: Locale,
+) -> Option<String> {
+    use crate::edit::Sweep;
+    match sweep {
+        Sweep::TooMany => {
+            let text = gettext(locale, "Select fewer rows, or delete in the SQL editor.");
+            Some(look.label(&text))
+        }
+        Sweep::Refused(lock) => Some(delete_said(*lock, table, look, locale)),
+        Sweep::Mark { rows, skipped, .. } if *skipped > 0 => {
+            let text = crate::ui::pending_bar::marked_text(rows.len(), *skipped, locale);
+            Some(look.label(&text))
+        }
+        Sweep::Mark { .. } | Sweep::Restore { .. } | Sweep::Drop { .. } => None,
     }
 }
 

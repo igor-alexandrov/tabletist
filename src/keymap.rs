@@ -146,6 +146,8 @@ pub enum When {
     NewRow,
     /// The list of a foreign key cell's picker is open under its field.
     KeyPicker,
+    /// A visual selection of rows is on, in the terminal look.
+    Visual,
     /// The chooser of a table's label column is open: beside a picker's
     /// list, which gives it the keys.
     LabelChooser,
@@ -350,6 +352,8 @@ commands! {
     MoveRow,
     MoveColumn,
     MovePage,
+    ExtendUp,
+    ExtendDown,
     OpenInspector,
     ToggleInspector,
     CloseInspector,
@@ -392,6 +396,9 @@ commands! {
     PutRow,
     PutRowAbove,
     DeleteRow,
+    SelectRows,
+    DeleteSelection,
+    LeaveVisual,
     OpenReferencedRow,
     ShowSavedRow,
     MoveInStructure,
@@ -566,6 +573,8 @@ impl Command {
             C::MoveRow => info("Move by row", "", Editing),
             C::MoveColumn => info("Move by column", "", Editing),
             C::MovePage => info("Move by page", "", Editing),
+            C::ExtendUp => info("Extend the selection up", "", Editing),
+            C::ExtendDown => info("Extend the selection down", "", Editing),
             C::OpenInspector => info(
                 "Open inspector / focus fields",
                 "Open inspector / focus fields",
@@ -626,6 +635,9 @@ impl Command {
                 Editing,
             ),
             C::DeleteRow => info("Delete row", "Delete row", Editing),
+            C::SelectRows => info("Select rows", "", Editing),
+            C::DeleteSelection => info("Delete the selected rows", "", Editing),
+            C::LeaveVisual => info("Leave the selection of rows", "", Editing),
             C::OpenReferencedRow => info("Open referenced row", "Open referenced row", Editing),
             C::ShowSavedRow => info(
                 "Show saved row in sorted position",
@@ -1023,6 +1035,9 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
         ),
+        // A table's rows only: a result has one selected row.
+        bind(C::ExtendUp, GRID, keys(&[k("shift+up")]), NONE),
+        bind(C::ExtendDown, GRID, keys(&[k("shift+down")]), NONE),
         bind(
             C::OpenInspector,
             GRID,
@@ -1237,6 +1252,11 @@ pub const BINDINGS: &[Binding] = {
         // other looks have a button there.
         bind(C::DeleteRow, INSPECTOR, NONE, keys(&[k("dd")])).when(When::NewRow),
         bind(C::AddRow, INSPECTOR, NONE, keys(&[k("o")])).when(When::NewRow),
+        // The terminal look's visual selection of rows: `V` starts and
+        // leaves it, and while it is on `d` alone deletes its rows.
+        bind(C::SelectRows, GRID, NONE, keys(&[k("V")])),
+        bind(C::DeleteSelection, GRID, NONE, keys(&[k("d")])).when(When::Visual),
+        bind(C::LeaveVisual, GRID, NONE, keys(&[k("esc")])).when(When::Visual),
         bind(C::OpenReferencedRow, GRID, NONE, keys(&[k("gd")])),
         bind(C::ShowSavedRow, GRID, NONE, keys(&[k("gs")])),
         // The Structure view of a table, which is the grid's tab with its
@@ -2013,11 +2033,44 @@ impl PartialEq<&str> for Written {
     }
 }
 
+impl Command {
+    /// Whether a count before the command's keys says of how many rows it
+    /// is. Before any other command's keys a count is dropped.
+    pub fn takes_count(self) -> bool {
+        matches!(self, Self::DeleteRow)
+    }
+}
+
+/// The count typed before a key, and what follows it: `12dd` is 12 and
+/// `dd`. A count begins with a digit that is not nought, and more than six
+/// digits read as 999,999.
+pub fn count_of(typed: &str) -> (Option<u32>, &str) {
+    let digits = typed.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || typed.starts_with('0') {
+        return (None, typed);
+    }
+    let (count, rest) = typed.split_at(digits);
+    let count = if digits > 6 {
+        999_999
+    } else {
+        count.parse().unwrap_or(999_999)
+    };
+    (Some(count), rest)
+}
+
+/// Whether `typed` is a count with no key after it yet.
+pub fn is_count(typed: &str) -> bool {
+    matches!(count_of(typed), (Some(_), ""))
+}
+
 /// What typed characters, or a line of the `:` prompt, come to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Typed {
     /// They are this command's keys.
     Command(Command),
+    /// They are this command's keys with a count before them (`3dd`), and
+    /// the command takes one.
+    Counted(Command, u32),
     /// They are the keys of something that is not built yet: taken, and
     /// nothing happens.
     Claimed,
@@ -2191,6 +2244,16 @@ impl Keymap {
         holds: &dyn Fn(When) -> bool,
         typed: &str,
     ) -> Typed {
+        // A count before the key, where one is read: on a table's rows, in
+        // the terminal look.
+        let (count, typed) = if layout == Layout::Omarchy && scope == Scope::Grid {
+            count_of(typed)
+        } else {
+            (None, typed)
+        };
+        if count.is_some() && typed.is_empty() {
+            return Typed::Waiting;
+        }
         let letters = |spelled: &Spelled| -> Option<String> {
             let Spelled::Strokes(strokes) = spelled else {
                 return None;
@@ -2203,13 +2266,19 @@ impl Keymap {
                 })
                 .collect()
         };
-        self.read(
+        let read = self.read(
             layout,
             scope,
             holds,
             &|spelled| letters(spelled).is_some_and(|letters| letters == typed),
             &|spelled| letters(spelled).is_some_and(|letters| letters.starts_with(typed)),
-        )
+        );
+        match (read, count) {
+            (Typed::Command(command), Some(count)) if command.takes_count() => {
+                Typed::Counted(command, count)
+            }
+            _ => read,
+        }
     }
 
     /// What a line of the `:` prompt (`line`, without its colon) comes to
@@ -2802,6 +2871,9 @@ mod tests {
         assert_eq!(omarchy(Command::PasteNewRows), "\"+p, ctrl+shift+v");
         assert_eq!(omarchy(Command::DuplicateConnection), "yy p");
         assert_eq!(omarchy(Command::DuplicateRow), "yy p");
+        assert_eq!(mac(Command::ExtendUp), "⇧↑");
+        assert_eq!(mac(Command::ExtendDown), "⇧↓");
+        assert_eq!(omarchy(Command::ExtendDown), "");
         assert_eq!(omarchy(Command::DiscardChanges), ":e!");
         assert_eq!(omarchy(Command::ReviewSql), ":diff");
         assert_eq!(omarchy(Command::History), ":history");
@@ -2907,6 +2979,52 @@ mod tests {
             );
             assert_eq!(keymap.typed(layout, Scope::Grid, &nothing, "x"), Nothing);
         }
+    }
+
+    #[test]
+    fn a_visual_selection_has_its_own_keys() {
+        let keymap = Keymap::default();
+        let visual = |when: When| when == When::Visual;
+        let nothing = |_: When| false;
+        let grid = |holds: &dyn Fn(When) -> bool, typed: &str| {
+            keymap.typed(Layout::Omarchy, Scope::Grid, holds, typed)
+        };
+        assert_eq!(grid(&nothing, "V"), Typed::Command(Command::SelectRows));
+        // `d` alone is the whole key while a selection is on, and the
+        // first of two without one.
+        assert_eq!(grid(&visual, "d"), Typed::Command(Command::DeleteSelection));
+        assert_eq!(grid(&nothing, "d"), Typed::Waiting);
+        assert_eq!(grid(&nothing, "dd"), Typed::Command(Command::DeleteRow));
+        assert_eq!(keymap.label(Layout::Omarchy, Command::LeaveVisual), "esc");
+        assert_eq!(keymap.label(Layout::Mac, Command::SelectRows), "");
+    }
+
+    #[test]
+    fn a_count_is_read_before_the_key_that_takes_one() {
+        let keymap = Keymap::default();
+        let nothing = |_: When| false;
+        let read = |layout, scope, typed: &str| keymap.typed(layout, scope, &nothing, typed);
+        let grid = |typed: &str| read(Layout::Omarchy, Scope::Grid, typed);
+        assert_eq!(grid("3"), Typed::Waiting);
+        assert_eq!(grid("3d"), Typed::Waiting);
+        assert_eq!(grid("3dd"), Typed::Counted(Command::DeleteRow, 3));
+        assert_eq!(grid("12dd"), Typed::Counted(Command::DeleteRow, 12));
+        assert_eq!(
+            grid("1234567dd"),
+            Typed::Counted(Command::DeleteRow, 999_999)
+        );
+        // Before any other key the count is dropped, and the key acts once.
+        assert_eq!(grid("3j"), Typed::Command(Command::MoveRow));
+        // Nought begins no count.
+        assert_eq!(grid("0"), Typed::Nothing);
+        assert_eq!(grid("0dd"), Typed::Nothing);
+        // Only the terminal look's grid of a table reads one.
+        assert_eq!(read(Layout::Omarchy, Scope::Results, "3"), Typed::Nothing);
+        assert_eq!(read(Layout::Omarchy, Scope::Inspector, "3"), Typed::Nothing);
+        assert_eq!(read(Layout::Mac, Scope::Grid, "3"), Typed::Nothing);
+        assert_eq!(count_of("12dd"), (Some(12), "dd"));
+        assert_eq!(count_of("dd"), (None, "dd"));
+        assert!(is_count("12") && !is_count("12d") && !is_count("") && !is_count("0"));
     }
 
     #[test]

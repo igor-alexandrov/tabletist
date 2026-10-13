@@ -71,6 +71,12 @@ pub struct Row {
     /// Its number among the table's rows, from 1, for a screen reader.
     /// `None` for a row the table does not hold yet.
     pub number: Option<u64>,
+    /// The row is marked for deletion: a screen reader is told so, also
+    /// where its delete failed and its mark is the trouble's.
+    pub deleted: bool,
+    /// The row is one of several selected rows: it is drawn as the
+    /// selected row of its kind is, and told as selected.
+    pub ranged: bool,
 }
 
 /// How a cell draws its text.
@@ -116,6 +122,12 @@ pub enum Mark {
     Locked,
     /// A cell of a row a save found gone from the server.
     Gone,
+    /// A cell of a row marked for deletion: its value, dimmed and struck
+    /// through.
+    Deleted,
+    /// The cell that marks such a row in the desktop looks, the first of
+    /// its key: a minus, then its value as the row's others are.
+    Deleting,
     /// The cell that marks a new row: its text in the row's tone.
     Added,
     /// A cell of a new row nothing is set in: what the database will fill
@@ -148,6 +160,8 @@ pub type Editor<'a> = &'a mut dyn FnMut(&mut Ui, Rect);
 #[derive(Debug, Default, PartialEq)]
 pub struct GridOutput {
     pub clicked: Option<CellPos>,
+    /// Shift was held at the click: it extends the selection to its row.
+    pub shift: bool,
     /// The cell a second click landed on, soon after the first.
     pub double_clicked: Option<CellPos>,
     /// Where the cell being edited is, in view or not: what an editor that
@@ -315,6 +329,38 @@ fn paint_slanted(
         .add_with(role, text, 0.0, |format| {
             format.color = color;
             format.italics = true;
+        })
+        .layout(ui.ctx());
+    if right {
+        laid.paint_right(painter, x, y);
+    } else {
+        laid.paint_left(painter, x, y);
+    }
+}
+
+/// [`paint`], struck through: a value of a row marked for deletion. With
+/// `sign`, a minus in that colour stands before it, not struck: the mark
+/// of the row, where the look has no gutter for one.
+#[allow(clippy::too_many_arguments)] // the text, its place, and its look
+fn paint_struck(
+    painter: &egui::Painter,
+    ui: &Ui,
+    role: TextRole,
+    (sign, text): (Option<egui::Color32>, &str),
+    color: egui::Color32,
+    x: f32,
+    y: f32,
+    right: bool,
+    look: &Look,
+) {
+    let mut laid = Text::new(look);
+    if let Some(sign) = sign {
+        laid = laid.add_with(role, "\u{2212} ", 0.0, |format| format.color = sign);
+    }
+    let laid = laid
+        .add_with(role, text, 0.0, |format| {
+            format.color = color;
+            format.strikethrough = Stroke::new(1.0, color);
         })
         .layout(ui.ctx());
     if right {
@@ -716,12 +762,23 @@ pub fn show<'a>(
             virtual_rows(ui, row_count, row_height, |ui, row| {
                 // A row takes a click, not the Tab key: the grid is the stop.
                 let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
-                let Row { mark, number } = rows(row);
+                let Row {
+                    mark,
+                    number,
+                    deleted,
+                    ranged,
+                } = rows(row);
                 let label = match number {
+                    Some(number) if deleted => format!("Row {number}, marked for deletion"),
                     Some(number) => format!("Row {number}"),
                     None => "New row, not saved".to_owned(),
                 };
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+                if ranged {
+                    ui.ctx().accesskit_node_builder(response.id, |node| {
+                        node.set_selected(true);
+                    });
+                }
                 if response.clicked() || response.double_clicked() {
                     let col = response
                         .interact_pointer_pos()
@@ -738,6 +795,7 @@ pub fn show<'a>(
                     let cell = Some(CellPos { row, col });
                     if response.clicked() {
                         output.clicked = cell;
+                        output.shift = ui.input(|input| input.modifiers.shift);
                     }
                     if response.double_clicked() {
                         output.double_clicked = cell;
@@ -748,7 +806,7 @@ pub fn show<'a>(
                 let row_tone = match mark {
                     RowMark::None => None,
                     RowMark::Changed => Some(Tone::Warning),
-                    RowMark::Trouble => Some(Tone::Danger),
+                    RowMark::Trouble | RowMark::Deleted => Some(Tone::Danger),
                     RowMark::New => Some(Tone::Success),
                 };
                 let new = mark == RowMark::New;
@@ -756,16 +814,27 @@ pub fn show<'a>(
                 // having no number among the table's. Its mark is not
                 // steady enough, a cell to fix in it makes it `Trouble`.
                 let held_back = new || number.is_none();
-                let selected_row = selection.is_some_and(|cell| cell.row == row);
+                // The cursor's row, and with it the rows selected with it.
+                let cursor_row = selection.is_some_and(|cell| cell.row == row);
+                let selected_row = cursor_row || ranged;
                 // With the keyboard in the grid the cell takes the
                 // selection's colour and its row a lighter tint of it.
                 let lit_row = selected_row && lit && !look.terminal;
                 let fresh = crate::env::new_row_colors(crate::env::Platform::of(look), palette);
+                let doomed =
+                    crate::env::deleted_row_colors(crate::env::Platform::of(look), palette);
                 let fill = if new {
                     // A new row keeps its own fill under the selection
                     // too: its cell alone takes the selection's colour,
                     // and says where the keyboard is.
                     Some(fresh.fill)
+                } else if deleted && !ranged {
+                    // As a new row: the row keeps its fill, and its cell
+                    // alone says where the keyboard is. Not among several
+                    // selected rows: there it takes the selection's fill
+                    // with them, so the range reads as one, and its bar
+                    // and its struck values still say it is marked.
+                    Some(doomed.fill)
                 } else if lit_row {
                     Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
                 } else {
@@ -826,7 +895,7 @@ pub fn show<'a>(
                                 painter.rect_filled(bar, CornerRadius::ZERO, fresh.bar);
                             }
                             let line = rect.center().y;
-                            if selected_row {
+                            if cursor_row {
                                 // The cursor: a bold accent block in the
                                 // gutter.
                                 let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent)
@@ -841,6 +910,7 @@ pub fn show<'a>(
                                 let sign = match mark {
                                     RowMark::Trouble => "!",
                                     RowMark::New => "+",
+                                    RowMark::Deleted => "-",
                                     RowMark::None | RowMark::Changed => "~",
                                 };
                                 Text::one(look, TextRole::OGroup, sign, tone.color(palette))
@@ -901,7 +971,13 @@ pub fn show<'a>(
                         Mark::Pending | Mark::Doubt | Mark::Saving => Some(Tone::Warning),
                         Mark::Trouble => Some(Tone::Danger),
                         Mark::Saved => Some(Tone::Success),
-                        Mark::None | Mark::Locked | Mark::Gone | Mark::Added | Mark::Unset => None,
+                        Mark::None
+                        | Mark::Locked
+                        | Mark::Gone
+                        | Mark::Deleted
+                        | Mark::Deleting
+                        | Mark::Added
+                        | Mark::Unset => None,
                     };
                     let locked = content.mark == Mark::Locked && !look.terminal;
                     // A cell with a warning keeps its lines under the cursor.
@@ -987,6 +1063,7 @@ pub fn show<'a>(
                         // accent of a selected row whose cell is not lit.
                         let color = match row_tone {
                             Some(_) if new => Some(fresh.bar),
+                            Some(_) if deleted => Some(doomed.bar),
                             Some(tone) => Some(tone.color(palette)),
                             None => (selected_row && !lit_row).then_some(palette.accent),
                         };
@@ -1000,6 +1077,11 @@ pub fn show<'a>(
                     // on its key, and a computed column a step quieter.
                     let written = match (tone, row_tone) {
                         _ if content.mark == Mark::Gone => written_in(palette, palette.dim),
+                        // A row marked for deletion: every value in the
+                        // one tone its style gives, the key's too.
+                        _ if matches!(content.mark, Mark::Deleted | Mark::Deleting) => {
+                            written_in(palette, doomed.text)
+                        }
                         // A new row's marker in the row's tone; the
                         // terminal writes it dimmed, as it does what a
                         // cell will be filled with.
@@ -1838,7 +1920,16 @@ fn draw_cell(
                 (true, false) => palette.secondary,
                 _ => palette.text,
             };
-            if content.slanted {
+            if matches!(content.mark, Mark::Deleted | Mark::Deleting) {
+                // The one arm that strikes: every cell of a marked row is
+                // plain text. The palette's own red is not what the cell's
+                // texts are written in, so the style is asked again.
+                let sign = (content.mark == Mark::Deleting).then(|| {
+                    crate::env::deleted_row_colors(crate::env::Platform::of(look), palette).marker
+                });
+                let said = (sign, shown.as_ref());
+                paint_struck(&clip, ui, role, said, color, x, center, numeric, look);
+            } else if content.slanted {
                 paint_slanted(&clip, ui, role, &shown, color, x, center, numeric, look);
             } else {
                 paint(&clip, ui, role, &shown, color, x, center, numeric, look);
@@ -1880,6 +1971,8 @@ mod tests {
         Row {
             mark,
             number: Some(row as u64 + 1),
+            deleted: false,
+            ranged: false,
         }
     }
 
@@ -2261,6 +2354,70 @@ mod tests {
         }
     }
 
+    /// A row marked for deletion keeps its own fill under the cursor, and
+    /// takes the selection's among the rows it is selected with: a range
+    /// reads as one, and the row's bar and its struck values still say it
+    /// is marked.
+    #[test]
+    fn a_marked_row_of_a_range_takes_the_selections_fill() {
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let said = look.name;
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+            // The second row is marked. Ranged, it and the row above are
+            // the selected rows.
+            let rows = |ranged: bool| {
+                move |at: usize| Row {
+                    mark: if at == 1 {
+                        RowMark::Deleted
+                    } else {
+                        RowMark::None
+                    },
+                    number: Some(at as u64 + 1),
+                    deleted: at == 1,
+                    ranged: ranged && at <= 1,
+                }
+            };
+            let doomed = crate::env::deleted_row_colors(crate::env::Platform::of(&look), &palette);
+            let wide = |rects: &[egui::epaint::RectShape], fill: egui::Color32| {
+                let filled = |rect: &&egui::epaint::RectShape| {
+                    rect.fill == fill && rect.rect.width() > 400.0
+                };
+                rects.iter().filter(filled).count()
+            };
+            // Alone under the cursor: its own fill, as ever.
+            let here = Some(CellPos { row: 1, col: 1 });
+            let (rects, _) = marked_rows(
+                &ctx,
+                &look,
+                &palette,
+                Mark::None,
+                &rows(false),
+                here,
+                vec![],
+            );
+            assert_eq!(wide(&rects, doomed.fill), 1, "{said}");
+            assert_eq!(wide(&rects, palette.selection), 0, "{said}");
+            // In a range, the cursor on the row above: both rows are
+            // filled as selected rows are.
+            let above = Some(CellPos { row: 0, col: 1 });
+            let (rects, _) = marked_rows(
+                &ctx,
+                &look,
+                &palette,
+                Mark::None,
+                &rows(true),
+                above,
+                vec![],
+            );
+            assert_eq!(wide(&rects, doomed.fill), 0, "{said}");
+            assert_eq!(wide(&rects, palette.selection), 2, "{said}");
+        }
+    }
+
     #[test]
     fn a_selected_new_rows_first_cell_is_marked_while_no_cell_is_lit() {
         for look in Look::ALL.into_iter().filter(|look| !look.terminal) {
@@ -2344,7 +2501,12 @@ mod tests {
             marked(&ctx, &look, &palette, Mark::None, RowMark::None);
             let new = |mark: RowMark| {
                 move |at: usize| match at {
-                    1 => Row { mark, number: None },
+                    1 => Row {
+                        mark,
+                        number: None,
+                        deleted: false,
+                        ranged: false,
+                    },
                     at => numbered(RowMark::None, at),
                 }
             };
@@ -2502,6 +2664,8 @@ mod tests {
             0 => Row {
                 mark: RowMark::New,
                 number: None,
+                deleted: false,
+                ranged: false,
             },
             // The page's rows keep their numbers under it.
             row => numbered(RowMark::None, row - 1),

@@ -9,6 +9,10 @@ pub mod conflict_prompt;
 pub mod connect_dialog;
 pub mod data_view;
 #[cfg(test)]
+mod delete_many_tests;
+#[cfg(test)]
+mod delete_tests;
+#[cfg(test)]
 mod duplicate_tests;
 #[cfg(test)]
 mod env_tests;
@@ -7340,6 +7344,7 @@ mod tests {
                 partial: false,
             }],
             foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         };
         harness.answer_structure(structure);
         assert!(harness.has("Columns"));
@@ -11372,6 +11377,7 @@ mod tests {
             primary_key: vec!["id".into()],
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         });
         harness.answer_rows(RowPage {
             columns: names
@@ -11918,10 +11924,13 @@ mod tests {
             // Delete drops the new row the selection is on, and no other.
             harness.press(Key::Delete, Modifiers::NONE);
             assert!(edits(&harness, tab, id).added.is_empty(), "{}", look.name);
+            // On a row of the page it marks the row for deletion: the page
+            // keeps it until a save.
             harness.press(Key::Delete, Modifiers::NONE);
             let workspace = harness.app.workspace(tab).unwrap();
             let rows = workspace.object_tab(id).unwrap().page().unwrap().rows.len();
             assert_eq!(rows, 3, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).deleted.len(), 1, "{}", look.name);
         }
     }
 
@@ -12461,12 +12470,14 @@ mod tests {
         assert_eq!(edits(&harness, tab, id).added.len(), 1, "one d waits");
         type_key(&mut harness, Key::D, "d");
         assert!(edits(&harness, tab, id).added.is_empty());
-        // On a field of a row of the page the key drops nothing.
+        // On a field of a row of the page the key drops nothing, and
+        // marks nothing: it is the rows' key there.
         select(&mut harness, tab, id, (1, 1));
         open_inspector(&mut harness);
         harness.settle();
         type_key(&mut harness, Key::D, "d");
         type_key(&mut harness, Key::D, "d");
+        assert!(edits(&harness, tab, id).deleted.is_empty());
         assert_eq!(
             harness
                 .app
@@ -12587,6 +12598,7 @@ mod tests {
             inserted: vec![Some(stored)],
             rows: Vec::new(),
             elapsed: std::time::Duration::from_millis(5),
+            gone: Vec::new(),
         }));
         assert!(harness.has("written 1 new row · 5 ms"));
         // The row is the table's now, with the id the database gave it.
@@ -13184,6 +13196,7 @@ mod tests {
                     tabletist_db::Value::Null,
                 ]],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             let green = Tone::Success.fill(&look, &palette);
@@ -13233,6 +13246,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: rows.to_vec(),
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             let green = Tone::Success.fill(&look, &palette);
@@ -13280,6 +13294,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: rows.to_vec(),
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             // A cell by the email of its row, which every look writes as it
@@ -13862,6 +13877,7 @@ mod tests {
                     tabletist_db::Value::Null,
                 ]],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
             // With nothing pending the key sends nothing.
@@ -15918,6 +15934,7 @@ mod tests {
                 ],
             ],
             elapsed: std::time::Duration::from_millis(14),
+            gone: Vec::new(),
         }));
         harness.settle();
         let said = "written 2 changes · 2 rows · 14 ms";
@@ -16466,10 +16483,13 @@ mod tests {
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         harness.settle();
         let palette = harness.app.palette;
-        // No row of the table is deleted yet.
-        assert!(painted(&harness, "dd delete"), "{:?}", harness.painted);
-        assert!(!painted_in(&harness, "dd delete", palette.text));
-        // `i edit` and `o new row` are live now, and the struck `e edit`
+        // The row under the cursor can be deleted: its key works.
+        assert!(
+            painted_in(&harness, "dd delete", palette.text),
+            "{:?}",
+            harness.painted
+        );
+        // `i edit` and `o new row` are live too, and the struck `e edit`
         // is gone.
         assert!(!painted(&harness, "e edit"));
         assert!(painted(&harness, "i edit"));
@@ -16487,6 +16507,9 @@ mod tests {
         harness.settle();
         assert!(painted(&harness, "o new row"));
         assert!(!painted_in(&harness, "o new row", palette.text));
+        // Nor is one deleted there.
+        assert!(painted(&harness, "dd delete"));
+        assert!(!painted_in(&harness, "dd delete", palette.text));
     }
 
     #[test]
@@ -17440,6 +17463,7 @@ mod tests {
                 tabletist_db::Value::Null,
             ]],
             elapsed: std::time::Duration::from_millis(14),
+            gone: Vec::new(),
         }
     }
 
@@ -18163,6 +18187,7 @@ mod tests {
                     tabletist_db::Value::Text("{}".into()),
                 ]],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             assert!(!open(&harness, tab, id), "{}", look.name);
         }
@@ -19134,6 +19159,7 @@ mod tests {
                     ],
                 ],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             assert!(!painted(&harness, "was NULL"), "{}", look.name);
@@ -19160,7 +19186,7 @@ mod tests {
     }
 
     #[test]
-    fn the_row_panels_duplicate_can_be_pressed_and_delete_waits() {
+    fn the_row_panels_duplicate_and_delete_can_be_pressed() {
         for look in Look::ALL {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (1, 1));
@@ -19171,10 +19197,10 @@ mod tests {
                     .map(|(_, enabled)| enabled)
                     .collect::<Vec<_>>()
             };
-            assert_eq!(pressable(&mut harness), [true, false], "{}", look.name);
+            assert_eq!(pressable(&mut harness), [true, true], "{}", look.name);
             // With a value pending as without.
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-            assert_eq!(pressable(&mut harness), [true, false], "{}", look.name);
+            assert_eq!(pressable(&mut harness), [true, true], "{}", look.name);
             // The panel is no mode to put it in: no button edits the row.
             let edit = if look.terminal { "e edit" } else { "Edit" };
             assert!(!has_button(&mut harness, edit), "{}", look.name);
@@ -23950,7 +23976,9 @@ mod tests {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (1, 1));
             let inspector = key_of(&look, crate::keymap::Command::OpenInspector);
-            let how = format!("Click a value or press {inspector} to edit");
+            let copy = key_of(&look, crate::keymap::Command::DuplicateRow);
+            let delete = key_of(&look, crate::keymap::Command::DeleteRow);
+            let how = format!("Click a value or press {inspector} to edit · {copy} · {delete}");
             assert_eq!(times_painted(&harness, "e edit"), 0, "{}", look.name);
             if look.terminal {
                 assert!(painted(&harness, "[ ] prev/next"));

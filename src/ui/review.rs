@@ -11,6 +11,7 @@ use tabletist_db::Access;
 use tabletist_db::sql::TokenKind;
 
 use crate::app::App;
+use crate::edit::Effect;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, ConnTabId, TabId};
 use crate::review::{Ink, Line, Review};
@@ -114,6 +115,48 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
                 say("cannot be sent:")
             )
         }
+        Line::Delete(row) => format!("-- {} {} {row}", say("delete"), say("row")),
+        Line::DeleteRun(rows) => format!("-- {} {rows} {}", say("delete"), say("rows")),
+        Line::DeleteRefused { row, reason } => format!(
+            "-- {} {} {row} · {} {reason}",
+            say("delete"),
+            say("row"),
+            say("cannot be sent:")
+        ),
+        // The action as SQL writes it: it is the key's, not the app's.
+        Line::Also(Effect::Deletes { table, rows }) => {
+            let what = match rows {
+                Some(rows) => {
+                    let rows = usize::try_from(*rows).unwrap_or(usize::MAX);
+                    counted(locale, rows, "row", "rows")
+                }
+                None => say("rows").into_owned(),
+            };
+            format!(
+                "-- {} {what} {} {table} (ON DELETE CASCADE)",
+                say("also deletes"),
+                say("in")
+            )
+        }
+        Line::Also(Effect::Clears {
+            table,
+            columns,
+            rows,
+        }) => {
+            let rows = match rows {
+                Some(rows) => {
+                    let plural = u32::try_from(*rows).unwrap_or(u32::MAX);
+                    format!("{rows} {table} {}", ngettext(locale, "row", "rows", plural))
+                }
+                None => format!("{table} {}", say("rows")),
+            };
+            format!(
+                "-- {} {} {} {rows} (ON DELETE SET NULL)",
+                say("also clears"),
+                columns.join(", "),
+                say("in")
+            )
+        }
         Line::Sql(_) => return None,
     })
 }
@@ -138,10 +181,16 @@ fn comment_color(line: &Line, palette: &Palette) -> Color32 {
         | Line::Unsendable
         | Line::NewBlocked(_)
         | Line::NewRequired(_)
-        | Line::NewRefused(_) => Tone::Danger.color(palette),
-        Line::Row(_) | Line::Check(_) | Line::New | Line::Sql(_) => {
-            sql_text::color_of(TokenKind::Comment, palette)
-        }
+        | Line::NewRefused(_)
+        | Line::DeleteRefused { .. } => Tone::Danger.color(palette),
+        // What a statement does beyond what it says: a warning.
+        Line::Also(_) => Tone::Warning.color(palette),
+        Line::Row(_)
+        | Line::Check(_)
+        | Line::New
+        | Line::Delete(_)
+        | Line::DeleteRun(_)
+        | Line::Sql(_) => sql_text::color_of(TokenKind::Comment, palette),
     }
 }
 
@@ -334,7 +383,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             widgets::hline(ui, head.x_range(), head.top() + 0.5, palette.outline);
             widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.outline);
             if look.terminal {
-                let counts = (review.added, review.changes, review.rows);
+                let counts = (review.added, review.changes, review.rows, review.deleted);
                 terminal_head(ui, head, side, counts, typing, skin);
                 let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT), full.max);
                 asked = terminal_foot(ui, foot, side, read_only, skin);
@@ -467,7 +516,7 @@ fn terminal_head(
     ui: &egui::Ui,
     head: Rect,
     side: f32,
-    (added, changes, rows): (usize, usize, usize),
+    (added, changes, rows, deleted): (usize, usize, usize, usize),
     typing: bool,
     skin: Skin<'_>,
 ) {
@@ -477,15 +526,19 @@ fn terminal_head(
         locale,
     } = skin;
     let y = head.center().y;
-    // The new rows, then the changes and their rows, each where there is
-    // any: "pending · 1 new row · 2 changes · 1 row".
+    // The new rows, then the changes and their rows, then the rows to
+    // delete, each where there is any: "pending · 1 new row · 2 changes
+    // · 1 row · 1 to delete".
     let mut counts = vec![skin.say("pending")];
     if added > 0 {
         counts.push(look.label(&counted(locale, added, "new row", "new rows")));
     }
-    if changes > 0 || added == 0 {
+    if changes > 0 || (added == 0 && deleted == 0) {
         counts.push(look.label(&counted(locale, changes, "change", "changes")));
         counts.push(look.label(&counted(locale, rows, "row", "rows")));
+    }
+    if deleted > 0 {
+        counts.push(format!("{deleted} {}", skin.say("to delete")));
     }
     let counts = counts.join(" · ");
     let counts = Text::one(look, TextRole::OGroup, &counts, palette.text);
@@ -676,6 +729,7 @@ mod tests {
             object: ObjectRef::new("main", "users"),
             inserts: Vec::new(),
             rows: ids.iter().map(row).collect(),
+            deletes: Vec::new(),
         }
     }
 
@@ -686,6 +740,54 @@ mod tests {
         assert_eq!(
             read(Line::Row("id 2".into())).as_deref(),
             Some("-- row id 2")
+        );
+        assert_eq!(
+            read(Line::Delete("id 9".into())).as_deref(),
+            Some("-- delete row id 9")
+        );
+        assert_eq!(
+            read(Line::DeleteRun(3)).as_deref(),
+            Some("-- delete 3 rows")
+        );
+        let also = |effect: Effect| read(Line::Also(effect));
+        let covers = || "book_covers".to_owned();
+        let deletes = |rows| Effect::Deletes {
+            table: covers(),
+            rows,
+        };
+        assert_eq!(
+            also(deletes(Some(3))).as_deref(),
+            Some("-- also deletes 3 rows in book_covers (ON DELETE CASCADE)")
+        );
+        assert_eq!(
+            also(deletes(Some(1))).as_deref(),
+            Some("-- also deletes 1 row in book_covers (ON DELETE CASCADE)")
+        );
+        let clears = |rows| Effect::Clears {
+            table: covers(),
+            columns: vec!["publisher_id".to_owned()],
+            rows,
+        };
+        assert_eq!(
+            also(clears(Some(3))).as_deref(),
+            Some("-- also clears publisher_id in 3 book_covers rows (ON DELETE SET NULL)")
+        );
+        // Not counted yet, or not countable: the line without a number.
+        assert_eq!(
+            also(deletes(None)).as_deref(),
+            Some("-- also deletes rows in book_covers (ON DELETE CASCADE)")
+        );
+        assert_eq!(
+            also(clears(None)).as_deref(),
+            Some("-- also clears publisher_id in book_covers rows (ON DELETE SET NULL)")
+        );
+        let refused = Line::DeleteRefused {
+            row: "id 9".into(),
+            reason: "no".into(),
+        };
+        assert_eq!(
+            read(refused).as_deref(),
+            Some("-- delete row id 9 · cannot be sent: no")
         );
         let check = Line::Check(vec![
             ("kind".into(), "'print'".into()),

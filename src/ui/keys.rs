@@ -52,7 +52,8 @@ pub(crate) fn prompt_letter(
 ) -> Option<Command> {
     match keymap.typed(layout, Scope::Prompt, &|holds| holds == when, typed) {
         Typed::Command(command) => Some(command),
-        Typed::Claimed | Typed::Waiting | Typed::Nothing => None,
+        // A line of the prompt has no count.
+        Typed::Claimed | Typed::Waiting | Typed::Nothing | Typed::Counted(..) => None,
     }
 }
 
@@ -490,7 +491,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // can be edited. Everywhere else it is no key.
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
-        .filter(|&(tab, id)| app.flips(tab, id));
+        .filter(|&(tab, id)| app.flips(tab, id))
+        // Not under the terminal look's visual selection of rows.
+        .filter(|&(tab, id)| {
+            let object = app
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id));
+            !(app.look.terminal && object.is_some_and(|object| object.visual()))
+        });
     let layout = app.layout();
     let on_picker = matches!(
         app.active_tab().content,
@@ -800,6 +808,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(Action::CloseTab { tab, id });
             }
             if !editing && any_grid && !tree_arrows && !focused {
+                // Shift with an arrow takes the row it moves to into the
+                // selection. A table's rows only.
+                if sql.is_none() {
+                    for (command, rows) in [(Command::ExtendUp, -1), (Command::ExtendDown, 1)] {
+                        let presses = on(input, command, Scope::Grid).count;
+                        actions.extend((0..presses).map(|_| Action::ExtendBy { tab, id, rows }));
+                    }
+                }
                 let page = 20;
                 let moves = [Command::MoveRow, Command::MoveColumn, Command::MovePage];
                 for command in moves {
@@ -1301,6 +1317,9 @@ fn editing_keys(
         asked(input, keymap, layout, command, scope, normal)
     };
     let open = object.edits.editor.is_some();
+    // The terminal look's visual selection of rows holds back the chords
+    // that act on one cell or one row.
+    let visual = app.look.terminal && object.visual();
     let editor = crate::ui::cell_editor::field_id(tab, id);
     let typing = open && ctx.memory(|memory| memory.has_focus(editor));
     // A save is read wherever the pending bar offers it with its key:
@@ -1371,11 +1390,17 @@ fn editing_keys(
     // The field the keys were given back from: it gives up the keyboard
     // once the input is read.
     let mut left = None;
+    // Why the row's delete was refused: said once the input is read, since
+    // a toast asks the context for what this closure holds.
+    let mut refused = None;
     ctx.input_mut(|input| {
         // Each chord with exactly what it names held: the one that drops
         // every change is not the one that touches one cell.
         if on(input, Command::DiscardChanges, Scope::Grid, true).count > 0 {
             actions.push(Action::DiscardEdits { tab, id });
+        }
+        if visual {
+            return;
         }
         // A click selects its cell once the frame is drawn, after these
         // keys were read: what acts on the active cell, or opens its
@@ -1420,12 +1445,12 @@ fn editing_keys(
         let Some(selected) = object.selection else {
             return;
         };
-        // The row's delete drops a new row: nothing of it is in the
-        // table. On a row of the page it does nothing yet.
-        let on_new = crate::edit::new_id(selected.row).is_some() && field.is_none();
+        // The row's delete: a new row is dropped, a row of the page is
+        // marked for deletion, or restored where it is marked. With the
+        // keys on a field of the row panel nothing is deleted here.
         let deletes = on(input, Command::DeleteRow, Scope::Grid, true).count;
-        if on_new && deletes > 0 {
-            actions.push(Action::DropRow { tab, id });
+        if deletes > 0 && field.is_none() {
+            refused = delete_selected(app, tab, id, actions);
             return;
         }
         let cell = crate::model::CellPos {
@@ -1509,6 +1534,121 @@ fn editing_keys(
     if let Some(stop) = left {
         ctx.memory_mut(|memory| memory.surrender_focus(stop));
     }
+    if let Some(why) = refused {
+        crate::ui::toast::say(ctx, &why);
+    }
+}
+
+/// Asks for the selected row of the tab `id` to be deleted, or hands back
+/// why it cannot be, for the caller to say: a toast in the desktop looks,
+/// the status line's message in the Omarchy look.
+fn delete_row(app: &App, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) -> Option<String> {
+    let refused = app.workspace(tab).and_then(|workspace| {
+        let object = workspace.object_tab(id)?;
+        let row = object.selection?.row;
+        let lock = crate::edit::Table::of(workspace, object)?.no_delete(row)?;
+        let table = crate::ui::format::display_safe(&object.object.name);
+        Some(crate::ui::cell_editor::delete_said(
+            lock, &table, &app.look, app.locale,
+        ))
+    });
+    if refused.is_none() {
+        actions.push(Action::DeleteRow { tab, id });
+    }
+    refused
+}
+
+/// Asks for the selected rows of the tab `id` to be deleted. One row is
+/// [`delete_row`]'s. Of several, hands back what there is to say where a
+/// refusal is said: why none is deleted, or how many were left out.
+fn delete_selected(
+    app: &App,
+    tab: ConnTabId,
+    id: TabId,
+    actions: &mut Vec<Action>,
+) -> Option<String> {
+    let several = app.workspace(tab).and_then(|workspace| {
+        let object = workspace.object_tab(id)?;
+        let rows = object.selected_rows();
+        if rows.len() < 2 {
+            return None;
+        }
+        let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
+        let table = crate::ui::format::display_safe(&object.object.name);
+        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
+        Some((sweep, said))
+    });
+    let Some((sweep, said)) = several else {
+        return delete_row(app, tab, id, actions);
+    };
+    if !matches!(
+        sweep,
+        crate::edit::Sweep::TooMany | crate::edit::Sweep::Refused(_)
+    ) {
+        actions.push(Action::DeleteSelected { tab, id });
+    }
+    said
+}
+
+/// Asks for the cursor's row and the rows after it, `count` in all, to be
+/// deleted, or hands back what there is to say where a refusal is said.
+fn delete_count(
+    app: &App,
+    tab: ConnTabId,
+    id: TabId,
+    count: u32,
+    actions: &mut Vec<Action>,
+) -> Option<String> {
+    let (sweep, said) = app.workspace(tab).and_then(|workspace| {
+        let object = workspace.object_tab(id)?;
+        let rows = object.rows_from_cursor(count);
+        if rows.is_empty() {
+            return None;
+        }
+        let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
+        let table = crate::ui::format::display_safe(&object.object.name);
+        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
+        Some((sweep, said))
+    })?;
+    if !matches!(
+        sweep,
+        crate::edit::Sweep::TooMany | crate::edit::Sweep::Refused(_)
+    ) {
+        actions.push(Action::DeleteCount { tab, id, count });
+    }
+    said
+}
+
+/// Whether a visual selection of rows holds `command` back: what changes,
+/// copies or follows one cell or one row. The moves, the inspector's
+/// show and hide, a save, a discard, Review SQL, a reload, the filters and
+/// the pages are not among them.
+fn held_back(command: Command) -> bool {
+    matches!(
+        command,
+        Command::EditCell
+            | Command::ReplaceCell
+            | Command::OpenInspector
+            | Command::SetNull
+            | Command::SetDefault
+            | Command::UndoCell
+            | Command::RedoCell
+            | Command::CopyCells
+            | Command::CopyRow
+            | Command::PasteCells
+            | Command::PasteNewRows
+            | Command::AddRow
+            | Command::AddRowAbove
+            | Command::AddRowAtEnd
+            | Command::DuplicateRow
+            | Command::YankRow
+            | Command::PutRow
+            | Command::PutRowAbove
+            | Command::DeleteRow
+            | Command::OpenReferencedRow
+            | Command::ShowSavedRow
+            | Command::BooleanCycle
+    )
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
@@ -1691,7 +1831,7 @@ fn letters(
                 Typed::Command(command) => Some(command),
                 // Nobody's, or the key of something not built yet. A
                 // character that ends a wait is not read again as a first.
-                Typed::Claimed | Typed::Nothing => None,
+                Typed::Claimed | Typed::Nothing | Typed::Counted(..) => None,
             };
             let step = if char == 'k' { -1 } else { 1 };
             match (command, &selected) {
@@ -1738,6 +1878,9 @@ fn letters(
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
+    // A visual selection of rows is on: its keys are read, and the keys
+    // that act on one cell or one row are held back.
+    let visual = object.is_some_and(|object| object.visual());
     let on_sql = workspace.active_sql_tab().is_some();
     // A SQL editor showing its result takes the letters that move in it.
     let sql_grid = workspace
@@ -1773,6 +1916,13 @@ fn letters(
     // Dismiss does in the other looks; then it closes the row panel. (On a
     // field of the panel it gave the keys back to the grid, before this.)
     let quiet = !left_field && !menu_open;
+    // A visual selection first: it is the innermost thing the key leaves.
+    if let Some(id) = active.filter(|_| visual)
+        && quiet
+        && on(Command::LeaveVisual, Scope::Grid).fresh
+    {
+        actions.push(Action::LeaveVisual { tab, id });
+    }
     if let Some(id) = reviewing
         && quiet
         && on(Command::CloseReview, Scope::Grid).fresh
@@ -1876,6 +2026,7 @@ fn letters(
         crate::keymap::When::Note => note.is_some(),
         crate::keymap::When::RefusedWrite => has_card,
         crate::keymap::When::NewRow => on_new,
+        crate::keymap::When::Visual => visual,
         // The Structure view shows where the rows would: its own keys
         // come before the rows' there.
         crate::keymap::When::Structure => structure_shows,
@@ -1913,7 +2064,9 @@ fn letters(
     let only_edits = {
         let mut waiting = waiting.clone();
         typed.iter().all(|char| {
-            if *char == ':' && waiting.is_empty() {
+            if *char == ':' && (waiting.is_empty() || crate::keymap::is_count(&waiting)) {
+                // A count before the colon goes with it.
+                waiting.clear();
                 return true;
             }
             waiting.push(*char);
@@ -1950,7 +2103,9 @@ fn letters(
         // The colon opens the prompt, wherever a tab of the workspace is
         // in front: a table's or a SQL editor's, with the keys on the tree
         // too. It is no key of the keymap's: its lines are.
-        if char == ':' && waiting.is_empty() {
+        if char == ':' && (waiting.is_empty() || crate::keymap::is_count(&waiting)) {
+            // A count before the colon goes with it.
+            waiting.clear();
             take_char(ctx, char);
             if alone {
                 opened = true;
@@ -1959,7 +2114,7 @@ fn letters(
             continue;
         }
         waiting.push(char);
-        let command = match read(&waiting) {
+        let (command, count) = match read(&waiting) {
             // Nobody's: left in the frame, as any other text is.
             Typed::Nothing => {
                 waiting.clear();
@@ -1970,11 +2125,13 @@ fn letters(
                 continue;
             }
             // The key of something that is not built yet: taken.
-            Typed::Claimed => None,
-            Typed::Command(command) => Some(command),
+            Typed::Claimed => (None, None),
+            Typed::Command(command) => (Some(command), None),
+            Typed::Counted(command, count) => (Some(command), Some(count)),
         };
         take_char(ctx, char);
         waiting.clear();
+        let command = command.filter(|command| !(visual && held_back(*command)));
         match (command, active) {
             (Some(Command::EditCell), _) if edits && alone => {
                 opened = true;
@@ -2035,15 +2192,58 @@ fn letters(
                 let above = command == Command::PutRowAbove;
                 actions.push(Action::PutRow { tab, id, above });
             }
-            // The row under the cursor is dropped where it is a new one,
-            // with the keys on the rows or on a field of its form.
+            (Some(Command::SelectRows), Some(id)) if rows_show && !tree && field.is_none() => {
+                actions.push(Action::SelectRows { tab, id });
+            }
+            // The rows of the visual selection. Where none of them is
+            // deleted the selection stays, to be made smaller.
+            (Some(Command::DeleteSelection), Some(id)) if rows_show && !tree && field.is_none() => {
+                let from = actions.len();
+                let why = delete_selected(app, tab, id, actions);
+                // One row's delete comes back as its own action: the
+                // selection's is what leaves the visual selection.
+                for action in &mut actions[from..] {
+                    if matches!(action, Action::DeleteRow { .. }) {
+                        *action = Action::DeleteSelected { tab, id };
+                    }
+                }
+                if let Some(why) = why {
+                    crate::ui::toast::say(ctx, &why);
+                }
+            }
+            // The row under the cursor is deleted: dropped where it is a
+            // new one, marked or restored where it is the page's. With
+            // the keys on a field, only a new row's form has the key.
             (Some(Command::DeleteRow), Some(id))
                 if rows_show && !tree && (field.is_none() || on_new) =>
             {
-                actions.push(Action::DropRow { tab, id });
+                // A count names its own rows. From a field of a new
+                // row's form, the row it is of.
+                let why = match count {
+                    Some(count) if field.is_none() => delete_count(app, tab, id, count, actions),
+                    _ if field.is_none() => delete_selected(app, tab, id, actions),
+                    _ => delete_row(app, tab, id, actions),
+                };
+                if let Some(why) = why {
+                    crate::ui::toast::say(ctx, &why);
+                }
             }
             (Some(Command::OpenReferencedRow), Some(object_tab)) => {
-                actions.push(Action::FollowSelectedKey { tab, object_tab });
+                // On a row whose delete a foreign key refused, the rows
+                // that hold it: what the error line names the key for.
+                let held = app.workspace(tab).and_then(|workspace| {
+                    let object = workspace.object_tab(object_tab)?;
+                    let row = object.selection?.row;
+                    let doomed = object.edits.deleted.get(&row)?;
+                    doomed.holder.as_ref().map(|_| row)
+                });
+                match held {
+                    Some(row) => {
+                        let id = object_tab;
+                        actions.push(Action::OpenHolders { tab, id, row });
+                    }
+                    None => actions.push(Action::FollowSelectedKey { tab, object_tab }),
+                }
             }
             // The Structure view's cursor, and the column under it as
             // what labels the table's rows.

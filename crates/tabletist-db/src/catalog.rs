@@ -96,6 +96,54 @@ pub struct ForeignKeyInfo {
     pub on_delete: String,
 }
 
+/// A foreign key of another table, or of the table itself, that points at
+/// the table a [`Structure`] describes: what a row of that table loses, or
+/// is held by, when a row of this one is deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReferencingKey {
+    /// SQLite foreign keys have no names.
+    pub name: Option<String>,
+    /// The table that has the key.
+    pub schema: String,
+    pub table: String,
+    /// Its columns, and the columns of the described table each points at.
+    pub columns: Vec<String>,
+    pub ref_columns: Vec<String>,
+    /// As the engine writes it: `CASCADE`, `SET NULL`, `NO ACTION`.
+    pub on_delete: String,
+}
+
+/// What a foreign key does to the rows that point at a row that is
+/// deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acts {
+    /// `ON DELETE CASCADE`: they are deleted with it.
+    Deletes,
+    /// `ON DELETE SET NULL`: their key is cleared.
+    Clears,
+}
+
+impl ReferencingKey {
+    /// What the key does on a delete, where it does one of the two things
+    /// a user is told of. `None` for a key that holds the row, and for
+    /// `SET DEFAULT`.
+    pub fn acts(&self) -> Option<Acts> {
+        match self.on_delete.to_ascii_uppercase().as_str() {
+            "CASCADE" => Some(Acts::Deletes),
+            "SET NULL" => Some(Acts::Clears),
+            _ => None,
+        }
+    }
+
+    /// Whether the key keeps a row it points at from being deleted.
+    pub fn holds(&self) -> bool {
+        matches!(
+            self.on_delete.to_ascii_uppercase().as_str(),
+            "NO ACTION" | "RESTRICT"
+        )
+    }
+}
+
 /// What the Structure view shows.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Structure {
@@ -103,6 +151,9 @@ pub struct Structure {
     pub primary_key: Vec<String>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKeyInfo>,
+    /// The foreign keys that point at the table, its own among them where
+    /// it points at itself.
+    pub referenced_by: Vec<ReferencingKey>,
 }
 
 impl Structure {
@@ -143,6 +194,31 @@ impl Structure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(on_delete: &str) -> ReferencingKey {
+        ReferencingKey {
+            name: Some("book_covers_publisher_id_fkey".into()),
+            schema: "public".into(),
+            table: "book_covers".into(),
+            columns: vec!["publisher_id".into()],
+            ref_columns: vec!["id".into()],
+            on_delete: on_delete.into(),
+        }
+    }
+
+    /// What a delete does to the rows that point at it, however the
+    /// engine writes the action.
+    #[test]
+    fn a_key_acts_or_holds_by_its_action() {
+        assert_eq!(key("CASCADE").acts(), Some(Acts::Deletes));
+        assert_eq!(key("cascade").acts(), Some(Acts::Deletes));
+        assert_eq!(key("SET NULL").acts(), Some(Acts::Clears));
+        assert_eq!(key("SET DEFAULT").acts(), None);
+        assert!(key("NO ACTION").holds());
+        assert!(key("RESTRICT").holds());
+        assert!(!key("CASCADE").holds());
+        assert!(!key("SET DEFAULT").holds());
+    }
 
     fn column(name: &str, nullable: bool) -> ColumnInfo {
         ColumnInfo {

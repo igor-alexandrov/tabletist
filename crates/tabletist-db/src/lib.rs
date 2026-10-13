@@ -37,11 +37,13 @@ use std::sync::Arc;
 
 use adapter::Adapter;
 pub use catalog::{
-    ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
+    Acts, ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef,
+    ReferencingKey, Structure,
 };
 pub use class::{ColumnClass, Temporal, column_class, temporal};
 pub use dialect::{
-    Dialect, InsertParts, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
+    DeleteParts, Dialect, InsertParts, InsertStatement, RowDeletion, RowUpdate, Sql, UpdateParts,
+    escape_like, quote_literal,
 };
 pub use error::{Error, Named, Result, SshStage};
 pub use lookup::{Lookup, LookupPage, LookupPart, LookupRow, Matched};
@@ -53,7 +55,8 @@ pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMod
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 pub use write::{
-    CellChange, ChangeSet, Conflict, InsertValue, NewValue, RowChange, RowInsert, WriteOutcome,
+    CellChange, ChangeSet, Conflict, InsertValue, MAX_RUN, NewValue, RowChange, RowDelete,
+    RowInsert, WriteOutcome, delete_runs,
 };
 
 /// Whether a session may write. [`Connection::write`] and a script run in
@@ -310,11 +313,20 @@ impl Connection {
     /// the database decides which row a key finds.
     ///
     /// The set's new rows are written first, each by one `INSERT`, then
-    /// its changed rows. A new row comes back as the database stored it,
+    /// its changed rows, then its rows to delete, each by one `DELETE`.
+    /// A new row comes back as the database stored it,
     /// or as `None` where that is not known for sure, which is more often
     /// than on a table with a trigger: [`WriteOutcome::Written`] lists
     /// every case. A caller reads the table again for such a row, and
     /// takes no new row for known because its table has no trigger.
+    ///
+    /// A row to delete is found by its key and locked with the changed
+    /// rows, before anything is written, and no other column of it is
+    /// compared. One that is not there is no failure and no conflict:
+    /// the rest of the save is written, and [`WriteOutcome::Written`]
+    /// says which rows were already gone. One the database refuses to
+    /// delete, a row a foreign key holds most often, undoes the save
+    /// ([`WriteOutcome::FailedDelete`]).
     ///
     /// On a read-only connection it is refused before the set is even
     /// looked at. The future must be awaited to its end and never dropped:

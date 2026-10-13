@@ -1,4 +1,5 @@
-//! Changing rows: what a save asks for, and what came of it.
+//! Changing, adding and deleting rows: what a save asks for, and what came
+//! of it.
 
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,8 @@ pub struct ChangeSet {
     /// The new rows. They are written before `rows` are changed.
     pub inserts: Vec<RowInsert>,
     pub rows: Vec<RowChange>,
+    /// The rows to delete. They go last, after every row is changed.
+    pub deletes: Vec<RowDelete>,
 }
 
 /// Its table and its counts, without the values: a set is what a command
@@ -25,6 +28,7 @@ impl std::fmt::Debug for ChangeSet {
             .field("inserts", &self.inserts.len())
             .field("rows", &self.rows.len())
             .field("cells", &cells)
+            .field("deletes", &self.deletes.len())
             .finish_non_exhaustive()
     }
 }
@@ -67,6 +71,52 @@ pub struct CellChange {
     pub new: NewValue,
 }
 
+/// A row to delete: what finds it, and nothing more. No other column is
+/// compared with what the page loaded: a row someone changed since is
+/// deleted as it now stands, and one that is already gone is no failure
+/// (see [`WriteOutcome::Written`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowDelete {
+    /// The row key's columns (`Structure::row_key`) and their loaded
+    /// values, as a [`RowChange`]'s.
+    pub key: Vec<(String, Value)>,
+}
+
+/// How many rows one `DELETE` of a save names, at most.
+pub const MAX_RUN: usize = 100;
+
+/// The save's deletes, cut into runs in their order: neighbours whose
+/// keys name the same columns in the same order, at most [`MAX_RUN`] of
+/// them, go in one statement ([`crate::Dialect::delete_run`]). `built`
+/// says of each row whether its own statement could be built
+/// ([`crate::Dialect::delete_row`]): one that could not is a run of its
+/// own, since no statement holds it. Every row is in exactly one run.
+///
+/// The values of a run's column are of one kind too. MySQL reads a
+/// `bigint unsigned` above the signed range as text and one below it as
+/// a number, and a list that mixes the two is not sure to compare each as
+/// `=` does.
+pub fn delete_runs(deletes: &[RowDelete], built: &[bool]) -> Vec<std::ops::Range<usize>> {
+    let same_columns = |a: &RowDelete, b: &RowDelete| same_key_shape(&a.key, &b.key);
+    let sent = |row: usize| built.get(row).copied().unwrap_or(false);
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for (row, delete) in deletes.iter().enumerate() {
+        let joins = runs.last().is_some_and(|run| {
+            sent(row)
+                && sent(run.start)
+                && run.len() < MAX_RUN
+                && deletes
+                    .get(run.start)
+                    .is_some_and(|first| same_columns(first, delete))
+        });
+        match runs.last_mut() {
+            Some(run) if joins => run.end = row + 1,
+            _ => runs.push(row..row + 1),
+        }
+    }
+    runs
+}
+
 /// What a cell becomes: NULL, text the database turns into the column's
 /// type, or what the database makes itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,8 +147,10 @@ pub enum WriteOutcome {
         ///   after its `INSERT`, move its key, or take the row for itself
         ///   and store it elsewhere or nowhere;
         /// - on PostgreSQL and SQLite, in a save that also changes rows,
-        ///   on a table one of whose foreign keys acts on an update: a
-        ///   changed row can carry a new one with it;
+        ///   on a table one of whose foreign keys acts on an update, and
+        ///   in a save that also deletes rows, on a table one of whose
+        ///   foreign keys acts on a delete: a changed or a deleted row
+        ///   can carry a new one with it;
         /// - on MySQL, which hands no row back, where the primary key
         ///   does not find the row again, or the server would not list
         ///   the table's triggers to this user.
@@ -108,6 +160,10 @@ pub enum WriteOutcome {
         /// Each changed row as the database now holds it, in the set's
         /// order.
         rows: Vec<Vec<Value>>,
+        /// The places, in the set's `deletes`, of the rows that were not
+        /// there to delete: someone deleted them first. Every other row
+        /// of `deletes` is deleted, and the rest of the save is written.
+        gone: Vec<usize>,
         elapsed: Duration,
     },
     /// Rows that are gone, or whose changed columns no longer hold what
@@ -119,6 +175,9 @@ pub enum WriteOutcome {
     /// The statement of `inserts[insert]` could not be built or failed.
     /// Nothing was written.
     FailedInsert { insert: usize, error: Error },
+    /// The statement of `deletes[delete]` could not be built or failed: a
+    /// foreign key that holds the row, most often. Nothing was written.
+    FailedDelete { delete: usize, error: Error },
 }
 
 /// A row a save found changed since it was loaded.
@@ -134,7 +193,7 @@ impl ChangeSet {
     /// Refuses a set that cannot be written as it stands, before anything
     /// is sent: a statement without a key would touch every row.
     pub fn check(&self) -> Result<()> {
-        if self.rows.is_empty() && self.inserts.is_empty() {
+        if self.rows.is_empty() && self.inserts.is_empty() && self.deletes.is_empty() {
             return Err(Error::query("there is nothing to save"));
         }
         for insert in &self.inserts {
@@ -200,6 +259,37 @@ impl ChangeSet {
                 }
             }
         }
+        for (index, delete) in self.deletes.iter().enumerate() {
+            if delete.key.is_empty() {
+                return Err(Error::query("a row to delete has no key"));
+            }
+            if let Some((column, _)) = delete.key.iter().enumerate().find_map(|(index, named)| {
+                delete.key[..index]
+                    .iter()
+                    .any(|(earlier, _)| *earlier == named.0)
+                    .then_some(named)
+            }) {
+                return Err(Error::query(format!(
+                    "{column} is named twice in the row's key"
+                )));
+            }
+            if delete.key.iter().any(|(_, value)| value.is_null()) {
+                return Err(Error::query(
+                    "a row to delete cannot be found: its key is NULL",
+                ));
+            }
+            if self.deletes[..index]
+                .iter()
+                .any(|earlier| same_key(&earlier.key, &delete.key))
+            {
+                return Err(Error::query("two rows to delete have the same key"));
+            }
+            // Its update would run, and then be thrown away with the row:
+            // what the save meant by the two is not known.
+            if self.rows.iter().any(|row| same_key(&row.key, &delete.key)) {
+                return Err(Error::query("a row to save is both changed and deleted"));
+            }
+        }
         Ok(())
     }
 }
@@ -208,6 +298,8 @@ impl ChangeSet {
 pub(crate) struct Stored {
     pub(crate) inserted: Vec<Option<Vec<Value>>>,
     pub(crate) rows: Vec<Vec<Value>>,
+    /// See [`WriteOutcome::Written`]'s `gone`.
+    pub(crate) gone: Vec<usize>,
 }
 
 /// What the statements of a save came to, before its transaction ends.
@@ -218,6 +310,7 @@ pub(crate) enum Applied {
     Conflicts(Vec<Conflict>),
     Failed { row: usize, error: Error },
     FailedInsert { insert: usize, error: Error },
+    FailedDelete { delete: usize, error: Error },
 }
 
 impl Applied {
@@ -225,16 +318,50 @@ impl Applied {
     /// has ended.
     pub(crate) fn outcome(self, started: Instant) -> WriteOutcome {
         match self {
-            Self::Rows(Stored { inserted, rows }) => WriteOutcome::Written {
+            Self::Rows(Stored {
                 inserted,
                 rows,
+                gone,
+            }) => WriteOutcome::Written {
+                inserted,
+                rows,
+                gone,
                 elapsed: started.elapsed(),
             },
             Self::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
             Self::Failed { row, error } => WriteOutcome::Failed { row, error },
             Self::FailedInsert { insert, error } => WriteOutcome::FailedInsert { insert, error },
+            Self::FailedDelete { delete, error } => WriteOutcome::FailedDelete { delete, error },
         }
     }
+}
+
+/// Whether two rows' keys can stand in one run: the same columns in the
+/// same order, each with a value of the same kind.
+pub(crate) fn same_key_shape(a: &Key, b: &Key) -> bool {
+    let alike = |a: &(String, Value), b: &(String, Value)| {
+        a.0 == b.0 && std::mem::discriminant(&a.1) == std::mem::discriminant(&b.1)
+    };
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| alike(a, b))
+}
+
+/// A point inside the save's transaction to come back to: before a run of
+/// deletes, so a run the database refuses can be undone and its rows sent
+/// one at a time. The three statements are every engine's.
+pub(crate) const SAVEPOINT: &str = "SAVEPOINT tabletist_run";
+pub(crate) const ROLLBACK_TO: &str = "ROLLBACK TO SAVEPOINT tabletist_run";
+pub(crate) const RELEASE: &str = "RELEASE SAVEPOINT tabletist_run";
+
+/// A statement deleted another number of rows than it named.
+pub(crate) fn deleted_instead(deleted: u64, meant: usize) -> Error {
+    let meant = if meant == 1 {
+        "one".to_owned()
+    } else {
+        meant.to_string()
+    };
+    Error::query(format!(
+        "the save would have deleted {deleted} rows where it meant {meant}"
+    ))
 }
 
 /// Ends a save that was told to stop, as a cancelled statement ends it. A
@@ -284,6 +411,15 @@ pub(crate) fn spelled_otherwise<'a>(change: &'a RowChange, columns: &[String]) -
         .find(|name| !columns.iter().any(|column| column == name))
 }
 
+/// A column of `key` that is not one of the row's `columns` as the table
+/// spells them: [`spelled_otherwise`] for a row that is found and not
+/// changed, which has a key and no set.
+pub(crate) fn key_spelled_otherwise<'a>(key: &'a Key, columns: &[String]) -> Option<&'a str> {
+    key.iter()
+        .map(|(name, _)| name.as_str())
+        .find(|name| !columns.iter().any(|column| column == name))
+}
+
 /// A column `insert` names a second time, as an engine that matches names
 /// without regard to case reads them: `same` is how it compares two.
 /// `ChangeSet::check` compares names exactly, and lets `kind` beside `KIND`
@@ -296,6 +432,9 @@ pub(crate) fn named_twice(insert: &RowInsert, same: impl Fn(&str, &str) -> bool)
             .then_some(cell.column.as_str())
     })
 }
+
+/// A row's key: its columns and their loaded values.
+pub(crate) type Key = [(String, Value)];
 
 /// Whether two keys find the same row: the same columns, each with the
 /// same value, in whatever order each names them.
@@ -326,22 +465,23 @@ pub(crate) fn conflicts_of(places: Vec<usize>, mut read: Vec<Option<Vec<Value>>>
 /// unique column and by another. Both changes would then be compared with
 /// the row as it was, and the later written over the earlier.
 ///
-/// `read` holds, for each of `rows`, the row its locking read found (`None`
-/// when it is gone), and `columns` names the values of every one of them:
-/// they are reads of one table in one transaction. Two reads found the same
-/// row when their rows hold the same values, as the database returned them,
-/// in the key columns of either change: each read found one row by a key
-/// that names one row, so a row with that key's values is that row.
+/// `keys` holds the key of each row the save read, and `read` the row its
+/// locking read found (`None` when it is gone), in the same order: the
+/// changed rows and the rows to delete alike (see [`read_by`]). `columns`
+/// names the values of every one of them: they are reads of one table in
+/// one transaction. Two reads found the same row when their rows hold the
+/// same values, as the database returned them, in the key columns of
+/// either: each read found one row by a key that names one row, so a row
+/// with that key's values is that row.
 pub(crate) fn same_row_twice(
-    rows: &[RowChange],
+    keys: &[&Key],
     columns: &[String],
-    read: &[Option<Vec<Value>>],
+    read: &[Option<&[Value]>],
 ) -> Result<()> {
-    // Where each change's key columns are among a row's values.
-    let mut keys = Vec::with_capacity(rows.len());
-    for row in rows {
-        let places: Vec<usize> = row
-            .key
+    // Where each key's columns are among a row's values.
+    let mut places_of = Vec::with_capacity(keys.len());
+    for key in keys {
+        let places: Vec<usize> = key
             .iter()
             .map(|(name, _)| {
                 columns
@@ -350,7 +490,7 @@ pub(crate) fn same_row_twice(
                     .ok_or_else(|| Error::query(format!("no such column: {name}")))
             })
             .collect::<Result<_>>()?;
-        keys.push(places);
+        places_of.push(places);
     }
     for (later, theirs) in read.iter().enumerate() {
         let Some(theirs) = theirs else { continue };
@@ -366,12 +506,30 @@ pub(crate) fn same_row_twice(
                     })
                 })
             };
-            if alike(keys.get(earlier)) || alike(keys.get(later)) {
+            if alike(places_of.get(earlier)) || alike(places_of.get(later)) {
                 return Err(Error::query("two changes of the save name the same row"));
             }
         }
     }
     Ok(())
+}
+
+/// What [`same_row_twice`] compares, for a save whose changed rows read
+/// `rows` and whose rows to delete read `doomed`: every key, and the row
+/// each found.
+pub(crate) fn read_by<'a>(
+    changes: &'a ChangeSet,
+    rows: &'a [Option<Vec<Value>>],
+    doomed: &'a [Option<Vec<Value>>],
+) -> (Vec<&'a Key>, Vec<Option<&'a [Value]>>) {
+    let keys = changes
+        .rows
+        .iter()
+        .map(|row| row.key.as_slice())
+        .chain(changes.deletes.iter().map(|delete| delete.key.as_slice()))
+        .collect();
+    let read = rows.iter().chain(doomed).map(Option::as_deref).collect();
+    (keys, read)
 }
 
 /// Whether the row as the database holds it (`server`, whose values
@@ -401,6 +559,47 @@ pub(crate) fn changed_since_loaded(
 mod tests {
     use super::*;
 
+    fn by(columns: &[&str], id: i64) -> RowDelete {
+        RowDelete {
+            key: columns
+                .iter()
+                .map(|column| ((*column).to_owned(), Value::Int(id)))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn deletes_are_cut_into_runs_of_neighbours_with_the_same_key() {
+        let rows: Vec<RowDelete> = (0..250).map(|id| by(&["id"], id)).collect();
+        let built = vec![true; rows.len()];
+        assert_eq!(delete_runs(&rows, &built), [0..100, 100..200, 200..250]);
+        // A key of other columns begins a run, and so does one in another
+        // order.
+        let rows = [
+            by(&["id"], 1),
+            by(&["id"], 2),
+            by(&["book_id", "author_id"], 3),
+            by(&["author_id", "book_id"], 4),
+            by(&["author_id", "book_id"], 5),
+        ];
+        assert_eq!(delete_runs(&rows, &[true; 5]), [0..2, 2..3, 3..5]);
+        // A row that was not built stands alone, between two runs.
+        let rows: Vec<RowDelete> = (0..5).map(|id| by(&["id"], id)).collect();
+        let built = [true, true, false, true, true];
+        assert_eq!(delete_runs(&rows, &built), [0..2, 2..3, 3..5]);
+        assert!(delete_runs(&[], &[]).is_empty());
+        // A key whose value is of another kind than its neighbour's (MySQL
+        // reads a large unsigned number as text) is in no run with it.
+        let mut rows = [
+            by(&["id"], 1),
+            by(&["id"], 2),
+            by(&["id"], 3),
+            by(&["id"], 4),
+        ];
+        rows[2].key[0].1 = Value::Text("18446744073709551615".into());
+        assert_eq!(delete_runs(&rows, &[true; 4]), [0..2, 2..3, 3..4]);
+    }
+
     fn cell(column: &str) -> CellChange {
         CellChange {
             column: column.into(),
@@ -425,7 +624,99 @@ mod tests {
             object: ObjectRef::new("main", "users"),
             inserts: Vec::new(),
             rows,
+            deletes: Vec::new(),
         }
+    }
+
+    fn doomed(key: Vec<(&str, Value)>) -> RowDelete {
+        RowDelete {
+            key: key
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+        }
+    }
+
+    fn deleting(deletes: Vec<RowDelete>) -> ChangeSet {
+        ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes,
+        }
+    }
+
+    #[test]
+    fn a_set_of_rows_to_delete_alone_is_a_save() {
+        let changes = deleting(vec![
+            doomed(vec![("id", Value::Int(9))]),
+            doomed(vec![("id", Value::Int(10))]),
+        ]);
+        assert_eq!(changes.check(), Ok(()));
+        assert!(deleting(Vec::new()).check().is_err());
+    }
+
+    #[test]
+    fn a_row_to_delete_needs_a_key_that_finds_one_row() {
+        let said = |deletes: Vec<RowDelete>| deleting(deletes).check();
+        assert_eq!(
+            said(vec![doomed(Vec::new())]),
+            Err(Error::query("a row to delete has no key"))
+        );
+        assert_eq!(
+            said(vec![doomed(vec![("id", Value::Null)])]),
+            Err(Error::query(
+                "a row to delete cannot be found: its key is NULL"
+            ))
+        );
+        assert_eq!(
+            said(vec![doomed(vec![
+                ("book_id", Value::Int(101)),
+                ("book_id", Value::Int(102)),
+            ])]),
+            Err(Error::query("book_id is named twice in the row's key"))
+        );
+        // The same row twice, its key's columns in either order.
+        let author = |name: &str| Value::Text(name.into());
+        assert_eq!(
+            said(vec![
+                doomed(vec![
+                    ("book_id", Value::Int(101)),
+                    ("author", author("Ada Quill")),
+                ]),
+                doomed(vec![
+                    ("author", author("Ada Quill")),
+                    ("book_id", Value::Int(101)),
+                ]),
+            ]),
+            Err(Error::query("two rows to delete have the same key"))
+        );
+    }
+
+    #[test]
+    fn a_row_is_not_changed_and_deleted_in_one_save() {
+        let changes = ChangeSet {
+            deletes: vec![doomed(vec![("id", Value::Int(2))])],
+            ..set(vec![row(vec![("id", Value::Int(2))], vec![cell("name")])])
+        };
+        assert_eq!(
+            changes.check(),
+            Err(Error::query("a row to save is both changed and deleted"))
+        );
+        // Another row's delete beside it is a save like any other.
+        let changes = ChangeSet {
+            deletes: vec![doomed(vec![("id", Value::Int(3))])],
+            ..set(vec![row(vec![("id", Value::Int(2))], vec![cell("name")])])
+        };
+        assert_eq!(changes.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_set_is_printed_without_the_keys_of_its_rows_to_delete() {
+        let changes = deleting(vec![doomed(vec![("id", Value::Int(4711))])]);
+        let printed = format!("{changes:?}");
+        assert!(printed.contains("deletes: 1"), "{printed}");
+        assert!(!printed.contains("4711"), "{printed}");
     }
 
     fn value(column: &str) -> InsertValue {
@@ -473,6 +764,7 @@ mod tests {
                 RowInsert { set: Vec::new() },
             ],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         assert_eq!(changes.check(), Ok(()));
         let nothing = ChangeSet {
@@ -490,6 +782,7 @@ mod tests {
                 set: vec![value("kind"), value("kind")],
             }],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         assert_eq!(
             changes.check(),
@@ -505,6 +798,7 @@ mod tests {
                 set: vec![value("kind")],
             }],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         let printed = format!("{changes:?}");
         assert!(printed.contains("inserts: 1"), "{printed}");
@@ -538,7 +832,7 @@ mod tests {
         let printed = format!("{changes:?}");
         assert_eq!(
             printed,
-            r#"ChangeSet { object: ObjectRef { schema: "main", name: "users" }, inserts: 0, rows: 2, cells: 3, .. }"#
+            r#"ChangeSet { object: ObjectRef { schema: "main", name: "users" }, inserts: 0, rows: 2, cells: 3, deletes: 0, .. }"#
         );
         // On several lines too, as a panic prints a value.
         let pretty = format!("{changes:#?}");
@@ -712,6 +1006,41 @@ mod tests {
     }
 
     #[test]
+    fn a_key_is_spelled_as_the_table_spells_it() {
+        let columns = ["id".to_owned(), "name".to_owned()];
+        let key = |name: &str| vec![(name.to_owned(), Value::Int(1))];
+        assert_eq!(key_spelled_otherwise(&key("id"), &columns), None);
+        assert_eq!(key_spelled_otherwise(&key("ID"), &columns), Some("ID"));
+    }
+
+    #[test]
+    fn a_delete_and_a_change_that_read_the_same_row_are_refused() {
+        let columns = ["id".to_owned(), "email".to_owned()];
+        let ada = vec![Value::Int(1), Value::Text("ada@example.com".into())];
+        let changes = ChangeSet {
+            // The row by its number, and the same row by its unique
+            // address: `check` sees two keys.
+            deletes: vec![doomed(vec![(
+                "email",
+                Value::Text("ada@example.com".into()),
+            )])],
+            ..set(vec![row(vec![("id", Value::Int(1))], vec![cell("name")])])
+        };
+        assert_eq!(changes.check(), Ok(()));
+        let rows = [Some(ada.clone())];
+        let found = [Some(ada)];
+        let (keys, read) = read_by(&changes, &rows, &found);
+        assert_eq!(
+            same_row_twice(&keys, &columns, &read),
+            Err(Error::query("two changes of the save name the same row"))
+        );
+        // A delete whose row is gone reads no row, and names none twice.
+        let gone = [None];
+        let (keys, read) = read_by(&changes, &rows, &gone);
+        assert_eq!(same_row_twice(&keys, &columns, &read), Ok(()));
+    }
+
+    #[test]
     fn two_changes_that_read_the_same_row_are_refused() {
         let columns = ["id".to_owned(), "email".to_owned(), "name".to_owned()];
         let person = |id: Value, email: &str| {
@@ -724,7 +1053,9 @@ mod tests {
         let by =
             |column: &str, value: Value, set: &str| row(vec![(column, value)], vec![cell(set)]);
         let said = |rows: &[RowChange], read: &[Option<Vec<Value>>]| {
-            same_row_twice(rows, &columns, read).map_err(|error| error.to_string())
+            let keys: Vec<&Key> = rows.iter().map(|row| row.key.as_slice()).collect();
+            let read: Vec<Option<&[Value]>> = read.iter().map(Option::as_deref).collect();
+            same_row_twice(&keys, &columns, &read).map_err(|error| error.to_string())
         };
         let twice = Err("two changes of the save name the same row".to_owned());
         // One key spelled two ways: the database found the row of the

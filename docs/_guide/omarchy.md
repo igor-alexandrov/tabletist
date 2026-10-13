@@ -92,7 +92,7 @@ list instead.
 | Ctrl+Alt+Left and Right | Previous and next page |
 | `/` | Filter with a WHERE line |
 | Ctrl+F | Filter bar |
-| `gd` | Follow the selected foreign key |
+| `gd` | Follow the selected foreign key. On a row whose delete a foreign key refused, open the rows that hold it |
 | `v` then `y` | Copy the cell |
 | `R` | Reload |
 | Ctrl+C | Cancel the running query |
@@ -142,7 +142,11 @@ says why.
 | `o`, `O` | Add a row below the cursor's row, or above it |
 | `yy` | Yank the cursor's row, and put it on the clipboard |
 | `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
-| `dd` | Drop a new row that is not saved yet |
+| `dd` | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
+| `3dd` | The same for the cursor's row and the two after it. Any count works, up to 1,000 rows. The cursor moves to the row after them |
+| `V` | Start a selection of rows on the cursor's row. `j`, `k` and the other moves extend it. The status line reads `-- VISUAL --` and counts its rows |
+| `d` | In a selection of rows: delete its rows, or restore them where all are marked. New rows among them are dropped |
+| Esc, `V` | Leave the selection of rows |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |

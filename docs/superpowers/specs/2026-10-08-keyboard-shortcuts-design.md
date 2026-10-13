@@ -86,7 +86,7 @@ Build what the current code supports today. For commands that don't exist yet (e
 | Paste as new rows | grid | ⇧⌘V | `"+p`, `ctrl+shift+v` |
 | Add row | grid | ⌘N, or ↓ on the last row | `o` below / `O` above |
 | Duplicate row | grid | ⌘D | `yy p` / `yy P` |
-| Delete row (drops a new row) | grid | ⌫ | `dd` |
+| Delete row (drops a new row; marks a row of the page since 2026-10-12, see `2026-10-12-deleting-rows-design.md`) | grid | ⌫ | `dd` |
 | Open referenced row | grid | none | `gd` |
 | Show saved row in sorted position | grid | none | `gs` |
 | Review pending SQL | grid | Review SQL button | `:diff` (`]c` next change) |

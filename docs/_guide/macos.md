@@ -128,7 +128,8 @@ column's line, or come to them with Tab or F6.
 | Return, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Cmd+N | Add a row, at the top of the grid |
 | Cmd+D | Duplicate the row, as a new row at the top of the grid |
-| Backspace, Forward Delete | Drop a new row that is not saved yet |
+| Backspace, Forward Delete | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
+| Shift+Up, Shift+Down | Select the row above or below with the selected rows. Backspace then deletes them all |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |
 | Cmd+L | In a foreign key cell's list: choose the column that labels it. In the chooser, Up and Down move, Return chooses and Esc closes |

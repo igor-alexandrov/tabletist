@@ -17,8 +17,8 @@ use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
-    ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree,
-    TreeKey, TreeNode, Wanted, Workspace,
+    Reach, ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState,
+    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -636,7 +636,7 @@ impl App {
                         ))
                     });
                 if let Some((object, column, value)) = target {
-                    self.follow_foreign_key(tab, object, column, value);
+                    self.follow_foreign_key(tab, object, vec![(column, value)]);
                 }
             }
             Action::FocusWhere(tab) => {
@@ -676,7 +676,7 @@ impl App {
                 {
                     object.query.sort.clear();
                     object.query.offset = 0;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     self.fetch_rows(tab, object_tab);
                 }
@@ -686,7 +686,20 @@ impl App {
                 object,
                 column,
                 value,
-            } => self.follow_foreign_key(tab, object, column, value),
+            } => self.follow_foreign_key(tab, object, vec![(column, value)]),
+            Action::OpenFiltered { tab, object, by } => {
+                self.follow_foreign_key(tab, object, by);
+            }
+            Action::OpenHolders { tab, id, row } => {
+                let holder = self
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .and_then(|object| object.edits.deleted.get(&row)?.holder.clone());
+                if let Some(holder) = holder {
+                    let by = holder.columns.into_iter().zip(holder.values).collect();
+                    self.follow_foreign_key(tab, holder.table, by);
+                }
+            }
             Action::RefreshTree(tab) => self.refresh_tree(tab),
             Action::OpenObject {
                 tab,
@@ -768,6 +781,12 @@ impl App {
                 }
                 let describe = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     object.view = view;
+                    // A visual selection is of the rows on screen: another
+                    // view shows none, and has its own use for the keys
+                    // the selection would take.
+                    if changes && object.visual() {
+                        object.range = None;
+                    }
                     // A chooser that was open in the Structure view was
                     // that view's.
                     object.label_chooser = None;
@@ -785,7 +804,7 @@ impl App {
                     }
                     object.query.offset += u64::from(object.query.limit);
                     object.pinned = true;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     // Never show rows for a query we no longer display.
                     object.rows.value = None;
                     true
@@ -813,7 +832,7 @@ impl App {
                         .map_or(page_size, |before| before.min(page_size));
                     object.query.offset -= u64::from(step);
                     object.pinned = true;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     Some(step)
                 });
@@ -837,7 +856,7 @@ impl App {
                         .unwrap_or_default();
                     object.query.offset = 0;
                     object.pinned = true;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     self.fetch_rows(tab, object_tab);
                 }
@@ -884,7 +903,7 @@ impl App {
                     // The field that was to get the keyboard back was the
                     // row's the selection leaves.
                     object.focus_field = None;
-                    object.selection = Some(cell);
+                    object.set_cursor(Some(cell), Reach::End);
                     object.pinned = true;
                 } else if let Some(sql) = self.sql_tab_mut(tab, id) {
                     // The result may have been replaced since the frame
@@ -1102,6 +1121,10 @@ impl App {
             Action::YankRow { tab, id } => self.yank_row(tab, id),
             Action::PutRow { tab, id, above } => self.put_row(tab, id, above),
             Action::DropRow { tab, id } => self.drop_row(tab, id),
+            Action::DeleteRow { tab, id } => self.delete_row(tab, id),
+            Action::DeleteSelected { tab, id } => self.delete_selected(tab, id),
+            Action::DeleteCount { tab, id, count } => self.delete_count(tab, id, count),
+            Action::RestoreRow { tab, id } => self.restore_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
                 // Not under a save: its answer is put into this set.
                 if let Some(object) = self.object_tab_mut(tab, id)
@@ -1109,20 +1132,31 @@ impl App {
                     && object.edits.editor.is_none()
                     && object.edits.saving.is_none()
                 {
-                    object.edits.revert((cell.row, cell.col));
-                    object.fields = None;
+                    // On a row that is marked for deletion the mark is
+                    // what there is to take back: its cells are not the
+                    // set's until it is.
+                    if object.edits.deleted.contains_key(&cell.row) {
+                        self.restore(tab, id, cell.row);
+                    } else {
+                        object.edits.revert((cell.row, cell.col));
+                        object.fields = None;
+                    }
                 }
             }
             Action::DiscardEdits { tab, id } => {
                 // Not under a save: dropping the set would drop the save
                 // with it, and its answer would find no tab to tell.
+                let mut stale = Vec::new();
                 if let Some(object) = self.object_tab_mut(tab, id)
                     && object.edits.saving.is_none()
                 {
+                    // The counts of what its deletes take go with them.
+                    stale = object.edits.counts_out();
                     object.edits.discard();
                     object.off_new_rows();
                     object.fields = None;
                 }
+                self.stop_counts(tab, stale);
             }
             Action::DismissNote { tab, id } => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
@@ -1206,27 +1240,48 @@ impl App {
                         },
                     });
                 } else if let Some(object) = self.object_tab_mut(tab, id) {
-                    let (height, width) = object
-                        .page()
-                        .map(|page| (page.rows.len(), page.columns.len()))
-                        .unwrap_or((0, 0));
-                    // Through the rows as the grid shows them: a new row
-                    // stands among the page's, and is no row of it.
-                    let order = crate::edit::Order::of(&object.edits.added, height);
-                    let moved = match object.selection {
-                        _ if order.is_empty() || width == 0 => None,
-                        None => order.row(0).map(|row| CellPos { row, col: 0 }),
-                        Some(cell) => {
-                            let from = order.place(cell.row).unwrap_or(0);
-                            let to = step(from, rows, order.len());
-                            order.row(to).map(|row| CellPos {
-                                row,
-                                col: step(cell.col, cols, width),
-                            })
-                        }
-                    };
+                    let moved = moved(object, rows, cols);
                     object.pinned |= moved.is_some();
-                    object.selection = moved;
+                    object.set_cursor(moved, Reach::Move);
+                }
+            }
+            Action::ExtendTo { tab, id, cell } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.set_cursor(Some(cell), Reach::Extend);
+                    object.pinned = true;
+                }
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Grid;
+                }
+            }
+            Action::ExtendBy { tab, id, rows } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    let moved = moved(object, rows, 0);
+                    object.pinned |= moved.is_some();
+                    object.set_cursor(moved, Reach::Extend);
+                }
+            }
+            Action::SelectRows { tab, id } => {
+                // As a move does: an editor's text is kept, and the keys
+                // are the rows'.
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.toggle_visual();
+                }
+            }
+            Action::LeaveVisual { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id)
+                    && object.visual()
+                {
+                    object.range = None;
                 }
             }
             Action::ToggleRowPanel(tab) => {
@@ -2521,13 +2576,22 @@ impl App {
                     // rows gone from.
                     object.edits.discard();
                 } else {
+                    // What a save that wrote found already deleted is of
+                    // rows by their keys, not of this page: a save that
+                    // has its page read again still says it.
+                    let said = object
+                        .edits
+                        .note
+                        .take()
+                        .filter(|note| matches!(note, crate::edit::Note::AlreadyDeleted(_)));
                     object.edits = crate::edit::Edits::default();
+                    object.edits.note = said;
                 }
                 let (height, width) = object
                     .page()
                     .map(|page| (page.rows.len(), page.columns.len()))
                     .unwrap_or((0, 0));
-                object.selection = match object.selection {
+                let clamped = match object.selection {
                     Some(_) if height == 0 || width == 0 => None,
                     Some(cell) => Some(CellPos {
                         row: cell.row.min(height - 1),
@@ -2535,6 +2599,8 @@ impl App {
                     }),
                     None => None,
                 };
+                // The page was read again: a range was of the rows it held.
+                object.set_cursor(clamped, Reach::End);
                 // A question about this tab's rows was about their pending
                 // cells, which went with the set just now, and names rows
                 // by their place in the page: nothing is left to ask.
@@ -2767,6 +2833,13 @@ impl App {
                     if object.count.finish(request, result) && total.is_some() {
                         object.estimated_rows = total;
                     }
+                } else {
+                    // Not a table's own total: one of a tab's counts of
+                    // what its deletes take with them, or of who holds a
+                    // row it could not delete, where it is one.
+                    let rows = result.as_ref().ok().copied();
+                    let _ = self.taken_counted(session, request, rows)
+                        || self.held_counted(session, request, rows);
                 }
             }
             Event::Lookup {
@@ -3684,15 +3757,10 @@ impl App {
         self.fetch_rows(tab, new_id);
     }
 
-    /// Opens `object` filtered to the rows whose `column` is `value`: where
-    /// a foreign key points.
-    fn follow_foreign_key(
-        &mut self,
-        tab: ConnTabId,
-        object: ObjectRef,
-        column: String,
-        value: String,
-    ) {
+    /// Opens `object` filtered to the rows that hold each value of `by` in
+    /// its column: where a foreign key points, or the rows that point at a
+    /// row.
+    fn follow_foreign_key(&mut self, tab: ConnTabId, object: ObjectRef, by: Vec<(String, String)>) {
         let kind = self
             .workspace(tab)
             .and_then(|workspace| workspace.tree.object_info(&object))
@@ -3712,21 +3780,19 @@ impl App {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|opened| opened.edits.holds());
         if holds {
-            let follow = Action::FollowForeignKey {
-                tab,
-                object,
-                column,
-                value,
-            };
+            let follow = Action::OpenFiltered { tab, object, by };
             self.hold(Held::Action(Box::new(follow)), vec![(tab, id)]);
             return;
         }
         if let Some(opened) = self.object_tab_mut(tab, id) {
-            opened.filter.rows = vec![crate::model::FilterRow {
-                column,
-                op: tabletist_db::FilterOp::Eq,
-                value,
-            }];
+            let rows = by
+                .into_iter()
+                .map(|(column, value)| crate::model::FilterRow {
+                    column,
+                    op: tabletist_db::FilterOp::Eq,
+                    value,
+                });
+            opened.filter.rows = rows.collect();
         }
         self.apply_filters(tab, id);
         if let Some(workspace) = self.workspace_mut(tab) {
@@ -3922,7 +3988,7 @@ impl App {
         object.query.raw_where = raw_where;
         object.query.offset = 0;
         object.pinned = true;
-        object.selection = None;
+        object.set_cursor(None, Reach::End);
         self.reset_count(tab, id);
         self.fetch_rows(tab, id);
     }
@@ -4243,6 +4309,30 @@ fn opens_messages(
 fn step(index: usize, delta: isize, len: usize) -> usize {
     let moved = (index as i128 + delta as i128).clamp(0, len as i128 - 1);
     moved as usize
+}
+
+/// Where a move by `rows` and `cols` puts the cursor of `object`, through
+/// the rows as the grid shows them: a new row stands among the page's, and
+/// is no row of it. With no cursor, the first cell. `None` where the grid
+/// has no cell.
+fn moved(object: &ObjectTab, rows: isize, cols: isize) -> Option<CellPos> {
+    let (height, width) = object
+        .page()
+        .map(|page| (page.rows.len(), page.columns.len()))
+        .unwrap_or((0, 0));
+    let order = crate::edit::Order::of(&object.edits.added, height);
+    match object.selection {
+        _ if order.is_empty() || width == 0 => None,
+        None => order.row(0).map(|row| CellPos { row, col: 0 }),
+        Some(cell) => {
+            let from = order.place(cell.row).unwrap_or(0);
+            let to = step(from, rows, order.len());
+            order.row(to).map(|row| CellPos {
+                row,
+                col: step(cell.col, cols, width),
+            })
+        }
+    }
 }
 
 /// A row's text for the row panel, formatted once. A cell of the page's
@@ -11653,6 +11743,7 @@ mod tests {
                 inserted: vec![Some(cover(15, HARBOR))],
                 rows: vec![changed],
                 elapsed: std::time::Duration::from_millis(5),
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(!tab_now.edits.holds() && tab_now.edits.added.is_empty());
@@ -11691,6 +11782,7 @@ mod tests {
                 inserted: vec![Some(cover(15, HARBOR)), Some(cover(16, HARBOR))],
                 rows: Vec::new(),
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let page = object(&harness, tab, id).page().unwrap();
             let ids: Vec<&Value> = page.rows.iter().map(|row| &row[0]).collect();
@@ -11708,6 +11800,7 @@ mod tests {
                 inserted: vec![None],
                 rows: Vec::new(),
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(tab_now.edits.added.is_empty() && tab_now.selection.is_none());
@@ -11762,6 +11855,7 @@ mod tests {
                 inserted: vec![Some(cover(15, HARBOR))],
                 rows: Vec::new(),
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let page = object(&harness, tab, id).page().unwrap();
             assert_eq!(page.rows[0], cover(15, HARBOR));
@@ -11849,6 +11943,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com"), row(4, "dan@example.com")],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(tab_now.edits.cells.is_empty() && tab_now.edits.saving.is_none());
@@ -12011,6 +12106,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![vec![Value::Int(2)]],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert!(!object(&harness, tab, id).edits.holds());
             assert!(matches!(
@@ -12040,6 +12136,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             // A cell that cannot be edited leaves its note.
             harness.app.apply(Action::EditCell {
@@ -12093,6 +12190,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(tab_now.edits.cells.is_empty() && tab_now.edits.saved.is_some());
@@ -12302,6 +12400,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
         }
@@ -13435,6 +13534,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, email)],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             })
         }
 
@@ -14232,6 +14332,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![vec![Value::Int(2)]],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert!(harness.app.dialog.is_none());
             assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
@@ -14318,6 +14419,7 @@ mod tests {
                     rows: 1,
                     added: 0,
                     elapsed: std::time::Duration::ZERO,
+                    deleted: 0,
                 });
             }
             // From the Leave prompt, so a close is held for the save.
@@ -14496,6 +14598,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(4, "dan@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert_eq!(gone(&harness), [1]);
             // after a discard of what is pending,

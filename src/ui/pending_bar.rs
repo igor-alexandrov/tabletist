@@ -44,14 +44,29 @@ pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static s
     format!("{count} {}", ngettext(locale, one, many, plural))
 }
 
+/// "11 rows marked for deletion. 1 can't be deleted.": what a delete of
+/// several rows marked, and how many of the rows it named it left out.
+pub fn marked_text(marked: usize, skipped: usize, locale: Locale) -> String {
+    let rows = counted(
+        locale,
+        marked,
+        "row marked for deletion",
+        "rows marked for deletion",
+    );
+    if skipped == 0 {
+        return format!("{rows}.");
+    }
+    format!("{rows}. {skipped} {}", gettext(locale, "can't be deleted."))
+}
+
 /// How many foreign keys name no row: "1 value names no row". What a save
 /// may be refused for, and is not held back by.
 pub fn doubts_text(doubts: usize, locale: Locale) -> String {
     counted(locale, doubts, "value names no row", "values name no row")
 }
 
-/// "1 new row · 3 changes in 2 rows · 1 value names no row", each part
-/// where there is any. Short, the changes go without their rows and the
+/// "1 new row · 3 changes in 2 rows · 1 to delete · 1 value names no
+/// row", each part where there is any. Short, the changes go without their rows and the
 /// warnings are left to the part that says them alone.
 fn counts_text(counts: crate::edit::Counts, doubts: usize, short: bool, locale: Locale) -> String {
     let mut parts = Vec::new();
@@ -69,6 +84,10 @@ fn counts_text(counts: crate::edit::Counts, doubts: usize, short: bool, locale: 
                 counted(locale, counts.rows, "row", "rows")
             )
         });
+    }
+    if counts.deleted > 0 {
+        let to_delete = gettext(locale, "to delete");
+        parts.push(format!("{} {to_delete}", counts.deleted));
     }
     if doubts > 0 && !short {
         parts.push(doubts_text(doubts, locale));
@@ -116,7 +135,7 @@ pub fn note_line(
 
 /// The database's own words about a statement that failed, after its code
 /// when it gave one.
-fn database_said(error: &Error) -> String {
+pub(crate) fn database_said(error: &Error) -> String {
     match error {
         Error::Query {
             code: Some(code),
@@ -125,6 +144,31 @@ fn database_said(error: &Error) -> String {
         } => format!("{code} · {}", sentence(&format::capped(message))),
         other => sentence(&format::capped(&other.to_string())),
     }
+}
+
+/// "3 rows in book_covers still point at this row": who holds a row
+/// whose delete a foreign key refused. The app's own words are put
+/// through `own`; the table's name is its own.
+pub(crate) fn holder_said(
+    holder: &crate::edit::Holder,
+    locale: Locale,
+    own: impl Fn(&str) -> String,
+) -> String {
+    let plural = u32::try_from(holder.rows).unwrap_or(u32::MAX);
+    let points = ngettext(
+        locale,
+        "still points at this row",
+        "still point at this row",
+        plural,
+    );
+    format!(
+        "{} {} {} {} {}",
+        holder.rows,
+        own(&ngettext(locale, "row", "rows", plural)),
+        own(&gettext(locale, "in")),
+        format::display_safe(&holder.table.name),
+        own(&points)
+    )
 }
 
 /// What `note` says, the app's own words put through `own`: the values of
@@ -159,6 +203,40 @@ fn note_said(
             say("Nothing was saved. 1 new row failed, so the whole transaction rolled back."),
             database_said(error)
         ),
+        // The spec's banner. A save stops at its first statement that
+        // fails, so one row fails at a time.
+        Note::FailedDelete { row, error } => {
+            let rolled =
+                say("Nothing was saved. 1 row failed, so the whole transaction rolled back.");
+            let said = database_said(error);
+            // Who holds the row, once it was counted.
+            let doomed = object.edits.deleted.get(row);
+            match doomed.and_then(|doomed| doomed.holder.as_ref()) {
+                Some(holder) => {
+                    let held = sentence(&holder_said(holder, locale, &own));
+                    format!("{rolled} {said} {held}")
+                }
+                None => format!("{rolled} {said}"),
+            }
+        }
+        // Of a save that wrote: the rows by their keys, which are theirs.
+        Note::AlreadyDeleted(rows) => match rows.as_slice() {
+            [row] => format!("{} {row} {}", say("Row"), say("was already deleted.")),
+            // Up to three by name; of more, three and how many more.
+            rows => {
+                let named = rows.len().min(3);
+                let names = rows.get(..named).unwrap_or_default().join(", ");
+                let said = format!(
+                    "{} {} {names}",
+                    rows.len(),
+                    say("rows were already deleted:")
+                );
+                match rows.len() - named {
+                    0 => format!("{said}."),
+                    more => format!("{said} {} {more} {}.", say("and"), say("more")),
+                }
+            }
+        },
         Note::Lost => say("The connection was lost while saving. Reload to see what was written."),
         Note::NotSent => say("Not connected. Nothing was sent."),
         Note::Cancelled => format!("{} {nothing}", say("Save cancelled.")),
@@ -176,10 +254,18 @@ pub fn written_text(saved: &Saved, locale: Locale) -> String {
     if saved.added > 0 {
         parts.push(counted(locale, saved.added, "new row", "new rows"));
     }
-    // A save of new rows alone changed none.
-    if saved.changes > 0 || saved.added == 0 {
+    // A save of new rows or of deleted rows alone changed none.
+    if saved.changes > 0 || (saved.added == 0 && saved.deleted == 0) {
         parts.push(counted(locale, saved.changes, "change", "changes"));
         parts.push(counted(locale, saved.rows, "row", "rows"));
+    }
+    if saved.deleted > 0 {
+        parts.push(counted(
+            locale,
+            saved.deleted,
+            "row deleted",
+            "rows deleted",
+        ));
     }
     parts.push(format::elapsed(saved.elapsed));
     format!("{} {}", gettext(locale, "written"), parts.join(" · "))
@@ -258,6 +344,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let blocked = app
         .save_blocked(tab, id)
         .map(|block| block_text(block, counts.to_fix, locale));
+    // The row the bar's line is of, where its delete was refused and the
+    // rows that hold it were counted.
+    let held = match &edits.note {
+        Some(Note::FailedDelete { row, .. }) => {
+            let doomed = edits.deleted.get(row);
+            doomed
+                .and_then(|doomed| doomed.holder.as_ref())
+                .map(|_| *row)
+        }
+        _ => None,
+    };
+    let open_rows = gettext(locale, "Open rows");
     // What the tab's new rows still need: the column, or how many.
     let lacking = app.lacking(tab, id);
     let needs = match lacking.as_slice() {
@@ -341,6 +439,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             // One button under two names, so the keyboard stays on it.
             let review_name = if reviewing { &hide } else { &review };
             let review_button = || ButtonSpec::new(review_name).quiet().keyed("review-sql");
+            // The rows that hold a row whose delete was refused, while the
+            // bar says who they are.
+            let open_button = || ButtonSpec::new(&open_rows).quiet();
             let cancel_button = || ButtonSpec::new(&cancel).label(&cancel_save).quiet();
             let room = full.width() - 2.0 * SIDE;
             let lead = DOT + 10.0;
@@ -348,6 +449,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 let mut beside = BETWEEN + ButtonSpec::new(&discard).width(ui, &look);
                 if pending {
                     beside += BETWEEN + review_button().width(ui, &look);
+                }
+                if held.is_some() {
+                    beside += BETWEEN + open_button().width(ui, &look);
                 }
                 if saving {
                     beside += BETWEEN + cancel_button().width(ui, &look);
@@ -407,6 +511,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     let action = Action::ReviewEdits { tab, id, show };
                     rows.push((row(review_name, None), action));
                 }
+                if let Some(row_held) = held {
+                    let action = Action::OpenHolders {
+                        tab,
+                        id,
+                        row: row_held,
+                    };
+                    rows.push((row(&open_rows, None), action));
+                }
                 // The reducer ignores it under a save: it is not offered.
                 let unoffered = saving.then_some(&*busy);
                 rows.push((row(&discard, unoffered), Action::DiscardEdits { tab, id }));
@@ -445,6 +557,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                         actions.push(Action::ReviewEdits { tab, id, show });
                     }
                 }
+                if let Some(row) = held {
+                    let button = open_button();
+                    let at = place(ui, &button);
+                    if button.show_at(ui, at, &look, &palette).clicked() {
+                        actions.push(Action::OpenHolders { tab, id, row });
+                    }
+                }
                 if saving {
                     // A save is one of the tab's requests: the query's
                     // cancel stops it.
@@ -461,7 +580,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let dot = Rect::from_min_size(pos2(x, y - DOT / 2.0), vec2(DOT, DOT));
             // Green while nothing but new rows is pending, as a new row
             // is: amber once a value of a loaded row is changed too.
-            let dot_color = if counts.added > 0 && counts.changes == 0 {
+            let dot_color = if counts.added > 0 && counts.changes == 0 && counts.deleted == 0 {
                 crate::env::new_row_colors(crate::env::Platform::of(&look), &palette).bar
             } else {
                 Tone::Warning.color(&palette)
