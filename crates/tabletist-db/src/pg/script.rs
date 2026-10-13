@@ -6,9 +6,9 @@
 
 use std::time::{Duration, Instant};
 
+use bytes::BytesMut;
 use tokio_postgres::SimpleQueryMessage;
 use tokio_postgres::error::SqlState;
-use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::types::{Format, FromSql, IsNull, ToSql, Type, to_sql_checked};
 
 use super::{Conn, column_metas, first_text, query_error, row_values, unexpected};

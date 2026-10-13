@@ -5628,6 +5628,7 @@ dependencies = [
 name = "tabletist-db"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures-util",
  "log",
  "mysql_async",

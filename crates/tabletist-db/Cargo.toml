@@ -40,6 +40,10 @@ sqlparser = { version = "0.63", default-features = false, features = ["std"] }
 
 # PostgreSQL, async. Rows are read through its simple-query protocol.
 tokio-postgres = "0.7"
+# The buffer tokio-postgres hands a value to write itself into: an agent's
+# value is sent as text, by a `ToSql` of its own (already in the tree
+# through tokio-postgres).
+bytes = "1"
 # TLS for tokio-postgres on rustls (no OpenSSL to build or ship).
 tokio-postgres-rustls = "0.14"
 # ring rather than aws-lc: no cmake/NASM needed to build on Windows.
