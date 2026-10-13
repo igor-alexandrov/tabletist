@@ -100,6 +100,7 @@ pub(crate) fn answer(outcome: ScriptOutcome, stop: &StopFlag) -> Result<Answer> 
         StatementOutcome::Done { .. } => Err(Error::query(
             "the statement answered no rows, so it is not a read",
         )),
+        StatementOutcome::Error { error, .. } if timed_out(&error) => Err(Error::Timeout),
         StatementOutcome::Error { error, .. } => Err(error),
         StatementOutcome::Cancelled if stop.is_stopped() => Err(Error::Cancelled),
         // Nobody here stopped it, so the database's own timeout did:
@@ -110,10 +111,25 @@ pub(crate) fn answer(outcome: ScriptOutcome, stop: &StopFlag) -> Result<Answer> 
     }
 }
 
+/// The numbers MySQL (3024) and MariaDB (1969) give a statement their own
+/// timeout ended. Only they number an error: see [`crate::Named`].
+const OVER_ITS_TIME: [u32; 2] = [3024, 1969];
+
+/// Whether `error` is a database's word for a statement that ran over the
+/// time the run set.
+fn timed_out(error: &Error) -> bool {
+    match error {
+        Error::Query { named, .. } => named
+            .number
+            .is_some_and(|number| OVER_ITS_TIME.contains(&number)),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StatementResult, ValueKind};
+    use crate::{Named, StatementResult, ValueKind};
 
     fn outcome_of(outcome: StatementOutcome) -> ScriptOutcome {
         ScriptOutcome {
@@ -185,6 +201,33 @@ mod tests {
             answer(ScriptOutcome::default(), &stopped),
             Err(Error::Cancelled)
         );
+    }
+
+    #[test]
+    fn mysqls_and_mariadbs_word_for_a_timeout_is_a_timeout() {
+        let numbered = |number: u32| StatementOutcome::Error {
+            error: Error::Query {
+                code: Some("HY000".into()),
+                message: "Query execution was interrupted".into(),
+                detail: None,
+                hint: None,
+                named: Box::new(Named {
+                    number: Some(number),
+                    ..Named::default()
+                }),
+            },
+            position: None,
+        };
+        for number in [3024, 1969] {
+            assert_eq!(
+                answer(outcome_of(numbered(number)), &StopFlag::new()),
+                Err(Error::Timeout),
+                "{number}"
+            );
+        }
+        // Any other number is the statement's own error.
+        let other = answer(outcome_of(numbered(1054)), &StopFlag::new()).unwrap_err();
+        assert!(matches!(other, Error::Query { .. }), "{other:?}");
     }
 
     #[test]

@@ -723,4 +723,154 @@ mod mysql {
         assert_eq!(connection.dialect(), Dialect::MySql);
         the_bookshop_is_stocked(&connection, "mysql").await;
     }
+
+    #[tokio::test]
+    async fn an_agent_reads_the_bookshop_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        an_agent_reads_the_bookshop(&connection, "mysql").await;
+    }
+
+    #[tokio::test]
+    async fn mysql_takes_each_value_as_its_own_type() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let on = "mysql";
+        // The ends of a 64-bit integer come back as they went.
+        let ends = read(
+            &connection,
+            "SELECT ?, ?",
+            &[Param::Int(i64::MAX), Param::Int(i64::MIN)],
+            on,
+        )
+        .await;
+        assert_eq!(ends, [[Value::Int(i64::MAX), Value::Int(i64::MIN)]]);
+        // Text that reads as a number is still text: no row has this id.
+        let found = read(
+            &connection,
+            "SELECT count(*) FROM books WHERE title = ?",
+            &[Param::Text("3".into())],
+            on,
+        )
+        .await;
+        assert_eq!(found, [[Value::Int(0)]]);
+        // A backslash is a character of the value, whatever the server's
+        // SQL mode makes of one in a literal.
+        let sent = "a\\b'c\"d";
+        let back = read(&connection, "SELECT ?", &[Param::Text(sent.into())], on).await;
+        assert_eq!(back, [[text(sent)]]);
+    }
+
+    #[tokio::test]
+    async fn a_question_mark_in_a_string_is_text_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let found = read(
+            &connection,
+            "SELECT 'where?', title FROM books WHERE id = ?",
+            &[Param::Int(3)],
+            "mysql",
+        )
+        .await;
+        assert_eq!(found, [[text("where?"), text("Lanterns")]]);
+    }
+
+    #[tokio::test]
+    async fn a_plan_takes_values_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let plan = read(
+            &connection,
+            "EXPLAIN SELECT title FROM books WHERE id = ?",
+            &[Param::Int(3)],
+            "mysql",
+        )
+        .await;
+        assert!(!plan.is_empty());
+    }
+
+    /// MySQL holds a `SELECT` to its time limit and nothing else. Every
+    /// shape of read is one to it, wherever the slow part stands.
+    #[tokio::test]
+    async fn the_time_limit_holds_a_read_of_any_shape_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let slow = slow(5);
+        let short = Limits {
+            timeout: Duration::from_millis(100),
+            ..LIMITS
+        };
+        for sql in [
+            format!("WITH weighed AS ({slow}) SELECT * FROM weighed"),
+            format!("SELECT * FROM ({slow}) weighed"),
+            format!("SELECT 1 UNION ALL ({slow})"),
+            format!("SELECT title, ({slow}) FROM books"),
+            format!("SELECT title FROM books WHERE id > ({slow})"),
+        ] {
+            let ended = asked(&connection, &sql, &[], short).await;
+            assert_eq!(ended.unwrap_err(), Error::Timeout, "{sql}");
+        }
+        the_bookshop_is_stocked(&connection, "mysql").await;
+    }
+
+    /// A read that waits behind another session's lock on a table is ended
+    /// by the same limit: MySQL's timer ends the wait as it ends the run.
+    #[tokio::test]
+    async fn the_time_limit_ends_a_wait_for_a_lock_on_mysql() {
+        let (Some(connection), Some(url)) = (bookshop().await, url()) else {
+            return;
+        };
+        let mut holder = admin(&url).await;
+        holder
+            .query_drop("LOCK TABLES book_covers WRITE")
+            .await
+            .unwrap();
+        let short = Limits {
+            timeout: Duration::from_millis(200),
+            ..LIMITS
+        };
+        let started = Instant::now();
+        let ended = asked(&connection, "SELECT count(*) FROM book_covers", &[], short).await;
+        let took = started.elapsed();
+        holder.query_drop("UNLOCK TABLES").await.unwrap();
+        holder.disconnect().await.unwrap();
+        assert_eq!(ended.unwrap_err(), Error::Timeout);
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        // The lock is gone, and the session reads on.
+        let covers = read(
+            &connection,
+            "SELECT count(*) FROM book_covers",
+            &[],
+            "mysql",
+        )
+        .await;
+        assert_eq!(covers, [[Value::Int(3)]]);
+    }
+
+    /// The time limit is the session's, and the reset that ends a run
+    /// takes it away: after a run, one that ran out of time or not, the
+    /// session has none, as the SQL editor expects.
+    #[tokio::test]
+    async fn the_time_limit_ends_with_its_run_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let on = "mysql";
+        let limit = "SELECT @@session.max_execution_time";
+        let none = [[Value::Int(0)]];
+        read(&connection, "SELECT count(*) FROM books", &[], on).await;
+        assert_eq!(rows_of(&connection, limit, on).await, none);
+        let short = Limits {
+            timeout: Duration::from_millis(50),
+            ..LIMITS
+        };
+        let ended = asked(&connection, &slow(5), &[], short).await;
+        assert_eq!(ended.unwrap_err(), Error::Timeout);
+        assert_eq!(rows_of(&connection, limit, on).await, none);
+    }
 }

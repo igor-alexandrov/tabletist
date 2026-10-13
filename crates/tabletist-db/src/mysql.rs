@@ -514,11 +514,11 @@ impl Adapter for Conn {
 
     async fn run_read(
         &self,
-        _read: &Read,
-        _limits: Limits,
-        _stop: &StopFlag,
+        read: &Read,
+        limits: Limits,
+        stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
-        Err(Error::Unsupported("an agent's read on MySQL"))
+        self.agent_read(read, limits, stop).await
     }
 
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
