@@ -13,7 +13,7 @@ use tabletist_db::{LookupPart, ObjectRef};
 use crate::backend::{Command, Event, RequestId, StateFile};
 use crate::connections::ConnectionId;
 use crate::key_picker::{Columns, Picker};
-use crate::labels::{Chooser, Excluded, LabelChoice, Refused, Resolved, Source};
+use crate::labels::{Chooser, Excluded, LabelChoice, Place, Refused, Resolved, Source};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectView, Pane, TabId};
 use crate::testing::{GENRES, Harness, PUBLISHERS, node, publishers_structure};
 use crate::theme::Look;
@@ -55,8 +55,10 @@ fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
     (harness, tab, id)
 }
 
-fn connection(harness: &Harness, tab: ConnTabId) -> ConnectionId {
-    harness.app.workspace(tab).unwrap().conn_id.clone()
+/// Where the tables of `tab` are, for what is kept of their labels: its
+/// saved connection, and the database it is on.
+fn connection(harness: &Harness, tab: ConnTabId) -> Place {
+    harness.app.workspace(tab).unwrap().label_place()
 }
 
 /// Keeps `choice` for `table` on the saved connection of `tab`, as the
@@ -185,7 +187,10 @@ fn a_choice_labels_every_key_that_points_at_the_table() {
 #[test]
 fn a_choice_is_its_saved_connections_alone() {
     let (mut harness, tab, id) = covers_in(Look::macos());
-    let other = ConnectionId("another-connection".into());
+    let other = Place {
+        conn: ConnectionId("another-connection".into()),
+        database: String::new(),
+    };
     assert_ne!(other, connection(&harness, tab));
     let none = LabelChoice::NoLabel;
     harness
@@ -214,6 +219,43 @@ fn a_number_column_can_label_a_table() {
     let parent = Some("parent_id".to_owned());
     assert!(!searched(&harness).is_empty());
     assert!(searched(&harness).iter().all(|label| *label == parent));
+}
+
+/// One PostgreSQL connection reaches several databases, and its tab is
+/// switched from one to another. A choice made on one is not the other's:
+/// the other's pickers are labelled by the app's pick, and a column the
+/// other's table lacks is not gone from the first, whose choice stays.
+#[test]
+fn a_choice_made_on_one_database_is_not_anothers() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // The connection as PostgreSQL's, on the database `app`, where the
+    // publishers have a legal name.
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.driver = tabletist_db::Driver::Postgres;
+    workspace.spec.database = "app".into();
+    let app = connection(&harness, tab);
+    assert_eq!(app.database, "app");
+    keep(&mut harness, tab, &publishers(), column("legal_name"));
+    // On `other`, as a switch leaves the tab, the publishers have none.
+    harness.app.workspace_mut(tab).unwrap().spec.database = "other".into();
+    let other = connection(&harness, tab);
+    assert_ne!(other, app);
+    edit(&mut harness, tab, id, 1);
+    let by_app = labelled(Some("name"), Source::Automatic, Some("name"));
+    assert!(picker(&harness, tab, id).label == Columns::Known(by_app));
+    assert!(!harness.has("legal_name is gone, so labels use Automatic (name)."));
+    let labels = &harness.app.labels;
+    assert_eq!(labels.choice(&app, &publishers()), column("legal_name"));
+    assert_eq!(labels.gone(&other, &publishers()), None);
+    assert!(saved(&harness).is_empty());
+    // The switch itself, back to the first: its choice is there. (An
+    // open edit would be asked about first.)
+    harness.press(Key::Escape, Modifiers::NONE);
+    let database = "app".to_owned();
+    harness.app.apply(Action::SwitchDatabase { tab, database });
+    assert_eq!(connection(&harness, tab), app);
+    let labels = &harness.app.labels;
+    assert_eq!(labels.choice(&app, &publishers()), column("legal_name"));
 }
 
 /// Test 9: a chosen column the table no longer has is found when its
@@ -331,7 +373,9 @@ fn deleting_a_connection_forgets_its_choices() {
     let (mut harness, tab, _) = covers_in(Look::macos());
     keep(&mut harness, tab, &publishers(), column("name"));
     let conn = connection(&harness, tab);
-    harness.app.apply(Action::DeleteConnection(conn.clone()));
+    harness
+        .app
+        .apply(Action::DeleteConnection(conn.conn.clone()));
     assert_eq!(
         harness.app.labels.choice(&conn, &publishers()),
         LabelChoice::Automatic

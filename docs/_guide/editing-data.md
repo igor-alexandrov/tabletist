@@ -136,7 +136,8 @@ list shows.
 The list is searched again by the new label at once, and its foot says
 **Set by you** where you picked a column or No label. The choice is the
 table's: every foreign key that points at it uses it. It is kept for that
-saved connection, in `labels.json` among
+saved connection (on PostgreSQL, for the database the tab is on), in
+`labels.json` among
 [the app's files]({% link _reference/settings-and-files.md %}) on this
 computer. Nothing is written to the database.
 

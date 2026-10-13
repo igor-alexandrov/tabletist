@@ -83,7 +83,8 @@ impl App {
             let kept = workspace.columns.get(&target.0);
             // What labels the table's rows: the user's choice, or the
             // app's pick.
-            let of = (&workspace.conn_id, table.dialect);
+            let place = workspace.label_place();
+            let of = (&place, table.dialect);
             let label = kept
                 .and_then(|kept| {
                     super::labels::resolved(&self.labels, of, kept, &target.0, &target.1)
@@ -201,7 +202,7 @@ impl App {
             return;
         };
         let dialect = workspace.driver.dialect();
-        let conn = workspace.conn_id.clone();
+        let place = workspace.label_place();
         let mut ready = Vec::new();
         let mut commits = Vec::new();
         // Split, so the tabs and the cache are borrowed side by side.
@@ -221,7 +222,7 @@ impl App {
                 continue;
             };
             if kept.value.is_some() {
-                let of = (&conn, dialect);
+                let of = (&place, dialect);
                 let label = super::labels::resolved(&labels, of, kept, &picker.target, &picker.key);
                 // None: its chosen column is missing from columns that
                 // are being read again. Their answer comes here too.

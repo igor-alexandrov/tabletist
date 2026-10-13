@@ -3037,6 +3037,15 @@ impl Workspace {
         self.tabs.iter_mut().find(|tab| tab.id() == id)
     }
 
+    /// Where this workspace's tables are, for what is kept of their
+    /// labels: its saved connection, and the database it is on now.
+    pub fn label_place(&self) -> crate::labels::Place {
+        crate::labels::Place {
+            conn: self.conn_id.clone(),
+            database: crate::labels::database_key(self.driver, &self.spec.database),
+        }
+    }
+
     /// The lines of the chooser of what labels the rows of `table`, by
     /// its columns as the workspace knows them now. `keys` are the
     /// columns its rows are found by: the one a picker's foreign key

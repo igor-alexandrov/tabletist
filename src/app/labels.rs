@@ -8,25 +8,24 @@ use tabletist_db::{ColumnInfo, Dialect, ObjectKind, ObjectRef};
 use std::time::Instant;
 
 use super::App;
-use crate::connections::ConnectionId;
 use crate::key_picker::Columns;
-use crate::labels::{self, Chooser, LabelChoice, Labels, Line, Resolved, Source};
+use crate::labels::{self, Chooser, LabelChoice, Labels, Line, Place, Resolved, Source};
 use crate::model::{ConnTabId, Fetch, ObjectView, TabId};
 
-/// What labels the rows of `table`, whose columns the workspace of the
-/// saved connection `conn` keeps as `kept`, in a picker whose foreign key
-/// references `key`. None while the columns are not known. None too while
+/// What labels the rows of `table`, whose columns the workspace at
+/// `place` keeps as `kept`, in a picker whose foreign key references
+/// `key`. None while the columns are not known. None too while
 /// a chosen column is missing from columns that are being read again: it
 /// is called gone only by columns that are fresh.
 pub(super) fn resolved(
     labels: &Labels,
-    (conn, dialect): (&ConnectionId, Dialect),
+    (place, dialect): (&Place, Dialect),
     kept: &Fetch<Vec<ColumnInfo>>,
     table: &ObjectRef,
     key: &str,
 ) -> Option<Resolved> {
     let columns = kept.value.as_deref()?;
-    let choice = labels.choice(conn, table);
+    let choice = labels.choice(place, table);
     let resolved = labels::resolve(&choice, dialect, columns, &[key]);
     if resolved.gone.is_some() && kept.is_loading() {
         return None;
@@ -39,7 +38,8 @@ impl App {
     /// reference its column `key`: the one resolver every view reads.
     pub fn label_of(&self, tab: ConnTabId, table: &ObjectRef, key: &str) -> Option<Resolved> {
         let workspace = self.workspace(tab)?;
-        let of = (&workspace.conn_id, workspace.driver.dialect());
+        let place = workspace.label_place();
+        let of = (&place, workspace.driver.dialect());
         resolved(&self.labels, of, workspace.columns.get(table)?, table, key)
     }
 
@@ -58,20 +58,20 @@ impl App {
         let Some(columns) = fresh else {
             return;
         };
-        let conn = workspace.conn_id.clone();
-        let LabelChoice::Column(name) = self.labels.choice(&conn, table) else {
+        let place = workspace.label_place();
+        let LabelChoice::Column(name) = self.labels.choice(&place, table) else {
             return;
         };
         if columns.iter().any(|column| column.name == name) {
             return;
         }
-        self.labels.lost(&conn, table, &name);
+        self.labels.lost(&place, table, &name);
         self.save_labels();
         // A picker that is open on the column searches by what is left,
         // and says the column is gone: nobody chose, so nothing confirms
         // a choice. One that waits for these columns is labelled for the
         // first time by their answer.
-        self.relabel(&conn, table, false);
+        self.relabel(&place, table, false);
     }
 
     /// The chooser of the tab `id`, where it has a place for one: its
@@ -128,7 +128,7 @@ impl App {
             ObjectKind::View | ObjectKind::MaterializedView => return None,
         }
         let structure = object.structure.value.as_ref()?;
-        let choice = self.labels.choice(&workspace.conn_id, &object.object);
+        let choice = self.labels.choice(&workspace.label_place(), &object.object);
         let dialect = workspace.driver.dialect();
         let keys = labels::own_keys(structure);
         Some(labels::resolve(&choice, dialect, &structure.columns, &keys))
@@ -156,7 +156,7 @@ impl App {
                     }
                     let label = self.structure_label(tab, id)?;
                     let (table, lines) = self.chooser_lines(tab, id)?;
-                    let choice = self.labels.choice(&workspace.conn_id, &table);
+                    let choice = self.labels.choice(&workspace.label_place(), &table);
                     Some(match label.source {
                         Source::KeysOnly => Asked::Nothing,
                         Source::Automatic | Source::User => {
@@ -175,7 +175,7 @@ impl App {
                         return None;
                     }
                     let (table, lines) = self.chooser_lines(tab, id)?;
-                    let choice = self.labels.choice(&workspace.conn_id, &table);
+                    let choice = self.labels.choice(&workspace.label_place(), &table);
                     // The columns are still on their way: Automatic and
                     // No label can be chosen at once, and the rest shows
                     // when it comes.
@@ -371,28 +371,28 @@ impl App {
         let Some(workspace) = self.workspace(tab) else {
             return false;
         };
-        let conn = workspace.conn_id.clone();
+        let place = workspace.label_place();
         self.forget_refusal(tab);
-        if !self.labels.choose(&conn, table, choice) {
+        if !self.labels.choose(&place, table, choice) {
             return false;
         }
         self.save_labels();
-        self.relabel(&conn, table, true);
+        self.relabel(&place, table, true);
         true
     }
 
-    /// Labels afresh every open picker of `table` on the saved connection
-    /// `conn`, in whichever of its tabs, and sends each one's search again
+    /// Labels afresh every open picker of `table` at `place`, in whichever
+    /// tab of its saved connection is on that database, and sends each one's search again
     /// for the text it holds: once, and no other table's. `chosen` says
     /// the user just chose: each picker then confirms it for a while, and
     /// one that still waits for the table's columns is among them, to
     /// confirm when its list comes.
-    pub(super) fn relabel(&mut self, conn: &ConnectionId, table: &ObjectRef, chosen: bool) {
+    pub(super) fn relabel(&mut self, place: &Place, table: &ObjectRef, chosen: bool) {
         let now = Instant::now();
         let labels = self.labels.clone();
         let tabs: Vec<ConnTabId> = self
             .open_connections()
-            .filter(|(_, workspace)| workspace.conn_id == *conn)
+            .filter(|(_, workspace)| workspace.label_place() == *place)
             .map(|(tab, _)| tab)
             .collect();
         let mut again = Vec::new();
@@ -415,7 +415,7 @@ impl App {
                 };
                 let label = columns
                     .get(table)
-                    .and_then(|kept| resolved(&labels, (conn, dialect), kept, table, &picker.key))
+                    .and_then(|kept| resolved(&labels, (place, dialect), kept, table, &picker.key))
                     .map_or(Columns::Waiting, Columns::Known);
                 picker.relabel(label, chosen.then_some(now));
                 again.push((tab, object.id));
@@ -441,11 +441,11 @@ impl App {
             if picker.label == Columns::Waiting {
                 return None;
             }
-            let conn = &workspace.conn_id;
-            let gone = self.labels.gone(conn, &picker.target)?.to_owned();
-            Some((conn.clone(), picker.target.clone(), gone))
+            let place = workspace.label_place();
+            let gone = self.labels.gone(&place, &picker.target)?.to_owned();
+            Some((place, picker.target.clone(), gone))
         });
-        let Some((conn, table, gone)) = found else {
+        let Some((place, table, gone)) = found else {
             return;
         };
         if let Some(picker) = self
@@ -454,7 +454,7 @@ impl App {
         {
             picker.gone = Some((gone, Instant::now()));
         }
-        if self.labels.told(&conn, &table) {
+        if self.labels.told(&place, &table) {
             self.save_labels();
         }
     }

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tabletist_db::{ColumnClass, ColumnInfo, Dialect, ObjectRef, Structure, column_class};
+use tabletist_db::{ColumnClass, ColumnInfo, Dialect, Driver, ObjectRef, Structure, column_class};
 
 use crate::connections::ConnectionId;
 
@@ -340,8 +340,30 @@ impl Chooser {
     }
 }
 
-/// The file's format.
-pub const VERSION: u32 = 1;
+/// The file's format. The first kept its choices by connection alone.
+pub const VERSION: u32 = 2;
+
+/// Where a table is, for what is kept of it: the saved connection, and
+/// the database the tab is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub conn: ConnectionId,
+    /// As [`database_key`] names it.
+    pub database: String,
+}
+
+/// The database a choice is kept under, for a connection of `driver` that
+/// is on `database`. One PostgreSQL server holds several databases, each
+/// with schemas of its own, and a tab can be switched from one to another:
+/// a table of one is not the table of the same name in the next. Nothing
+/// elsewhere: a MySQL table's schema is its database, and a SQLite
+/// connection is its one file.
+pub fn database_key(driver: Driver, database: &str) -> String {
+    match driver {
+        Driver::Postgres => database.to_owned(),
+        Driver::MySql | Driver::Sqlite => String::new(),
+    }
+}
 
 /// What is kept of one table.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -355,14 +377,22 @@ struct Kept {
     gone: Option<String>,
 }
 
+/// What is kept of the tables of one database: by schema, then by table.
+type Tables = BTreeMap<String, BTreeMap<String, Kept>>;
+
 /// Every choice, stored as `labels.json` in the state directory: by the
-/// saved connection's id, then by schema, then by table. Nothing of it is
-/// ever written to a database.
+/// saved connection's id, then by database ([`database_key`]), then by
+/// schema, then by table. Nothing of it is ever written to a database.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "File")]
 pub struct Labels {
     version: u32,
-    connections: BTreeMap<String, BTreeMap<String, BTreeMap<String, Kept>>>,
+    connections: BTreeMap<String, BTreeMap<String, Tables>>,
+    /// What a file of the first format kept, by connection alone, until
+    /// [`Labels::adopt`] says which database each connection is saved
+    /// with.
+    #[serde(skip)]
+    legacy: BTreeMap<String, Tables>,
 }
 
 impl Default for Labels {
@@ -370,14 +400,47 @@ impl Default for Labels {
         Self {
             version: VERSION,
             connections: BTreeMap::new(),
+            legacy: BTreeMap::new(),
         }
+    }
+}
+
+/// The file as it is read, in either format: what is kept of a connection
+/// is read by the file's version.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct File {
+    version: u32,
+    connections: BTreeMap<String, serde_json::Value>,
+}
+
+impl From<File> for Labels {
+    fn from(file: File) -> Self {
+        let mut labels = Self::default();
+        for (conn, kept) in file.connections {
+            // A connection whose part does not read is left out, and the
+            // others are kept.
+            if file.version < VERSION {
+                match serde_json::from_value(kept) {
+                    Ok(tables) => drop(labels.legacy.insert(conn, tables)),
+                    Err(error) => log::warn!("labels of {conn} were not read: {error}"),
+                }
+            } else {
+                match serde_json::from_value(kept) {
+                    Ok(databases) => drop(labels.connections.insert(conn, databases)),
+                    Err(error) => log::warn!("labels of {conn} were not read: {error}"),
+                }
+            }
+        }
+        labels
     }
 }
 
 impl Labels {
     /// The store at `path`. A missing file is an empty store; one that
     /// cannot be read is kept aside (`util::load_json`), and the store
-    /// starts empty.
+    /// starts empty. A file of the first format is read whole, and its
+    /// choices wait for [`Labels::adopt`].
     pub fn load(path: &Path) -> Self {
         crate::util::load_json(path)
     }
@@ -386,16 +449,38 @@ impl Labels {
         crate::util::save_json(path, self)
     }
 
-    fn kept(&self, conn: &ConnectionId, table: &ObjectRef) -> Option<&Kept> {
+    /// Gives what a file of the first format kept to the database each
+    /// connection is saved with, which `database_of` names as
+    /// [`database_key`] does: there was no other database a choice could
+    /// have been made on that the file could tell apart. A connection
+    /// that is saved no more (`None`) keeps nothing. Returns whether the
+    /// file was of that format and held anything.
+    pub fn adopt(&mut self, database_of: impl Fn(&ConnectionId) -> Option<String>) -> bool {
+        let legacy = std::mem::take(&mut self.legacy);
+        let any = !legacy.is_empty();
+        for (conn, tables) in legacy {
+            let Some(database) = database_of(&ConnectionId(conn.clone())) else {
+                continue;
+            };
+            let kept = self.connections.entry(conn).or_default();
+            kept.entry(database).or_default().extend(tables);
+        }
+        any
+    }
+
+    fn kept(&self, place: &Place, table: &ObjectRef) -> Option<&Kept> {
         self.connections
-            .get(&conn.0)?
+            .get(&place.conn.0)?
+            .get(&place.database)?
             .get(&table.schema)?
             .get(&table.name)
     }
 
-    fn kept_mut(&mut self, conn: &ConnectionId, table: &ObjectRef) -> &mut Kept {
+    fn kept_mut(&mut self, place: &Place, table: &ObjectRef) -> &mut Kept {
         self.connections
-            .entry(conn.0.clone())
+            .entry(place.conn.0.clone())
+            .or_default()
+            .entry(place.database.clone())
             .or_default()
             .entry(table.schema.clone())
             .or_default()
@@ -404,27 +489,32 @@ impl Labels {
     }
 
     /// Drops what is kept of `table` where it says nothing any more, and
-    /// the schema and the connection it leaves empty.
-    fn tidy(&mut self, conn: &ConnectionId, table: &ObjectRef) {
-        let Some(schemas) = self.connections.get_mut(&conn.0) else {
+    /// the schema, the database and the connection it leaves empty.
+    fn tidy(&mut self, place: &Place, table: &ObjectRef) {
+        let Some(databases) = self.connections.get_mut(&place.conn.0) else {
             return;
         };
-        if let Some(tables) = schemas.get_mut(&table.schema) {
-            if tables.get(&table.name) == Some(&Kept::default()) {
-                tables.remove(&table.name);
+        if let Some(schemas) = databases.get_mut(&place.database) {
+            if let Some(tables) = schemas.get_mut(&table.schema) {
+                if tables.get(&table.name) == Some(&Kept::default()) {
+                    tables.remove(&table.name);
+                }
+                if tables.is_empty() {
+                    schemas.remove(&table.schema);
+                }
             }
-            if tables.is_empty() {
-                schemas.remove(&table.schema);
+            if schemas.is_empty() {
+                databases.remove(&place.database);
             }
         }
-        if schemas.is_empty() {
-            self.connections.remove(&conn.0);
+        if databases.is_empty() {
+            self.connections.remove(&place.conn.0);
         }
     }
 
-    /// What was chosen for `table` on the saved connection `conn`.
-    pub fn choice(&self, conn: &ConnectionId, table: &ObjectRef) -> LabelChoice {
-        self.kept(conn, table)
+    /// What was chosen for `table` at `place`.
+    pub fn choice(&self, place: &Place, table: &ObjectRef) -> LabelChoice {
+        self.kept(place, table)
             .map(|kept| kept.choice.clone())
             .unwrap_or_default()
     }
@@ -432,21 +522,21 @@ impl Labels {
     /// Makes `choice` the choice for `table`. A column that was noted gone
     /// and not said yet is forgotten: the user chose again. Returns
     /// whether anything changed.
-    pub fn choose(&mut self, conn: &ConnectionId, table: &ObjectRef, choice: LabelChoice) -> bool {
-        let before = self.kept(conn, table).cloned().unwrap_or_default();
+    pub fn choose(&mut self, place: &Place, table: &ObjectRef, choice: LabelChoice) -> bool {
+        let before = self.kept(place, table).cloned().unwrap_or_default();
         let after = Kept { choice, gone: None };
         if before == after {
             return false;
         }
-        *self.kept_mut(conn, table) = after;
-        self.tidy(conn, table);
+        *self.kept_mut(place, table) = after;
+        self.tidy(place, table);
         true
     }
 
     /// The column chosen for `table` is not there any more: the choice
     /// goes back to Automatic, and `column` is kept to be said once.
-    pub fn lost(&mut self, conn: &ConnectionId, table: &ObjectRef, column: &str) {
-        *self.kept_mut(conn, table) = Kept {
+    pub fn lost(&mut self, place: &Place, table: &ObjectRef, column: &str) {
+        *self.kept_mut(place, table) = Kept {
             choice: LabelChoice::Automatic,
             gone: Some(column.to_owned()),
         };
@@ -454,17 +544,17 @@ impl Labels {
 
     /// The chosen column of `table` that was found gone, and that the user
     /// has not been told of.
-    pub fn gone(&self, conn: &ConnectionId, table: &ObjectRef) -> Option<&str> {
-        self.kept(conn, table)?.gone.as_deref()
+    pub fn gone(&self, place: &Place, table: &ObjectRef) -> Option<&str> {
+        self.kept(place, table)?.gone.as_deref()
     }
 
     /// The user was told. Returns whether there was anything to tell.
-    pub fn told(&mut self, conn: &ConnectionId, table: &ObjectRef) -> bool {
-        if self.gone(conn, table).is_none() {
+    pub fn told(&mut self, place: &Place, table: &ObjectRef) -> bool {
+        if self.gone(place, table).is_none() {
             return false;
         }
-        self.kept_mut(conn, table).gone = None;
-        self.tidy(conn, table);
+        self.kept_mut(place, table).gone = None;
+        self.tidy(place, table);
         true
     }
 
@@ -851,9 +941,22 @@ mod tests {
         ObjectRef::new("public", "publishers")
     }
 
+    /// A saved connection that reaches one database: MySQL's or SQLite's.
+    fn at(conn: &str) -> Place {
+        on(conn, "")
+    }
+
+    /// A saved connection of PostgreSQL, on `database`.
+    fn on(conn: &str, database: &str) -> Place {
+        Place {
+            conn: ConnectionId(conn.into()),
+            database: database.into(),
+        }
+    }
+
     #[test]
     fn a_choice_is_kept_by_connection_and_table() {
-        let (dev, production) = (ConnectionId("dev".into()), ConnectionId("prod".into()));
+        let (dev, production) = (at("dev"), at("prod"));
         let mut labels = Labels::default();
         assert_eq!(labels.choice(&dev, &publishers()), LabelChoice::Automatic);
         assert!(labels.choose(&dev, &publishers(), chosen("name")));
@@ -872,7 +975,7 @@ mod tests {
 
     #[test]
     fn automatic_is_kept_as_nothing() {
-        let dev = ConnectionId("dev".into());
+        let dev = at("dev");
         let mut labels = Labels::default();
         labels.choose(&dev, &publishers(), LabelChoice::NoLabel);
         assert!(labels.choose(&dev, &publishers(), LabelChoice::Automatic));
@@ -881,7 +984,7 @@ mod tests {
 
     #[test]
     fn a_lost_column_is_said_once() {
-        let dev = ConnectionId("dev".into());
+        let dev = at("dev");
         let mut labels = Labels::default();
         labels.choose(&dev, &publishers(), chosen("legal_name"));
         labels.lost(&dev, &publishers(), "legal_name");
@@ -898,12 +1001,12 @@ mod tests {
 
     #[test]
     fn a_deleted_connections_choices_are_forgotten() {
-        let (dev, production) = (ConnectionId("dev".into()), ConnectionId("prod".into()));
+        let (dev, production) = (at("dev"), at("prod"));
         let mut labels = Labels::default();
         labels.choose(&dev, &publishers(), chosen("name"));
         labels.choose(&production, &publishers(), LabelChoice::NoLabel);
-        assert!(labels.forget(&dev));
-        assert!(!labels.forget(&dev));
+        assert!(labels.forget(&dev.conn));
+        assert!(!labels.forget(&dev.conn));
         assert_eq!(labels.choice(&dev, &publishers()), LabelChoice::Automatic);
         assert_eq!(
             labels.choice(&production, &publishers()),
@@ -911,18 +1014,93 @@ mod tests {
         );
     }
 
+    /// One PostgreSQL connection reaches several databases, and a tab is
+    /// switched from one to another: a table of one is not the table of
+    /// the same name in the next. MySQL's schema is its database, and a
+    /// SQLite connection is one file.
+    #[test]
+    fn a_choice_is_its_databases_alone() {
+        let (app, other) = (on("dev", "app"), on("dev", "other"));
+        let mut labels = Labels::default();
+        labels.choose(&app, &publishers(), chosen("legal_name"));
+        assert_eq!(labels.choice(&other, &publishers()), LabelChoice::Automatic);
+        // What the other database's table lacks is not gone from this one.
+        labels.lost(&other, &publishers(), "legal_name");
+        assert_eq!(labels.choice(&app, &publishers()), chosen("legal_name"));
+        assert_eq!(labels.gone(&app, &publishers()), None);
+        assert!(labels.told(&other, &publishers()));
+        // Forgetting the connection forgets every database of it.
+        assert!(labels.forget(&app.conn));
+        assert_eq!(labels, Labels::default());
+        assert_eq!(database_key(Driver::Postgres, "app"), "app");
+        assert_eq!(database_key(Driver::MySql, "app"), "");
+        assert_eq!(database_key(Driver::Sqlite, "app"), "");
+    }
+
+    /// The first format kept a choice by connection alone. Its file still
+    /// reads: each connection's choices are those of the database it is
+    /// saved with, and a connection that is saved no more keeps nothing.
+    #[test]
+    fn a_file_of_the_first_format_is_its_connections_own_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("labels.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"connections":{
+                "dev":{"public":{"publishers":{"choice":{"column":"name"}},"genres":{"gone":"title"}}},
+                "deleted":{"public":{"publishers":{"choice":"no-label"}}}}}"#,
+        )
+        .unwrap();
+        let mut labels = Labels::load(&path);
+        let own = |conn: &ConnectionId| (conn.0 == "dev").then(|| "app".to_owned());
+        assert!(labels.adopt(own));
+        assert!(!labels.adopt(own), "once");
+        let (app, other) = (on("dev", "app"), on("dev", "other"));
+        assert_eq!(labels.choice(&app, &publishers()), chosen("name"));
+        let genres = ObjectRef::new("public", "genres");
+        assert_eq!(labels.gone(&app, &genres), Some("title"));
+        assert_eq!(labels.choice(&other, &publishers()), LabelChoice::Automatic);
+        let deleted = on("deleted", "app");
+        assert_eq!(
+            labels.choice(&deleted, &publishers()),
+            LabelChoice::Automatic
+        );
+        // It is written in the format of now, and reads the same again.
+        labels.save(&path).unwrap();
+        let mut read = Labels::load(&path);
+        assert!(!read.adopt(own));
+        assert_eq!(read, labels);
+        // A part that does not read costs that connection's choices, and
+        // no other's.
+        std::fs::write(
+            &path,
+            br#"{"version":2,"connections":{
+                "dev":{"app":{"public":{"publishers":{"choice":"no-label"}}}},
+                "odd":{"app":"not a schema"}}}"#,
+        )
+        .unwrap();
+        let read = Labels::load(&path);
+        assert_eq!(read.choice(&app, &publishers()), LabelChoice::NoLabel);
+    }
+
     #[test]
     fn the_file_reads_as_it_was_written_and_a_person_can_read_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("labels.json");
         assert_eq!(Labels::load(&path), Labels::default());
-        let dev = ConnectionId("dev".into());
+        let dev = on("dev", "bookshop");
         let mut labels = Labels::default();
         labels.choose(&dev, &publishers(), chosen("name"));
         labels.choose(
             &dev,
             &ObjectRef::new("public", "authors"),
             LabelChoice::NoLabel,
+        );
+        // A connection with one database keeps its tables under no name.
+        labels.choose(
+            &at("file"),
+            &ObjectRef::new("main", "isbns"),
+            chosen("note"),
         );
         labels.lost(&dev, &ObjectRef::new("public", "genres"), "title");
         labels.save(&path).unwrap();
@@ -932,18 +1110,23 @@ mod tests {
         assert_eq!(
             written,
             serde_json::json!({
-                "version": 1,
-                "connections": { "dev": { "public": {
-                    "authors": { "choice": "no-label" },
-                    "genres": { "gone": "title" },
-                    "publishers": { "choice": { "column": "name" } },
-                } } },
+                "version": 2,
+                "connections": {
+                    "dev": { "bookshop": { "public": {
+                        "authors": { "choice": "no-label" },
+                        "genres": { "gone": "title" },
+                        "publishers": { "choice": { "column": "name" } },
+                    } } },
+                    "file": { "": { "main": {
+                        "isbns": { "choice": { "column": "note" } },
+                    } } },
+                },
             })
         );
         // A file with less in it reads: every part has its default.
         std::fs::write(
             &path,
-            br#"{"connections":{"dev":{"public":{"genres":{}}}}}"#,
+            br#"{"version":2,"connections":{"dev":{"bookshop":{"public":{"genres":{}}}}}}"#,
         )
         .unwrap();
         let read = Labels::load(&path);

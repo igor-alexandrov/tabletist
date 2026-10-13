@@ -139,7 +139,17 @@ impl App {
                 (HostKeys::default(), Some(problem))
             }
         };
-        let labels = crate::labels::Labels::load(&dirs.labels_file());
+        // A file of the first format kept its choices by connection alone:
+        // they are those of the database each connection is saved with.
+        let mut labels = crate::labels::Labels::load(&dirs.labels_file());
+        let adopted = labels.adopt(|id| {
+            let saved = connections
+                .connections
+                .iter()
+                .find(|saved| saved.id == *id)?;
+            let spec = &saved.spec;
+            Some(crate::labels::database_key(spec.driver, &spec.database))
+        });
         let mut app = Self {
             dirs,
             settings,
@@ -177,6 +187,9 @@ impl App {
         // An older file is written in this version once, off the UI thread.
         if upgraded {
             app.save_connections();
+        }
+        if adopted {
+            app.save_labels();
         }
         // So are settings that were read from the old settings.json.
         if source == Source::Json {
@@ -4287,6 +4300,65 @@ mod tests {
             Backend::recording(),
         );
         (app, dir)
+    }
+
+    /// A labels file of the first format kept its choices by connection
+    /// alone. At a start they become those of the database each
+    /// connection is saved with (PostgreSQL's; a MySQL table's schema is
+    /// its database), and the backend saves the file in the format of now.
+    #[test]
+    fn an_older_labels_file_is_its_connections_own_database() {
+        use crate::connections::ConnectionId;
+        use crate::labels::{LabelChoice, Place};
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        let connections = dirs.connections_file();
+        std::fs::create_dir_all(connections.parent().unwrap()).unwrap();
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(&connections, fixture).unwrap();
+        let path = dirs.labels_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"version":1,"connections":{
+                "green":{"public":{"publishers":{"choice":{"column":"name"}}}},
+                "yellow":{"bookshop_preview":{"publishers":{"choice":"no-label"}}}}}"#,
+        )
+        .unwrap();
+        let app = App::new(dirs, Settings::default().into(), Backend::recording());
+        let on = |conn: &str, database: &str| Place {
+            conn: ConnectionId(conn.into()),
+            database: database.into(),
+        };
+        let publishers = tabletist_db::ObjectRef::new("public", "publishers");
+        let chosen = LabelChoice::Column("name".into());
+        let own = on("green", "bookshop_development");
+        assert_eq!(app.labels.choice(&own, &publishers), chosen);
+        let other = on("green", "bookshop_review");
+        assert_eq!(
+            app.labels.choice(&other, &publishers),
+            LabelChoice::Automatic
+        );
+        let preview = tabletist_db::ObjectRef::new("bookshop_preview", "publishers");
+        let kept = app.labels.choice(&on("yellow", ""), &preview);
+        assert_eq!(kept, LabelChoice::NoLabel);
+        let saves = |app: &App| {
+            app.backend
+                .sent
+                .iter()
+                .filter(|command| matches!(command, Command::Save { path: to, .. } if *to == path))
+                .count()
+        };
+        assert_eq!(saves(&app), 1);
+        // A file of the format of now is not saved again at a start.
+        app.labels.save(&path).unwrap();
+        let again = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default().into(),
+            Backend::recording(),
+        );
+        assert_eq!(saves(&again), 0);
+        assert_eq!(again.labels, app.labels);
     }
 
     #[test]
