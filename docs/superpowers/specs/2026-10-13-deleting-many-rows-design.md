@@ -89,11 +89,15 @@ range:
 | What set the cursor | The range |
 |---|---|
 | An extend (Shift+click, Shift+arrow) | Runs from its anchor, or from the row the cursor was on, to the new row. Not held |
-| A move by key (an arrow, `j` `k` `h` `l`, a page up or down, the first or last row, `:N`, the row before or after from the inspector) | Kept when held, and so follows the cursor. Ended otherwise |
+| A move by key, to another row or along the row (an arrow, `j` `k` `h` `l`, Tab, a page up or down, the first or last row, `:N`, the row before or after from the inspector) | Kept when held, and so follows the cursor. Ended otherwise |
 | Anything else (a click, a followed foreign key, a new or duplicated row, an editor that opens, a save, a jump from the pending bar) | Ended |
 
-A move along the row (`h`, `l`, ←, →, Tab) changes the cursor's cell and
-not the rows.
+A move along the row (`h`, `l`, ←, →, Tab) is a move like any other: it
+ends a range that is not held, and under a held one it changes the
+cursor's cell and not the rows.
+
+The field stays `pub`, as tests write it. The rule holds for the app's own
+code: nothing outside that function writes `selection`.
 
 A range does not outlive its page: a reload, a sort, a filter, another
 page and a save that removes rows end it, as they forget the cursor.
@@ -128,16 +132,21 @@ an anchor cell on the same footing. Nothing here stands in its way.
   the board draws the mode alone.
 - The rows of the range take the selection background of the components
   board. The cursor's row and cell keep their own look.
-- While it is on, the grid's other commands do nothing, by whatever key:
-  editing a cell (`i`, Enter), a new row (`o`), set NULL (`x`), yank and
-  paste (`yy`, `p`), `gd`, a count. Moves, the `:` prompt and the commands
-  that are not the grid's (tabs, the tree, save, Review SQL) work as ever.
-  This is a gate on commands in `src/ui/keys.rs`: the keymap has no way to
-  say "nothing else".
+- While it is on, the commands that change, copy or follow a row or a
+  cell do nothing, by whatever key: Edit cell and Edit cell from nothing
+  (`i`, Enter), Set NULL, Set DEFAULT, Undo and Redo one cell, Copy cell
+  values, Copy row, Paste, Add row in its three places, Duplicate row,
+  Yank the row, Open referenced row (`gd`), the saved row (`gs`), and a
+  count. Every other command works as ever: the moves, the inspector,
+  save, discard, Review SQL and its keys, a reload, the filters, the
+  pages, tabs, the tree and the `:` prompt. This is a list of commands in
+  `src/ui/keys.rs`, gated where they are read: the keymap has no way to
+  say "nothing else", and a scope does not tell them apart.
 - `esc` leaves visual before it does anything else it does in the grid:
   with the review open, a note showing or the inspector open, the first
-  `esc` leaves visual and the next does what it does today. In the keymap
-  its line stands after those, since the last line that holds wins.
+  `esc` leaves visual and the next does what it does today. `esc` is a
+  chord, and `src/ui/keys.rs` asks each command in turn for it: Leave
+  visual is asked before Close review, Dismiss note and Close inspector.
 - A click ends it.
 - Shift+click works here too and makes a range that is not held. `dd`
   acts on it.
@@ -401,7 +410,7 @@ rest: `12 rows were already deleted: id 1, id 2, id 3 and 9 more.`
 | `src/ui/row_panel.rs` | Nothing: its Delete sends `DeleteRow`, the cursor's row |
 | `src/ui/pending_bar.rs` | The shorter note of rows already gone |
 | `src/review.rs` | Lines from `delete_runs`, `lay_delete` for a run |
-| `src/testing.rs` | A click with Shift held: pointer events at a cell's place with the modifier, since a click by AccessKit carries none |
+| `src/testing.rs` | A click with Shift held: pointer events at a cell's place, with Shift set on the frame's input as well as on the events, since a click by AccessKit carries none and `Harness::frame` leaves the frame's modifiers at their default |
 | `crates/tabletist-db/src/write.rs` | `delete_runs` |
 | `crates/tabletist-db/src/dialect.rs` | `delete_run`, `DeleteParts` for a run |
 | `crates/tabletist-db/src/{sqlite,pg,mysql}/write.rs` | The run with its savepoint |
@@ -417,15 +426,16 @@ Headless, on the Bookshop fixtures. "(Test 3)" and "(Test 7)" finish
 those tests of the first spec.
 
 1. (Test 3) Shift+click and Shift+arrows select a run of rows. The footer
-   counts them. A plain click selects one again. Shift+click with no
-   cursor selects one row.
+   counts them. A plain click selects one again, and so do ↓ and →.
+   Shift+click with no cursor selects one row.
 2. (Test 3) ⌫ on several selected rows marks them all and keeps the
    range. A second ⌫ restores them. A selection with one unmarked row
    marks that row and restores none.
 3. (Test 3) `V`, `j`, `j`, `d` marks three rows, leaves visual and puts
    the cursor on the first. `esc` leaves visual and marks nothing. The
-   mode line shows `-- VISUAL --` and the count while it is on. `i`, `o`
-   and Enter do nothing in it, `l` moves the cell and keeps the rows.
+   mode line shows `-- VISUAL --` and the count while it is on. `i`, `o`,
+   `x`, `gd` and Enter do nothing in it, `l` moves the cell and keeps the
+   rows, and `:w` saves.
 4. With the review open and visual on, the first `esc` leaves visual and
    the second closes the review. The same with a note and with the
    inspector.
@@ -476,7 +486,15 @@ Step 4 of a run (more rows touched than meant) and step 5 (a busy
 database) have no test of their own on a server: the first cannot be made
 once each row was read and found once, the second needs two sessions that
 wait on each other. Each driver's sorting of an error into busy or not is
-tested as a function.
+tested as a function. SQLite's reads the primary code under the extended
+one, and can hardly meet a busy file on a run at all: the save's `BEGIN
+IMMEDIATE` already holds it.
+
+One check that is not a behaviour: the MySQL scenario for a key of two
+columns reads the `EXPLAIN` of its run's `DELETE` and fails where it is a
+scan of the whole table. A row list on the right of `IN` should find its
+rows by the key. A server that does not would lock every row for a run
+where it locks 100 today.
 
 PostgreSQL and MySQL scenarios run in CI only: the integration jobs
 already name `--test delete_rows`.
