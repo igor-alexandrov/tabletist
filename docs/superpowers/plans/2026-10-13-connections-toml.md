@@ -2197,3 +2197,7 @@ The website changes with it: Task 3.
 - **Names.** `Loaded { store, save, save_last_used, problem }`, `file::read`, `file::write`, `file::Read { connections, named }`, `file::Problem`, `AppDirs::legacy_connections_file`, `AppDirs::last_used_file`, `StateFile::LastUsed`, `Environment::key` and `util::toml_string` are spelled the same in every task.
 - **Every commit stands.** After Task 1 nothing a user sees changed. After Task 2 the app reads and writes the new files, and the website still names the old one, for one commit. After Task 3 it does not.
 - **Not reviewed by a second reader.** The draft was not given to a separate reviewer before this plan was written, as the second run of Phase 1a was. The pull request's review is the first.
+
+## After the run
+
+Run on 2026-10-13, inline, one commit for each task. Every step showed what it says above, `Cargo.lock` did not change, and the files the tasks changed are byte for byte the draft's.
