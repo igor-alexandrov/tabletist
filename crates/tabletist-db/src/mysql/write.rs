@@ -13,7 +13,7 @@ use super::{
 use crate::script::retry_cancelled;
 use crate::write::{
     Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
-    not_stopped, same_row_twice, spelled_otherwise,
+    not_stopped, read_by, same_row_twice, spelled_otherwise,
 };
 use crate::{
     ChangeSet, ColumnClass, ColumnMeta, Dialect, Error, InsertValue, NewValue, ObjectRef, Result,
@@ -589,10 +589,13 @@ fn inexact(type_name: &str) -> Option<&str> {
     matches!(name, "timestamp" | "bit" | "float").then_some(name)
 }
 
-/// A key column of `change` that cannot be matched exactly, and its type,
-/// among the row's `columns`.
-fn inexact_key<'a>(change: &'a RowChange, columns: &'a [ColumnMeta]) -> Option<(&'a str, &'a str)> {
-    change.key.iter().find_map(|(name, _)| {
+/// A column of `key` that cannot be matched exactly, and its type, among
+/// the row's `columns`.
+fn inexact_key<'a>(
+    key: &'a [(String, Value)],
+    columns: &'a [ColumnMeta],
+) -> Option<(&'a str, &'a str)> {
+    key.iter().find_map(|(name, _)| {
         let column = columns.iter().find(|column| column.name == *name)?;
         Some((name.as_str(), inexact(&column.type_name)?))
     })
@@ -694,7 +697,7 @@ async fn apply(
         }
         // Known only now: a key comes without its columns' types, and the
         // read's answer is the first to carry them.
-        if let Some((name, type_name)) = inexact_key(change, &columns) {
+        if let Some((name, type_name)) = inexact_key(&change.key, &columns) {
             return Err(Error::query(format!(
                 "{name} is a {type_name} column, and a key of that type cannot be matched \
                  exactly, so the save cannot be sure which row it names"
@@ -715,7 +718,10 @@ async fn apply(
     }
     // Before a conflict is answered too: a set that names a row twice is
     // not one to offer writing over what the server holds.
-    same_row_twice(&changes.rows, &names, &read)?;
+    {
+        let (keys, found) = read_by(changes, &read, &[]);
+        same_row_twice(&keys, &names, &found)?;
+    }
     // Asked again now that the reads hold the table: its metadata lock
     // lasts until the transaction ends, so an `ALTER TABLE` waits, and the
     // engine found here is the engine the updates run on. Before the reads
@@ -929,15 +935,15 @@ mod tests {
             column("ratio", "float unsigned"),
             column("name", "varchar"),
         ];
-        assert_eq!(inexact_key(&change(&["id"], &["name"]), &columns), None);
+        assert_eq!(inexact_key(&change(&["id"], &["name"]).key, &columns), None);
         // Only a key's column: a save may set one of such a type.
-        assert_eq!(inexact_key(&change(&["id"], &["at"]), &columns), None);
+        assert_eq!(inexact_key(&change(&["id"], &["at"]).key, &columns), None);
         assert_eq!(
-            inexact_key(&change(&["id", "at"], &["name"]), &columns),
+            inexact_key(&change(&["id", "at"], &["name"]).key, &columns),
             Some(("at", "timestamp"))
         );
         assert_eq!(
-            inexact_key(&change(&["ratio"], &["name"]), &columns),
+            inexact_key(&change(&["ratio"], &["name"]).key, &columns),
             Some(("ratio", "float"))
         );
     }

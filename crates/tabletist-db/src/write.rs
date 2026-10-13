@@ -358,6 +358,9 @@ pub(crate) fn named_twice(insert: &RowInsert, same: impl Fn(&str, &str) -> bool)
     })
 }
 
+/// A row's key: its columns and their loaded values.
+pub(crate) type Key = [(String, Value)];
+
 /// Whether two keys find the same row: the same columns, each with the
 /// same value, in whatever order each names them.
 fn same_key(a: &[(String, Value)], b: &[(String, Value)]) -> bool {
@@ -387,22 +390,23 @@ pub(crate) fn conflicts_of(places: Vec<usize>, mut read: Vec<Option<Vec<Value>>>
 /// unique column and by another. Both changes would then be compared with
 /// the row as it was, and the later written over the earlier.
 ///
-/// `read` holds, for each of `rows`, the row its locking read found (`None`
-/// when it is gone), and `columns` names the values of every one of them:
-/// they are reads of one table in one transaction. Two reads found the same
-/// row when their rows hold the same values, as the database returned them,
-/// in the key columns of either change: each read found one row by a key
-/// that names one row, so a row with that key's values is that row.
+/// `keys` holds the key of each row the save read, and `read` the row its
+/// locking read found (`None` when it is gone), in the same order: the
+/// changed rows and the rows to delete alike (see [`read_by`]). `columns`
+/// names the values of every one of them: they are reads of one table in
+/// one transaction. Two reads found the same row when their rows hold the
+/// same values, as the database returned them, in the key columns of
+/// either: each read found one row by a key that names one row, so a row
+/// with that key's values is that row.
 pub(crate) fn same_row_twice(
-    rows: &[RowChange],
+    keys: &[&Key],
     columns: &[String],
-    read: &[Option<Vec<Value>>],
+    read: &[Option<&[Value]>],
 ) -> Result<()> {
-    // Where each change's key columns are among a row's values.
-    let mut keys = Vec::with_capacity(rows.len());
-    for row in rows {
-        let places: Vec<usize> = row
-            .key
+    // Where each key's columns are among a row's values.
+    let mut places_of = Vec::with_capacity(keys.len());
+    for key in keys {
+        let places: Vec<usize> = key
             .iter()
             .map(|(name, _)| {
                 columns
@@ -411,7 +415,7 @@ pub(crate) fn same_row_twice(
                     .ok_or_else(|| Error::query(format!("no such column: {name}")))
             })
             .collect::<Result<_>>()?;
-        keys.push(places);
+        places_of.push(places);
     }
     for (later, theirs) in read.iter().enumerate() {
         let Some(theirs) = theirs else { continue };
@@ -427,12 +431,30 @@ pub(crate) fn same_row_twice(
                     })
                 })
             };
-            if alike(keys.get(earlier)) || alike(keys.get(later)) {
+            if alike(places_of.get(earlier)) || alike(places_of.get(later)) {
                 return Err(Error::query("two changes of the save name the same row"));
             }
         }
     }
     Ok(())
+}
+
+/// What [`same_row_twice`] compares, for a save whose changed rows read
+/// `rows` and whose rows to delete read `doomed`: every key, and the row
+/// each found.
+pub(crate) fn read_by<'a>(
+    changes: &'a ChangeSet,
+    rows: &'a [Option<Vec<Value>>],
+    doomed: &'a [Option<Vec<Value>>],
+) -> (Vec<&'a Key>, Vec<Option<&'a [Value]>>) {
+    let keys = changes
+        .rows
+        .iter()
+        .map(|row| row.key.as_slice())
+        .chain(changes.deletes.iter().map(|delete| delete.key.as_slice()))
+        .collect();
+    let read = rows.iter().chain(doomed).map(Option::as_deref).collect();
+    (keys, read)
 }
 
 /// Whether the row as the database holds it (`server`, whose values
@@ -868,6 +890,33 @@ mod tests {
     }
 
     #[test]
+    fn a_delete_and_a_change_that_read_the_same_row_are_refused() {
+        let columns = ["id".to_owned(), "email".to_owned()];
+        let ada = vec![Value::Int(1), Value::Text("ada@example.com".into())];
+        let changes = ChangeSet {
+            // The row by its number, and the same row by its unique
+            // address: `check` sees two keys.
+            deletes: vec![doomed(vec![(
+                "email",
+                Value::Text("ada@example.com".into()),
+            )])],
+            ..set(vec![row(vec![("id", Value::Int(1))], vec![cell("name")])])
+        };
+        assert_eq!(changes.check(), Ok(()));
+        let rows = [Some(ada.clone())];
+        let found = [Some(ada)];
+        let (keys, read) = read_by(&changes, &rows, &found);
+        assert_eq!(
+            same_row_twice(&keys, &columns, &read),
+            Err(Error::query("two changes of the save name the same row"))
+        );
+        // A delete whose row is gone reads no row, and names none twice.
+        let gone = [None];
+        let (keys, read) = read_by(&changes, &rows, &gone);
+        assert_eq!(same_row_twice(&keys, &columns, &read), Ok(()));
+    }
+
+    #[test]
     fn two_changes_that_read_the_same_row_are_refused() {
         let columns = ["id".to_owned(), "email".to_owned(), "name".to_owned()];
         let person = |id: Value, email: &str| {
@@ -880,7 +929,9 @@ mod tests {
         let by =
             |column: &str, value: Value, set: &str| row(vec![(column, value)], vec![cell(set)]);
         let said = |rows: &[RowChange], read: &[Option<Vec<Value>>]| {
-            same_row_twice(rows, &columns, read).map_err(|error| error.to_string())
+            let keys: Vec<&Key> = rows.iter().map(|row| row.key.as_slice()).collect();
+            let read: Vec<Option<&[Value]>> = read.iter().map(Option::as_deref).collect();
+            same_row_twice(&keys, &columns, &read).map_err(|error| error.to_string())
         };
         let twice = Err("two changes of the save name the same row".to_owned());
         // One key spelled two ways: the database found the row of the

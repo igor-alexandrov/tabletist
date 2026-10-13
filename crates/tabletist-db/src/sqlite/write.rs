@@ -9,7 +9,7 @@ use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::{InsertStatement, RowUpdate};
 use crate::write::{
     Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
-    not_stopped, same_row_twice, spelled_otherwise,
+    not_stopped, read_by, same_row_twice, spelled_otherwise,
 };
 use crate::{
     ChangeSet, Dialect, Error, ObjectRef, Result, RowChange, Sql, StopFlag, Value, WriteOutcome,
@@ -305,7 +305,10 @@ fn apply(
     }
     // Before a conflict is answered too: a set that names a row twice is
     // not one to offer writing over what the file holds.
-    same_row_twice(&changes.rows, &names, &rows_read)?;
+    {
+        let (keys, found) = read_by(changes, &rows_read, &[]);
+        same_row_twice(&keys, &names, &found)?;
+    }
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, rows_read)));
     }

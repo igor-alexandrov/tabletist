@@ -10,7 +10,7 @@ use crate::dialect::{InsertStatement, RowUpdate};
 use crate::script::retry_cancelled;
 use crate::write::{
     Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
-    same_row_twice,
+    read_by, same_row_twice,
 };
 use crate::{ChangeSet, ColumnMeta, Dialect, Error, Result, StopFlag, Value, WriteOutcome};
 
@@ -183,7 +183,10 @@ async fn apply(
     }
     // Before a conflict is answered too: a set that names a row twice is
     // not one to offer writing over what the server holds.
-    same_row_twice(&changes.rows, &names, &read)?;
+    {
+        let (keys, found) = read_by(changes, &read, &[]);
+        same_row_twice(&keys, &names, &found)?;
+    }
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
     }
