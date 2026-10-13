@@ -7,9 +7,9 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Answer, Duplicate, Editor, EditorPlace, Lock, NEW_ROWS, Note, Order, Pending, Place, Problem,
-    Saved, Saving, Sent, State, Table, Told, change_set, check, conflicting, is_change, new_id,
-    new_row, opens_large, same_changes, settled, shown_lines, start_text,
+    Answer, Duplicate, Editor, EditorPlace, Effect, Lock, NEW_ROWS, Note, Order, Pending, Place,
+    Problem, Saved, Saving, Sent, State, Table, Taken, Told, change_set, check, conflicting,
+    is_change, new_id, new_row, opens_large, same_changes, settled, shown_lines, start_text,
 };
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
@@ -450,7 +450,17 @@ impl App {
             // its row fails here as it would in the save, with the
             // builder's reason. No cell is to fix: Save was not disabled.
             let blocked = crate::review::Blocked::default();
-            let review = crate::review::of(dialect, &changes, blocked, Values::Shown);
+            let mut review = crate::review::of(dialect, &changes, blocked, Values::Shown);
+            // What was counted already, before the review goes to the
+            // panel and to the prompt: the two are then the same review.
+            let counted = self
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id))
+                .and_then(|object| object.edits.taken.as_ref())
+                .map(Taken::lines);
+            if let Some(lines) = counted {
+                review.also(&lines);
+            }
             if let Some((part, error)) = review.refused.clone() {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.saved = None;
@@ -494,6 +504,9 @@ impl App {
                 then,
                 after_answer: None,
             })));
+            // What the deletes take with them, where it was not counted
+            // yet: the prompt says it as the answers come.
+            self.count_taken(tab, id);
             return;
         }
         self.send_write(tab, id, changes, sent, then);
@@ -998,6 +1011,8 @@ impl App {
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
+        // The counts of the rows that were marked are of another set now.
+        let stale = object.edits.counts_out();
         if !object.edits.mark(cell.row) {
             return;
         }
@@ -1010,6 +1025,14 @@ impl App {
         object.edits.note = None;
         // The row panel shows the row as marked.
         object.fields = None;
+        self.stop_counts(tab, stale);
+    }
+
+    /// Stops counts a tab no longer waits for.
+    pub(super) fn stop_counts(&mut self, tab: ConnTabId, requests: Vec<RequestId>) {
+        if let Some(session) = self.workspace(tab).map(|workspace| workspace.session) {
+            self.cancel(session, requests);
+        }
     }
 
     /// Takes the mark for deletion off the selected row.
@@ -1029,6 +1052,7 @@ impl App {
             return;
         };
         // Not under a save: its answer names the rows it sent.
+        let stale = object.edits.counts_out();
         if object.edits.saving.is_some() || !object.edits.restore(row) {
             return;
         }
@@ -1046,6 +1070,7 @@ impl App {
         object.edits.told = Some(Told::Restored { row: name });
         object.edits.note = None;
         object.fields = None;
+        self.stop_counts(tab, stale);
         // Asked of a foreign key's typed value only: every other cell has
         // nothing to ask.
         for cell in unasked {
@@ -1558,7 +1583,15 @@ impl App {
             if let Some(object) = self.object_tab_mut(tab, id) {
                 object.edits.reviewing = review.is_some();
                 object.edits.review = review;
+                // What was counted since the marks last changed is the
+                // review's too.
+                let lines = object.edits.taken.as_ref().map(Taken::lines);
+                if let (Some(review), Some(lines)) = (object.edits.review.as_mut(), lines) {
+                    review.also(&lines);
+                }
             }
+            // And what was not is asked now.
+            self.count_taken(tab, id);
         }
     }
 
@@ -1568,9 +1601,104 @@ impl App {
     /// characters of each.
     pub fn review_whole(&self, tab: ConnTabId, id: TabId) -> Option<crate::review::Review> {
         self.table(tab, id, |table, object| {
-            crate::review::build(&object.object, table, &object.edits.cells, Values::Whole)
+            let mut review =
+                crate::review::build(&object.object, table, &object.edits.cells, Values::Whole)?;
+            // What the deletes take with them is copied as it is shown.
+            if let Some(taken) = &object.edits.taken {
+                review.also(&taken.lines());
+            }
+            Some(review)
         })
         .flatten()
+    }
+
+    /// Asks how many rows the tab's deletes take with them in other
+    /// tables, where rows are marked, a key that acts points at the table,
+    /// and nothing was asked since the marks last changed. The answers
+    /// come as counts (`taken_counted`).
+    pub(super) fn count_taken(&mut self, tab: ConnTabId, id: TabId) {
+        let asked = self
+            .table(tab, id, |table, object| {
+                let unasked = object.edits.taken.is_none();
+                unasked.then(|| crate::edit::taken_by(table))
+            })
+            .flatten()
+            .unwrap_or_default();
+        if asked.is_empty() {
+            return;
+        }
+        let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
+            return;
+        };
+        let mut sent = Vec::with_capacity(asked.len());
+        for (effect, queries) in asked {
+            let mut requests = Vec::with_capacity(queries.len());
+            for query in queries {
+                let request = RequestId(self.next_id());
+                self.backend.send(Command::CountRows {
+                    session,
+                    request,
+                    query,
+                });
+                requests.push(request);
+            }
+            sent.push((effect, requests));
+        }
+        let taken = Taken::asked(sent);
+        let lines = taken.lines();
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.taken = Some(taken);
+            if let Some(review) = object.edits.review.as_mut() {
+                review.also(&lines);
+            }
+        }
+        self.also_in_prompt(tab, id, &lines);
+    }
+
+    /// The production confirmation of the tab `id`, where one is up: its
+    /// review says what the deletes take too.
+    fn also_in_prompt(&mut self, tab: ConnTabId, id: TabId, lines: &[Effect]) {
+        if let Some(Dialog::ConfirmWrite(prompt)) = self.dialog.as_mut()
+            && prompt.tab == tab
+            && prompt.id == id
+        {
+            prompt.review.also(lines);
+        }
+    }
+
+    /// A count came back: one of a tab's counts of what its deletes take,
+    /// where it is one. `rows` is `None` where the count failed. Says
+    /// whether it was one of them.
+    pub(super) fn taken_counted(
+        &mut self,
+        session: SessionId,
+        request: RequestId,
+        rows: Option<u64>,
+    ) -> bool {
+        let Some(tab) = self.tab_for_session(session) else {
+            return false;
+        };
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return false;
+        };
+        let found = workspace.object_tabs_mut().find_map(|object| {
+            let taken = object.edits.taken.as_mut()?;
+            if !taken.answer(request, rows) {
+                return None;
+            }
+            let lines = taken.lines();
+            if let Some(review) = object.edits.review.as_mut() {
+                review.also(&lines);
+            }
+            Some((object.id, lines))
+        });
+        match found {
+            Some((id, lines)) => {
+                self.also_in_prompt(tab, id, &lines);
+                true
+            }
+            None => false,
+        }
     }
 
     /// A save was answered: `Event::Written`.

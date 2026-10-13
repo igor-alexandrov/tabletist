@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, InsertValue,
-    NewValue, ObjectKind, ObjectRef, RowChange, RowDelete, RowInsert, RowPage, Structure, Value,
-    column_class, temporal,
+    Access, Acts, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, Filter,
+    FilterOp, InsertValue, NewValue, ObjectKind, ObjectRef, ReferencingKey, RowChange, RowDelete,
+    RowInsert, RowPage, RowQuery, Structure, Value, column_class, temporal,
 };
 
 use crate::backend::RequestId;
@@ -1397,6 +1397,10 @@ pub struct Edits {
     /// The last row that was marked or restored, for a screen reader to
     /// be told.
     pub told: Option<Told>,
+    /// What the marked rows' deletes take with them in other tables, once
+    /// a review asked. `None` until one does, and again when the marks
+    /// change.
+    pub taken: Option<Taken>,
     /// Review SQL is open: the drawer on macOS and Windows, the terminal
     /// look's `:diff` panel.
     pub reviewing: bool,
@@ -1466,6 +1470,185 @@ pub enum Effect {
         columns: Vec<String>,
         rows: Option<u64>,
     },
+}
+
+/// What a tab's deletes take with them in other tables, as far as it was
+/// counted. Dropped when the marks change.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Taken {
+    /// One for each key that acts, in the structure's order. `rows` is
+    /// `None` until every count of the key is in, and where one failed.
+    pub effects: Vec<Effect>,
+    /// The counts still out: the request, and the effect it is of.
+    pub pending: Vec<(RequestId, usize)>,
+    /// What was counted for each effect so far.
+    counted: Vec<u64>,
+    /// The effects one of whose counts failed.
+    failed: Vec<usize>,
+}
+
+impl Taken {
+    /// What is waited for: `asked` are the effects with the requests sent
+    /// for each. An effect with no request is one nothing can count: it
+    /// stays without a number.
+    pub fn asked(asked: Vec<(Effect, Vec<RequestId>)>) -> Self {
+        let mut taken = Self::default();
+        for (place, (effect, requests)) in asked.into_iter().enumerate() {
+            taken.effects.push(effect);
+            taken.counted.push(0);
+            if requests.is_empty() {
+                taken.failed.push(place);
+            }
+            taken
+                .pending
+                .extend(requests.into_iter().map(|request| (request, place)));
+        }
+        taken
+    }
+
+    /// Takes the answer of `request`: how many rows, or `None` where the
+    /// count failed. Says whether the request was one of these.
+    pub fn answer(&mut self, request: RequestId, rows: Option<u64>) -> bool {
+        let Some(at) = self.pending.iter().position(|(asked, _)| *asked == request) else {
+            return false;
+        };
+        let (_, place) = self.pending.remove(at);
+        match rows {
+            Some(rows) => {
+                if let Some(counted) = self.counted.get_mut(place) {
+                    *counted += rows;
+                }
+            }
+            None => self.failed.push(place),
+        }
+        // Said once the last count of the key is in.
+        let waits = self.pending.iter().any(|(_, of)| *of == place);
+        let total = (!waits && !self.failed.contains(&place))
+            .then(|| self.counted.get(place).copied())
+            .flatten();
+        if let Some(effect) = self.effects.get_mut(place) {
+            match effect {
+                Effect::Deletes { rows, .. } | Effect::Clears { rows, .. } => *rows = total,
+            }
+        }
+        true
+    }
+
+    /// The lines a review shows: every effect but one that was counted
+    /// and takes nothing.
+    pub fn lines(&self) -> Vec<Effect> {
+        let takes = |effect: &&Effect| {
+            !matches!(
+                effect,
+                Effect::Deletes { rows: Some(0), .. } | Effect::Clears { rows: Some(0), .. }
+            )
+        };
+        self.effects.iter().filter(takes).cloned().collect()
+    }
+}
+
+/// What to count for the rows of `table` that are marked for deletion:
+/// each key that points at the table and acts on a delete, as the effect
+/// it has, with the counts that say how many rows it reaches. Empty where
+/// nothing is marked or no such key is known.
+pub fn taken_by(table: &Table<'_>) -> Vec<(Effect, Vec<RowQuery>)> {
+    let rows: Vec<usize> = table.deleted.keys().copied().collect();
+    let Some(structure) = table.structure.filter(|_| !rows.is_empty()) else {
+        return Vec::new();
+    };
+    let shown = |name: &String| crate::ui::format::display_safe(name).into_owned();
+    structure
+        .referenced_by
+        .iter()
+        .filter_map(|key| {
+            let effect = match key.acts()? {
+                Acts::Deletes => Effect::Deletes {
+                    table: shown(&key.table),
+                    rows: None,
+                },
+                Acts::Clears => Effect::Clears {
+                    table: shown(&key.table),
+                    columns: key.columns.iter().map(shown).collect(),
+                    rows: None,
+                },
+            };
+            // No row can point at a NULL: such a key takes nothing, and
+            // has no line.
+            match pointing_at(table, key, &rows) {
+                Some(queries) if queries.is_empty() => None,
+                Some(queries) => Some((effect, queries)),
+                // The page does not hold what the key points at: said
+                // without a number.
+                None => Some((effect, Vec::new())),
+            }
+        })
+        .collect()
+}
+
+/// The counts of the rows of `key`'s table that point at the page's
+/// `rows`: one where the key is one column, one for each row where it is
+/// several, since the app's filters are ANDed. `None` where the page
+/// does not hold what the key points at; no count where every row holds
+/// a NULL there, which no row points at.
+fn pointing_at(table: &Table<'_>, key: &ReferencingKey, rows: &[usize]) -> Option<Vec<RowQuery>> {
+    let object = ObjectRef::new(key.schema.clone(), key.table.clone());
+    let places: Option<Vec<usize>> = key
+        .ref_columns
+        .iter()
+        .map(|name| {
+            let mut columns = table.page.columns.iter();
+            columns.position(|column| column.name == *name)
+        })
+        .collect();
+    let places = places.filter(|places| !places.is_empty() && places.len() == key.columns.len())?;
+    // Each marked row's values of the columns the key points at, as a
+    // filter reads them. A row with a NULL there is pointed at by none.
+    let values: Vec<Vec<String>> = rows
+        .iter()
+        .filter_map(|&row| {
+            let held = table.page.rows.get(row)?;
+            places
+                .iter()
+                .map(|&col| held.get(col).filter(|value| !value.is_null()))
+                .map(|value| value.map(crate::ui::format::plain_text))
+                .collect::<Option<Vec<String>>>()
+        })
+        .collect();
+    let filter = |column: &String, op: FilterOp, value: String| Filter {
+        column: column.clone(),
+        op,
+        value,
+    };
+    let count = |filters: Vec<Filter>| {
+        let mut query = RowQuery::new(object.clone(), 1);
+        query.filters = filters;
+        query
+    };
+    // What the filter's `IN` reads back as it is: it splits at commas,
+    // trims each value and drops an empty one.
+    let listable = |row: &Vec<String>| {
+        row.first().is_some_and(|value| {
+            !value.is_empty() && !value.contains(',') && value.trim() == value.as_str()
+        })
+    };
+    Some(match key.columns.as_slice() {
+        // One column and values `IN` can list: one count.
+        [column] if values.len() > 1 && values.iter().all(listable) => {
+            let list: Vec<&str> = values.iter().flatten().map(String::as_str).collect();
+            vec![count(vec![filter(column, FilterOp::In, list.join(","))])]
+        }
+        columns => values
+            .into_iter()
+            .map(|row| {
+                let filters = columns.iter().zip(row);
+                count(
+                    filters
+                        .map(|(column, value)| filter(column, FilterOp::Eq, value))
+                        .collect(),
+                )
+            })
+            .collect(),
+    })
 }
 
 /// How much is pending.
@@ -1647,6 +1830,13 @@ impl Edits {
         true
     }
 
+    /// The counts that are out for this tab: of what its deletes take
+    /// with them. They are the tab's reads, as its page's is.
+    pub fn counts_out(&self) -> Vec<RequestId> {
+        let taken = self.taken.iter().flat_map(|taken| &taken.pending);
+        taken.map(|(request, _)| *request).collect()
+    }
+
     /// Marks the page's row `row` for deletion. What was made of the set,
     /// its review, is stale. Says whether the row was not marked before.
     pub fn mark(&mut self, row: usize) -> bool {
@@ -1697,6 +1887,8 @@ impl Edits {
             self.why = None;
         }
         self.review = None;
+        // The counts were of the rows that were marked.
+        self.taken = None;
         true
     }
 
@@ -1716,6 +1908,8 @@ impl Edits {
             self.why = None;
         }
         self.review = None;
+        // The counts were of the rows that were marked.
+        self.taken = None;
         true
     }
 
@@ -2672,6 +2866,78 @@ mod tests {
         let table = marked_covers(&structure, &page, &edits);
         let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
         assert_eq!(sent.deletes, [0, 1]);
+    }
+
+    /// One count for a key of one column, `IN` the marked rows' values
+    /// where there are several.
+    #[test]
+    fn what_a_delete_takes_is_asked_once_for_each_key() {
+        let structure = crate::testing::publishers_structure();
+        let page = crate::testing::publishers_page();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        let table = marked_covers(&structure, &page, &edits);
+        let asked = taken_by(&table);
+        assert_eq!(asked.len(), 2);
+        let (effect, queries) = &asked[0];
+        assert_eq!(
+            *effect,
+            Effect::Deletes {
+                table: "book_covers".into(),
+                rows: None
+            }
+        );
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].object, ObjectRef::new("main", "book_covers"));
+        let filter = &queries[0].filters[0];
+        assert_eq!(
+            (filter.column.as_str(), filter.op, filter.value.as_str()),
+            ("publisher_id", FilterOp::Eq, "9100000000000000001")
+        );
+        assert!(matches!(&asked[1].0, Effect::Clears { table, .. } if table == "books"));
+        // Two rows: one count still, by their two values.
+        edits.mark(2);
+        let table = marked_covers(&structure, &page, &edits);
+        let asked = taken_by(&table);
+        let filter = &asked[0].1[0].filters[0];
+        assert_eq!(filter.op, FilterOp::In);
+        assert_eq!(filter.value, "9100000000000000001,9100000000000000007");
+        // Nothing marked, nothing asked.
+        let none = Edits::default();
+        assert!(taken_by(&marked_covers(&structure, &page, &none)).is_empty());
+    }
+
+    /// A key's count is its counts added up, said once the last is in.
+    /// One that takes nothing has no line, and one that failed none with
+    /// a number.
+    #[test]
+    fn what_was_counted_is_said_once_every_count_of_a_key_is_in() {
+        let deletes = |rows| Effect::Deletes {
+            table: "book_covers".into(),
+            rows,
+        };
+        let clears = |rows| Effect::Clears {
+            table: "books".into(),
+            columns: vec!["publisher_id".into()],
+            rows,
+        };
+        let (a, b, c) = (RequestId(1), RequestId(2), RequestId(3));
+        let mut taken = Taken::asked(vec![(deletes(None), vec![a, b]), (clears(None), vec![c])]);
+        assert_eq!(taken.lines(), [deletes(None), clears(None)]);
+        assert!(taken.answer(a, Some(2)));
+        // One count of the key is still out.
+        assert_eq!(taken.lines(), [deletes(None), clears(None)]);
+        assert!(taken.answer(b, Some(1)));
+        assert_eq!(taken.lines(), [deletes(Some(3)), clears(None)]);
+        // Nothing to clear: no line.
+        assert!(taken.answer(c, Some(0)));
+        assert_eq!(taken.lines(), [deletes(Some(3))]);
+        // Not one of these.
+        assert!(!taken.answer(RequestId(9), Some(1)));
+        // A count that failed leaves its line without a number.
+        let mut failed = Taken::asked(vec![(deletes(None), vec![a])]);
+        assert!(failed.answer(a, None));
+        assert_eq!(failed.lines(), [deletes(None)]);
     }
 
     /// Spec 1 and test 1: a mark, and the mark taken back.

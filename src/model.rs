@@ -2123,6 +2123,8 @@ impl ObjectTab {
         ]
         .into_iter()
         .flatten()
+        // And the counts of what its deletes take with them.
+        .chain(self.edits.counts_out())
     }
 
     pub fn page(&self) -> Option<&RowPage> {
@@ -3119,6 +3121,9 @@ impl Workspace {
                 crate::edit::DoubtState::Asked(_) => false,
                 crate::edit::DoubtState::Missing => true,
             });
+            // Nor will a count of what the tab's deletes take: the next
+            // review asks again.
+            object.edits.taken = None;
         }
         self.server_version = Fetch::default();
         // Fetches the old session will never answer, and names that may

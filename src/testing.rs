@@ -792,10 +792,43 @@ pub fn publishers_structure() -> tabletist_db::Structure {
         type_name: type_name.into(),
         ..ColumnInfo::default()
     };
+    // The keys that point at the table: `book_covers` loses its covers
+    // with a publisher, and `books` is cleared of it.
+    let key = |table: &str, on_delete: &str| tabletist_db::ReferencingKey {
+        name: Some(format!("{table}_publisher_id_fkey")),
+        schema: "main".into(),
+        table: table.into(),
+        columns: vec!["publisher_id".into()],
+        ref_columns: vec!["id".into()],
+        on_delete: on_delete.into(),
+    };
     tabletist_db::Structure {
         columns: vec![column("id", "INTEGER"), column("name", "TEXT")],
         primary_key: vec!["id".into()],
+        referenced_by: vec![key("book_covers", "CASCADE"), key("books", "SET NULL")],
         ..tabletist_db::Structure::default()
+    }
+}
+
+/// A page of `publishers`: the three of [`PUBLISHERS`].
+pub fn publishers_page() -> RowPage {
+    let meta = |name: &str, type_name: &str, kind: ValueKind| ColumnMeta {
+        name: name.into(),
+        type_name: type_name.into(),
+        kind,
+    };
+    RowPage {
+        columns: vec![
+            meta("id", "INTEGER", ValueKind::Numeric),
+            meta("name", "TEXT", ValueKind::Text),
+        ],
+        rows: PUBLISHERS
+            .iter()
+            .map(|(id, name)| vec![Value::Int(*id), Value::Text((*name).into())])
+            .collect(),
+        has_more: false,
+        ordered_by_key: true,
+        elapsed: std::time::Duration::from_millis(2),
     }
 }
 

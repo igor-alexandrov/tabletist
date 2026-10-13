@@ -1079,13 +1079,17 @@ impl App {
             Action::DiscardEdits { tab, id } => {
                 // Not under a save: dropping the set would drop the save
                 // with it, and its answer would find no tab to tell.
+                let mut stale = Vec::new();
                 if let Some(object) = self.object_tab_mut(tab, id)
                     && object.edits.saving.is_none()
                 {
+                    // The counts of what its deletes take go with them.
+                    stale = object.edits.counts_out();
                     object.edits.discard();
                     object.off_new_rows();
                     object.fields = None;
                 }
+                self.stop_counts(tab, stale);
             }
             Action::DismissNote { tab, id } => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
@@ -2714,6 +2718,11 @@ impl App {
                     if object.count.finish(request, result) && total.is_some() {
                         object.estimated_rows = total;
                     }
+                } else {
+                    // Not a table's own total: one of a tab's counts of
+                    // what its deletes take with them, where it is one.
+                    let rows = result.as_ref().ok().copied();
+                    let _ = self.taken_counted(session, request, rows);
                 }
             }
             Event::Lookup {

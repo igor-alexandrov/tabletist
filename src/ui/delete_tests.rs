@@ -746,3 +746,194 @@ fn a_row_already_deleted_is_said_where_the_page_is_read_again() {
     assert_eq!(edits(&harness, tab, id).note, note);
     assert!(harness.has("Row id 2 was already deleted."));
 }
+
+/// The Bookshop's publishers, writable, the grid holding the keyboard:
+/// `book_covers` loses its covers with a publisher, and `books` is
+/// cleared of it.
+fn publishers_in(look: Look) -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let tab = harness.connect_fake_as(false);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: tabletist_db::ObjectRef::new("main", "publishers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(crate::testing::publishers_structure());
+    harness.answer_rows(crate::testing::publishers_page());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+    harness.settle();
+    (harness, tab, id)
+}
+
+/// The counts asked of other tables than the publishers' own, by the
+/// table each is of.
+fn counts_asked(harness: &Harness) -> Vec<(crate::backend::RequestId, String)> {
+    let sent = harness.app.backend.sent.iter();
+    sent.filter_map(|command| match command {
+        Command::CountRows { request, query, .. } if query.object.name != "publishers" => {
+            Some((*request, query.object.name.clone()))
+        }
+        _ => None,
+    })
+    .collect()
+}
+
+/// The requests the app asked the backend to stop.
+fn stopped(harness: &Harness) -> Vec<crate::backend::RequestId> {
+    let sent = harness.app.backend.sent.iter();
+    sent.filter_map(|command| match command {
+        Command::Cancel { request, .. } => Some(*request),
+        _ => None,
+    })
+    .collect()
+}
+
+fn answer_count(
+    harness: &mut Harness,
+    tab: ConnTabId,
+    request: crate::backend::RequestId,
+    rows: u64,
+) {
+    let session = harness.app.workspace(tab).unwrap().session;
+    let result = Ok(rows);
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Count {
+            session,
+            request,
+            result,
+        }));
+    harness.settle();
+}
+
+fn review(harness: &mut Harness, tab: ConnTabId, id: TabId, show: bool) {
+    harness.app.apply(Action::ReviewEdits { tab, id, show });
+    harness.settle();
+}
+
+const ALSO_DELETES: &str = "-- also deletes 3 rows in book_covers (ON DELETE CASCADE)";
+
+/// Spec 4, "Cascades", and test 10: Review SQL asks for a count for each
+/// key that acts, and says each once it has it.
+#[test]
+fn review_sql_says_what_the_deletes_take_with_them() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    mark(&mut harness, tab, id, 0);
+    // Marking alone asks nothing.
+    assert!(counts_asked(&harness).is_empty());
+    review(&mut harness, tab, id, true);
+    let asked = counts_asked(&harness);
+    let tables: Vec<&str> = asked.iter().map(|(_, table)| table.as_str()).collect();
+    assert_eq!(tables, ["book_covers", "books"]);
+    // Until the answer, without a number.
+    assert!(harness.has("-- also deletes rows in book_covers (ON DELETE CASCADE)"));
+    answer_count(&mut harness, tab, asked[0].0, 3);
+    answer_count(&mut harness, tab, asked[1].0, 0);
+    assert!(harness.has(ALSO_DELETES));
+    // No row of `books` has that publisher: no line.
+    let lines = &edits(&harness, tab, id).review.as_ref().unwrap().lines;
+    let also = |line: &&crate::review::Line| matches!(line, crate::review::Line::Also(_));
+    assert_eq!(lines.iter().filter(also).count(), 1);
+    // Kept while the marks stand: closing and opening the review asks
+    // nothing again, and the line is there at once.
+    review(&mut harness, tab, id, false);
+    review(&mut harness, tab, id, true);
+    assert_eq!(counts_asked(&harness).len(), 2);
+    assert!(harness.has(ALSO_DELETES));
+}
+
+/// A mark that changes while the counts are out stops them, and the next
+/// review asks for the rows that are marked now.
+#[test]
+fn a_changed_mark_stops_the_counts_and_asks_again() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    mark(&mut harness, tab, id, 0);
+    review(&mut harness, tab, id, true);
+    let first: Vec<_> = counts_asked(&harness)
+        .into_iter()
+        .map(|(request, _)| request)
+        .collect();
+    assert_eq!(first.len(), 2);
+    mark(&mut harness, tab, id, 1);
+    for request in &first {
+        assert!(stopped(&harness).contains(request));
+    }
+    // The review is open: it is made again, and asks again.
+    assert_eq!(counts_asked(&harness).len(), 4);
+    // An answer of the first round is no longer waited for.
+    answer_count(&mut harness, tab, first[0], 9);
+    let taken = edits(&harness, tab, id).taken.as_ref().unwrap();
+    assert!(
+        taken
+            .lines()
+            .iter()
+            .all(|effect| !matches!(effect, crate::edit::Effect::Deletes { rows: Some(_), .. }))
+    );
+}
+
+/// The same lines in the production confirm.
+#[test]
+fn the_production_confirm_says_what_the_deletes_take_with_them() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+    mark(&mut harness, tab, id, 0);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.settle();
+    let asked = counts_asked(&harness);
+    assert_eq!(asked.len(), 2);
+    answer_count(&mut harness, tab, asked[0].0, 3);
+    answer_count(&mut harness, tab, asked[1].0, 2);
+    assert!(harness.has(ALSO_DELETES));
+    assert!(harness.has("-- also clears publisher_id in 2 books rows (ON DELETE SET NULL)"));
+}
+
+/// Review SQL first, then the save: the confirm has the lines at once,
+/// and asks nothing again.
+#[test]
+fn the_production_confirm_has_what_review_sql_counted() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+    mark(&mut harness, tab, id, 0);
+    review(&mut harness, tab, id, true);
+    let asked = counts_asked(&harness);
+    answer_count(&mut harness, tab, asked[0].0, 3);
+    answer_count(&mut harness, tab, asked[1].0, 0);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.settle();
+    assert_eq!(counts_asked(&harness).len(), 2);
+    let Some(crate::model::Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+        panic!("the production confirm is up");
+    };
+    let deletes = crate::edit::Effect::Deletes {
+        table: "book_covers".into(),
+        rows: Some(3),
+    };
+    assert_eq!(prompt.review.effects(), [deletes]);
+}
+
+/// And in the Omarchy look's `:diff`.
+#[test]
+fn diff_says_what_the_deletes_take_with_them() {
+    let (mut harness, tab, id) = publishers_in(Look::omarchy());
+    mark(&mut harness, tab, id, 0);
+    review(&mut harness, tab, id, true);
+    let asked = counts_asked(&harness);
+    answer_count(&mut harness, tab, asked[0].0, 3);
+    assert!(harness.has(ALSO_DELETES));
+}
+
+/// A copy of the review has the lines too.
+#[test]
+fn a_copied_review_says_what_the_deletes_take_with_them() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    mark(&mut harness, tab, id, 0);
+    review(&mut harness, tab, id, true);
+    let asked = counts_asked(&harness);
+    answer_count(&mut harness, tab, asked[0].0, 3);
+    let whole = harness.app.review_whole(tab, id).unwrap();
+    let text = crate::ui::review::text(&whole, harness.app.locale);
+    assert!(text.contains(ALSO_DELETES), "{text}");
+}

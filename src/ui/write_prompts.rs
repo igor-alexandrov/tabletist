@@ -615,12 +615,14 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         // those are cut. Of the set the sheet was made with, which is what
         // it shows and all it would send: the tab's own need not be the
         // one in front, nor, were it to change, the one that was read.
-        let whole = crate::review::of(
+        let mut whole = crate::review::of(
             dialect,
             &prompt.changeset,
             crate::review::Blocked::default(),
             Values::Whole,
         );
+        // With what the sheet says the deletes take with them.
+        whole.also(&prompt.review.effects());
         ctx.copy_text(review::text(&whole, locale));
         crate::ui::toast::say(ctx, &gettext(locale, review::COPIED_SQL));
     }
