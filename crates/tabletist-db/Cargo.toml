@@ -30,6 +30,13 @@ url = "2"
 # Decoding user names, passwords and database names in URLs.
 percent-encoding = "2"
 log = "0.4"
+# Reads the one statement an agent sends through the MCP server, in each
+# database's own dialect, so `agent` can let through the kinds of statement
+# it knows and refuse the rest: the tokenizer in `sql` cannot say what a
+# statement is. Without its default `recursive-protection` (the `recursive`
+# and `stacker` crates, with assembly to build), which guards the parser and
+# not what overflows: `agent` parses on a thread whose stack it sizes itself.
+sqlparser = { version = "0.63", default-features = false, features = ["std"] }
 
 # PostgreSQL, async. Rows are read through its simple-query protocol.
 tokio-postgres = "0.7"
