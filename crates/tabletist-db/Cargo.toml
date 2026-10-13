@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 # Typed errors the app shows to the user as-is.
 thiserror = "2"
-# Connection specs are saved in connections.json.
+# Connection specs were saved in connections.json, which is still read.
 serde = { version = "1", features = ["derive"] }
 # Adapters are async; SQLite's blocking calls run on spawn_blocking.
 tokio = { version = "1", features = ["rt", "sync", "net", "io-util"] }

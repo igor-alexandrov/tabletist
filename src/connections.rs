@@ -1,12 +1,17 @@
-//! Saved connections, stored as `connections.json`. Specs only: passwords
-//! live in the OS keyring, never in this file.
+//! Saved connections, stored as `connections.toml` (see `file`). Specs
+//! only: passwords live in the OS keyring, never in this file. When each
+//! connection last connected is kept apart, with the state.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tabletist_db::ConnectSpec;
 
 use crate::env::Environment;
+use crate::paths::AppDirs;
+
+mod file;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub String);
@@ -75,56 +80,44 @@ pub fn access(read_only: Option<bool>, environment: Environment) -> tabletist_db
     }
 }
 
-/// The file's format. 2 dropped the colour a connection used to keep
-/// beside its environment, and the `test` environment.
-pub const VERSION: u32 = 2;
+/// The format of `connections.toml`. 1 and 2 were `connections.json`: 2
+/// dropped the colour a connection used to keep beside its environment,
+/// and the `test` environment. 3 is the first that is TOML.
+pub const VERSION: u32 = file::VERSION;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SavedConnections {
-    pub version: u32,
     pub connections: Vec<SavedConnection>,
     /// When each connection last connected, in seconds since the Unix
-    /// epoch, by id. Kept beside the connections so they stay as saved.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub last_used: std::collections::BTreeMap<String, u64>,
+    /// epoch, by id. Kept in a file of its own (`AppDirs::last_used_file`).
+    pub last_used: BTreeMap<String, u64>,
 }
 
-impl Default for SavedConnections {
-    fn default() -> Self {
-        Self {
-            version: VERSION,
-            connections: Vec::new(),
-            last_used: std::collections::BTreeMap::new(),
-        }
-    }
+/// What a start has of the saved connections.
+#[derive(Debug, Default, PartialEq)]
+pub struct Loaded {
+    pub store: SavedConnections,
+    /// Whether `connections.toml` is to be written: the connections came
+    /// from an older version's `connections.json`, or one of them had no
+    /// id in the file and was given one.
+    pub save: bool,
+    /// Whether the times of last use are to be written: they came from
+    /// `connections.json`, which kept them.
+    pub save_last_used: bool,
+    /// Why `connections.toml` could not be read, as the user is told. The
+    /// file was kept aside and the store is empty.
+    pub problem: Option<String>,
 }
 
-/// The file as any version wrote it.
-#[derive(Debug, Deserialize)]
+/// `connections.json` as either of its versions wrote it.
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct StoredConnections {
-    /// Files from before the field existed are version 1.
-    #[serde(default = "first_version")]
-    version: u32,
     connections: Vec<StoredConnection>,
-    last_used: std::collections::BTreeMap<String, u64>,
+    last_used: BTreeMap<String, u64>,
 }
 
-fn first_version() -> u32 {
-    1
-}
-
-impl Default for StoredConnections {
-    fn default() -> Self {
-        Self {
-            version: VERSION,
-            connections: Vec::new(),
-            last_used: std::collections::BTreeMap::new(),
-        }
-    }
-}
-
-/// A connection as any version wrote it.
+/// A connection as either version of `connections.json` wrote it.
 #[derive(Debug, Deserialize)]
 struct StoredConnection {
     id: ConnectionId,
@@ -258,7 +251,6 @@ impl StoredConnections {
             })
             .collect();
         let store = SavedConnections {
-            version: VERSION,
             connections,
             last_used: self.last_used,
         };
@@ -267,26 +259,74 @@ impl StoredConnections {
 }
 
 impl SavedConnections {
-    /// Reads the store. An older file is upgraded in memory, each
-    /// connection whose environment is worked out logged.
-    pub fn load(path: &Path) -> Self {
-        Self::load_upgrading(path).0
+    /// The connections a start has: from `connections.toml`, else from an
+    /// older version's `connections.json`, else none. It writes nothing:
+    /// what is to be written, the caller saves on the backend, once.
+    ///
+    /// A `connections.toml` that cannot be read is kept aside, whole, and
+    /// the start has no connections: a file that is wrong somewhere is not
+    /// used in part, so the next save cannot lose what was not read.
+    pub fn load(dirs: &AppDirs) -> Loaded {
+        let path = dirs.connections_file();
+        let text = match std::fs::read(&path) {
+            Ok(bytes) => String::from_utf8(bytes).map_err(|error| error.to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Self::load_legacy(&dirs.legacy_connections_file());
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        match text.and_then(|text| file::read(&text).map_err(|problem| problem.to_string())) {
+            Ok(read) => Loaded {
+                store: Self {
+                    connections: read.connections,
+                    last_used: crate::util::load_json(&dirs.last_used_file()),
+                },
+                save: read.named,
+                ..Loaded::default()
+            },
+            Err(problem) => {
+                crate::util::keep_aside(&path, &problem);
+                let name = |path: &Path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                };
+                Loaded {
+                    problem: Some(format!(
+                        "{} could not be read ({problem}). It was kept beside itself as \
+                         {}.bad, and no connection was loaded.",
+                        name(&path),
+                        name(&path)
+                    )),
+                    ..Loaded::default()
+                }
+            }
+        }
     }
 
-    /// [`SavedConnections::load`], and whether the file was an older
-    /// version: the caller saves it (on the backend) so it is upgraded once.
-    pub fn load_upgrading(path: &Path) -> (Self, bool) {
+    /// What `connections.json` holds, each connection whose environment
+    /// is worked out logged. A file that is there is written as TOML by
+    /// the caller, and is left as it is.
+    fn load_legacy(path: &Path) -> Loaded {
+        let there = path.exists();
         let stored: StoredConnections = crate::util::load_json(path);
-        let old = stored.version < VERSION;
         let (store, notes) = stored.upgrade();
         for note in &notes {
             log::info!("{note}");
         }
-        (store, old)
+        Loaded {
+            save: there,
+            save_last_used: there && !store.last_used.is_empty(),
+            store,
+            problem: None,
+        }
     }
 
+    /// Writes `connections.toml`: the connections, in the one form the app
+    /// writes, atomically.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        crate::util::save_json(path, self)
+        let text = file::write(&self.connections)?;
+        crate::util::write_atomic(path, text.as_bytes())
     }
 
     pub fn get(&self, id: &ConnectionId) -> Option<&SavedConnection> {
@@ -422,8 +462,14 @@ mod tests {
         let stored: StoredConnections = serde_json::from_str(text).unwrap();
         let (store, _) = stored.upgrade();
         assert!(store.last_used.is_empty());
-        let saved = serde_json::to_string(&store).unwrap();
-        assert!(!saved.contains("last_used"), "{saved}");
+    }
+
+    /// The directories of a test, and the folder they are under.
+    fn dirs() -> (AppDirs, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        dirs.ensure().unwrap();
+        (dirs, dir)
     }
 
     fn saved(name: &str, file: &str) -> SavedConnection {
@@ -440,29 +486,134 @@ mod tests {
 
     #[test]
     fn connections_round_trip_through_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("connections.json");
+        let (dirs, _dir) = dirs();
         let mut store = SavedConnections::default();
         store.upsert(SavedConnection {
             environment: Environment::Production,
             ..saved("Prod", "/prod.db")
         });
-        store.save(&path).unwrap();
-        let loaded = SavedConnections::load(&path);
-        assert_eq!(loaded.connections, store.connections);
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("\"environment\": \"production\""), "{text}");
-        assert!(text.contains("\"version\": 2"), "{text}");
-        assert!(!text.contains("color"), "{text}");
+        store.save(&dirs.connections_file()).unwrap();
+        let loaded = SavedConnections::load(&dirs);
+        assert_eq!(loaded.store, store);
+        // Read as it was written: nothing to write again, nothing wrong.
+        assert!(!loaded.save && !loaded.save_last_used);
+        assert_eq!(loaded.problem, None);
+        let text = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(text.contains("environment = \"production\""), "{text}");
+        assert!(text.contains("version = 3"), "{text}");
+    }
+
+    /// When a connection last connected is the state's, and comes back
+    /// with the connections though it is no part of their file.
+    #[test]
+    fn the_times_of_last_use_are_kept_apart_from_the_connections() {
+        let (dirs, _dir) = dirs();
+        let mut store = SavedConnections::default();
+        let prod = saved("Prod", "/prod.db");
+        store.upsert(prod.clone());
+        store.mark_used(&prod.id, 1_790_683_200);
+        store.save(&dirs.connections_file()).unwrap();
+        let text = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(!text.contains("last_used"), "{text}");
+        assert!(!text.contains("1790683200"), "{text}");
+        // Not written by a save of the connections.
+        assert!(!dirs.last_used_file().exists());
+        assert_eq!(
+            SavedConnections::load(&dirs).store.last_used(&prod.id),
+            None
+        );
+        crate::util::save_json(&dirs.last_used_file(), &store.last_used).unwrap();
+        let loaded = SavedConnections::load(&dirs);
+        assert_eq!(loaded.store.last_used(&prod.id), Some(1_790_683_200));
+        assert_eq!(loaded.store, store);
     }
 
     #[test]
-    fn a_damaged_store_is_kept_aside() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("connections.json");
+    fn a_file_that_cannot_be_read_is_kept_aside_whole_and_said() {
+        let (dirs, _dir) = dirs();
+        let path = dirs.connections_file();
+        let good = saved("Prod", "/prod.db");
+        let mut store = SavedConnections::default();
+        store.upsert(good);
+        store.save(&path).unwrap();
+        // One key that is no key: nothing of the file is used.
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text = text.replace("driver ", "read_onyl = true\ndriver ");
+        std::fs::write(&path, &text).unwrap();
+        let loaded = SavedConnections::load(&dirs);
+        assert!(loaded.store.connections.is_empty());
+        assert!(!loaded.save && !loaded.save_last_used);
+        let problem = loaded.problem.unwrap();
+        assert!(
+            problem.starts_with(
+                "connections.toml could not be read (line 13: unknown field `read_onyl`"
+            ),
+            "{problem}"
+        );
+        assert!(
+            problem.ends_with(
+                "It was kept beside itself as connections.toml.bad, and no connection was loaded."
+            ),
+            "{problem}"
+        );
+        // The file is whole where it was kept, and gone from its place:
+        // the next save writes a new one and replaces nothing.
+        let aside = path.with_file_name("connections.toml.bad");
+        assert_eq!(std::fs::read_to_string(aside).unwrap(), text);
+        assert!(!path.exists());
+        // Bytes that are no text are kept aside the same way.
+        std::fs::write(&path, [0xC3, 0x28]).unwrap();
+        let loaded = SavedConnections::load(&dirs);
+        assert!(loaded.problem.is_some());
+        assert!(path.with_file_name("connections.toml.bad.1").exists());
+    }
+
+    #[test]
+    fn a_damaged_older_file_is_kept_aside() {
+        let (dirs, _dir) = dirs();
+        let path = dirs.legacy_connections_file();
         std::fs::write(&path, "[not json").unwrap();
-        assert!(SavedConnections::load(&path).connections.is_empty());
-        assert!(dir.path().join("connections.json.bad").exists());
+        let loaded = SavedConnections::load(&dirs);
+        assert!(loaded.store.connections.is_empty());
+        assert!(path.with_file_name("connections.json.bad").exists());
+    }
+
+    /// The new file wins: once it is there the old one is not read, even
+    /// with other connections in it.
+    #[test]
+    fn the_older_file_is_not_read_beside_the_new_one() {
+        let (dirs, _dir) = dirs();
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
+        let mut store = SavedConnections::default();
+        store.upsert(saved("Only", "/only.db"));
+        store.save(&dirs.connections_file()).unwrap();
+        let loaded = SavedConnections::load(&dirs);
+        assert_eq!(loaded.store, store);
+        assert!(!loaded.save && !loaded.save_last_used);
+    }
+
+    /// A connection written into the file by hand needs no id: it gets
+    /// one, and the file is to be written so that it keeps it.
+    #[test]
+    fn a_connection_without_an_id_gets_one_that_is_saved() {
+        let (dirs, _dir) = dirs();
+        let text = "version = 3\n\n[[connections]]\nname = \"By hand\"\ndriver = \"sqlite\"\n\
+                    sqlite_path = \"/by-hand.db\"\n";
+        std::fs::write(dirs.connections_file(), text).unwrap();
+        let loaded = SavedConnections::load(&dirs);
+        assert!(loaded.save);
+        assert_eq!(loaded.problem, None);
+        let [connection] = loaded.store.connections.as_slice() else {
+            panic!("{:?}", loaded.store);
+        };
+        assert_eq!(connection.name, "By hand");
+        assert!(!connection.id.0.is_empty());
+        // Saved, it reads back with the same id and nothing left to write.
+        loaded.store.save(&dirs.connections_file()).unwrap();
+        let again = SavedConnections::load(&dirs);
+        assert_eq!(again.store, loaded.store);
+        assert!(!again.save);
     }
 
     #[test]
@@ -561,7 +712,6 @@ mod tests {
         ] {
             assert_eq!(environment(id), expected, "{id}");
         }
-        assert_eq!(store.version, VERSION);
         assert_eq!(
             store.last_used(&ConnectionId("red".into())),
             Some(1_790_683_200)
@@ -602,32 +752,38 @@ mod tests {
         );
     }
 
+    /// The first start of this version: what `connections.json` kept is
+    /// read, both files are to be written, and written they hold all of
+    /// it. The old file is left as it was.
     #[test]
-    fn an_upgraded_file_saved_again_has_nothing_left_to_work_out() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("connections.json");
-        std::fs::write(&path, include_str!("../tests/fixtures/connections-v1.json")).unwrap();
-        let (first, old) = SavedConnections::load_upgrading(&path);
-        assert!(old);
-        first.save(&path).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("\"version\": 2"), "{text}");
+    fn an_older_file_is_read_once_and_written_as_the_new_ones() {
+        let (dirs, _dir) = dirs();
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
+        let first = SavedConnections::load(&dirs);
+        assert!(first.save && first.save_last_used);
+        assert_eq!(first.problem, None);
+        assert_eq!(first.store, self::fixture().0);
+        // What the app then has the backend write.
+        first.store.save(&dirs.connections_file()).unwrap();
+        crate::util::save_json(&dirs.last_used_file(), &first.store.last_used).unwrap();
+        let text = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(text.contains("version = 3"), "{text}");
         assert!(!text.contains("color"), "{text}");
         assert!(!text.contains("\"test\""), "{text}");
-        let stored: StoredConnections = serde_json::from_str(&text).unwrap();
-        let (again, notes) = stored.upgrade();
-        assert!(notes.is_empty(), "{notes:#?}");
-        assert_eq!(again, first);
-        assert!(!SavedConnections::load_upgrading(&path).1);
+        let again = SavedConnections::load(&dirs);
+        assert_eq!(again.store, first.store);
+        assert!(!again.save && !again.save_last_used);
+        let kept = std::fs::read_to_string(dirs.legacy_connections_file()).unwrap();
+        assert_eq!(kept, fixture);
     }
 
     #[test]
-    fn a_missing_file_needs_no_upgrade() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("connections.json");
-        let (store, old) = SavedConnections::load_upgrading(&path);
-        assert!(store.connections.is_empty());
-        assert!(!old);
+    fn nothing_on_disk_is_no_connections_and_nothing_to_write() {
+        let (dirs, _dir) = dirs();
+        assert_eq!(SavedConnections::load(&dirs), Loaded::default());
+        assert!(!dirs.connections_file().exists());
+        assert!(!dirs.last_used_file().exists());
     }
 
     #[test]

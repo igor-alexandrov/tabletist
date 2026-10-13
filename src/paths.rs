@@ -70,6 +70,13 @@ impl AppDirs {
     }
 
     pub fn connections_file(&self) -> PathBuf {
+        self.config.join("connections.toml")
+    }
+
+    /// Where versions before the TOML file kept the connections, and when
+    /// each last connected. Read at a start that finds no
+    /// `connections.toml`, and never written.
+    pub fn legacy_connections_file(&self) -> PathBuf {
         self.config.join("connections.json")
     }
 
@@ -85,6 +92,13 @@ impl AppDirs {
     /// this computer, and no setting: it is kept with the state.
     pub fn labels_file(&self) -> PathBuf {
         self.state.join("labels.json")
+    }
+
+    /// When each saved connection last connected. Of this computer, and
+    /// written at every connect: kept with the state, so that the file of
+    /// connections is written only when one of them changes.
+    pub fn last_used_file(&self) -> PathBuf {
+        self.state.join("last_used.json")
     }
 
     pub fn log_file(&self) -> PathBuf {
@@ -113,7 +127,15 @@ mod tests {
         );
         assert_eq!(
             dirs.connections_file(),
+            PathBuf::from("/root/config/connections.toml")
+        );
+        assert_eq!(
+            dirs.legacy_connections_file(),
             PathBuf::from("/root/config/connections.json")
+        );
+        assert_eq!(
+            dirs.last_used_file(),
+            PathBuf::from("/root/state/last_used.json")
         );
         assert_eq!(
             dirs.known_hosts_file(),

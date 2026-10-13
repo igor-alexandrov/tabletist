@@ -130,7 +130,8 @@ impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
         let source = loaded.source;
         let (settings, settings_file) = loaded.into_parts();
-        let (connections, upgraded) = SavedConnections::load_upgrading(&dirs.connections_file());
+        let loaded_connections = SavedConnections::load(&dirs);
+        let connections = loaded_connections.store;
         let (host_keys, host_keys_error) = match crate::known_hosts::load(&dirs.known_hosts_file())
         {
             Ok(keys) => (keys, None),
@@ -168,7 +169,7 @@ impl App {
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
-            notice: None,
+            notice: loaded_connections.problem,
             host_keys,
             host_keys_error,
             titlebar: TitleBar::default(),
@@ -184,9 +185,14 @@ impl App {
         };
         let tab = app.picker_tab();
         app.tabs.push(tab);
-        // An older file is written in this version once, off the UI thread.
-        if upgraded {
+        // What an older version kept in connections.json is written as
+        // this one keeps it, once, off the UI thread. So is a file in
+        // which a connection had no id yet.
+        if loaded_connections.save {
             app.save_connections();
+        }
+        if loaded_connections.save_last_used {
+            app.save_last_used();
         }
         if adopted {
             app.save_labels();
@@ -1774,6 +1780,7 @@ impl App {
             Action::DeleteConnection(id) => {
                 if let Some(removed) = self.connections.remove(&id) {
                     self.save_connections();
+                    self.save_last_used();
                     // Its label choices go with it. A tab that is still
                     // open on it falls back to Automatic.
                     if self.labels.forget(&id) {
@@ -2963,7 +2970,7 @@ impl App {
             return;
         }
         self.connections.mark_used(&conn, crate::util::now_secs());
-        self.save_connections();
+        self.save_last_used();
     }
 
     /// Saves the label choices on the backend, as the connections are.
@@ -2971,6 +2978,15 @@ impl App {
         self.backend.send(Command::Save {
             path: self.dirs.labels_file(),
             file: StateFile::Labels(self.labels.clone()),
+        });
+    }
+
+    /// Saves when each connection last connected, on the backend. A file
+    /// of its own: a connect does not write the file of connections.
+    fn save_last_used(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.last_used_file(),
+            file: StateFile::LastUsed(self.connections.last_used.clone()),
         });
     }
 
@@ -4402,7 +4418,7 @@ mod tests {
         use crate::labels::{LabelChoice, Place};
         let dir = tempfile::tempdir().unwrap();
         let dirs = AppDirs::at(dir.path());
-        let connections = dirs.connections_file();
+        let connections = dirs.legacy_connections_file();
         std::fs::create_dir_all(connections.parent().unwrap()).unwrap();
         let fixture = include_str!("../tests/fixtures/connections-v1.json");
         std::fs::write(&connections, fixture).unwrap();
@@ -4451,39 +4467,101 @@ mod tests {
         assert_eq!(again.labels, app.labels);
     }
 
+    /// How many times `app` had the backend save `path`.
+    fn saves_of(app: &App, path: &std::path::Path) -> usize {
+        app.backend
+            .sent
+            .iter()
+            .filter(|command| matches!(command, Command::Save { path: to, .. } if to == path))
+            .count()
+    }
+
     #[test]
-    fn an_older_connections_file_is_saved_upgraded_by_the_backend() {
+    fn connections_read_from_the_old_json_are_written_as_toml_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        let (old, new, used) = (
+            dirs.legacy_connections_file(),
+            dirs.connections_file(),
+            dirs.last_used_file(),
+        );
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(&old, fixture).unwrap();
+        let start = || {
+            App::new(
+                AppDirs::at(dir.path()),
+                Settings::default().into(),
+                Backend::recording(),
+            )
+        };
+        let app = start();
+        assert_eq!(app.notice, None);
+        assert_eq!(app.connections.connections.len(), 14);
+        // Both files are the backend's to write: the connections, and
+        // when each last connected, which the old file kept with them.
+        assert_eq!((saves_of(&app, &new), saves_of(&app, &used)), (1, 1));
+        assert!(!new.exists(), "the UI thread writes nothing");
+        assert_eq!(saves_of(&app, &old), 0);
+        // Written, they are what the next start reads, and nothing is
+        // saved again. The old file is as it was.
+        app.connections.save(&new).unwrap();
+        std::fs::create_dir_all(used.parent().unwrap()).unwrap();
+        crate::util::save_json(&used, &app.connections.last_used).unwrap();
+        let again = start();
+        assert_eq!(again.connections, app.connections);
+        assert_eq!((saves_of(&again, &new), saves_of(&again, &used)), (0, 0));
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), fixture);
+    }
+
+    #[test]
+    fn a_connections_file_that_cannot_be_read_is_said_at_the_start() {
         let dir = tempfile::tempdir().unwrap();
         let path = AppDirs::at(dir.path()).connections_file();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, include_str!("../tests/fixtures/connections-v1.json")).unwrap();
+        std::fs::write(&path, "version = 3\n\n[[connections]]\nname = 1\n").unwrap();
         let app = App::new(
             AppDirs::at(dir.path()),
             Settings::default().into(),
             Backend::recording(),
         );
-        let saves = |app: &App| {
-            app.backend
-                .sent
-                .iter()
-                .filter(|command| matches!(command, Command::Save { path: to, .. } if *to == path))
-                .count()
-        };
-        assert_eq!(saves(&app), 1);
+        assert!(app.connections.connections.is_empty());
+        let notice = app.notice.clone().unwrap();
         assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("\"color\""),
-            "the UI thread writes nothing"
+            notice.starts_with("connections.toml could not be read (line 4: "),
+            "{notice}"
         );
-        // A current file is not saved again.
-        app.connections.save(&path).unwrap();
-        let app = App::new(
-            AppDirs::at(dir.path()),
-            Settings::default().into(),
-            Backend::recording(),
-        );
-        assert_eq!(saves(&app), 0);
+        // Kept aside, and nothing written in its place.
+        assert!(path.with_file_name("connections.toml.bad").exists());
+        assert_eq!(saves_of(&app, &path), 0);
+    }
+
+    /// A connect is written to the state, and leaves the file of
+    /// connections alone.
+    #[test]
+    fn a_connect_writes_when_it_was_and_not_the_connections() {
+        let (mut app, dir) = app();
+        let dirs = AppDirs::at(dir.path());
+        let (connections, used) = (dirs.connections_file(), dirs.last_used_file());
+        let (tab, session, request) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.clone();
+        let before = saves_of(&app, &connections);
+        assert_eq!(saves_of(&app, &used), 0);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+            access: crate::testing::asked_access(&app),
+        }));
+        assert!(app.connections.last_used(&conn).is_some());
+        assert_eq!(saves_of(&app, &used), 1);
+        assert_eq!(saves_of(&app, &connections), before);
+        // A deleted connection's time goes with it, in both files.
+        app.apply(Action::DeleteConnection(conn.clone()));
+        assert_eq!(app.connections.last_used(&conn), None);
+        assert_eq!(saves_of(&app, &used), 2);
+        assert_eq!(saves_of(&app, &connections), before + 1);
     }
 
     #[test]
@@ -5945,8 +6023,7 @@ mod tests {
         app.apply(Action::DeleteConnection(conn.clone()));
         assert!(app.connections.get(&conn).is_none());
         assert_eq!(app.workspace(tab).unwrap().name, "Local");
-        let stored =
-            crate::connections::SavedConnections::load(&AppDirs::at(dir.path()).connections_file());
+        let stored = crate::connections::SavedConnections::load(&AppDirs::at(dir.path())).store;
         assert!(stored.get(&conn).is_none());
     }
 

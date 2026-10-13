@@ -93,7 +93,9 @@ pub struct SshSpec {
     pub auth: SshAuth,
 }
 
-/// Everything needed to connect except secrets. Saved in connections.json.
+/// Everything needed to connect except secrets. Saved in the app's
+/// connections.toml, in a form of the app's own: what is derived here
+/// reads the connections.json of older versions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConnectSpec {

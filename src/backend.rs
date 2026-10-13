@@ -190,6 +190,8 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StateFile {
     Connections(SavedConnections),
+    /// When each saved connection last connected, by its id.
+    LastUsed(std::collections::BTreeMap<String, u64>),
     KnownHosts(HostKeys),
     Settings(crate::settings::Settings),
     Labels(crate::labels::Labels),
@@ -199,6 +201,7 @@ impl StateFile {
     fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
         match self {
             Self::Connections(connections) => connections.save(path),
+            Self::LastUsed(times) => crate::util::save_json(path, times),
             Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
             Self::Settings(settings) => settings.save(path),
             Self::Labels(labels) => labels.save(path),
@@ -4383,7 +4386,8 @@ mod tests {
     #[test]
     fn a_burst_of_saves_leaves_the_newest_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config").join("connections.json");
+        let dirs = crate::paths::AppDirs::at(dir.path());
+        let path = dirs.connections_file();
         let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         for n in 0..50 {
             backend.send(Command::Save {
@@ -4392,7 +4396,7 @@ mod tests {
             });
         }
         backend.flush(WAIT);
-        let stored = SavedConnections::load(&path);
+        let stored = SavedConnections::load(&dirs).store;
         assert_eq!(stored.connections[0].name, "49");
         let mut saved = 0;
         while let Some(Event::Saved { result, .. }) = backend.wait(Duration::from_millis(100)) {
