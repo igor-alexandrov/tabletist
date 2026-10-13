@@ -2340,4 +2340,6 @@ One commit beyond the tasks above, from the review of the pull request.
 - **The fix is a second reading.** What a read may not hold (a function with effects, a word that writes or locks) is now looked for twice: in sqlparser's tokens and in the tokens of the app's own tokenizer, which was written to end a string, a comment and a dollar quote where each database ends it. Found in either, it is refused. `what_either_tokenizer_reads_as_a_call_or_a_write_is_refused` covers it. `tokens_read` keeps the placeholders and the assignment, and both readings go through `words_read`.
 - `check_read`'s documentation now says that it blocks until its thread is done, so a caller on an async runtime goes through `spawn_blocking`.
 
+- **A second review, of that commit, found two real gaps in PostgreSQL's list**, both closed with tests. `ts_stat` and `ts_rewrite` run a query given as text, so a call inside that text was read as a string: `SELECT * FROM ts_stat('SELECT … pg_advisory_lock(1) …')` passed. They are on the list now, with the functions of the `tablefunc` and `xml2` extensions that do the same (`crosstab`, `connectby`, `xpath_table`). And the prefix `pg_stat_reset` did not cover `pg_stat_statements_reset`, which clears the statistics of the whole server.
+
 The tests are 33.

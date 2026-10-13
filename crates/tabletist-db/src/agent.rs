@@ -647,6 +647,15 @@ fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str
                 "setval",
                 // The session's random seed, which a rollback leaves set.
                 "setseed",
+                // The statistics of the whole server, from the extension
+                // most often installed.
+                "pg_stat_statements_reset",
+                // They take a query as text and run it: full text search's
+                // two, and those of the tablefunc and xml2 extensions.
+                "ts_stat",
+                "ts_rewrite",
+                "connectby",
+                "xpath_table",
                 // Large objects to and from files on the server.
                 "lo_import",
                 "lo_export",
@@ -666,6 +675,7 @@ fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str
                 "pg_wal_replay_",
                 "pg_stat_reset",
                 "dblink",
+                "crosstab",
                 "query_to_xml",
                 "table_to_xml",
                 "cursor_to_xml",
@@ -1462,6 +1472,28 @@ mod tests {
                 "nextval",
             ),
             (Dialect::Postgres, "SELECT setseed(0.5)", "setseed"),
+            // They run the query their text holds, and the call in it.
+            (
+                Dialect::Postgres,
+                "SELECT * FROM ts_stat('SELECT to_tsvector(w) FROM (SELECT \
+                 pg_advisory_lock(1)::text AS w) s')",
+                "ts_stat",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT ts_rewrite('a'::tsquery, 'SELECT pg_sleep(1)::text::tsquery, NULL')",
+                "ts_rewrite",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT * FROM crosstab('SELECT pg_sleep(1), 1, 1') AS t(a text, b int)",
+                "crosstab",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT pg_stat_statements_reset()",
+                "pg_stat_statements_reset",
+            ),
             (
                 Dialect::Postgres,
                 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",

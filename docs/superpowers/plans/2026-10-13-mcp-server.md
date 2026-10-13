@@ -469,7 +469,9 @@ string. The checker collects every function name, in expressions and in
 - **Always refused** (`function_not_allowed`). PostgreSQL: `set_config`,
   `pg_terminate_backend`, `pg_cancel_backend`, `pg_sleep*`, `pg_advisory_*`,
   `pg_read_*file`, `pg_ls_*`, `pg_stat_file`, `lo_*`, `dblink*`,
-  `query_to_xml*`, `table_to_xml*`, `cursor_to_xml*`, `nextval`, `setval`,
+  `query_to_xml*`, `table_to_xml*`, `cursor_to_xml*`, `ts_stat`, `ts_rewrite`,
+  `crosstab*`, `connectby`, `xpath_table`, `pg_stat_statements_reset`,
+  `setseed`, `nextval`, `setval`,
   `pg_notify`, `pg_reload_conf`, `pg_logical_*`, `pg_replication_*`. MySQL:
   `SLEEP`, `BENCHMARK`, `GET_LOCK`, `RELEASE_LOCK`, `RELEASE_ALL_LOCKS`,
   `LOAD_FILE`, `SOURCE_POS_WAIT`, `MASTER_POS_WAIT`, MariaDB's `NEXTVAL` and
