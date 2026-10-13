@@ -237,7 +237,8 @@ impl Connection {
     /// protocol, and are never written into its text. And the database
     /// itself ends the statement after `limits.timeout`, which answers
     /// [`Error::Timeout`]; a caller keeps a timer of its own behind it, as
-    /// for any script.
+    /// for any script. A wait for a lock is part of that time, on all
+    /// three.
     ///
     /// A statement that failed is its error, and one `stop` ended is
     /// [`Error::Cancelled`]. A `read` that was checked for another

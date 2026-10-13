@@ -369,6 +369,36 @@ mod sqlite {
         assert_eq!(found, [[text("where?"), text("Lanterns")]]);
     }
 
+    /// SQLite does not ask the progress handler while it waits for another
+    /// connection's lock on the file, so the run holds that wait to its own
+    /// time too: a read behind a writer is ended when its time is up, and
+    /// not when the session's five seconds are.
+    #[tokio::test]
+    async fn the_deadline_ends_a_wait_for_a_lock_on_sqlite() {
+        let (connection, dir) = bookshop().await;
+        let holder = rusqlite::Connection::open(dir.path().join("bookshop.db")).unwrap();
+        holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let short = Limits {
+            timeout: Duration::from_millis(200),
+            ..LIMITS
+        };
+        let started = Instant::now();
+        let ended = asked(&connection, "SELECT count(*) FROM book_covers", &[], short).await;
+        let took = started.elapsed();
+        holder.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(ended.unwrap_err(), Error::Timeout);
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        // The lock is gone, and the session reads on.
+        let covers = read(
+            &connection,
+            "SELECT count(*) FROM book_covers",
+            &[],
+            "sqlite",
+        )
+        .await;
+        assert_eq!(covers, [[Value::Int(3)]]);
+    }
+
     /// The run's deadline is taken off with the run: the SQL editor's next
     /// script on the session has no time limit of the driver's.
     #[tokio::test]

@@ -156,7 +156,9 @@ fn begin(connection: &rusqlite::Connection, mode: ScriptMode) -> Result<()> {
 ///
 /// `sent` is there when the run is of an agent's one statement: its values
 /// are bound, and the run has a deadline, after which the statement that
-/// runs is interrupted as a stop interrupts it.
+/// runs is interrupted as a stop interrupts it. A statement that waits
+/// for another connection's lock does not run, and is not interrupted: so
+/// that wait is held to the run's time as well, for the run's length.
 fn script(
     connection: &rusqlite::Connection,
     fences: &Fences,
@@ -202,18 +204,37 @@ fn script(
         Some(move || watching.is_stopped() || deadline.is_some_and(|at| Instant::now() >= at)),
     );
     let params = sent.map(|sent| sent.params);
-    let ran = statements(
-        connection,
-        fences,
-        texts,
-        limit,
-        mode,
-        stop,
-        params,
-        &mut outcome,
-    );
+    // The cleanup's `set_session_pragmas` puts the session's own wait back.
+    let held = match sent {
+        Some(sent) => connection
+            .busy_timeout(Duration::from_millis(u64::from(sent.timeout_ms())))
+            .map_err(map_error),
+        None => Ok(()),
+    };
+    let ran = held.and_then(|()| {
+        statements(
+            connection,
+            fences,
+            texts,
+            limit,
+            mode,
+            stop,
+            params,
+            &mut outcome,
+        )
+    });
     // Removed before the cleanup, so a stop cannot interrupt it.
     connection.progress_handler(0, None::<fn() -> bool>);
+    if sent.is_some()
+        && let Some(result) = outcome.results.last_mut()
+        && let StatementOutcome::Error { error, .. } = &result.outcome
+        && waited_out(error)
+    {
+        // The wait was the run's whole time: the statement is one that
+        // ran out of it, as one the deadline interrupts is.
+        result.outcome = StatementOutcome::Cancelled;
+        outcome.stopped = true;
+    }
     if mode == ScriptMode::Write {
         return end_write(connection, stop, ran, outcome);
     }
@@ -306,6 +327,19 @@ fn end_transaction(connection: &rusqlite::Connection) -> Result<()> {
         set_session_pragmas(connection)
     };
     attempt().or_else(|_| attempt()).map_err(map_error)
+}
+
+/// Whether a statement failed because a lock on the file did not come in
+/// the time the session waits for one: SQLITE_BUSY, which is 5, under
+/// whatever the extended code adds above its low byte.
+fn waited_out(error: &Error) -> bool {
+    let Error::Query {
+        code: Some(code), ..
+    } = error
+    else {
+        return false;
+    };
+    code.parse::<i32>().is_ok_and(|code| code & 0xff == 5)
 }
 
 /// When a run that began at `start` is over its `timeout`: `None` for a
@@ -2757,6 +2791,54 @@ mod tests {
         assert_eq!(bound(&Param::Float(1.5)), Sqlite::Real(1.5));
         // Not the number a filter's typed text would become.
         assert_eq!(bound(&Param::Text("5".into())), Sqlite::Text("5".into()));
+    }
+
+    #[test]
+    fn a_wait_that_ran_out_is_told_by_its_result_code() {
+        let failed = |code: Option<&str>| Error::Query {
+            code: code.map(str::to_owned),
+            message: "database is locked".into(),
+            detail: None,
+            hint: None,
+            named: Box::default(),
+        };
+        // SQLITE_BUSY, and its extended codes: _RECOVERY, _SNAPSHOT,
+        // _TIMEOUT.
+        for code in ["5", "261", "517", "773"] {
+            assert!(waited_out(&failed(Some(code))), "{code}");
+        }
+        // SQLITE_ERROR, SQLITE_LOCKED, a constraint, a code that is no
+        // number, and none.
+        for code in [Some("1"), Some("6"), Some("2067"), Some("busy"), None] {
+            assert!(!waited_out(&failed(code)), "{code:?}");
+        }
+        assert!(!waited_out(&Error::Cancelled));
+    }
+
+    /// The wait for a lock is the run's for its length, and the session's
+    /// five seconds again after it.
+    #[tokio::test]
+    async fn an_agents_run_puts_the_wait_for_a_lock_back() {
+        /// How long the session waits for a lock, in milliseconds.
+        async fn wait(conn: &Conn) -> Result<i64> {
+            conn.run(|connection| {
+                connection
+                    .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+                    .map_err(map_error)
+            })
+            .await
+        }
+        let (conn, _dir) = fixture().await;
+        assert_eq!(wait(&conn).await, Ok(5_000));
+        let read = crate::agent::check_read(Dialect::Sqlite, "SELECT 1", &[]).unwrap();
+        let limits = Limits {
+            rows: 10,
+            timeout: Duration::from_millis(250),
+        };
+        conn.run_read(&read, limits, &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(wait(&conn).await, Ok(5_000));
     }
 
     #[test]
