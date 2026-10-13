@@ -259,6 +259,13 @@ it is.
 A new row that is not saved yet is dropped by the same key, and leaves
 nothing to save.
 
+To delete several rows at once, select them first: hold Shift and click
+another row, or hold Shift and press the Up or Down arrow. The footer says
+how many rows are selected. Backspace then marks them all. Pressed again
+it restores them all, and where only some of them were marked it marks the
+rest. New rows among them are dropped. One press takes up to 1,000 rows:
+for more, delete with a statement in the SQL editor.
+
 Save writes the deletes with everything else that is pending, in one
 transaction: new rows first, then changed rows, then deleted rows.
 **Review SQL** shows each row's `DELETE` before you save. After the save
@@ -284,7 +291,7 @@ count is in a line stands without its number.
 
 Rows cannot be deleted on a read-only connection, in a view, or in a
 table without a primary key or unique index. The key and the button say
-why. Each press marks one row; mark several by pressing the key on each.
+why. In the Omarchy look a press marks one row.
 
 ## When someone else changed the row
 

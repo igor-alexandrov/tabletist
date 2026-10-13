@@ -118,6 +118,7 @@ a Mac keyboard labels Delete.
 | Cmd+N | Add a row, at the top of the grid |
 | Cmd+D | Duplicate the row, as a new row at the top of the grid |
 | Backspace, Forward Delete | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
+| Shift+Up, Shift+Down | Select the row above or below with the selected rows. Backspace then deletes them all |
 | Return, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Cancel the edit |
 | Option+Return | Open the large editor. In it, Cmd+Return applies and Esc cancels |

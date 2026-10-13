@@ -10,6 +10,13 @@
 
 Line numbers are of head `9e71520`.
 
+Status: built on 2026-10-13, one commit per task. Each task's blocks are the plan's as written, but for these:
+
+- Task 3: the scene that was looked at had a row marked for deletion in the middle of the range. It keeps its own fill and strike there, as a marked row under the cursor does, so of the three rows only two read as selected by their fill.
+- Task 5: `drop_named` reads the anchor before it changes it, where the plan's block borrowed the range twice. The tests gained a helper, `add_below`, for a new row under a row of the page.
+- Tasks 2 to 5: each test was written with its task's code and run once both were in, not seen to fail first.
+- 1Password was locked from task 2's commit on: each task's tree was staged and recorded as it passed its checks, and the commits were made in order once signing worked.
+
 ---
 
 ## Where the plan leaves the spec, for a yes
