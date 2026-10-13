@@ -8,8 +8,9 @@ use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
     Answer, Duplicate, Editor, EditorPlace, Effect, Holder, Lock, NEW_ROWS, Note, Order, Pending,
-    Place, Problem, Saved, Saving, Sent, State, Table, Taken, Told, change_set, check, conflicting,
-    is_change, new_id, new_row, opens_large, same_changes, settled, shown_lines, start_text,
+    Place, Problem, Saved, Saving, Sent, State, Sweep, Table, Taken, Told, change_set, check,
+    conflicting, is_change, new_id, new_row, opens_large, same_changes, settled, shown_lines,
+    start_text,
 };
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
@@ -53,6 +54,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::PutRow { .. }
             | Action::DropRow { .. }
             | Action::DeleteRow { .. }
+            | Action::DeleteSelected { .. }
             | Action::RestoreRow { .. }
             | Action::RevertCell { .. }
             | Action::DiscardEdits { .. }
@@ -71,6 +73,56 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::CancelPassword
             | Action::TrustHostKey
     )
+}
+
+/// Drops the new rows `new` of `object`, which an action named among
+/// `named` (the grid's order, before the drop). The cursor and the range's
+/// anchor, where theirs went, go to the nearest row of `named` that is
+/// left; with none left, the range ends and the cursor is on the row that
+/// stands where its own stood. Says how many were dropped.
+fn drop_named(object: &mut ObjectTab, named: &[usize], new: &[usize]) -> usize {
+    if new.is_empty() {
+        return 0;
+    }
+    let height = object.page().map_or(0, |page| page.rows.len());
+    // Where the cursor's row stood, for when no row named is left.
+    let stood = object
+        .selection
+        .and_then(|cell| Order::of(&object.edits.added, height).place(cell.row));
+    let dropped = new
+        .iter()
+        .filter_map(|row| new_id(*row))
+        .filter(|id| object.edits.drop_row(*id))
+        .count();
+    // The rows named that are left, each with its place among them.
+    let left: Vec<(usize, usize)> = named
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, row)| !new.contains(row))
+        .collect();
+    let nearest = |row: usize| {
+        let at = named.iter().position(|named| *named == row)?;
+        let near = left.iter().min_by_key(|(place, _)| place.abs_diff(at));
+        near.map(|(_, row)| *row)
+    };
+    if let Some(anchor) = object.range.map(|range| range.anchor)
+        && new.contains(&anchor)
+    {
+        match (nearest(anchor), object.range.as_mut()) {
+            (Some(row), Some(range)) => range.anchor = row,
+            _ => object.range = None,
+        }
+    }
+    if let Some(cell) = object.selection.filter(|cell| new.contains(&cell.row)) {
+        let row = nearest(cell.row).or_else(|| {
+            let order = Order::of(&object.edits.added, height);
+            order.row(stood?.min(order.len().saturating_sub(1)))
+        });
+        let cell = row.map(|row| CellPos { row, col: cell.col });
+        object.set_cursor(cell, Reach::Keep);
+    }
+    dropped
 }
 
 /// What the text of an editor that was typed into comes to once the editor
@@ -1034,6 +1086,87 @@ impl App {
         // The row panel shows the row as marked.
         object.fields = None;
         self.stop_counts(tab, stale);
+    }
+
+    /// Deletes the selected rows. One row is [`Self::delete_row`]'s.
+    pub(super) fn delete_selected(&mut self, tab: ConnTabId, id: TabId) {
+        let rows = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .map(ObjectTab::selected_rows)
+            .unwrap_or_default();
+        if rows.len() < 2 {
+            return self.delete_row(tab, id);
+        }
+        self.sweep_rows(tab, id, &rows);
+    }
+
+    /// Deletes `rows` in one action, as [`Table::sweep`] has it: marks
+    /// them and drops the new ones among them, or restores them. A row is
+    /// marked and restored as one row is.
+    fn sweep_rows(&mut self, tab: ConnTabId, id: TabId, rows: &[usize]) {
+        // The text being typed is part of its row's edits, which are kept
+        // under the mark.
+        self.close_editor(tab, id, true);
+        let Some(sweep) = self.table(tab, id, |table, _| table.sweep(rows)) else {
+            return;
+        };
+        let told = match sweep {
+            // The view said why.
+            Sweep::TooMany | Sweep::Refused(_) => return,
+            Sweep::Restore { rows } => {
+                for row in &rows {
+                    self.restore(tab, id, *row);
+                }
+                Told::RestoredRows {
+                    restored: rows.len(),
+                }
+            }
+            Sweep::Mark {
+                rows: marks,
+                new,
+                skipped,
+            } => {
+                let Some(object) = self.object_tab_mut(tab, id) else {
+                    return;
+                };
+                // The counts of the rows that were marked are of another
+                // set now.
+                let stale = object.edits.counts_out();
+                let marked = marks.iter().filter(|row| object.edits.mark(**row)).count();
+                let dropped = drop_named(object, rows, &new);
+                let deleted = object.edits.deleted.len();
+                self.stop_counts(tab, stale);
+                Told::MarkedRows {
+                    marked,
+                    skipped,
+                    dropped,
+                    deleted,
+                }
+            }
+            Sweep::Drop { new } => {
+                let Some(object) = self.object_tab_mut(tab, id) else {
+                    return;
+                };
+                let dropped = drop_named(object, rows, &new);
+                Told::MarkedRows {
+                    marked: 0,
+                    skipped: 0,
+                    dropped,
+                    deleted: object.edits.deleted.len(),
+                }
+            }
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        object.edits.told = Some(told);
+        // A tab that holds a change stays, as it does for a cell's.
+        object.pinned = true;
+        // What the last save said was of another set.
+        object.edits.note = None;
+        // The row panel shows the cursor's row as it is now.
+        object.fields = None;
     }
 
     /// Stops counts a tab no longer waits for.

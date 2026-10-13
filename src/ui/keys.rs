@@ -1295,7 +1295,7 @@ fn editing_keys(
         // keys on a field of the row panel nothing is deleted here.
         let deletes = on(input, Command::DeleteRow, Scope::Grid, true).count;
         if deletes > 0 && field.is_none() {
-            refused = delete_row(app, tab, id, actions);
+            refused = delete_selected(app, tab, id, actions);
             return;
         }
         let cell = crate::model::CellPos {
@@ -1401,6 +1401,38 @@ fn delete_row(app: &App, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) -
         actions.push(Action::DeleteRow { tab, id });
     }
     refused
+}
+
+/// Asks for the selected rows of the tab `id` to be deleted. One row is
+/// [`delete_row`]'s. Of several, hands back what there is to say where a
+/// refusal is said: why none is deleted, or how many were left out.
+fn delete_selected(
+    app: &App,
+    tab: ConnTabId,
+    id: TabId,
+    actions: &mut Vec<Action>,
+) -> Option<String> {
+    let several = app.workspace(tab).and_then(|workspace| {
+        let object = workspace.object_tab(id)?;
+        let rows = object.selected_rows();
+        if rows.len() < 2 {
+            return None;
+        }
+        let sweep = crate::edit::Table::of(workspace, object)?.sweep(&rows);
+        let table = crate::ui::format::display_safe(&object.object.name);
+        let said = crate::ui::cell_editor::sweep_said(&sweep, &table, &app.look, app.locale);
+        Some((sweep, said))
+    });
+    let Some((sweep, said)) = several else {
+        return delete_row(app, tab, id, actions);
+    };
+    if !matches!(
+        sweep,
+        crate::edit::Sweep::TooMany | crate::edit::Sweep::Refused(_)
+    ) {
+        actions.push(Action::DeleteSelected { tab, id });
+    }
+    said
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
@@ -1928,7 +1960,13 @@ fn letters(
             (Some(Command::DeleteRow), Some(id))
                 if rows_show && !tree && (field.is_none() || on_new) =>
             {
-                if let Some(why) = delete_row(app, tab, id, actions) {
+                // From a field of a new row's form, the row it is of.
+                let why = if field.is_none() {
+                    delete_selected(app, tab, id, actions)
+                } else {
+                    delete_row(app, tab, id, actions)
+                };
+                if let Some(why) = why {
                     crate::ui::toast::say(ctx, &why);
                 }
             }

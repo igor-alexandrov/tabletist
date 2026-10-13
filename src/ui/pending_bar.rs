@@ -44,6 +44,21 @@ pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static s
     format!("{count} {}", ngettext(locale, one, many, plural))
 }
 
+/// "11 rows marked for deletion. 1 can't be deleted.": what a delete of
+/// several rows marked, and how many of the rows it named it left out.
+pub fn marked_text(marked: usize, skipped: usize, locale: Locale) -> String {
+    let rows = counted(
+        locale,
+        marked,
+        "row marked for deletion",
+        "rows marked for deletion",
+    );
+    if skipped == 0 {
+        return format!("{rows}.");
+    }
+    format!("{rows}. {skipped} {}", gettext(locale, "can't be deleted."))
+}
+
 /// How many foreign keys name no row: "1 value names no row". What a save
 /// may be refused for, and is not held back by.
 pub fn doubts_text(doubts: usize, locale: Locale) -> String {

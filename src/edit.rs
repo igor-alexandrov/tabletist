@@ -1552,6 +1552,18 @@ pub enum Told {
     Restored {
         row: String,
     },
+    /// Several rows in one action: how many were marked, how many of the
+    /// rows named cannot be deleted, how many new rows were dropped with
+    /// them, and how many rows are marked now.
+    MarkedRows {
+        marked: usize,
+        skipped: usize,
+        dropped: usize,
+        deleted: usize,
+    },
+    RestoredRows {
+        restored: usize,
+    },
 }
 
 /// What a save's deletes do in a table whose foreign key points at the

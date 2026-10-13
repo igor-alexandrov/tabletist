@@ -1510,6 +1510,30 @@ pub fn delete_said(lock: Lock, table: &str, look: &Look, locale: Locale) -> Stri
     }
 }
 
+/// What a delete of several rows says where a refusal is said: why none
+/// of them is deleted, or how many it left out. `None` where every row it
+/// named is marked, restored or dropped.
+pub fn sweep_said(
+    sweep: &crate::edit::Sweep,
+    table: &str,
+    look: &Look,
+    locale: Locale,
+) -> Option<String> {
+    use crate::edit::Sweep;
+    match sweep {
+        Sweep::TooMany => {
+            let text = gettext(locale, "Select fewer rows, or delete in the SQL editor.");
+            Some(look.label(&text))
+        }
+        Sweep::Refused(lock) => Some(delete_said(*lock, table, look, locale)),
+        Sweep::Mark { rows, skipped, .. } if *skipped > 0 => {
+            let text = crate::ui::pending_bar::marked_text(rows.len(), *skipped, locale);
+            Some(look.label(&text))
+        }
+        Sweep::Mark { .. } | Sweep::Restore { .. } | Sweep::Drop { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -430,6 +430,13 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Delete the selected rows. One row is `DeleteRow`'s. Of several, the
+    /// unmarked are marked and the new ones dropped, or, where every one
+    /// is marked, all are restored (`edit::Table::sweep`).
+    DeleteSelected {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Take the mark for deletion off the selected row.
     RestoreRow {
         tab: ConnTabId,

@@ -7,7 +7,8 @@
 
 use egui::{Key, Modifiers};
 
-use super::insert_audit_tests::{add, painted, select, selected};
+use super::duplicate_tests::button;
+use super::insert_audit_tests::{add, covers_as, edits, painted, select, selected, set};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::testing::{Harness, book_covers_page, book_covers_structure};
 use crate::theme::Look;
@@ -166,5 +167,193 @@ fn a_range_is_counted_in_the_footer_and_told_as_selected() {
         assert_eq!(told("Row 4"), Some(true));
         assert_eq!(told("Row 1"), None);
         assert_eq!(told("Row 5"), None);
+    }
+}
+
+/// The rows marked for deletion.
+fn marked(harness: &Harness, tab: ConnTabId, id: TabId) -> Vec<usize> {
+    edits(harness, tab, id).deleted.keys().copied().collect()
+}
+
+/// What the toast says, where one shows.
+fn said(harness: &Harness) -> Option<String> {
+    crate::ui::toast::said(&harness.ctx)
+}
+
+/// Whether `words` are said to a screen reader, as a polite live region.
+fn polite(harness: &mut Harness, words: &str) -> bool {
+    let tree = harness.settle();
+    let mut nodes = tree.nodes.iter();
+    let node = nodes.find(|(_, node)| node.label().or_else(|| node.value()) == Some(words));
+    node.map(|(_, node)| node.live()) == Some(Some(egui::accesskit::Live::Polite))
+}
+
+/// A new row right under the page's row `row`, its editor closed. Says
+/// its row, as a cell names it.
+fn add_below(harness: &mut Harness, tab: ConnTabId, id: TabId, row: usize) -> usize {
+    let place = crate::edit::Place::Below(row);
+    harness.app.apply(Action::AddRow { tab, id, place });
+    harness.app.apply(Action::CancelEdit { tab, id });
+    harness.settle();
+    crate::edit::new_row(edits(harness, tab, id).added.last().unwrap().id)
+}
+
+/// Spec 2 and test 2: Backspace on several rows marks them all and keeps
+/// the range, and a second one restores them. With one of them unmarked,
+/// that one is marked and none is restored.
+#[test]
+fn backspace_marks_the_selected_rows_and_again_restores_them() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_with(look, book_covers_page(5));
+        select_rows(&mut harness, tab, id, 1, 3);
+        harness.press(Key::Backspace, Modifiers::NONE);
+        assert_eq!(marked(&harness, tab, id), [1, 2, 3]);
+        assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
+        assert_eq!(selected(&harness, tab, id), Some((3, 1)));
+        assert_eq!(said(&harness), None);
+        harness.press(Key::Backspace, Modifiers::NONE);
+        assert!(marked(&harness, tab, id).is_empty());
+        // One row of the range marked alone, then the range.
+        select(&mut harness, tab, id, (2, 1));
+        harness.press(Key::Backspace, Modifiers::NONE);
+        select_rows(&mut harness, tab, id, 1, 3);
+        harness.press(Key::Backspace, Modifiers::NONE);
+        assert_eq!(marked(&harness, tab, id), [1, 2, 3]);
+    }
+}
+
+/// Spec 2 and test 6: one action takes 1,000 rows and no more.
+#[test]
+fn more_than_a_thousand_rows_are_refused_with_the_message() {
+    let (mut harness, tab, id) = covers_with(Look::macos(), book_covers_page(1_001));
+    select_rows(&mut harness, tab, id, 0, 1_000);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert!(marked(&harness, tab, id).is_empty());
+    assert_eq!(
+        said(&harness).as_deref(),
+        Some("Select fewer rows, or delete in the SQL editor.")
+    );
+    select_rows(&mut harness, tab, id, 0, 999);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert_eq!(marked(&harness, tab, id).len(), 1_000);
+}
+
+/// Spec 2 and test 7: new rows of a range are dropped with a mark and left
+/// at a restore, and the range that is left stays selected.
+#[test]
+fn new_rows_of_a_range_are_dropped_with_the_mark() {
+    let (mut harness, tab, id) = covers_with(Look::macos(), book_covers_page(3));
+    // A new row under row 0, and the range from it down to row 2.
+    let new = add_below(&mut harness, tab, id, 0);
+    select(&mut harness, tab, id, (new, 1));
+    harness.app.apply(Action::ExtendBy { tab, id, rows: 2 });
+    assert_eq!(rows(&harness, tab, id), [new, 1, 2]);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert!(edits(&harness, tab, id).added.is_empty());
+    assert_eq!(marked(&harness, tab, id), [1, 2]);
+    // The anchor was the row that went: the rows left are still selected.
+    assert_eq!(rows(&harness, tab, id), [1, 2]);
+    assert!(polite(
+        &mut harness,
+        "2 rows marked for deletion. 2 to delete. 1 new row dropped."
+    ));
+    // A restore leaves a new row of the range alone: a new row under row
+    // 0 again, and with it rows 1 and 2, which are both marked.
+    let new = add_below(&mut harness, tab, id, 0);
+    select(&mut harness, tab, id, (new, 1));
+    harness.app.apply(Action::ExtendBy { tab, id, rows: 2 });
+    assert_eq!(rows(&harness, tab, id), [new, 1, 2]);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert_eq!(edits(&harness, tab, id).added.len(), 1);
+    assert!(marked(&harness, tab, id).is_empty());
+}
+
+/// Test 7: a range of new rows alone drops them and says so.
+#[test]
+fn a_range_of_new_rows_alone_drops_them() {
+    let (mut harness, tab, id) = covers_with(Look::macos(), book_covers_page(3));
+    add(&mut harness, tab, id);
+    add(&mut harness, tab, id);
+    let first = crate::edit::new_row(edits(&harness, tab, id).added[0].id);
+    select(&mut harness, tab, id, (first, 1));
+    harness.app.apply(Action::ExtendBy { tab, id, rows: 1 });
+    assert_eq!(rows(&harness, tab, id).len(), 2);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert!(edits(&harness, tab, id).added.is_empty());
+    assert!(marked(&harness, tab, id).is_empty());
+    assert!(polite(&mut harness, "2 new rows dropped."));
+    // The cursor was on the second of them, the grid's second row: it is
+    // on the row that stands there now, as after one new row is dropped.
+    assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+}
+
+/// Spec 2 and test 8: a row that cannot be deleted is left out and
+/// counted, and a table that takes no delete says why.
+#[test]
+fn a_row_that_cannot_be_deleted_is_left_out_and_said() {
+    let mut page = book_covers_page(5);
+    page.rows[2][0] = tabletist_db::Value::Null;
+    let (mut harness, tab, id) = covers_with(Look::macos(), page);
+    select_rows(&mut harness, tab, id, 1, 3);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert_eq!(marked(&harness, tab, id), [1, 3]);
+    assert_eq!(
+        said(&harness).as_deref(),
+        Some("2 rows marked for deletion. 1 can't be deleted.")
+    );
+    assert!(polite(
+        &mut harness,
+        "2 rows marked for deletion. 1 can't be deleted. 2 to delete."
+    ));
+    let table = tabletist_db::ObjectKind::Table;
+    let (mut harness, tab, id) = covers_as(Look::macos(), table, true);
+    select_rows(&mut harness, tab, id, 0, 2);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert!(marked(&harness, tab, id).is_empty());
+    assert_eq!(said(&harness).as_deref(), Some("Read-only connection"));
+}
+
+/// Spec 2 and test 9: each marked row keeps its pending cells under the
+/// mark, and a restore of the range gives them back.
+#[test]
+fn the_rows_of_a_range_keep_their_edits_under_the_mark() {
+    let (mut harness, tab, id) = covers_with(Look::macos(), book_covers_page(5));
+    set(&mut harness, tab, id, (1, 2), "audio");
+    set(&mut harness, tab, id, (3, 2), "audio");
+    select_rows(&mut harness, tab, id, 1, 3);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert!(edits(&harness, tab, id).cells.is_empty());
+    harness.press(Key::Backspace, Modifiers::NONE);
+    let cells: Vec<(usize, usize)> = edits(&harness, tab, id).cells.keys().copied().collect();
+    assert_eq!(cells, [(1, 2), (3, 2)]);
+}
+
+/// Spec 2 and test 11: what a screen reader is told of several rows.
+#[test]
+fn a_screen_reader_is_told_how_many_rows_were_marked_and_restored() {
+    let (mut harness, tab, id) = covers_with(Look::macos(), book_covers_page(5));
+    select(&mut harness, tab, id, (0, 1));
+    harness.press(Key::Backspace, Modifiers::NONE);
+    select_rows(&mut harness, tab, id, 1, 3);
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert!(polite(
+        &mut harness,
+        "3 rows marked for deletion. 4 to delete."
+    ));
+    harness.press(Key::Backspace, Modifiers::NONE);
+    assert!(polite(&mut harness, "3 rows restored."));
+}
+
+/// Spec 2, M8 and test 12: the inspector's Delete is of the row it shows.
+#[test]
+fn the_panels_delete_marks_the_cursors_row_alone() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_with(look, book_covers_page(5));
+        select_rows(&mut harness, tab, id, 1, 3);
+        assert_eq!(button(&mut harness, "Delete"), (true, None));
+        harness.click("Delete");
+        harness.settle();
+        assert_eq!(marked(&harness, tab, id), [3]);
+        assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
     }
 }

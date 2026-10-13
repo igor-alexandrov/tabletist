@@ -1394,6 +1394,35 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             gettext(locale, "Row"),
             gettext(locale, "restored.")
         )),
+        (
+            Some(Told::MarkedRows {
+                marked,
+                skipped,
+                dropped,
+                deleted,
+            }),
+            _,
+        ) => {
+            let mut parts = Vec::new();
+            if *marked > 0 {
+                parts.push(super::pending_bar::marked_text(*marked, *skipped, locale));
+                parts.push(format!("{deleted} {}", gettext(locale, "to delete.")));
+            }
+            if *dropped > 0 {
+                let rows = super::pending_bar::counted(
+                    locale,
+                    *dropped,
+                    "new row dropped",
+                    "new rows dropped",
+                );
+                parts.push(format!("{rows}."));
+            }
+            Some(parts.join(" "))
+        }
+        (Some(Told::RestoredRows { restored }), _) => Some(format!(
+            "{}.",
+            super::pending_bar::counted(locale, *restored, "row restored", "rows restored")
+        )),
         (None, Some(saved)) if saved.deleted > 0 => Some(format!(
             "{}.",
             super::pending_bar::counted(locale, saved.deleted, "row deleted", "rows deleted")
