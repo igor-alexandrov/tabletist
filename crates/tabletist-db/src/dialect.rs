@@ -884,7 +884,8 @@ impl Dialect {
     /// One `DELETE` for a run of a save's rows ([`crate::delete_runs`]):
     /// `WHERE "id" IN (..)`, or `WHERE ("a", "b") IN ((..), (..))` for a
     /// key of several columns. `Err` where it is no run (fewer than two
-    /// rows, or keys that do not name the same columns in the same order),
+    /// rows, or keys that do not name the same columns in the same order
+    /// with values of one kind),
     /// and where one of its rows is one no save sends
     /// ([`Dialect::delete_row`]). The rows it finds are the rows its
     /// rows' own statements find: each value is spelled as there, and
@@ -893,12 +894,11 @@ impl Dialect {
         let [first, _, ..] = rows else {
             return Err(Error::query("a run of deletes is two rows or more"));
         };
-        let same = |row: &&RowDelete| {
-            row.key.len() == first.key.len()
-                && row.key.iter().zip(&first.key).all(|(a, b)| a.0 == b.0)
-        };
+        let same = |row: &&RowDelete| crate::write::same_key_shape(&row.key, &first.key);
         if first.key.is_empty() || !rows.iter().all(same) {
-            return Err(Error::query("the rows of a run have the same key columns"));
+            return Err(Error::query(
+                "the rows of a run have the same key columns, with values of one kind",
+            ));
         }
         for row in rows {
             self.key_read_exactly(&row.key)?;
@@ -1888,6 +1888,14 @@ mod tests {
                 .is_err()
         );
         assert!(Dialect::Sqlite.delete_run(&covers, &[&fine, &fine]).is_ok());
+        // Nor do a number and a text in one column make a run.
+        let number = doomed(vec![("id", Value::Int(9))]);
+        let words = doomed(vec![("id", text("18446744073709551615"))]);
+        assert!(
+            Dialect::MySql
+                .delete_run(&covers, &[&number, &words])
+                .is_err()
+        );
     }
 
     /// Spec 4, step 5: what each engine says when it was busy, not when a

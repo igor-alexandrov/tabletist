@@ -10,6 +10,12 @@
 
 Line numbers are of head `ac63a1b`.
 
+From the review of this plan, built with it:
+
+- The savepoint's statements and `deleted_instead` are written in Task 2, with their first user, not in Task 1.
+- `delete_runs` also begins a run where a key's value is of another kind than its neighbour's (a number beside a text): MySQL reads a `bigint unsigned` above the signed range as text, and an `IN` list that mixes the two may not compare each as `=` does. `delete_run` refuses such rows too.
+- The app's side (Tasks 5 and 6) was built before the two servers' (Tasks 3 and 4), while this review was out.
+
 ---
 
 ## Where the plan leaves the spec, for a yes
@@ -847,7 +853,44 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
     }
 ```
 
-`bookshop()` runs `named(&create(), prefix)`. A test for each of the four scenarios, each with a prefix of its own (`pgruns`, `pggone`, `pgtwo`, `pgkin`), ended with `admin.batch_execute(&named(DROP, prefix))` as the others are. The second deletes rows 5 and 7 first: `admin.batch_execute(&named("DELETE FROM shop_stock WHERE id IN (5, 7)", "pggone"))`.
+`bookshop()` runs `named(&create(), prefix)`. A test for each of the four scenarios, each with a prefix of its own that no other test has (`pgruns`, `pgrungone`, `pgruntwo`, `pgkin`: `pggone` and `pgtwo` are taken, and two tests on one prefix drop each other's tables), ended with `admin.batch_execute(&named(DROP, prefix))` as the others are. The second deletes rows 5 and 7 first: `admin.batch_execute(&named("DELETE FROM shop_stock WHERE id IN (5, 7)", "pgrungone"))`.
+
+None of the four can fail before the driver changes: one statement a row deletes the same rows. One test more shows that a run was sent, by a trigger that fires once for each statement:
+
+```rust
+    /// Many-rows spec 4: the rows of a run go in one statement. A trigger
+    /// that fires once for each statement counts them: three for 250
+    /// rows, where one statement a row would make 250.
+    #[tokio::test]
+    async fn postgres_sends_a_run_as_one_statement() {
+        let Some((admin, connection)) = bookshop("pgstmts").await else {
+            return;
+        };
+        let made = named(
+            "CREATE TABLE shop_seen (at bigint GENERATED ALWAYS AS IDENTITY);
+             CREATE FUNCTION shop_note() RETURNS trigger LANGUAGE plpgsql AS
+                 $$ BEGIN INSERT INTO shop_seen DEFAULT VALUES; RETURN NULL; END $$;
+             CREATE TRIGGER shop_noted AFTER DELETE ON shop_stock
+                 FOR EACH STATEMENT EXECUTE FUNCTION shop_note()",
+            "pgstmts",
+        );
+        admin.batch_execute(&made).await.unwrap();
+        many_rows_go_in_runs(&connection, &shop("pgstmts")).await;
+        let seen = admin
+            .query_one(&named("SELECT count(*) FROM shop_seen", "pgstmts"), &[])
+            .await
+            .unwrap();
+        assert_eq!(seen.get::<_, i64>(0), 3);
+        let dropped = named(
+            "DROP TABLE IF EXISTS shop_stock, shop_seen; DROP FUNCTION IF EXISTS shop_note()",
+            "pgstmts",
+        );
+        admin.batch_execute(&dropped).await.unwrap();
+        admin.batch_execute(&named(DROP, "pgstmts")).await.unwrap();
+    }
+```
+
+(`DROP` at the top of `bookshop` must clear what an earlier, failed run of this test left: `shop_seen` and the function join it, or this test drops them itself before `bookshop`.)
 
 - [ ] **Step 2: The run in the driver**
 
@@ -1040,7 +1083,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
             ),
 ```
 
-(`shop_slots` joins `DROP`.) A test for each of the four scenarios, as PostgreSQL's (`myruns`, `mygone`, `mytwo`, `mykin`), and the plan's check:
+(`shop_slots` joins `DROP`.) A test for each of the four scenarios, as PostgreSQL's (`myruns`, `myrungone`, `myruntwo`, `mykin`: `mygone` and `mytwo` are taken), and the plan's check. MySQL has no trigger that fires once for a statement, so that its driver sends runs rests on Task 1's strings, the compiler, and `mysql_deletes_a_row_and_the_row_it_points_at_in_one_run`, which only a run can make go through the fallback:
 
 ```rust
     /// R7: a run by a key of two columns finds its rows by the key. A
@@ -1240,7 +1283,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
         };
         let values: Vec<&str> = pieces
             .iter()
-            .filter(|piece| piece.ink == Ink::Value)
+            .filter(|piece| piece.ink == Ink::Number)
             .map(|piece| piece.text.as_str())
             .collect();
         assert_eq!(values, ["9", "10", "11"]);
@@ -1318,7 +1361,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
     }
 ```
 
-(`Ink::Value` and a piece's `ink` are as `value(literal, values)` makes them: read `fn value` and the `Piece` type at the top of the file, and use their names.)
+(`value(literal, values)` inks a number as `Ink::Number`: the test filters on that, not on `Ink::Value`, which does not exist.)
 
 `src/ui/review.rs`, beside the test at 741:
 

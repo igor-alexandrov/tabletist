@@ -91,10 +91,13 @@ pub const MAX_RUN: usize = 100;
 /// says of each row whether its own statement could be built
 /// ([`crate::Dialect::delete_row`]): one that could not is a run of its
 /// own, since no statement holds it. Every row is in exactly one run.
+///
+/// The values of a run's column are of one kind too. MySQL reads a
+/// `bigint unsigned` above the signed range as text and one below it as
+/// a number, and a list that mixes the two is not sure to compare each as
+/// `=` does.
 pub fn delete_runs(deletes: &[RowDelete], built: &[bool]) -> Vec<std::ops::Range<usize>> {
-    let same_columns = |a: &RowDelete, b: &RowDelete| {
-        a.key.len() == b.key.len() && a.key.iter().zip(&b.key).all(|(a, b)| a.0 == b.0)
-    };
+    let same_columns = |a: &RowDelete, b: &RowDelete| same_key_shape(&a.key, &b.key);
     let sent = |row: usize| built.get(row).copied().unwrap_or(false);
     let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
     for (row, delete) in deletes.iter().enumerate() {
@@ -331,6 +334,15 @@ impl Applied {
             Self::FailedDelete { delete, error } => WriteOutcome::FailedDelete { delete, error },
         }
     }
+}
+
+/// Whether two rows' keys can stand in one run: the same columns in the
+/// same order, each with a value of the same kind.
+pub(crate) fn same_key_shape(a: &Key, b: &Key) -> bool {
+    let alike = |a: &(String, Value), b: &(String, Value)| {
+        a.0 == b.0 && std::mem::discriminant(&a.1) == std::mem::discriminant(&b.1)
+    };
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| alike(a, b))
 }
 
 /// A point inside the save's transaction to come back to: before a run of
@@ -576,6 +588,16 @@ mod tests {
         let built = [true, true, false, true, true];
         assert_eq!(delete_runs(&rows, &built), [0..2, 2..3, 3..5]);
         assert!(delete_runs(&[], &[]).is_empty());
+        // A key whose value is of another kind than its neighbour's (MySQL
+        // reads a large unsigned number as text) is in no run with it.
+        let mut rows = [
+            by(&["id"], 1),
+            by(&["id"], 2),
+            by(&["id"], 3),
+            by(&["id"], 4),
+        ];
+        rows[2].key[0].1 = Value::Text("18446744073709551615".into());
+        assert_eq!(delete_runs(&rows, &[true; 4]), [0..2, 2..3, 3..4]);
     }
 
     fn cell(column: &str) -> CellChange {
