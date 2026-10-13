@@ -858,8 +858,8 @@ mod postgres {
 mod mysql {
     use super::*;
 
-    const DROP: &str =
-        "DROP TABLE IF EXISTS shop_shelves, shop_book_authors, shop_book_covers, shop_publishers";
+    const DROP: &str = "DROP TABLE IF EXISTS shop_slots, shop_genres, shop_stock, shop_shelves, \
+        shop_book_authors, shop_book_covers, shop_publishers";
 
     const CREATE: [&str; 8] = [
         "CREATE TABLE shop_publishers (
@@ -895,6 +895,37 @@ mod mysql {
         "INSERT INTO shop_shelves VALUES (1, NULL), (2, 1), (3, NULL)",
     ];
 
+    /// The Bookshop's statements, with its stock of 300 rows, its genres,
+    /// and 300 slots under a key of two columns.
+    fn create() -> Vec<String> {
+        let slots: Vec<String> = (1..=300)
+            .map(|slot| format!("({}, {slot})", slot % 7))
+            .collect();
+        let more = [
+            "CREATE TABLE shop_stock (id BIGINT PRIMARY KEY)".to_owned(),
+            format!("INSERT INTO shop_stock VALUES {}", stock_values()),
+            "CREATE TABLE shop_genres (
+                 id BIGINT PRIMARY KEY,
+                 parent_id BIGINT,
+                 FOREIGN KEY (parent_id) REFERENCES shop_genres (id)
+             )"
+            .to_owned(),
+            "INSERT INTO shop_genres VALUES (1, NULL), (2, 1), (3, NULL)".to_owned(),
+            "CREATE TABLE shop_slots (
+                 shelf BIGINT NOT NULL,
+                 slot BIGINT NOT NULL,
+                 PRIMARY KEY (shelf, slot)
+             )"
+            .to_owned(),
+            format!("INSERT INTO shop_slots VALUES {}", slots.join(", ")),
+        ];
+        CREATE
+            .iter()
+            .map(|&sql| sql.to_owned())
+            .chain(more)
+            .collect()
+    }
+
     fn named(sql: &str, prefix: &str) -> String {
         sql.replace("shop_", &format!("{prefix}_"))
     }
@@ -929,8 +960,8 @@ mod mysql {
         let opts = mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
         let mut admin = mysql_async::Conn::new(opts).await.unwrap();
         admin.query_drop(named(DROP, prefix)).await.unwrap();
-        for statement in CREATE {
-            admin.query_drop(named(statement, prefix)).await.unwrap();
+        for statement in create() {
+            admin.query_drop(named(&statement, prefix)).await.unwrap();
         }
         let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
         spec.tls = TlsMode::Disable;
@@ -1020,5 +1051,79 @@ mod mysql {
         };
         a_row_the_save_took_with_another_is_deleted(&connection, &shop("mytree")).await;
         admin.query_drop(named(DROP, "mytree")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_deletes_many_rows_in_runs() {
+        let Some((mut admin, connection)) = bookshop("myruns").await else {
+            return;
+        };
+        many_rows_go_in_runs(&connection, &shop("myruns")).await;
+        admin.query_drop(named(DROP, "myruns")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_says_which_rows_of_a_run_were_gone() {
+        let Some((mut admin, connection)) = bookshop("myrungone").await else {
+            return;
+        };
+        admin
+            .query_drop("DELETE FROM myrungone_stock WHERE id IN (5, 7)")
+            .await
+            .unwrap();
+        rows_already_gone_leave_the_rest_of_their_run(&connection, &shop("myrungone")).await;
+        admin.query_drop(named(DROP, "myrungone")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_deletes_a_run_by_a_key_of_two_columns() {
+        let Some((mut admin, connection)) = bookshop("myruntwo").await else {
+            return;
+        };
+        a_run_by_a_key_of_two_columns_finds_its_rows(&connection, &shop("myruntwo")).await;
+        admin.query_drop(named(DROP, "myruntwo")).await.unwrap();
+    }
+
+    /// The server checks a foreign key row by row, so the run of Crime
+    /// and Fiction is refused whole. It is undone, and the two go one at
+    /// a time, child first: the fallback, on a server.
+    #[tokio::test]
+    async fn mysql_deletes_a_row_and_the_row_it_points_at_in_one_run() {
+        let Some((mut admin, connection)) = bookshop("mykin").await else {
+            return;
+        };
+        a_row_and_the_row_it_points_at_go_in_one_run(&connection, &shop("mykin")).await;
+        admin.query_drop(named(DROP, "mykin")).await.unwrap();
+    }
+
+    /// A run by a key of two columns finds its rows by the key. A server
+    /// that scanned the table for it would lock every row where a row's
+    /// own statement locks one.
+    #[tokio::test]
+    async fn mysql_finds_the_rows_of_a_run_by_their_key() {
+        let Some((mut admin, _connection)) = bookshop("myplan").await else {
+            return;
+        };
+        let explain = named(
+            "EXPLAIN DELETE FROM shop_slots WHERE (shelf, slot) IN ((1, 1), (2, 2), (3, 3))",
+            "myplan",
+        );
+        let plan: Vec<mysql_async::Row> = admin.query(explain).await.unwrap();
+        let access: Vec<String> = plan
+            .iter()
+            .map(|row| {
+                row.get::<Option<String>, _>("type")
+                    .flatten()
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert!(!access.is_empty(), "the plan has a row for the table");
+        assert!(
+            access
+                .iter()
+                .all(|access| access != "ALL" && access != "index"),
+            "the run scans the table: {access:?}"
+        );
+        admin.query_drop(named(DROP, "myplan")).await.unwrap();
     }
 }

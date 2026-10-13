@@ -12,12 +12,13 @@ use super::{
 };
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, Stored, changed_since_loaded, conflicts_of, key_spelled_otherwise, more_than_one,
-    named_twice, not_read_back, not_stopped, read_by, same_row_twice, spelled_otherwise,
+    Applied, RELEASE, ROLLBACK_TO, SAVEPOINT, Stored, changed_since_loaded, conflicts_of,
+    deleted_instead, key_spelled_otherwise, more_than_one, named_twice, not_read_back, not_stopped,
+    read_by, same_row_twice, spelled_otherwise,
 };
 use crate::{
     ChangeSet, ColumnClass, ColumnMeta, Dialect, Error, InsertValue, NewValue, ObjectRef, Result,
-    RowChange, RowDelete, RowInsert, Sql, StopFlag, Value, WriteOutcome, column_class,
+    RowChange, RowDelete, RowInsert, Sql, StopFlag, Value, WriteOutcome, column_class, delete_runs,
 };
 
 /// One row's statements, built before anything is sent.
@@ -710,6 +711,140 @@ async fn delete(
     }
 }
 
+/// Deletes one row of the save by its own statement. `Ok(Some(..))` is
+/// how the save ends where the row is not deleted; `Err` is a cancel, a
+/// stop or a lost session.
+async fn delete_one(
+    conn: &mut mysql_async::Conn,
+    deletion: &Deletion,
+    place: usize,
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    let deleted = match delete(conn, &deletion.delete, stop).await? {
+        Ok(deleted) => deleted,
+        Err(error) => {
+            return Ok(Some(Applied::FailedDelete {
+                delete: place,
+                error,
+            }));
+        }
+    };
+    // None: a row deleted before this one took it along (a key of the
+    // table that points at the table), which is what the save meant, or a
+    // trigger kept it, which is not. The row says which: its locking read
+    // once more.
+    if deleted == 0 && rows(conn, &deletion.lock, stop).await?.1.is_empty() {
+        return Ok(None);
+    }
+    Ok((deleted != 1).then(|| Applied::FailedDelete {
+        delete: place,
+        error: deleted_instead(deleted, 1),
+    }))
+}
+
+/// Deletes the rows `live` of the save (places among its deletes, each
+/// found by its read, two or more) in one statement. A run the server
+/// refuses is undone to the savepoint before it, and its rows go one at a
+/// time, so the error is its row's. The server checks a foreign key row
+/// by row: a run that holds a row and the row it points at is refused
+/// whole, and goes through one at a time, child first.
+async fn delete_many(
+    conn: &mut mysql_async::Conn,
+    changes: &ChangeSet,
+    deletes: &[Deletion],
+    live: &[usize],
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    let Some(&first) = live.first() else {
+        return Ok(None);
+    };
+    let keys: Vec<&RowDelete> = live
+        .iter()
+        .filter_map(|&place| changes.deletes.get(place))
+        .collect();
+    // Each row was built, so the run is: were it not, or were part of a
+    // name read as a parameter, the rows go as ever.
+    let run = Dialect::MySql
+        .delete_run(&changes.object, &keys)
+        .ok()
+        .map(|run| run.sql)
+        .filter(|sql| driver_parameter(&sql.text).is_ok());
+    // What the run's statement came to: how many rows it deleted, or
+    // `None` where its rows are to go one at a time (it is no run, or it
+    // was refused and undone).
+    let deleted = match &run {
+        None => None,
+        Some(sql) => {
+            not_stopped(stop)?;
+            execute(conn, SAVEPOINT).await?;
+            match delete(conn, sql, stop).await? {
+                Ok(deleted) => Some(deleted),
+                // Busy: sent again row by row, each row could wait as
+                // long.
+                Err(error) if Dialect::MySql.busy(&error) => {
+                    return Ok(Some(Applied::FailedDelete {
+                        delete: first,
+                        error,
+                    }));
+                }
+                Err(error) => match execute(conn, ROLLBACK_TO).await {
+                    Ok(()) => None,
+                    Err(lost @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(lost),
+                    // No savepoint to come back to: the transaction is
+                    // gone, and a row sent now would be written for good.
+                    // The run's error ends the save.
+                    Err(_) => {
+                        return Ok(Some(Applied::FailedDelete {
+                            delete: first,
+                            error,
+                        }));
+                    }
+                },
+            }
+        }
+    };
+    let Some(deleted) = deleted else {
+        for &place in live {
+            let Some(deletion) = deletes.get(place) else {
+                continue;
+            };
+            let failed = delete_one(conn, deletion, place, stop).await?;
+            if failed.is_some() {
+                return Ok(failed);
+            }
+        }
+        if run.is_some() {
+            execute(conn, RELEASE).await?;
+        }
+        return Ok(None);
+    };
+    let meant = live.len() as u64;
+    if deleted > meant {
+        return Ok(Some(Applied::FailedDelete {
+            delete: first,
+            error: deleted_instead(deleted, live.len()),
+        }));
+    }
+    if deleted < meant {
+        // A row of the run that a delete of this save took along (a key
+        // of the table that points at the table) is what the save meant.
+        // One a trigger kept is not.
+        for &place in live {
+            let Some(deletion) = deletes.get(place) else {
+                continue;
+            };
+            if !rows(conn, &deletion.lock, stop).await?.1.is_empty() {
+                return Ok(Some(Applied::FailedDelete {
+                    delete: place,
+                    error: deleted_instead(0, 1),
+                }));
+            }
+        }
+    }
+    execute(conn, RELEASE).await?;
+    Ok(None)
+}
+
 /// The first warning of the statement that just ran, as its error.
 async fn warning(conn: &mut mysql_async::Conn) -> Result<Error> {
     let rows: Vec<mysql_async::Row> = conn.query("SHOW WARNINGS").await.map_err(query_error)?;
@@ -859,37 +994,25 @@ async fn apply(
             return Ok(Applied::Failed { row, error });
         }
     }
-    // The rows to delete, last: the order a review shows them in. One
-    // that was not there is said and not sent.
+    // The rows to delete, last: the order a review shows them in, in runs
+    // of neighbours. One that was not there is said and not sent.
     let mut gone = Vec::new();
-    for (place, (deletion, found)) in deletes.iter().zip(&doomed).enumerate() {
-        if found.is_none() {
-            gone.push(place);
-            continue;
-        }
-        let deleted = match delete(conn, &deletion.delete, stop).await? {
-            Ok(deleted) => deleted,
-            Err(error) => {
-                return Ok(Applied::FailedDelete {
-                    delete: place,
-                    error,
-                });
-            }
+    // Every row's statements were built: the save does not begin otherwise.
+    let built = vec![true; changes.deletes.len()];
+    for run in delete_runs(&changes.deletes, &built) {
+        let found = |place: &usize| doomed.get(*place).is_some_and(Option::is_some);
+        let (live, missing): (Vec<usize>, Vec<usize>) = run.partition(found);
+        gone.extend(missing);
+        let failed = match live.as_slice() {
+            [] => None,
+            [place] => match deletes.get(*place) {
+                Some(deletion) => delete_one(conn, deletion, *place, stop).await?,
+                None => None,
+            },
+            _ => delete_many(conn, changes, deletes, &live, stop).await?,
         };
-        // None: a row deleted before this one took it along (a key of the
-        // table that points at the table), which is what the save meant,
-        // or a trigger kept it, which is not. The row says which: its
-        // locking read once more.
-        if deleted == 0 && rows(conn, &deletion.lock, stop).await?.1.is_empty() {
-            continue;
-        }
-        if deleted != 1 {
-            return Ok(Applied::FailedDelete {
-                delete: place,
-                error: Error::query(format!(
-                    "the save would have deleted {deleted} rows where it meant one"
-                )),
-            });
+        if let Some(failed) = failed {
+            return Ok(failed);
         }
     }
     let mut saved = Vec::with_capacity(statements.len());
