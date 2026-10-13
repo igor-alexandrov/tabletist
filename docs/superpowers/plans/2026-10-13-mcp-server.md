@@ -909,6 +909,22 @@ Protocol and HTTP answers, for calls that never reach a tool:
 
 ### C.1 Storage
 
+**Changed on 2026-10-13: the connections move to `connections.toml`
+first** (`2026-10-13-connections-toml.md`, a run of its own before Phase
+1b). What follows was written for `connections.json` and still says what
+an agent's settings are. Where they are kept changes:
+
+- Each connection is a `[[connections]]` table, found by its `id`, and its
+  agent settings are its `[connections.agents]` table. That is the board's
+  TOML but for the key: the boards key a connection by its name, and two
+  connections may share one.
+- The file's version is 3. Phase 1b's `agents` table makes it 4: the file
+  is read strictly, so a Tabletist that does not know the table refuses
+  the file and keeps it aside, where the JSON was read past what it did not
+  know. Agents are not turned off by a downgrade. They are not read at all.
+- When each connection last connected is in the state directory
+  (`last_used.json`), so a connect no longer writes the connections.
+
 **Per connection: `connections.json`.** `SavedConnection`
 (`src/connections.rs:35-50`) gains one field:
 
@@ -1560,9 +1576,9 @@ The ones Phase 1 waits for are marked.
    on this computer. A notification cannot show the SQL, the preview or the
    warnings, and approving without them is the thing the card exists to
    prevent. The notification's one action is "Review".
-5. **(Phase 1)** `connections.json` or a new `connections.toml`? The plan
-   uses the JSON file that exists. Is that accepted, with the Omarchy
-   editor showing the JSON fragment in place of the board's TOML?
+5. Settled on 2026-10-13: `connections.toml`, as a run of its own before
+   Phase 1b (`2026-10-13-connections-toml.md`). A connection is found by
+   its id, not by its name as the boards draw it.
 6. Activity and Log as a tab of the main window, not as windows. Accepted?
    (Needed for 1b's Activity.)
 7. The count on the approval card: a read-only `SELECT`, with a dry run
