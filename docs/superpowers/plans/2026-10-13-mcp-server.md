@@ -1528,12 +1528,9 @@ The ones Phase 1 waits for are marked.
 15. **(Phase 1)** A Bookshop SQL fixture for the three drivers, new in
     `crates/tabletist-db/fixtures/`. Accepted? The alternative is the
     `users` and `orders` fixture the driver tests use today.
-16. **(Before merge)** This file's place. `docs/` is the website's source,
-    and only `superpowers` and `bin` are kept out of it
-    (`docs/_config.yml:113-115`). `docs/plans/mcp-server.md` has no front
-    matter, so Jekyll copies it to the site as it is once this is on
-    `main`. Move it to `docs/superpowers/plans/`, or add `plans` to the
-    exclusions (three more files)?
+16. Settled on 2026-10-13: this file lives in `docs/superpowers/plans/`,
+    which the website leaves out (`docs/_config.yml:113-115`). Under
+    `docs/plans/` Jekyll would have copied it to the site as it is.
 17. A new stdio agent: a notification, as planned, or a question the first
     time a name is seen ("Let Claude Code connect?")? The second is a real
     gate for stdio, which has none.
