@@ -8,7 +8,7 @@
 use egui::{Key, Modifiers};
 
 use super::duplicate_tests::button;
-use super::insert_audit_tests::{add, covers_as, edits, painted, select, selected, set};
+use super::insert_audit_tests::{add, covers_as, edits, painted, select, selected, set, type_key};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::testing::{Harness, book_covers_page, book_covers_structure};
 use crate::theme::Look;
@@ -423,4 +423,126 @@ fn a_visual_selections_delete_lands_on_the_first_row_left() {
     assert_eq!(marked(&harness, tab, id), [1, 2]);
     assert!(!visual(&harness, tab, id));
     assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+}
+
+/// Spec 1 (Omarchy) and test 3: `V` starts a visual selection, `j` and `k`
+/// extend it, the keys that act on one cell or row do nothing in it, a
+/// move along the row keeps its rows, and `d` marks them and leaves it.
+#[test]
+fn v_selects_rows_and_d_marks_them() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::V, "V");
+    assert!(visual(&harness, tab, id));
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::J, "j");
+    assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
+    // Held back: an editor, a new row, Set NULL, a followed key, the
+    // inspector's fields.
+    type_key(&mut harness, Key::I, "i");
+    type_key(&mut harness, Key::O, "o");
+    type_key(&mut harness, Key::X, "x");
+    type_key(&mut harness, Key::G, "g");
+    type_key(&mut harness, Key::D, "d");
+    harness.press(Key::Enter, Modifiers::NONE);
+    let pending = edits(&harness, tab, id);
+    assert!(pending.editor.is_none() && pending.added.is_empty() && pending.cells.is_empty());
+    assert!(marked(&harness, tab, id).is_empty());
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert_eq!(workspace.object_tab(id).unwrap().focus_field, None);
+    assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
+    // Along the row the cell changes and the rows do not.
+    type_key(&mut harness, Key::L, "l");
+    assert_eq!(selected(&harness, tab, id), Some((3, 3)));
+    assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
+    type_key(&mut harness, Key::D, "d");
+    assert_eq!(marked(&harness, tab, id), [1, 2, 3]);
+    assert!(!visual(&harness, tab, id));
+    assert_eq!(selected(&harness, tab, id), Some((1, 3)));
+    // On one row too: `V`, `d` marks it and leaves the selection.
+    select(&mut harness, tab, id, (4, 2));
+    type_key(&mut harness, Key::V, "V");
+    type_key(&mut harness, Key::D, "d");
+    assert_eq!(marked(&harness, tab, id), [1, 2, 3, 4]);
+    assert!(!visual(&harness, tab, id));
+}
+
+/// Test 3: `esc` and a second `V` leave a visual selection and mark
+/// nothing, and a save is not held back.
+#[test]
+fn esc_and_v_leave_a_visual_selection() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::V, "V");
+    type_key(&mut harness, Key::J, "j");
+    assert!(visual(&harness, tab, id));
+    assert_eq!(rows(&harness, tab, id), [1, 2]);
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!visual(&harness, tab, id));
+    assert!(marked(&harness, tab, id).is_empty());
+    assert_eq!(selected(&harness, tab, id), Some((2, 2)));
+    type_key(&mut harness, Key::V, "V");
+    assert!(visual(&harness, tab, id));
+    type_key(&mut harness, Key::V, "V");
+    assert!(!visual(&harness, tab, id));
+    // With something pending, the save's chord works in it.
+    set(&mut harness, tab, id, (0, 2), "audio");
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::V, "V");
+    harness.press(Key::S, Modifiers::COMMAND);
+    assert!(edits(&harness, tab, id).saving.is_some());
+}
+
+/// Spec 1 (Omarchy) and test 4: with something else for `esc` to close,
+/// the first `esc` leaves the visual selection and the next does what it
+/// does today.
+#[test]
+fn esc_leaves_a_visual_selection_before_it_closes_anything() {
+    // The Review SQL panel.
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    set(&mut harness, tab, id, (0, 2), "audio");
+    let show = true;
+    harness.app.apply(Action::ReviewEdits { tab, id, show });
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::V, "V");
+    assert!(visual(&harness, tab, id));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!visual(&harness, tab, id));
+    assert!(edits(&harness, tab, id).reviewing);
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!edits(&harness, tab, id).reviewing);
+    // The row panel.
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    select(&mut harness, tab, id, (1, 2));
+    harness.app.workspace_mut(tab).unwrap().row_panel = true;
+    type_key(&mut harness, Key::V, "V");
+    assert!(visual(&harness, tab, id));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!visual(&harness, tab, id));
+    assert!(harness.app.workspace(tab).unwrap().row_panel);
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!harness.app.workspace(tab).unwrap().row_panel);
+    // What the last save came to: a row it found already deleted, which
+    // is what the line keeps saying until it is dismissed.
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    select(&mut harness, tab, id, (0, 1));
+    harness.app.apply(Action::DeleteRow { tab, id });
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        inserted: Vec::new(),
+        rows: Vec::new(),
+        gone: vec![0],
+        elapsed: std::time::Duration::from_millis(14),
+    }));
+    harness.settle();
+    assert!(edits(&harness, tab, id).note.is_some());
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::V, "V");
+    assert!(visual(&harness, tab, id));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!visual(&harness, tab, id));
+    assert!(edits(&harness, tab, id).note.is_some());
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(edits(&harness, tab, id).note.is_none());
 }

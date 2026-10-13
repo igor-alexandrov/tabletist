@@ -146,6 +146,8 @@ pub enum When {
     NewRow,
     /// The list of a foreign key cell's picker is open under its field.
     KeyPicker,
+    /// A visual selection of rows is on, in the terminal look.
+    Visual,
 }
 
 /// The mode a chord holds in: with the keyboard in a text field (insert),
@@ -386,6 +388,9 @@ commands! {
     PutRow,
     PutRowAbove,
     DeleteRow,
+    SelectRows,
+    DeleteSelection,
+    LeaveVisual,
     OpenReferencedRow,
     ShowSavedRow,
     ReviewSql,
@@ -610,6 +615,9 @@ impl Command {
                 Editing,
             ),
             C::DeleteRow => info("Delete row", "Delete row", Editing),
+            C::SelectRows => info("Select rows", "", Editing),
+            C::DeleteSelection => info("Delete the selected rows", "", Editing),
+            C::LeaveVisual => info("Leave the selection of rows", "", Editing),
             C::OpenReferencedRow => info("Open referenced row", "Open referenced row", Editing),
             C::ShowSavedRow => info(
                 "Show saved row in sorted position",
@@ -1201,6 +1209,11 @@ pub const BINDINGS: &[Binding] = {
         // other looks have a button there.
         bind(C::DeleteRow, INSPECTOR, NONE, keys(&[k("dd")])).when(When::NewRow),
         bind(C::AddRow, INSPECTOR, NONE, keys(&[k("o")])).when(When::NewRow),
+        // The terminal look's visual selection of rows: `V` starts and
+        // leaves it, and while it is on `d` alone deletes its rows.
+        bind(C::SelectRows, GRID, NONE, keys(&[k("V")])),
+        bind(C::DeleteSelection, GRID, NONE, keys(&[k("d")])).when(When::Visual),
+        bind(C::LeaveVisual, GRID, NONE, keys(&[k("esc")])).when(When::Visual),
         bind(C::OpenReferencedRow, GRID, NONE, keys(&[k("gd")])),
         bind(C::ShowSavedRow, GRID, NONE, keys(&[k("gs")])),
         bind(
@@ -2719,6 +2732,24 @@ mod tests {
             );
             assert_eq!(keymap.typed(layout, Scope::Grid, &nothing, "x"), Nothing);
         }
+    }
+
+    #[test]
+    fn a_visual_selection_has_its_own_keys() {
+        let keymap = Keymap::default();
+        let visual = |when: When| when == When::Visual;
+        let nothing = |_: When| false;
+        let grid = |holds: &dyn Fn(When) -> bool, typed: &str| {
+            keymap.typed(Layout::Omarchy, Scope::Grid, holds, typed)
+        };
+        assert_eq!(grid(&nothing, "V"), Typed::Command(Command::SelectRows));
+        // `d` alone is the whole key while a selection is on, and the
+        // first of two without one.
+        assert_eq!(grid(&visual, "d"), Typed::Command(Command::DeleteSelection));
+        assert_eq!(grid(&nothing, "d"), Typed::Waiting);
+        assert_eq!(grid(&nothing, "dd"), Typed::Command(Command::DeleteRow));
+        assert_eq!(keymap.label(Layout::Omarchy, Command::LeaveVisual), "esc");
+        assert_eq!(keymap.label(Layout::Mac, Command::SelectRows), "");
     }
 
     #[test]

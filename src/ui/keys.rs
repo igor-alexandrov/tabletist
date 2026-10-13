@@ -476,7 +476,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // can be edited. Everywhere else it is no key.
     let flips = object
         .filter(|_| grid && !editing && !tree_arrows && !focused)
-        .filter(|&(tab, id)| app.flips(tab, id));
+        .filter(|&(tab, id)| app.flips(tab, id))
+        // Not under the terminal look's visual selection of rows.
+        .filter(|&(tab, id)| {
+            let object = app
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id));
+            !(app.look.terminal && object.is_some_and(|object| object.visual()))
+        });
     let layout = app.layout();
     let on_picker = matches!(
         app.active_tab().content,
@@ -1168,6 +1175,9 @@ fn editing_keys(
         asked(input, keymap, layout, command, scope, normal)
     };
     let open = object.edits.editor.is_some();
+    // The terminal look's visual selection of rows holds back the chords
+    // that act on one cell or one row.
+    let visual = app.look.terminal && object.visual();
     let editor = crate::ui::cell_editor::field_id(tab, id);
     let typing = open && ctx.memory(|memory| memory.has_focus(editor));
     // A save is read wherever the pending bar offers it with its key:
@@ -1246,6 +1256,9 @@ fn editing_keys(
         // every change is not the one that touches one cell.
         if on(input, Command::DiscardChanges, Scope::Grid, true).count > 0 {
             actions.push(Action::DiscardEdits { tab, id });
+        }
+        if visual {
+            return;
         }
         // A click selects its cell once the frame is drawn, after these
         // keys were read: what acts on the active cell, or opens its
@@ -1433,6 +1446,38 @@ fn delete_selected(
         actions.push(Action::DeleteSelected { tab, id });
     }
     said
+}
+
+/// Whether a visual selection of rows holds `command` back: what changes,
+/// copies or follows one cell or one row. The moves, the inspector's
+/// show and hide, a save, a discard, Review SQL, a reload, the filters and
+/// the pages are not among them.
+fn held_back(command: Command) -> bool {
+    matches!(
+        command,
+        Command::EditCell
+            | Command::ReplaceCell
+            | Command::OpenInspector
+            | Command::SetNull
+            | Command::SetDefault
+            | Command::UndoCell
+            | Command::RedoCell
+            | Command::CopyCells
+            | Command::CopyRow
+            | Command::PasteCells
+            | Command::PasteNewRows
+            | Command::AddRow
+            | Command::AddRowAbove
+            | Command::AddRowAtEnd
+            | Command::DuplicateRow
+            | Command::YankRow
+            | Command::PutRow
+            | Command::PutRowAbove
+            | Command::DeleteRow
+            | Command::OpenReferencedRow
+            | Command::ShowSavedRow
+            | Command::BooleanCycle
+    )
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
@@ -1660,6 +1705,9 @@ fn letters(
     // The cursor's row is a new one: the row panel is its form, and the
     // key that drops the row is read from the form's fields too.
     let on_new = selection.is_some_and(|cell| crate::edit::new_id(cell.row).is_some());
+    // A visual selection of rows is on: its keys are read, and the keys
+    // that act on one cell or one row are held back.
+    let visual = object.is_some_and(|object| object.visual());
     let on_sql = workspace.active_sql_tab().is_some();
     // A SQL editor showing its result takes the letters that move in it.
     let sql_grid = workspace
@@ -1695,6 +1743,13 @@ fn letters(
     // Dismiss does in the other looks; then it closes the row panel. (On a
     // field of the panel it gave the keys back to the grid, before this.)
     let quiet = !left_field && !menu_open;
+    // A visual selection first: it is the innermost thing the key leaves.
+    if let Some(id) = active.filter(|_| visual)
+        && quiet
+        && on(Command::LeaveVisual, Scope::Grid).fresh
+    {
+        actions.push(Action::LeaveVisual { tab, id });
+    }
     if let Some(id) = reviewing
         && quiet
         && on(Command::CloseReview, Scope::Grid).fresh
@@ -1798,6 +1853,7 @@ fn letters(
         crate::keymap::When::Note => note.is_some(),
         crate::keymap::When::RefusedWrite => has_card,
         crate::keymap::When::NewRow => on_new,
+        crate::keymap::When::Visual => visual,
         _ => false,
     };
     let review_only = |when: crate::keymap::When| when == crate::keymap::When::Review;
@@ -1894,6 +1950,7 @@ fn letters(
         };
         take_char(ctx, char);
         waiting.clear();
+        let command = command.filter(|command| !(visual && held_back(*command)));
         match (command, active) {
             (Some(Command::EditCell), _) if edits && alone => {
                 opened = true;
@@ -1953,6 +2010,25 @@ fn letters(
                 opened = true;
                 let above = command == Command::PutRowAbove;
                 actions.push(Action::PutRow { tab, id, above });
+            }
+            (Some(Command::SelectRows), Some(id)) if rows_show && !tree && field.is_none() => {
+                actions.push(Action::SelectRows { tab, id });
+            }
+            // The rows of the visual selection. Where none of them is
+            // deleted the selection stays, to be made smaller.
+            (Some(Command::DeleteSelection), Some(id)) if rows_show && !tree && field.is_none() => {
+                let from = actions.len();
+                let why = delete_selected(app, tab, id, actions);
+                // One row's delete comes back as its own action: the
+                // selection's is what leaves the visual selection.
+                for action in &mut actions[from..] {
+                    if matches!(action, Action::DeleteRow { .. }) {
+                        *action = Action::DeleteSelected { tab, id };
+                    }
+                }
+                if let Some(why) = why {
+                    crate::ui::toast::say(ctx, &why);
+                }
             }
             // The row under the cursor is deleted: dropped where it is a
             // new one, marked or restored where it is the page's. With
