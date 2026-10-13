@@ -4,7 +4,19 @@ Status: a plan for review. No app code changes with it.
 
 Written on 2026-10-13 against `main` at `89a7e88`. Line numbers are from that
 commit. Designs: the "Agents · MCP server" section of the Tabletist canvas
-(nine boards). They are not copied into the repository.
+(twelve boards, since the change below). They are not copied into the
+repository.
+
+**Changed on 2026-10-13: the Agents tab.** The designs changed after this
+plan was written, and the change answers open question 6. Activity and the
+log are no window of their own, and no tab of the app either: each
+connection window has an **Agents** tab, next to its table and query tabs,
+that covers that connection. Two boards are gone (the activity window and
+the log window), five are new, and one is renamed. Section 2, A.5, D, F, G
+and the open questions are revised for it, each where it changed. Nothing
+else is: the tools, the enforcement, per-connection access, storage and the
+threat model stand as they were. Line numbers in the revised parts are from
+`main` at `cf7b78f`.
 
 Each phase below gets its own plan under `docs/superpowers/plans/` before any
 code is written, as every batch of work in this repository does.
@@ -64,16 +76,21 @@ as drawn. Each needs a yes or a no before the phase that builds it.
 |---|---|---|---|
 | 1 | Per-connection settings in `connections.toml` under `[connections."…".agents]` (decision 7, both Omarchy boards) | Connections are in `connections.json`, version 2 (`src/paths.rs:72-74`, `src/connections.rs:80`). No TOML holds a connection. Names are not unique: two connections named "Bookshop" form a group (`src/ui/picker.rs:63-100`), so a table keyed by name cannot hold them | An `agents` object on each connection in `connections.json`. The Omarchy editor shows that fragment where the board shows TOML. Moving connections to TOML is its own project (question 5) |
 | 2 | Settings › Agents beside General, Appearance, Editor, Keyboard, AI assistant, Updates | One pane. No pane list, no pane state (`SettingsDialog { row, resetting }`, `src/model.rs:1446-1453`) | Phase 1b adds the pane switch and builds two panes: General and Agents. The other five stay unbuilt |
-| 3 | An activity window and a log window | One OS window. No `show_viewport` call anywhere. Settings, About and Help are modal dialogs in the root viewport | Activity and Log are app tabs, a third `ConnTabContent` (`src/model.rs:25-30`), not windows and not modal dialogs. A modal would block the app while a feed updates (question 6) |
-| 4 | macOS: the Agents pane and the Log are reached from a menu | The app builds no menu. winit's default app menu is patched for About and Settings through `crates/tabletist-appkit` (`src/macos.rs:133-200`) | Reached from Settings › Agents ("Activity…", "Open log"), from a header chip while an agent is connected, and from the notification. Two app-menu items can follow through `tabletist-appkit`, as Settings did |
-| 5 | Omarchy: `:agents` and `:agents log` | The `:` prompt exists only in a workspace (`src/ui/keys.rs:1804-1814`, `App::run_command`, `src/app/editing.rs:1351`). The connections screen has none, and the keymap looks an ex command up by scope | Both commands answer in the Grid and SQL editor scopes. The connections screen gets the `:` prompt too, since agent access is set there (question 12) |
-| 6 | Omarchy status line: `-- AGENT WRITE -- … a approve d deny esc later` | Single letters are safe only in the `Prompt` scope, which is a dialog (`keys::prompt_letter`, `src/ui/keys.rs:47`). Outside a dialog, `a` in normal mode would approve a write for anyone whose fingers know vim's append | The status line announces the request and names `:agents`. `a` and `d` act only inside the approval box, which the person opens (question 12) |
+| 3 | An **Agents** tab in each connection window, next to its table and query tabs. (Changed on 2026-10-13: the boards first drew an activity window and a log window) | A connection window is what the app already calls a connection's tab in its one OS window (`Command::GoToConnectionWindow`, `src/keymap.rs:835-840`). Inside it is a strip of tabs, `Workspace::tabs` (`src/model.rs:815`), and a `Tab` is a table or a SQL editor (`:2446-2449`) | `Tab` gains a third kind, `Agents` (D.4). This is what the boards draw now, and it settles question 6 |
+| 4 | macOS: View › Agents ⌥⌘A, in a View menu with Data, Structure and Inspector | The app builds no menu. winit's default app menu is patched for About and Settings through `crates/tabletist-appkit` (`src/macos.rs:133-200`). There is no View menu | ⌥⌘A is a command of the keymap and needs no menu. The sidebar entry, quick open, Settings and the Connections row are built in Phase 1b. The menu item waits for a View menu, which is its own work (question 24) |
+| 5 | Omarchy: `ga` from the grid or the sidebar, `:agents` "from anywhere", `:agents log` | The `:` prompt exists only in a workspace (`src/ui/keys.rs:1804-1814`, `App::run_command`, `src/app/editing.rs:1351`), and the keymap looks an ex command up in the Grid and SQL editor scopes alone | `:agents` answers in every scope of a connection window, the Agents tab's own included. The connections screen needs no `:` prompt: its way in is `a` on a row and then `t`, as the board draws (this replaces the first proposal) |
+| 6 | Omarchy: `[a] approve and run  [d] deny with a note` in the Agents tab, and the bottom line `-- AGENT WRITE -- … a approve d deny esc later` | A single letter is safe only where nothing else reads it. In a grid's normal mode `a` would approve a write for anyone whose fingers know vim's append | `a` and `d` are keys of the Agents tab alone (a new `Agents` scope), and the tab never takes the keys by itself. The bottom line names `a` and `d` while that tab has the keys. In any other tab it names `ga` (D.4, question 12) |
 | 7 | "Counted by a dry run, rolled back", before the person is asked | Nothing in the app runs a write to count it. A dry run on a MySQL table that is not transactional is a real write (`rollback_warning`, error 1196, is how the script run reports it) | Count with a read-only `SELECT count(*)` built from the statement. A dry run becomes something the person asks for on the card (B.6, question 7) |
 | 8 | Production: "Can it ever be above Read?" | A SQL tab on production cannot write at all today: `Workspace::sql_writes` answers `NoWrites::Unconfirmed` because the question for a script is not built (`src/model.rs:2840-2848`) | Production is capped at Read until that question exists. Then approved writes on production pass both the approval and the production confirmation |
 | 9 | "Use only the Bookshop demo data in fixtures and tests" | There is no Bookshop database. The SQL fixtures are `users`, `orders`, `events`, `big` (`crates/tabletist-db/fixtures/`). Bookshop exists as in-memory scenes for screenshots (`src/shots.rs`) | Phase 1a adds a small Bookshop SQL fixture for the three drivers, with the tables the boards use (question 15) |
 | 10 | "macOS and Omarchy get the same features" | There are three looks: Windows shares the macOS code paths (`Look::standard`, `src/theme.rs:390`), and the release builds Windows packages | Windows gets the macOS variant with Ctrl for Cmd, a named pipe for the shim, and a taskbar flash where the others notify (question 14) |
 | 11 | `list_connections` shows `hidden: [customers]`, and the refusal says "customers is hidden" | The editor's hint says hidden tables "don't exist for the agent, not even in the schema" | Kept as drawn: the name of a hidden table is told to the agent, its columns and rows are not. Otherwise the agent cannot act on the refusal (question 8) |
 | 12 | The "…" menu has "Copy URL"; the row shows a "read-only" tag; the editor is an accordion | The menu has Duplicate and Delete (`src/ui/picker.rs:983-999`). The list shows no read-only tag. The editor has fieldsets | Out of scope. This work adds the Agents column, the Agents menu entry and the Agents fieldset to the screens as they are |
+| 13 | ⌘P: typing "agents" offers "Agents · Bookshop · dev" | Quick open finds the tables and views of the loaded schema and nothing else (`App::quick_open_matches`, `src/app.rs:3971`). It is bound on macOS and Windows only (`C::FindObject`, `src/keymap.rs:917`) | Quick open gains one fixed entry that is no table. Omarchy has `ga` and `:agents` in its place |
+| 14 | The tab covers "only that window's connection": an agent is here, or elsewhere ("Also: Cursor on Bookshop · staging") | A session is not on a connection. An agent names the connection in each call, and one session may use several, or none yet | A session is here once it has made a call that names this connection (A.5). One that has named none yet is under "Also:" in every window (question 22) |
+| 15 | A notification for a write on a connection whose window is not open "opens that connection's window on its Agents tab" | Opening a connection window connects, and may ask for a password or an SSH host key first (`App::open_workspace`, `src/app.rs:2007`) | The window opens on the Agents tab and connects behind it, as any does. The card does not wait for that: an approved write runs on the server's own session, not the window's |
+| 16 | **Stop agents here** stops every agent on this connection | Stopping a session gives the agent back its connection in the second it takes to connect again (A.5, question 11) | It ends every session that has used this connection, and the tab says that agents can connect again. Whether it should also hold is question 21 |
+| 17 | **Turn on** "starts the server at once". The brief's list of tests has "Turn on" change nothing until confirmed | Both cannot hold | The board's reading: the button is the confirmation. It starts the server and changes no connection's access (question 23) |
 
 ## A. Architecture
 
@@ -138,7 +155,7 @@ asked for each time (`PasswordMode::Ask`, `src/connections.rs:23-32`), an SSH
 host whose key is not yet trusted, and a keyring that is locked. An agent
 cannot answer those prompts, and a prompt that appears because an agent asked
 is a way to phish the person. The call is refused with
-`connection_unavailable`, and Activity says why.
+`connection_unavailable`, and the Agents tab says why.
 
 ### A.2 Stdio
 
@@ -169,7 +186,7 @@ and `eframe::run_native` (`src/entrypoint.rs:81-161`):
    process would wipe the app's), and never shows the startup error dialog
    (`report_startup_error`, `src/entrypoint.rs:65-79`).
 2. It connects to the endpoint and sends one line: the relay's version, the
-   key, and its working directory, which gives Activity its project name
+   key, and its working directory, which gives the Agents tab its project name
    ("tabletist-repo") when the client does not offer MCP roots.
 3. From then on it copies bytes both ways and understands none of them. The
    app serves MCP on that connection. One connection is one session.
@@ -221,7 +238,8 @@ taken.
   `agents.json` in the state directory (0600). The token itself is not kept.
   It is not in `settings.toml`, which people edit, sync and paste into bug
   reports.
-- The name the person gave is the agent's name in Activity and in the log.
+- The name the person gave is the agent's name in the Agents tab and in the
+  log.
   What the client says about itself is shown beside it, never instead.
 
 **Checks on every request, before the body is read:**
@@ -320,6 +338,7 @@ struct AgentSession {
     connected_at: SystemTime,
     last_call_at: SystemTime,
     calls: u64,
+    connections: Vec<Used>,        // each connection it has named, with its calls and its last one
     state: State,                  // Idle | Running(call) | WaitingForYou(request)
     stop: CancellationToken,       // parent of every call in flight
 }
@@ -327,13 +346,36 @@ struct AgentSession {
 
 - A stdio session is one connection from the relay: it begins when the
   relay connects and ends when either side closes.
-- An HTTP session is a token in use. It leaves Activity after thirty minutes
-  without a call. Nothing is enforced through it.
+- An HTTP session is a token in use. It leaves the Agents tab after thirty
+  minutes without a call. Nothing is enforced through it.
 - The agent's name is whatever the client says, in `initialize` or in a
   request's `_meta`. It is a label, not an identity. Only an HTTP token's
   name is something the person chose.
 
-**Stopping.** "Stop session" cancels the session's token.
+**Where a session is** (added on 2026-10-13, for the Agents tab). The tab
+covers one connection, and a session belongs to none: the agent names a
+connection in each call.
+
+- A session is **here**, for a connection, from its first call that names
+  that connection until it ends. `list_connections` names none.
+- A session that has used two connections is here in both windows. Each
+  shows its calls on that connection, and "Stop session" in either stops
+  all of it.
+- A session that has named no connection yet is nowhere in particular. It
+  is listed under "Also:" in every Agents tab, as "Claude Code · no
+  connection yet" (question 22).
+- The sidebar's "● Claude Code" and the status bar's "1 agent here" count
+  the sessions that are here.
+
+**Stopping.** There are three, from the narrowest:
+
+| | Where | What it stops |
+|---|---|---|
+| **Stop session** | A session's line in the Agents tab | That session, wherever it works |
+| **Stop agents here** | The Agents tab's header | Every session that is here, for this connection. Added on 2026-10-13 |
+| **Stop all agents** | Settings › Agents, the server's switch | The server (below) |
+
+"Stop session" cancels the session's token.
 
 - A query in flight is stopped the way the backend stops a script today:
   the `StopFlag` is set and the session's cancel is sent again and again
@@ -351,11 +393,21 @@ struct AgentSession {
 - The agent's read session on the database is kept for the next agent,
   unless a cleanup failed, in which case it is closed, as the backend does.
 
+"Stop agents here" stops each session that is here, as "Stop session" does,
+and withdraws every write waiting on this connection. A session that also
+works on another connection ends there too: a session cannot be stopped in
+part. The server stays up and the connection's access is what it was, so an
+agent can connect again and call again, as a new session with its own
+notification. The tab says so where it says what was stopped ("Stopped 2
+agents. They can connect again: set access to Off in Connections to keep
+them out."). Whether stopping should itself keep them out is question 21.
+
 "Stop all agents" switches the server off, the same as the toggle in
 Settings: every session is stopped, the endpoint and the port close, and
 nothing reconnects until the person turns it on. Stopping sessions and
 leaving the server up would give agents back their connection in the second
-it takes to reconnect (question 11).
+it takes to reconnect (question 11). The new boards draw it nowhere but as
+that toggle.
 
 ## B. Enforcement
 
@@ -849,7 +901,7 @@ confirmation for a script is not built. So:
 | The count grew | `count_changed`, as above |
 | The database refused it | `write_failed`, with the database's code and message. Nothing was written |
 | The commit failed | `write_failed`, "The database refused the commit. Nothing was written.", with its message |
-| The connection was lost mid-write | `write_unknown`, "The connection was lost. Tabletist cannot say whether it was written." The log and Activity say the same. The run's own error is this honest today |
+| The connection was lost mid-write | `write_unknown`, "The connection was lost. Tabletist cannot say whether it was written." The log and the Agents tab say the same. The run's own error is this honest today |
 | The server or the session was stopped | `server_stopped` |
 
 ### B.8 Refusal codes
@@ -1120,7 +1172,7 @@ Boards: `macOS – Agents (MCP), setup`, `Omarchy – Agents (MCP), setup`.
 | What | Where |
 |---|---|
 | A pane switch. `SettingsDialog` gains `pane: Pane { General, Agents }`, with an `Action` to change it | `src/model.rs:1446-1453` |
-| macOS and Windows: the nav lists two items, not the one hard-coded "General". The Agents pane: the toggle, the status row, "Connect an agent" with the three-way switch and Copy, the Access box with "Open Connections", "How it stays safe", the two Log rows | `src/ui/settings/sheet.rs:166-238`, a new `src/ui/settings/agents.rs` |
+| macOS and Windows: the nav lists two items, not the one hard-coded "General". The Agents pane: the toggle, the status row with **Show Agents tab**, "Connect an agent" with the three-way switch and Copy, the Access box with "Open Connections", "How it stays safe", the two Log rows with **Show log** | `src/ui/settings/sheet.rs:166-238`, a new `src/ui/settings/agents.rs` |
 | Omarchy: the same nav, the rows with the cursor, `y` to copy the command, `enter` on the access row to open Connections, and the file pane showing `[mcp]` | `src/ui/settings/terminal.rs:220-236`, `file_pane.rs:195-313`, `mod.rs:126-239` for the keys |
 | The settings keys | `src/settings.rs` (C.1) |
 | The command to copy. macOS: the path of the running binary inside the app bundle (`std::env::current_exe`). Linux: `tabletist mcp` when `tabletist` is on the `PATH`, else the full path | New, in `tabletist-mcp` |
@@ -1128,6 +1180,13 @@ Boards: `macOS – Agents (MCP), setup`, `Omarchy – Agents (MCP), setup`.
 
 The board's other panes (Appearance, Editor, Keyboard, AI assistant,
 Updates) are not built by this work.
+
+**Changed on 2026-10-13.** "Activity…" is **Show Agents tab**, and "Open
+log" is **Show log**. Settings is the app's, and an Agents tab is a
+connection's, so each needs a connection to show: the window that was in
+front when Settings opened. With no connection window open both are
+disabled, with the reason beside them ("Open a connection to see its
+agents"). The board does not draw that case.
 
 ### D.2 The Connections list
 
@@ -1143,6 +1202,8 @@ access`.
 | A new `Action::SetAgentAccess { conn, access }`, which saves through `App::save_connections` (`src/app.rs:2827-2832`) and sends the new policy to the backend | `src/model.rs:47`, `src/app.rs` |
 | Levels that are not available are shown disabled with the reason: "Open read-only is on", "Production" | `connections::access`, `src/connections.rs:70` |
 | The footer hints gain `a agent access` on Omarchy | `picker.rs:336-344`, from the keymap |
+| **Show Agents tab** (added on 2026-10-13). macOS: an item of the "…" menu's Agents part. Omarchy: `t` in the box that `a` opens. It opens the connection's window when it has none, and shows its Agents tab | `Action::ShowAgents`, D.4 |
+| The row's Agents column counts the writes waiting on a connection that has no window open ("1 waiting") | Not drawn on a board (question 25) |
 
 ### D.3 The connection editor
 
@@ -1161,52 +1222,164 @@ Omarchy connections board.
 Phase 1b builds access, rows and timeout. Phase 1c adds Tables. Phase 3a
 adds Masked columns.
 
-### D.4 Activity, the approval card, notifications
+### D.4 The Agents tab
 
-Boards: `macOS – Agents (MCP), activity and approval`, `Omarchy – Agents
-(MCP), activity, approval and log`.
+Boards: `macOS – Agents tab, activity and approval`, `macOS – Agents tab, no
+agents yet`, `macOS – Agents tab, ways in and empty states`, `Omarchy –
+Agents tab, ways in and empty states`, `Omarchy – Agents tab, activity,
+approval and log`.
 
-**Activity is a tab.** `ConnTabContent` gains `Agents(Box<AgentsTab>)`
-beside `Picker` and `Workspace` (`src/model.rs:25-30`), drawn by a new
-`src/ui/agents/` with `mod.rs`, `sheet.rs` and `terminal.rs`, as Settings
-and the connection editor are split. One such tab at most: opening it again
-shows it.
+**Changed on 2026-10-13.** This section first made Activity one tab of the
+app, beside the connections, and put the approval in a dialog. The boards
+now put both inside each connection window, in a tab of that connection.
+There is no app-wide agents window and no agents dialog.
 
-| What | Where |
+**The tab.** `Tab` gains `Agents(Box<AgentsTab>)` beside `Object` and `Sql`
+(`src/model.rs:2446-2449`), drawn by a new `src/ui/agents/` with `mod.rs`,
+`sheet.rs` and `terminal.rs`, as Settings and the connection editor are
+split.
+
+| Rule | How |
 |---|---|
-| The sessions column, the selected session's header with "Stop session", the call feed, "Open log", "Stop all agents" | `src/ui/agents/` |
-| The header chip that opens the tab, shown while an agent is connected, with a count when a write waits | The connection bar in `src/ui/mod.rs` |
-| `Action`s: `ShowAgents`, `ShowAgentLog`, `StopAgentSession`, `StopAgents`, `ReviewAgentWrite`, `ApproveAgentWrite`, `DenyAgentWrite`, `PreviewAgentWrite` | `src/model.rs:47` |
-| `Command::Mcp` and `Event::Mcp` | `src/backend.rs:52`, `:209` |
+| One for each connection window, opened on demand, closable | `Workspace::tabs` holds one at most. `Action::ShowAgents { conn, view }` opens it or makes it the active tab, and opens the connection's window first when it has none. `CloseTab` closes it as any tab |
+| It never opens itself and never takes the focus, even when a write arrives | No arm of `Event::Mcp` in `App::apply` adds a tab, changes `active_tab`, or moves the keys. Only what the person does can: the sidebar entry, the key, quick open, a notification they clicked, Settings, the Connections row. F.7 holds every event to it |
+| Closing it stops nothing | Sessions and requests live in `App::agents`, not in the tab. A request keeps waiting, and keeps its five minutes |
+| A count while a write waits | The tab's label and the sidebar entry read one number from `App::agents`: the requests waiting on this connection |
+| Its place | Where it was opened, after the tabs that were there, with a number on Omarchy as any tab has (`alt+1..9`, `C::SwitchTab`, `src/keymap.rs:942`). It holds no pending edits, so closing it asks nothing, and it is not among the editors a closed tab can be brought back from |
+| The strip | `src/ui/object_tabs.rs` draws tables and SQL editors. It gains the third kind: the icon, "Agents", the count |
 
-**The approval card never takes the keyboard by itself.** A request does
-three things: the notification, the chip's count, and on Omarchy the status
-line's "-- AGENT WRITE -- claude code · 3 rows in Bookshop · dev · :agents".
-It does not open a dialog over what the person is doing. `prompt_password`
-is the precedent for not replacing a dialog the person is working in
-(`src/app.rs:2009`).
+Every `match` on `Tab` gains an arm for the new kind, where a tab is closed
+or switched to among others. The phase plan lists them from the compiler's
+errors.
 
-The person opens the review: the notification, the chip, `:agents`, or the
-card's place in the Activity tab. That opens `Dialog::AgentWrite`, which is
-in the `Prompt` scope with a new `When::AgentWrite`:
+**One connection.** `App::agents: AgentsState` stays one for the app (the
+server's status, every session, the feed's last few hundred calls, the
+requests waiting), fed by `Event::Mcp(..)`. A tab shows the part of it that
+is its window's connection:
 
-- the SQL as it will run, the agent's reason, the count and how it was
-  made, "Runs as" with the connection's user, "One transaction, then
-  commit", the preview link, the cascade and no-`WHERE` warnings (B.6);
-- macOS: **Deny…** and **Approve and run**. Deny opens a one-line note
-  field;
+- the header: "Agents on Bookshop · dev · Read + approved writes · Change in
+  Connections". The link opens the connection editor at its Agents section
+  (D.3);
+- **Stop agents here** (A.5);
+- "Also: Cursor on Bookshop · staging · Show", for sessions that are
+  elsewhere. Show brings that connection's window forward with its Agents
+  tab open, and opens the window first when there is none. On Omarchy these
+  are the "elsewhere" group under the sessions, and `enter` shows;
+- the sessions that are here (A.5), each with its line ("Claude Code ·
+  tabletist-repo · connected 10:38 · 14 calls · Runs as dev") and **Stop
+  session**;
+- the feed, of the calls on this connection;
+- the status bar: "1 agent here · 1 write waiting", the server's addresses,
+  and the key that shows the tab.
+
+**Ways in.** There is always a visible one, whether or not an agent is
+connected.
+
+| Way | macOS and Windows | Omarchy | In the code |
+|---|---|---|---|
+| The sidebar, in every state | An **Agents** button in the sidebar's footer, above **SQL Editor**, highlighted while its tab is the active one | The sidebar's last line above the key hints: `agents`, the state, `ga` | `src/ui/sidebar.rs`. The footer is one button high (`SQL_FOOTER`, `:426`) and the terminal's is the hints (`terminal_footer`, `:364`). Each grows by a row |
+| The key | ⌥⌘A | `ga` from the grid or the sidebar, `:agents` from anywhere in the window | D.6 |
+| Quick open | ⌘P: "agents" offers "Agents · Bookshop · dev" | none | Row 13 of section 2 |
+| The menu | View › Agents | none | Row 4 of section 2. Not in Phase 1b |
+| A notification | For a write, or for a new agent | The same, through mako | Below |
+| Settings › Agents | **Show Agents tab**, **Show log** | The same rows | D.1 |
+| Connections | The row's "…" › Agents › **Show Agents tab** | `a` on a row, then `t` | D.2 |
+
+All of them work in every state, the server off included: the tab is the
+app's own view and needs no server. None of them is the sidebar entry
+opening the tab by itself.
+
+The sidebar entry's right side has five states:
+
+| State | macOS and Windows | Omarchy | When |
+|---|---|---|---|
+| Waiting | an amber **1 waiting** pill | `● 1 waiting` | a write waits on this connection |
+| Connected | **● Claude Code**, green | `● claude code` | a session is here |
+| Idle | **None connected** | `none connected` | access allows agents, and nobody is here |
+| Off here | **Off here**, muted | `off here` | this connection's access is Off |
+| Server off | **Server off**, muted | `server off` | `mcp.enabled` is false |
+
+One function gives the state from the settings, the connection's access and
+`App::agents`, and the tab's empty state asks the same one. Two cases the
+boards leave open: with the server off and access Off at once it says
+"Server off" (question 26), and with more than one session here it names the
+one that called last.
+
+**Activity.** The sessions and the feed are Phase 1b's. The card is Phase
+2's.
+
+**The write request card** is in the tab, above the feed: "Claude Code wants
+to change 3 rows in book_covers · asked 10:43:02 · waits up to 5 min", the
+SQL as it will run, the agent's reason, the count and how it was made (B.6,
+row 7 of section 2), "Transaction: one, then commit", "Preview the 3 rows in
+a tab", the cascade and no-`WHERE` warnings, and "Nothing runs until you
+choose. The agent gets the result or your note."
+
+- macOS and Windows: **Deny…** and **Approve and run ⌘↩**. Deny opens a
+  one-line note field in the card.
 - Omarchy: `[a] approve and run  [d] deny with a note  [p] preview rows
-  [esc] decide later`;
-- `esc` closes the box and leaves the request waiting. The card stays in
-  the Activity tab with the time left;
-- one request is shown at a time, the oldest first (E.5);
-- a request that was withdrawn or timed out while the box is open says so
-  in the box and offers only Close.
+  [esc] decide later`.
 
-`ApproveAgentWrite` looks the request up again when it is applied, as
-`ConfirmSqlRun` re-checks the tab's mode: a card left on screen cannot
-approve a request that is gone or a connection that has since become
-read-only.
+What keeps an approval the person's own:
+
+- **A request does three things and no more:** the notification, the count
+  on the sidebar entry and on the tab, and on Omarchy the bottom line. It
+  opens nothing and moves no keys. `prompt_password` is the precedent for
+  not taking over what the person is working in (`src/app.rs:2009`).
+- **The keys are the tab's.** ⌘↩, `a`, `d` and `p` are bound in a new
+  `Agents` scope with `When::AgentWrite`. They mean nothing in a grid, the
+  sidebar or a SQL editor. This replaces the dialog the plan first had: the
+  card is drawn in the tab, and the tab is only ever in front because the
+  person put it there.
+- **The bottom line on Omarchy** reads `-- AGENT WRITE -- claude code · 3
+  rows in Bookshop · dev  a approve  d deny  esc later` while the Agents tab
+  has the keys, as the board draws it. In any other tab of that window it
+  ends `ga agents` in the place of the three keys: a line that named `a`
+  where `a` does nothing would be worse than none.
+- **A key lands on the request the person saw.** `ApproveAgentWrite` and
+  `DenyAgentWrite` carry the id of the request that was drawn. One that
+  arrives while the tab already has the keys takes them only once it has
+  been on screen for half a second, so a key on its way does not answer a
+  card that has just appeared. And the request is looked up again when the
+  action is applied, as `ConfirmSqlRun` re-checks the tab's mode: a card
+  left on screen cannot approve a request that is gone, or a connection that
+  has since become read-only.
+- One request is shown at a time for a connection, the oldest first (E.5),
+  with the number of the others.
+- A request that was withdrawn or timed out says so in its card and offers
+  only Dismiss.
+- `esc`, "decide later", leaves the request waiting and gives the keys back
+  to the feed. The card stays, with the time left.
+- "Preview the rows in a tab" opens a read-only SQL tab in this window with
+  the `SELECT` of the rows the write would change (B.6). It needs the
+  window's own session, so it waits for a window that is still connecting.
+
+**Empty states.** In the Activity view's place, by the state the sidebar
+entry shows:
+
+| State | Title | Body | Actions |
+|---|---|---|---|
+| Allowed, no agents yet | No agents connected to Bookshop · dev | "Agents like Claude Code can read this database and propose changes you approve here. Connect one with this command, then ask it about Bookshop." Then the command with **Copy**, and a box "On this connection": access, hidden tables, masked columns, last agent | **Other agents…**, **Show log** |
+| Off for this connection | Agents can't use Bookshop · production | "Access is Off for this connection, so agents don't see it at all. The log still shows past calls." | **Show log**, **Allow agents…** |
+| Server off | The agent server is off | "Turn it on to let agents like Claude Code use the connections you allow. It runs only while Tabletist is open, on this computer." | **Settings…**, **Turn on** |
+
+- **Allow agents…** opens the connection editor at its Agents section.
+  Nothing changes until Save there (`ctrl+s` on Omarchy).
+- **Turn on** sets `mcp.enabled` through `App::change_settings`, which
+  starts the server at once. It changes no connection's access: each still
+  starts Off (question 23).
+- **Other agents…** opens Settings › Agents. **Copy** copies D.1's command.
+  **Show log** switches the tab to its Log view.
+- The box "On this connection" grows with the phases: access in 1b, hidden
+  tables in 1c, masked columns in 3a. "Last agent" is read from the log.
+- On Omarchy: `[y]` copy, `[l]` show log, `[e]` allow agents…, `[o]` turn
+  on, `[s]` settings.
+
+**Actions.** `ShowAgents { conn, view }`, `StopAgentSession`,
+`StopAgentsHere { conn }`, `ApproveAgentWrite { request }`,
+`DenyAgentWrite { request, note }`, `PreviewAgentWrite { request }`,
+`TurnAgentsOn`, `CopyAgentCommand` (`src/model.rs:47`), with `Command::Mcp`
+and `Event::Mcp` (`src/backend.rs:52`, `:209`).
 
 **Notifications.** There are none in the app today.
 
@@ -1216,34 +1389,55 @@ read-only.
 | macOS | `UNUserNotificationCenter`, in `crates/tabletist-appkit`, the only crate allowed `unsafe` for AppKit | Needs the signed app bundle and the person's permission. In an unsigned build: the Dock icon bounces (`ViewportCommand::RequestUserAttention`) |
 | Windows | The taskbar button flashes | A toast needs an app identity the installer does not register yet |
 
-- "Review" brings the window forward and opens the box. Nothing can be
-  approved from a notification: the SQL is not on it.
+- **A write:** "Review" brings Tabletist forward, goes to that connection's
+  window and shows its Agents tab with the card. It is the same
+  `Action::ShowAgents` on both looks: the notification's action carries the
+  connection's id and nothing else.
+- **A write on a connection whose window is not open** opens that window on
+  its Agents tab. The window connects behind the tab as any does, and may
+  ask for a password or an SSH host key first (row 15 of section 2). There
+  is no app-wide window to fall back to.
+- **A new agent** is on no connection yet. Its notification goes to the
+  frontmost connection window's Agents tab, where it is under "Also:", or to
+  the Connections screen when no window is open (question 22).
+- Where the platform has no action to click (the Dock's bounce, the
+  taskbar's flash), bringing Tabletist forward shows the count on the
+  sidebar entry, and the person opens the tab.
+- Nothing can be approved from a notification: the SQL is not on it.
 - The text holds the agent's name, the count and the connection's name. No
   SQL, since notifications are kept in a history other programs can read.
 - `mcp.notify` turns off the notifications for a connect and for a write
-  request. The chip and the status line stay.
+  request. The counts and the bottom line stay.
 - An agent connecting is one notification for each session, not for each
   call.
 
 ### D.5 The log
 
-Boards: `macOS – Agents (MCP), log`, and the lower half of the Omarchy
-activity board.
+Boards: `macOS – Agents tab, log`, and the lower half of the Omarchy board.
 
-The log is the Activity tab's second view (`AgentsTab::view: Activity |
-Log`), not another window.
+**Changed on 2026-10-13.** The log is the Agents tab's second view
+(`AgentsTab::view: Activity | Log`), behind the **Activity / Log** switch at
+the tab's top. It was to be a window, and before that a view of an app-wide
+tab.
 
 | What | Where |
 |---|---|
-| The table: time, agent, connection, tool, request, rows, ms, result | `src/ui/agents/log.rs`. The grid's row drawing in `src/ui/grid.rs` is for database values. A plain list is enough here |
-| Filters: agent, connection, result, and a search of the SQL. They are a query to the backend, `Command::Mcp(QueryLog { filter, before, limit })`, answered in pages | `src/backend.rs` |
-| The detail pane: the SQL, "Ran as", "Matched", "Returned to agent", "Masked", "Took", and the note that rows are not kept | |
-| "Open in SQL editor": opens a SQL tab on that connection with the statement, in Read-only mode, not run. A connection that was deleted since disables it | `Action::NewSqlTab` and the workspace opening in `src/app.rs` |
-| "Export…" | C.1 |
-| Omarchy: `/` filter, `enter` details, `o` open in a SQL tab | The keymap |
+| The table: time, agent, tool, request, rows, ms, result. The connection is a column only under All connections | `src/ui/agents/log.rs`. The grid's row drawing in `src/ui/grid.rs` is for database values. A plain list is enough here |
+| Filters: **This connection** (the default) or All connections, the agent, the result, and a search of the SQL. They are a query to the backend, `Command::Mcp(QueryLog { filter, before, limit })`, answered in pages | `src/backend.rs` |
+| "This connection" is the connection's id. The calls of a connection that was deleted since are under All connections alone | C.1 |
+| The count line: "186 calls · last 30 days · on this computer" | |
+| The detail pane, for the selected call: the SQL with its parameters, the rows changed against the count the person was shown ("3 (dry run said 3)"), the time waited, the time taken, who approved, the agent's reason. For a read: what ran, the rows and columns returned, the time, what was masked. And the note that rows are not kept | The parameters are what question 18 asks about: the board shows them in full. The count's words follow question 7 |
+| **Open in SQL editor**: opens a SQL tab with the statement, in Read-only mode, not run. In this window for a call on this connection, and in that connection's window for another. A connection that was deleted since disables it | `Action::NewSqlTab` and the workspace opening in `src/app.rs` |
+| **Export…** | C.1 |
+| Omarchy: `L` shows all connections and back, `/` filters, `enter` details, `o` opens in a SQL tab | D.6 |
 
-Phase 1b ships the list with the detail line. Phase 3b adds the filters, the
-detail pane, the search, export and "Open in SQL editor".
+The Log view works with the server off and with access Off: it reads the log
+file, and both empty states say that it still shows past calls. Rows are
+never stored (C.1).
+
+Phase 1b ships the list for this connection, the switch to All connections,
+and the detail line. Phase 3b adds the other filters, the search, the detail
+pane, export and "Open in SQL editor".
 
 ### D.6 The keymap
 
@@ -1254,22 +1448,39 @@ else, and `tests/keys.rs` fails on one spelled in a view.
 
 | Command | Scope, when | macOS | Omarchy | Checked against |
 |---|---|---|---|---|
-| Approve agent write | `Prompt`, `When::AgentWrite` | `cmd+enter` | `a` | `cmd+enter` is Run statement in `SqlEditor` (`:1279`), Apply in `CellEditor` when `LargeEditor` (`:1128`), Save and connect in `Prompt` when `ConnectionForm` (`:1486`). None shares this `when`, and `Prompt` is alongside nothing (`Scope::alongside`, `:96-106`). Plain `a` is bound nowhere |
-| Deny agent write | `Prompt`, `When::AgentWrite` | the button | `d` | `d` is Discard in `Prompt` when `Leaving` (`:1451`) and when `Conflict` (`:1462`). Another `when`, so no clash |
-| Preview rows | `Prompt`, `When::AgentWrite` | the link | `p` | Free in `Prompt` |
-| Decide later | `Prompt`, `When::AgentWrite` | `esc` | `esc` | As every prompt |
-| Change agent access | `Connections` | the "…" menu | `a` | The scope has `e`, `n`, `yy p`, `dd`, `/`, `enter` (`:828-870`). Nothing begins with `a` |
-| Agent activity | `Global` | none (Settings, the chip) | `:agents` | Needs an ex command outside `Grid` and `SqlEditor`: `Keymap::ex` is asked with one of those two today |
-| Agent log | `Global` | none | `:agents log` | The same |
-| Stop session | a new `Agents` scope | the button | `S` | The scope is new. It sits alongside `Global`, whose keys are chords |
-| Stop all agents | `Agents` | the button | `X` | |
-| Open in SQL tab | `Agents` | the button | `o` | |
-| Copy the command | `Prompt`, `When::SettingsScreen` | the button | `y` | The settings screen has `j`, `k`, `h`, `l`, `space`, `R`, `ctrl+e`, `esc` |
+| Show the Agents tab | `Global` | `cmd+alt+a`, the sidebar's **Agents**, View › Agents | `ga` in `Grid` and `Sidebar`, `:agents` | `cmd+alt+a` is bound nowhere: the `cmd+alt` chords are the arrows, `backspace`, `e` and `l` (`:1008-1014`, `:1284`, `:1328-1352`, `:1410`). `g` begins `gd`, `gs` and `gl` in `Grid` (`:1260-1261`, `:1285`) and nothing in `Sidebar`, and `ga` is free in both. `:agents` needs an ex command in every scope of a connection window: `Keymap::ex` is asked in `Grid` and `SqlEditor` today |
+| The tab on its Log view | `Global` | **Show log** | `:agents log` | The same |
+| Switch to the Agents tab | `Global` | a click on the tab, `cmd+shift+[` and `]` | `alt+1..9` | `C::SwitchTab` (`:942`), `C::PreviousTab` and `C::NextTab` as they are. The tab has a number like any |
+| Show the tab from Connections | `Prompt`, in the box that `a` opens | "…" › Agents › Show Agents tab | `a`, then `t` | The box is new (D.2). `t` is `C::ToggleTree` in `Sidebar` (`:991`), another scope |
+| Approve agent write | `Agents`, `When::AgentWrite` | `cmd+enter` | `a` | `cmd+enter` is Apply in a large cell editor (`:1188`), Run statement in `SqlEditor` (`:1391`), Accept and run for the assistant (`:1527`), and Save and connect in `Prompt` (`:1598`). `Agents` is a scope of its own, alongside `Global` only. Plain `a` is bound nowhere |
+| Deny agent write | `Agents`, `When::AgentWrite` | the button | `d` | `d` is Delete in `Grid` when `Visual` (`:1258`) and Discard in `Prompt` (`:1561`, `:1572`). Other scopes |
+| Preview rows | `Agents`, `When::AgentWrite` | the link | `p` | `p` is Put row in a grid's cells (`:1242`). Another scope |
+| Decide later | `Agents`, `When::AgentWrite` | `esc` | `esc` | It gives the keys back to the feed. It closes nothing |
+| Stop session | `Agents` | the button | `S` | The scope is new. It sits alongside `Global`, whose keys are chords |
+| Stop agents here | `Agents` | the button | `X` | `X` was to be Stop all agents, which is the switch in Settings now. The board draws no key for this one |
+| All connections in the log | `Agents`, the Log view | the filter | `L` | Free in the new scope. `h/l` move in a grid (`:1030`), in lower case |
+| Filter the log, open its details | `Agents`, the Log view | the fields | `/`, `enter` | As in the Connections list |
+| Open in a SQL tab | `Agents`, the Log view | the button | `o` | `o` is Add row in `Grid` (`:1227`). Another scope |
+| Copy the command, show the log | `Agents`, no agents yet | the buttons | `y`, `l` | |
+| Allow agents…, show the log | `Agents`, Off here | the buttons | `e`, `l` | `e` edits a connection in `Connections` (`:883`), which is what this does |
+| Turn on, Settings | `Agents`, server off | the buttons | `o`, `s` | `o` is also Open in a SQL tab, in the Log view. The two are never on screen together |
+| Change agent access | `Connections` | the "…" menu | `a` | The scope has `e`, `n`, `yy p`, `dd`, `/`, `enter` (`:875-915`). Nothing begins with `a` |
+| Copy the command, in Settings | `Prompt`, `When::SettingsScreen` | the button | `y` | The settings screen has `j`, `k`, `h`, `l`, `space`, `R`, `ctrl+e`, `esc` |
+
+**Changed on 2026-10-13.** The commands that opened an activity view and a
+log view are one now, Show the Agents tab, with a key on macOS where there
+was none. The approval's keys move from a dialog's scope to the tab's. The
+keys of the empty states and of the log are new. Line numbers in this table
+are from `main` at `cf7b78f`.
+
+`?` lists `ga` under Navigation (`src/ui/help.rs:15`), as the board asks.
+The View menu on the board shows no shortcut for Data and Structure, on
+purpose: `cmd+1..9` is Go to connection window (`:835-840`).
 
 The brief's proposals hold, with two conditions the code sets:
 
-1. `a` and `d` for a write are safe only in a dialog. This is row 6 of
-   section 2.
+1. `a` and `d` for a write are the Agents tab's keys and no other scope's,
+   and the tab never takes the keys by itself. This is row 6 of section 2.
 2. The keyboard brief's rule 4 already makes a production write on Omarchy
    wait for the database's name typed out. If production ever goes above
    Read, `a` opens that box and does not replace it.
@@ -1294,10 +1505,10 @@ a person.
 | Threat | What stops it | What remains |
 |---|---|---|
 | **A prompt-injected agent.** A row, a web page or a file tells the agent to delete data or to send it somewhere | It can only do what the four tools do. Reads are read-only at the database, capped in rows, size and time. A write shows the person the SQL, the count and the agent's reason, and waits. There is no "always allow". Connections that are Off, hidden tables and masked values never enter its context. Every call is in the log | Whatever it may read, it can send elsewhere with its other tools: MCP governs the query, not the agent. A person who approves without reading. The agent's "reason" is text an injection can write, and the card labels it as the agent's words |
-| **A malicious local process on 127.0.0.1.** Another program of the same user, or a web page in the person's browser | The port answers only with a token, which is 256 random bits and kept as a digest. A web page is refused before that: any `Origin` is refused, `Host` must be the loopback name, no CORS header is sent, so DNS rebinding and a plain cross-site `fetch` both fail. The socket is 0600 in a 0700 directory, and the relay must present the key | A program running as the same user can read the key file and start `tabletist mcp` itself. It is then an agent like any other: it appears in Activity, a notification says it connected, it gets the same policy, and it cannot write without the person. It could also read the token from another agent's configuration file. Nothing local can be kept from the account that owns it |
+| **A malicious local process on 127.0.0.1.** Another program of the same user, or a web page in the person's browser | The port answers only with a token, which is 256 random bits and kept as a digest. A web page is refused before that: any `Origin` is refused, `Host` must be the loopback name, no CORS header is sent, so DNS rebinding and a plain cross-site `fetch` both fail. The socket is 0600 in a 0700 directory, and the relay must present the key | A program running as the same user can read the key file and start `tabletist mcp` itself. It is then an agent like any other: it appears in the Agents tab, a notification says it connected, it gets the same policy, and it cannot write without the person. It could also read the token from another agent's configuration file. Nothing local can be kept from the account that owns it |
 | **Another user on the same machine** | Unix: the socket's and the directory's modes, and the state directory is private (`AppDirs::ensure`, `src/paths.rs:57-60`). Windows: the pipe refuses remote clients, and the key file is in the user's profile. The TCP port is open to every local user, and answers none of them without a token. Tokens and the log are 0600 | A user with administrator rights, as on any machine. Another user can see that the port is open |
 | **An agent that exfiltrates through errors or timing** | Errors about connecting are replaced by one fixed sentence, so no host, user or path is sent. A refusal is made from the policy, before the database is asked, so it takes the same time whatever the data is. On a connection that hides or masks something, a database error loses its detail and hint lines, where PostgreSQL quotes rows. Masked columns cannot stand in a predicate, a sort or a function, so there is no yes-or-no question to time. The system catalogs and their sample values are closed there. The statement timeout and the rate limit bound how much can be asked | The name of a hidden table (by design). Whether rows exist and how many, on any table the agent may read. A function or a view in the database that the checks cannot see into (B.3). An error message whose main line quotes a value. A timing channel through such a function |
-| **An agent that floods `propose_write`** | One request waits for each session. A second one from the same session is refused at once with `busy`. Across sessions, requests queue and the person sees one card at a time, oldest first, with "2 more waiting". At most 6 requests a minute and 30 an hour for each session, then `rate_limited`. After three denials in a row from one session, the next request needs the person to open Activity: there is no notification for it. "Stop session" and "Stop all agents" are on the same screen. One notification is shown for a session's requests, updated in place | A patient agent can still ask thirty times an hour. The person can turn the connection to Read, which ends it. Wearing a person down until they approve is a human risk that a count and a clear card reduce and do not remove |
+| **An agent that floods `propose_write`** | One request waits for each session. A second one from the same session is refused at once with `busy`. Across sessions, requests queue and the person sees one card at a time, oldest first, with "2 more waiting". At most 6 requests a minute and 30 an hour for each session, then `rate_limited`. After three denials in a row from one session, the next request needs the person to open the Agents tab: there is no notification for it. "Stop session" and "Stop agents here" are in that tab. One notification is shown for a session's requests, updated in place | A patient agent can still ask thirty times an hour. The person can turn the connection to Read, which ends it. Wearing a person down until they approve is a human risk that a count and a clear card reduce and do not remove |
 
 Also considered:
 
@@ -1398,10 +1609,7 @@ runs on tokio's paused clock, which the workspace already uses in tests
 - **Two requests:** the second from one session is `busy`. Two sessions
   queue, oldest first. The rate limit, on the paused clock.
 - **Progress:** a notification every 15 seconds while it waits.
-- **UI:** with `Backend::recording()`, a request event shows the chip and,
-  on Omarchy, the status line, and opens no dialog. "Review" opens the box.
-  `cmd+enter` (macOS and Windows) and `a` (Omarchy) send the approval.
-  `a` typed in a grid while a request waits sends nothing.
+- **UI:** F.7, which has the card with the rest of the Agents tab.
 
 ### F.4 The log
 
@@ -1443,7 +1651,52 @@ the user, the host, the database file's path.
   `listen` refused with a notice.
 - The website's check (`docs/bin/check`) for the pages each phase changes.
 
-## G. Phases
+### F.7 The Agents tab
+
+Added on 2026-10-13. Headless, through `src/testing.rs` with
+`Backend::recording()` and injected `Event::Mcp` values, on the Bookshop,
+in both looks. No pixel or design snapshot is part of any test run, and no
+snapshot material is committed.
+
+- **The sidebar entry's state**, for each of the five cases: a write
+  waiting, a session here, allowed with nobody here, access Off, the server
+  off. And the two the boards leave open: the server off wins over access
+  Off, and with two sessions here the one that called last is named.
+- **The tab is never opened or focused by what arrives.** For each
+  `Event::Mcp` (a session connects, a call, a write requested, a request
+  withdrawn, the server stops): with the tab closed, no tab is added and the
+  active tab and the keys are where they were. With the tab open and another
+  tab active, the other stays active.
+- **The count** on the sidebar entry and on the tab's label: none, one, two.
+  A request on another connection does not count here. It goes when the
+  request is answered, withdrawn or timed out.
+- **One connection.** A session is here after its first call that names the
+  connection and not before. One that works on two is in both windows. One
+  that has named none is under "Also:". Show brings the other window forward
+  on its Agents tab, and opens it first when it is not open.
+- **One tab for a window.** Each way in (the sidebar, the key, quick open,
+  Settings, the Connections row, a notification's action) shows the same
+  tab, and each works with the server off.
+- **Closing the tab stops nothing.** The sessions are there and a request
+  still waits, with the time it had.
+- **The log defaults to This connection.** All connections shows the rest.
+  The calls of a deleted connection are under All connections alone.
+- **The empty states:** which one shows for each state. "Allow agents…"
+  opens the editor at its Agents section, and until Save nothing is saved
+  and nothing is sent: Cancel leaves access Off. "Turn on" starts the server
+  with one change of the settings, and changes no connection's access. Copy
+  puts the command on the clipboard.
+- **The approval's keys.** `a`, `d` and `cmd+enter` in a grid, in the
+  sidebar and in a SQL editor send nothing while a request waits. In the
+  Agents tab they answer the request that is drawn. A request that arrived
+  less than half a second ago is not answered. A key for a request that is
+  gone does nothing.
+- **Omarchy's bottom line** names `ga` outside the tab and `a`, `d` and
+  `esc` inside it.
+- **Stop agents here** stops the sessions that are here and withdraws the
+  writes waiting here, and leaves a session that is only elsewhere.
+
+## G. Phases## G. Phases
 
 The brief's three phases are kept as the numbers. Phase 1 is four pull
 requests, since as one it would be too large to review well. Phase 3 is
@@ -1469,7 +1722,14 @@ off until the person turns it on.
   unchanged and green.
 
 **1b. The server over stdio, access Off and Read, the three read tools, the
-log, and the UI to turn it on. Both looks.**
+log, the Agents tab, and the UI to turn it on. Both looks.**
+
+- The Agents tab (changed on 2026-10-13): the sidebar entry with its five
+  states, the ways in but the View menu, the tab with its sessions, "Stop
+  session", "Stop agents here" and the feed, which is read-only in this
+  phase, the Log view as a plain list, and the three empty states. It is
+  the largest piece of this phase, and the phase's own plan cuts 1b into
+  runs.
 
 - Files: `crates/tabletist-mcp/` (new), root `Cargo.toml`,
   `src/entrypoint.rs` and `src/main.rs` (the `mcp` subcommand),
@@ -1477,7 +1737,10 @@ log, and the UI to turn it on. Both looks.**
   code shared), `src/connections.rs`, `src/settings.rs`, `src/paths.rs`,
   `src/model.rs`, `src/app.rs`, `src/keymap.rs`, `src/ui/keys.rs`,
   `src/ui/settings/`, `src/ui/picker.rs`, `src/ui/connect_dialog/`,
-  `src/ui/agents/` (Activity, the plain log list), `src/ui/mod.rs`,
+  `src/ui/agents/` (the tab: Activity, the plain log list, the empty
+  states), `src/ui/sidebar.rs` (the entry), `src/ui/object_tabs.rs` (the
+  third kind of tab), `src/ui/quick_open.rs`, `src/ui/help.rs`,
+  `src/ui/mod.rs`,
   `src/testing.rs`, `tests/cli.rs`, the website pages
   (`_reference/settings-and-files.md`, `connections.md`,
   `keyboard-shortcuts.md`, `_guide/omarchy.md`, `macos.md`, a new
@@ -1487,8 +1750,9 @@ log, and the UI to turn it on. Both looks.**
 - Risks: the relay on Windows (A.2). The first second process of this app.
   A second session to a database for each connection an agent uses. The
   settings pane switch.
-- Tests: F.1 in process and over stdio, F.4, F.5, the UI tests for the
-  three screens, the keymap.
+- Tests: F.1 in process and over stdio, F.4, F.5, F.7 without the card and
+  the count, the UI tests for Settings, Connections and the editor, the
+  keymap.
 - Notifications for a connect are in this phase on Linux, since it is one
   D-Bus call. macOS and Windows get the attention request.
 
@@ -1523,16 +1787,19 @@ log, and the UI to turn it on. Both looks.**
 - Files: `crates/tabletist-db/src/agent/` (the write rules, the count),
   `script.rs` and each driver's `script/write.rs` (the check before
   `COMMIT`), `tabletist-mcp` (the broker, progress, the queue, the rate
-  limit), `src/backend.rs`, `src/model.rs` (`Dialog::AgentWrite`),
-  `src/app.rs`, `src/keymap.rs`, `src/ui/agents/` (the card, the box, the
-  preview), `src/ui/workspace.rs` (the status line),
+  limit), `src/backend.rs`, `src/model.rs` (the requests in `AgentsState`),
+  `src/app.rs`, `src/keymap.rs` (`When::AgentWrite` in the `Agents` scope),
+  `src/ui/agents/` (the card in the tab, the note, the preview),
+  `src/ui/sidebar.rs` and `src/ui/object_tabs.rs` (the count),
+  `src/ui/workspace.rs` (the bottom line),
   `crates/tabletist-appkit` (the macOS notification), the access controls
   (the third level), the website.
 - Risks: client timeouts shorter than the wait. The macOS notification's
   permission and signing. The first write that does not start with the
   person.
-- Tests: F.3. The write rows of F.2. By hand: Claude Code and Cursor
-  waiting five minutes, each look's notification.
+- Tests: F.3. The write rows of F.2. The card, the count and the keys of
+  F.7. By hand: Claude Code and Cursor waiting five minutes, each look's
+  notification.
 
 **3a. Masked columns.**
 
@@ -1544,11 +1811,11 @@ log, and the UI to turn it on. Both looks.**
   between A alone and A over B is made here, on the matrix.
 - Tests: the masking rows of F.2, for each driver.
 
-**3b. The full log.**
+**3b. The Log view, in full.** (This was a log window before 2026-10-13.)
 
-- Files: `src/ui/agents/log.rs` (filters, the search, the detail pane),
-  `tabletist-mcp` (the queries, export), `src/app.rs` ("Open in SQL
-  editor").
+- Files: `src/ui/agents/log.rs` (the agent and result filters, the search,
+  the detail pane), `tabletist-mcp` (the queries, export), `src/app.rs`
+  ("Open in SQL editor").
 - Risks: small.
 - Tests: the rest of F.4, the UI tests of the filters.
 
@@ -1566,7 +1833,7 @@ The ones Phase 1 waits for are marked.
    server?".
 2. **Per-agent policies: v1 or later?** Later. Only HTTP agents have an
    identity that means anything (A.5): a stdio agent names itself. A policy
-   by name would be a policy anyone can pick. The log and Activity already
+   by name would be a policy anyone can pick. The log and the Agents tab already
    keep the names, so nothing is lost by waiting.
 3. **Can production be set above Read, and with what extra confirm?** Not
    until the app can confirm a script on production, which it cannot today
@@ -1579,8 +1846,9 @@ The ones Phase 1 waits for are marked.
 5. Settled on 2026-10-13: `connections.toml`, as a run of its own before
    Phase 1b (`2026-10-13-connections-toml.md`). A connection is found by
    its id, not by its name as the boards draw it.
-6. Activity and Log as a tab of the main window, not as windows. Accepted?
-   (Needed for 1b's Activity.)
+6. Settled on 2026-10-13, by the designs: neither windows, as the boards
+   had it, nor a tab of the app, as this plan had it. Each connection window
+   has an Agents tab, with Activity and Log in it (D.4, D.5).
 7. The count on the approval card: a read-only `SELECT`, with a dry run
    only when the person asks. Accepted, against the board's "Counted by a
    dry run"? (Phase 2.)
@@ -1595,9 +1863,10 @@ The ones Phase 1 waits for are marked.
     as planned, or a `--launch` flag from the start?
 11. "Stop all agents" switches the server off until it is turned on again.
     Accepted?
-12. Omarchy: `a` and `d` only inside the approval box, with the status line
-    pointing at `:agents`. And the `:` prompt on the connections screen.
-    Accepted? (Phase 2, and 1b for `:agents`.)
+12. Omarchy: `a` and `d` are keys of the Agents tab alone, and in any other
+    tab the bottom line ends `ga agents` where the board has `a approve  d
+    deny  esc later`. Accepted? The connections screen needs no `:` prompt
+    any more. (Phase 2.)
 13. System catalogs: open on a connection that hides nothing, closed on one
     that hides or masks something. Or closed everywhere, for one rule?
     (Phase 1c.)
@@ -1621,6 +1890,32 @@ The ones Phase 1 waits for are marked.
     for a name that is taken?
 20. An `UPDATE` or `DELETE` without a `WHERE`: a warning on the card, as
     planned, or refused outright for agents?
+
+The next six come from the Agents tab (2026-10-13).
+
+21. **(Phase 1)** "Stop agents here" ends the sessions that are here, and an
+    agent can connect and call again at once. Should stopping also keep
+    agents out of this connection, until the person lets them back or
+    Tabletist starts again? The boards have no state for a connection that
+    is stopped and not Off.
+22. **(Phase 1)** A session is on no connection until a call names one.
+    Planned: an agent that has just connected is under "Also:" in every
+    window's tab, and its notification goes to the frontmost connection
+    window. And "Stop session" for a session that works on two connections
+    stops it in both.
+23. **(Phase 1)** "Turn on" in the empty state starts the server at once, as
+    the board says. The brief's list of tests has it change nothing until
+    confirmed. Planned: the board's, with the button as the confirmation.
+24. **(Phase 1)** View › Agents needs a View menu, which the app does not
+    have. Planned: every other way in is built in Phase 1b, and the menu
+    item comes when a View menu does.
+25. A write waits on a connection that has no window open, and the
+    notification was missed, or notifications are off. Planned: the count in
+    the Connections list's Agents column, and "Also:" in any Agents tab that
+    is open. The boards draw neither. (Phase 2.)
+26. **(Phase 1)** The server is off and this connection's access is Off:
+    which does the sidebar entry say, and which empty state shows? Planned:
+    "Server off".
 
 ## Sources
 
