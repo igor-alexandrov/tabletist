@@ -475,7 +475,7 @@ string. The checker collects every function name, in expressions and in
   `pg_notify`, `pg_reload_conf`, `pg_logical_*`, `pg_replication_*`. MySQL:
   `SLEEP`, `BENCHMARK`, `GET_LOCK`, `RELEASE_LOCK`, `RELEASE_ALL_LOCKS`,
   `LOAD_FILE`, `SOURCE_POS_WAIT`, `MASTER_POS_WAIT`, MariaDB's `NEXTVAL` and
-  `SETVAL`, and assignment to a user variable. SQLite: `load_extension`, and every table-valued `pragma_*`.
+  `SETVAL`, `LAST_INSERT_ID`, and assignment to a user variable. SQLite: `load_extension`, and every table-valued `pragma_*`.
 - **Functions the database's users wrote**, which the checker cannot read:
   allowed on a connection that hides and masks nothing, refused on one that
   does. Telling them apart needs the names of the database's routines, which

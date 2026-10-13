@@ -714,6 +714,10 @@ fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str
                 // MariaDB's sequences, which a rollback does not put back.
                 "nextval",
                 "setval",
+                // Given a value, it sets what the session's next call
+                // answers. The check cannot tell that from the call
+                // without one, so both are refused.
+                "last_insert_id",
             ],
             &[],
         ),
@@ -1540,6 +1544,12 @@ mod tests {
             ),
             // MariaDB, which this dialect also speaks to.
             (Dialect::MySql, "SELECT NEXTVAL(order_numbers)", "NEXTVAL"),
+            // With a value, it sets what the session's next call answers.
+            (
+                Dialect::MySql,
+                "SELECT LAST_INSERT_ID(42)",
+                "LAST_INSERT_ID",
+            ),
             (
                 Dialect::MySql,
                 "SELECT SETVAL(order_numbers, 1000000)",
