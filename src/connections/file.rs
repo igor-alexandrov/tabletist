@@ -776,6 +776,28 @@ auth = "key-file"
         assert_eq!(ssh.auth, SshAuth::KeyFile { path: "/id".into() });
     }
 
+    /// The example on the website's page of files is a file the app reads,
+    /// and its first connection is one the app writes just so.
+    #[test]
+    fn the_websites_example_is_read_and_written_as_it_shows() {
+        // Windows checks the page out with CRLF line ends.
+        let page =
+            include_str!("../../docs/_reference/settings-and-files.md").replace("\r\n", "\n");
+        let (_, section) = page.split_once("## The connections file").unwrap();
+        let (_, block) = section.split_once("```toml\n").unwrap();
+        let (example, _) = block.split_once("```").unwrap();
+        let read = read(example).unwrap();
+        // The second connection is shown without an id.
+        assert!(read.named);
+        let [production, on_disk] = read.connections.as_slice() else {
+            panic!("{read:?}");
+        };
+        assert_eq!(on_disk.name, "Bookshop on disk");
+        let written = write(std::slice::from_ref(production)).unwrap();
+        let (shown, _) = example.split_once("\n[[connections]]\nname").unwrap();
+        assert_eq!(written, format!("{HEADER}{shown}"));
+    }
+
     /// TOML is text, and so is JSON, which could not hold such a path
     /// either: the save fails and says which path.
     #[cfg(unix)]

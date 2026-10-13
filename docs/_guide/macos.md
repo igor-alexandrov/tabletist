@@ -186,7 +186,7 @@ Everything Tabletist keeps is in one folder:
 ~/Library/Application Support/dev.tabletist.Tabletist
 ```
 
-It holds `settings.toml`, `connections.json`, `known_hosts.json`, the
+It holds `settings.toml`, `connections.toml`, `known_hosts.json`, the
 `themes` folder and the logs. **Settings** shows where the settings file
 is, and **Reveal in Finder** takes you there.
 
