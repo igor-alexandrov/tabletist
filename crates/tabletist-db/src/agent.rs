@@ -691,7 +691,7 @@ fn pragma_table(dialect: Dialect, name: &str) -> bool {
 
 /// Refuses a function on the dialect's list, by its name without its
 /// schema: `pg_catalog.pg_sleep(1)` is `pg_sleep`.
-fn function_allowed(dialect: Dialect, name: &str) -> Result<(), Refusal> {
+pub(crate) fn function_allowed(dialect: Dialect, name: &str) -> Result<(), Refusal> {
     let lower = name.to_ascii_lowercase();
     let (names, prefixes) = effects(dialect);
     if names.contains(&lower.as_str()) || prefixes.iter().any(|prefix| lower.starts_with(prefix)) {

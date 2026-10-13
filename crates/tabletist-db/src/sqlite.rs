@@ -26,7 +26,7 @@ use crate::{
 mod fence;
 mod write;
 
-use fence::{Fence, Fences, authorize};
+use fence::{Fence, Fences};
 
 /// An open SQLite database.
 pub(crate) struct Conn {
@@ -399,14 +399,24 @@ fn statements(
         }
         let started = Instant::now();
         // Only the script's own text is fenced: the checks above and the
-        // rollback after the run are the app's.
+        // rollback after the run are the app's. An agent's statement has
+        // a fence of its own, which lists what a read does.
+        let fence = match params {
+            Some(_) => Fence::Agent,
+            None => Fence::Script,
+        };
         let result = {
-            let _fenced = fences.fence(Fence::Script);
+            let _fenced = fences.fence(fence);
             statement(connection, text, limit, params)
         };
         let result = match result {
             Ok(result) => result,
-            Err(error) => crate::script::statement_failed(error, None)?,
+            Err(error) => {
+                // SQLite says "not authorized" of what a fence denied. An
+                // agent is told what that was.
+                let error = fences.refused().map_or(error, Error::Agent);
+                crate::script::statement_failed(error, None)?
+            }
         };
         let cancelled = result == StatementOutcome::Cancelled;
         outcome.stopped |= cancelled;
@@ -807,10 +817,8 @@ impl Conn {
             // it may do depends on whose text it is (see `Fence`).
             let fences = Fences::default();
             let asked = fences.clone();
-            tabletist_sqlite_ffi::set_authorizer(&connection, move |action| {
-                authorize(asked.current(), action)
-            })
-            .map_err(map_error)?;
+            tabletist_sqlite_ffi::set_authorizer(&connection, move |action| asked.ask(action))
+                .map_err(map_error)?;
             Ok((connection, fences, journal_mode))
         };
         let (connection, fences, journal_mode) = tokio::task::spawn_blocking(opened)
@@ -2791,6 +2799,117 @@ mod tests {
         assert_eq!(bound(&Param::Float(1.5)), Sqlite::Real(1.5));
         // Not the number a filter's typed text would become.
         assert_eq!(bound(&Param::Text("5".into())), Sqlite::Text("5".into()));
+    }
+
+    use crate::agent::Refusal;
+    use crate::sql;
+
+    /// What an agent's one statement answers when it is run past the
+    /// check, as if the check had missed it: its outcome, behind the
+    /// agent's fence.
+    async fn past_the_check(conn: &Conn, text: &str) -> StatementOutcome {
+        let fences = conn.fences.clone();
+        let texts = vec![text.to_owned()];
+        let outcome = conn
+            .run(move |connection| {
+                let sent = Sent {
+                    params: &[],
+                    timeout: Duration::from_secs(10),
+                };
+                let (mode, stop) = (ScriptMode::ReadOnly, StopFlag::new());
+                script(connection, &fences, &texts, 10, mode, &stop, Some(sent))
+            })
+            .await
+            .unwrap();
+        let [result] = outcome.results.as_slice() else {
+            panic!("{text}: {outcome:?}");
+        };
+        result.outcome.clone()
+    }
+
+    /// The check refuses each of these on the statement's text. Past it,
+    /// SQLite's own reading refuses them, and the agent is told what by
+    /// name where SQLite would only say "not authorized".
+    #[tokio::test]
+    async fn what_the_check_missed_is_refused_where_sqlite_reads_it() {
+        let (conn, _dir) = fixture().await;
+        let not_allowed = |what: &str| Refusal::NotAllowed(what.into());
+        for (text, refusal) in [
+            // A pragma read as a table, with no parenthesis for a name
+            // list to find.
+            (
+                "SELECT name FROM pragma_table_info WHERE arg = 'users'",
+                not_allowed("PRAGMA table_info"),
+            ),
+            (
+                "SELECT * FROM pragma_table_info('users')",
+                not_allowed("PRAGMA table_info"),
+            ),
+            (
+                "SELECT * FROM pragma_database_list",
+                not_allowed("PRAGMA database_list"),
+            ),
+            (
+                "SELECT * FROM pragma_optimize",
+                not_allowed("PRAGMA optimize"),
+            ),
+            ("PRAGMA query_only = 0", not_allowed("PRAGMA query_only")),
+            ("PRAGMA table_info(users)", not_allowed("PRAGMA table_info")),
+            (
+                "SELECT load_extension('nowhere')",
+                Refusal::FunctionNotAllowed("load_extension".into()),
+            ),
+            // By the name SQLite knows the function under, whatever the
+            // letters it was written in.
+            (
+                "SELECT id FROM users WHERE LOAD_EXTENSION('nowhere') IS NULL",
+                Refusal::FunctionNotAllowed("load_extension".into()),
+            ),
+            ("ATTACH DATABASE ':memory:' AS other", not_allowed("ATTACH")),
+            ("SAVEPOINT mine", not_allowed("a transaction statement")),
+            ("COMMIT", not_allowed("a transaction statement")),
+            (
+                "CREATE TABLE notes (body TEXT)",
+                not_allowed("a statement that is not a read"),
+            ),
+            ("ANALYZE", not_allowed("a statement that is not a read")),
+        ] {
+            let outcome = past_the_check(&conn, text).await;
+            let expected = StatementOutcome::Error {
+                error: Error::Agent(refusal),
+                position: None,
+            };
+            assert_eq!(outcome, expected, "{text}");
+        }
+        // A write the fence lets SQLite prepare, as R*Tree's own are, is
+        // the session's to refuse when it runs.
+        let outcome = past_the_check(&conn, "DELETE FROM users").await;
+        let StatementOutcome::Error { error, .. } = &outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(error.to_string().contains("readonly"), "{error}");
+        // A read is read.
+        let outcome = past_the_check(&conn, "SELECT count(*) FROM users").await;
+        assert!(
+            matches!(outcome, StatementOutcome::Rows { .. }),
+            "{outcome:?}"
+        );
+        // The fence is the agent's: the SQL editor's script reads a pragma
+        // as a table, as before, on the same session.
+        let editor = sql::statements(
+            Dialect::Sqlite,
+            "SELECT name FROM pragma_table_info('users')",
+        );
+        let texts: Vec<String> = editor.into_iter().map(|statement| statement.text).collect();
+        let outcome = conn
+            .run_script(texts, 10, ScriptMode::ReadOnly, &StopFlag::new())
+            .await
+            .unwrap();
+        let rows = matches!(
+            &outcome.results[0].outcome,
+            StatementOutcome::Rows { rows, .. } if !rows.is_empty()
+        );
+        assert!(rows, "{outcome:?}");
     }
 
     #[test]

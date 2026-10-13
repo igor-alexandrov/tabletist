@@ -67,6 +67,11 @@ pub enum Error {
     /// session is closed.
     #[error("the script ended its transaction, so the session was closed")]
     LeftTransaction,
+    /// Why an agent's statement was refused where the database itself read
+    /// it: on SQLite, by the authorizer. The check's own refusals never
+    /// become errors. Nothing ran.
+    #[error("{0}")]
+    Agent(crate::agent::Refusal),
     #[error("the operation timed out")]
     Timeout,
     #[error("the connection was lost: {0}")]
