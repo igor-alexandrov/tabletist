@@ -1695,6 +1695,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         &|row| grid::Row {
             mark: crate::edit::RowMark::None,
             number: Some(row as u64 + 1),
+            deleted: false,
         },
         None,
         None,

@@ -28,6 +28,8 @@ pub struct Harness {
     pub text_rects: Vec<(String, egui::Rect)>,
     /// Every piece of text the last frame painted slanted.
     pub slanted: Vec<String>,
+    /// Every piece of text the last frame painted struck through.
+    pub struck: Vec<String>,
     /// Every rectangle, circle and outline the last frame filled, and where.
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
@@ -172,12 +174,14 @@ impl Harness {
         self.painted.clear();
         self.text_rects.clear();
         self.slanted.clear();
+        self.struck.clear();
         self.fills.clear();
         self.strokes.clear();
         self.outlines.clear();
         for clipped in &output.shapes {
             collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
             collect_slanted(&clipped.shape, &mut self.slanted);
+            collect_struck(&clipped.shape, &mut self.struck);
             collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
             collect_outlines(&clipped.shape, &mut self.outlines);
         }
@@ -323,6 +327,27 @@ fn collect_slanted(shape: &egui::Shape, into: &mut Vec<String>) {
             let sections = &text.galley.job.sections;
             if !sections.is_empty() && sections.iter().all(|section| section.format.italics) {
                 into.push(text.galley.text().to_owned());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The pieces of `shape`'s texts that are written struck through: each
+/// run of a text that is, without what stands beside it unstruck.
+fn collect_struck(shape: &egui::Shape, into: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_struck(shape, into)),
+        egui::Shape::Text(text) => {
+            let job = &text.galley.job;
+            for section in &job.sections {
+                if section.format.strikethrough != egui::Stroke::NONE
+                    && let Some(piece) = job
+                        .text
+                        .get(section.byte_range.start.0..section.byte_range.end.0)
+                {
+                    into.push(piece.to_owned());
+                }
             }
         }
         _ => {}
@@ -1283,6 +1308,7 @@ impl Harness {
             painted: Vec::new(),
             text_rects: Vec::new(),
             slanted: Vec::new(),
+            struck: Vec::new(),
             fills: Vec::new(),
             strokes: Vec::new(),
             outlines: Vec::new(),

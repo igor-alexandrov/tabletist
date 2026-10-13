@@ -71,6 +71,9 @@ pub struct Row {
     /// Its number among the table's rows, from 1, for a screen reader.
     /// `None` for a row the table does not hold yet.
     pub number: Option<u64>,
+    /// The row is marked for deletion: a screen reader is told so, also
+    /// where its delete failed and its mark is the trouble's.
+    pub deleted: bool,
 }
 
 /// How a cell draws its text.
@@ -116,6 +119,12 @@ pub enum Mark {
     Locked,
     /// A cell of a row a save found gone from the server.
     Gone,
+    /// A cell of a row marked for deletion: its value, dimmed and struck
+    /// through.
+    Deleted,
+    /// The cell that marks such a row in the desktop looks, the first of
+    /// its key: a minus, then its value as the row's others are.
+    Deleting,
     /// The cell that marks a new row: its text in the row's tone.
     Added,
     /// A cell of a new row nothing is set in: what the database will fill
@@ -315,6 +324,38 @@ fn paint_slanted(
         .add_with(role, text, 0.0, |format| {
             format.color = color;
             format.italics = true;
+        })
+        .layout(ui.ctx());
+    if right {
+        laid.paint_right(painter, x, y);
+    } else {
+        laid.paint_left(painter, x, y);
+    }
+}
+
+/// [`paint`], struck through: a value of a row marked for deletion. With
+/// `sign`, a minus in that colour stands before it, not struck: the mark
+/// of the row, where the look has no gutter for one.
+#[allow(clippy::too_many_arguments)] // the text, its place, and its look
+fn paint_struck(
+    painter: &egui::Painter,
+    ui: &Ui,
+    role: TextRole,
+    (sign, text): (Option<egui::Color32>, &str),
+    color: egui::Color32,
+    x: f32,
+    y: f32,
+    right: bool,
+    look: &Look,
+) {
+    let mut laid = Text::new(look);
+    if let Some(sign) = sign {
+        laid = laid.add_with(role, "\u{2212} ", 0.0, |format| format.color = sign);
+    }
+    let laid = laid
+        .add_with(role, text, 0.0, |format| {
+            format.color = color;
+            format.strikethrough = Stroke::new(1.0, color);
         })
         .layout(ui.ctx());
     if right {
@@ -716,8 +757,13 @@ pub fn show<'a>(
             virtual_rows(ui, row_count, row_height, |ui, row| {
                 // A row takes a click, not the Tab key: the grid is the stop.
                 let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
-                let Row { mark, number } = rows(row);
+                let Row {
+                    mark,
+                    number,
+                    deleted,
+                } = rows(row);
                 let label = match number {
+                    Some(number) if deleted => format!("Row {number}, marked for deletion"),
                     Some(number) => format!("Row {number}"),
                     None => "New row, not saved".to_owned(),
                 };
@@ -761,11 +807,17 @@ pub fn show<'a>(
                 // selection's colour and its row a lighter tint of it.
                 let lit_row = selected_row && lit && !look.terminal;
                 let fresh = crate::env::new_row_colors(crate::env::Platform::of(look), palette);
+                let doomed =
+                    crate::env::deleted_row_colors(crate::env::Platform::of(look), palette);
                 let fill = if new {
                     // A new row keeps its own fill under the selection
                     // too: its cell alone takes the selection's colour,
                     // and says where the keyboard is.
                     Some(fresh.fill)
+                } else if deleted {
+                    // As a new row: the row keeps its fill, and its cell
+                    // alone says where the keyboard is.
+                    Some(doomed.fill)
                 } else if lit_row {
                     Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
                 } else {
@@ -902,7 +954,13 @@ pub fn show<'a>(
                         Mark::Pending | Mark::Doubt | Mark::Saving => Some(Tone::Warning),
                         Mark::Trouble => Some(Tone::Danger),
                         Mark::Saved => Some(Tone::Success),
-                        Mark::None | Mark::Locked | Mark::Gone | Mark::Added | Mark::Unset => None,
+                        Mark::None
+                        | Mark::Locked
+                        | Mark::Gone
+                        | Mark::Deleted
+                        | Mark::Deleting
+                        | Mark::Added
+                        | Mark::Unset => None,
                     };
                     let locked = content.mark == Mark::Locked && !look.terminal;
                     // A cell with a warning keeps its lines under the cursor.
@@ -988,6 +1046,7 @@ pub fn show<'a>(
                         // accent of a selected row whose cell is not lit.
                         let color = match row_tone {
                             Some(_) if new => Some(fresh.bar),
+                            Some(_) if deleted => Some(doomed.bar),
                             Some(tone) => Some(tone.color(palette)),
                             None => (selected_row && !lit_row).then_some(palette.accent),
                         };
@@ -1001,6 +1060,11 @@ pub fn show<'a>(
                     // on its key, and a computed column a step quieter.
                     let written = match (tone, row_tone) {
                         _ if content.mark == Mark::Gone => written_in(palette, palette.dim),
+                        // A row marked for deletion: every value in the
+                        // one tone its style gives, the key's too.
+                        _ if matches!(content.mark, Mark::Deleted | Mark::Deleting) => {
+                            written_in(palette, doomed.text)
+                        }
                         // A new row's marker in the row's tone; the
                         // terminal writes it dimmed, as it does what a
                         // cell will be filled with.
@@ -1839,7 +1903,16 @@ fn draw_cell(
                 (true, false) => palette.secondary,
                 _ => palette.text,
             };
-            if content.slanted {
+            if matches!(content.mark, Mark::Deleted | Mark::Deleting) {
+                // The one arm that strikes: every cell of a marked row is
+                // plain text. The palette's own red is not what the cell's
+                // texts are written in, so the style is asked again.
+                let sign = (content.mark == Mark::Deleting).then(|| {
+                    crate::env::deleted_row_colors(crate::env::Platform::of(look), palette).marker
+                });
+                let said = (sign, shown.as_ref());
+                paint_struck(&clip, ui, role, said, color, x, center, numeric, look);
+            } else if content.slanted {
                 paint_slanted(&clip, ui, role, &shown, color, x, center, numeric, look);
             } else {
                 paint(&clip, ui, role, &shown, color, x, center, numeric, look);
@@ -1881,6 +1954,7 @@ mod tests {
         Row {
             mark,
             number: Some(row as u64 + 1),
+            deleted: false,
         }
     }
 
@@ -2345,7 +2419,11 @@ mod tests {
             marked(&ctx, &look, &palette, Mark::None, RowMark::None);
             let new = |mark: RowMark| {
                 move |at: usize| match at {
-                    1 => Row { mark, number: None },
+                    1 => Row {
+                        mark,
+                        number: None,
+                        deleted: false,
+                    },
                     at => numbered(RowMark::None, at),
                 }
             };
@@ -2503,6 +2581,7 @@ mod tests {
             0 => Row {
                 mark: RowMark::New,
                 number: None,
+                deleted: false,
             },
             // The page's rows keep their numbers under it.
             row => numbered(RowMark::None, row - 1),

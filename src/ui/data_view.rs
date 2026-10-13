@@ -1320,6 +1320,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // What editing asks of the workspace and the tab together, read before
     // the tab is taken for its editor's text.
     let computed = computed_columns(workspace, object);
+    // A deleted row's minus stands where the row's key begins.
+    let delete_marker = crate::edit::Table::of(workspace, object)
+        .and_then(|table| table.key())
+        .and_then(|key| key.into_iter().min());
     let (unset, lacking) = new_row_columns(workspace, object);
     let target = object.edits.editor.as_ref().and_then(|editor| {
         let how = (hold, &editor_keys);
@@ -1407,9 +1411,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             object.edits.saving.is_some(),
             object.edits.saved.as_ref(),
             &object.edits.gone,
+            &object.edits.deleted,
             computed,
             &ctx,
         );
+        changes.delete_marker = delete_marker;
         let undo = crate::keymap::Command::UndoCell;
         changes.undo_key = crate::ui::keys::written(&ctx, &look, undo);
         changes.doubts = doubts;
@@ -1504,11 +1510,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                             _ => RowMark::New,
                         },
                         number: None,
+                        deleted: false,
                     },
-                    None => grid::Row {
-                        mark: crate::edit::row_mark(changes.cells, row),
-                        number: Some(object.query.offset + row as u64 + 1),
-                    },
+                    None => {
+                        let doomed = object.edits.deleted.get(&row);
+                        grid::Row {
+                            mark: match doomed {
+                                Some(doomed) if doomed.failed.is_some() => RowMark::Trouble,
+                                Some(_) => RowMark::Deleted,
+                                None => crate::edit::row_mark(changes.cells, row),
+                            },
+                            number: Some(object.query.offset + row as u64 + 1),
+                            deleted: doomed.is_some(),
+                        }
+                    }
                 },
                 None => grid::Row::default(),
             },
@@ -1697,6 +1712,11 @@ struct Changes<'a> {
     saved: &'a [CellPos],
     /// The page's rows a save found gone from the server.
     gone: &'a BTreeSet<usize>,
+    /// The page's rows marked for deletion.
+    deleted: &'a BTreeMap<usize, crate::edit::Doomed>,
+    /// The column a deleted row's minus stands in, in the desktop looks:
+    /// the first of the row's key.
+    delete_marker: Option<usize>,
     /// The cell that was asked for and cannot be edited, and why.
     why: Option<(CellPos, String)>,
     /// What each column holds in a new row nothing is set in, by the
@@ -1873,6 +1893,7 @@ impl<'a> Changes<'a> {
         saving: bool,
         saved: Option<&'a crate::edit::Saved>,
         gone: &'a BTreeSet<usize>,
+        deleted: &'a BTreeMap<usize, crate::edit::Doomed>,
         computed: Vec<bool>,
         ctx: &egui::Context,
     ) -> Self {
@@ -1888,6 +1909,8 @@ impl<'a> Changes<'a> {
             saving,
             saved: saved.unwrap_or_default(),
             gone,
+            deleted,
+            delete_marker: None,
             why: None,
             unset: Vec::new(),
             marker: None,
@@ -1927,6 +1950,25 @@ impl<'a> Changes<'a> {
         // nothing here walks it.
         if self.gone.contains(&row) {
             cell.mark = Mark::Gone;
+            return;
+        }
+        // A row marked for deletion is that and nothing else. Every value
+        // is plain text, so one way of striking it through serves every
+        // column: a NULL is its word, a tag and a chip their text.
+        if self.deleted.contains_key(&row) {
+            if cell.null {
+                cell.text = "NULL".into();
+            }
+            cell.null = false;
+            cell.slanted = false;
+            cell.hint = None;
+            cell.style = grid::Style::Plain;
+            let marker = !look.terminal && self.delete_marker == Some(col);
+            cell.mark = if marker {
+                Mark::Deleting
+            } else {
+                Mark::Deleted
+            };
             return;
         }
         let Some(pending) = self.cells.get(&at) else {
@@ -2559,7 +2601,8 @@ mod tests {
         let ctx = egui::Context::default();
         let words = "No book with id 999";
         for saving in [false, true] {
-            let mut changes = Changes::of(&cells, saving, None, &gone, Vec::new(), &ctx);
+            let none = BTreeMap::new();
+            let mut changes = Changes::of(&cells, saving, None, &gone, &none, Vec::new(), &ctx);
             changes.doubts = BTreeMap::from([(at, words.to_owned())]);
             let look = Look::macos();
             let locale = crate::i18n::Locale::default();

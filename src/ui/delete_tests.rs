@@ -369,3 +369,55 @@ fn a_marked_rows_cell_says_restore_the_row_to_edit_it() {
     assert!(edits(&harness, tab, id).editor.is_none());
     assert!(painted(&harness, "restore the row to edit it."));
 }
+
+/// Spec 3 and 6: a marked row stays where it is, says that it is marked,
+/// and its values are struck through. The desktop looks write a minus
+/// before the row's key, which is struck with the rest.
+#[test]
+fn a_marked_row_is_struck_through_and_says_so() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        // Only the grid's texts: the row panel writes the row's values too.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        mark(&mut harness, tab, id, 1);
+        assert!(harness.has("Row 2, marked for deletion"));
+        assert!(harness.has("Row 1"));
+        let struck =
+            |harness: &Harness, text: &str| harness.struck.iter().any(|piece| piece == text);
+        // The row's kind, its NULL as text (no chip stands in a marked
+        // row), and its key after the minus.
+        assert!(struck(&harness, "ebook"));
+        assert!(struck(&harness, "NULL"));
+        assert!(struck(&harness, "2"));
+        assert!(painted(&harness, "\u{2212} 2"));
+        // Another row's values are as they were.
+        assert!(!struck(&harness, "print"));
+        // Restored, nothing is struck.
+        harness.app.apply(Action::RestoreRow { tab, id });
+        harness.settle();
+        assert!(harness.struck.is_empty());
+        assert!(harness.has("Row 2"));
+        assert!(!harness.has("Row 2, marked for deletion"));
+    }
+}
+
+/// The Omarchy look keeps the key as it is, struck, and marks the gutter.
+#[test]
+fn the_terminal_marks_a_deleted_row_in_its_gutter() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    mark(&mut harness, tab, id, 1);
+    assert!(painted(&harness, "-"));
+    assert!(harness.struck.iter().any(|piece| piece == "2"));
+    assert!(!painted(&harness, "\u{2212} 2"));
+}
+
+/// Row v: a marked row's edit is not drawn. The row shows what it loaded.
+#[test]
+fn a_marked_rows_edit_is_drawn_as_the_row_is() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    set(&mut harness, tab, id, (1, 2), "audio");
+    mark(&mut harness, tab, id, 1);
+    assert!(harness.struck.iter().any(|piece| piece == "ebook"));
+    assert!(!painted(&harness, "audio"));
+}
