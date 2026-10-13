@@ -668,3 +668,35 @@ fn a_count_over_a_thousand_rows_is_refused_with_the_message() {
     assert_eq!(marked(&harness, tab, id).len(), 1_000);
     assert_eq!(selected(&harness, tab, id), Some((1_000, 1)));
 }
+
+/// A visual selection is of the rows on screen. The Structure view shows
+/// none and has keys of its own, Esc among them: switching to it leaves
+/// the selection, so nothing hidden takes that view's keys. A range made
+/// with Shift holds no key back, and stays.
+#[test]
+fn the_structure_view_leaves_a_visual_selection() {
+    use crate::model::ObjectView;
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    select(&mut harness, tab, id, (1, 2));
+    type_key(&mut harness, Key::V, "V");
+    type_key(&mut harness, Key::J, "j");
+    assert!(visual(&harness, tab, id));
+    let view = ObjectView::Structure;
+    harness.app.apply(Action::SetView {
+        tab,
+        object_tab: id,
+        view,
+    });
+    assert!(!visual(&harness, tab, id));
+    assert_eq!(selected(&harness, tab, id), Some((2, 2)));
+    assert_eq!(rows(&harness, tab, id), [2]);
+    // Not a range that is not held.
+    let (mut harness, tab, id) = covers_with(Look::macos(), book_covers_page(5));
+    select_rows(&mut harness, tab, id, 1, 3);
+    harness.app.apply(Action::SetView {
+        tab,
+        object_tab: id,
+        view,
+    });
+    assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
+}

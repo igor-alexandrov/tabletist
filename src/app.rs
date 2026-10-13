@@ -781,6 +781,12 @@ impl App {
                 }
                 let describe = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     object.view = view;
+                    // A visual selection is of the rows on screen: another
+                    // view shows none, and has its own use for the keys
+                    // the selection would take.
+                    if changes && object.visual() {
+                        object.range = None;
+                    }
                     // A chooser that was open in the Structure view was
                     // that view's.
                     object.label_chooser = None;
