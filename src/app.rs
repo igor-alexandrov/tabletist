@@ -1056,6 +1056,8 @@ impl App {
             Action::YankRow { tab, id } => self.yank_row(tab, id),
             Action::PutRow { tab, id, above } => self.put_row(tab, id, above),
             Action::DropRow { tab, id } => self.drop_row(tab, id),
+            Action::DeleteRow { tab, id } => self.delete_row(tab, id),
+            Action::RestoreRow { tab, id } => self.restore_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
                 // Not under a save: its answer is put into this set.
                 if let Some(object) = self.object_tab_mut(tab, id)
@@ -1063,8 +1065,15 @@ impl App {
                     && object.edits.editor.is_none()
                     && object.edits.saving.is_none()
                 {
-                    object.edits.revert((cell.row, cell.col));
-                    object.fields = None;
+                    // On a row that is marked for deletion the mark is
+                    // what there is to take back: its cells are not the
+                    // set's until it is.
+                    if object.edits.deleted.contains_key(&cell.row) {
+                        self.restore(tab, id, cell.row);
+                    } else {
+                        object.edits.revert((cell.row, cell.col));
+                        object.fields = None;
+                    }
                 }
             }
             Action::DiscardEdits { tab, id } => {

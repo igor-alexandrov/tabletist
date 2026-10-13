@@ -400,6 +400,18 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Delete the selected row: a new one is dropped with what was set in
+    /// it, a row of the page is marked for deletion, and one that is
+    /// marked is restored.
+    DeleteRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Take the mark for deletion off the selected row.
+    RestoreRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Put back a cell's loaded value: `cell`, or the active cell where
     /// none is named, as the keys ask.
     RevertCell {
@@ -1371,7 +1383,9 @@ pub struct WritePrompt {
     pub rows: usize,
     /// How many rows the save adds.
     pub added: usize,
-    /// What the Omarchy box's field holds: `write` confirms.
+    /// How many rows the save deletes.
+    pub deleted: usize,
+    /// What the Omarchy box's field holds: the database's name confirms.
     pub typed: String,
     pub focus: bool,
     /// What the statements are of: a save is sent only while the tab's

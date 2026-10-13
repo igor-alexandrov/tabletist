@@ -9,6 +9,8 @@ pub mod conflict_prompt;
 pub mod connect_dialog;
 pub mod data_view;
 #[cfg(test)]
+mod delete_tests;
+#[cfg(test)]
 mod duplicate_tests;
 #[cfg(test)]
 mod env_tests;

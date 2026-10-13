@@ -8,8 +8,8 @@ use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
     Answer, Duplicate, Editor, EditorPlace, Lock, NEW_ROWS, Note, Order, Pending, Place, Problem,
-    Saved, Saving, Sent, State, Table, change_set, check, conflicting, is_change, new_id, new_row,
-    opens_large, same_changes, settled, shown_lines, start_text,
+    Saved, Saving, Sent, State, Table, Told, change_set, check, conflicting, is_change, new_id,
+    new_row, opens_large, same_changes, settled, shown_lines, start_text,
 };
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
@@ -52,6 +52,8 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::DuplicateRow { .. }
             | Action::PutRow { .. }
             | Action::DropRow { .. }
+            | Action::DeleteRow { .. }
+            | Action::RestoreRow { .. }
             | Action::RevertCell { .. }
             | Action::DiscardEdits { .. }
             | Action::WriteEdits { .. }
@@ -277,7 +279,7 @@ impl App {
             (Some(false), true) => counts.changes.saturating_sub(1),
             _ => counts.changes,
         };
-        (changes + counts.added).max(1)
+        (changes + counts.added + counts.deleted).max(1)
     }
 
     /// Does what was held, now that nothing is in its way. It passes the
@@ -485,6 +487,7 @@ impl App {
                 changes: cells,
                 rows: sent.rows.len(),
                 added: changes.inserts.len(),
+                deleted: changes.deletes.len(),
                 typed: String::new(),
                 focus: true,
                 changeset: changes,
@@ -958,6 +961,78 @@ impl App {
         object.selection = stood
             .and_then(|place| order.row(place.min(last)))
             .map(|row| CellPos { row, col: cell.col });
+    }
+
+    /// Deletes the selected row: drops it where it is a new one, marks it
+    /// for deletion where it is a row of the page, and restores it where
+    /// it is marked. A row that cannot be deleted stays as it is: the
+    /// keys and the button say why before they ask.
+    pub(super) fn delete_row(&mut self, tab: ConnTabId, id: TabId) {
+        let selected = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.selection);
+        let Some(cell) = selected else {
+            return;
+        };
+        if new_id(cell.row).is_some() {
+            return self.drop_row(tab, id);
+        }
+        let marked = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.edits.deleted.contains_key(&cell.row));
+        if marked {
+            return self.restore(tab, id, cell.row);
+        }
+        // The text being typed is part of the row's edits, which are kept
+        // under the mark.
+        self.close_editor(tab, id, true);
+        let free = self.table(tab, id, |table, _| table.no_delete(cell.row).is_none());
+        if free != Some(true) {
+            return;
+        }
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        if !object.edits.mark(cell.row) {
+            return;
+        }
+        let row = crate::ui::pending_bar::row_name(object, cell.row);
+        let deleted = object.edits.deleted.len();
+        object.edits.told = Some(Told::Marked { row, deleted });
+        // A tab that holds a change stays, as it does for a cell's.
+        object.pinned = true;
+        // What the last save said was of another set.
+        object.edits.note = None;
+        // The row panel shows the row as marked.
+        object.fields = None;
+    }
+
+    /// Takes the mark for deletion off the selected row.
+    pub(super) fn restore_row(&mut self, tab: ConnTabId, id: TabId) {
+        let selected = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.selection);
+        if let Some(cell) = selected {
+            self.restore(tab, id, cell.row);
+        }
+    }
+
+    /// Takes the mark for deletion off the page's row `row`.
+    pub(super) fn restore(&mut self, tab: ConnTabId, id: TabId, row: usize) {
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        // Not under a save: its answer names the rows it sent.
+        if object.edits.saving.is_some() || !object.edits.restore(row) {
+            return;
+        }
+        let row = crate::ui::pending_bar::row_name(object, row);
+        object.edits.told = Some(Told::Restored { row });
+        object.edits.note = None;
+        object.fields = None;
     }
 
     /// Shows the row panel and asks it to give the keyboard to the selected
@@ -1518,15 +1593,22 @@ impl App {
         // did not send: no row is named for want of it.
         let place = |index: usize| saving.rows.get(index).copied();
         match result {
-            // No save of the app's deletes a row yet, so none can be gone.
             Ok(WriteOutcome::Written {
                 inserted,
                 rows,
-                gone: _,
+                gone,
                 elapsed,
             }) => {
                 let counts = object.edits.counts();
-                // The changed cells, by the page's rows they were of.
+                // The rows the save found already deleted, by their keys,
+                // while the page still holds them.
+                let already: Vec<String> = gone
+                    .iter()
+                    .filter_map(|&index| saving.deletes.get(index))
+                    .map(|&row| crate::ui::pending_bar::row_name(object, row))
+                    .collect();
+                // The changed cells, by the page's rows they were of. A
+                // row marked for deletion has none among them.
                 let changed: Vec<CellPos> = object
                     .edits
                     .cells
@@ -1543,6 +1625,7 @@ impl App {
                     rows.len() == saving.rows.len()
                         && rows.iter().all(wide)
                         && saving.rows.iter().all(|&at| at < page.rows.len())
+                        && saving.deletes.iter().all(|&at| at < page.rows.len())
                         // Every new row is known, and is one the set held.
                         && inserted.len() == saving.inserts.len()
                         && inserted.iter().all(|row| row.as_ref().is_some_and(wide))
@@ -1561,6 +1644,15 @@ impl App {
                     // are the page's from here on, in the order they were
                     // shown, so a row's number is where it was shown.
                     let order = Order::of(&added, page.rows.len());
+                    let doomed: std::collections::BTreeSet<usize> =
+                        saving.deletes.iter().copied().collect();
+                    // The rows as they stand once the save is done, in the
+                    // order they were shown, without the deleted ones: a
+                    // row's number is where it was shown among them.
+                    let kept: Vec<usize> = (0..order.len())
+                        .filter_map(|place| order.row(place))
+                        .filter(|row| !doomed.contains(row))
+                        .collect();
                     let stored = inserted.into_iter().flatten();
                     let mut stored: std::collections::BTreeMap<usize, Vec<tabletist_db::Value>> =
                         saving.inserts.iter().copied().zip(stored).collect();
@@ -1569,17 +1661,20 @@ impl App {
                             .into_iter()
                             .map(Some)
                             .collect();
-                    page.rows = (0..order.len())
-                        .filter_map(|place| {
-                            let row = order.row(place)?;
-                            match new_id(row) {
-                                Some(id) => stored.remove(&id),
-                                None => loaded.get_mut(row)?.take(),
-                            }
+                    page.rows = kept
+                        .iter()
+                        .filter_map(|&row| match new_id(row) {
+                            Some(id) => stored.remove(&id),
+                            None => loaded.get_mut(row)?.take(),
                         })
                         .collect();
                     let width = page.columns.len();
-                    let now = |row: usize| order.place(row);
+                    let places: std::collections::BTreeMap<usize, usize> = kept
+                        .iter()
+                        .enumerate()
+                        .map(|(place, &row)| (row, place))
+                        .collect();
+                    let now = |row: usize| places.get(&row).copied();
                     // What the save wrote, where it is now: each changed
                     // cell, and every cell of a new row.
                     let mut cells: Vec<CellPos> = changed
@@ -1599,17 +1694,32 @@ impl App {
                     let gone = std::mem::take(&mut object.edits.gone);
                     object.edits.gone = gone.into_iter().filter_map(now).collect();
                     object.selection = object.selection.and_then(|cell| {
-                        let row = now(cell.row)?;
+                        let row = match now(cell.row) {
+                            Some(row) => row,
+                            // Its row was deleted: the row that stood
+                            // after it, or the last where it was the last.
+                            None => {
+                                let stood = order.place(cell.row)?;
+                                let before = kept
+                                    .iter()
+                                    .filter(|&&row| order.place(row).is_some_and(|at| at < stood))
+                                    .count();
+                                before.min(kept.len().checked_sub(1)?)
+                            }
+                        };
                         Some(CellPos { row, col: cell.col })
                     });
-                    // The table has that many rows more, where it is known
-                    // how many it had.
+                    // The table has that many rows more and that many
+                    // fewer, where it is known how many it had. A row
+                    // found already deleted was counted when the page was
+                    // read.
                     let more = saving.inserts.len() as u64;
+                    let fewer = saving.deletes.len() as u64;
                     if let Some(count) = object.count.value.as_mut() {
-                        *count += more;
+                        *count = (*count + more).saturating_sub(fewer);
                     }
                     if let Some(estimate) = object.estimated_rows.as_mut() {
-                        *estimate += more;
+                        *estimate = (*estimate + more).saturating_sub(fewer);
                     }
                     object.edits.saved = Some(Saved {
                         at: std::time::Instant::now(),
@@ -1617,9 +1727,13 @@ impl App {
                         changes: counts.changes,
                         rows: counts.rows,
                         added: counts.added,
+                        deleted: saving.deletes.len().saturating_sub(already.len()),
                         elapsed,
-                        deleted: 0,
                     });
+                    // Written, and these were not there to delete.
+                    if !already.is_empty() {
+                        object.edits.note = Some(Note::AlreadyDeleted(already));
+                    }
                 } else {
                     // The table is not the one the page was read from, or a
                     // new row came back unknown (a table with a trigger,
@@ -1681,10 +1795,11 @@ impl App {
                 // The row panel says what stands against a cell.
                 object.fields = None;
             }
-            // No save of the app's deletes a row yet: there is no row to
-            // put this on.
-            Ok(WriteOutcome::FailedDelete { error, .. }) => {
-                object.edits.note = Some(Note::Refused(error));
+            Ok(WriteOutcome::FailedDelete { delete, error }) => {
+                let row = saving.deletes.get(delete).copied();
+                object.edits.fail_delete(row, error);
+                // The row panel says what stands against the row.
+                object.fields = None;
             }
             Err(error) => {
                 object.edits.note = Some(if error.is_connection_lost() {
