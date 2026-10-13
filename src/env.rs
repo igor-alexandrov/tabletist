@@ -50,6 +50,18 @@ impl Environment {
         if local { Self::Local } else { Self::None }
     }
 
+    /// The word a file keeps the environment as, and is read back from:
+    /// its name in lower case.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Dev => "dev",
+            Self::Staging => "staging",
+            Self::Production => "production",
+            Self::None => "none",
+        }
+    }
+
     /// Whether a connection in this environment is read-only unless its
     /// user says otherwise.
     pub fn read_only_by_default(self) -> bool {
@@ -405,6 +417,15 @@ fn omarchy(env: Environment, palette: &Palette) -> EnvColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_environment_is_read_back_from_the_word_a_file_keeps_it_as() {
+        for environment in Environment::ALL {
+            let written = format!("\"{}\"", environment.key());
+            let read: Environment = serde_json::from_str(&written).unwrap();
+            assert_eq!(read, environment);
+        }
+    }
     use crate::theme::contrast;
 
     fn hex(value: u32) -> Color32 {

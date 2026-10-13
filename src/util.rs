@@ -191,6 +191,28 @@ fn put_atomic(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<bool>
     Ok(true)
 }
 
+/// `text` as a TOML basic string: what the app writes into the files it
+/// writes as TOML itself.
+pub fn toml_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if control.is_control() => {
+                out.push_str(&format!("\\u{:04X}", u32::from(control)));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Saves `value` as pretty JSON, atomically.
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
