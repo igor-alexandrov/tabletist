@@ -642,3 +642,27 @@ fn a_refused_deletes_panel_shows_what_the_database_said() {
     assert!(harness.has("Will be deleted on save"));
     assert!(harness.has("FOREIGN KEY constraint failed."));
 }
+
+/// Spec 6 and test 12: the three announcements, word for word, each a
+/// polite live region.
+#[test]
+fn a_screen_reader_is_told_of_a_mark_a_restore_and_a_save() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let polite = |harness: &mut Harness, words: &str| {
+        let tree = harness.settle();
+        let mut nodes = tree.nodes.iter();
+        let node = nodes.find(|(_, node)| node.label().or_else(|| node.value()) == Some(words));
+        node.map(|(_, node)| node.live()) == Some(Some(egui::accesskit::Live::Polite))
+    };
+    mark(&mut harness, tab, id, 1);
+    assert!(polite(
+        &mut harness,
+        "Row id 2 marked for deletion. 1 to delete."
+    ));
+    harness.app.apply(Action::RestoreRow { tab, id });
+    assert!(polite(&mut harness, "Row id 2 restored."));
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(written(Vec::new()));
+    assert!(polite(&mut harness, "1 row deleted."));
+}

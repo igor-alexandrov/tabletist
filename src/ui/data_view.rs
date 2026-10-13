@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::app::App;
-use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Unset};
+use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Told, Unset};
 use crate::i18n::{gettext, ngettext};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
@@ -1356,6 +1356,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         let column = object.rows.value.as_ref()?.columns.get(picked.at.1)?;
         holds.then(|| key_picker::picked_text(&column.name, picked, locale))
     });
+    // The last row that was marked for deletion or restored, or what the
+    // last save deleted: said to a screen reader.
+    let told = match (&object.edits.told, &object.edits.saved) {
+        (Some(Told::Marked { row, deleted }), _) => Some(format!(
+            "{} {row} {} {deleted} {}",
+            gettext(locale, "Row"),
+            gettext(locale, "marked for deletion."),
+            gettext(locale, "to delete.")
+        )),
+        (Some(Told::Restored { row }), _) => Some(format!(
+            "{} {row} {}",
+            gettext(locale, "Row"),
+            gettext(locale, "restored.")
+        )),
+        (None, Some(saved)) if saved.deleted > 0 => Some(format!(
+            "{}.",
+            super::pending_bar::counted(locale, saved.deleted, "row deleted", "rows deleted")
+        )),
+        (None, _) => None,
+    };
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
     // changed.
@@ -1576,6 +1596,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             // On a point of the grid: a larger node would take the pointer
             // from the cells under it.
             let at = Rect::from_min_size(ui.max_rect().min, vec2(1.0, 1.0));
+            widgets::announce_polite(ui, at, words);
+        }
+        if let Some(words) = &told {
+            // On a point of its own: two live nodes do not share one.
+            let at = Rect::from_min_size(ui.max_rect().min + vec2(2.0, 0.0), vec2(1.0, 1.0));
             widgets::announce_polite(ui, at, words);
         }
         // A foreign key cell's list, under the cell its field is on. A
