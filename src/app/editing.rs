@@ -1374,8 +1374,16 @@ impl App {
             Some(_) => Scope::Grid,
             None => Scope::SqlEditor,
         };
+        // The Structure view's own lines hold while it shows.
+        let structure = workspace
+            .active_object_tab()
+            .is_some_and(|object| object.view == crate::model::ObjectView::Structure);
+        let holds = |when: crate::keymap::When| match when {
+            crate::keymap::When::Structure => structure,
+            _ => false,
+        };
         // The prompt is Omarchy's, in whatever look it is driven.
-        let read = self.keymap.ex(Layout::Omarchy, scope, &|_| false, line);
+        let read = self.keymap.ex(Layout::Omarchy, scope, &holds, line);
         let refused = |app: &mut Self| {
             if let Some(workspace) = app.workspace_mut(tab) {
                 workspace.command_error = Some(line.to_owned());
@@ -1398,6 +1406,30 @@ impl App {
                     workspace.review_refused = true;
                 }
                 return;
+            }
+            // What labels the table's rows for the foreign keys that point
+            // at it, from its Structure view: the chooser, Automatic, the
+            // keys alone, or the column the line names.
+            (Typed::Command(Command::OpenLabelChooser), Some((id, _))) => {
+                Action::ToggleLabelChooser { tab, id }
+            }
+            (Typed::Command(Command::LabelAutomatic), Some((id, _))) => {
+                let choice = crate::labels::LabelChoice::Automatic;
+                Action::SetLabel { tab, id, choice }
+            }
+            (Typed::Command(Command::LabelKeysOnly), Some((id, _))) => {
+                let choice = crate::labels::LabelChoice::NoLabel;
+                Action::SetLabel { tab, id, choice }
+            }
+            (Typed::Command(Command::LabelColumn), Some((id, _))) => {
+                let command = Command::LabelColumn;
+                let named = self
+                    .keymap
+                    .ex_argument(Layout::Omarchy, command, scope, line);
+                let Some(name) = named.map(str::to_owned) else {
+                    return refused(self);
+                };
+                Action::LabelByName { tab, id, name }
             }
             // A SQL editor's lines set the mode of its runs, as its switch
             // does. Where the tab cannot write the mode stays, as it does

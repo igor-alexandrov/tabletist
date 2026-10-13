@@ -71,6 +71,17 @@ In the connection dialog:
 | Mod+C | Copy the cell |
 | Mod+Shift+C | Copy the row |
 
+In a table's [Structure view]({% link _guide/browsing-data.md %}#structure):
+
+| Keys | Do |
+| --- | --- |
+| Mod+L | Choose the column that labels the table's rows for foreign keys |
+| Up, Down | Move by column |
+| Mod+Alt+L | Use the column under the cursor as that label |
+
+The last two work with the keyboard on the view's columns: click a
+column's line, or come to them with Tab or F6.
+
 ## Editing
 
 These are the keys of the macOS and Windows looks. The Omarchy look has
@@ -85,6 +96,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |
+| Mod+L | In a foreign key cell's list: [choose the column that labels it]({% link _guide/editing-data.md %}#the-label-column). In the chooser, Up and Down move, Enter chooses and Esc closes |
 | Mod+Backspace | Set NULL |
 | Mod+' | Set DEFAULT, where the column has a default |
 | Space | Flip a boolean cell: true, false, NULL |

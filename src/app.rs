@@ -27,6 +27,7 @@ use crate::theme::{self, Catalog, Palette};
 
 mod editing;
 mod key_picker;
+mod labels;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -82,6 +83,9 @@ pub struct App {
     pub actions: Vec<Action>,
     pub backend: Backend,
     pub connections: SavedConnections,
+    /// The label columns chosen for the tables foreign keys point at, from
+    /// labels.json. Read through `App::label_of` only.
+    pub labels: crate::labels::Labels,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -135,6 +139,17 @@ impl App {
                 (HostKeys::default(), Some(problem))
             }
         };
+        // A file of the first format kept its choices by connection alone:
+        // they are those of the database each connection is saved with.
+        let mut labels = crate::labels::Labels::load(&dirs.labels_file());
+        let adopted = labels.adopt(|id| {
+            let saved = connections
+                .connections
+                .iter()
+                .find(|saved| saved.id == *id)?;
+            let spec = &saved.spec;
+            Some(crate::labels::database_key(spec.driver, &spec.database))
+        });
         let mut app = Self {
             dirs,
             settings,
@@ -149,6 +164,7 @@ impl App {
             actions: Vec::new(),
             backend,
             connections,
+            labels,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -171,6 +187,9 @@ impl App {
         // An older file is written in this version once, off the UI thread.
         if upgraded {
             app.save_connections();
+        }
+        if adopted {
+            app.save_labels();
         }
         // So are settings that were read from the old settings.json.
         if source == Source::Json {
@@ -637,6 +656,7 @@ impl App {
                     workspace.command_error = None;
                     workspace.save_refused = false;
                     workspace.review_refused = false;
+                    workspace.label_refused = None;
                 }
             }
             Action::CloseCommand(tab) => {
@@ -646,6 +666,7 @@ impl App {
                     workspace.command_error = None;
                     workspace.save_refused = false;
                     workspace.review_refused = false;
+                    workspace.label_refused = None;
                 }
             }
             Action::RunCommand(tab) => self.run_command(tab),
@@ -747,11 +768,15 @@ impl App {
                 }
                 let describe = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     object.view = view;
+                    // A chooser that was open in the Structure view was
+                    // that view's.
+                    object.label_chooser = None;
                     view == ObjectView::Structure && object.structure.needs_load()
                 });
                 if describe {
                     self.describe(tab, object_tab);
                 }
+                self.forget_refusal(tab);
             }
             Action::NextPage { tab, object_tab } => {
                 let moved = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
@@ -1028,6 +1053,27 @@ impl App {
                 }
             }
             Action::PickerNull { tab, id } => self.picker_null(tab, id),
+            Action::ToggleLabelChooser { tab, id } => self.toggle_label_chooser(tab, id),
+            Action::MoveLabelChooser { tab, id, by } => {
+                self.in_label_chooser(tab, id, |chooser, lines| chooser.step(lines, by));
+            }
+            Action::PointLabelChooser { tab, id, line } => {
+                self.in_label_chooser(tab, id, |chooser, lines| chooser.to(lines, line));
+            }
+            Action::JumpLabelChooser { tab, id, to } => {
+                self.in_label_chooser(tab, id, |chooser, lines| chooser.jump(lines, to));
+            }
+            Action::ChooseLabel { tab, id, line } => self.choose_label(tab, id, line),
+            Action::CloseLabelChooser { tab, id } => self.close_label_chooser(tab, id),
+            Action::MoveStructureCursor { tab, id, by } => {
+                self.move_structure_cursor(tab, id, by);
+            }
+            Action::SetStructureCursor { tab, id, line } => {
+                self.set_structure_cursor(tab, id, line);
+            }
+            Action::UseAsLabel { tab, id, line } => self.use_as_label(tab, id, line),
+            Action::SetLabel { tab, id, choice } => self.set_tab_label(tab, id, choice),
+            Action::LabelByName { tab, id, name } => self.label_by_name(tab, id, &name),
             Action::EditorBreak { tab, id } => {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     // At the end of the text, where the cursor of a field
@@ -1488,6 +1534,8 @@ impl App {
                     // From the Structure view: show the data, with the bar.
                     let from_structure = object.view != ObjectView::Data;
                     object.view = ObjectView::Data;
+                    // A chooser that was open in that view was the view's.
+                    object.label_chooser = None;
                     let bar = &mut object.filter;
                     bar.open = !bar.open || from_structure;
                     bar.focus = bar.open;
@@ -1671,6 +1719,11 @@ impl App {
             Action::DeleteConnection(id) => {
                 if let Some(removed) = self.connections.remove(&id) {
                     self.save_connections();
+                    // Its label choices go with it. A tab that is still
+                    // open on it falls back to Automatic.
+                    if self.labels.forget(&id) {
+                        self.save_labels();
+                    }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
                     }
@@ -2503,6 +2556,8 @@ impl App {
                 let Some(workspace) = self.workspace_mut(tab) else {
                     return;
                 };
+                // The table whose columns this answer brought, if any.
+                let mut read = None;
                 let waiting = workspace
                     .object_tabs_mut()
                     .find(|o| o.structure.pending == Some(request));
@@ -2513,26 +2568,42 @@ impl App {
                     let columns = columns.map(|structure| structure.columns.clone());
                     let named = object.object.clone();
                     object.structure.finish(request, result);
+                    // The Structure view's cursor stays on a line there
+                    // is: the table may have fewer columns now.
+                    if let Some(structure) = &object.structure.value {
+                        let last = structure.columns.len().saturating_sub(1);
+                        object.structure_cursor = object.structure_cursor.min(last);
+                    }
                     // The review was made of the structure before this
                     // one, its key and its types: it is made again.
                     object.edits.review = None;
                     if let Some(columns) = columns {
-                        let kept = workspace.columns.entry(named).or_default();
+                        let kept = workspace.columns.entry(named.clone()).or_default();
                         // One being fetched gets its own answer.
                         if !kept.is_loading() {
                             kept.value = Some(columns);
                             kept.error = None;
+                            read = Some(named);
                         }
                         workspace.catalog_changed();
                     }
-                } else if let Some(kept) = workspace
+                } else if let Some((named, kept)) = workspace
                     .columns
-                    .values_mut()
-                    .find(|kept| kept.pending == Some(request))
+                    .iter_mut()
+                    .find(|(_, kept)| kept.pending == Some(request))
                 {
-                    // Asked for by a completion list.
+                    // Asked for by a completion list. A read that failed
+                    // leaves the columns it had: they are not fresh.
+                    let fresh = result.is_ok();
                     kept.finish(request, result.map(|structure| structure.columns));
+                    read = fresh.then(|| named.clone());
                     workspace.catalog_changed();
+                }
+                // A column chosen as the table's label may be gone from
+                // the columns just read. Before the pickers: they label
+                // by what is left.
+                if let Some(table) = read {
+                    self.check_label(tab, &table);
                 }
                 // A picker that waited for these columns learns them.
                 self.picker_columns(tab);
@@ -2820,6 +2891,14 @@ impl App {
         }
         self.connections.mark_used(&conn, crate::util::now_secs());
         self.save_connections();
+    }
+
+    /// Saves the label choices on the backend, as the connections are.
+    pub(crate) fn save_labels(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.labels_file(),
+            file: StateFile::Labels(self.labels.clone()),
+        });
     }
 
     /// Saves the connections on the backend (writing syncs the disk, which
@@ -4221,6 +4300,65 @@ mod tests {
             Backend::recording(),
         );
         (app, dir)
+    }
+
+    /// A labels file of the first format kept its choices by connection
+    /// alone. At a start they become those of the database each
+    /// connection is saved with (PostgreSQL's; a MySQL table's schema is
+    /// its database), and the backend saves the file in the format of now.
+    #[test]
+    fn an_older_labels_file_is_its_connections_own_database() {
+        use crate::connections::ConnectionId;
+        use crate::labels::{LabelChoice, Place};
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        let connections = dirs.connections_file();
+        std::fs::create_dir_all(connections.parent().unwrap()).unwrap();
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(&connections, fixture).unwrap();
+        let path = dirs.labels_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"version":1,"connections":{
+                "green":{"public":{"publishers":{"choice":{"column":"name"}}}},
+                "yellow":{"bookshop_preview":{"publishers":{"choice":"no-label"}}}}}"#,
+        )
+        .unwrap();
+        let app = App::new(dirs, Settings::default().into(), Backend::recording());
+        let on = |conn: &str, database: &str| Place {
+            conn: ConnectionId(conn.into()),
+            database: database.into(),
+        };
+        let publishers = tabletist_db::ObjectRef::new("public", "publishers");
+        let chosen = LabelChoice::Column("name".into());
+        let own = on("green", "bookshop_development");
+        assert_eq!(app.labels.choice(&own, &publishers), chosen);
+        let other = on("green", "bookshop_review");
+        assert_eq!(
+            app.labels.choice(&other, &publishers),
+            LabelChoice::Automatic
+        );
+        let preview = tabletist_db::ObjectRef::new("bookshop_preview", "publishers");
+        let kept = app.labels.choice(&on("yellow", ""), &preview);
+        assert_eq!(kept, LabelChoice::NoLabel);
+        let saves = |app: &App| {
+            app.backend
+                .sent
+                .iter()
+                .filter(|command| matches!(command, Command::Save { path: to, .. } if *to == path))
+                .count()
+        };
+        assert_eq!(saves(&app), 1);
+        // A file of the format of now is not saved again at a start.
+        app.labels.save(&path).unwrap();
+        let again = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default().into(),
+            Backend::recording(),
+        );
+        assert_eq!(saves(&again), 0);
+        assert_eq!(again.labels, app.labels);
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod i18n;
 pub mod key_picker;
 pub mod keymap;
 pub mod known_hosts;
+pub mod labels;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod model;

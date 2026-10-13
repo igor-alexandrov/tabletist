@@ -156,11 +156,15 @@ fn postgres(name: &str) -> ColumnClass {
         "real" | "double precision" => ColumnClass::Float,
         "boolean" => ColumnClass::Boolean,
         "json" | "jsonb" => ColumnClass::Json,
-        "text" | "bpchar" => ColumnClass::Text { max_chars: None },
+        // `citext` is the citext extension's: text compared without case.
+        "text" | "bpchar" | "citext" => ColumnClass::Text { max_chars: None },
         "character varying" | "character" => ColumnClass::Text {
             max_chars: length(name),
         },
         "bytea" => ColumnClass::Binary,
+        // The catalog names it with its schema where the extension's
+        // schema is not on the search path.
+        other if other.ends_with(".citext") => ColumnClass::Text { max_chars: None },
         _ => ColumnClass::Other,
     }
 }
@@ -366,6 +370,10 @@ mod tests {
             ("json", Json),
             ("jsonb", Json),
             ("text", Text { max_chars: None }),
+            // The extension's text that compares without case: text all
+            // the same, of no stated length.
+            ("citext", Text { max_chars: None }),
+            ("extensions.citext", Text { max_chars: None }),
             ("character varying", Text { max_chars: None }),
             (
                 "character varying(200)",

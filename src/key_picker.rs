@@ -6,12 +6,13 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    ColumnClass, ColumnInfo, Dialect, Error, Lookup, LookupPage, LookupPart, LookupRow, Matched,
-    NewValue, ObjectRef, Structure, Value, column_class,
+    ColumnClass, Error, Lookup, LookupPage, LookupPart, LookupRow, Matched, NewValue, ObjectRef,
+    Structure, Value,
 };
 
 use crate::backend::RequestId;
 use crate::edit::{DoubtState, Edits, State, Table, new_id};
+use crate::labels::{Chooser, Resolved};
 use crate::model::Advance;
 
 /// How many matches a list holds; more are said, not paged.
@@ -20,6 +21,9 @@ pub const LIMIT: u32 = 50;
 pub const DELAY: Duration = Duration::from_millis(150);
 /// How many options show at once; the list follows the highlight.
 pub const VISIBLE: usize = 8;
+/// How long a picker goes on saying what just happened to its label: that
+/// it changed, or that there is nothing to choose.
+pub const SAID: Duration = Duration::from_secs(4);
 
 /// The table and the column that the one-column foreign key of `column`
 /// points at. `None` for a column no such key names, and for a key whose
@@ -111,21 +115,6 @@ pub fn unmatched(table: &Table<'_>, own: &ObjectRef, edits: &Edits) -> Vec<Unmat
             })
         })
         .collect()
-}
-
-/// The column a person reads a row of the referenced table by: its first
-/// text column that is not the key.
-pub fn label_column(dialect: Dialect, columns: &[ColumnInfo], key: &str) -> Option<String> {
-    columns
-        .iter()
-        .filter(|column| column.name != key)
-        .find(|column| {
-            matches!(
-                column_class(dialect, &column.type_name),
-                ColumnClass::Text { .. }
-            )
-        })
-        .map(|column| column.name.clone())
 }
 
 /// A UUID as it is written: 36 characters with their hyphens, or 32 hex
@@ -246,8 +235,20 @@ pub fn found_in(label: &str, text: &str) -> Option<Range<usize>> {
 pub enum Columns {
     /// Its columns are being fetched.
     Waiting,
-    /// The label column, or none: the table is searched by its key alone.
-    Known(Option<String>),
+    /// What labels its rows, and who picked it (`labels::resolve`). With
+    /// no column the table is searched by its key alone.
+    Known(Resolved),
+}
+
+impl Columns {
+    /// The column the options are labelled by, once it is known and where
+    /// there is one.
+    pub fn column(&self) -> Option<&str> {
+        match self {
+            Self::Waiting => None,
+            Self::Known(label) => label.column.as_deref(),
+        }
+    }
 }
 
 /// The search that was last sent.
@@ -335,6 +336,25 @@ pub struct Picker {
     /// list: it was just read from the table, and is not asked about
     /// again.
     pub taken: bool,
+    /// The chooser of what labels the list, while it is open beside it.
+    /// It has the keys then: the field keeps the keyboard, and nothing
+    /// typed reaches its text.
+    pub chooser: Option<Chooser>,
+    /// The key of the option that was highlighted when the label changed,
+    /// and whether the user had moved to it: the answer of the search
+    /// that follows puts the highlight back on that row, if it holds it.
+    held: Option<(Value, bool)>,
+    /// When the label last changed under this picker. What says so shows
+    /// for [`SAID`], and goes with the next text typed.
+    pub changed: Option<Instant>,
+    /// The column that was chosen for the table and found gone, where
+    /// this is the first picker to open since, and when it was noted: the
+    /// list says so while it is open, and the terminal look's status line
+    /// for [`SAID`].
+    pub gone: Option<(String, Instant)>,
+    /// When the chooser was asked for and the table has nothing to
+    /// choose: said for [`SAID`].
+    pub nothing: Option<Instant>,
 }
 
 impl Picker {
@@ -367,7 +387,41 @@ impl Picker {
             failed: None,
             refused: false,
             taken: false,
+            chooser: None,
+            held: None,
+            changed: None,
+            gone: None,
+            nothing: None,
         }
+    }
+
+    /// The list is labelled by `label` from now on: the user chose, or
+    /// the column they had chosen is gone. `chosen` is when the user
+    /// chose, for what confirms a choice; none where nobody did. The
+    /// search for the text that shows is to be sent again (the reducer
+    /// sends it); until its answer the options stay as they are. A
+    /// failure was the old search's.
+    pub fn relabel(&mut self, label: Columns, chosen: Option<Instant>) {
+        self.held = self
+            .highlight
+            .and_then(|at| self.options.get(at))
+            .map(|option| (option.key.clone(), self.moved));
+        self.label = label;
+        self.changed = chosen;
+        self.nothing = None;
+        self.kept = None;
+        self.resends = 0;
+        if self.failed.take().is_some() {
+            self.listed = None;
+        }
+    }
+
+    /// Whether the list is the answer for the text that was last searched
+    /// for, with nothing of that search on its way.
+    pub fn answered_now(&self) -> bool {
+        self.asked.as_ref().is_some_and(|asked| {
+            asked.matching.is_none() && self.listed.as_deref() == Some(asked.text.as_str())
+        })
     }
 
     /// What is searched for while the editor holds `typed`.
@@ -396,6 +450,10 @@ impl Picker {
         self.refused = false;
         self.resends = 0;
         self.taken = false;
+        // What was said of the label was said of the list before this.
+        self.held = None;
+        self.changed = None;
+        self.nothing = None;
     }
 
     /// The editor's text was replaced by an option's key. It is the text
@@ -517,9 +575,20 @@ impl Picker {
                 self.options.clear();
                 self.more = false;
                 self.failed = Some(error);
+                // A search that failed has no list, and its keys are the
+                // field's again: no chooser stands beside nothing.
+                self.chooser = None;
             }
         }
         self.highlight = self.first_highlight();
+        // The label changed under the list: the highlight goes back to
+        // the row it was on, where the answer still holds that row.
+        if let Some((key, moved)) = self.held.take()
+            && let Some(at) = self.options.iter().position(|option| option.key == key)
+        {
+            self.highlight = Some(at);
+            self.moved = moved;
+        }
         Answered::Taken
     }
 
@@ -617,6 +686,8 @@ mod tests {
 
     use std::collections::BTreeSet;
 
+    use tabletist_db::{ColumnInfo, Dialect};
+
     use crate::edit::{Doubt, DoubtState, Edits, NEW_ROWS, Pending, State, Table};
     use tabletist_db::{Access, ColumnMeta, ForeignKeyInfo, ObjectKind, RowPage, ValueKind};
 
@@ -638,7 +709,12 @@ mod tests {
     fn picker(searching: bool, text: &str) -> Picker {
         Picker::new(
             (ObjectRef::new("main", "publishers"), "id".into()),
-            Columns::Known(Some("name".into())),
+            Columns::Known(crate::labels::Resolved {
+                column: Some("name".into()),
+                source: crate::labels::Source::Automatic,
+                automatic: Some("name".into()),
+                gone: None,
+            }),
             None,
             searching,
             text,
@@ -692,32 +768,6 @@ mod tests {
     }
 
     #[test]
-    fn the_label_is_the_first_text_column_that_is_not_the_key() {
-        let column = |name: &str, type_name: &str| ColumnInfo {
-            name: name.into(),
-            type_name: type_name.into(),
-            ..ColumnInfo::default()
-        };
-        // As the structure names PostgreSQL's types, which is how
-        // `column_class` reads them.
-        let columns = [
-            column("code", "text"),
-            column("founded", "integer"),
-            column("name", "character varying(64)"),
-            column("email", "text"),
-        ];
-        assert_eq!(
-            label_column(Dialect::Postgres, &columns, "code"),
-            Some("name".to_owned())
-        );
-        assert_eq!(
-            label_column(Dialect::Postgres, &columns, "founded"),
-            Some("code".to_owned())
-        );
-        assert_eq!(label_column(Dialect::Postgres, &columns[1..2], "id"), None);
-    }
-
-    #[test]
     fn a_text_is_pinned_only_where_it_reads_as_the_keys_type() {
         let whole = ColumnClass::Integer {
             min: i128::from(i64::MIN),
@@ -749,6 +799,12 @@ mod tests {
         let text = ColumnClass::Text { max_chars: None };
         assert_eq!(
             pinned("DE", text, "text", true),
+            Some(Value::Text("DE".into()))
+        );
+        // A `citext` key is a text key.
+        let folded = tabletist_db::column_class(tabletist_db::Dialect::Postgres, "citext");
+        assert_eq!(
+            pinned("DE", folded, "citext", true),
             Some(Value::Text("DE".into()))
         );
         let uuid = "123e4567-e89b-12d3-a456-426614174000";

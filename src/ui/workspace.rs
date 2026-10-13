@@ -1582,6 +1582,20 @@ struct Editing {
     /// Insert mode is in a foreign key cell's picker: the line names the
     /// list's keys in place of the editor's.
     picking: bool,
+    /// What the picker's options are labelled by, and where in the words
+    /// the column's name stands: "label name · automatic".
+    label: Option<(String, Option<std::ops::Range<usize>>)>,
+    /// The chooser of that label is open and has the keys: what it is
+    /// called, for the line to say in place of the column and its keys.
+    choosing: Option<String>,
+    /// The picker's table has something to choose a label from: the
+    /// chooser's key stands among the list's.
+    labels: bool,
+    /// What the picker says of its label for a while, in place of the
+    /// editor's keys, and in which tone: that it changed (a success),
+    /// that the column chosen is gone (a warning), or that there is
+    /// nothing to choose (plain words).
+    told: Option<(Option<states::Tone>, String)>,
     /// How much is pending, while anything is: "3 pending · 2 rows".
     pending: Option<String>,
     /// The rows to add, while there are any: "+1 new".
@@ -1716,6 +1730,20 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
             tail: None,
             color: states::Tone::Danger.color(palette),
         })
+    } else if let Some((_, name, why)) = workspace
+        .label_refused
+        .as_ref()
+        .filter(|(of, _, _)| *of == object.id)
+    {
+        // A column that was named for this table's label and not taken,
+        // with why, until the next key.
+        let table = &object.object.name;
+        Some(Said {
+            mark: None,
+            text: super::structure::refused_text(name, *why, table, look, locale),
+            tail: None,
+            color: states::Tone::Danger.color(palette),
+        })
     } else if workspace.review_refused && !edits.pending() {
         // `:diff` found nothing to show. No mistake of the typing: it
         // reads as the keys do, until the next key. Never over a table
@@ -1793,11 +1821,58 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
                 .as_ref()
                 .is_some_and(|picker| picker.failed.is_none())
     });
+    // The list has no foot in this look: the line says what labels it.
+    let picker = edits
+        .editor
+        .as_ref()
+        .filter(|_| picking)
+        .and_then(|editor| editor.picker.as_ref());
+    let label =
+        picker.and_then(|picker| super::key_picker::label_line(&picker.label, look, locale));
+    // Not where the table is its key alone: the key opens nothing there.
+    let labels = picker.is_some_and(|picker| {
+        use crate::key_picker::Columns;
+        use crate::labels::Source;
+        match &picker.label {
+            Columns::Waiting => true,
+            Columns::Known(label) => match label.source {
+                Source::Automatic | Source::User => true,
+                Source::KeysOnly => false,
+            },
+        }
+    });
+    let choosing = picker
+        .filter(|picker| picker.chooser.is_some())
+        .map(|picker| super::label_chooser::title(&picker.target.name, look, locale));
+    // One thing at a time: what was just asked for, what is gone, what
+    // changed.
+    let told = picker.and_then(|picker| {
+        use super::key_picker::{changed_line, gone_text, nothing_text};
+        use crate::key_picker::SAID;
+        if picker.nothing.is_some_and(|at| at.elapsed() < SAID) {
+            let said = nothing_text(&picker.target.name, look, locale);
+            return Some((None, said));
+        }
+        if picker
+            .gone
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < SAID)
+        {
+            let gone = gone_text(picker, look, locale)?;
+            return Some((Some(states::Tone::Warning), gone.line));
+        }
+        let said = changed_line(picker, look, locale)?;
+        Some((Some(states::Tone::Success), said))
+    });
     Editing {
         can_edit,
         insert,
         walks,
         picking,
+        label,
+        choosing,
+        labels,
+        told,
         pending,
         added,
         can_add,
@@ -1922,6 +1997,19 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .keymap
         .together(app.layout(), &[Command::NextPick, Command::PreviousPick]);
     let (set_key, close_key) = (key(Command::CommitDown), key(Command::ClosePicker));
+    // The keys of the chooser of that list's label, while it is open: the
+    // pairs that move in it, each as one hint (`j/k`, `ctrl+n/p`). The
+    // arrows are not said.
+    let chooser_moves: Vec<crate::keymap::Written> = (0..2)
+        .filter_map(|nth| {
+            let moves = (Command::NextLabel, Command::PreviousLabel);
+            let scope = crate::keymap::Scope::Prompt;
+            app.keymap.pair(app.layout(), moves, scope, nth)
+        })
+        .collect();
+    // The key that opens it from the list.
+    let label_key = key(Command::ChangeLabelColumn);
+    let (choose_key, back_key) = (key(Command::ChooseLabel), key(Command::CloseLabelChooser));
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -1932,6 +2020,22 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
     let editor = super::sql_editor::status_summary(app, tab);
     let on_editor = editor.is_some();
+    // The Structure view of the table in front shows: the line names
+    // that view's keys in the rows' place. The keys that choose what
+    // labels the table's rows are named where there is anything to
+    // choose: not for a view, nor for a table of its key alone.
+    let structure = workspace
+        .active_object_tab()
+        .filter(|object| object.view == ObjectView::Structure);
+    let labels = structure
+        .and_then(|object| app.structure_label(tab, object.id))
+        .is_some_and(|label| match label.source {
+            crate::labels::Source::Automatic | crate::labels::Source::User => true,
+            crate::labels::Source::KeysOnly => false,
+        });
+    let (column_key, use_key) = (key(Command::MoveInStructure), key(Command::UseAsLabel));
+    let (chooser_key, automatic_key) =
+        (key(Command::OpenLabelChooser), key(Command::LabelAutomatic));
     // The completion list's own key, while it is open with a row to put
     // in. One whose row is about to be inserted is not open any more: the
     // mode line is drawn before the editor inserts it.
@@ -2041,8 +2145,33 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if completing {
                 editor_hints.insert(0, (&complete_key, &*words[5], true));
             }
+            // The Structure view's keys: a row's do nothing on it.
+            let structure_words =
+                ["column", "use as label", "choose", "tables"].map(|word| gettext(locale, word));
+            let mut structure_hints: Vec<widgets::Hint<'_>> =
+                vec![(&column_key, &*structure_words[0], true)];
+            if labels {
+                // The line that hands the choice back says what it does
+                // by itself.
+                structure_hints.extend([
+                    (&use_key, &*structure_words[1], true),
+                    (&chooser_key, &*structure_words[2], true),
+                    (&automatic_key, "", true),
+                ]);
+            }
+            structure_hints.push((&sidebar_key, &*structure_words[3], true));
+            // What is pending in the table's rows is saved and reviewed
+            // from here too, as from the rows.
+            if !read_only {
+                structure_hints.push((&save_key, &*write, true));
+            }
+            if editing.pending.is_some() || editing.added.is_some() {
+                structure_hints.push((&review_key, &*review, true));
+            }
             let hints: &[widgets::Hint<'_>] = if on_editor {
                 &editor_hints
+            } else if structure.is_some() {
+                &structure_hints
             } else {
                 &table_hints
             };
@@ -2108,13 +2237,14 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 let moves = gettext(locale, "move");
                 let sets = gettext(locale, "set");
                 let closes = gettext(locale, "close");
+                let labels = gettext(locale, "label");
                 let keys = || {
                     if editing.picking {
                         // The list's keys, in place of the editor's. Only
                         // Esc differs: it closes the picker and drops the
                         // edit, where it keeps a text; Enter takes the
                         // highlighted option, and Tab goes on as ever.
-                        return Text::new(&look)
+                        let mut keys = Text::new(&look)
                             .add(role, &pick_keys, palette.text)
                             .space(role, " ")
                             .add(role, &moves, palette.dim)
@@ -2122,7 +2252,17 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             .add(role, &set_key, palette.text)
                             .space(role, " ")
                             .add(role, &sets, palette.dim)
-                            .add(role, " · ", palette.dim)
+                            .add(role, " · ", palette.dim);
+                        // The key that chooses what labels the list, where
+                        // there is anything to choose.
+                        if editing.labels {
+                            keys = keys
+                                .add(role, &label_key, palette.text)
+                                .space(role, " ")
+                                .add(role, &labels, palette.dim)
+                                .add(role, " · ", palette.dim);
+                        }
+                        return keys
                             .add(role, &close_key, palette.text)
                             .space(role, " ")
                             .add(role, &closes, palette.dim);
@@ -2141,6 +2281,62 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         .add(role, next, palette.dim)
                 };
                 let right = rect.right() - 12.0;
+                if let Some(title) = &editing.choosing {
+                    // The chooser has the keys: the line names it, and
+                    // them where there is room.
+                    let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
+                    let text = Text::one(&look, role, title, palette.secondary);
+                    x += widgets::paint_label(ui, x, y, text) + gap;
+                    let (or, chooses, back) = (
+                        gettext(locale, "or"),
+                        gettext(locale, "choose"),
+                        gettext(locale, "back"),
+                    );
+                    let keys = || {
+                        let mut keys = Text::new(&look);
+                        if let Some(first) = chooser_moves.first() {
+                            keys = keys.add(role, first, palette.text);
+                        }
+                        for more in chooser_moves.iter().skip(1) {
+                            keys = keys
+                                .space(role, " ")
+                                .add(role, &or, palette.dim)
+                                .space(role, " ")
+                                .add(role, more, palette.text);
+                        }
+                        keys.space(role, " ")
+                            .add(role, &moves, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &choose_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &chooses, palette.dim)
+                            .add(role, " · ", palette.dim)
+                            .add(role, &back_key, palette.text)
+                            .space(role, " ")
+                            .add(role, &back, palette.dim)
+                    };
+                    if x + widgets::measure(ui, keys()) <= right {
+                        widgets::paint_text_right(ui, right, y, keys());
+                    }
+                    return;
+                }
+                if let Some((tone, said)) = &editing.told {
+                    // What became of the label, for a while: in place of
+                    // the column and the keys, which come back after it.
+                    let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
+                    let color = tone.map_or(palette.text, |tone| tone.color(&palette));
+                    let wrote = match tone {
+                        Some(states::Tone::Success) => drawable(ui, role, &look, WROTE),
+                        Some(states::Tone::Warning | states::Tone::Danger) | None => None,
+                    };
+                    if let Some(mark) = wrote {
+                        let mark = Text::one(&look, role, mark, color);
+                        x += widgets::paint_label(ui, x, y, mark) + 6.0;
+                    }
+                    widgets::paint_label(ui, x, y, Text::one(&look, role, said, color));
+                    ui.ctx().request_repaint_after(crate::key_picker::SAID);
+                    return;
+                }
                 let fixed = left + widgets::measure(ui, mode()) + pending_room + errors_room;
                 let column_room = measure(column) + gap;
                 let named = fixed + column_room <= right;
@@ -2158,6 +2354,20 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     let said = || Text::one(&look, role, needs, danger);
                     if x + widgets::measure(ui, said()) <= right {
                         x += widgets::paint_label(ui, x, y, said()) + gap;
+                    }
+                }
+                if let Some((said, column)) = &editing.label {
+                    // The column's name stands out of the words round it.
+                    // It gives way before the keys do.
+                    let at = column.clone().unwrap_or(said.len()..said.len());
+                    let label = || {
+                        Text::new(&look)
+                            .add(role, &said[..at.start], palette.dim)
+                            .add(role, &said[at.clone()], palette.text)
+                            .add(role, &said[at.end..], palette.dim)
+                    };
+                    if named && x + widgets::measure(ui, label()) + gap + keys_width <= right {
+                        x += widgets::paint_label(ui, x, y, label()) + gap;
                     }
                 }
                 if named && x + keys_width <= right {

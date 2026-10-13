@@ -1565,6 +1565,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             let names = key_picker::Names {
                 table: &picker.target.name,
                 nullable: search.nullable,
+                chooser: search.chooser.as_ref(),
             };
             let skin = (&look, &palette, locale);
             let shown = key_picker::show(ui, picker, &editor.text, anchor, target.id, &names, skin);
@@ -1574,6 +1575,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 outcome.kept = false;
             }
             let id = object_tab;
+            // What was asked of the label's chooser ends no edit.
+            if let Some(asked) = shown.label {
+                actions.push(asked.action(tab, id));
+            }
             if let Some(index) = shown.picked {
                 pick = Some(Action::PickOption { tab, id, index });
             } else if shown.null {
@@ -1823,6 +1828,22 @@ pub(super) fn search_of(
             .is_some_and(|column| column.nullable),
         failed: picker.failed.is_some(),
         refused: picker.refused,
+        chooser: picker.chooser.as_ref().map(|chooser| {
+            let known = match &picker.label {
+                crate::key_picker::Columns::Known(label) => Some(label),
+                crate::key_picker::Columns::Waiting => None,
+            };
+            super::label_chooser::Open {
+                at: chooser.at,
+                lines: workspace.label_lines(&picker.target, &[&picker.key]),
+                choice: chooser.choice.clone(),
+                automatic: known.and_then(|label| label.automatic.clone()),
+                loading: known.is_none(),
+                arrived: chooser.waited && known.is_some(),
+                table: picker.target.name.clone(),
+                connection: (workspace.name.clone(), workspace.environment),
+            }
+        }),
     })
 }
 

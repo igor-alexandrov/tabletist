@@ -9,7 +9,7 @@ use directories::{BaseDirs, ProjectDirs};
 pub struct AppDirs {
     /// Settings, saved connections, trusted SSH hosts, themes.
     pub config: PathBuf,
-    /// Logs.
+    /// Logs, and the label columns chosen for foreign keys.
     pub state: PathBuf,
     /// The user's home directory, where there is one: a path under it is
     /// shown with `~`. Found with the others, at the start: without `HOME`
@@ -81,6 +81,12 @@ impl AppDirs {
         self.config.join("themes")
     }
 
+    /// The columns chosen to label the rows foreign keys point at. Of
+    /// this computer, and no setting: it is kept with the state.
+    pub fn labels_file(&self) -> PathBuf {
+        self.state.join("labels.json")
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.state.join("tabletist.log")
     }
@@ -114,6 +120,7 @@ mod tests {
             PathBuf::from("/root/config/known_hosts.json")
         );
         assert_eq!(dirs.themes_dir(), PathBuf::from("/root/config/themes"));
+        assert_eq!(dirs.labels_file(), PathBuf::from("/root/state/labels.json"));
         assert_eq!(dirs.log_file(), PathBuf::from("/root/state/tabletist.log"));
         assert_eq!(dirs.panic_log(), PathBuf::from("/root/state/panic.log"));
     }

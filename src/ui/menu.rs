@@ -106,6 +106,8 @@ pub struct Item<'a> {
     role: Option<TextRole>,
     detail: Option<&'a str>,
     disabled: Option<&'a str>,
+    note: Option<&'a str>,
+    lit: Option<bool>,
 }
 
 impl<'a> Item<'a> {
@@ -118,6 +120,8 @@ impl<'a> Item<'a> {
             role: None,
             detail: None,
             disabled: None,
+            note: None,
+            lit: None,
         }
     }
 
@@ -144,6 +148,23 @@ impl<'a> Item<'a> {
     /// A muted note at the row's right.
     pub fn detail(mut self, detail: &'a str) -> Self {
         self.detail = Some(detail);
+        self
+    }
+
+    /// Muted words that go on after the row's own, on its line: what a
+    /// choice comes to (`Automatic · uses name`).
+    pub fn note(mut self, note: &'a str) -> Self {
+        self.note = Some(note);
+        self
+    }
+
+    /// A row of a menu the keyboard never comes to: a field beside it
+    /// keeps the keyboard, and `lit` says whether the menu's keys are on
+    /// this row. It is clicked and never focused, and the pointer lights
+    /// no row by itself: whoever draws the menu moves its keys to the row
+    /// the pointer is over.
+    pub fn kept_out(mut self, lit: bool) -> Self {
+        self.lit = Some(lit);
         self
     }
 
@@ -180,15 +201,21 @@ impl<'a> Item<'a> {
         let noted = self
             .detail
             .map_or(0.0, |detail| DETAIL_GAP + measure(note, detail));
-        let wanted = lead + measure(role, self.text) + noted + shape.inset;
+        let own = measure(role, self.text);
+        let after = self
+            .note
+            .map_or(0.0, |words| shape.gap + measure(note, words));
+        let wanted = lead + own + after + noted + shape.inset;
         // A row that cannot be picked answers no press, and still takes
         // the keyboard, as a button that cannot be pressed does: the
-        // keyboard can then read why.
+        // keyboard can then read why. In a menu the keyboard never comes
+        // to, no row takes it.
         let enabled = self.disabled.is_none();
-        let sense = if enabled {
-            Sense::click()
-        } else {
-            Sense::focusable_noninteractive()
+        let sense = match (self.lit, enabled) {
+            (Some(_), true) => Sense::CLICK,
+            (Some(_), false) => Sense::hover(),
+            (None, true) => Sense::click(),
+            (None, false) => Sense::focusable_noninteractive(),
         };
         let (rect, response) = ui.allocate_at_least(vec2(wanted, shape.height), sense);
         let name = self.name.unwrap_or(self.text);
@@ -211,7 +238,10 @@ impl<'a> Item<'a> {
         // The pointer and the keyboard light a row the same way. One that
         // cannot be picked is lit by the keyboard alone, which has to show
         // where it is; its words stay muted.
-        let lit = focus::shown(&response) || (enabled && response.hovered());
+        let lit = match self.lit {
+            Some(lit) => lit,
+            None => focus::shown(&response) || (enabled && response.hovered()),
+        };
         focus::hint(ui, &response, rect, Ring::Own);
         // A long menu scrolls: the row the keyboard came to is brought
         // into view. Jump, not animate: the next key may come at once.
@@ -256,6 +286,12 @@ impl<'a> Item<'a> {
         Text::one(look, role, self.text, ink)
             .layout(ui.ctx())
             .paint_left(painter, rect.left() + lead, center);
+        if let Some(words) = self.note {
+            let left = rect.left() + lead + own + shape.gap;
+            Text::one(look, note, words, palette.dim)
+                .layout(ui.ctx())
+                .paint_left(painter, left, center);
+        }
         if let Some(detail) = self.detail {
             Text::one(look, note, detail, palette.dim)
                 .layout(ui.ctx())
