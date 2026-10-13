@@ -3866,3 +3866,34 @@ async fn what_a_save_shows_stores_what_it_binds() {
         assert_eq!(kept, encoding);
     }
 }
+
+/// The keys that point at a table: `orders.user_id` points at `users`.
+#[tokio::test]
+async fn a_structure_lists_the_keys_that_point_at_its_table() {
+    let (connection, _dir) = fixture().await;
+    let users = connection
+        .describe(&ObjectRef::new("main", "users"))
+        .await
+        .unwrap();
+    assert_eq!(
+        users.referenced_by,
+        [tabletist_db::ReferencingKey {
+            name: None,
+            schema: "main".into(),
+            table: "orders".into(),
+            columns: vec!["user_id".into()],
+            ref_columns: vec!["id".into()],
+            on_delete: "CASCADE".into(),
+        }]
+    );
+    assert_eq!(
+        users.referenced_by[0].acts(),
+        Some(tabletist_db::Acts::Deletes)
+    );
+    // And none points at `orders`.
+    let orders = connection
+        .describe(&ObjectRef::new("main", "orders"))
+        .await
+        .unwrap();
+    assert!(orders.referenced_by.is_empty());
+}

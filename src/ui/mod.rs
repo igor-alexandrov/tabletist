@@ -7339,6 +7339,7 @@ mod tests {
                 partial: false,
             }],
             foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         };
         harness.answer_structure(structure);
         assert!(harness.has("Columns"));
@@ -11371,6 +11372,7 @@ mod tests {
             primary_key: vec!["id".into()],
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         });
         harness.answer_rows(RowPage {
             columns: names

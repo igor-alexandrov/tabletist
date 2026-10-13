@@ -15,8 +15,8 @@ use crate::adapter::Adapter;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
     Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, Sql,
-    StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
+    ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
+    Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -714,11 +714,49 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
+        // The keys that point at the table: the same catalog, read from
+        // the other end. A partitioned table that has such a key has a
+        // row for each of its partitions too, all pointing here: only the
+        // key itself is listed. The copies name their parent in a column
+        // servers before version 11 do not have.
+        let referenced_by = self
+            .catalog(
+                "SELECT con.conname::text, cn.nspname::text, cc.relname::text, \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                              ORDER BY k.ord), \
+                        con.confdeltype::text \
+                 FROM pg_constraint con \
+                 JOIN pg_class cc ON cc.oid = con.conrelid \
+                 JOIN pg_namespace cn ON cn.oid = cc.relnamespace \
+                 WHERE con.confrelid = $1 AND con.contype = 'f' \
+                   AND COALESCE((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 \
+                 ORDER BY cn.nspname, cc.relname, con.conname",
+                &[&oid],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                let on_delete: String = column(row, 5)?;
+                Ok(ReferencingKey {
+                    name: Some(column(row, 0)?),
+                    schema: column(row, 1)?,
+                    table: column(row, 2)?,
+                    columns: column(row, 3)?,
+                    ref_columns: column(row, 4)?,
+                    on_delete: action(&on_delete).into(),
+                })
+            })
+            .collect::<Result<_>>()?;
         Ok(Structure {
             columns,
             primary_key: self.primary_key(object).await?,
             indexes,
             foreign_keys,
+            referenced_by,
         })
     }
 

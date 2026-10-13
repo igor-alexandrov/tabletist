@@ -24,8 +24,8 @@ use crate::script::retry_cancelled;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
     Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag,
-    Structure, TlsMode, Value, ValueKind, WriteOutcome, column_class,
+    ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
+    Secrets, StopFlag, Structure, TlsMode, Value, ValueKind, WriteOutcome, column_class,
 };
 
 /// A column as `describe` reads it from `information_schema.columns`: its
@@ -401,11 +401,49 @@ impl Adapter for Conn {
                 key.ref_columns.push(ref_column);
             }
         }
+        // The keys that point at the table: the same views, asked by what
+        // a key refers to.
+        let referencing: Vec<(String, String, String, String, String, String)> = self
+            .catalog(
+                "SELECT k.constraint_name, k.table_schema, k.table_name, k.column_name, \
+                        k.referenced_column_name, r.delete_rule \
+                 FROM information_schema.key_column_usage k \
+                 JOIN information_schema.referential_constraints r \
+                   ON r.constraint_schema = k.constraint_schema AND r.constraint_name = k.constraint_name \
+                  AND r.table_name = k.table_name \
+                 WHERE k.referenced_table_schema = ? AND k.referenced_table_name = ? \
+                 ORDER BY k.table_schema, k.table_name, k.constraint_name, k.ordinal_position",
+                at,
+            )
+            .await?;
+        let mut referenced_by: Vec<ReferencingKey> = Vec::new();
+        for (name, schema, table, column, ref_column, on_delete) in referencing {
+            let same = referenced_by.last().is_some_and(|key| {
+                key.name.as_deref() == Some(name.as_str())
+                    && key.schema == schema
+                    && key.table == table
+            });
+            if !same {
+                referenced_by.push(ReferencingKey {
+                    name: Some(name),
+                    schema,
+                    table,
+                    columns: Vec::new(),
+                    ref_columns: Vec::new(),
+                    on_delete,
+                });
+            }
+            if let Some(key) = referenced_by.last_mut() {
+                key.columns.push(column);
+                key.ref_columns.push(ref_column);
+            }
+        }
         Ok(Structure {
             columns,
             primary_key: self.primary_key(object).await?,
             indexes,
             foreign_keys,
+            referenced_by,
         })
     }
 

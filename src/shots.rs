@@ -220,6 +220,7 @@ fn structure() -> Structure {
             on_update: "NO ACTION".into(),
             on_delete: "CASCADE".into(),
         }],
+        referenced_by: Vec::new(),
     }
 }
 
@@ -2162,6 +2163,7 @@ mod mock {
             primary_key: vec!["id".into()],
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         }
     }
 
@@ -2196,6 +2198,7 @@ mod mock {
                 on_update: "NO ACTION".into(),
                 on_delete: "CASCADE".into(),
             }],
+            referenced_by: Vec::new(),
         }
     }
 

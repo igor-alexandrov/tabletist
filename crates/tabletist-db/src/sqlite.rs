@@ -17,9 +17,9 @@ use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
     Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptEnd, ScriptMode, ScriptOutcome,
-    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
-    column_class,
+    ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptEnd, ScriptMode,
+    ScriptOutcome, StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind,
+    WriteOutcome, column_class,
 };
 
 mod fence;
@@ -908,6 +908,7 @@ impl Adapter for Conn {
                 primary_key: primary_key(connection, &object)?,
                 indexes: indexes(connection, &object)?,
                 foreign_keys: foreign_keys(connection, &object)?,
+                referenced_by: referencing_keys(connection, &object)?,
             })
         })
         .await
@@ -1259,6 +1260,45 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         });
     }
     Ok(indexes)
+}
+
+/// The foreign keys that point at `object`: every table's own keys, kept
+/// where they refer to it. SQLite has no list of them, and matches a
+/// table's name without regard to ASCII case.
+fn referencing_keys(
+    connection: &rusqlite::Connection,
+    object: &ObjectRef,
+) -> Result<Vec<ReferencingKey>> {
+    let tables: Vec<String> = {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT name FROM {}.sqlite_master WHERE type = 'table' ORDER BY name",
+                Dialect::Sqlite.quote_ident(&object.schema)
+            ))
+            .map_err(map_error)?;
+        statement
+            .query_map([], |row| text(row, 0))
+            .map_err(map_error)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(map_error)?
+    };
+    let mut keys = Vec::new();
+    for table in tables {
+        let from = ObjectRef::new(object.schema.clone(), table);
+        for key in foreign_keys(connection, &from)? {
+            if key.ref_table.eq_ignore_ascii_case(&object.name) {
+                keys.push(ReferencingKey {
+                    name: None,
+                    schema: from.schema.clone(),
+                    table: from.name.clone(),
+                    columns: key.columns,
+                    ref_columns: key.ref_columns,
+                    on_delete: key.on_delete,
+                });
+            }
+        }
+    }
+    Ok(keys)
 }
 
 fn foreign_keys(

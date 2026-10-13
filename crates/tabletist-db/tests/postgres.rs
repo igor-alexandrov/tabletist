@@ -4059,3 +4059,45 @@ async fn a_row_that_cannot_be_read_back_alone_is_an_error_and_is_undone() {
     )
     .await;
 }
+
+/// The keys that point at `users`, from its own schema and from another:
+/// `orders` loses its rows with the user, `billing.invoices` its user.
+#[tokio::test]
+async fn a_structure_lists_the_keys_that_point_at_its_table() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let users = connection
+        .describe(&ObjectRef::new("public", "users"))
+        .await
+        .unwrap();
+    let said: Vec<(&str, &str, &[String], &str)> = users
+        .referenced_by
+        .iter()
+        .map(|key| {
+            (
+                key.schema.as_str(),
+                key.table.as_str(),
+                key.columns.as_slice(),
+                key.on_delete.as_str(),
+            )
+        })
+        .collect();
+    let user_id = ["user_id".to_owned()];
+    assert!(
+        said.contains(&("public", "orders", &user_id, "CASCADE")),
+        "{said:?}"
+    );
+    assert!(
+        said.contains(&("billing", "invoices", &user_id, "SET NULL")),
+        "{said:?}"
+    );
+    let orders = users
+        .referenced_by
+        .iter()
+        .find(|key| key.table == "orders")
+        .unwrap();
+    assert_eq!(orders.ref_columns, ["id"]);
+    assert_eq!(orders.name.as_deref(), Some("orders_user_id_fkey"));
+    assert_eq!(orders.acts(), Some(tabletist_db::Acts::Deletes));
+}

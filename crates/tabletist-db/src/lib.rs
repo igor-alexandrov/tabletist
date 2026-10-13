@@ -36,7 +36,8 @@ use std::sync::Arc;
 
 use adapter::Adapter;
 pub use catalog::{
-    ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
+    Acts, ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef,
+    ReferencingKey, Structure,
 };
 pub use class::{ColumnClass, Temporal, column_class, temporal};
 pub use dialect::{
