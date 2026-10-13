@@ -1772,6 +1772,21 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
                 )),
                 color: back,
             },
+            // The banner says that everything rolled back: the tail says
+            // what is left on screen.
+            Note::FailedDelete { .. } => Said {
+                mark: Some((FAILED, states::Tone::Danger)),
+                text,
+                tail: Some(say("the row stays marked").into_owned()),
+                color: back,
+            },
+            // Of a save that wrote.
+            Note::AlreadyDeleted(_) => Said {
+                mark: Some((WROTE, states::Tone::Success)),
+                text,
+                tail: None,
+                color: back,
+            },
             _ => Said {
                 mark: Some((FAILED, states::Tone::Danger)),
                 text,

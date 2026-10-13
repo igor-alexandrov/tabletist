@@ -467,3 +467,77 @@ fn a_save_that_deleted_says_how_many_rows() {
         "written 2 rows deleted · 14 ms"
     );
 }
+
+fn restrict() -> tabletist_db::Error {
+    tabletist_db::Error::Query {
+        code: Some("23503".into()),
+        message: "update or delete on table \"publishers\" violates foreign key constraint \
+                  \"book_covers_publisher_id_fkey\" on table \"book_covers\""
+            .into(),
+        detail: None,
+        hint: None,
+        named: Box::default(),
+    }
+}
+
+/// Spec 5: the banner, then the database's words with the constraint's
+/// name. The row stays marked.
+#[test]
+fn a_refused_delete_says_that_nothing_was_saved_and_why() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        mark(&mut harness, tab, id, 1);
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedDelete {
+            delete: 0,
+            error: restrict(),
+        }));
+        harness.settle();
+        assert!(harness.has(
+            "Nothing was saved. 1 row failed, so the whole transaction rolled back. 23503 · \
+             update or delete on table \"publishers\" violates foreign key constraint \
+             \"book_covers_publisher_id_fkey\" on table \"book_covers\"."
+        ));
+        assert!(harness.has("Row 2, marked for deletion"));
+    }
+}
+
+/// The Omarchy look says it on its error line, by the row's number.
+#[test]
+fn the_terminal_says_a_refused_delete_on_its_error_line() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedDelete {
+        delete: 0,
+        error: restrict(),
+    }));
+    harness.settle();
+    let mut lines = harness.painted.iter();
+    let line = lines.find(|(text, _)| text.starts_with("! 2: "));
+    assert!(
+        line.is_some_and(|(text, _)| text.contains("23503")),
+        "{:?}",
+        harness.painted
+    );
+}
+
+/// Spec 4 and test 9: the words for a row someone deleted first.
+#[test]
+fn a_row_already_deleted_is_said_by_its_key() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    mark(&mut harness, tab, id, 0);
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(written(vec![1]));
+    harness.settle();
+    assert!(harness.has("Row id 2 was already deleted."));
+    // And where two were.
+    let note = crate::edit::Note::AlreadyDeleted(vec!["id 2".into(), "id 3".into()]);
+    let workspace = harness.app.workspace(tab).unwrap();
+    let object = workspace.object_tab(id).unwrap();
+    assert_eq!(
+        crate::ui::pending_bar::note_text(&note, object, harness.app.locale),
+        "2 rows were already deleted: id 2, id 3."
+    );
+}

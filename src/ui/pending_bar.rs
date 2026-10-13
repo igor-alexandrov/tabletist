@@ -163,9 +163,23 @@ fn note_said(
             say("Nothing was saved. 1 new row failed, so the whole transaction rolled back."),
             database_said(error)
         ),
-        // Worded with the rest of what a save that deletes says.
-        Note::FailedDelete { error, .. } => format!("{} {nothing}", database_said(error)),
-        Note::AlreadyDeleted(_) => String::new(),
+        // The spec's banner. A save stops at its first statement that
+        // fails, so one row fails at a time.
+        Note::FailedDelete { error, .. } => format!(
+            "{} {}",
+            say("Nothing was saved. 1 row failed, so the whole transaction rolled back."),
+            database_said(error)
+        ),
+        // Of a save that wrote: the rows by their keys, which are theirs.
+        Note::AlreadyDeleted(rows) => match rows.as_slice() {
+            [row] => format!("{} {row} {}", say("Row"), say("was already deleted.")),
+            rows => format!(
+                "{} {} {}.",
+                rows.len(),
+                say("rows were already deleted:"),
+                rows.join(", ")
+            ),
+        },
         Note::Lost => say("The connection was lost while saving. Reload to see what was written."),
         Note::NotSent => say("Not connected. Nothing was sent."),
         Note::Cancelled => format!("{} {nothing}", say("Save cancelled.")),

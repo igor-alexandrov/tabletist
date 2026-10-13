@@ -1200,6 +1200,17 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
         .and_then(|workspace| workspace.object_tab(object_tab))
         .and_then(|object| {
             let page = object.page()?;
+            // A row whose delete failed has no cell to say it: the row,
+            // by its number, and the database's words.
+            let refused = object
+                .edits
+                .deleted
+                .iter()
+                .find_map(|(&row, doomed)| Some((row, doomed.failed.as_ref()?)));
+            if let Some((row, error)) = refused {
+                let number = object.query.offset + row as u64 + 1;
+                return Some(format!("! {number}:  {}", failure_text(error)));
+            }
             // The set is in the page's order: by row, then by column.
             let (&(row, col), pending) = object
                 .edits
@@ -1961,13 +1972,15 @@ impl<'a> Changes<'a> {
         // A row marked for deletion is that and nothing else. Every value
         // is plain text, so one way of striking it through serves every
         // column: a NULL is its word, a tag and a chip their text.
-        if self.deleted.contains_key(&row) {
+        if let Some(doomed) = self.deleted.get(&row) {
             if cell.null {
                 cell.text = "NULL".into();
             }
             cell.null = false;
             cell.slanted = false;
-            cell.hint = None;
+            // What the database said of a delete it refused, under the
+            // pointer on any of the row's cells.
+            cell.hint = doomed.failed.as_ref().map(failure_text);
             cell.style = grid::Style::Plain;
             let marker = !look.terminal && self.delete_marker == Some(col);
             cell.mark = if marker {
