@@ -74,6 +74,9 @@ pub struct Row {
     /// The row is marked for deletion: a screen reader is told so, also
     /// where its delete failed and its mark is the trouble's.
     pub deleted: bool,
+    /// The row is one of several selected rows: it is drawn as the
+    /// selected row of its kind is, and told as selected.
+    pub ranged: bool,
 }
 
 /// How a cell draws its text.
@@ -763,6 +766,7 @@ pub fn show<'a>(
                     mark,
                     number,
                     deleted,
+                    ranged,
                 } = rows(row);
                 let label = match number {
                     Some(number) if deleted => format!("Row {number}, marked for deletion"),
@@ -770,6 +774,11 @@ pub fn show<'a>(
                     None => "New row, not saved".to_owned(),
                 };
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+                if ranged {
+                    ui.ctx().accesskit_node_builder(response.id, |node| {
+                        node.set_selected(true);
+                    });
+                }
                 if response.clicked() || response.double_clicked() {
                     let col = response
                         .interact_pointer_pos()
@@ -805,7 +814,9 @@ pub fn show<'a>(
                 // having no number among the table's. Its mark is not
                 // steady enough, a cell to fix in it makes it `Trouble`.
                 let held_back = new || number.is_none();
-                let selected_row = selection.is_some_and(|cell| cell.row == row);
+                // The cursor's row, and with it the rows selected with it.
+                let cursor_row = selection.is_some_and(|cell| cell.row == row);
+                let selected_row = cursor_row || ranged;
                 // With the keyboard in the grid the cell takes the
                 // selection's colour and its row a lighter tint of it.
                 let lit_row = selected_row && lit && !look.terminal;
@@ -881,7 +892,7 @@ pub fn show<'a>(
                                 painter.rect_filled(bar, CornerRadius::ZERO, fresh.bar);
                             }
                             let line = rect.center().y;
-                            if selected_row {
+                            if cursor_row {
                                 // The cursor: a bold accent block in the
                                 // gutter.
                                 let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent)
@@ -1958,6 +1969,7 @@ mod tests {
             mark,
             number: Some(row as u64 + 1),
             deleted: false,
+            ranged: false,
         }
     }
 
@@ -2426,6 +2438,7 @@ mod tests {
                         mark,
                         number: None,
                         deleted: false,
+                        ranged: false,
                     },
                     at => numbered(RowMark::None, at),
                 }
@@ -2585,6 +2598,7 @@ mod tests {
                 mark: RowMark::New,
                 number: None,
                 deleted: false,
+                ranged: false,
             },
             // The page's rows keep their numbers under it.
             row => numbered(RowMark::None, row - 1),

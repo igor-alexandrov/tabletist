@@ -7,7 +7,7 @@
 
 use egui::{Key, Modifiers};
 
-use super::insert_audit_tests::{add, select, selected};
+use super::insert_audit_tests::{add, painted, select, selected};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::testing::{Harness, book_covers_page, book_covers_structure};
 use crate::theme::Look;
@@ -144,4 +144,27 @@ fn a_range_ends_with_its_page_and_with_what_works_on_one_row() {
         elapsed: std::time::Duration::from_millis(14),
     }));
     assert_eq!(range(&harness, tab, id), None);
+}
+
+/// Spec 1 and tests 1 and 11: the footer counts the selected rows, and
+/// each row of a range is told to a screen reader as selected.
+#[test]
+fn a_range_is_counted_in_the_footer_and_told_as_selected() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_with(look, book_covers_page(5));
+        select(&mut harness, tab, id, (1, 2));
+        assert!(painted(&harness, "1 row selected"));
+        select_rows(&mut harness, tab, id, 1, 3);
+        assert!(painted(&harness, "3 rows selected"));
+        let tree = harness.settle();
+        let told = |label: &str| {
+            let mut nodes = tree.nodes.iter();
+            let node = nodes.find(|(_, node)| node.label() == Some(label));
+            node.and_then(|(_, node)| node.is_selected())
+        };
+        assert_eq!(told("Row 2"), Some(true));
+        assert_eq!(told("Row 4"), Some(true));
+        assert_eq!(told("Row 1"), None);
+        assert_eq!(told("Row 5"), None);
+    }
 }

@@ -1696,6 +1696,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             mark: crate::edit::RowMark::None,
             number: Some(row as u64 + 1),
             deleted: false,
+            ranged: false,
         },
         None,
         None,

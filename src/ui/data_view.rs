@@ -61,6 +61,11 @@ fn selection_note(
     locale: crate::i18n::Locale,
 ) -> Option<String> {
     let cell = object.selection?;
+    // Several rows: how many, whatever kind each is.
+    let rows = object.selected_rows().len();
+    if rows > 1 {
+        return Some(format!("{rows} {}", gettext(locale, "rows selected")));
+    }
     let Some(id) = crate::edit::new_id(cell.row) else {
         return Some(gettext(locale, "1 row selected").into_owned());
     };
@@ -1500,6 +1505,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         // among them. A place is the grid's; a row is the set's and the
         // page's, and the reducer's.
         let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
+        // The rows selected with the cursor's, as places of the grid. Read
+        // here, before the tab is taken for its editor's text.
+        let span = object.selected_span();
+        let ranged =
+            |place: usize| span.is_some_and(|(first, last)| (first..=last).contains(&place));
         let placed = |cell: CellPos| {
             let row = order.place(cell.row)?;
             Some(CellPos { row, col: cell.col })
@@ -1567,6 +1577,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         },
                         number: None,
                         deleted: false,
+                        ranged: ranged(place),
                     },
                     None => {
                         let doomed = object.edits.deleted.get(&row);
@@ -1578,6 +1589,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                             },
                             number: Some(object.query.offset + row as u64 + 1),
                             deleted: doomed.is_some(),
+                            ranged: ranged(place),
                         }
                     }
                 },
