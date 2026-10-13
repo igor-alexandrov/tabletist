@@ -17,7 +17,8 @@ use std::time::Duration;
 
 use tabletist_db::{
     Access, CellChange, ChangeSet, ConnectSpec, Connection, Error, HostKeys, InsertValue, NewValue,
-    ObjectRef, RowChange, RowDelete, RowInsert, RowQuery, Secrets, StopFlag, Value, WriteOutcome,
+    ObjectRef, RowChange, RowDelete, RowInsert, RowQuery, Secrets, StopFlag, TlsMode, Value,
+    WriteOutcome,
 };
 
 const NORTHLIGHT: i64 = 9_100_000_000_000_000_001;
@@ -411,5 +412,171 @@ mod sqlite {
             "{outcome:?}"
         );
         assert_eq!(firsts(&connection, covers).await, ["1", "2", "3"]);
+    }
+}
+
+mod postgres {
+    use super::*;
+
+    /// Written for the tables that begin with `shop`: each test has a
+    /// Bookshop of its own, whose tables begin with its own word.
+    const DROP: &str =
+        "DROP TABLE IF EXISTS shop_shelves, shop_book_authors, shop_book_covers, shop_publishers";
+
+    const CREATE: &str = "
+        CREATE TABLE shop_publishers (
+            id bigint PRIMARY KEY,
+            name text NOT NULL UNIQUE
+        );
+        INSERT INTO shop_publishers VALUES
+            (9100000000000000001, 'Northlight Books'),
+            (9100000000000000004, 'Harbor Press'),
+            (9100000000000000007, 'Harbor Lights');
+        CREATE TABLE shop_book_covers (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            publisher_id bigint NOT NULL REFERENCES shop_publishers (id),
+            kind varchar NOT NULL DEFAULT 'print'
+        );
+        INSERT INTO shop_book_covers (publisher_id, kind) VALUES
+            (9100000000000000001, 'print'),
+            (9100000000000000001, 'ebook'),
+            (9100000000000000004, 'print');
+        CREATE TABLE shop_book_authors (
+            book_id bigint NOT NULL,
+            author text NOT NULL,
+            PRIMARY KEY (book_id, author)
+        );
+        INSERT INTO shop_book_authors VALUES
+            (101, 'Ada Quill'), (101, 'Sam O''Neil'), (102, 'Ada Quill');
+        CREATE TABLE shop_shelves (
+            id bigint PRIMARY KEY,
+            parent_id bigint REFERENCES shop_shelves (id) ON DELETE CASCADE
+        );
+        INSERT INTO shop_shelves VALUES (1, NULL), (2, 1), (3, NULL)";
+
+    fn named(sql: &str, prefix: &str) -> String {
+        sql.replace("shop_", &format!("{prefix}_"))
+    }
+
+    fn shop(prefix: &str) -> Shop {
+        Shop {
+            schema: "public".into(),
+            publishers: format!("{prefix}_publishers"),
+            covers: format!("{prefix}_book_covers"),
+            authors: format!("{prefix}_book_authors"),
+            shelves: format!("{prefix}_shelves"),
+            id: "bigint",
+            text: "text",
+        }
+    }
+
+    fn url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_PG_URL").ok();
+        url.filter(|url| !url.trim().is_empty())
+    }
+
+    /// The Bookshop whose tables begin with `prefix`, made anew, with a
+    /// session of the test's own standing in for another program. `None`
+    /// without a server.
+    async fn bookshop(prefix: &str) -> Option<(tokio_postgres::Client, Connection)> {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return None;
+        };
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (admin, session) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(session);
+        admin.batch_execute(&named(DROP, prefix)).await.unwrap();
+        admin.batch_execute(&named(CREATE, prefix)).await.unwrap();
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::Writable)
+                .await
+                .unwrap();
+        Some((admin, connection))
+    }
+
+    #[tokio::test]
+    async fn postgres_deletes_a_row_by_its_key() {
+        let Some((admin, connection)) = bookshop("pgdel").await else {
+            return;
+        };
+        a_marked_row_is_deleted(&connection, &shop("pgdel")).await;
+        admin.batch_execute(&named(DROP, "pgdel")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_says_a_row_was_already_gone_and_saves_the_rest() {
+        let Some((admin, connection)) = bookshop("pggone").await else {
+            return;
+        };
+        admin
+            .batch_execute("DELETE FROM pggone_book_covers WHERE id = 2")
+            .await
+            .unwrap();
+        a_row_already_gone_is_said_and_the_rest_is_saved(&connection, &shop("pggone")).await;
+        admin.batch_execute(&named(DROP, "pggone")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_writes_new_rows_before_it_deletes() {
+        let Some((admin, connection)) = bookshop("pgorder").await else {
+            return;
+        };
+        a_new_row_goes_in_before_a_row_goes_out(&connection, &shop("pgorder")).await;
+        admin.batch_execute(&named(DROP, "pgorder")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_changes_rows_before_it_deletes() {
+        let Some((admin, connection)) = bookshop("pgfirst").await else {
+            return;
+        };
+        a_row_is_changed_before_a_row_goes_out(&connection, &shop("pgfirst")).await;
+        admin.batch_execute(&named(DROP, "pgfirst")).await.unwrap();
+    }
+
+    /// Spec 5: 23503, and the constraint that holds the row, which is
+    /// what finds the table that refers to it.
+    #[tokio::test]
+    async fn postgres_keeps_a_row_a_foreign_key_holds() {
+        let Some((admin, connection)) = bookshop("pgheld").await else {
+            return;
+        };
+        let error =
+            a_row_a_foreign_key_holds_stays_and_the_save_is_undone(&connection, &shop("pgheld"))
+                .await;
+        let Error::Query {
+            code, named: of, ..
+        } = error
+        else {
+            panic!("a query error: {error:?}");
+        };
+        assert_eq!(code.as_deref(), Some("23503"));
+        assert_eq!(
+            of.constraint.as_deref(),
+            Some("pgheld_book_covers_publisher_id_fkey")
+        );
+        admin.batch_execute(&named(DROP, "pgheld")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_deletes_by_a_key_of_two_columns() {
+        let Some((admin, connection)) = bookshop("pgtwo").await else {
+            return;
+        };
+        a_key_of_two_columns_finds_its_row(&connection, &shop("pgtwo")).await;
+        admin.batch_execute(&named(DROP, "pgtwo")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_deletes_a_row_another_delete_took_with_it() {
+        let Some((admin, connection)) = bookshop("pgtree").await else {
+            return;
+        };
+        a_row_the_save_took_with_another_is_deleted(&connection, &shop("pgtree")).await;
+        admin.batch_execute(&named(DROP, "pgtree")).await.unwrap();
     }
 }

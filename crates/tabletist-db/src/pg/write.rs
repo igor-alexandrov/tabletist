@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio_postgres::SimpleQueryMessage;
 
 use super::{Conn, column, column_metas, query_error, row_values};
-use crate::dialect::{InsertStatement, RowUpdate};
+use crate::dialect::{InsertStatement, RowDeletion, RowUpdate};
 use crate::script::retry_cancelled;
 use crate::write::{
     Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
@@ -42,13 +42,20 @@ impl Conn {
                 Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
             }
         }
+        let mut deletions = Vec::with_capacity(changes.deletes.len());
+        for (delete, row) in changes.deletes.iter().enumerate() {
+            match Dialect::Postgres.delete_row(&changes.object, row) {
+                Ok(built) => deletions.push(built),
+                Err(error) => return Ok(WriteOutcome::FailedDelete { delete, error }),
+            }
+        }
         let client = self.client.lock().await;
         // Stopped before it began: nothing is sent.
         not_stopped(stop)?;
         let started = Instant::now();
         // From here every path ends the transaction, whatever of it began.
         let applied = match begin(&client).await {
-            Ok(()) => apply(&client, changes, &inserts, &updates, stop).await,
+            Ok(()) => apply(&client, changes, &inserts, &updates, &deletions, stop).await,
             Err(error) => Err(error),
         };
         // The last moment a stop is heard. Once COMMIT is sent the save is
@@ -132,14 +139,16 @@ async fn rows(
 }
 
 /// The steps of a save inside its transaction: lock and compare every row,
-/// update every row, read every row back. `Err` leaves the transaction to
-/// be rolled back like every other end but `Rows`, and a `stop` found
-/// before any of its statements is such an end.
+/// write the new rows, update every row, delete the rows to delete, read
+/// every changed row back. `Err` leaves the transaction to be rolled back
+/// like every other end but `Rows`, and a `stop` found before any of its
+/// statements is such an end.
 async fn apply(
     client: &tokio_postgres::Client,
     changes: &ChangeSet,
     inserts: &[InsertStatement],
     updates: &[RowUpdate],
+    deletions: &[RowDeletion],
     stop: &StopFlag,
 ) -> Result<Applied> {
     let dialect = Dialect::Postgres;
@@ -181,10 +190,23 @@ async fn apply(
         }
         read.push(server);
     }
+    // The rows to delete are locked now too, while nothing is written: a
+    // delete someone has not committed yet is waited for, and then the
+    // row is found gone. `None` is a row that is already gone.
+    let mut doomed = Vec::with_capacity(changes.deletes.len());
+    for delete in &changes.deletes {
+        let select = dialect.select_row(&changes.object, &delete.key, true);
+        not_stopped(stop)?;
+        let mut found = rows(client, &select.text, &columns).await?;
+        if found.len() > 1 {
+            return Err(more_than_one());
+        }
+        doomed.push(found.pop());
+    }
     // Before a conflict is answered too: a set that names a row twice is
     // not one to offer writing over what the server holds.
     {
-        let (keys, found) = read_by(changes, &read, &[]);
+        let (keys, found) = read_by(changes, &read, &doomed);
         same_row_twice(&keys, &names, &found)?;
     }
     if !conflicts.is_empty() {
@@ -248,6 +270,57 @@ async fn apply(
             });
         }
     }
+    // The rows to delete, last: the order a review shows them in. One
+    // that was not there is said and not sent.
+    let mut gone = Vec::new();
+    let found = changes.deletes.iter().zip(deletions).zip(&doomed);
+    for (delete, ((row, deletion), found)) in found.enumerate() {
+        if found.is_none() {
+            gone.push(delete);
+            continue;
+        }
+        not_stopped(stop)?;
+        let messages = match client
+            .simple_query(&deletion.sql.text)
+            .await
+            .map_err(query_error)
+        {
+            Ok(messages) => messages,
+            // A cancel or a lost session ends the save; anything else is
+            // the statement's own failure: a foreign key that holds the
+            // row, most often.
+            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+            Err(error) => return Ok(Applied::FailedDelete { delete, error }),
+        };
+        // The count is of the table's own rows, without those a foreign
+        // key took with them.
+        let touched = messages
+            .iter()
+            .find_map(|message| match message {
+                SimpleQueryMessage::CommandComplete(count) => Some(*count),
+                _ => None,
+            })
+            .unwrap_or(0);
+        // None: a row deleted before this one took it along (a key of the
+        // table that points at the table), which is what the save meant,
+        // or a trigger or a rule kept it, which is not. The row says
+        // which.
+        if touched == 0 {
+            let select = dialect.select_row(&changes.object, &row.key, false);
+            not_stopped(stop)?;
+            if rows(client, &select.text, &columns).await?.is_empty() {
+                continue;
+            }
+        }
+        if touched != 1 {
+            return Ok(Applied::FailedDelete {
+                delete,
+                error: Error::query(format!(
+                    "the save would have deleted {touched} rows where it meant one"
+                )),
+            });
+        }
+    }
     let mut saved = Vec::with_capacity(changes.rows.len());
     for change in &changes.rows {
         let select = dialect.select_row(&changes.object, &change.key, false);
@@ -255,7 +328,9 @@ async fn apply(
         let mut found = rows(client, &select.text, &columns).await?;
         // A trigger the update fired can give a second row the key, or
         // take it from the first. Either way the row to hand back is no
-        // longer known, and the save is undone.
+        // longer known, and the save is undone. None can also be a row
+        // the save deleted taking this one with it (a key of the table
+        // that points at the table).
         if found.len() > 1 {
             return Err(more_than_one());
         }
@@ -282,12 +357,20 @@ async fn apply(
                 // work without one: a row changed after the inserts can
                 // carry a new row with it. Only a save that changes rows
                 // has such an update.
+                //
+                // A row the save deleted does the same where a key of the
+                // table acts on a delete: a new row can name the deleted
+                // one, straight or through another table. Only a save
+                // that deletes rows has such a delete.
                 "SELECT c.relkind = 'r' AND NOT c.relhasrules \
                         AND NOT EXISTS (SELECT 1 FROM pg_trigger t \
                                         WHERE t.tgrelid = c.oid AND NOT t.tgisinternal) \
                         AND ($3 OR NOT EXISTS (SELECT 1 FROM pg_constraint k \
                                                WHERE k.conrelid = c.oid AND k.contype = 'f' \
                                                  AND k.confupdtype NOT IN ('a', 'r'))) \
+                        AND ($4 OR NOT EXISTS (SELECT 1 FROM pg_constraint k \
+                                               WHERE k.conrelid = c.oid AND k.contype = 'f' \
+                                                 AND k.confdeltype NOT IN ('a', 'r'))) \
                  FROM pg_class c \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
                  WHERE n.nspname = $1 AND c.relname = $2",
@@ -295,6 +378,7 @@ async fn apply(
                     &changes.object.schema,
                     &changes.object.name,
                     &changes.rows.is_empty(),
+                    &changes.deletes.is_empty(),
                 ],
             )
             .await
@@ -310,7 +394,7 @@ async fn apply(
     Ok(Applied::Rows(Stored {
         inserted,
         rows: saved,
-        gone: Vec::new(),
+        gone,
     }))
 }
 
