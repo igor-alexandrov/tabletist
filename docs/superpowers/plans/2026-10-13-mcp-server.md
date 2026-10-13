@@ -408,12 +408,29 @@ back like any other.
 **Parser: `sqlparser` 0.63** (`sqlparser-rs`, Apache), with
 `PostgreSqlDialect`, `MySqlDialect` and `SQLiteDialect`, chosen by a `match`
 on `Dialect` that names every variant, as `AGENTS.md` requires. It gives a
-syntax tree, a visitor over every relation and expression (`visit_relations`,
-`visit_expressions`, the `visitor` feature) and source positions. It adds two
-crates, `sqlparser` and `sqlparser_derive`. Its default `recursive-protection`
-feature would add `recursive` and `stacker`, which build a little assembly;
-it can stay off, since the parser's own depth limit (`with_recursion_limit`)
-already refuses a statement nested too deep to walk.
+syntax tree, its tokens, and source positions. With the `std` feature alone it
+is one new crate. The `visitor` feature, which walks the tree
+(`visit_relations`, `visit_expressions`), adds `sqlparser_derive`.
+
+**Corrected on 2026-10-13, from the draft of Phase 1a.** This section first
+said the parser's own depth limit refuses a statement nested too deep to
+walk. It does not. The limit bounds parentheses. A chain such as `1+1+1+…`
+is parsed in a loop into a tree as deep as the chain is long, about 50,000
+levels under the size cap. Measured in a debug build on Linux: dropping that
+tree needs 4 to 8 MB of stack, and walking it with the derived visitor needs
+about 40 kB for each level, so 100 levels overflow the 2 MB a thread of the
+backend's runtime has. An overflow ends the process. The default
+`recursive-protection` feature guards the parser and `Display`, which are not
+what overflows. What follows from it:
+
+- Phase 1a parses on a thread with a stack of its own, and reads what it
+  must find at any depth (a write, a lock, `INTO`, a function, a
+  placeholder) off the tokens, never off the tree. See
+  `2026-10-13-mcp-server-1a-1-read-checker.md`.
+- Phase 1c needs the names of the tables a statement reads, which only the
+  tree has (B.3, point 1). It must bound the depth before it walks: a cap on
+  the number of tokens is the obvious bound, since a level costs at least
+  one. That design is 1c's.
 
 Why not the alternatives:
 
@@ -455,8 +472,8 @@ string. The checker collects every function name, in expressions and in
   `query_to_xml*`, `table_to_xml*`, `cursor_to_xml*`, `nextval`, `setval`,
   `pg_notify`, `pg_reload_conf`, `pg_logical_*`, `pg_replication_*`. MySQL:
   `SLEEP`, `BENCHMARK`, `GET_LOCK`, `RELEASE_LOCK`, `RELEASE_ALL_LOCKS`,
-  `LOAD_FILE`, `SOURCE_POS_WAIT`, `MASTER_POS_WAIT`, and assignment to a user
-  variable. SQLite: `load_extension`, and every table-valued `pragma_*`.
+  `LOAD_FILE`, `SOURCE_POS_WAIT`, `MASTER_POS_WAIT`, MariaDB's `NEXTVAL` and
+  `SETVAL`, and assignment to a user variable. SQLite: `load_extension`, and every table-valued `pragma_*`.
 - **Functions the database's users wrote**, which the checker cannot read:
   allowed on a connection that hides and masks nothing, refused on one that
   does. Telling them apart needs the names of the database's routines, which
@@ -497,7 +514,8 @@ A reference is looked for in four places:
 
 1. **The statement's names.** `visit_relations` gives every name in a table
    position, at any depth: joins, subqueries, CTE bodies, `LATERAL`, set
-   operations. Each is resolved against the catalog and compared, without
+   operations. (It walks the tree, so the depth is bounded first: see the
+   correction in B.2.) Each is resolved against the catalog and compared, without
    regard to case (the strict reading for MySQL, whose rule depends on the
    server). A CTE named like a hidden table is refused, not reasoned about:
    getting its scope wrong would be a leak.
@@ -1380,6 +1398,9 @@ off until the person turns it on.
 
 **1a. The enforcement core. No server, nothing visible.**
 
+- Runs: three, each its own plan and pull request. The read checker
+  (`2026-10-13-mcp-server-1a-1-read-checker.md`), then the drivers, then
+  SQLite's `Fence::Agent`. The check for writes moves to Phase 2.
 - Files: `crates/tabletist-db/src/agent.rs` and `agent/` (the checker, the
   function lists, the agent policy type), `sql.rs` (parameter tokens),
   `script.rs`, `pg/script.rs`, `mysql/script.rs`, `sqlite.rs` (parameters,
