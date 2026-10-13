@@ -1513,9 +1513,11 @@ impl App {
         // did not send: no row is named for want of it.
         let place = |index: usize| saving.rows.get(index).copied();
         match result {
+            // No save of the app's deletes a row yet, so none can be gone.
             Ok(WriteOutcome::Written {
                 inserted,
                 rows,
+                gone: _,
                 elapsed,
             }) => {
                 let counts = object.edits.counts();
@@ -1672,6 +1674,11 @@ impl App {
                 object.edits.fail_insert(new, error);
                 // The row panel says what stands against a cell.
                 object.fields = None;
+            }
+            // No save of the app's deletes a row yet: there is no row to
+            // put this on.
+            Ok(WriteOutcome::FailedDelete { error, .. }) => {
+                object.edits.note = Some(Note::Refused(error));
             }
             Err(error) => {
                 object.edits.note = Some(if error.is_connection_lost() {

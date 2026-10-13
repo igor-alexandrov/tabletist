@@ -4688,6 +4688,7 @@ mod tests {
                     new: tabletist_db::NewValue::Text(new.into()),
                 }],
             }],
+            deletes: Vec::new(),
         }
     }
 
@@ -5050,7 +5051,7 @@ mod tests {
         assert_eq!(
             printed,
             "Write { session: SessionId(7), request: RequestId(11), changes: ChangeSet { \
-             object: ObjectRef { schema: \"main\", name: \"users\" }, inserts: 0, rows: 1, cells: 1, .. } }"
+             object: ObjectRef { schema: \"main\", name: \"users\" }, inserts: 0, rows: 1, cells: 1, deletes: 0, .. } }"
         );
         let pretty = format!("{command:#?}");
         for hidden in ["Grace Hopper", "Ada Lovelace", "TEXT"] {
@@ -5076,6 +5077,7 @@ mod tests {
                     }],
                 })
                 .collect(),
+            deletes: Vec::new(),
         }
     }
 

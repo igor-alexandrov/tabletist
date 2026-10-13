@@ -377,5 +377,9 @@ fn apply(
         .into_iter()
         .map(|row| row.filter(|_| known))
         .collect();
-    Ok(Applied::Rows(Stored { inserted, rows }))
+    Ok(Applied::Rows(Stored {
+        inserted,
+        rows,
+        gone: Vec::new(),
+    }))
 }

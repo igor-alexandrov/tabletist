@@ -751,6 +751,7 @@ fn edit_saved(harness: &mut Harness) {
         inserted: Vec::new(),
         rows: vec![row],
         elapsed: Duration::from_millis(14),
+        gone: Vec::new(),
     }));
 }
 

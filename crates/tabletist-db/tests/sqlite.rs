@@ -1758,6 +1758,7 @@ fn rename(id: i64, loaded: &str, new: &str) -> ChangeSet {
                 new: NewValue::Text(new.into()),
             }],
         }],
+        deletes: Vec::new(),
     }
 }
 
@@ -1776,6 +1777,7 @@ async fn a_read_only_connection_refuses_a_save_before_it_reads_it() {
         object: ObjectRef::new("main", "users"),
         inserts: Vec::new(),
         rows: Vec::new(),
+        deletes: Vec::new(),
     };
     assert_eq!(
         connection.write(&empty, &StopFlag::new()).await,
@@ -1794,6 +1796,7 @@ async fn a_writable_connection_refuses_a_set_it_cannot_write() {
         object: ObjectRef::new("main", "users"),
         inserts: Vec::new(),
         rows: Vec::new(),
+        deletes: Vec::new(),
     };
     assert!(matches!(
         connection.write(&empty, &StopFlag::new()).await,
@@ -1846,6 +1849,7 @@ async fn save(
             key: vec![("id".into(), Value::Int(id))],
             set,
         }],
+        deletes: Vec::new(),
     };
     let outcome = connection.write(&changes, &StopFlag::new()).await;
     (changes, outcome)
@@ -1943,6 +1947,7 @@ async fn a_row_changed_by_someone_else_is_a_conflict_and_nothing_is_written() {
                 }],
             },
         ],
+        deletes: Vec::new(),
     };
     other_program(&dir)
         .execute("UPDATE users SET name = 'Theirs' WHERE id = 1", [])
@@ -1983,6 +1988,7 @@ async fn a_change_to_a_column_the_save_leaves_alone_is_no_conflict() {
                 new: to("Mine"),
             }],
         }],
+        deletes: Vec::new(),
     };
     other_program(&dir)
         .execute("UPDATE users SET score = 99 WHERE id = 1", [])
@@ -2010,6 +2016,7 @@ async fn a_row_that_is_gone_is_a_conflict_without_a_row() {
                 new: to("Late"),
             }],
         }],
+        deletes: Vec::new(),
     };
     // Its orders go first: the fixture has foreign keys.
     let other = other_program(&dir);
@@ -2056,6 +2063,7 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
                 }],
             },
         ],
+        deletes: Vec::new(),
     };
     let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
     assert!(
@@ -2085,6 +2093,7 @@ fn adding(table: &str, inserts: Vec<RowInsert>, rows: Vec<RowChange>) -> ChangeS
         object: ObjectRef::new("main", table),
         inserts,
         rows,
+        deletes: Vec::new(),
     }
 }
 
@@ -2614,6 +2623,7 @@ async fn a_save_does_not_inherit_what_a_script_left_on_the_session() {
                 new: to("z"),
             }],
         }],
+        deletes: Vec::new(),
     };
     // The CHECK holds all the same, and the journal is the file's own.
     let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
@@ -2819,6 +2829,7 @@ async fn a_save_writes_a_decimal_as_a_number() {
                     new: to(new),
                 }],
             }],
+            deletes: Vec::new(),
         };
         let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
         let WriteOutcome::Written { rows, .. } = outcome else {
@@ -2861,6 +2872,7 @@ async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
                 new: to("both"),
             }],
         }],
+        deletes: Vec::new(),
     };
     let refused = connection.write(&changes, &StopFlag::new()).await;
     assert!(
@@ -2939,6 +2951,7 @@ async fn an_update_that_does_not_change_one_row_fails_and_is_undone() {
                 new: to("Through the view"),
             }],
         }],
+        deletes: Vec::new(),
     };
     let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
     assert!(
@@ -2980,6 +2993,7 @@ async fn a_column_with_no_type_keeps_the_kind_of_value_it_held() {
                     new: to("6"),
                 }],
             }],
+            deletes: Vec::new(),
         };
         let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
         let WriteOutcome::Written { rows, .. } = outcome else {
@@ -3014,6 +3028,7 @@ async fn a_save_reads_a_table_with_names_that_are_not_utf8() {
                     new,
                 }],
             }],
+            deletes: Vec::new(),
         };
     // A column SQL can name is saved, beside one it cannot.
     let price = one(
@@ -3132,6 +3147,7 @@ async fn a_name_two_columns_read_as_is_refused() {
                     new: to("mine"),
                 }],
             }],
+            deletes: Vec::new(),
         };
         let refused = connection.write(&changes, &StopFlag::new()).await;
         assert!(
@@ -3175,6 +3191,7 @@ fn one_cell(
                 new,
             }],
         }],
+        deletes: Vec::new(),
     }
 }
 
@@ -3541,6 +3558,7 @@ async fn a_name_in_other_letters_than_the_tables_is_refused() {
             change("id", "name", "Ada Lovelace"),
             change("ID", "email", "ada@example.com"),
         ],
+        deletes: Vec::new(),
     };
     assert_eq!(twice.check(), Ok(()));
     // A set's name too, alone.
@@ -3548,6 +3566,7 @@ async fn a_name_in_other_letters_than_the_tables_is_refused() {
         object: ObjectRef::new("main", "users"),
         inserts: Vec::new(),
         rows: vec![change("id", "NAME", "Ada Lovelace")],
+        deletes: Vec::new(),
     };
     for (changes, name) in [(twice, "ID"), (set, "NAME")] {
         let refused = connection.write(&changes, &StopFlag::new()).await;
@@ -3645,6 +3664,7 @@ async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
             object: ObjectRef::new("main", table),
             inserts: Vec::new(),
             rows: vec![change(first, "a", "a"), change(second, "b", "b")],
+            deletes: Vec::new(),
         }
     };
     for (table, key, first, second) in [

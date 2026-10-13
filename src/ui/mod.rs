@@ -12584,6 +12584,7 @@ mod tests {
             inserted: vec![Some(stored)],
             rows: Vec::new(),
             elapsed: std::time::Duration::from_millis(5),
+            gone: Vec::new(),
         }));
         assert!(harness.has("written 1 new row · 5 ms"));
         // The row is the table's now, with the id the database gave it.
@@ -13181,6 +13182,7 @@ mod tests {
                     tabletist_db::Value::Null,
                 ]],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             let green = Tone::Success.fill(&look, &palette);
@@ -13230,6 +13232,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: rows.to_vec(),
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             let green = Tone::Success.fill(&look, &palette);
@@ -13277,6 +13280,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: rows.to_vec(),
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             // A cell by the email of its row, which every look writes as it
@@ -13859,6 +13863,7 @@ mod tests {
                     tabletist_db::Value::Null,
                 ]],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
             // With nothing pending the key sends nothing.
@@ -15915,6 +15920,7 @@ mod tests {
                 ],
             ],
             elapsed: std::time::Duration::from_millis(14),
+            gone: Vec::new(),
         }));
         harness.settle();
         let said = "written 2 changes · 2 rows · 14 ms";
@@ -17437,6 +17443,7 @@ mod tests {
                 tabletist_db::Value::Null,
             ]],
             elapsed: std::time::Duration::from_millis(14),
+            gone: Vec::new(),
         }
     }
 
@@ -18160,6 +18167,7 @@ mod tests {
                     tabletist_db::Value::Text("{}".into()),
                 ]],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             assert!(!open(&harness, tab, id), "{}", look.name);
         }
@@ -19131,6 +19139,7 @@ mod tests {
                     ],
                 ],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             harness.settle();
             assert!(!painted(&harness, "was NULL"), "{}", look.name);

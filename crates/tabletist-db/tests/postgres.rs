@@ -2179,6 +2179,7 @@ fn changes_to(table: &str, rows: Vec<RowChange>) -> ChangeSet {
         object: ObjectRef::new("public", table),
         inserts: Vec::new(),
         rows,
+        deletes: Vec::new(),
     }
 }
 

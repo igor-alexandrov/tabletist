@@ -2141,6 +2141,7 @@ mod tests {
                     new: crate::NewValue::Text("Mine".into()),
                 }],
             }],
+            deletes: Vec::new(),
         };
         // The save's own error, at its BEGIN, which asks for the file. A
         // transaction that asked only at its first write would have read
@@ -2205,6 +2206,7 @@ mod tests {
                     new: crate::NewValue::Text("Mine".into()),
                 }],
             }],
+            deletes: Vec::new(),
         };
         // The save goes through, and only its own row is written.
         let outcome = conn.write(&changes, &StopFlag::new()).await;

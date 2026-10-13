@@ -2115,6 +2115,7 @@ pub fn change_set(
                 object: object.clone(),
                 inserts,
                 rows,
+                deletes: Vec::new(),
             },
             sent,
         )
@@ -2142,13 +2143,21 @@ pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
             object,
             inserts,
             rows,
+            deletes,
         },
         ChangeSet {
             object: other,
             inserts: other_inserts,
             rows: others,
+            deletes: other_deletes,
         },
     ) = (a, b);
+    let same_key = |a: &[(String, Value)], b: &[(String, Value)]| {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|((name, value), (other, with))| name == other && same_value(value, with))
+    };
     let same_cell = |a: &CellChange, b: &CellChange| {
         let CellChange {
             column,
@@ -2163,11 +2172,7 @@ pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
     };
     let same_row = |a: &RowChange, b: &RowChange| {
         let RowChange { key, set } = a;
-        key.len() == b.key.len()
-            && key
-                .iter()
-                .zip(&b.key)
-                .all(|((name, value), (other, with))| name == other && same_value(value, with))
+        same_key(key, &b.key)
             && set.len() == b.set.len()
             && set.iter().zip(&b.set).all(|(a, b)| same_cell(a, b))
     };
@@ -2176,6 +2181,11 @@ pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
         && inserts == other_inserts
         && rows.len() == others.len()
         && rows.iter().zip(others).all(|(a, b)| same_row(a, b))
+        && deletes.len() == other_deletes.len()
+        && deletes
+            .iter()
+            .zip(other_deletes)
+            .all(|(a, b)| same_key(&a.key, &b.key))
 }
 
 #[cfg(test)]
@@ -2196,6 +2206,7 @@ mod tests {
                 }],
             }],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         assert!(same_changes(&with("print"), &with("print")));
         assert!(!same_changes(&with("print"), &with("ebook")));
@@ -2217,6 +2228,7 @@ mod tests {
             object: ObjectRef::new("main", "readings"),
             inserts: Vec::new(),
             rows,
+            deletes: Vec::new(),
         };
         let nan = || Value::Float(f64::NAN);
         // Not a number is itself, as a changed cell's loaded value and as a
@@ -2283,6 +2295,25 @@ mod tests {
             );
         }
         assert!(same_changes(&base, &base.clone()));
+    }
+
+    #[test]
+    fn two_saves_that_delete_other_rows_are_not_the_same_save() {
+        let deleting = |id: i64| ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes: vec![tabletist_db::RowDelete {
+                key: vec![("id".to_owned(), Value::Int(id))],
+            }],
+        };
+        assert!(same_changes(&deleting(9), &deleting(9)));
+        assert!(!same_changes(&deleting(9), &deleting(10)));
+        let none = ChangeSet {
+            deletes: Vec::new(),
+            ..deleting(9)
+        };
+        assert!(!same_changes(&deleting(9), &none));
     }
 
     #[test]

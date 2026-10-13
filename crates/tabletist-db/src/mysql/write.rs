@@ -797,6 +797,7 @@ async fn apply(
     Ok(Applied::Rows(Stored {
         inserted,
         rows: saved,
+        gone: Vec::new(),
     }))
 }
 
@@ -1029,6 +1030,7 @@ mod tests {
                     new: NewValue::Text(new.into()),
                 }],
             }],
+            deletes: Vec::new(),
         }
     }
 
@@ -1388,6 +1390,7 @@ mod tests {
                         new: NewValue::Text("after".into()),
                     }],
                 }],
+                deletes: Vec::new(),
             };
             let outcome = conn.write(&changes, &StopFlag::new()).await;
             assert!(

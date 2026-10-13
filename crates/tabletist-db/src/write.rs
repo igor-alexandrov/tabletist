@@ -12,6 +12,8 @@ pub struct ChangeSet {
     /// The new rows. They are written before `rows` are changed.
     pub inserts: Vec<RowInsert>,
     pub rows: Vec<RowChange>,
+    /// The rows to delete. They go last, after every row is changed.
+    pub deletes: Vec<RowDelete>,
 }
 
 /// Its table and its counts, without the values: a set is what a command
@@ -25,6 +27,7 @@ impl std::fmt::Debug for ChangeSet {
             .field("inserts", &self.inserts.len())
             .field("rows", &self.rows.len())
             .field("cells", &cells)
+            .field("deletes", &self.deletes.len())
             .finish_non_exhaustive()
     }
 }
@@ -67,6 +70,17 @@ pub struct CellChange {
     pub new: NewValue,
 }
 
+/// A row to delete: what finds it, and nothing more. No other column is
+/// compared with what the page loaded: a row someone changed since is
+/// deleted as it now stands, and one that is already gone is no failure
+/// (see [`WriteOutcome::Written`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowDelete {
+    /// The row key's columns (`Structure::row_key`) and their loaded
+    /// values, as a [`RowChange`]'s.
+    pub key: Vec<(String, Value)>,
+}
+
 /// What a cell becomes: NULL, text the database turns into the column's
 /// type, or what the database makes itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,8 +111,10 @@ pub enum WriteOutcome {
         ///   after its `INSERT`, move its key, or take the row for itself
         ///   and store it elsewhere or nowhere;
         /// - on PostgreSQL and SQLite, in a save that also changes rows,
-        ///   on a table one of whose foreign keys acts on an update: a
-        ///   changed row can carry a new one with it;
+        ///   on a table one of whose foreign keys acts on an update, and
+        ///   in a save that also deletes rows, on a table one of whose
+        ///   foreign keys acts on a delete: a changed or a deleted row
+        ///   can carry a new one with it;
         /// - on MySQL, which hands no row back, where the primary key
         ///   does not find the row again, or the server would not list
         ///   the table's triggers to this user.
@@ -108,6 +124,10 @@ pub enum WriteOutcome {
         /// Each changed row as the database now holds it, in the set's
         /// order.
         rows: Vec<Vec<Value>>,
+        /// The places, in the set's `deletes`, of the rows that were not
+        /// there to delete: someone deleted them first. Every other row
+        /// of `deletes` is deleted, and the rest of the save is written.
+        gone: Vec<usize>,
         elapsed: Duration,
     },
     /// Rows that are gone, or whose changed columns no longer hold what
@@ -119,6 +139,9 @@ pub enum WriteOutcome {
     /// The statement of `inserts[insert]` could not be built or failed.
     /// Nothing was written.
     FailedInsert { insert: usize, error: Error },
+    /// The statement of `deletes[delete]` could not be built or failed: a
+    /// foreign key that holds the row, most often. Nothing was written.
+    FailedDelete { delete: usize, error: Error },
 }
 
 /// A row a save found changed since it was loaded.
@@ -134,7 +157,7 @@ impl ChangeSet {
     /// Refuses a set that cannot be written as it stands, before anything
     /// is sent: a statement without a key would touch every row.
     pub fn check(&self) -> Result<()> {
-        if self.rows.is_empty() && self.inserts.is_empty() {
+        if self.rows.is_empty() && self.inserts.is_empty() && self.deletes.is_empty() {
             return Err(Error::query("there is nothing to save"));
         }
         for insert in &self.inserts {
@@ -200,6 +223,37 @@ impl ChangeSet {
                 }
             }
         }
+        for (index, delete) in self.deletes.iter().enumerate() {
+            if delete.key.is_empty() {
+                return Err(Error::query("a row to delete has no key"));
+            }
+            if let Some((column, _)) = delete.key.iter().enumerate().find_map(|(index, named)| {
+                delete.key[..index]
+                    .iter()
+                    .any(|(earlier, _)| *earlier == named.0)
+                    .then_some(named)
+            }) {
+                return Err(Error::query(format!(
+                    "{column} is named twice in the row's key"
+                )));
+            }
+            if delete.key.iter().any(|(_, value)| value.is_null()) {
+                return Err(Error::query(
+                    "a row to delete cannot be found: its key is NULL",
+                ));
+            }
+            if self.deletes[..index]
+                .iter()
+                .any(|earlier| same_key(&earlier.key, &delete.key))
+            {
+                return Err(Error::query("two rows to delete have the same key"));
+            }
+            // Its update would run, and then be thrown away with the row:
+            // what the save meant by the two is not known.
+            if self.rows.iter().any(|row| same_key(&row.key, &delete.key)) {
+                return Err(Error::query("a row to save is both changed and deleted"));
+            }
+        }
         Ok(())
     }
 }
@@ -208,6 +262,8 @@ impl ChangeSet {
 pub(crate) struct Stored {
     pub(crate) inserted: Vec<Option<Vec<Value>>>,
     pub(crate) rows: Vec<Vec<Value>>,
+    /// See [`WriteOutcome::Written`]'s `gone`.
+    pub(crate) gone: Vec<usize>,
 }
 
 /// What the statements of a save came to, before its transaction ends.
@@ -225,9 +281,14 @@ impl Applied {
     /// has ended.
     pub(crate) fn outcome(self, started: Instant) -> WriteOutcome {
         match self {
-            Self::Rows(Stored { inserted, rows }) => WriteOutcome::Written {
+            Self::Rows(Stored {
                 inserted,
                 rows,
+                gone,
+            }) => WriteOutcome::Written {
+                inserted,
+                rows,
+                gone,
                 elapsed: started.elapsed(),
             },
             Self::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
@@ -425,7 +486,99 @@ mod tests {
             object: ObjectRef::new("main", "users"),
             inserts: Vec::new(),
             rows,
+            deletes: Vec::new(),
         }
+    }
+
+    fn doomed(key: Vec<(&str, Value)>) -> RowDelete {
+        RowDelete {
+            key: key
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+        }
+    }
+
+    fn deleting(deletes: Vec<RowDelete>) -> ChangeSet {
+        ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: Vec::new(),
+            rows: Vec::new(),
+            deletes,
+        }
+    }
+
+    #[test]
+    fn a_set_of_rows_to_delete_alone_is_a_save() {
+        let changes = deleting(vec![
+            doomed(vec![("id", Value::Int(9))]),
+            doomed(vec![("id", Value::Int(10))]),
+        ]);
+        assert_eq!(changes.check(), Ok(()));
+        assert!(deleting(Vec::new()).check().is_err());
+    }
+
+    #[test]
+    fn a_row_to_delete_needs_a_key_that_finds_one_row() {
+        let said = |deletes: Vec<RowDelete>| deleting(deletes).check();
+        assert_eq!(
+            said(vec![doomed(Vec::new())]),
+            Err(Error::query("a row to delete has no key"))
+        );
+        assert_eq!(
+            said(vec![doomed(vec![("id", Value::Null)])]),
+            Err(Error::query(
+                "a row to delete cannot be found: its key is NULL"
+            ))
+        );
+        assert_eq!(
+            said(vec![doomed(vec![
+                ("book_id", Value::Int(101)),
+                ("book_id", Value::Int(102)),
+            ])]),
+            Err(Error::query("book_id is named twice in the row's key"))
+        );
+        // The same row twice, its key's columns in either order.
+        let author = |name: &str| Value::Text(name.into());
+        assert_eq!(
+            said(vec![
+                doomed(vec![
+                    ("book_id", Value::Int(101)),
+                    ("author", author("Ada Quill")),
+                ]),
+                doomed(vec![
+                    ("author", author("Ada Quill")),
+                    ("book_id", Value::Int(101)),
+                ]),
+            ]),
+            Err(Error::query("two rows to delete have the same key"))
+        );
+    }
+
+    #[test]
+    fn a_row_is_not_changed_and_deleted_in_one_save() {
+        let changes = ChangeSet {
+            deletes: vec![doomed(vec![("id", Value::Int(2))])],
+            ..set(vec![row(vec![("id", Value::Int(2))], vec![cell("name")])])
+        };
+        assert_eq!(
+            changes.check(),
+            Err(Error::query("a row to save is both changed and deleted"))
+        );
+        // Another row's delete beside it is a save like any other.
+        let changes = ChangeSet {
+            deletes: vec![doomed(vec![("id", Value::Int(3))])],
+            ..set(vec![row(vec![("id", Value::Int(2))], vec![cell("name")])])
+        };
+        assert_eq!(changes.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_set_is_printed_without_the_keys_of_its_rows_to_delete() {
+        let changes = deleting(vec![doomed(vec![("id", Value::Int(4711))])]);
+        let printed = format!("{changes:?}");
+        assert!(printed.contains("deletes: 1"), "{printed}");
+        assert!(!printed.contains("4711"), "{printed}");
     }
 
     fn value(column: &str) -> InsertValue {
@@ -473,6 +626,7 @@ mod tests {
                 RowInsert { set: Vec::new() },
             ],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         assert_eq!(changes.check(), Ok(()));
         let nothing = ChangeSet {
@@ -490,6 +644,7 @@ mod tests {
                 set: vec![value("kind"), value("kind")],
             }],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         assert_eq!(
             changes.check(),
@@ -505,6 +660,7 @@ mod tests {
                 set: vec![value("kind")],
             }],
             rows: Vec::new(),
+            deletes: Vec::new(),
         };
         let printed = format!("{changes:?}");
         assert!(printed.contains("inserts: 1"), "{printed}");
@@ -538,7 +694,7 @@ mod tests {
         let printed = format!("{changes:?}");
         assert_eq!(
             printed,
-            r#"ChangeSet { object: ObjectRef { schema: "main", name: "users" }, inserts: 0, rows: 2, cells: 3, .. }"#
+            r#"ChangeSet { object: ObjectRef { schema: "main", name: "users" }, inserts: 0, rows: 2, cells: 3, deletes: 0, .. }"#
         );
         // On several lines too, as a panic prints a value.
         let pretty = format!("{changes:#?}");

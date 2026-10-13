@@ -676,6 +676,7 @@ mod tests {
             object: ObjectRef::new("main", "users"),
             inserts: Vec::new(),
             rows: ids.iter().map(row).collect(),
+            deletes: Vec::new(),
         }
     }
 

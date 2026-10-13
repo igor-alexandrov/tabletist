@@ -1174,6 +1174,7 @@ mod tests {
             object: users(),
             inserts: Vec::new(),
             rows: vec![row],
+            deletes: Vec::new(),
         };
         let review = of(
             Dialect::Postgres,
@@ -1254,6 +1255,7 @@ mod tests {
                     text("quotes", &"'".repeat(70)),
                 ],
             }],
+            deletes: Vec::new(),
         };
         for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
             // All of it but the NUL where the database's text holds none:
@@ -1346,6 +1348,7 @@ mod tests {
                 object: users(),
                 inserts: Vec::new(),
                 rows: vec![row(text("a"), "fine"), refused],
+                deletes: Vec::new(),
             };
             for values in [Values::Shown, Values::Whole] {
                 let review = of(dialect, &changes, Blocked::default(), values);
@@ -1413,6 +1416,7 @@ mod tests {
                     change("price", Value::Float(12.5), "13"),
                 ],
             }],
+            deletes: Vec::new(),
         };
         let review = of(
             Dialect::Postgres,

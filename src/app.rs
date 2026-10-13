@@ -11515,6 +11515,7 @@ mod tests {
                 inserted: vec![Some(cover(15, HARBOR))],
                 rows: vec![changed],
                 elapsed: std::time::Duration::from_millis(5),
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(!tab_now.edits.holds() && tab_now.edits.added.is_empty());
@@ -11553,6 +11554,7 @@ mod tests {
                 inserted: vec![Some(cover(15, HARBOR)), Some(cover(16, HARBOR))],
                 rows: Vec::new(),
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let page = object(&harness, tab, id).page().unwrap();
             let ids: Vec<&Value> = page.rows.iter().map(|row| &row[0]).collect();
@@ -11570,6 +11572,7 @@ mod tests {
                 inserted: vec![None],
                 rows: Vec::new(),
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(tab_now.edits.added.is_empty() && tab_now.selection.is_none());
@@ -11624,6 +11627,7 @@ mod tests {
                 inserted: vec![Some(cover(15, HARBOR))],
                 rows: Vec::new(),
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let page = object(&harness, tab, id).page().unwrap();
             assert_eq!(page.rows[0], cover(15, HARBOR));
@@ -11711,6 +11715,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com"), row(4, "dan@example.com")],
                 elapsed: std::time::Duration::from_millis(14),
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(tab_now.edits.cells.is_empty() && tab_now.edits.saving.is_none());
@@ -11873,6 +11878,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![vec![Value::Int(2)]],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert!(!object(&harness, tab, id).edits.holds());
             assert!(matches!(
@@ -11902,6 +11908,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             // A cell that cannot be edited leaves its note.
             harness.app.apply(Action::EditCell {
@@ -11955,6 +11962,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             let tab_now = object(&harness, tab, id);
             assert!(tab_now.edits.cells.is_empty() && tab_now.edits.saved.is_some());
@@ -12164,6 +12172,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
         }
@@ -13297,6 +13306,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(2, email)],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             })
         }
 
@@ -14094,6 +14104,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![vec![Value::Int(2)]],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert!(harness.app.dialog.is_none());
             assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
@@ -14358,6 +14369,7 @@ mod tests {
                 inserted: Vec::new(),
                 rows: vec![row(4, "dan@example.com")],
                 elapsed: std::time::Duration::ZERO,
+                gone: Vec::new(),
             }));
             assert_eq!(gone(&harness), [1]);
             // after a discard of what is pending,

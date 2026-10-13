@@ -52,7 +52,8 @@ pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMod
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 pub use write::{
-    CellChange, ChangeSet, Conflict, InsertValue, NewValue, RowChange, RowInsert, WriteOutcome,
+    CellChange, ChangeSet, Conflict, InsertValue, NewValue, RowChange, RowDelete, RowInsert,
+    WriteOutcome,
 };
 
 /// Whether a session may write. [`Connection::write`] and a script run in
