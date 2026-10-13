@@ -2341,5 +2341,6 @@ One commit beyond the tasks above, from the review of the pull request.
 - `check_read`'s documentation now says that it blocks until its thread is done, so a caller on an async runtime goes through `spawn_blocking`.
 
 - **A second review, of that commit, found two real gaps in PostgreSQL's list**, both closed with tests. `ts_stat` and `ts_rewrite` run a query given as text, so a call inside that text was read as a string: `SELECT * FROM ts_stat('SELECT … pg_advisory_lock(1) …')` passed. They are on the list now, with the functions of the `tablefunc` and `xml2` extensions that do the same (`crosstab`, `connectby`, `xpath_table`). And the prefix `pg_stat_reset` did not cover `pg_stat_statements_reset`, which clears the statistics of the whole server.
+- **A third review asked for the second reading to see MySQL's `:=` as well.** It did not: the assignment was looked for in sqlparser's tokens only, though the module says everything is looked for in both. Both readings now refuse it, in `words_read`. No text was found that MySQL takes and in which only one tokenizer reads an assignment, so the new test asks the app's own reading by itself.
 
-The tests are 33.
+The tests are 34.

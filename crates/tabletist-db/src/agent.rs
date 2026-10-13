@@ -468,13 +468,14 @@ enum Piece {
     },
     /// `(`
     Open,
+    /// `:=`
+    Assign,
     Other,
 }
 
 /// Reads the tokens of a statement the parser took for a query, and
-/// refuses what a read may not hold at any depth: a word that writes or
-/// locks, a function with effects, an assignment. Gives the placeholders
-/// it met, as written, in the order of the text.
+/// refuses what [`words_read`] refuses in them. Gives the placeholders it
+/// met, as written, in the order of the text.
 ///
 /// On tokens and not on the tree, for two reasons. A tree is as deep as
 /// its text is long, and walking one costs far more stack than dropping it.
@@ -495,20 +496,13 @@ fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<Vec<String>, Refusa
                 quoted: word.quote_style.is_some(),
             },
             Token::LParen => Piece::Open,
+            Token::Assignment => Piece::Assign,
             _ => Piece::Other,
         });
         match token {
             Token::Placeholder(written) => placeholders.push(written.clone()),
             Token::Colon => placeholders.extend(named_placeholder(dialect, ':', next)),
             Token::AtSign => placeholders.extend(named_placeholder(dialect, '@', next)),
-            // MySQL's `@total := @total + 1`: session state a rollback
-            // does not undo. PostgreSQL spells a named argument so.
-            Token::Assignment => match dialect {
-                Dialect::MySql => {
-                    return Err(Refusal::NotAllowed("An assignment to a variable".into()));
-                }
-                Dialect::Postgres | Dialect::Sqlite => {}
-            },
             _ => {}
         }
     }
@@ -523,45 +517,64 @@ fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<Vec<String>, Refusa
 /// not hold is looked for in both readings, and found in either it is
 /// refused.
 fn own_words(dialect: Dialect, text: &str) -> Vec<Piece> {
-    sql::tokenize(dialect, text)
-        .iter()
-        .filter_map(|token| {
-            let written = &text[token.range.clone()];
-            match token.kind {
-                TokenKind::Whitespace | TokenKind::Comment => None,
-                TokenKind::Keyword | TokenKind::Identifier => Some(Piece::Word {
-                    text: written.to_owned(),
-                    quoted: false,
-                }),
-                TokenKind::QuotedIdentifier => Some(Piece::Word {
-                    text: written
-                        .trim_start_matches(['"', '`', '['])
-                        .trim_end_matches(['"', '`', ']'])
-                        .to_owned(),
-                    quoted: true,
-                }),
-                TokenKind::Punctuation if written == "(" => Some(Piece::Open),
-                TokenKind::Punctuation
-                | TokenKind::String
-                | TokenKind::Number
-                | TokenKind::ExecutableComment
-                | TokenKind::Operator
-                | TokenKind::Semicolon => Some(Piece::Other),
+    let tokens = sql::tokenize(dialect, text);
+    let written = |token: &sql::Token| &text[token.range.clone()];
+    let mut pieces = Vec::with_capacity(tokens.len());
+    for (index, token) in tokens.iter().enumerate() {
+        pieces.push(match token.kind {
+            TokenKind::Whitespace | TokenKind::Comment => continue,
+            TokenKind::Keyword | TokenKind::Identifier => Piece::Word {
+                text: written(token).to_owned(),
+                quoted: false,
+            },
+            TokenKind::QuotedIdentifier => Piece::Word {
+                text: written(token)
+                    .trim_start_matches(['"', '`', '['])
+                    .trim_end_matches(['"', '`', ']'])
+                    .to_owned(),
+                quoted: true,
+            },
+            TokenKind::Punctuation if written(token) == "(" => Piece::Open,
+            // `:=` is two tokens here, with nothing between them.
+            TokenKind::Operator
+                if written(token) == ":"
+                    && tokens.get(index + 1).is_some_and(|next| {
+                        next.range.start == token.range.end && written(next) == "="
+                    }) =>
+            {
+                Piece::Assign
             }
-        })
-        .collect()
+            TokenKind::Punctuation
+            | TokenKind::String
+            | TokenKind::Number
+            | TokenKind::ExecutableComment
+            | TokenKind::Operator
+            | TokenKind::Semicolon => Piece::Other,
+        });
+    }
+    pieces
 }
 
 /// Refuses what a read may not hold at any depth, in one reading of its
-/// tokens: a function with effects, and a word that writes or locks.
+/// tokens: a function with effects, a word that writes or locks, and on
+/// MySQL an assignment to a variable.
 ///
 /// It errs toward refusing. `SELECT delete FROM notes` reads a column, on
 /// a database that lets one be named so without quotes, and is refused as
 /// a `DELETE`: a name in quotes passes.
 fn words_read(dialect: Dialect, pieces: &[Piece]) -> Result<(), Refusal> {
     for (index, piece) in pieces.iter().enumerate() {
-        let Piece::Word { text, quoted } = piece else {
-            continue;
+        let (text, quoted) = match piece {
+            Piece::Word { text, quoted } => (text, *quoted),
+            // MySQL's `@total := @total + 1`: session state a rollback
+            // does not undo. PostgreSQL spells a named argument so.
+            Piece::Assign => match dialect {
+                Dialect::MySql => {
+                    return Err(Refusal::NotAllowed("An assignment to a variable".into()));
+                }
+                Dialect::Postgres | Dialect::Sqlite => continue,
+            },
+            Piece::Open | Piece::Other => continue,
         };
         let next = pieces.get(index + 1);
         // A name with a parenthesis after it is a call, in an expression
@@ -570,7 +583,7 @@ fn words_read(dialect: Dialect, pieces: &[Piece]) -> Result<(), Refusal> {
             function_allowed(dialect, text)?;
             continue;
         }
-        if *quoted {
+        if quoted {
             continue;
         }
         let writes = match text.to_ascii_uppercase().as_str() {
@@ -1689,6 +1702,30 @@ mod tests {
         assert_eq!(
             refused(Dialect::Postgres, "SELECT $1$ FROM books FOR UPDATE -- $1$"),
             Refusal::NotReadOnly(Writes::Lock)
+        );
+    }
+
+    /// No text was found that MySQL takes and in which only one of the
+    /// two tokenizers reads an assignment, so the app's own reading is
+    /// asked by itself here.
+    #[test]
+    fn the_apps_own_reading_refuses_an_assignment_on_mysql_too() {
+        let own = |dialect, sql| words_read(dialect, &own_words(dialect, sql));
+        assert_eq!(
+            own(Dialect::MySql, "SELECT @total := @total + 1 FROM orders"),
+            Err(not_allowed("An assignment to a variable"))
+        );
+        // In a string, in a name and in a comment it is text.
+        assert_eq!(
+            own(
+                Dialect::MySql,
+                "SELECT @total, 'a := b', `:=` FROM orders -- c := d"
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            own(Dialect::Postgres, "SELECT make_interval(days := 2)"),
+            Ok(())
         );
     }
 
