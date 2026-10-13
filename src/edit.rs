@@ -1454,6 +1454,20 @@ pub enum Told {
     },
 }
 
+/// What a save's deletes do in a table whose foreign key points at the
+/// rows: its name as it is shown, and how many of its rows, once counted.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Effect {
+    /// `ON DELETE CASCADE`: the rows go with the deleted ones.
+    Deletes { table: String, rows: Option<u64> },
+    /// `ON DELETE SET NULL`: `columns` are cleared in them.
+    Clears {
+        table: String,
+        columns: Vec<String>,
+        rows: Option<u64>,
+    },
+}
+
 /// How much is pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {

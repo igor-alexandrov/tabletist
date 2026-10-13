@@ -9,7 +9,7 @@ use tabletist_db::{
     ChangeSet, Dialect, Error, InsertStatement, ObjectRef, RowDeletion, RowUpdate, Value,
 };
 
-use crate::edit::{NEW_ROWS, Pending, State, Table, change_set, new_row};
+use crate::edit::{Effect, NEW_ROWS, Pending, State, Table, change_set, new_row};
 use crate::ui::format;
 
 /// The most characters of a value that are shown: a longer one is cut, with
@@ -67,6 +67,9 @@ pub enum Line {
     Delete(String),
     /// The builder refuses the row's `DELETE`, in its own words.
     DeleteRefused { row: String, reason: String },
+    /// `-- also deletes 3 rows in book_covers (ON DELETE CASCADE)`: what
+    /// the deletes above take with them in another table.
+    Also(Effect),
     /// A line of a statement.
     Sql(Vec<Piece>),
 }
@@ -132,6 +135,24 @@ pub struct Review {
     pub lines: Vec<Line>,
     /// The first part whose statement the builder refused, and why.
     pub refused: Option<(Part, Error)>,
+}
+
+impl Review {
+    /// Puts what the set's deletes take with them after its statements,
+    /// in place of what it said of that before.
+    pub fn also(&mut self, effects: &[Effect]) {
+        self.lines.retain(|line| !matches!(line, Line::Also(_)));
+        self.lines.extend(effects.iter().cloned().map(Line::Also));
+    }
+
+    /// What the review says its deletes take with them.
+    pub fn effects(&self) -> Vec<Effect> {
+        let also = |line: &Line| match line {
+            Line::Also(effect) => Some(effect.clone()),
+            _ => None,
+        };
+        self.lines.iter().filter_map(also).collect()
+    }
 }
 
 /// Without the lines: they hold what the user typed, which stays out of
@@ -748,6 +769,30 @@ mod tests {
                 r#"   AND "author" = 'Ada Quill';"#,
             ]
         );
+    }
+
+    /// The lines stand after the statements, and a later answer takes the
+    /// earlier one's place.
+    #[test]
+    fn what_the_deletes_take_stands_after_the_statements() {
+        let changes = deleting(vec![vec![("id", Value::Int(9))]]);
+        let mut review = of(Dialect::Sqlite, &changes, Blocked::default(), Values::Shown);
+        let statements = review.lines.len();
+        let effect = |rows| Effect::Deletes {
+            table: "book_covers".into(),
+            rows,
+        };
+        review.also(&[effect(None)]);
+        assert_eq!(review.lines.len(), statements + 1);
+        assert_eq!(review.lines.last(), Some(&Line::Also(effect(None))));
+        review.also(&[effect(Some(3))]);
+        assert_eq!(review.lines.len(), statements + 1);
+        assert_eq!(review.lines.last(), Some(&Line::Also(effect(Some(3)))));
+        assert_eq!(review.effects(), [effect(Some(3))]);
+        // Nothing taken: no line.
+        review.also(&[]);
+        assert_eq!(review.lines.len(), statements);
+        assert!(review.effects().is_empty());
     }
 
     /// Spec 4: inserts, then updates, then deletes. And a delete the
