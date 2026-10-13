@@ -64,6 +64,47 @@ pub enum Lock {
     NotNull,
 }
 
+impl Lock {
+    /// Whether the reason holds for every row of the table, and not for
+    /// one row by what it holds.
+    pub fn of_table(self) -> bool {
+        matches!(
+            self,
+            Self::ReadOnly
+                | Self::NotATable
+                | Self::StructureLoading
+                | Self::NoKey
+                | Self::KeyType
+                | Self::Saving
+                | Self::Refreshing
+        )
+    }
+}
+
+/// How many rows one action marks for deletion, at most.
+pub const MAX_ROWS_DELETED: usize = 1_000;
+
+/// What a delete of several rows comes to ([`Table::sweep`]). Rows are as
+/// [`CellPos::row`] names them, in the order they were given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sweep {
+    /// More rows than one action takes.
+    TooMany,
+    /// None is deleted: no row of the table can be now, or none of these.
+    Refused(Lock),
+    /// The page's rows to mark and the new rows to drop. `skipped` rows
+    /// cannot be deleted on their own account.
+    Mark {
+        rows: Vec<usize>,
+        new: Vec<usize>,
+        skipped: usize,
+    },
+    /// Every row that can be deleted is marked already: they are restored.
+    Restore { rows: Vec<usize> },
+    /// Only new rows: they are dropped.
+    Drop { new: Vec<usize> },
+}
+
 /// A table's page as editing sees it.
 #[derive(Clone, Copy)]
 pub struct Table<'a> {
@@ -295,6 +336,54 @@ impl Table<'_> {
             return None;
         }
         self.row_lock(row).filter(|lock| *lock != Lock::Deleting)
+    }
+
+    /// What deleting `rows` in one action comes to: the selected rows, as
+    /// the grid orders them. A press marks when any of them is unmarked,
+    /// and restores only when all are marked.
+    pub fn sweep(&self, rows: &[usize]) -> Sweep {
+        if rows.len() > MAX_ROWS_DELETED {
+            return Sweep::TooMany;
+        }
+        // Under a save nothing is marked, restored or dropped: its answer
+        // names the rows it sent.
+        if self.saving {
+            return Sweep::Refused(Lock::Saving);
+        }
+        let (new, saved): (Vec<usize>, Vec<usize>) =
+            rows.iter().partition(|row| new_id(**row).is_some());
+        let mut free = Vec::with_capacity(saved.len());
+        let mut skipped = 0;
+        let mut why = None;
+        for row in saved {
+            match self.no_delete(row) {
+                None => free.push(row),
+                Some(lock) if lock.of_table() => return Sweep::Refused(lock),
+                Some(lock) => {
+                    skipped += 1;
+                    why.get_or_insert(lock);
+                }
+            }
+        }
+        let unmarked: Vec<usize> = free
+            .iter()
+            .copied()
+            .filter(|row| !self.deleted.contains_key(row))
+            .collect();
+        if !unmarked.is_empty() {
+            return Sweep::Mark {
+                rows: unmarked,
+                new,
+                skipped,
+            };
+        }
+        if !free.is_empty() {
+            return Sweep::Restore { rows: free };
+        }
+        if !new.is_empty() {
+            return Sweep::Drop { new };
+        }
+        Sweep::Refused(why.unwrap_or(Lock::NoSuchCell))
     }
 
     /// Why the column `col` takes no value in a new row, or `None` when it
@@ -2886,6 +2975,85 @@ mod tests {
             added: &edits.added,
             deleted: &edits.deleted,
         }
+    }
+
+    /// What deleting `rows` of `page` comes to, with `edits` pending.
+    fn swept(page: &RowPage, edits: &Edits, rows: &[usize]) -> Sweep {
+        let structure = crate::testing::book_covers_structure();
+        marked_covers(&structure, page, edits).sweep(rows)
+    }
+
+    fn mark_rows(rows: Vec<usize>, new: Vec<usize>, skipped: usize) -> Sweep {
+        Sweep::Mark { rows, new, skipped }
+    }
+
+    #[test]
+    fn a_sweep_marks_what_is_unmarked_and_restores_only_when_all_are_marked() {
+        let page = crate::testing::book_covers_page(5);
+        let mut edits = Edits::default();
+        assert_eq!(
+            swept(&page, &edits, &[1, 2, 3]),
+            mark_rows(vec![1, 2, 3], Vec::new(), 0)
+        );
+        // One of them marked already: the others are marked, none restored.
+        edits.mark(2);
+        assert_eq!(
+            swept(&page, &edits, &[1, 2, 3]),
+            mark_rows(vec![1, 3], Vec::new(), 0)
+        );
+        // All marked: they are restored.
+        edits.mark(1);
+        edits.mark(3);
+        let rows = vec![1, 2, 3];
+        assert_eq!(swept(&page, &edits, &[1, 2, 3]), Sweep::Restore { rows });
+    }
+
+    #[test]
+    fn a_sweep_drops_new_rows_with_a_mark_and_leaves_them_at_a_restore() {
+        let page = crate::testing::book_covers_page(5);
+        let mut edits = Edits::default();
+        let new = new_row(edits.add_row(Place::Below(1), 5));
+        assert_eq!(
+            swept(&page, &edits, &[1, new, 2]),
+            mark_rows(vec![1, 2], vec![new], 0)
+        );
+        assert_eq!(swept(&page, &edits, &[new]), Sweep::Drop { new: vec![new] });
+        edits.mark(1);
+        edits.mark(2);
+        let rows = vec![1, 2];
+        assert_eq!(swept(&page, &edits, &[1, new, 2]), Sweep::Restore { rows });
+    }
+
+    #[test]
+    fn a_sweep_leaves_out_a_row_that_cannot_be_deleted_and_counts_it() {
+        let mut page = crate::testing::book_covers_page(5);
+        page.rows[2][0] = Value::Null;
+        let edits = Edits::default();
+        assert_eq!(
+            swept(&page, &edits, &[1, 2, 3]),
+            mark_rows(vec![1, 3], Vec::new(), 1)
+        );
+        // Alone, its own reason is the answer.
+        assert_eq!(swept(&page, &edits, &[2]), Sweep::Refused(Lock::KeyIsNull));
+    }
+
+    #[test]
+    fn a_sweep_is_refused_for_the_table_and_over_the_cap() {
+        let structure = crate::testing::book_covers_structure();
+        let page = crate::testing::book_covers_page(MAX_ROWS_DELETED + 1);
+        let edits = Edits::default();
+        let all: Vec<usize> = (0..=MAX_ROWS_DELETED).collect();
+        assert_eq!(swept(&page, &edits, &all), Sweep::TooMany);
+        assert!(matches!(
+            swept(&page, &edits, &all[..MAX_ROWS_DELETED]),
+            Sweep::Mark { rows, .. } if rows.len() == MAX_ROWS_DELETED
+        ));
+        let mut read_only = marked_covers(&structure, &page, &edits);
+        read_only.access = Access::ReadOnly;
+        assert_eq!(read_only.sweep(&[1, 2]), Sweep::Refused(Lock::ReadOnly));
+        let mut saving = marked_covers(&structure, &page, &edits);
+        saving.saving = true;
+        assert_eq!(saving.sweep(&[1, 2]), Sweep::Refused(Lock::Saving));
     }
 
     fn pending_text(text: &str) -> Pending {
