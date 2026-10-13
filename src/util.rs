@@ -191,6 +191,28 @@ fn put_atomic(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<bool>
     Ok(true)
 }
 
+/// `text` as a TOML basic string: what the app writes into the files it
+/// writes as TOML itself.
+pub fn toml_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if control.is_control() => {
+                out.push_str(&format!("\\u{:04X}", u32::from(control)));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Saves `value` as pretty JSON, atomically.
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
@@ -227,7 +249,10 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
 /// and the next save writes a new file where it leads. Where the link
 /// cannot be followed nothing is renamed, the link least of all: a save
 /// through it fails in the same way, so nothing is replaced either.
-pub fn keep_aside(path: &Path, problem: &str) {
+///
+/// Gives the name the file was kept under, for whoever tells the user, or
+/// `None` when it could not be moved and is still in its place.
+pub fn keep_aside(path: &Path, problem: &str) -> Option<PathBuf> {
     let file = match resolve_link(path) {
         Ok(file) => file,
         Err(error) => {
@@ -236,7 +261,7 @@ pub fn keep_aside(path: &Path, problem: &str) {
                  leaving it in place and using defaults",
                 path.display()
             );
-            return;
+            return None;
         }
     };
     let path = file.as_path();
@@ -252,7 +277,7 @@ pub fn keep_aside(path: &Path, problem: &str) {
             "could not load {} ({problem}) and every .bad name is taken; using defaults",
             path.display()
         );
-        return;
+        return None;
     };
     log::warn!(
         "could not load {} ({problem}); keeping it as {} and using defaults",
@@ -261,7 +286,9 @@ pub fn keep_aside(path: &Path, problem: &str) {
     );
     if let Err(error) = std::fs::rename(path, &aside) {
         log::warn!("could not keep {} aside: {error}", path.display());
+        return None;
     }
+    Some(aside)
 }
 
 /// How well `candidate` matches `query` typed in quick open (ignoring

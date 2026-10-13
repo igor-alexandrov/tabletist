@@ -5,6 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::paths::AppDirs;
+use crate::util::toml_string;
 
 /// How much of a timestamp the grid shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -185,27 +186,6 @@ const HEADER: &str = "# written by tabletist, safe to edit by hand\n";
 /// is something else.
 const MAX_LINES: usize = 1_000;
 const MAX_BYTES: usize = 64 * 1024;
-
-/// `text` as a TOML basic string.
-fn quote(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            control if control.is_control() => {
-                out.push_str(&format!("\\u{:04X}", u32::from(control)));
-            }
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
-}
 
 /// Where a start's settings came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -483,14 +463,14 @@ impl Settings {
     fn literal(&self, key: Key) -> Option<String> {
         Some(match key {
             Key::PageSize => self.page_size.to_string(),
-            Key::Timestamps => quote(self.timestamps.name()),
+            Key::Timestamps => toml_string(self.timestamps.name()),
             Key::GroupDigits => self.group_digits.to_string(),
             Key::ValueTags => self.value_tags.to_string(),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
             Key::SqlLimit => self.sql_limit.to_string(),
             // TOML has no null: no timeout is no seconds.
             Key::SqlTimeoutSecs => self.sql_timeout_secs.unwrap_or(0).to_string(),
-            Key::Theme => quote(self.custom_theme.as_deref()?),
+            Key::Theme => toml_string(self.custom_theme.as_deref()?),
         })
     }
 

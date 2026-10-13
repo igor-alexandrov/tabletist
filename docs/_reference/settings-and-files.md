@@ -1,6 +1,6 @@
 ---
 title: Settings and Files
-description: The Settings window, every key of settings.toml, where Tabletist keeps its files, and its command-line options.
+description: The Settings window, every key of settings.toml and of connections.toml, where Tabletist keeps its files, and its command-line options.
 nav_order: 2
 ---
 
@@ -76,14 +76,101 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | File | Folder | Holds |
 | --- | --- | --- |
 | `settings.toml` | Settings | The options above |
-| `connections.json` | Settings | Your saved connections. It never holds a password |
+| `connections.toml` | Settings | Your saved connections. It never holds a password |
 | `known_hosts.json` | Settings | The SSH host keys you trusted |
 | `themes/` | Settings | Palette files |
+| `last_used.json` | State | When each saved connection last connected |
+| `connections.moved` | State | A note that your connections are kept in `connections.toml` |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 
 Passwords are kept in the system keyring, never in these files.
 [Read about passwords]({% link _reference/connections.md %}#passwords).
+
+## The connections file
+
+Saved connections are kept in `connections.toml`, one `[[connections]]`
+table for each.
+
+```toml
+version = 3
+
+[[connections]]
+id          = "6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11"
+name        = "Bookshop production"
+environment = "production"
+read_only   = true
+password    = "keyring"
+ssh_secret  = "ask"
+driver      = "postgres"
+host        = "db.example.com"
+port        = 5432
+user        = "app"
+database    = "bookshop_production"
+tls         = "verify-full"
+ca_file     = "/etc/ssl/bookshop-ca.pem"
+
+[connections.ssh]
+host = "bastion.example.com"
+port = 2222
+user = "deploy"
+auth = "key-file"
+key  = "/home/ada/.ssh/id_ed25519"
+
+[[connections]]
+name        = "Bookshop on disk"
+environment = "local"
+driver      = "sqlite"
+sqlite_path = "/home/ada/bookshop.db"
+```
+
+| Key | Values | Without it |
+| --- | --- | --- |
+| `id` | Any text that no other connection has | Tabletist gives the connection one at the next start |
+| `name` | Text | Required |
+| `environment` | `local`, `dev`, `staging`, `production`, `none` | `none` |
+| `read_only` | `true`, `false` | As the environment has it: read-only on production |
+| `password` | `none`, `keyring`, `ask` | `none` |
+| `ssh_secret` | `none`, `keyring`, `ask` | `none` |
+| `driver` | `postgres`, `mysql`, `sqlite` | Required |
+| `host`, `user`, `database` | Text | Empty |
+| `port` | A number up to 65535 | 5432 for PostgreSQL, 3306 for MySQL |
+| `tls` | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` | `prefer` |
+| `ca_file` | The path of a certificate file | None |
+| `sqlite_path` | The path of a SQLite file | None |
+
+A tunnel is the connection's `[connections.ssh]` table: `host`, and
+optionally `port` and `user`, `auth` (`password`, `key-file` or `agent`),
+and with `key-file` the `key` to use.
+
+Edit the file while Tabletist is closed. Tabletist writes the whole file
+again when you change a connection, so a comment you add is not kept.
+
+Tabletist reads the file strictly. A key it does not know, or a value a key
+cannot have, is an error and not something it skips: a line such as
+`read_onyl = true` must not pass for a connection that may write. When the
+file cannot be read, Tabletist starts with no connections, says which line
+is wrong, and keeps the file beside itself as `connections.toml.bad` (or
+`.bad.1` when that name is taken: the notice says which). Fix the line and
+rename the file back. When each connection last connected is kept. What
+Tabletist says of the line never repeats a value written on it.
+
+Until you rename the file back or remove it, every start says that it is
+there, and loads no connection.
+
+Versions before this one kept the connections in `connections.json`.
+Tabletist reads that file once, at the first start that finds no
+`connections.toml`, writes the two files above from it, tells you, and
+leaves it where it is. If the old file itself cannot be read, it is kept
+aside in the same way and nothing is written for it, so it is read again
+once it is mended.
+
+At the next start, which finds `connections.toml`, Tabletist notes in its
+state folder that the connections have moved (`connections.moved`). From
+then on `connections.json` is not read again, whatever becomes of the new
+file: the connections of the day they moved do not come back in place of a
+`connections.toml` that was kept aside or removed. To have the old file
+read once more, remove `connections.moved` as well.
 
 ## Command-line options
 
