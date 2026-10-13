@@ -828,9 +828,12 @@ pub fn show<'a>(
                     // too: its cell alone takes the selection's colour,
                     // and says where the keyboard is.
                     Some(fresh.fill)
-                } else if deleted {
+                } else if deleted && !ranged {
                     // As a new row: the row keeps its fill, and its cell
-                    // alone says where the keyboard is.
+                    // alone says where the keyboard is. Not among several
+                    // selected rows: there it takes the selection's fill
+                    // with them, so the range reads as one, and its bar
+                    // and its struck values still say it is marked.
                     Some(doomed.fill)
                 } else if lit_row {
                     Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
@@ -2348,6 +2351,70 @@ mod tests {
                     .any(|rect| rect.fill == palette.selection && rect.rect.width() < 400.0);
                 assert!(cell, "{said}: the selection is the cell's");
             }
+        }
+    }
+
+    /// A row marked for deletion keeps its own fill under the cursor, and
+    /// takes the selection's among the rows it is selected with: a range
+    /// reads as one, and the row's bar and its struck values still say it
+    /// is marked.
+    #[test]
+    fn a_marked_row_of_a_range_takes_the_selections_fill() {
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let said = look.name;
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+            // The second row is marked. Ranged, it and the row above are
+            // the selected rows.
+            let rows = |ranged: bool| {
+                move |at: usize| Row {
+                    mark: if at == 1 {
+                        RowMark::Deleted
+                    } else {
+                        RowMark::None
+                    },
+                    number: Some(at as u64 + 1),
+                    deleted: at == 1,
+                    ranged: ranged && at <= 1,
+                }
+            };
+            let doomed = crate::env::deleted_row_colors(crate::env::Platform::of(&look), &palette);
+            let wide = |rects: &[egui::epaint::RectShape], fill: egui::Color32| {
+                let filled = |rect: &&egui::epaint::RectShape| {
+                    rect.fill == fill && rect.rect.width() > 400.0
+                };
+                rects.iter().filter(filled).count()
+            };
+            // Alone under the cursor: its own fill, as ever.
+            let here = Some(CellPos { row: 1, col: 1 });
+            let (rects, _) = marked_rows(
+                &ctx,
+                &look,
+                &palette,
+                Mark::None,
+                &rows(false),
+                here,
+                vec![],
+            );
+            assert_eq!(wide(&rects, doomed.fill), 1, "{said}");
+            assert_eq!(wide(&rects, palette.selection), 0, "{said}");
+            // In a range, the cursor on the row above: both rows are
+            // filled as selected rows are.
+            let above = Some(CellPos { row: 0, col: 1 });
+            let (rects, _) = marked_rows(
+                &ctx,
+                &look,
+                &palette,
+                Mark::None,
+                &rows(true),
+                above,
+                vec![],
+            );
+            assert_eq!(wide(&rects, doomed.fill), 0, "{said}");
+            assert_eq!(wide(&rects, palette.selection), 2, "{said}");
         }
     }
 

@@ -121,8 +121,13 @@ an anchor cell on the same footing. Nothing here stands in its way.
 
 - The footer counts: `3 rows selected`, and `3 rows selected · read-only`.
 - Each row of the range is painted as the selected row of its kind is
-  today (a new row stays green, a marked row stays struck). Only the
-  cursor's cell is the active cell.
+  today (a new row stays green). Only the cursor's cell is the active
+  cell.
+- A row marked for deletion takes the selection's fill among the rows it
+  is selected with, and keeps its bar, its minus and its struck values.
+  Alone under the cursor it keeps its own fill, as before. (Asked for on
+  2026-10-13, once the first build was looked at: there the marked row
+  kept its red fill inside a range, and the range did not read as one.)
 
 ### Omarchy look
 
