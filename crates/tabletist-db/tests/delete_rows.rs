@@ -15,6 +15,7 @@
 
 use std::time::Duration;
 
+use mysql_async::prelude::Queryable;
 use tabletist_db::{
     Access, CellChange, ChangeSet, ConnectSpec, Connection, Error, HostKeys, InsertValue, NewValue,
     ObjectRef, RowChange, RowDelete, RowInsert, RowQuery, Secrets, StopFlag, TlsMode, Value,
@@ -578,5 +579,171 @@ mod postgres {
         };
         a_row_the_save_took_with_another_is_deleted(&connection, &shop("pgtree")).await;
         admin.batch_execute(&named(DROP, "pgtree")).await.unwrap();
+    }
+}
+
+mod mysql {
+    use super::*;
+
+    const DROP: &str =
+        "DROP TABLE IF EXISTS shop_shelves, shop_book_authors, shop_book_covers, shop_publishers";
+
+    const CREATE: [&str; 8] = [
+        "CREATE TABLE shop_publishers (
+             id BIGINT PRIMARY KEY,
+             name VARCHAR(64) NOT NULL UNIQUE
+         )",
+        "INSERT INTO shop_publishers VALUES
+             (9100000000000000001, 'Northlight Books'),
+             (9100000000000000004, 'Harbor Press'),
+             (9100000000000000007, 'Harbor Lights')",
+        "CREATE TABLE shop_book_covers (
+             id BIGINT AUTO_INCREMENT PRIMARY KEY,
+             publisher_id BIGINT NOT NULL,
+             kind VARCHAR(64) NOT NULL DEFAULT 'print',
+             FOREIGN KEY (publisher_id) REFERENCES shop_publishers (id)
+         )",
+        "INSERT INTO shop_book_covers (publisher_id, kind) VALUES
+             (9100000000000000001, 'print'),
+             (9100000000000000001, 'ebook'),
+             (9100000000000000004, 'print')",
+        "CREATE TABLE shop_book_authors (
+             book_id BIGINT NOT NULL,
+             author VARCHAR(64) NOT NULL,
+             PRIMARY KEY (book_id, author)
+         )",
+        "INSERT INTO shop_book_authors VALUES
+             (101, 'Ada Quill'), (101, 'Sam O''Neil'), (102, 'Ada Quill')",
+        "CREATE TABLE shop_shelves (
+             id BIGINT PRIMARY KEY,
+             parent_id BIGINT,
+             FOREIGN KEY (parent_id) REFERENCES shop_shelves (id) ON DELETE CASCADE
+         )",
+        "INSERT INTO shop_shelves VALUES (1, NULL), (2, 1), (3, NULL)",
+    ];
+
+    fn named(sql: &str, prefix: &str) -> String {
+        sql.replace("shop_", &format!("{prefix}_"))
+    }
+
+    fn shop(prefix: &str) -> Shop {
+        Shop {
+            schema: "tabletist".into(),
+            publishers: format!("{prefix}_publishers"),
+            covers: format!("{prefix}_book_covers"),
+            authors: format!("{prefix}_book_authors"),
+            shelves: format!("{prefix}_shelves"),
+            id: "bigint",
+            text: "varchar(64)",
+        }
+    }
+
+    fn url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").ok();
+        url.filter(|url| !url.trim().is_empty())
+    }
+
+    /// The Bookshop whose tables begin with `prefix`, made anew, with a
+    /// session of the test's own standing in for another program. `None`
+    /// without a server.
+    async fn bookshop(prefix: &str) -> Option<(mysql_async::Conn, Connection)> {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+            return None;
+        };
+        let opts = mysql_async::Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        let mut admin = mysql_async::Conn::new(opts).await.unwrap();
+        admin.query_drop(named(DROP, prefix)).await.unwrap();
+        for statement in CREATE {
+            admin.query_drop(named(statement, prefix)).await.unwrap();
+        }
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        let connection =
+            Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::Writable)
+                .await
+                .unwrap();
+        Some((admin, connection))
+    }
+
+    #[tokio::test]
+    async fn mysql_deletes_a_row_by_its_key() {
+        let Some((mut admin, connection)) = bookshop("mydel").await else {
+            return;
+        };
+        a_marked_row_is_deleted(&connection, &shop("mydel")).await;
+        admin.query_drop(named(DROP, "mydel")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_says_a_row_was_already_gone_and_saves_the_rest() {
+        let Some((mut admin, connection)) = bookshop("mygone").await else {
+            return;
+        };
+        admin
+            .query_drop("DELETE FROM mygone_book_covers WHERE id = 2")
+            .await
+            .unwrap();
+        a_row_already_gone_is_said_and_the_rest_is_saved(&connection, &shop("mygone")).await;
+        admin.query_drop(named(DROP, "mygone")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_writes_new_rows_before_it_deletes() {
+        let Some((mut admin, connection)) = bookshop("myorder").await else {
+            return;
+        };
+        a_new_row_goes_in_before_a_row_goes_out(&connection, &shop("myorder")).await;
+        admin.query_drop(named(DROP, "myorder")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_changes_rows_before_it_deletes() {
+        let Some((mut admin, connection)) = bookshop("myfirst").await else {
+            return;
+        };
+        a_row_is_changed_before_a_row_goes_out(&connection, &shop("myfirst")).await;
+        admin.query_drop(named(DROP, "myfirst")).await.unwrap();
+    }
+
+    /// Spec 5: MySQL's 1451, under the SQLSTATE 23000 it shares with other
+    /// failures, and the constraint that holds the row.
+    #[tokio::test]
+    async fn mysql_keeps_a_row_a_foreign_key_holds() {
+        let Some((mut admin, connection)) = bookshop("myheld").await else {
+            return;
+        };
+        let error =
+            a_row_a_foreign_key_holds_stays_and_the_save_is_undone(&connection, &shop("myheld"))
+                .await;
+        let Error::Query {
+            code, named: of, ..
+        } = error
+        else {
+            panic!("a query error: {error:?}");
+        };
+        assert_eq!(code.as_deref(), Some("23000"));
+        assert_eq!(of.number, Some(1451));
+        assert_eq!(of.constraint.as_deref(), Some("myheld_book_covers_ibfk_1"));
+        assert!(of.columns.is_empty());
+        admin.query_drop(named(DROP, "myheld")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_deletes_by_a_key_of_two_columns() {
+        let Some((mut admin, connection)) = bookshop("mytwo").await else {
+            return;
+        };
+        a_key_of_two_columns_finds_its_row(&connection, &shop("mytwo")).await;
+        admin.query_drop(named(DROP, "mytwo")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_deletes_a_row_another_delete_took_with_it() {
+        let Some((mut admin, connection)) = bookshop("mytree").await else {
+            return;
+        };
+        a_row_the_save_took_with_another_is_deleted(&connection, &shop("mytree")).await;
+        admin.query_drop(named(DROP, "mytree")).await.unwrap();
     }
 }

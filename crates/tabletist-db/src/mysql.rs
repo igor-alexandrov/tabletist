@@ -956,6 +956,16 @@ pub(crate) fn named(number: u32, message: &str) -> Named {
             let key = key.map(|key| key.split_once('.').map_or(key, |(_, key)| key).to_owned());
             (key, Vec::new())
         }
+        // ER_ROW_IS_REFERENCED_2: a row another table's foreign key holds.
+        // The constraint as it was defined, as 1452's. Its columns are the
+        // other table's, and a caller looks for a named column in the
+        // table it wrote to, so they are left out.
+        1451 => {
+            let constraint = message
+                .split_once("CONSTRAINT ")
+                .and_then(|(_, rest)| quoted(rest, '`'));
+            (constraint, Vec::new())
+        }
         // ER_NO_REFERENCED_ROW_2: the constraint as it was defined, which
         // is SQL and not translated.
         1452 => {
@@ -1139,6 +1149,18 @@ mod tests {
                 Some("audit_book_covers_ibfk_1".into()),
                 vec!["publisher_id".to_owned()]
             )
+        );
+        // ER_ROW_IS_REFERENCED_2, a delete a foreign key refuses: the
+        // constraint, and no column, since the one it names is the
+        // referencing table's and not the table the save wrote to.
+        assert_eq!(
+            of(
+                1451,
+                "Cannot delete or update a parent row: a foreign key constraint fails \
+                 (`tabletist`.`shop_book_covers`, CONSTRAINT `shop_book_covers_ibfk_1` \
+                 FOREIGN KEY (`publisher_id`) REFERENCES `shop_publishers` (`id`))"
+            ),
+            (Some(1451), Some("shop_book_covers_ibfk_1".into()), vec![])
         );
         assert_eq!(
             of(1048, "Column 'publisher_id' cannot be null"),
