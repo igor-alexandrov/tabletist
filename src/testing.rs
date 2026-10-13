@@ -252,6 +252,31 @@ impl Harness {
         self.settle();
     }
 
+    /// Clicks the row labelled `label` with Shift held, by the pointer: a
+    /// click through AccessKit carries no modifier. The frame is told of
+    /// Shift as a window tells it, before the pointer moves.
+    pub fn shift_click(&mut self, label: &str) {
+        let tree = self.settle();
+        let row = bounds(&tree, label, Role::Button)
+            .unwrap_or_else(|| panic!("no row labelled {label:?}: {:?}", labels(&tree)));
+        let pos = row.left_center() + egui::vec2(40.0, 0.0);
+        let shift = egui::Modifiers::SHIFT;
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: shift,
+        };
+        self.frame(vec![
+            egui::Event::ModifiersChanged(shift),
+            egui::Event::PointerMoved(pos),
+        ]);
+        self.frame(vec![press(true)]);
+        self.frame(vec![press(false)]);
+        self.frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)]);
+        self.settle();
+    }
+
     /// The window gives the keyboard to another app, or has it again, as
     /// the window says it: an event, and the state of every frame after.
     pub fn window_focus(&mut self, focused: bool) {

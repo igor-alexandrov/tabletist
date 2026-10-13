@@ -732,6 +732,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(Action::CloseTab { tab, id });
             }
             if !editing && any_grid && !tree_arrows && !focused {
+                // Shift with an arrow takes the row it moves to into the
+                // selection. A table's rows only.
+                if sql.is_none() {
+                    for (command, rows) in [(Command::ExtendUp, -1), (Command::ExtendDown, 1)] {
+                        let presses = on(input, command, Scope::Grid).count;
+                        actions.extend((0..presses).map(|_| Action::ExtendBy { tab, id, rows }));
+                    }
+                }
                 let page = 20;
                 let moves = [Command::MoveRow, Command::MoveColumn, Command::MovePage];
                 for command in moves {

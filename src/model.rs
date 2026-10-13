@@ -240,6 +240,20 @@ pub enum Action {
         id: TabId,
         cell: CellPos,
     },
+    /// Select the rows from the cursor's row, or from the range's anchor,
+    /// to `cell`'s row, and put the cursor on `cell`: Shift with a click.
+    /// With no cursor it selects the cell.
+    ExtendTo {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+    },
+    /// The same by rows from the cursor: Shift with an arrow.
+    ExtendBy {
+        tab: ConnTabId,
+        id: TabId,
+        rows: isize,
+    },
     /// Open the editor on a cell of a table's grid, or say why it cannot
     /// be edited.
     EditCell {

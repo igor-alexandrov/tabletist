@@ -1692,7 +1692,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             });
         }
         if let Some(cell) = output.clicked.and_then(held) {
-            actions.push(Action::SelectCell { tab, id, cell });
+            // With Shift held the click takes the rows up to its own into
+            // the selection.
+            actions.push(if output.shift {
+                Action::ExtendTo { tab, id, cell }
+            } else {
+                Action::SelectCell { tab, id, cell }
+            });
         }
         // A second click edits the cell.
         if let Some(cell) = output.double_clicked.and_then(held) {

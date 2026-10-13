@@ -1186,27 +1186,31 @@ impl App {
                         },
                     });
                 } else if let Some(object) = self.object_tab_mut(tab, id) {
-                    let (height, width) = object
-                        .page()
-                        .map(|page| (page.rows.len(), page.columns.len()))
-                        .unwrap_or((0, 0));
-                    // Through the rows as the grid shows them: a new row
-                    // stands among the page's, and is no row of it.
-                    let order = crate::edit::Order::of(&object.edits.added, height);
-                    let moved = match object.selection {
-                        _ if order.is_empty() || width == 0 => None,
-                        None => order.row(0).map(|row| CellPos { row, col: 0 }),
-                        Some(cell) => {
-                            let from = order.place(cell.row).unwrap_or(0);
-                            let to = step(from, rows, order.len());
-                            order.row(to).map(|row| CellPos {
-                                row,
-                                col: step(cell.col, cols, width),
-                            })
-                        }
-                    };
+                    let moved = moved(object, rows, cols);
                     object.pinned |= moved.is_some();
                     object.set_cursor(moved, Reach::Move);
+                }
+            }
+            Action::ExtendTo { tab, id, cell } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.set_cursor(Some(cell), Reach::Extend);
+                    object.pinned = true;
+                }
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Grid;
+                }
+            }
+            Action::ExtendBy { tab, id, rows } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    let moved = moved(object, rows, 0);
+                    object.pinned |= moved.is_some();
+                    object.set_cursor(moved, Reach::Extend);
                 }
             }
             Action::ToggleRowPanel(tab) => {
@@ -4201,6 +4205,30 @@ fn opens_messages(
 fn step(index: usize, delta: isize, len: usize) -> usize {
     let moved = (index as i128 + delta as i128).clamp(0, len as i128 - 1);
     moved as usize
+}
+
+/// Where a move by `rows` and `cols` puts the cursor of `object`, through
+/// the rows as the grid shows them: a new row stands among the page's, and
+/// is no row of it. With no cursor, the first cell. `None` where the grid
+/// has no cell.
+fn moved(object: &ObjectTab, rows: isize, cols: isize) -> Option<CellPos> {
+    let (height, width) = object
+        .page()
+        .map(|page| (page.rows.len(), page.columns.len()))
+        .unwrap_or((0, 0));
+    let order = crate::edit::Order::of(&object.edits.added, height);
+    match object.selection {
+        _ if order.is_empty() || width == 0 => None,
+        None => order.row(0).map(|row| CellPos { row, col: 0 }),
+        Some(cell) => {
+            let from = order.place(cell.row).unwrap_or(0);
+            let to = step(from, rows, order.len());
+            order.row(to).map(|row| CellPos {
+                row,
+                col: step(cell.col, cols, width),
+            })
+        }
+    }
 }
 
 /// A row's text for the row panel, formatted once. A cell of the page's

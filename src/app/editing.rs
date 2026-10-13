@@ -59,6 +59,8 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::WriteEdits { .. }
             | Action::ReviewEdits { .. }
             | Action::SelectCell { .. }
+            | Action::ExtendTo { .. }
+            | Action::ExtendBy { .. }
             | Action::MoveSelection { .. }
             // Closing the row panel closes the editor it draws, and the
             // text of that editor joins the set.

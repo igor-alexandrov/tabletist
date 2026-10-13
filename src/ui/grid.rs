@@ -157,6 +157,8 @@ pub type Editor<'a> = &'a mut dyn FnMut(&mut Ui, Rect);
 #[derive(Debug, Default, PartialEq)]
 pub struct GridOutput {
     pub clicked: Option<CellPos>,
+    /// Shift was held at the click: it extends the selection to its row.
+    pub shift: bool,
     /// The cell a second click landed on, soon after the first.
     pub double_clicked: Option<CellPos>,
     /// Where the cell being edited is, in view or not: what an editor that
@@ -784,6 +786,7 @@ pub fn show<'a>(
                     let cell = Some(CellPos { row, col });
                     if response.clicked() {
                         output.clicked = cell;
+                        output.shift = ui.input(|input| input.modifiers.shift);
                     }
                     if response.double_clicked() {
                         output.double_clicked = cell;

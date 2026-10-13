@@ -343,6 +343,8 @@ commands! {
     MoveRow,
     MoveColumn,
     MovePage,
+    ExtendUp,
+    ExtendDown,
     OpenInspector,
     ToggleInspector,
     CloseInspector,
@@ -547,6 +549,8 @@ impl Command {
             C::MoveRow => info("Move by row", "", Editing),
             C::MoveColumn => info("Move by column", "", Editing),
             C::MovePage => info("Move by page", "", Editing),
+            C::ExtendUp => info("Extend the selection up", "", Editing),
+            C::ExtendDown => info("Extend the selection down", "", Editing),
             C::OpenInspector => info(
                 "Open inspector / focus fields",
                 "Open inspector / focus fields",
@@ -990,6 +994,9 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
         ),
+        // A table's rows only: a result has one selected row.
+        bind(C::ExtendUp, GRID, keys(&[k("shift+up")]), NONE),
+        bind(C::ExtendDown, GRID, keys(&[k("shift+down")]), NONE),
         bind(
             C::OpenInspector,
             GRID,
@@ -2604,6 +2611,9 @@ mod tests {
         assert_eq!(omarchy(Command::PasteNewRows), "\"+p, ctrl+shift+v");
         assert_eq!(omarchy(Command::DuplicateConnection), "yy p");
         assert_eq!(omarchy(Command::DuplicateRow), "yy p");
+        assert_eq!(mac(Command::ExtendUp), "⇧↑");
+        assert_eq!(mac(Command::ExtendDown), "⇧↓");
+        assert_eq!(omarchy(Command::ExtendDown), "");
         assert_eq!(omarchy(Command::DiscardChanges), ":e!");
         assert_eq!(omarchy(Command::ReviewSql), ":diff");
         assert_eq!(omarchy(Command::History), ":history");
