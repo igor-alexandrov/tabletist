@@ -251,7 +251,8 @@ fn was(count: usize) -> String {
 /// Refused, with nothing run: more than one statement; a statement
 /// [`sql::refusal`] refuses; anything that writes, locks or selects `INTO`,
 /// at any depth; every other kind of statement; a function on the dialect's
-/// list of those with effects; and text the parser cannot read.
+/// list of those with effects; placeholders that do not match `params`; and
+/// text the parser cannot read.
 pub fn check_read(dialect: Dialect, sql: &str, params: &[Param]) -> Result<Read, Refusal> {
     if sql.len() > MAX_SQL_BYTES {
         return Err(Refusal::TooLarge(Large::Statement));
@@ -271,7 +272,7 @@ pub fn check_read(dialect: Dialect, sql: &str, params: &[Param]) -> Result<Read,
         return Err(Refusal::NotAllowed(what));
     }
     let text = statement.text.as_str();
-    let explains = on_a_deep_stack(|| read_parsed(dialect, text))??;
+    let explains = on_a_deep_stack(|| read_parsed(dialect, text, params))??;
     Ok(Read {
         text: text.to_owned(),
         explains,
@@ -296,7 +297,7 @@ fn on_a_deep_stack<T: Send>(check: impl FnOnce() -> T + Send) -> Result<T, Refus
 
 /// Parses `text` and checks it. Says whether it is an `EXPLAIN`. The tree
 /// is built and dropped here, on the deep stack.
-fn read_parsed(dialect: Dialect, text: &str) -> Result<bool, Refusal> {
+fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, Refusal> {
     let parser: &dyn sqlparser::dialect::Dialect = match dialect {
         Dialect::Postgres => &PostgreSqlDialect {},
         Dialect::MySql => &MySqlDialect {},
@@ -345,7 +346,8 @@ fn read_parsed(dialect: Dialect, text: &str) -> Result<bool, Refusal> {
         }
         other => return Err(not_a_read(dialect, text, other)),
     };
-    tokens_read(dialect, &tokens)?;
+    let placeholders = tokens_read(dialect, &tokens)?;
+    params_match(dialect, &placeholders, params)?;
     Ok(explains)
 }
 
@@ -449,7 +451,8 @@ fn query_reads(query: &Query) -> Result<(), Refusal> {
 
 /// Reads the tokens of a statement the parser took for a query, and
 /// refuses what a read may not hold at any depth: a word that writes or
-/// locks, a function with effects, an assignment.
+/// locks, a function with effects, an assignment. Gives the placeholders
+/// it met, as written, in the order of the text.
 ///
 /// On tokens and not on the tree, for two reasons. A tree is as deep as
 /// its text is long, and walking one costs far more stack than dropping it.
@@ -459,14 +462,18 @@ fn query_reads(query: &Query) -> Result<(), Refusal> {
 /// It errs toward refusing. `SELECT delete FROM notes` reads a column, on
 /// a database that lets one be named so without quotes, and is refused as
 /// a `DELETE`: a name in quotes passes.
-fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<(), Refusal> {
+fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<Vec<String>, Refusal> {
     let code: Vec<&Token> = tokens
         .iter()
         .filter(|token| !matches!(token, Token::Whitespace(_)))
         .collect();
+    let mut placeholders = Vec::new();
     for (index, token) in code.iter().enumerate() {
         let next = code.get(index + 1).copied();
         match token {
+            Token::Placeholder(written) => placeholders.push(written.clone()),
+            Token::Colon => placeholders.extend(named_placeholder(dialect, ':', next)),
+            Token::AtSign => placeholders.extend(named_placeholder(dialect, '@', next)),
             // MySQL's `@total := @total + 1`: session state a rollback
             // does not undo. PostgreSQL spells a named argument so.
             Token::Assignment => match dialect {
@@ -504,7 +511,7 @@ fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<(), Refusal> {
             _ => {}
         }
     }
-    Ok(())
+    Ok(placeholders)
 }
 
 /// Whether the token after a `FOR` begins a locking clause.
@@ -620,6 +627,64 @@ fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str
             &["pragma_"],
         ),
     }
+}
+
+/// A parameter by name, which the tokenizer gives as a sign and a word:
+/// `:name` on MySQL and SQLite, `@name` on SQLite. PostgreSQL has neither
+/// (its colon stands in `tags[1:n]`), and to MySQL `@name` is a variable of
+/// the session, in one token.
+fn named_placeholder(dialect: Dialect, sign: char, next: Option<&Token>) -> Option<String> {
+    let Some(Token::Word(name)) = next else {
+        return None;
+    };
+    let named = match (dialect, sign) {
+        (Dialect::MySql | Dialect::Sqlite, ':') | (Dialect::Sqlite, '@') => true,
+        (Dialect::Postgres | Dialect::MySql | Dialect::Sqlite, _) => false,
+    };
+    named.then(|| format!("{sign}{}", name.value))
+}
+
+/// Checks the placeholders a statement holds against the values sent.
+fn params_match(
+    dialect: Dialect,
+    placeholders: &[String],
+    params: &[Param],
+) -> Result<(), Refusal> {
+    let mut expected = 0;
+    for written in placeholders {
+        let position = match dialect {
+            // `$1` may stand twice; the highest number is the count.
+            Dialect::Postgres => written
+                .strip_prefix('$')
+                .and_then(|number| number.parse::<usize>().ok())
+                .filter(|number| *number > 0),
+            Dialect::MySql | Dialect::Sqlite => (written == "?").then_some(expected + 1),
+        };
+        let Some(position) = position else {
+            return Err(Refusal::InvalidParams(ParamFault::Placeholder {
+                written: written.clone(),
+                dialect,
+            }));
+        };
+        expected = expected.max(position);
+    }
+    if expected != params.len() {
+        return Err(Refusal::InvalidParams(ParamFault::Count {
+            expected,
+            sent: params.len(),
+        }));
+    }
+    for (index, param) in params.iter().enumerate() {
+        let fault = match param {
+            Param::Text(text) if text.contains('\0') => ParamFault::Nul(index + 1),
+            Param::Float(number) if !number.is_finite() => ParamFault::NotFinite(index + 1),
+            Param::Null | Param::Bool(_) | Param::Int(_) | Param::Float(_) | Param::Text(_) => {
+                continue;
+            }
+        };
+        return Err(Refusal::InvalidParams(fault));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1414,6 +1479,148 @@ mod tests {
                 "WITH pg_sleep_log(n) AS (SELECT 1) SELECT n FROM pg_sleep_log"
             ),
             Refusal::FunctionNotAllowed("pg_sleep_log".into())
+        );
+    }
+
+    #[test]
+    fn placeholders_are_counted_in_each_dialects_own_spelling() {
+        let two = [Param::Int(4), Param::Text("print".into())];
+        for (dialect, sql, params) in [
+            (
+                Dialect::Postgres,
+                "SELECT id FROM book_covers WHERE publisher_id = $1 AND kind = $2",
+                &two[..],
+            ),
+            // A number may stand twice, and in any order.
+            (Dialect::Postgres, "SELECT $2, $1, $2", &two[..]),
+            (
+                Dialect::Postgres,
+                "SELECT title FROM books LIMIT $1",
+                &two[..1],
+            ),
+            (
+                Dialect::MySql,
+                "SELECT id FROM book_covers WHERE publisher_id = ? AND kind = ?",
+                &two[..],
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT id FROM book_covers WHERE publisher_id = ? AND kind = ?",
+                &two[..],
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT title FROM books LIMIT ?",
+                &two[..1],
+            ),
+        ] {
+            assert!(
+                check_read(dialect, sql, params).is_ok(),
+                "{dialect:?}: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_count_that_does_not_match_is_refused() {
+        let count = |expected, sent| Refusal::InvalidParams(ParamFault::Count { expected, sent });
+        let one = [Param::Int(4)];
+        for dialect in ALL {
+            assert_eq!(
+                check_read(dialect, "SELECT title FROM books", &one),
+                Err(count(0, 1)),
+                "{dialect:?}"
+            );
+        }
+        assert_eq!(refused(Dialect::Postgres, "SELECT $1, $2, $1"), count(2, 0));
+        assert_eq!(
+            check_read(Dialect::Postgres, "SELECT $3", &one),
+            Err(count(3, 1))
+        );
+        assert_eq!(
+            check_read(Dialect::MySql, "SELECT ?, ?", &one),
+            Err(count(2, 1))
+        );
+        assert_eq!(refused(Dialect::Sqlite, "SELECT ?"), count(1, 0));
+    }
+
+    #[test]
+    fn a_placeholder_in_a_string_is_text() {
+        for (dialect, sql) in [
+            (Dialect::Postgres, "SELECT '$1', $$ $2 $$"),
+            (Dialect::MySql, "SELECT '?', \"?\""),
+            (Dialect::Sqlite, "SELECT '?', ':id' -- ?"),
+        ] {
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}: {sql}");
+        }
+    }
+
+    #[test]
+    fn a_placeholder_that_is_not_the_dialects_own_is_refused() {
+        for (dialect, sql, written) in [
+            (Dialect::Postgres, "SELECT $0", "$0"),
+            (Dialect::Postgres, "SELECT $id", "$id"),
+            (Dialect::MySql, "SELECT id FROM books WHERE id = :id", ":id"),
+            (Dialect::Sqlite, "SELECT id FROM books WHERE id = ?1", "?1"),
+            (
+                Dialect::Sqlite,
+                "SELECT id FROM books WHERE id = :id",
+                ":id",
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT id FROM books WHERE id = @id",
+                "@id",
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT id FROM books WHERE id = $id",
+                "$id",
+            ),
+        ] {
+            assert_eq!(
+                refused(dialect, sql),
+                Refusal::InvalidParams(ParamFault::Placeholder {
+                    written: written.into(),
+                    dialect,
+                }),
+                "{dialect:?}: {sql}"
+            );
+        }
+        // PostgreSQL has no `?` parameter, and its parser none either.
+        assert_eq!(
+            refused(Dialect::Postgres, "SELECT id FROM books WHERE id = ?"),
+            Refusal::NotParsed
+        );
+        // A variable of MySQL's session, and a slice of a PostgreSQL array.
+        assert!(read(Dialect::MySql, "SELECT @id").is_ok());
+        assert!(read(Dialect::Postgres, "SELECT tags[1:2] FROM books").is_ok());
+    }
+
+    #[test]
+    fn a_parameter_no_database_takes_is_refused_by_its_position() {
+        let sql = "SELECT $1, $2";
+        assert_eq!(
+            check_read(
+                Dialect::Postgres,
+                sql,
+                &[Param::Int(1), Param::Text("a\0b".into())]
+            ),
+            Err(Refusal::InvalidParams(ParamFault::Nul(2)))
+        );
+        for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                check_read(Dialect::Postgres, sql, &[Param::Float(number), Param::Null]),
+                Err(Refusal::InvalidParams(ParamFault::NotFinite(1)))
+            );
+        }
+        assert!(
+            check_read(
+                Dialect::Postgres,
+                sql,
+                &[Param::Float(19.5), Param::Bool(true)]
+            )
+            .is_ok()
         );
     }
 }
