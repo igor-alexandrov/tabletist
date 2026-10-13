@@ -666,3 +666,57 @@ fn a_screen_reader_is_told_of_a_mark_a_restore_and_a_save() {
     harness.answer_written(written(Vec::new()));
     assert!(polite(&mut harness, "1 row deleted."));
 }
+
+/// A refused delete's error is the save's that was refused: the next save
+/// sends the row again without it, and what that save comes to is what
+/// the tab says.
+#[test]
+fn a_refused_deletes_error_goes_when_the_row_is_sent_again() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedDelete {
+        delete: 0,
+        error: restrict(),
+    }));
+    harness.settle();
+    assert_eq!(edits(&harness, tab, id).counts().failed, 1);
+    // Another row is changed, and the save is sent again.
+    set(&mut harness, tab, id, (0, 2), "audio");
+    harness.app.apply(Action::WriteEdits { tab, id });
+    let sending = edits(&harness, tab, id);
+    assert!(
+        sending
+            .deleted
+            .get(&1)
+            .is_some_and(|doomed| doomed.failed.is_none())
+    );
+    assert_eq!(sending.counts().failed, 0);
+    assert_eq!(sending.row_mark(1), crate::edit::RowMark::Deleted);
+    // This save fails on the changed row: its failure is the one said,
+    // not the delete's of the save before.
+    let check = tabletist_db::Error::Query {
+        code: Some("23514".into()),
+        message: "new row violates check constraint".into(),
+        detail: None,
+        hint: None,
+        named: Box::default(),
+    };
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Failed {
+        row: 0,
+        error: check,
+    }));
+    harness.settle();
+    let mut lines = harness.painted.iter();
+    let line = lines.find(|(text, _)| text.starts_with("! "));
+    assert!(
+        line.is_some_and(|(text, _)| text.starts_with("! 1:") && text.contains("23514")),
+        "{:?}",
+        harness.painted
+    );
+    // The row is still marked, and has no error of its own.
+    assert_eq!(
+        edits(&harness, tab, id).row_mark(1),
+        crate::edit::RowMark::Deleted
+    );
+}

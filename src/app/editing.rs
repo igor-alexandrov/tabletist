@@ -569,6 +569,9 @@ impl App {
         };
         object.edits.note = None;
         object.edits.saved = None;
+        // A delete the last save was refused is sent again: its error is
+        // that save's, and would stand before what this one comes to.
+        object.edits.resend_deletes();
         object.edits.saving = Some(Saving {
             request,
             rows: sent.rows,

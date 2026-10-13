@@ -1709,6 +1709,15 @@ impl Edits {
         self.note = Some(Note::FailedDelete { row, error });
     }
 
+    /// A save is sent: what the last one said of a row to delete is no
+    /// longer what stands against it. The answer says it again where it
+    /// still holds.
+    pub fn resend_deletes(&mut self) {
+        for doomed in self.deleted.values_mut() {
+            doomed.failed = None;
+        }
+    }
+
     /// A value of the new row whose cells are under `row` changed: it is
     /// no longer the row the last save failed on.
     fn mended(&mut self, row: usize) {
