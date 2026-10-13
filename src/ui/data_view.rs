@@ -1209,7 +1209,19 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
                 .find_map(|(&row, doomed)| Some((row, doomed.failed.as_ref()?)));
             if let Some((row, error)) = refused {
                 let number = object.query.offset + row as u64 + 1;
-                return Some(format!("! {number}:  {}", failure_text(error)));
+                let failure = failure_text(error);
+                // Who holds the row, once it was counted.
+                let doomed = object.edits.deleted.get(&row);
+                let held = doomed
+                    .and_then(|doomed| doomed.holder.as_ref())
+                    .map(|holder| {
+                        let own = |words: &str| look.label(words);
+                        super::pending_bar::holder_said(holder, locale, own)
+                    });
+                return Some(match held {
+                    Some(held) => format!("! {number}:  {failure} · {held}"),
+                    None => format!("! {number}:  {failure}"),
+                });
             }
             // The set is in the page's order: by row, then by column.
             let (&(row, col), pending) = object
@@ -2005,7 +2017,17 @@ impl<'a> Changes<'a> {
             cell.slanted = false;
             // What the database said of a delete it refused, under the
             // pointer on any of the row's cells.
-            cell.hint = doomed.failed.as_ref().map(failure_text);
+            cell.hint = doomed.failed.as_ref().map(|error| {
+                let failure = failure_text(error);
+                match &doomed.holder {
+                    Some(holder) => {
+                        let own = |words: &str| look.label(words);
+                        let held = super::pending_bar::holder_said(holder, locale, own);
+                        format!("{failure} · {held}")
+                    }
+                    None => failure,
+                }
+            });
             cell.style = grid::Style::Plain;
             let marker = !look.terminal && self.delete_marker == Some(col);
             cell.mark = if marker {

@@ -793,7 +793,8 @@ pub fn publishers_structure() -> tabletist_db::Structure {
         ..ColumnInfo::default()
     };
     // The keys that point at the table: `book_covers` loses its covers
-    // with a publisher, and `books` is cleared of it.
+    // with a publisher, `books` is cleared of it, and `book_reviews`
+    // holds it.
     let key = |table: &str, on_delete: &str| tabletist_db::ReferencingKey {
         name: Some(format!("{table}_publisher_id_fkey")),
         schema: "main".into(),
@@ -805,7 +806,11 @@ pub fn publishers_structure() -> tabletist_db::Structure {
     tabletist_db::Structure {
         columns: vec![column("id", "INTEGER"), column("name", "TEXT")],
         primary_key: vec!["id".into()],
-        referenced_by: vec![key("book_covers", "CASCADE"), key("books", "SET NULL")],
+        referenced_by: vec![
+            key("book_covers", "CASCADE"),
+            key("books", "SET NULL"),
+            key("book_reviews", "NO ACTION"),
+        ],
         ..tabletist_db::Structure::default()
     }
 }

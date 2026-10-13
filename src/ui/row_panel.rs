@@ -943,6 +943,12 @@ fn draw(
                 let said = crate::ui::pending_bar::database_said(error);
                 top = form_note(ui, full, top, &said, &look, &palette);
             }
+            // And who holds the row, once that was counted.
+            if let Some(holder) = doomed.and_then(|doomed| doomed.holder.as_ref()) {
+                let own = |words: &str| look.label(words);
+                let said = crate::ui::pending_bar::holder_said(holder, locale, own);
+                top = form_note(ui, full, top, &said, &look, &palette);
+            }
             // A copy says what it was made as at the form's top, above
             // its fields and what a table without a key says.
             if let Some(made) = fresh.as_ref().and_then(|fresh| fresh.made.as_ref()) {

@@ -1401,6 +1401,9 @@ pub struct Edits {
     /// a review asked. `None` until one does, and again when the marks
     /// change.
     pub taken: Option<Taken>,
+    /// The counts out for a row whose delete was refused: the request,
+    /// the page's row, and who would hold it.
+    pub holders: Vec<(RequestId, usize, Holder)>,
     /// Review SQL is open: the drawer on macOS and Windows, the terminal
     /// look's `:diff` panel.
     pub reviewing: bool,
@@ -1430,6 +1433,10 @@ pub struct Picked {
 pub struct Doomed {
     /// What its `DELETE` failed with in the last save.
     pub failed: Option<Error>,
+    /// Who holds the row, where its delete was refused by a foreign key
+    /// and the rows that point at it were counted. It goes with the
+    /// error it explains.
+    pub holder: Option<Holder>,
     /// The row's pending cells as they stood when it was marked, by
     /// column: kept for its restoring, and no part of the set until then.
     cells: Vec<(usize, Pending)>,
@@ -1581,6 +1588,83 @@ pub fn taken_by(table: &Table<'_>) -> Vec<(Effect, Vec<RowQuery>)> {
                 // without a number.
                 None => Some((effect, Vec::new())),
             }
+        })
+        .collect()
+}
+
+/// The rows of another table that still point at a row whose delete a
+/// foreign key refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holder {
+    /// The table that has the key, and the key's columns.
+    pub table: ObjectRef,
+    pub columns: Vec<String>,
+    /// The row's values those columns hold, as a filter reads them.
+    pub values: Vec<String>,
+    /// How many rows hold them.
+    pub rows: u64,
+}
+
+/// Whether `error` is a foreign key's refusal of a delete, as `dialect`
+/// says one.
+pub fn is_held(dialect: Dialect, error: &Error) -> bool {
+    let Error::Query {
+        code,
+        message,
+        named,
+        ..
+    } = error
+    else {
+        return false;
+    };
+    let code = code.as_deref();
+    match dialect {
+        // 23001 is `RESTRICT`'s own from version 18 on; before it, and
+        // for `NO ACTION`, 23503.
+        Dialect::Postgres => matches!(code, Some("23503" | "23001")),
+        // Its state, 23000, is other failures' too: the number says it.
+        Dialect::MySql => named.number == Some(1451),
+        // `NO ACTION` is SQLITE_CONSTRAINT_FOREIGNKEY. `RESTRICT` is
+        // raised as a trigger's failure, SQLITE_CONSTRAINT_TRIGGER, which
+        // is every trigger's: told from the others by SQLite's own words,
+        // which no setting translates.
+        Dialect::Sqlite => {
+            code == Some("787")
+                || (code == Some("1811") && message == "FOREIGN KEY constraint failed")
+        }
+    }
+}
+
+/// What to count to learn who holds the page's row `row`, whose delete
+/// failed with `error`: for each key that could be the one, who would be
+/// held (`rows` not counted yet) and the count. The key the error names,
+/// where it names one. Else every key that holds.
+pub fn held_by(table: &Table<'_>, row: usize, error: &Error) -> Vec<(Holder, RowQuery)> {
+    let Some(structure) = table.structure.filter(|_| is_held(table.dialect, error)) else {
+        return Vec::new();
+    };
+    let named = match error {
+        Error::Query { named, .. } => named.constraint.as_deref(),
+        _ => None,
+    };
+    structure
+        .referenced_by
+        .iter()
+        .filter(|key| match named {
+            Some(name) => key.name.as_deref() == Some(name),
+            None => key.holds(),
+        })
+        .filter_map(|key| {
+            let mut queries = pointing_at(table, key, &[row])?;
+            let query = queries.pop().filter(|_| queries.is_empty())?;
+            let values = query.filters.iter().map(|filter| filter.value.clone());
+            let holder = Holder {
+                table: query.object.clone(),
+                columns: key.columns.clone(),
+                values: values.collect(),
+                rows: 0,
+            };
+            Some((holder, query))
         })
         .collect()
 }
@@ -1834,7 +1918,8 @@ impl Edits {
     /// with them. They are the tab's reads, as its page's is.
     pub fn counts_out(&self) -> Vec<RequestId> {
         let taken = self.taken.iter().flat_map(|taken| &taken.pending);
-        taken.map(|(request, _)| *request).collect()
+        let holders = self.holders.iter().map(|(request, ..)| *request);
+        taken.map(|(request, _)| *request).chain(holders).collect()
     }
 
     /// Marks the page's row `row` for deletion. What was made of the set,
@@ -1873,6 +1958,7 @@ impl Edits {
             .collect();
         let doomed = Doomed {
             failed: None,
+            holder: None,
             cells,
             doubts,
         };
@@ -1904,6 +1990,7 @@ impl Edits {
         for (col, doubt) in doomed.doubts {
             self.doubts.insert((row, col), doubt);
         }
+        self.holders.retain(|(_, of, _)| *of != row);
         if self.why.is_some_and(|(cell, _)| cell.row == row) {
             self.why = None;
         }
@@ -1924,6 +2011,8 @@ impl Edits {
             return;
         };
         doomed.failed = Some(error.clone());
+        // Who held the row was of the refusal before this one.
+        doomed.holder = None;
         self.note = Some(Note::FailedDelete { row, error });
     }
 
@@ -1933,7 +2022,10 @@ impl Edits {
     pub fn resend_deletes(&mut self) {
         for doomed in self.deleted.values_mut() {
             doomed.failed = None;
+            doomed.holder = None;
         }
+        // Nor is a count of who held one of them waited for.
+        self.holders.clear();
     }
 
     /// A value of the new row whose cells are under `row` changed: it is
@@ -2938,6 +3030,61 @@ mod tests {
         let mut failed = Taken::asked(vec![(deletes(None), vec![a])]);
         assert!(failed.answer(a, None));
         assert_eq!(failed.lines(), [deletes(None)]);
+    }
+
+    /// A refusal that names its constraint is counted for that key; one
+    /// that names none, for every key that holds.
+    #[test]
+    fn a_refused_delete_is_asked_who_holds_its_row() {
+        let structure = crate::testing::publishers_structure();
+        let page = crate::testing::publishers_page();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        let table = marked_covers(&structure, &page, &edits);
+        let refusal = |code: &str, constraint: Option<&str>| Error::Query {
+            code: Some(code.into()),
+            message: "refused".into(),
+            detail: None,
+            hint: None,
+            named: Box::new(tabletist_db::Named {
+                constraint: constraint.map(str::to_owned),
+                ..tabletist_db::Named::default()
+            }),
+        };
+        // SQLite (the fixture's engine) names no key: every key that
+        // holds. NO ACTION is 787, RESTRICT 1811 with the same words.
+        let asked = held_by(&table, 0, &refusal("787", None));
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0.table, ObjectRef::new("main", "book_reviews"));
+        assert_eq!(asked[0].0.columns, ["publisher_id"]);
+        assert_eq!(asked[0].0.values, ["9100000000000000001"]);
+        let restrict = Error::Query {
+            code: Some("1811".into()),
+            message: "FOREIGN KEY constraint failed".into(),
+            detail: None,
+            hint: None,
+            named: Box::default(),
+        };
+        assert_eq!(held_by(&table, 0, &restrict).len(), 1);
+        // 1811 is every trigger's failure: another message is not a key's.
+        assert!(held_by(&table, 0, &refusal("1811", None)).is_empty());
+        // PostgreSQL names the key: that one. 23001 is its RESTRICT from
+        // version 18 on.
+        let postgres = Table {
+            dialect: Dialect::Postgres,
+            ..table
+        };
+        for code in ["23503", "23001"] {
+            let named = refusal(code, Some("book_reviews_publisher_id_fkey"));
+            assert_eq!(held_by(&postgres, 0, &named).len(), 1, "{code}");
+        }
+        let other = refusal("23503", Some("no_such_key"));
+        assert!(held_by(&postgres, 0, &other).is_empty());
+        // Another failure is no foreign key's, and one engine's code is
+        // not another's.
+        assert!(held_by(&postgres, 0, &refusal("23514", None)).is_empty());
+        assert!(held_by(&postgres, 0, &refusal("787", None)).is_empty());
+        assert!(held_by(&table, 0, &Error::query("no")).is_empty());
     }
 
     /// Spec 1 and test 1: a mark, and the mark taken back.

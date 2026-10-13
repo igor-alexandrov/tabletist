@@ -2720,9 +2720,11 @@ impl App {
                     }
                 } else {
                     // Not a table's own total: one of a tab's counts of
-                    // what its deletes take with them, where it is one.
+                    // what its deletes take with them, or of who holds a
+                    // row it could not delete, where it is one.
                     let rows = result.as_ref().ok().copied();
-                    let _ = self.taken_counted(session, request, rows);
+                    let _ = self.taken_counted(session, request, rows)
+                        || self.held_counted(session, request, rows);
                 }
             }
             Event::Lookup {

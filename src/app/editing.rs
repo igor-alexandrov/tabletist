@@ -7,8 +7,8 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Answer, Duplicate, Editor, EditorPlace, Effect, Lock, NEW_ROWS, Note, Order, Pending, Place,
-    Problem, Saved, Saving, Sent, State, Table, Taken, Told, change_set, check, conflicting,
+    Answer, Duplicate, Editor, EditorPlace, Effect, Holder, Lock, NEW_ROWS, Note, Order, Pending,
+    Place, Problem, Saved, Saving, Sent, State, Table, Taken, Told, change_set, check, conflicting,
     is_change, new_id, new_row, opens_large, same_changes, settled, shown_lines, start_text,
 };
 use crate::model::{
@@ -1738,6 +1738,9 @@ impl App {
         // The page's row of the set's row `index`. None for a row the save
         // did not send: no row is named for want of it.
         let place = |index: usize| saving.rows.get(index).copied();
+        // The row a delete was refused for, to ask who holds it once the
+        // tab is let go of.
+        let mut refused = None;
         match result {
             Ok(WriteOutcome::Written {
                 inserted,
@@ -1948,6 +1951,7 @@ impl App {
                 object.edits.fail_delete(row, error);
                 // The row panel says what stands against the row.
                 object.fields = None;
+                refused = row;
             }
             Err(error) => {
                 object.edits.note = Some(if error.is_connection_lost() {
@@ -1959,6 +1963,76 @@ impl App {
                 });
             }
         }
+        if let Some(row) = refused {
+            self.count_holders(tab, id, row);
+        }
+    }
+
+    /// Asks who holds the page's row `row`, whose delete was refused: a
+    /// count for each key that could be the one, now that the save is
+    /// undone. Nothing is asked where the refusal was no foreign key's.
+    fn count_holders(&mut self, tab: ConnTabId, id: TabId, row: usize) {
+        let asked = self
+            .table(tab, id, |table, object| {
+                let error = object.edits.deleted.get(&row)?.failed.as_ref()?;
+                Some(crate::edit::held_by(table, row, error))
+            })
+            .flatten()
+            .unwrap_or_default();
+        let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
+            return;
+        };
+        let mut out = Vec::with_capacity(asked.len());
+        for (holder, query) in asked {
+            let request = RequestId(self.next_id());
+            self.backend.send(Command::CountRows {
+                session,
+                request,
+                query,
+            });
+            out.push((request, row, holder));
+        }
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.holders = out;
+        }
+    }
+
+    /// A count came back: one of a refused delete's, where it is one. The
+    /// first key that holds rows is the row's holder. Says whether it was
+    /// one of them.
+    pub(super) fn held_counted(
+        &mut self,
+        session: SessionId,
+        request: RequestId,
+        rows: Option<u64>,
+    ) -> bool {
+        let Some(tab) = self.tab_for_session(session) else {
+            return false;
+        };
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return false;
+        };
+        for object in workspace.object_tabs_mut() {
+            let edits = &mut object.edits;
+            let mut out = edits.holders.iter();
+            let Some(at) = out.position(|(asked, ..)| *asked == request) else {
+                continue;
+            };
+            let (_, row, holder) = edits.holders.remove(at);
+            // Only of the refusal it was asked about: a row that was sent
+            // again since has no error for this to explain.
+            if let Some(rows) = rows.filter(|rows| *rows > 0)
+                && let Some(doomed) = edits.deleted.get_mut(&row)
+                && doomed.failed.is_some()
+                && doomed.holder.is_none()
+            {
+                doomed.holder = Some(Holder { rows, ..holder });
+                // The row panel says it under the row's line.
+                object.fields = None;
+            }
+            return true;
+        }
+        false
     }
 
     /// Answers the question about the row a save found changed, and asks

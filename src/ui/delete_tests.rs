@@ -937,3 +937,96 @@ fn a_copied_review_says_what_the_deletes_take_with_them() {
     let text = crate::ui::review::text(&whole, harness.app.locale);
     assert!(text.contains(ALSO_DELETES), "{text}");
 }
+
+fn refused(code: &str, number: Option<u32>, constraint: Option<&str>) -> tabletist_db::Error {
+    tabletist_db::Error::Query {
+        code: Some(code.into()),
+        message: "FOREIGN KEY constraint failed".into(),
+        detail: None,
+        hint: None,
+        named: Box::new(tabletist_db::Named {
+            number,
+            constraint: constraint.map(str::to_owned),
+            columns: Vec::new(),
+        }),
+    }
+}
+
+/// Refuses the delete of the one marked row with `error`.
+fn refuse(harness: &mut Harness, tab: ConnTabId, id: TabId, error: tabletist_db::Error) {
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedDelete {
+        delete: 0,
+        error,
+    }));
+    harness.settle();
+}
+
+/// Spec 5 and test 8: after the rollback the row says how many rows of
+/// which table still point at it.
+#[test]
+fn a_refused_delete_says_who_still_points_at_the_row() {
+    for look in desktop() {
+        let (mut harness, tab, id) = publishers_in(look);
+        mark(&mut harness, tab, id, 0);
+        refuse(&mut harness, tab, id, refused("787", None, None));
+        // One count: of the one key that holds.
+        let asked = counts_asked(&harness);
+        assert_eq!(asked.len(), 1, "{}", look.name);
+        let (request, table) = asked.last().unwrap();
+        assert_eq!(table, "book_reviews");
+        answer_count(&mut harness, tab, *request, 3);
+        let held = "3 rows in book_reviews still point at this row";
+        // Under the database's words in the row panel, and after them in
+        // the bar.
+        assert!(harness.has(held), "{}", look.name);
+        let bar = "Nothing was saved. 1 row failed, so the whole transaction rolled back. 787 · \
+                   FOREIGN KEY constraint failed. 3 rows in book_reviews still point at this row.";
+        assert!(harness.has(bar), "{}", look.name);
+        let doomed = edits(&harness, tab, id).deleted.get(&0).unwrap();
+        assert_eq!(doomed.holder.as_ref().map(|holder| holder.rows), Some(3));
+        // Sent again, the row has no error and no holder of the last one.
+        harness.app.apply(Action::WriteEdits { tab, id });
+        let doomed = edits(&harness, tab, id).deleted.get(&0).unwrap();
+        assert!(doomed.failed.is_none() && doomed.holder.is_none());
+    }
+}
+
+/// MySQL's refusal is told by its number, under the state it shares, and
+/// a refusal that is no foreign key's asks nothing.
+#[test]
+fn only_a_foreign_keys_refusal_is_asked_about() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::MySql;
+    mark(&mut harness, tab, id, 0);
+    let key = Some("book_reviews_publisher_id_fkey");
+    refuse(&mut harness, tab, id, refused("23000", Some(1451), key));
+    assert_eq!(counts_asked(&harness).len(), 1);
+    // No row holds it after all: nothing is said.
+    let (request, _) = counts_asked(&harness)[0].clone();
+    answer_count(&mut harness, tab, request, 0);
+    let doomed = edits(&harness, tab, id).deleted.get(&0).unwrap();
+    assert!(doomed.holder.is_none());
+    // Another failure under the same state.
+    refuse(&mut harness, tab, id, refused("23000", Some(1142), None));
+    assert_eq!(counts_asked(&harness).len(), 1);
+}
+
+/// The Omarchy look says it on its error line.
+#[test]
+fn the_terminal_says_who_holds_a_row() {
+    let (mut harness, tab, id) = publishers_in(Look::omarchy());
+    // The line is cut to the grid's width where it is painted: with the
+    // row panel away it has more room, and a screen reader is told the
+    // whole of it either way.
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    mark(&mut harness, tab, id, 0);
+    refuse(&mut harness, tab, id, refused("787", None, None));
+    let (request, _) = counts_asked(&harness).last().cloned().unwrap();
+    answer_count(&mut harness, tab, request, 1);
+    let tree = harness.settle();
+    let labels = crate::testing::labels(&tree);
+    let line = labels.iter().find(|label| label.starts_with("! 1: "));
+    let said = "1 row in book_reviews still points at this row";
+    assert!(line.is_some_and(|label| label.contains(said)), "{labels:?}");
+}

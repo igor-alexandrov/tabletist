@@ -131,6 +131,31 @@ pub(crate) fn database_said(error: &Error) -> String {
     }
 }
 
+/// "3 rows in book_covers still point at this row": who holds a row
+/// whose delete a foreign key refused. The app's own words are put
+/// through `own`; the table's name is its own.
+pub(crate) fn holder_said(
+    holder: &crate::edit::Holder,
+    locale: Locale,
+    own: impl Fn(&str) -> String,
+) -> String {
+    let plural = u32::try_from(holder.rows).unwrap_or(u32::MAX);
+    let points = ngettext(
+        locale,
+        "still points at this row",
+        "still point at this row",
+        plural,
+    );
+    format!(
+        "{} {} {} {} {}",
+        holder.rows,
+        own(&ngettext(locale, "row", "rows", plural)),
+        own(&gettext(locale, "in")),
+        format::display_safe(&holder.table.name),
+        own(&points)
+    )
+}
+
 /// What `note` says, the app's own words put through `own`: the values of
 /// a row's key and what the database said are theirs, and stay as they are.
 fn note_said(
@@ -165,11 +190,20 @@ fn note_said(
         ),
         // The spec's banner. A save stops at its first statement that
         // fails, so one row fails at a time.
-        Note::FailedDelete { error, .. } => format!(
-            "{} {}",
-            say("Nothing was saved. 1 row failed, so the whole transaction rolled back."),
-            database_said(error)
-        ),
+        Note::FailedDelete { row, error } => {
+            let rolled =
+                say("Nothing was saved. 1 row failed, so the whole transaction rolled back.");
+            let said = database_said(error);
+            // Who holds the row, once it was counted.
+            let doomed = object.edits.deleted.get(row);
+            match doomed.and_then(|doomed| doomed.holder.as_ref()) {
+                Some(holder) => {
+                    let held = sentence(&holder_said(holder, locale, &own));
+                    format!("{rolled} {said} {held}")
+                }
+                None => format!("{rolled} {said}"),
+            }
+        }
         // Of a save that wrote: the rows by their keys, which are theirs.
         Note::AlreadyDeleted(rows) => match rows.as_slice() {
             [row] => format!("{} {row} {}", say("Row"), say("was already deleted.")),
