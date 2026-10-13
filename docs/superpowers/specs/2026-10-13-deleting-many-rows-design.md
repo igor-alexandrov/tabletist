@@ -41,7 +41,9 @@ headless tests, UI copy is short and plain with no em dashes.
 ## Decisions that need a yes
 
 The canvas and the first spec leave these open. Each has the default this
-spec is written to. Say which to change.
+spec is written to.
+
+Status: every default was approved on 2026-10-13.
 
 | # | Question | Default | The other way |
 |---|---|---|---|
