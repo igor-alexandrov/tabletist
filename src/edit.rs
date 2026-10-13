@@ -1813,11 +1813,22 @@ pub fn held_by(table: &Table<'_>, row: usize, error: &Error) -> Vec<(Holder, Row
         .collect()
 }
 
+/// How many values one count's `IN` lists, at most. More are counted in
+/// parts and added: the rows that point at different rows are different
+/// rows.
+const MAX_IN_VALUES: usize = 1_000;
+
+/// How many counts one key is asked, at most, where it is counted once
+/// for each marked row. Above it the key's line stands without a number.
+const MAX_ROW_COUNTS: usize = 100;
+
 /// The counts of the rows of `key`'s table that point at the page's
-/// `rows`: one where the key is one column, one for each row where it is
-/// several, since the app's filters are ANDed. `None` where the page
-/// does not hold what the key points at; no count where every row holds
-/// a NULL there, which no row points at.
+/// `rows`: one where the key is one column ([`MAX_IN_VALUES`] values to a
+/// count), one for each row where it is several, since the app's filters
+/// are ANDed. `None` where the page does not hold what the key points at,
+/// and where a key counted row by row would take more than
+/// [`MAX_ROW_COUNTS`] counts; no count where every row holds a NULL
+/// there, which no row points at.
 fn pointing_at(table: &Table<'_>, key: &ReferencingKey, rows: &[usize]) -> Option<Vec<RowQuery>> {
     let object = ObjectRef::new(key.schema.clone(), key.table.clone());
     let places: Option<Vec<usize>> = key
@@ -1860,11 +1871,17 @@ fn pointing_at(table: &Table<'_>, key: &ReferencingKey, rows: &[usize]) -> Optio
         })
     };
     Some(match key.columns.as_slice() {
-        // One column and values `IN` can list: one count.
-        [column] if values.len() > 1 && values.iter().all(listable) => {
-            let list: Vec<&str> = values.iter().flatten().map(String::as_str).collect();
-            vec![count(vec![filter(column, FilterOp::In, list.join(","))])]
-        }
+        // One column and values `IN` can list: one count for each
+        // thousand of them.
+        [column] if values.len() > 1 && values.iter().all(listable) => values
+            .chunks(MAX_IN_VALUES)
+            .map(|part| {
+                let list: Vec<&str> = part.iter().flatten().map(String::as_str).collect();
+                count(vec![filter(column, FilterOp::In, list.join(","))])
+            })
+            .collect(),
+        // A count for each row: too many to ask for.
+        _ if values.len() > MAX_ROW_COUNTS => return None,
         columns => values
             .into_iter()
             .map(|row| {
@@ -3323,6 +3340,58 @@ mod tests {
         // Nothing marked, nothing asked.
         let none = Edits::default();
         assert!(taken_by(&object, &marked_covers(&structure, &page, &none)).is_empty());
+    }
+
+    /// Many-rows spec 5 and test 17: a key counted with `IN` takes a
+    /// thousand values to a count, and a key counted row by row is not
+    /// counted for more than a hundred rows.
+    #[test]
+    fn counts_stay_bounded_with_many_rows_marked() {
+        let structure = crate::testing::publishers_structure();
+        let mut page = crate::testing::publishers_page();
+        let row = page.rows[0].clone();
+        page.rows = (0..1_500)
+            .map(|id| {
+                let mut row = row.clone();
+                row[0] = Value::Int(id);
+                row
+            })
+            .collect();
+        let object = ObjectRef::new("main", "publishers");
+        let mut edits = Edits::default();
+        for row in 0..1_500 {
+            edits.mark(row);
+        }
+        let asked = taken_by(&object, &marked_covers(&structure, &page, &edits));
+        // The key of one column: two counts, of 1,000 values and of 500.
+        let (_, queries, _) = &asked[0];
+        let listed: Vec<usize> = queries
+            .iter()
+            .map(|query| query.filters[0].value.split(',').count())
+            .collect();
+        assert_eq!(listed, [1_000, 500]);
+        assert!(
+            queries
+                .iter()
+                .all(|query| query.filters[0].op == FilterOp::In)
+        );
+        // A key of two columns: one count a row up to a hundred rows, and
+        // none above, which leaves its line without a number.
+        let mut two = structure.clone();
+        two.referenced_by[0].columns = vec!["publisher_id".into(), "kind".into()];
+        two.referenced_by[0].ref_columns = vec!["id".into(), "name".into()];
+        let mut edits = Edits::default();
+        for row in 0..100 {
+            edits.mark(row);
+        }
+        let asked = taken_by(&object, &marked_covers(&two, &page, &edits));
+        assert_eq!(asked[0].1.len(), 100);
+        edits.mark(100);
+        let asked = taken_by(&object, &marked_covers(&two, &page, &edits));
+        assert!(asked[0].1.is_empty());
+        let effect = asked[0].0.clone();
+        let taken = Taken::asked(vec![(effect.clone(), Vec::new(), 0)]);
+        assert_eq!(taken.lines(), [effect]);
     }
 
     /// A key of the table that points at the table: a marked row under a

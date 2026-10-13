@@ -222,12 +222,20 @@ fn note_said(
         // Of a save that wrote: the rows by their keys, which are theirs.
         Note::AlreadyDeleted(rows) => match rows.as_slice() {
             [row] => format!("{} {row} {}", say("Row"), say("was already deleted.")),
-            rows => format!(
-                "{} {} {}.",
-                rows.len(),
-                say("rows were already deleted:"),
-                rows.join(", ")
-            ),
+            // Up to three by name; of more, three and how many more.
+            rows => {
+                let named = rows.len().min(3);
+                let names = rows.get(..named).unwrap_or_default().join(", ");
+                let said = format!(
+                    "{} {} {names}",
+                    rows.len(),
+                    say("rows were already deleted:")
+                );
+                match rows.len() - named {
+                    0 => format!("{said}."),
+                    more => format!("{said} {} {more} {}.", say("and"), say("more")),
+                }
+            }
         },
         Note::Lost => say("The connection was lost while saving. Reload to see what was written."),
         Note::NotSent => say("Not connected. Nothing was sent."),

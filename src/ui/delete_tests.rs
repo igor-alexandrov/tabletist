@@ -541,6 +541,18 @@ fn a_row_already_deleted_is_said_by_its_key() {
         crate::ui::pending_bar::note_text(&note, object, harness.app.locale),
         "2 rows were already deleted: id 2, id 3."
     );
+    // Up to three are named, and the rest counted.
+    let names = |count: usize| (1..=count).map(|id| format!("id {id}")).collect();
+    let three = crate::edit::Note::AlreadyDeleted(names(3));
+    assert_eq!(
+        crate::ui::pending_bar::note_text(&three, object, harness.app.locale),
+        "3 rows were already deleted: id 1, id 2, id 3."
+    );
+    let five = crate::edit::Note::AlreadyDeleted(names(5));
+    assert_eq!(
+        crate::ui::pending_bar::note_text(&five, object, harness.app.locale),
+        "5 rows were already deleted: id 1, id 2, id 3 and 2 more."
+    );
 }
 
 /// Spec 4, "Production confirm": the deletes are counted with the rest.
