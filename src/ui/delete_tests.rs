@@ -720,3 +720,29 @@ fn a_refused_deletes_error_goes_when_the_row_is_sent_again() {
         crate::edit::RowMark::Deleted
     );
 }
+
+/// A save whose new row comes back unknown (a table with a trigger, say)
+/// has its page read again. What it found already deleted is still said,
+/// before the page arrives and after.
+#[test]
+fn a_row_already_deleted_is_said_where_the_page_is_read_again() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    let new = add(&mut harness, tab, id);
+    let publisher = (crate::edit::new_row(new), 1);
+    set(&mut harness, tab, id, publisher, "9100000000000000004");
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        inserted: vec![None],
+        rows: Vec::new(),
+        gone: vec![0],
+        elapsed: std::time::Duration::from_millis(14),
+    }));
+    let note = Some(crate::edit::Note::AlreadyDeleted(vec!["id 2".into()]));
+    assert_eq!(edits(&harness, tab, id).note, note);
+    // The page as the database now has it.
+    harness.answer_rows(crate::testing::book_covers_page(3));
+    harness.settle();
+    assert_eq!(edits(&harness, tab, id).note, note);
+    assert!(harness.has("Row id 2 was already deleted."));
+}

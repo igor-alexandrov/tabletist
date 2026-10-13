@@ -1638,6 +1638,12 @@ impl App {
                 // The rows an earlier save found gone are still gone.
                 object.edits.discard();
                 object.fields = None;
+                // Written, and these were not there to delete: said
+                // whether the page is patched or read again.
+                let gone_before = already.len();
+                if !already.is_empty() {
+                    object.edits.note = Some(Note::AlreadyDeleted(already));
+                }
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
                     let wide = |row: &Vec<tabletist_db::Value>| row.len() == page.columns.len();
                     rows.len() == saving.rows.len()
@@ -1745,13 +1751,9 @@ impl App {
                         changes: counts.changes,
                         rows: counts.rows,
                         added: counts.added,
-                        deleted: saving.deletes.len().saturating_sub(already.len()),
+                        deleted: saving.deletes.len().saturating_sub(gone_before),
                         elapsed,
                     });
-                    // Written, and these were not there to delete.
-                    if !already.is_empty() {
-                        object.edits.note = Some(Note::AlreadyDeleted(already));
-                    }
                 } else {
                     // The table is not the one the page was read from, or a
                     // new row came back unknown (a table with a trigger,

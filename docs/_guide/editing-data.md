@@ -273,7 +273,7 @@ stood after them.
 
 Rows cannot be deleted on a read-only connection, in a view, or in a
 table without a primary key or unique index. The key and the button say
-why. One row is marked at a time.
+why. Each press marks one row; mark several by pressing the key on each.
 
 ## When someone else changed the row
 

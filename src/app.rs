@@ -2477,7 +2477,16 @@ impl App {
                     // rows gone from.
                     object.edits.discard();
                 } else {
+                    // What a save that wrote found already deleted is of
+                    // rows by their keys, not of this page: a save that
+                    // has its page read again still says it.
+                    let said = object
+                        .edits
+                        .note
+                        .take()
+                        .filter(|note| matches!(note, crate::edit::Note::AlreadyDeleted(_)));
                     object.edits = crate::edit::Edits::default();
+                    object.edits.note = said;
                 }
                 let (height, width) = object
                     .page()
