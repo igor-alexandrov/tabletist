@@ -63,6 +63,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::SelectCell { .. }
             | Action::ExtendTo { .. }
             | Action::ExtendBy { .. }
+            | Action::SelectRows { .. }
             | Action::MoveSelection { .. }
             // Closing the row panel closes the editor it draws, and the
             // text of that editor joins the set.
@@ -1088,32 +1089,57 @@ impl App {
         self.stop_counts(tab, stale);
     }
 
-    /// Deletes the selected rows. One row is [`Self::delete_row`]'s.
+    /// Deletes the selected rows. One row is [`Self::delete_row`]'s. A
+    /// visual selection is left once its rows were acted on, the cursor on
+    /// the first of them that is left.
     pub(super) fn delete_selected(&mut self, tab: ConnTabId, id: TabId) {
-        let rows = self
+        let found = self
             .workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
-            .map(ObjectTab::selected_rows)
-            .unwrap_or_default();
-        if rows.len() < 2 {
-            return self.delete_row(tab, id);
+            .map(|object| (object.selected_rows(), object.visual()));
+        let Some((rows, visual)) = found else {
+            return;
+        };
+        let acted = if rows.len() < 2 {
+            self.delete_row(tab, id);
+            true
+        } else {
+            self.sweep_rows(tab, id, &rows)
+        };
+        if !(visual && acted) {
+            return;
         }
-        self.sweep_rows(tab, id, &rows);
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        // A row of the page is there still, and a new row where the mark
+        // did not drop it.
+        let left = |row: &&usize| match new_id(**row) {
+            Some(new) => object.edits.added.iter().any(|added| added.id == new),
+            None => true,
+        };
+        let first = rows.iter().find(left).copied();
+        let col = object.selection.map_or(0, |cell| cell.col);
+        match first {
+            Some(row) => object.set_cursor(Some(CellPos { row, col }), Reach::End),
+            // None of them is left: the cursor is where the drop put it.
+            None => object.range = None,
+        }
     }
 
     /// Deletes `rows` in one action, as [`Table::sweep`] has it: marks
     /// them and drops the new ones among them, or restores them. A row is
-    /// marked and restored as one row is.
-    fn sweep_rows(&mut self, tab: ConnTabId, id: TabId, rows: &[usize]) {
+    /// marked and restored as one row is. Says whether it did any of it.
+    fn sweep_rows(&mut self, tab: ConnTabId, id: TabId, rows: &[usize]) -> bool {
         // The text being typed is part of its row's edits, which are kept
         // under the mark.
         self.close_editor(tab, id, true);
         let Some(sweep) = self.table(tab, id, |table, _| table.sweep(rows)) else {
-            return;
+            return false;
         };
         let told = match sweep {
             // The view said why.
-            Sweep::TooMany | Sweep::Refused(_) => return,
+            Sweep::TooMany | Sweep::Refused(_) => return false,
             Sweep::Restore { rows } => {
                 for row in &rows {
                     self.restore(tab, id, *row);
@@ -1128,7 +1154,7 @@ impl App {
                 skipped,
             } => {
                 let Some(object) = self.object_tab_mut(tab, id) else {
-                    return;
+                    return false;
                 };
                 // The counts of the rows that were marked are of another
                 // set now.
@@ -1146,7 +1172,7 @@ impl App {
             }
             Sweep::Drop { new } => {
                 let Some(object) = self.object_tab_mut(tab, id) else {
-                    return;
+                    return false;
                 };
                 let dropped = drop_named(object, rows, &new);
                 Told::MarkedRows {
@@ -1158,7 +1184,7 @@ impl App {
             }
         };
         let Some(object) = self.object_tab_mut(tab, id) else {
-            return;
+            return false;
         };
         object.edits.told = Some(told);
         // A tab that holds a change stays, as it does for a cell's.
@@ -1167,6 +1193,7 @@ impl App {
         object.edits.note = None;
         // The row panel shows the cursor's row as it is now.
         object.fields = None;
+        true
     }
 
     /// Stops counts a tab no longer waits for.

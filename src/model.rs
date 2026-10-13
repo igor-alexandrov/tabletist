@@ -254,6 +254,17 @@ pub enum Action {
         id: TabId,
         rows: isize,
     },
+    /// Start a visual selection of rows on the cursor's row, or leave the
+    /// one that is on: the terminal look's `V`.
+    SelectRows {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Leave a visual selection of rows. The cursor stays.
+    LeaveVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Open the editor on a cell of a table's grid, or say why it cannot
     /// be edited.
     EditCell {
@@ -2196,6 +2207,25 @@ impl ObjectTab {
             .collect()
     }
 
+    /// Whether a visual selection of rows is on: a range that moves keep.
+    pub fn visual(&self) -> bool {
+        self.range.is_some_and(|range| range.held)
+    }
+
+    /// Starts a visual selection of rows on the cursor's row, or leaves
+    /// the one that is on. A range that stands becomes it, from its
+    /// anchor. With no cursor there is none to start.
+    pub fn toggle_visual(&mut self) {
+        if self.visual() {
+            self.range = None;
+            return;
+        }
+        if let Some(cell) = self.selection {
+            let anchor = self.range.map_or(cell.row, |range| range.anchor);
+            self.range = Some(RowRange { anchor, held: true });
+        }
+    }
+
     pub fn new(
         id: TabId,
         object: ObjectRef,
@@ -3403,6 +3433,31 @@ mod tests {
         tab.edits = crate::edit::Edits::default();
         tab.off_new_rows();
         assert_eq!((tab.selected_rows(), tab.range), (vec![2], None));
+    }
+
+    #[test]
+    fn a_visual_selection_is_started_and_left_on_the_cursors_row() {
+        let mut tab = covers(5);
+        // With no cursor there is none to start.
+        tab.toggle_visual();
+        assert!(!tab.visual());
+        tab.set_cursor(at(2), Reach::End);
+        tab.toggle_visual();
+        assert!(tab.visual());
+        assert_eq!(tab.selected_rows(), [2]);
+        // Moves extend it, up and down.
+        tab.set_cursor(at(4), Reach::Move);
+        assert_eq!(tab.selected_rows(), [2, 3, 4]);
+        tab.set_cursor(at(0), Reach::Move);
+        assert_eq!(tab.selected_rows(), [0, 1, 2]);
+        tab.toggle_visual();
+        assert_eq!((tab.visual(), tab.selected_rows()), (false, vec![0]));
+        // A range made with Shift becomes the visual one, from its anchor.
+        tab.set_cursor(at(1), Reach::Extend);
+        tab.toggle_visual();
+        assert!(tab.visual());
+        tab.set_cursor(at(3), Reach::Move);
+        assert_eq!(tab.selected_rows(), [0, 1, 2, 3]);
     }
 
     fn info(name: &str, kind: ObjectKind) -> ObjectInfo {

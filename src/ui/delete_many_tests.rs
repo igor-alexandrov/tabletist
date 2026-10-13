@@ -357,3 +357,70 @@ fn the_panels_delete_marks_the_cursors_row_alone() {
         assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
     }
 }
+
+/// Whether a visual selection of rows is on.
+fn visual(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
+    let workspace = harness.app.workspace(tab).unwrap();
+    workspace.object_tab(id).unwrap().visual()
+}
+
+/// Moves the cursor by `rows`, as `j` and `k` do.
+fn move_rows(harness: &mut Harness, tab: ConnTabId, id: TabId, rows: isize) {
+    let cols = 0;
+    harness.app.apply(Action::MoveSelection {
+        tab,
+        id,
+        rows,
+        cols,
+    });
+}
+
+/// Spec 1 (Omarchy) and spec 2: the delete of a visual selection marks its
+/// rows, leaves visual and puts the cursor on the first of them. Leaving
+/// it marks nothing and keeps the cursor.
+#[test]
+fn a_visual_selections_delete_marks_its_rows_and_leaves_it() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(5));
+    select(&mut harness, tab, id, (3, 2));
+    harness.app.apply(Action::SelectRows { tab, id });
+    assert!(visual(&harness, tab, id));
+    // Up from the anchor: the first row of the range is the cursor's.
+    move_rows(&mut harness, tab, id, -2);
+    assert_eq!(rows(&harness, tab, id), [1, 2, 3]);
+    harness.app.apply(Action::DeleteSelected { tab, id });
+    assert_eq!(marked(&harness, tab, id), [1, 2, 3]);
+    assert!(!visual(&harness, tab, id));
+    assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+    assert_eq!(rows(&harness, tab, id), [1]);
+    // Down from the anchor: the cursor goes back to the first row.
+    select(&mut harness, tab, id, (1, 2));
+    harness.app.apply(Action::SelectRows { tab, id });
+    move_rows(&mut harness, tab, id, 2);
+    harness.app.apply(Action::DeleteSelected { tab, id });
+    assert!(marked(&harness, tab, id).is_empty());
+    assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+    // Left, it marks nothing and the cursor stays.
+    harness.app.apply(Action::SelectRows { tab, id });
+    move_rows(&mut harness, tab, id, 2);
+    harness.app.apply(Action::LeaveVisual { tab, id });
+    assert!(!visual(&harness, tab, id));
+    assert!(marked(&harness, tab, id).is_empty());
+    assert_eq!(selected(&harness, tab, id), Some((3, 2)));
+}
+
+/// Spec 2: a visual selection's delete drops its new rows, and the cursor
+/// is on the first row of it that is left.
+#[test]
+fn a_visual_selections_delete_lands_on_the_first_row_left() {
+    let (mut harness, tab, id) = covers_with(Look::omarchy(), book_covers_page(4));
+    let new = add_below(&mut harness, tab, id, 0);
+    select(&mut harness, tab, id, (new, 1));
+    harness.app.apply(Action::SelectRows { tab, id });
+    move_rows(&mut harness, tab, id, 2);
+    assert_eq!(rows(&harness, tab, id), [new, 1, 2]);
+    harness.app.apply(Action::DeleteSelected { tab, id });
+    assert!(edits(&harness, tab, id).added.is_empty());
+    assert_eq!(marked(&harness, tab, id), [1, 2]);
+    assert!(!visual(&harness, tab, id));
+    assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+}

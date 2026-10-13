@@ -1214,6 +1214,23 @@ impl App {
                     object.set_cursor(moved, Reach::Extend);
                 }
             }
+            Action::SelectRows { tab, id } => {
+                // As a move does: an editor's text is kept, and the keys
+                // are the rows'.
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                    object.focus_field = None;
+                    object.toggle_visual();
+                }
+            }
+            Action::LeaveVisual { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id)
+                    && object.visual()
+                {
+                    object.range = None;
+                }
+            }
             Action::ToggleRowPanel(tab) => {
                 // An editor the panel draws goes with it, its text kept:
                 // closed, the panel would leave it open where nothing
