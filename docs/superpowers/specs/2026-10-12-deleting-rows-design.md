@@ -180,3 +180,55 @@ Proceed with the defaults and list them in the PR.
 - The test list.
 - The defaults you kept.
 - Screenshots only if blurred.
+
+## As built
+
+Runs 1 and 2 (`docs/superpowers/plans/2026-10-12-deleting-rows-1-save.md`,
+`2026-10-12-deleting-rows-2-marking.md`), on 2026-10-12. What was built
+otherwise than this asks, each agreed with the user before it was built:
+
+- **Undo.** ⌘Z and `u` on a marked row restore it. There is no redo: the
+  app has no undo stack, only the key that puts one cell back.
+- **One row at a time.** The app has no selection of several rows, no
+  visual mode and no count before a key. `d` on a visual selection,
+  `{count}dd`, the cap of 1,000 and the `IN (…)` batches wait for those
+  (a run 4, or a spec of their own). Tests 3 and the batching of test 7
+  with them.
+- **Privileges.** The app reads no DELETE privilege, so the command is
+  not disabled for want of one: the server's refusal is the row's error
+  after the save.
+- **A query's result.** Nothing new: a result's row panel has no Delete,
+  and ⌫ and `dd` are not keys of a result's grid.
+- **The statement.** One `DELETE` per row, the names qualified and
+  quoted. PostgreSQL is sent the key as literals, as it is for an
+  `UPDATE`; MySQL and SQLite bind it.
+- **Already gone.** Each row to delete is found and locked before
+  anything is written. One that is not there is reported, and the rest
+  is saved: "Row id 9 was already deleted." A row that another of the
+  save's deletes took with it (a tree whose key cascades) is deleted, not
+  failed.
+- **Cascades and the restrict count.** Not built yet (run 3): the app
+  loads no foreign key that points at a table. A refused delete shows
+  the database's own words, with the constraint's name on PostgreSQL and
+  MySQL.
+- **Error navigation.** Not built: the commands are not.
+- **The marker.** In the desktop looks the first column of the row's key
+  shows a minus before its value, which is struck through with the
+  row's others (`− 9`), not `− delete`: the macOS look's key column is 64
+  points wide and does not hold the word. The style stands in
+  `env::deleted_row_colors`.
+- **Every value of a marked row is plain text**, struck through: a tag,
+  a chip and the NULL chip are drawn as their text.
+- **Hidden edits.** Marking takes the row's pending cells out of the
+  set's cells and keeps them with the mark; restoring puts them back.
+- **The words.** The pending bar: "1 new row · 1 change in 1 row · 1 to
+  delete". The Omarchy status line: "-1 to delete" beside its other
+  counts. The production confirm: "Save 1 new row, 2 changes and 1
+  deleted row to production?". Review SQL: `-- delete row id 9` over the
+  statement. A refused delete: "Nothing was saved. 1 row failed, so the
+  whole transaction rolled back." and the database's words.
+- **The inspector.** "Will be deleted on save" under the panel's header
+  with Restore at its right; the Omarchy look's line ends with `dd
+  restore`. The footer's Delete is disabled on a marked row in the
+  desktop looks.
+- **Announcements.** Polite live regions, with the spec's words.

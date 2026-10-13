@@ -1,6 +1,6 @@
 ---
 title: Editing Data
-description: Edit values in the grid, add and duplicate rows, review the SQL before it runs, and what happens when someone else changed the same row.
+description: Edit values in the grid, add, duplicate and delete rows, review the SQL before it runs, and what happens when someone else changed the same row.
 nav_order: 4
 ---
 
@@ -8,8 +8,8 @@ Editing needs a writable connection. A connection with **Open read-only**
 ticked blocks every write, and that is the default for production.
 [Read about read-only connections]({% link _reference/connections.md %}#open-read-only).
 
-Today you can change values in existing rows, add rows and duplicate a
-row. Pasting and deleting rows are not built yet.
+Today you can change values in existing rows, add rows, duplicate a row
+and delete rows. Pasting rows is not built yet.
 
 ## Change a value
 
@@ -242,8 +242,38 @@ calls it unknown. The row panel, as the copy's form, says at its top
 which columns were copied (the first of them where there are many), which
 were cleared and why, and which were not copied and why.
 
-One row is copied at a time. **Delete**, beside **Duplicate**, is not
-built yet.
+One row is copied at a time.
+
+## Delete a row
+
+Select a row and press Backspace (Delete works too), or press **Delete**
+in the row panel. In the Omarchy look the key is `dd`. The row is marked:
+it stays where it is, struck through on a red tint, until you save.
+Nothing has reached the database yet.
+
+Press the key again on a marked row to restore it, or press **Restore**
+in the row panel, or undo (Mod+Z, `u`). Edits you had made to the row are
+kept while it is marked and come back with it. They are not saved while
+it is.
+
+A new row that is not saved yet is dropped by the same key, and leaves
+nothing to save.
+
+Save writes the deletes with everything else that is pending, in one
+transaction: new rows first, then changed rows, then deleted rows.
+**Review SQL** shows each row's `DELETE` before you save. After the save
+the rows are gone from the grid, and the selection is on the row that
+stood after them.
+
+- If someone else deleted the row first, the save still goes through,
+  and a line says which row was already gone.
+- If the database refuses a delete (a foreign key still points at the
+  row, most often), nothing is saved. The row stays marked and shows the
+  database's message.
+
+Rows cannot be deleted on a read-only connection, in a view, or in a
+table without a primary key or unique index. The key and the button say
+why. One row is marked at a time.
 
 ## When someone else changed the row
 

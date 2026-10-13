@@ -81,7 +81,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Enter, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Mod+N | [Add a row]({% link _guide/editing-data.md %}#add-a-row), at the top of the grid, while a table's rows are in front |
 | Mod+D | [Duplicate the row]({% link _guide/editing-data.md %}#duplicate-a-row), as a new row at the top of the grid |
-| Backspace, Delete | Drop a new row that is not saved yet |
+| Backspace, Delete | [Delete the row]({% link _guide/editing-data.md %}#delete-a-row): mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |

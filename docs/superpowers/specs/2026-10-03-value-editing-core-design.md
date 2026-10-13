@@ -1340,7 +1340,9 @@ Left as found in the conflict question:
   cannot be opened; Revert and Discard all take it out, and a save of it
   fails its row with the builder's reason.
 - A row that is gone is drawn dim until slice 5 (rows) draws a deleted
-  row; the two should then agree.
+  row; the two should then agree. (A row marked for deletion is drawn
+  since 2026-10-12, see `2026-10-12-deleting-rows-design.md`: struck
+  through on a red tint. A row found gone is still drawn dim.)
 - On a keyboard layout without Latin letters `o`, `s`, `k` and `d` do
   nothing, as Omarchy's other letters: the hints are buttons, and Esc
   keeps.

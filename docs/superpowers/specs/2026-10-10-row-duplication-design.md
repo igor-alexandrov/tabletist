@@ -67,7 +67,8 @@ Made with the user on 2026-10-10.
 - The new row's form has no Duplicate button: its footer is the insert
   spec's (section 7). Mod+D and `yy p` copy a new row all the same.
 - **Delete** stays disabled. Its reason is the row's own where it has one,
-  else "Deleting rows arrives in a later version".
+  else "Deleting rows arrives in a later version". (Built on 2026-10-12:
+  see `2026-10-12-deleting-rows-design.md`.)
 
 A copy is refused where a new row is refused, by `Table::no_rows`: a
 read-only connection, a view or a materialized view, a structure not
@@ -300,7 +301,8 @@ key of two columns.
     make no copy, and the button says why. A table without a key takes a
     copy.
 14. The Duplicate button makes a copy. Delete is disabled and says that
-    deleting arrives later. A SQL result's row has neither, as before.
+    deleting arrives later (it works since 2026-10-12). A SQL result's row
+    has neither, as before.
 15. The form's line, in both looks: the three sentences, "and N more", a
     sentence left out when it is empty.
 16. `required · unique` in the grid's cell and the form's field, and

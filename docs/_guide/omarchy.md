@@ -123,7 +123,7 @@ copying a whole row.
 | `o`, `O` | Add a row below the cursor's row, or above it |
 | `yy` | Yank the cursor's row, and put it on the clipboard |
 | `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
-| `dd` | Drop a new row that is not saved yet |
+| `dd` | Delete the row: mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
 | Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
