@@ -250,8 +250,8 @@ fn was(count: usize) -> String {
 ///
 /// Refused, with nothing run: more than one statement; a statement
 /// [`sql::refusal`] refuses; anything that writes, locks or selects `INTO`,
-/// at any depth; every other kind of statement; and text the parser cannot
-/// read.
+/// at any depth; every other kind of statement; a function on the dialect's
+/// list of those with effects; and text the parser cannot read.
 pub fn check_read(dialect: Dialect, sql: &str, params: &[Param]) -> Result<Read, Refusal> {
     if sql.len() > MAX_SQL_BYTES {
         return Err(Refusal::TooLarge(Large::Statement));
@@ -449,7 +449,7 @@ fn query_reads(query: &Query) -> Result<(), Refusal> {
 
 /// Reads the tokens of a statement the parser took for a query, and
 /// refuses what a read may not hold at any depth: a word that writes or
-/// locks, an assignment.
+/// locks, a function with effects, an assignment.
 ///
 /// On tokens and not on the tree, for two reasons. A tree is as deep as
 /// its text is long, and walking one costs far more stack than dropping it.
@@ -476,8 +476,10 @@ fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<(), Refusal> {
                 Dialect::Postgres | Dialect::Sqlite => {}
             },
             Token::Word(word) => {
-                // `INSERT('abc', 1, 1, 'x')` is one of MySQL's functions.
+                // A name with a parenthesis after it is a call, in an
+                // expression or in a table's place, whatever its quotes.
                 if matches!(next, Some(Token::LParen)) {
+                    function_allowed(dialect, &word.value)?;
                     continue;
                 }
                 if word.quote_style.is_some() {
@@ -515,6 +517,109 @@ fn locks_after(next: Option<&Token>) -> bool {
             word.keyword,
             Keyword::UPDATE | Keyword::SHARE | Keyword::NO | Keyword::KEY
         )
+}
+
+/// Refuses a function on the dialect's list, by its name without its
+/// schema: `pg_catalog.pg_sleep(1)` is `pg_sleep`.
+fn function_allowed(dialect: Dialect, name: &str) -> Result<(), Refusal> {
+    let lower = name.to_ascii_lowercase();
+    let (names, prefixes) = effects(dialect);
+    if names.contains(&lower.as_str()) || prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
+        return Err(Refusal::FunctionNotAllowed(name.to_owned()));
+    }
+    Ok(())
+}
+
+/// The functions an agent's statement may not call, by name and by the
+/// start of a name, lower-cased. They do something a read-only transaction
+/// does not undo or refuse: end another session, take a lock, sleep, read a
+/// file on the server, change a setting, or run SQL held in a string, which
+/// no check here reads.
+///
+/// The lists are not complete and cannot be: an extension brings more. What
+/// they miss still runs in the read-only transaction, as the connection's
+/// own user.
+fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str]) {
+    match dialect {
+        Dialect::Postgres => (
+            &[
+                "set_config",
+                "pg_terminate_backend",
+                "pg_cancel_backend",
+                "pg_reload_conf",
+                "pg_rotate_logfile",
+                "pg_notify",
+                "pg_promote",
+                "pg_switch_wal",
+                "pg_stat_file",
+                "pg_export_snapshot",
+                "pg_start_backup",
+                "pg_stop_backup",
+                "nextval",
+                "setval",
+                // The session's random seed, which a rollback leaves set.
+                "setseed",
+                // Large objects to and from files on the server.
+                "lo_import",
+                "lo_export",
+            ],
+            &[
+                "pg_sleep",
+                "pg_advisory_",
+                "pg_try_advisory_",
+                "pg_read_",
+                "pg_ls_",
+                "pg_file_",
+                "pg_logical_",
+                "pg_replication_",
+                "pg_create_",
+                "pg_drop_",
+                "pg_backup_",
+                "pg_wal_replay_",
+                "pg_stat_reset",
+                "dblink",
+                "query_to_xml",
+                "table_to_xml",
+                "cursor_to_xml",
+                "schema_to_xml",
+                "database_to_xml",
+            ],
+        ),
+        Dialect::MySql => (
+            &[
+                "sleep",
+                "benchmark",
+                "get_lock",
+                "release_lock",
+                "release_all_locks",
+                "load_file",
+                "master_pos_wait",
+                "source_pos_wait",
+                "master_gtid_wait",
+                "wait_for_executed_gtid_set",
+                "wait_until_sql_thread_after_gtids",
+                "sys_exec",
+                "sys_eval",
+                // MariaDB's sequences, which a rollback does not put back.
+                "nextval",
+                "setval",
+            ],
+            &[],
+        ),
+        Dialect::Sqlite => (
+            &[
+                "load_extension",
+                "readfile",
+                "writefile",
+                "edit",
+                "fts3_tokenizer",
+            ],
+            // The table-valued forms of the pragmas, `pragma_table_info`
+            // and the rest: a `PRAGMA` statement is refused, and so is its
+            // other spelling.
+            &["pragma_"],
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1156,6 +1261,159 @@ mod tests {
                 "SELECT replace(title, 'a', 'b') FROM books"
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_function_with_effects_is_refused_by_its_name_as_written() {
+        for (dialect, sql, name) in [
+            (Dialect::Postgres, "SELECT pg_sleep(1)", "pg_sleep"),
+            (Dialect::Postgres, "SELECT PG_SLEEP(1)", "PG_SLEEP"),
+            (
+                Dialect::Postgres,
+                "SELECT pg_sleep_for('1 minute')",
+                "pg_sleep_for",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT pg_catalog . \"pg_sleep\" /* quietly */ (1)",
+                "pg_sleep",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT * FROM pg_read_file('/etc/passwd')",
+                "pg_read_file",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT * FROM books, LATERAL pg_sleep(1)",
+                "pg_sleep",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT title FROM books WHERE id = (SELECT pg_advisory_lock(1))",
+                "pg_advisory_lock",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT query_to_xml('SELECT * FROM customers', true, false, '')",
+                "query_to_xml",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT nextval('books_id_seq')",
+                "nextval",
+            ),
+            (Dialect::Postgres, "SELECT setseed(0.5)", "setseed"),
+            (
+                Dialect::Postgres,
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",
+                "pg_terminate_backend",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT * FROM dblink('dbname=bookshop', 'SELECT 1') AS t(n int)",
+                "dblink",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT lo_export(16411, '/tmp/cover')",
+                "lo_export",
+            ),
+            (Dialect::MySql, "SELECT SLEEP(5)", "SLEEP"),
+            (Dialect::MySql, "SELECT `sleep`(5)", "sleep"),
+            (Dialect::MySql, "SELECT SLEEP (5)", "SLEEP"),
+            // The tokens end the string where MySQL ends it.
+            (Dialect::MySql, "SELECT 'it\\'s', sleep(1)", "sleep"),
+            (Dialect::MySql, "SELECT GET_LOCK('covers', 10)", "GET_LOCK"),
+            (
+                Dialect::MySql,
+                "SELECT LOAD_FILE('/etc/passwd')",
+                "LOAD_FILE",
+            ),
+            (
+                Dialect::MySql,
+                "SELECT BENCHMARK(1000000, SHA2(title, 512)) FROM books",
+                "BENCHMARK",
+            ),
+            // MariaDB, which this dialect also speaks to.
+            (Dialect::MySql, "SELECT NEXTVAL(order_numbers)", "NEXTVAL"),
+            (
+                Dialect::MySql,
+                "SELECT SETVAL(order_numbers, 1000000)",
+                "SETVAL",
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT load_extension('covers')",
+                "load_extension",
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT * FROM pragma_table_info('customers')",
+                "pragma_table_info",
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT name FROM pragma_table_list()",
+                "pragma_table_list",
+            ),
+        ] {
+            assert_eq!(
+                refused(dialect, sql),
+                Refusal::FunctionNotAllowed(name.into()),
+                "{dialect:?}: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_functions_and_a_listed_name_that_is_not_called_pass() {
+        for (dialect, sql) in [
+            (
+                Dialect::Postgres,
+                "SELECT count(*), lower(title), now() FROM books GROUP BY 2",
+            ),
+            (Dialect::Postgres, "SELECT * FROM generate_series(1, 3)"),
+            (
+                Dialect::Postgres,
+                "SELECT ceil(1.5), extract(year FROM now()), trim(both ' ' from title) FROM books",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT 'pg_sleep(1)', \"pg_sleep\" FROM notes",
+            ),
+            // The large-object functions that write are left to the
+            // read-only transaction.
+            (
+                Dialect::Postgres,
+                "WITH lo_big(n) AS (SELECT 1) SELECT n FROM lo_big",
+            ),
+            // SLEEP is no function of PostgreSQL's, and pg_sleep none of
+            // MySQL's: each list is its dialect's own.
+            (Dialect::Postgres, "SELECT sleep(1)"),
+            (Dialect::MySql, "SELECT pg_sleep(1)"),
+            (
+                Dialect::MySql,
+                "SELECT COUNT(*), UPPER(title), IS_FREE_LOCK('covers') FROM books",
+            ),
+            (Dialect::Sqlite, "SELECT * FROM json_each('[1, 2]')"),
+            (Dialect::Sqlite, "SELECT 'load_extension(''x'')'"),
+        ] {
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}: {sql}");
+        }
+    }
+
+    /// A name with a parenthesis after it is taken for a call wherever it
+    /// stands: the check errs toward refusing.
+    #[test]
+    fn a_table_expression_named_like_a_listed_function_is_refused_too() {
+        assert_eq!(
+            refused(
+                Dialect::Postgres,
+                "WITH pg_sleep_log(n) AS (SELECT 1) SELECT n FROM pg_sleep_log"
+            ),
+            Refusal::FunctionNotAllowed("pg_sleep_log".into())
         );
     }
 }
