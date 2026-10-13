@@ -4,7 +4,10 @@
 //! [`check_read`] is the check in front of the server's `run_query`. It
 //! lets through what it knows, one statement that reads, and refuses
 //! everything else, text it cannot read included: an agent can write its
-//! query another way, and it is never given the benefit of the doubt.
+//! query another way, and it is never given the benefit of the doubt. What
+//! a read may not hold is looked for in two readings of the text, by the
+//! parser's tokenizer and by the app's own, and refused when either finds
+//! it.
 //! [`Refusal`] is why: a code an agent may match on, and a sentence it can
 //! act on.
 //!
@@ -17,10 +20,10 @@ use std::fmt;
 
 use sqlparser::ast::{Query, SetExpr, Statement, UtilityOption};
 use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
-use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
+use crate::sql::TokenKind;
 use crate::{Dialect, sql};
 
 /// The longest statement that is read at all, in bytes.
@@ -253,6 +256,9 @@ fn was(count: usize) -> String {
 /// at any depth; every other kind of statement; a function on the dialect's
 /// list of those with effects; placeholders that do not match `params`; and
 /// text the parser cannot read.
+///
+/// It blocks until a thread of its own has parsed the statement. A caller
+/// on an async runtime calls it through `spawn_blocking`.
 pub fn check_read(dialect: Dialect, sql: &str, params: &[Param]) -> Result<Read, Refusal> {
     if sql.len() > MAX_SQL_BYTES {
         return Err(Refusal::TooLarge(Large::Statement));
@@ -347,6 +353,9 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
         other => return Err(not_a_read(dialect, text, other)),
     };
     let placeholders = tokens_read(dialect, &tokens)?;
+    // The second reading, by the tokenizer written to agree with each
+    // database on where a string, a comment and a dollar quote end.
+    words_read(dialect, &own_words(dialect, text))?;
     params_match(dialect, &placeholders, params)?;
     Ok(explains)
 }
@@ -407,7 +416,7 @@ fn named(dialect: Dialect, text: &str) -> String {
 
 /// Whether the statement's outermost query is one the three databases
 /// have, and its body reads. What is nested in it is not walked: a tree is
-/// as deep as its text is long, and [`tokens_read`] reads every level of it
+/// as deep as its text is long, and [`words_read`] reads every level of it
 /// without descending.
 fn query_reads(query: &Query) -> Result<(), Refusal> {
     // Named field by field: a field a later sqlparser adds must be decided
@@ -449,6 +458,19 @@ fn query_reads(query: &Query) -> Result<(), Refusal> {
     }
 }
 
+/// A token as far as this check reads it, from either tokenizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Piece {
+    /// A keyword or a name, without its quotes.
+    Word {
+        text: String,
+        quoted: bool,
+    },
+    /// `(`
+    Open,
+    Other,
+}
+
 /// Reads the tokens of a statement the parser took for a query, and
 /// refuses what a read may not hold at any depth: a word that writes or
 /// locks, a function with effects, an assignment. Gives the placeholders
@@ -458,18 +480,23 @@ fn query_reads(query: &Query) -> Result<(), Refusal> {
 /// its text is long, and walking one costs far more stack than dropping it.
 /// And a word is refused wherever the parser put it: this does not depend
 /// on which kind of expression sqlparser makes of it.
-///
-/// It errs toward refusing. `SELECT delete FROM notes` reads a column, on
-/// a database that lets one be named so without quotes, and is refused as
-/// a `DELETE`: a name in quotes passes.
 fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<Vec<String>, Refusal> {
     let code: Vec<&Token> = tokens
         .iter()
         .filter(|token| !matches!(token, Token::Whitespace(_)))
         .collect();
     let mut placeholders = Vec::new();
+    let mut pieces = Vec::with_capacity(code.len());
     for (index, token) in code.iter().enumerate() {
         let next = code.get(index + 1).copied();
+        pieces.push(match token {
+            Token::Word(word) => Piece::Word {
+                text: word.value.clone(),
+                quoted: word.quote_style.is_some(),
+            },
+            Token::LParen => Piece::Open,
+            _ => Piece::Other,
+        });
         match token {
             Token::Placeholder(written) => placeholders.push(written.clone()),
             Token::Colon => placeholders.extend(named_placeholder(dialect, ':', next)),
@@ -482,48 +509,102 @@ fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<Vec<String>, Refusa
                 }
                 Dialect::Postgres | Dialect::Sqlite => {}
             },
-            Token::Word(word) => {
-                // A name with a parenthesis after it is a call, in an
-                // expression or in a table's place, whatever its quotes.
-                if matches!(next, Some(Token::LParen)) {
-                    function_allowed(dialect, &word.value)?;
-                    continue;
-                }
-                if word.quote_style.is_some() {
-                    continue;
-                }
-                let writes = match word.keyword {
-                    Keyword::INSERT => Writes::Insert,
-                    Keyword::UPDATE => Writes::Update,
-                    Keyword::DELETE => Writes::Delete,
-                    Keyword::MERGE => Writes::Merge,
-                    Keyword::INTO => Writes::Into,
-                    // `FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR
-                    // KEY SHARE`. `substring(title FROM 1 FOR 3)` is not one.
-                    Keyword::FOR if locks_after(next) => Writes::Lock,
-                    // `TABLE books`: a table named where no later check of
-                    // table names looks. `SELECT * FROM books` says the same.
-                    Keyword::TABLE => return Err(Refusal::NotAllowed("TABLE".into())),
-                    _ => continue,
-                };
-                return Err(Refusal::NotReadOnly(writes));
-            }
             _ => {}
         }
     }
+    words_read(dialect, &pieces)?;
     Ok(placeholders)
 }
 
-/// Whether the token after a `FOR` begins a locking clause.
-fn locks_after(next: Option<&Token>) -> bool {
-    let Some(Token::Word(word)) = next else {
+/// The statement as the app's own tokenizer reads it, which was written
+/// to end a string, a comment and a dollar quote where each database ends
+/// it. sqlparser reads some text another way: `$1$ … $1$` is one string to
+/// it, and a parameter followed by code to PostgreSQL. So what a read may
+/// not hold is looked for in both readings, and found in either it is
+/// refused.
+fn own_words(dialect: Dialect, text: &str) -> Vec<Piece> {
+    sql::tokenize(dialect, text)
+        .iter()
+        .filter_map(|token| {
+            let written = &text[token.range.clone()];
+            match token.kind {
+                TokenKind::Whitespace | TokenKind::Comment => None,
+                TokenKind::Keyword | TokenKind::Identifier => Some(Piece::Word {
+                    text: written.to_owned(),
+                    quoted: false,
+                }),
+                TokenKind::QuotedIdentifier => Some(Piece::Word {
+                    text: written
+                        .trim_start_matches(['"', '`', '['])
+                        .trim_end_matches(['"', '`', ']'])
+                        .to_owned(),
+                    quoted: true,
+                }),
+                TokenKind::Punctuation if written == "(" => Some(Piece::Open),
+                TokenKind::Punctuation
+                | TokenKind::String
+                | TokenKind::Number
+                | TokenKind::ExecutableComment
+                | TokenKind::Operator
+                | TokenKind::Semicolon => Some(Piece::Other),
+            }
+        })
+        .collect()
+}
+
+/// Refuses what a read may not hold at any depth, in one reading of its
+/// tokens: a function with effects, and a word that writes or locks.
+///
+/// It errs toward refusing. `SELECT delete FROM notes` reads a column, on
+/// a database that lets one be named so without quotes, and is refused as
+/// a `DELETE`: a name in quotes passes.
+fn words_read(dialect: Dialect, pieces: &[Piece]) -> Result<(), Refusal> {
+    for (index, piece) in pieces.iter().enumerate() {
+        let Piece::Word { text, quoted } = piece else {
+            continue;
+        };
+        let next = pieces.get(index + 1);
+        // A name with a parenthesis after it is a call, in an expression
+        // or in a table's place, whatever its quotes.
+        if matches!(next, Some(Piece::Open)) {
+            function_allowed(dialect, text)?;
+            continue;
+        }
+        if *quoted {
+            continue;
+        }
+        let writes = match text.to_ascii_uppercase().as_str() {
+            "INSERT" => Writes::Insert,
+            "UPDATE" => Writes::Update,
+            "DELETE" => Writes::Delete,
+            "MERGE" => Writes::Merge,
+            "INTO" => Writes::Into,
+            // `FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR KEY
+            // SHARE`. `substring(title FROM 1 FOR 3)` is not one.
+            "FOR" if locks_after(next) => Writes::Lock,
+            // `TABLE books`: a table named where no later check of table
+            // names looks. `SELECT * FROM books` says the same.
+            "TABLE" => return Err(Refusal::NotAllowed("TABLE".into())),
+            _ => continue,
+        };
+        return Err(Refusal::NotReadOnly(writes));
+    }
+    Ok(())
+}
+
+/// Whether the word after a `FOR` begins a locking clause.
+fn locks_after(next: Option<&Piece>) -> bool {
+    let Some(Piece::Word {
+        text,
+        quoted: false,
+    }) = next
+    else {
         return false;
     };
-    word.quote_style.is_none()
-        && matches!(
-            word.keyword,
-            Keyword::UPDATE | Keyword::SHARE | Keyword::NO | Keyword::KEY
-        )
+    matches!(
+        text.to_ascii_uppercase().as_str(),
+        "UPDATE" | "SHARE" | "NO" | "KEY"
+    )
 }
 
 /// Refuses a function on the dialect's list, by its name without its
@@ -933,6 +1014,17 @@ mod tests {
                 Dialect::Postgres,
                 "SELECT set_config('search_path', 'x', false)",
                 "set_config",
+            ),
+            // A name in Unicode escapes can spell any function's.
+            (
+                Dialect::Postgres,
+                "SELECT U&\"\\0070g_advisory_lock\"(1)",
+                "a U& name",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT u&\"pg\\005fsleep\"(10)",
+                "a U& name",
             ),
             (Dialect::MySql, "SELECT /*! 1, */ 2", "a /*! */ comment"),
             (
@@ -1479,6 +1571,92 @@ mod tests {
                 "WITH pg_sleep_log(n) AS (SELECT 1) SELECT n FROM pg_sleep_log"
             ),
             Refusal::FunctionNotAllowed("pg_sleep_log".into())
+        );
+    }
+
+    /// Where a comment or a string ends decides what is code. Each case
+    /// is read as its database reads it.
+    #[test]
+    fn a_call_is_seen_where_the_database_ends_a_comment_or_a_string() {
+        for (dialect, sql, name) in [
+            // PostgreSQL ends a line comment at a carriage return.
+            (
+                Dialect::Postgres,
+                "SELECT 1 -- c\r, pg_sleep(1)",
+                "pg_sleep",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT 1 -- c\r\n, pg_sleep(1)",
+                "pg_sleep",
+            ),
+            // Its block comments nest.
+            (
+                Dialect::Postgres,
+                "SELECT 1 /* a /* b */ c */ , pg_sleep(1)",
+                "pg_sleep",
+            ),
+            // A backslash escapes nothing in its plain strings.
+            (
+                Dialect::Postgres,
+                "SELECT 'a\\' , pg_sleep(1) --'",
+                "pg_sleep",
+            ),
+            // To MySQL `--` opens a comment only before white space.
+            (Dialect::MySql, "SELECT 1--1, SLEEP(5)", "SLEEP"),
+            (Dialect::MySql, "SELECT 1 --1, SLEEP(5)", "SLEEP"),
+            (Dialect::MySql, "SELECT 1 # c\n, SLEEP(5)", "SLEEP"),
+            // Its block comments do not nest, and neither do SQLite's.
+            (Dialect::MySql, "SELECT 1 /* a /* b */ , SLEEP(5)", "SLEEP"),
+            (
+                Dialect::Sqlite,
+                "SELECT 1 /* a /* b */ , load_extension('x')",
+                "load_extension",
+            ),
+            // SQLite has no backslash escapes.
+            (
+                Dialect::Sqlite,
+                "SELECT \"a\\\" , load_extension('x') --\"",
+                "load_extension",
+            ),
+        ] {
+            assert_eq!(
+                refused(dialect, sql),
+                Refusal::FunctionNotAllowed(name.into()),
+                "{dialect:?}: {sql:?}"
+            );
+        }
+        // And the same names where the database reads a comment or a
+        // string: they are text.
+        for (dialect, sql) in [
+            (Dialect::Postgres, "SELECT 1 /* a /* b */ , pg_sleep(1) */"),
+            (Dialect::Postgres, "SELECT E'a\\' , pg_sleep(1) --'"),
+            (Dialect::Postgres, "SELECT $a$ $b$ , pg_sleep(1) -- $a$"),
+            // MySQL and SQLite end a line comment at a line feed only.
+            (Dialect::MySql, "SELECT 1 -- c\r, SLEEP(5)"),
+            (Dialect::MySql, "SELECT 1 # c\r, SLEEP(5)"),
+            (Dialect::Sqlite, "SELECT 1 -- c\r, load_extension('x')"),
+            (Dialect::MySql, "SELECT \"a\\\" , SLEEP(5) -- \""),
+            (Dialect::MySql, "SELECT 'a'' , SLEEP(5) -- '"),
+        ] {
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}: {sql:?}");
+        }
+    }
+
+    /// The statement is read twice, by sqlparser's tokenizer and by the
+    /// app's own, and refused for what either finds. Here sqlparser takes
+    /// `$1$ … $1$` for one dollar-quoted string, which hides the call. The
+    /// app's tokenizer reads a parameter and then code, as PostgreSQL does:
+    /// a dollar quote's tag cannot begin with a digit.
+    #[test]
+    fn what_either_tokenizer_reads_as_a_call_or_a_write_is_refused() {
+        assert_eq!(
+            refused(Dialect::Postgres, "SELECT $1$ , pg_sleep(1) -- $1$"),
+            Refusal::FunctionNotAllowed("pg_sleep".into())
+        );
+        assert_eq!(
+            refused(Dialect::Postgres, "SELECT $1$ FROM books FOR UPDATE -- $1$"),
+            Refusal::NotReadOnly(Writes::Lock)
         );
     }
 
