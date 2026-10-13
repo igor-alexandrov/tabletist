@@ -4233,8 +4233,12 @@ mod tests {
                 StateFile::Settings(crate::settings::Settings::default()),
             ),
             (
-                "connections.json",
+                "connections.toml",
                 StateFile::Connections(SavedConnections::default()),
+            ),
+            (
+                "last_used.json",
+                StateFile::LastUsed(std::collections::BTreeMap::new()),
             ),
             (
                 "known_hosts.json",

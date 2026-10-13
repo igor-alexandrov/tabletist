@@ -4536,6 +4536,30 @@ mod tests {
         assert_eq!(saves_of(&app, &path), 0);
     }
 
+    /// An older file that cannot be read is said too, and no new file is
+    /// written from nothing: the older one is read again once it is mended.
+    #[test]
+    fn an_older_connections_file_that_cannot_be_read_is_said_and_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        let old = dirs.legacy_connections_file();
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "{ not json").unwrap();
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default().into(),
+            Backend::recording(),
+        );
+        assert!(app.connections.connections.is_empty());
+        let notice = app.notice.clone().unwrap();
+        assert!(
+            notice.starts_with("connections.json could not be read ("),
+            "{notice}"
+        );
+        assert_eq!(saves_of(&app, &dirs.connections_file()), 0);
+        assert_eq!(saves_of(&app, &dirs.last_used_file()), 0);
+    }
+
     /// A connect is written to the state, and leaves the file of
     /// connections alone.
     #[test]
@@ -5686,11 +5710,11 @@ mod tests {
     fn a_failed_save_shows_a_notice() {
         let (mut app, _dir) = app();
         app.apply(Action::Backend(Event::Saved {
-            path: "/config/connections.json".into(),
+            path: "/config/connections.toml".into(),
             result: Err("No space left on device".into()),
         }));
         let notice = app.notice.clone().expect("a notice");
-        assert!(notice.contains("connections.json"), "{notice}");
+        assert!(notice.contains("connections.toml"), "{notice}");
         assert!(notice.contains("No space left"), "{notice}");
     }
 

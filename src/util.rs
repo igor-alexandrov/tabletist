@@ -249,7 +249,10 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
 /// and the next save writes a new file where it leads. Where the link
 /// cannot be followed nothing is renamed, the link least of all: a save
 /// through it fails in the same way, so nothing is replaced either.
-pub fn keep_aside(path: &Path, problem: &str) {
+///
+/// Gives the name the file was kept under, for whoever tells the user, or
+/// `None` when it could not be moved and is still in its place.
+pub fn keep_aside(path: &Path, problem: &str) -> Option<PathBuf> {
     let file = match resolve_link(path) {
         Ok(file) => file,
         Err(error) => {
@@ -258,7 +261,7 @@ pub fn keep_aside(path: &Path, problem: &str) {
                  leaving it in place and using defaults",
                 path.display()
             );
-            return;
+            return None;
         }
     };
     let path = file.as_path();
@@ -274,7 +277,7 @@ pub fn keep_aside(path: &Path, problem: &str) {
             "could not load {} ({problem}) and every .bad name is taken; using defaults",
             path.display()
         );
-        return;
+        return None;
     };
     log::warn!(
         "could not load {} ({problem}); keeping it as {} and using defaults",
@@ -283,7 +286,9 @@ pub fn keep_aside(path: &Path, problem: &str) {
     );
     if let Err(error) = std::fs::rename(path, &aside) {
         log::warn!("could not keep {} aside: {error}", path.display());
+        return None;
     }
+    Some(aside)
 }
 
 /// How well `candidate` matches `query` typed in quick open (ignoring

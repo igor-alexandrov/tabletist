@@ -2201,3 +2201,12 @@ The website changes with it: Task 3.
 ## After the run
 
 Run on 2026-10-13, inline, one commit for each task. Every step showed what it says above, `Cargo.lock` did not change, and the files the tasks changed are byte for byte the draft's.
+
+## After the pull request's review
+
+One commit beyond the tasks above, from the review of the pull request. The diffs in the tasks do not have it. Each of the four was shown by a test that failed first, but for the last, which is about names.
+
+- **The times of last use were lost after a file that could not be read.** The start left them unread with the connections, so the next connect wrote `last_used.json` without them. They are read whatever becomes of `connections.toml`: they are another file's, and whole.
+- **A damaged `connections.json` was abandoned.** The start had an empty `connections.toml` written for it, after which the older file was never read again, mended or not. Nothing is written for an older file that cannot be read now, and it is said in the notice as the new file's problem is. That is the notice "What this run leaves out" said it would not give.
+- **The notice named a file that was not always the one.** A file is kept as `.bad.1` when `.bad` is taken, and is not moved at all where its link cannot be followed. `util::keep_aside` now says what it did, and the notice says that: the name the file has, or that it is still in its place and a save would replace it.
+- **Two tests still saved `connections.json`.** They save `connections.toml` now, and the one that saves through a symbolic link saves `last_used.json` too.

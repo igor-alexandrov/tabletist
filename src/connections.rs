@@ -284,39 +284,72 @@ impl SavedConnections {
                 save: read.named,
                 ..Loaded::default()
             },
-            Err(problem) => {
-                crate::util::keep_aside(&path, &problem);
-                let name = |path: &Path| {
-                    path.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                };
-                Loaded {
-                    problem: Some(format!(
-                        "{} could not be read ({problem}). It was kept beside itself as \
-                         {}.bad, and no connection was loaded.",
-                        name(&path),
-                        name(&path)
-                    )),
-                    ..Loaded::default()
-                }
-            }
+            // The times of last use are another file's, and whole: with
+            // them in hand a connect writes that file as it was, and they
+            // are there again when this one is mended.
+            Err(problem) => Self::unreadable(
+                &path,
+                &problem,
+                crate::util::load_json(&dirs.last_used_file()),
+            ),
+        }
+    }
+
+    /// What a start has of a file of connections that cannot be read: no
+    /// connection, and the reason for the user, with where the file is
+    /// now. It is kept aside, where that can be done.
+    fn unreadable(path: &Path, problem: &str, last_used: BTreeMap<String, u64>) -> Loaded {
+        let name = |path: &Path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let now = match crate::util::keep_aside(path, problem) {
+            Some(aside) => format!(
+                "It was kept beside itself as {}, and no connection was loaded.",
+                name(&aside)
+            ),
+            None => "It could not be moved aside and is still in its place: saving a \
+                     connection now would replace it. No connection was loaded."
+                .to_owned(),
+        };
+        Loaded {
+            store: Self {
+                connections: Vec::new(),
+                last_used,
+            },
+            problem: Some(format!(
+                "{} could not be read ({problem}). {now}",
+                name(path)
+            )),
+            ..Loaded::default()
         }
     }
 
     /// What `connections.json` holds, each connection whose environment
-    /// is worked out logged. A file that is there is written as TOML by
-    /// the caller, and is left as it is.
+    /// is worked out logged. A file that was read is written as TOML by
+    /// the caller, and is left as it is. One that cannot be read is kept
+    /// aside and nothing is written for it: an empty `connections.toml`
+    /// would be read at every later start, and this file never again.
     fn load_legacy(path: &Path) -> Loaded {
-        let there = path.exists();
-        let stored: StoredConnections = crate::util::load_json(path);
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Loaded::default();
+            }
+            Err(error) => return Self::unreadable(path, &error.to_string(), BTreeMap::new()),
+        };
+        let stored: StoredConnections = match serde_json::from_slice(&bytes) {
+            Ok(stored) => stored,
+            Err(error) => return Self::unreadable(path, &error.to_string(), BTreeMap::new()),
+        };
         let (store, notes) = stored.upgrade();
         for note in &notes {
             log::info!("{note}");
         }
         Loaded {
-            save: there,
-            save_last_used: there && !store.last_used.is_empty(),
+            save: true,
+            save_last_used: !store.last_used.is_empty(),
             store,
             problem: None,
         }
@@ -534,8 +567,10 @@ mod tests {
         let path = dirs.connections_file();
         let good = saved("Prod", "/prod.db");
         let mut store = SavedConnections::default();
-        store.upsert(good);
+        store.upsert(good.clone());
+        store.mark_used(&good.id, 1_790_683_200);
         store.save(&path).unwrap();
+        crate::util::save_json(&dirs.last_used_file(), &store.last_used).unwrap();
         // One key that is no key: nothing of the file is used.
         let text = std::fs::read_to_string(&path).unwrap();
         let text = text.replace("driver ", "read_onyl = true\ndriver ");
@@ -561,21 +596,83 @@ mod tests {
         let aside = path.with_file_name("connections.toml.bad");
         assert_eq!(std::fs::read_to_string(aside).unwrap(), text);
         assert!(!path.exists());
-        // Bytes that are no text are kept aside the same way.
+        // When each connection last connected is still known: the file of
+        // times is whole, and a connect now must not write it without them.
+        assert_eq!(loaded.store.last_used(&good.id), Some(1_790_683_200));
+        // Bytes that are no text are kept aside the same way, under the
+        // next name that is free, and that is the name the user is told.
         std::fs::write(&path, [0xC3, 0x28]).unwrap();
         let loaded = SavedConnections::load(&dirs);
-        assert!(loaded.problem.is_some());
         assert!(path.with_file_name("connections.toml.bad.1").exists());
+        let problem = loaded.problem.unwrap();
+        assert!(
+            problem.ends_with(
+                "It was kept beside itself as connections.toml.bad.1, and no connection was \
+                 loaded."
+            ),
+            "{problem}"
+        );
     }
 
+    /// A file that cannot be moved aside is still in its place, and the
+    /// user is told that, not that there is a copy.
     #[test]
-    fn a_damaged_older_file_is_kept_aside() {
+    fn a_file_that_could_not_be_kept_aside_is_said_to_be_in_its_place() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let (dirs, _dir) = dirs();
+        let path = dirs.connections_file();
+        // A link that leads back to itself: it cannot be read or followed.
+        crate::util::symlink_file(&path, &path);
+        let loaded = SavedConnections::load(&dirs);
+        assert!(loaded.store.connections.is_empty());
+        let problem = loaded.problem.unwrap();
+        assert!(
+            problem.starts_with("connections.toml could not be read ("),
+            "{problem}"
+        );
+        assert!(
+            problem.ends_with(
+                "It could not be moved aside and is still in its place: saving a connection \
+                 now would replace it. No connection was loaded."
+            ),
+            "{problem}"
+        );
+        assert!(!path.with_file_name("connections.toml.bad").exists());
+    }
+
+    /// A damaged older file is kept aside and said, and nothing is to be
+    /// written in its stead: an empty `connections.toml` would be read at
+    /// every later start, and the older file never again.
+    #[test]
+    fn a_damaged_older_file_is_kept_aside_and_read_again_once_mended() {
         let (dirs, _dir) = dirs();
         let path = dirs.legacy_connections_file();
         std::fs::write(&path, "[not json").unwrap();
         let loaded = SavedConnections::load(&dirs);
         assert!(loaded.store.connections.is_empty());
+        assert!(!loaded.save && !loaded.save_last_used);
+        let problem = loaded.problem.unwrap();
+        assert!(
+            problem.starts_with("connections.json could not be read ("),
+            "{problem}"
+        );
+        assert!(
+            problem.ends_with(
+                "It was kept beside itself as connections.json.bad, and no connection was \
+                 loaded."
+            ),
+            "{problem}"
+        );
         assert!(path.with_file_name("connections.json.bad").exists());
+        // Mended and put back, it is read as any older file is.
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(&path, fixture).unwrap();
+        let mended = SavedConnections::load(&dirs);
+        assert_eq!(mended.store.connections.len(), 14);
+        assert!(mended.save && mended.save_last_used);
+        assert_eq!(mended.problem, None);
     }
 
     /// The new file wins: once it is there the old one is not read, even

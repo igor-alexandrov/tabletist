@@ -149,13 +149,15 @@ Tabletist reads the file strictly. A key it does not know, or a value a key
 cannot have, is an error and not something it skips: a line such as
 `read_onyl = true` must not pass for a connection that may write. When the
 file cannot be read, Tabletist starts with no connections, says which line
-is wrong, and keeps the file beside itself as `connections.toml.bad`. Fix
-the line and rename the file back.
+is wrong, and keeps the file beside itself as `connections.toml.bad` (or
+`.bad.1` when that name is taken: the notice says which). Fix the line and
+rename the file back. When each connection last connected is kept.
 
 Versions before this one kept the connections in `connections.json`.
 Tabletist reads that file once, at the first start that finds no
 `connections.toml`, writes the two files above from it, and leaves it
-where it is.
+where it is. If that file cannot be read, it is kept aside in the same
+way and nothing is written for it, so it is read again once it is mended.
 
 ## Command-line options
 
