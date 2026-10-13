@@ -1839,7 +1839,7 @@ impl App {
         let asked = self
             .table(tab, id, |table, object| {
                 let unasked = object.edits.taken.is_none();
-                unasked.then(|| crate::edit::taken_by(table))
+                unasked.then(|| crate::edit::taken_by(&object.object, table))
             })
             .flatten()
             .unwrap_or_default();
@@ -1850,7 +1850,7 @@ impl App {
             return;
         };
         let mut sent = Vec::with_capacity(asked.len());
-        for (effect, queries) in asked {
+        for (effect, queries, own) in asked {
             let mut requests = Vec::with_capacity(queries.len());
             for query in queries {
                 let request = RequestId(self.next_id());
@@ -1861,7 +1861,7 @@ impl App {
                 });
                 requests.push(request);
             }
-            sent.push((effect, requests));
+            sent.push((effect, requests, own));
         }
         let taken = Taken::asked(sent);
         let lines = taken.lines();

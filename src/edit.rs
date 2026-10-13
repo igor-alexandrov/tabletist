@@ -3,7 +3,7 @@
 //! is decided from the page and the structure alone; the reducer
 //! (`app.rs`, `app/editing.rs`) owns every transition.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
@@ -1593,17 +1593,22 @@ pub struct Taken {
     counted: Vec<u64>,
     /// The effects one of whose counts failed.
     failed: Vec<usize>,
+    /// How many of the rows each effect's counts find are the save's own
+    /// deletes: taken off what the effect is said to take.
+    own: Vec<u64>,
 }
 
 impl Taken {
     /// What is waited for: `asked` are the effects with the requests sent
-    /// for each. An effect with no request is one nothing can count: it
-    /// stays without a number.
-    pub fn asked(asked: Vec<(Effect, Vec<RequestId>)>) -> Self {
+    /// for each, and how many of the rows they will find the save deletes
+    /// itself ([`taken_by`]). An effect with no request is one nothing can
+    /// count: it stays without a number.
+    pub fn asked(asked: Vec<(Effect, Vec<RequestId>, u64)>) -> Self {
         let mut taken = Self::default();
-        for (place, (effect, requests)) in asked.into_iter().enumerate() {
+        for (place, (effect, requests, own)) in asked.into_iter().enumerate() {
             taken.effects.push(effect);
             taken.counted.push(0);
+            taken.own.push(own);
             if requests.is_empty() {
                 taken.failed.push(place);
             }
@@ -1631,9 +1636,13 @@ impl Taken {
         }
         // Said once the last count of the key is in.
         let waits = self.pending.iter().any(|(_, of)| *of == place);
+        // Without the rows the save deletes itself: the key takes those
+        // nowhere.
+        let own = self.own.get(place).copied().unwrap_or(0);
         let total = (!waits && !self.failed.contains(&place))
             .then(|| self.counted.get(place).copied())
-            .flatten();
+            .flatten()
+            .map(|counted| counted.saturating_sub(own));
         if let Some(effect) = self.effects.get_mut(place) {
             match effect {
                 Effect::Deletes { rows, .. } | Effect::Clears { rows, .. } => *rows = total,
@@ -1655,11 +1664,17 @@ impl Taken {
     }
 }
 
-/// What to count for the rows of `table` that are marked for deletion:
-/// each key that points at the table and acts on a delete, as the effect
-/// it has, with the counts that say how many rows it reaches. Empty where
+/// What to count for the rows of `table` (`object`) that are marked for
+/// deletion: each key that points at the table and acts on a delete, as
+/// the effect it has, with the counts that say how many rows it reaches,
+/// and how many of those rows the save deletes itself. Empty where
 /// nothing is marked or no such key is known.
-pub fn taken_by(table: &Table<'_>) -> Vec<(Effect, Vec<RowQuery>)> {
+///
+/// The last is for a key of the table that points at the table: a marked
+/// row under a marked row is one of the save's own deletes, sent before
+/// the row it points at, and the key takes it nowhere. The count finds it
+/// all the same.
+pub fn taken_by(object: &ObjectRef, table: &Table<'_>) -> Vec<(Effect, Vec<RowQuery>, u64)> {
     let rows: Vec<usize> = table.deleted.keys().copied().collect();
     let Some(structure) = table.structure.filter(|_| !rows.is_empty()) else {
         return Vec::new();
@@ -1682,15 +1697,43 @@ pub fn taken_by(table: &Table<'_>) -> Vec<(Effect, Vec<RowQuery>)> {
             };
             // No row can point at a NULL: such a key takes nothing, and
             // has no line.
+            let own = key.schema == object.schema && key.table.eq_ignore_ascii_case(&object.name);
+            let own = if own { own_among(table, key, &rows) } else { 0 };
             match pointing_at(table, key, &rows) {
                 Some(queries) if queries.is_empty() => None,
-                Some(queries) => Some((effect, queries)),
+                Some(queries) => Some((effect, queries, own)),
                 // The page does not hold what the key points at: said
                 // without a number.
-                None => Some((effect, Vec::new())),
+                None => Some((effect, Vec::new(), own)),
             }
         })
         .collect()
+}
+
+/// How many of the page's `rows` point, by `key`, at one of them: where
+/// `key` is the table's own, rows the save deletes itself. None where the
+/// page does not hold the key's columns: nothing is taken off then.
+fn own_among(table: &Table<'_>, key: &ReferencingKey, rows: &[usize]) -> u64 {
+    let place = |name: &String| {
+        let mut columns = table.page.columns.iter();
+        columns.position(|column| column.name == *name)
+    };
+    let from: Option<Vec<usize>> = key.columns.iter().map(place).collect();
+    let to: Option<Vec<usize>> = key.ref_columns.iter().map(place).collect();
+    let (Some(from), Some(to)) = (from, to) else {
+        return 0;
+    };
+    if from.is_empty() || from.len() != to.len() {
+        return 0;
+    }
+    let pointed_at: HashSet<Vec<KeyPart<'_>>> = rows
+        .iter()
+        .filter_map(|&row| key_parts(table.page, row, &to))
+        .collect();
+    let points = |row: &&usize| {
+        key_parts(table.page, **row, &from).is_some_and(|values| pointed_at.contains(&values))
+    };
+    rows.iter().filter(points).count() as u64
 }
 
 /// The rows of another table that still point at a row whose delete a
@@ -2657,14 +2700,7 @@ fn delete_order(object: &ObjectRef, table: &Table<'_>) -> Vec<usize> {
     if own.is_empty() || marked.len() < 2 {
         return marked;
     }
-    // What `row` holds in `cols`, as a key of a map. `None` where one of
-    // them is NULL: a key with a NULL in it points at no row.
-    let parts = |row: usize, cols: &[usize]| -> Option<Vec<KeyPart<'_>>> {
-        let held = table.page.rows.get(row)?;
-        cols.iter()
-            .map(|&col| KeyPart::of(held.get(col)?))
-            .collect()
-    };
+    let parts = |row: usize, cols: &[usize]| key_parts(table.page, row, cols);
     // The graph, made once. The marked rows by what each of the table's
     // own keys points at in them: a row is found by the values a child
     // holds, not by trying every pair.
@@ -2723,6 +2759,15 @@ fn delete_order(object: &ObjectRef, table: &Table<'_>) -> Vec<usize> {
     let left = (0..marked.len()).filter(|&index| !taken[index]);
     order.extend(left.map(|index| marked[index]));
     order
+}
+
+/// What the page's `row` holds in `cols`, as a key of a map. `None` where
+/// one of them is NULL: a key with a NULL in it points at no row.
+fn key_parts<'a>(page: &'a RowPage, row: usize, cols: &[usize]) -> Option<Vec<KeyPart<'a>>> {
+    let held = page.rows.get(row)?;
+    cols.iter()
+        .map(|&col| KeyPart::of(held.get(col)?))
+        .collect()
 }
 
 /// A value of a key as a key of a map: alike where [`same_value`] says two
@@ -3248,10 +3293,11 @@ mod tests {
         let page = crate::testing::publishers_page();
         let mut edits = Edits::default();
         edits.mark(0);
+        let object = ObjectRef::new("main", "publishers");
         let table = marked_covers(&structure, &page, &edits);
-        let asked = taken_by(&table);
+        let asked = taken_by(&object, &table);
         assert_eq!(asked.len(), 2);
-        let (effect, queries) = &asked[0];
+        let (effect, queries, _) = &asked[0];
         assert_eq!(
             *effect,
             Effect::Deletes {
@@ -3270,13 +3316,61 @@ mod tests {
         // Two rows: one count still, by their two values.
         edits.mark(2);
         let table = marked_covers(&structure, &page, &edits);
-        let asked = taken_by(&table);
+        let asked = taken_by(&object, &table);
         let filter = &asked[0].1[0].filters[0];
         assert_eq!(filter.op, FilterOp::In);
         assert_eq!(filter.value, "9100000000000000001,9100000000000000007");
         // Nothing marked, nothing asked.
         let none = Edits::default();
-        assert!(taken_by(&marked_covers(&structure, &page, &none)).is_empty());
+        assert!(taken_by(&object, &marked_covers(&structure, &page, &none)).is_empty());
+    }
+
+    /// A key of the table that points at the table: a marked row under a
+    /// marked row is the save's own delete, which the count finds too. It
+    /// is taken off what the key is said to take.
+    #[test]
+    fn a_marked_row_under_a_marked_row_is_not_counted_as_taken() {
+        // Fiction (1), under it Crime (2) and Essays (3); Poetry (4).
+        let (mut structure, page) = genres(&[(1, None), (2, Some(1)), (3, Some(1)), (4, None)]);
+        let object = ObjectRef::new("main", "genres");
+        let deletes = |rows| Effect::Deletes {
+            table: "genres".into(),
+            rows,
+        };
+        for on_delete in ["CASCADE", "SET NULL"] {
+            structure.referenced_by[0].on_delete = on_delete.into();
+            // Fiction and Crime marked: Crime is the save's own.
+            let mut edits = Edits::default();
+            edits.mark(0);
+            edits.mark(1);
+            let asked = taken_by(&object, &marked_covers(&structure, &page, &edits));
+            assert_eq!(asked.len(), 1, "{on_delete}");
+            assert_eq!(asked[0].2, 1, "{on_delete}");
+            // Fiction alone: nothing of the save's own under it.
+            let mut edits = Edits::default();
+            edits.mark(0);
+            let asked = taken_by(&object, &marked_covers(&structure, &page, &edits));
+            assert_eq!(asked[0].2, 0, "{on_delete}");
+        }
+        // Another table's key takes nothing off.
+        let publishers = crate::testing::publishers_structure();
+        let page = crate::testing::publishers_page();
+        let mut edits = Edits::default();
+        edits.mark(0);
+        edits.mark(2);
+        let object = ObjectRef::new("main", "publishers");
+        let asked = taken_by(&object, &marked_covers(&publishers, &page, &edits));
+        assert!(asked.iter().all(|(_, _, own)| *own == 0));
+        // The count finds Crime and Essays: Essays alone is taken.
+        let request = RequestId(1);
+        let mut taken = Taken::asked(vec![(deletes(None), vec![request], 1)]);
+        assert!(taken.answer(request, Some(2)));
+        assert_eq!(taken.lines(), [deletes(Some(1))]);
+        // Every row that points is marked: the key takes nothing, and has
+        // no line.
+        let mut taken = Taken::asked(vec![(deletes(None), vec![request], 1)]);
+        assert!(taken.answer(request, Some(1)));
+        assert!(taken.lines().is_empty());
     }
 
     /// A key's count is its counts added up, said once the last is in.
@@ -3294,7 +3388,10 @@ mod tests {
             rows,
         };
         let (a, b, c) = (RequestId(1), RequestId(2), RequestId(3));
-        let mut taken = Taken::asked(vec![(deletes(None), vec![a, b]), (clears(None), vec![c])]);
+        let mut taken = Taken::asked(vec![
+            (deletes(None), vec![a, b], 0),
+            (clears(None), vec![c], 0),
+        ]);
         assert_eq!(taken.lines(), [deletes(None), clears(None)]);
         assert!(taken.answer(a, Some(2)));
         // One count of the key is still out.
@@ -3307,7 +3404,7 @@ mod tests {
         // Not one of these.
         assert!(!taken.answer(RequestId(9), Some(1)));
         // A count that failed leaves its line without a number.
-        let mut failed = Taken::asked(vec![(deletes(None), vec![a])]);
+        let mut failed = Taken::asked(vec![(deletes(None), vec![a], 0)]);
         assert!(failed.answer(a, None));
         assert_eq!(failed.lines(), [deletes(None)]);
     }
