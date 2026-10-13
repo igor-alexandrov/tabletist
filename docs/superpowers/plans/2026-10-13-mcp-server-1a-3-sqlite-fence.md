@@ -1043,3 +1043,7 @@ No website page changes: no behaviour, setting, file or key a user sees is touch
 - **Names.** `Fence::Agent`, `Fences::ask`, `Fences::refused`, `refusal`, `Error::Agent`, `pragma_table` and `function_allowed` are spelled the same in both tasks and in the tests.
 - **What a reader might expect and will not find.** A statement that passes the check and is refused by the fence, end to end. Task 1 closed the only one known. The fence is tested on SQLite's own actions and by running statements past the check.
 - **Every commit stands.** After Task 1 the check refuses more and nothing else changed. After Task 2 an agent's statement on SQLite has its own fence, and the SQL editor's and a filter's are as they were: `tests/sqlite.rs` was run at each.
+
+## After the run
+
+Run on 2026-10-13, inline, one commit for each task. Every step showed what it says above, and the files the tasks changed are byte for byte the draft's.
