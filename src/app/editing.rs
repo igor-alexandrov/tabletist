@@ -13,7 +13,7 @@ use crate::edit::{
 };
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
-    ObjectTab, ObjectView, Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
+    ObjectTab, ObjectView, Pane, Reach, SaveBlock, SessionStatus, TabId, WritePrompt,
 };
 use crate::review::{Part, Values};
 
@@ -776,7 +776,7 @@ impl App {
         let is_open = opened.is_ok();
         match opened {
             Ok(editor) => {
-                object.selection = Some(cell);
+                object.set_cursor(Some(cell), Reach::End);
                 object.edits.editor = Some(editor);
                 object.edits.why = None;
                 // The keyboard is the editor's: a field that was owed it
@@ -790,7 +790,7 @@ impl App {
             // Typing on a cell that cannot be edited does nothing.
             Err(_) if !asked => return,
             Err(lock) => {
-                object.selection = Some(cell);
+                object.set_cursor(Some(cell), Reach::End);
                 object.edits.why = Some((cell, lock));
                 object.edits.why_place = place;
             }
@@ -827,7 +827,7 @@ impl App {
             return;
         }
         if let Some(object) = self.object_tab_mut(tab, id) {
-            object.selection = Some(cell);
+            object.set_cursor(Some(cell), Reach::End);
             object.focus_field = None;
         }
         if let Some(workspace) = self.workspace_mut(tab) {
@@ -974,9 +974,15 @@ impl App {
         object.fields = None;
         let order = Order::of(&object.edits.added, height);
         let last = order.len().saturating_sub(1);
-        object.selection = stood
+        let stays = stood
             .and_then(|place| order.row(place.min(last)))
             .map(|row| CellPos { row, col: cell.col });
+        // The rows selected with it stay selected, unless they began on
+        // the row that went.
+        if object.range.is_some_and(|range| range.anchor == cell.row) {
+            object.range = None;
+        }
+        object.set_cursor(stays, Reach::Keep);
     }
 
     /// Deletes the selected row: drops it where it is a new one, marks it
@@ -1848,7 +1854,7 @@ impl App {
                     cells.sort_unstable_by_key(|cell| (cell.row, cell.col));
                     let gone = std::mem::take(&mut object.edits.gone);
                     object.edits.gone = gone.into_iter().filter_map(now).collect();
-                    object.selection = object.selection.and_then(|cell| {
+                    let moved = object.selection.and_then(|cell| {
                         let row = match now(cell.row) {
                             Some(row) => row,
                             // Its row was deleted: the row that stood
@@ -1864,6 +1870,9 @@ impl App {
                         };
                         Some(CellPos { row, col: cell.col })
                     });
+                    // The rows are others now: a range was of the page
+                    // the save found.
+                    object.set_cursor(moved, Reach::End);
                     // The table has that many rows more and that many
                     // fewer, where it is known how many it had. A row
                     // found already deleted was counted when the page was

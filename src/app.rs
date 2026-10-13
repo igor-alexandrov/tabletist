@@ -17,8 +17,8 @@ use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
-    ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree,
-    TreeKey, TreeNode, Wanted, Workspace,
+    Reach, ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState,
+    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -655,7 +655,7 @@ impl App {
                 {
                     object.query.sort.clear();
                     object.query.offset = 0;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     self.fetch_rows(tab, object_tab);
                 }
@@ -773,7 +773,7 @@ impl App {
                     }
                     object.query.offset += u64::from(object.query.limit);
                     object.pinned = true;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     // Never show rows for a query we no longer display.
                     object.rows.value = None;
                     true
@@ -801,7 +801,7 @@ impl App {
                         .map_or(page_size, |before| before.min(page_size));
                     object.query.offset -= u64::from(step);
                     object.pinned = true;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     Some(step)
                 });
@@ -825,7 +825,7 @@ impl App {
                         .unwrap_or_default();
                     object.query.offset = 0;
                     object.pinned = true;
-                    object.selection = None;
+                    object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     self.fetch_rows(tab, object_tab);
                 }
@@ -872,7 +872,7 @@ impl App {
                     // The field that was to get the keyboard back was the
                     // row's the selection leaves.
                     object.focus_field = None;
-                    object.selection = Some(cell);
+                    object.set_cursor(Some(cell), Reach::End);
                     object.pinned = true;
                 } else if let Some(sql) = self.sql_tab_mut(tab, id) {
                     // The result may have been replaced since the frame
@@ -1206,7 +1206,7 @@ impl App {
                         }
                     };
                     object.pinned |= moved.is_some();
-                    object.selection = moved;
+                    object.set_cursor(moved, Reach::Move);
                 }
             }
             Action::ToggleRowPanel(tab) => {
@@ -2509,7 +2509,7 @@ impl App {
                     .page()
                     .map(|page| (page.rows.len(), page.columns.len()))
                     .unwrap_or((0, 0));
-                object.selection = match object.selection {
+                let clamped = match object.selection {
                     Some(_) if height == 0 || width == 0 => None,
                     Some(cell) => Some(CellPos {
                         row: cell.row.min(height - 1),
@@ -2517,6 +2517,8 @@ impl App {
                     }),
                     None => None,
                 };
+                // The page was read again: a range was of the rows it held.
+                object.set_cursor(clamped, Reach::End);
                 // A question about this tab's rows was about their pending
                 // cells, which went with the set just now, and names rows
                 // by their place in the page: nothing is left to ask.
@@ -3878,7 +3880,7 @@ impl App {
         object.query.raw_where = raw_where;
         object.query.offset = 0;
         object.pinned = true;
-        object.selection = None;
+        object.set_cursor(None, Reach::End);
         self.reset_count(tab, id);
         self.fetch_rows(tab, id);
     }
