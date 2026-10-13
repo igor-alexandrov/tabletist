@@ -8,11 +8,13 @@ use rusqlite::types::ValueRef;
 use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::{InsertStatement, RowDeletion, RowUpdate};
 use crate::write::{
-    Applied, Stored, changed_since_loaded, conflicts_of, key_spelled_otherwise, more_than_one,
-    named_twice, not_read_back, not_stopped, read_by, same_row_twice, spelled_otherwise,
+    Applied, RELEASE, ROLLBACK_TO, SAVEPOINT, Stored, changed_since_loaded, conflicts_of,
+    deleted_instead, key_spelled_otherwise, more_than_one, named_twice, not_read_back, not_stopped,
+    read_by, same_row_twice, spelled_otherwise,
 };
 use crate::{
-    ChangeSet, Dialect, Error, ObjectRef, Result, RowChange, Sql, StopFlag, Value, WriteOutcome,
+    ChangeSet, Dialect, Error, ObjectRef, Result, RowChange, RowDelete, Sql, StopFlag, Value,
+    WriteOutcome, delete_runs,
 };
 
 pub(super) fn write(
@@ -266,6 +268,148 @@ fn follows_deletes(connection: &rusqlite::Connection, object: &ObjectRef) -> Res
         .map_err(map_error)
 }
 
+/// Deletes one row of the save by its own statement. `Ok(Some(..))` is
+/// how the save ends where the row is not deleted; `Err` is a cancel, a
+/// stop or a lost session.
+fn delete_one(
+    connection: &rusqlite::Connection,
+    changes: &ChangeSet,
+    deletion: &RowDeletion,
+    delete: usize,
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    not_stopped(stop)?;
+    let params = rusqlite::params_from_iter(deletion.sql.params.iter().map(exact));
+    let touched = match connection
+        .execute(&deletion.sql.text, params)
+        .map_err(map_error)
+    {
+        Ok(touched) => touched,
+        // A cancel or a lost session ends the save; anything else is the
+        // statement's own failure: a foreign key that holds the row, most
+        // often.
+        Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+        Err(error) => return Ok(Some(Applied::FailedDelete { delete, error })),
+    };
+    // The count is of the table's own rows, without those a foreign key
+    // took with them. None: a row deleted before this one took it along (a
+    // key of the table that points at the table), which is what the save
+    // meant, or a trigger kept it, which is not. The row says which.
+    if touched == 0 && !still_there(connection, changes, delete, stop)? {
+        return Ok(None);
+    }
+    Ok((touched != 1).then(|| Applied::FailedDelete {
+        delete,
+        error: deleted_instead(touched as u64, 1),
+    }))
+}
+
+/// Whether the row of the save's delete `delete` is still in the table.
+fn still_there(
+    connection: &rusqlite::Connection,
+    changes: &ChangeSet,
+    delete: usize,
+    stop: &StopFlag,
+) -> Result<bool> {
+    let Some(row) = changes.deletes.get(delete) else {
+        return Ok(false);
+    };
+    let select = Dialect::Sqlite.select_row(&changes.object, &row.key, false);
+    not_stopped(stop)?;
+    let (_, still) = read(connection, &select)?;
+    Ok(!still.is_empty())
+}
+
+/// Deletes the rows `live` of the save (places among its deletes, each
+/// found by its read, two or more) in one statement. A run the file
+/// refuses is undone to the savepoint before it, and its rows go one at a
+/// time, so the error is its row's.
+fn delete_many(
+    connection: &rusqlite::Connection,
+    changes: &ChangeSet,
+    deletions: &[RowDeletion],
+    live: &[usize],
+    stop: &StopFlag,
+) -> Result<Option<Applied>> {
+    let singly = || -> Result<Option<Applied>> {
+        for &delete in live {
+            let Some(deletion) = deletions.get(delete) else {
+                continue;
+            };
+            let failed = delete_one(connection, changes, deletion, delete, stop)?;
+            if failed.is_some() {
+                return Ok(failed);
+            }
+        }
+        Ok(None)
+    };
+    let Some(&first) = live.first() else {
+        return Ok(None);
+    };
+    let rows: Vec<&RowDelete> = live
+        .iter()
+        .filter_map(|&delete| changes.deletes.get(delete))
+        .collect();
+    // Each row was built, so the run is: were it not, the rows go as ever.
+    let Ok(run) = Dialect::Sqlite.delete_run(&changes.object, &rows) else {
+        return singly();
+    };
+    not_stopped(stop)?;
+    connection.execute_batch(SAVEPOINT).map_err(map_error)?;
+    let params = rusqlite::params_from_iter(run.sql.params.iter().map(exact));
+    let touched = match connection.execute(&run.sql.text, params).map_err(map_error) {
+        Ok(touched) => touched,
+        Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+        // Busy: sent again row by row, each row could wait as long.
+        Err(error) if Dialect::Sqlite.busy(&error) => {
+            return Ok(Some(Applied::FailedDelete {
+                delete: first,
+                error,
+            }));
+        }
+        Err(error) => {
+            return match connection.execute_batch(ROLLBACK_TO).map_err(map_error) {
+                Ok(()) => {
+                    let failed = singly()?;
+                    if failed.is_none() {
+                        connection.execute_batch(RELEASE).map_err(map_error)?;
+                    }
+                    Ok(failed)
+                }
+                Err(lost @ (Error::Cancelled | Error::ConnectionLost(_))) => Err(lost),
+                // No savepoint to come back to: the transaction is gone
+                // (a trigger rolled it back), and a row sent now would be
+                // written for good. The run's error ends the save.
+                Err(_) => Ok(Some(Applied::FailedDelete {
+                    delete: first,
+                    error,
+                })),
+            };
+        }
+    };
+    if touched > live.len() {
+        return Ok(Some(Applied::FailedDelete {
+            delete: first,
+            error: deleted_instead(touched as u64, live.len()),
+        }));
+    }
+    if touched < live.len() {
+        // A row of the run that a delete of this save took along (a key
+        // of the table that points at the table) is what the save meant.
+        // One a trigger kept is not.
+        for &delete in live {
+            if still_there(connection, changes, delete, stop)? {
+                return Ok(Some(Applied::FailedDelete {
+                    delete,
+                    error: deleted_instead(0, 1),
+                }));
+            }
+        }
+    }
+    connection.execute_batch(RELEASE).map_err(map_error)?;
+    Ok(None)
+}
+
 /// The steps of a save inside its transaction: read and compare every row,
 /// write the new rows, update every row, delete the rows to delete, read
 /// every changed row back. `stop` is asked before each statement, and a
@@ -410,48 +554,25 @@ fn apply(
             });
         }
     }
-    // The rows to delete, last: the order a review shows them in. One
-    // that was not there is said and not sent.
+    // The rows to delete, last: the order a review shows them in, in runs
+    // of neighbours. One that was not there is said and not sent.
     let mut gone = Vec::new();
-    let found = changes.deletes.iter().zip(deletions).zip(&doomed);
-    for (delete, ((row, deletion), found)) in found.enumerate() {
-        if found.is_none() {
-            gone.push(delete);
-            continue;
-        }
-        not_stopped(stop)?;
-        let params = rusqlite::params_from_iter(deletion.sql.params.iter().map(exact));
-        let touched = match connection
-            .execute(&deletion.sql.text, params)
-            .map_err(map_error)
-        {
-            Ok(touched) => touched,
-            // A cancel or a lost session ends the save; anything else is
-            // the statement's own failure: a foreign key that holds the
-            // row, most often.
-            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
-            Err(error) => return Ok(Applied::FailedDelete { delete, error }),
+    // Every row's statement was built: the save does not begin otherwise.
+    let built = vec![true; changes.deletes.len()];
+    for run in delete_runs(&changes.deletes, &built) {
+        let found = |delete: &usize| doomed.get(*delete).is_some_and(Option::is_some);
+        let (live, missing): (Vec<usize>, Vec<usize>) = run.partition(found);
+        gone.extend(missing);
+        let failed = match live.as_slice() {
+            [] => None,
+            [delete] => match deletions.get(*delete) {
+                Some(deletion) => delete_one(connection, changes, deletion, *delete, stop)?,
+                None => None,
+            },
+            _ => delete_many(connection, changes, deletions, &live, stop)?,
         };
-        // The count is of the table's own rows, without those a foreign
-        // key took with them. None: a row deleted before this one took it
-        // along (a key of the table that points at the table), which is
-        // what the save meant, or a trigger kept it, which is not. The
-        // row says which.
-        if touched == 0 {
-            let select = dialect.select_row(&changes.object, &row.key, false);
-            not_stopped(stop)?;
-            let (_, still) = read(connection, &select)?;
-            if still.is_empty() {
-                continue;
-            }
-        }
-        if touched != 1 {
-            return Ok(Applied::FailedDelete {
-                delete,
-                error: Error::query(format!(
-                    "the save would have deleted {touched} rows where it meant one"
-                )),
-            });
+        if let Some(failed) = failed {
+            return Ok(failed);
         }
     }
     let mut rows = Vec::with_capacity(changes.rows.len());

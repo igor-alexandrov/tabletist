@@ -333,6 +333,25 @@ impl Applied {
     }
 }
 
+/// A point inside the save's transaction to come back to: before a run of
+/// deletes, so a run the database refuses can be undone and its rows sent
+/// one at a time. The three statements are every engine's.
+pub(crate) const SAVEPOINT: &str = "SAVEPOINT tabletist_run";
+pub(crate) const ROLLBACK_TO: &str = "ROLLBACK TO SAVEPOINT tabletist_run";
+pub(crate) const RELEASE: &str = "RELEASE SAVEPOINT tabletist_run";
+
+/// A statement deleted another number of rows than it named.
+pub(crate) fn deleted_instead(deleted: u64, meant: usize) -> Error {
+    let meant = if meant == 1 {
+        "one".to_owned()
+    } else {
+        meant.to_string()
+    };
+    Error::query(format!(
+        "the save would have deleted {deleted} rows where it meant {meant}"
+    ))
+}
+
 /// Ends a save that was told to stop, as a cancelled statement ends it. A
 /// cancel reaches only a statement that is running, and one that arrives
 /// between two of a save's statements is lost: so each driver asks here

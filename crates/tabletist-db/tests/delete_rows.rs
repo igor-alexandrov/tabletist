@@ -7,6 +7,10 @@
 //! `docs/superpowers/specs/2026-10-12-deleting-rows-design.md`, "test N"
 //! an entry of its Tests.
 //!
+//! Rows next to each other go in one statement, a run. "Many-rows spec N"
+//! and "many-rows test N" are of
+//! `docs/superpowers/specs/2026-10-13-deleting-many-rows-design.md`.
+//!
 //! PostgreSQL and MySQL need their servers (see compose.yaml). Without the
 //! variables those tests print "skipped" and pass.
 
@@ -33,6 +37,10 @@ struct Shop {
     covers: String,
     authors: String,
     shelves: String,
+    /// 300 rows numbered from 1, for a save of many.
+    stock: String,
+    /// Genres under genres, by a key that holds.
+    genres: String,
     /// The type of an id column, and of a text one, as the structure
     /// names them.
     id: &'static str,
@@ -49,6 +57,13 @@ fn by_id(id: i64) -> RowDelete {
     RowDelete {
         key: vec![("id".to_owned(), Value::Int(id))],
     }
+}
+
+/// The rows of the stock table, as the values of one `INSERT`: 300 rows,
+/// numbered from 1.
+fn stock_values() -> String {
+    let rows: Vec<String> = (1..=300).map(|id| format!("({id})")).collect();
+    rows.join(", ")
 }
 
 fn deleting(object: ObjectRef, deletes: Vec<RowDelete>) -> ChangeSet {
@@ -268,6 +283,75 @@ async fn a_row_the_save_took_with_another_is_deleted(connection: &Connection, sh
     assert_eq!(firsts(connection, shelves).await, ["3"]);
 }
 
+/// Many-rows spec 4 and test 15: 250 rows of one save go in three runs,
+/// and are gone.
+async fn many_rows_go_in_runs(connection: &Connection, shop: &Shop) {
+    let stock = shop.table(&shop.stock);
+    let deletes: Vec<RowDelete> = (1..=250).map(by_id).collect();
+    let outcome = save(connection, &deleting(stock.clone(), deletes)).await;
+    assert!(
+        matches!(&outcome, WriteOutcome::Written { gone, .. } if gone.is_empty()),
+        "{outcome:?}"
+    );
+    let left = firsts(connection, stock).await;
+    assert_eq!(left.len(), 50);
+    assert!(left.contains(&"251".to_owned()) && left.contains(&"300".to_owned()));
+}
+
+/// Many-rows test 15: rows 5 and 7 were deleted by someone else before
+/// this is called. The save says which of its deletes they were, and
+/// deletes the rest of their run.
+async fn rows_already_gone_leave_the_rest_of_their_run(connection: &Connection, shop: &Shop) {
+    let stock = shop.table(&shop.stock);
+    let deletes: Vec<RowDelete> = (1..=10).map(by_id).collect();
+    let outcome = save(connection, &deleting(stock.clone(), deletes)).await;
+    let WriteOutcome::Written { gone, .. } = outcome else {
+        panic!("the save wrote: {outcome:?}");
+    };
+    assert_eq!(gone, [4, 6]);
+    assert_eq!(firsts(connection, stock).await.len(), 290);
+}
+
+/// Many-rows spec 4 and test 15: a run by a key of two columns finds its
+/// rows.
+async fn a_run_by_a_key_of_two_columns_finds_its_rows(connection: &Connection, shop: &Shop) {
+    let authors = shop.table(&shop.authors);
+    let by = |book: i64, author: &str| RowDelete {
+        key: vec![
+            ("book_id".to_owned(), Value::Int(book)),
+            ("author".to_owned(), Value::Text(author.into())),
+        ],
+    };
+    let changes = deleting(
+        authors.clone(),
+        vec![by(101, "Ada Quill"), by(101, "Sam O'Neil")],
+    );
+    let outcome = save(connection, &changes).await;
+    assert!(
+        matches!(&outcome, WriteOutcome::Written { gone, .. } if gone.is_empty()),
+        "{outcome:?}"
+    );
+    assert_eq!(rows(connection, authors).await, [["102", "Ada Quill"]]);
+}
+
+/// Many-rows spec 4, step 6, and test 15: Crime (2) stands under Fiction
+/// (1), by a key that holds. The app sends the child first, and the two
+/// are one run. An engine that checks the key row by row refuses the run
+/// and takes the rows one at a time; either way both are gone.
+async fn a_row_and_the_row_it_points_at_go_in_one_run(connection: &Connection, shop: &Shop) {
+    let genres = shop.table(&shop.genres);
+    let outcome = save(
+        connection,
+        &deleting(genres.clone(), vec![by_id(2), by_id(1)]),
+    )
+    .await;
+    assert!(
+        matches!(&outcome, WriteOutcome::Written { gone, .. } if gone.is_empty()),
+        "{outcome:?}"
+    );
+    assert_eq!(firsts(connection, genres).await, ["3"]);
+}
+
 mod sqlite {
     use super::*;
 
@@ -302,6 +386,21 @@ mod sqlite {
         );
         INSERT INTO shelves VALUES (1, NULL), (2, 1), (3, NULL)";
 
+    /// The Bookshop, with its stock of 300 rows and its genres.
+    fn create() -> String {
+        format!(
+            "{CREATE};
+             CREATE TABLE stock (id INTEGER PRIMARY KEY);
+             INSERT INTO stock VALUES {};
+             CREATE TABLE genres (
+                 id INTEGER PRIMARY KEY,
+                 parent_id INTEGER REFERENCES genres (id)
+             );
+             INSERT INTO genres VALUES (1, NULL), (2, 1), (3, NULL)",
+            stock_values()
+        )
+    }
+
     fn shop() -> Shop {
         Shop {
             schema: "main".into(),
@@ -309,6 +408,8 @@ mod sqlite {
             covers: "book_covers".into(),
             authors: "book_authors".into(),
             shelves: "shelves".into(),
+            stock: "stock".into(),
+            genres: "genres".into(),
             id: "INTEGER",
             text: "TEXT",
         }
@@ -319,7 +420,7 @@ mod sqlite {
         let path = dir.path().join("bookshop.db");
         rusqlite::Connection::open(&path)
             .unwrap()
-            .execute_batch(CREATE)
+            .execute_batch(&create())
             .unwrap();
         let connection = Connection::connect_with(
             &ConnectSpec::sqlite(&path),
@@ -395,6 +496,86 @@ mod sqlite {
     /// same, and the save cannot be sure it is the column it reads as. It
     /// is an error, never a row that is already gone, and the row stays.
     #[tokio::test]
+    async fn sqlite_deletes_many_rows_in_runs() {
+        let (connection, _dir) = bookshop().await;
+        many_rows_go_in_runs(&connection, &shop()).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_says_which_rows_of_a_run_were_gone() {
+        let (connection, dir) = bookshop().await;
+        other_program(&dir)
+            .execute_batch("DELETE FROM stock WHERE id IN (5, 7)")
+            .unwrap();
+        rows_already_gone_leave_the_rest_of_their_run(&connection, &shop()).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_deletes_a_run_by_a_key_of_two_columns() {
+        let (connection, _dir) = bookshop().await;
+        a_run_by_a_key_of_two_columns_finds_its_rows(&connection, &shop()).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_deletes_a_row_and_the_row_it_points_at_in_one_run() {
+        let (connection, _dir) = bookshop().await;
+        a_row_and_the_row_it_points_at_go_in_one_run(&connection, &shop()).await;
+    }
+
+    /// Many-rows spec 4, step 3, and test 16: a trigger keeps one row of
+    /// a run. The save fails on that row, and nothing of it is written.
+    #[tokio::test]
+    async fn sqlite_fails_the_row_of_a_run_a_trigger_kept() {
+        let (connection, dir) = bookshop().await;
+        other_program(&dir)
+            .execute_batch(
+                "CREATE TRIGGER keep_seven BEFORE DELETE ON stock WHEN OLD.id = 7
+                 BEGIN SELECT RAISE(IGNORE); END",
+            )
+            .unwrap();
+        let stock = shop().table("stock");
+        let deletes: Vec<RowDelete> = (5..=9).map(by_id).collect();
+        let outcome = save(&connection, &deleting(stock.clone(), deletes)).await;
+        let WriteOutcome::FailedDelete { delete, error } = outcome else {
+            panic!("the save was to fail on a row to delete: {outcome:?}");
+        };
+        assert_eq!(delete, 2);
+        assert!(error.to_string().contains("deleted 0 rows"), "{error}");
+        assert_eq!(firsts(&connection, stock).await.len(), 300);
+    }
+
+    /// Many-rows spec 4, step 7, and test 16: a trigger rolls the
+    /// transaction back under a run. Nothing more is sent, and the run's
+    /// error is its first row's.
+    #[tokio::test]
+    async fn sqlite_sends_nothing_after_a_trigger_rolled_the_save_back() {
+        let (connection, dir) = bookshop().await;
+        other_program(&dir)
+            .execute_batch(
+                "CREATE TRIGGER stop_at_seven BEFORE DELETE ON stock WHEN OLD.id = 7
+                 BEGIN SELECT RAISE(ROLLBACK, 'seven stays'); END",
+            )
+            .unwrap();
+        let stock = shop().table("stock");
+        let deletes: Vec<RowDelete> = (5..=9).map(by_id).collect();
+        let outcome = save(&connection, &deleting(stock.clone(), deletes)).await;
+        let WriteOutcome::FailedDelete { delete, error } = outcome else {
+            panic!("the save was to fail on a row to delete: {outcome:?}");
+        };
+        assert_eq!(delete, 0);
+        assert!(error.to_string().contains("seven stays"), "{error}");
+        // Not one row went: had the rows been sent one at a time after
+        // the rollback, each would have been written for good.
+        assert_eq!(firsts(&connection, stock.clone()).await.len(), 300);
+        // And the session saves again.
+        let outcome = save(&connection, &deleting(stock, vec![by_id(1)])).await;
+        assert!(
+            matches!(outcome, WriteOutcome::Written { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn sqlite_refuses_a_key_the_table_spells_otherwise() {
         let (connection, _dir) = bookshop().await;
         let covers = shop().table("book_covers");
@@ -466,6 +647,8 @@ mod postgres {
             covers: format!("{prefix}_book_covers"),
             authors: format!("{prefix}_book_authors"),
             shelves: format!("{prefix}_shelves"),
+            stock: format!("{prefix}_stock"),
+            genres: format!("{prefix}_genres"),
             id: "bigint",
             text: "text",
         }
@@ -633,6 +816,8 @@ mod mysql {
             covers: format!("{prefix}_book_covers"),
             authors: format!("{prefix}_book_authors"),
             shelves: format!("{prefix}_shelves"),
+            stock: format!("{prefix}_stock"),
+            genres: format!("{prefix}_genres"),
             id: "bigint",
             text: "varchar(64)",
         }
