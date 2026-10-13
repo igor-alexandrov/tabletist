@@ -207,10 +207,38 @@ otherwise than this asks, each agreed with the user before it was built:
   is saved: "Row id 9 was already deleted." A row that another of the
   save's deletes took with it (a tree whose key cascades) is deleted, not
   failed.
-- **Cascades and the restrict count.** Not built yet (run 3): the app
-  loads no foreign key that points at a table. A refused delete shows
-  the database's own words, with the constraint's name on PostgreSQL and
-  MySQL.
+- **Cascades.** Built in run 3
+  (`docs/superpowers/plans/2026-10-13-deleting-rows-3-what-a-delete-takes.md`).
+  A table's structure lists the foreign keys that point at it. When a
+  review is made while rows are marked (Review SQL, `:diff`, the
+  production confirm), the app counts the rows each such key reaches and
+  the review says so after its statements, as comment lines in the
+  warning colour: `-- also deletes 3 rows in book_covers (ON DELETE
+  CASCADE)`, `-- also clears publisher_id in 3 book_covers rows (ON
+  DELETE SET NULL)`. Lower case and without a full stop, as the review's
+  other comments are. What differs from this spec:
+  - One count per key where the key is one column; a key of several
+    columns is counted once for each marked row, and the counts added.
+  - Only the rows that point at the marked rows directly are counted.
+    `SET DEFAULT` has no line.
+  - Until a count is in, and where one fails, its line stands without a
+    number. A count of 0 has no line.
+  - The counts are kept until the marks change, and are stopped by
+    Cancel, by closing the tab and by a mark that changes: a count runs
+    on the tab's one session, ahead of its next fetch or save.
+  - On SQLite every table's own keys are read each time a structure is
+    loaded, since it keeps no list of the keys that point at a table.
+- **The restrict count.** After a delete a foreign key refuses
+  (PostgreSQL 23503, and 23001 from version 18 on; MySQL 1451; SQLite 787,
+  and 1811 for `RESTRICT`) the app counts the rows that point at the row:
+  of the key the database names, or of every key that holds where it
+  names none. "3 rows in book_covers still point at this row" stands
+  after the database's words in the pending bar, in the row panel, on
+  the row's cells and on the Omarchy error line. **Open rows** is a
+  button of the bar and of the row panel; in the Omarchy look `gd` on
+  the row opens them.
+- **The order of deletes.** A row is deleted before the row it points
+  at, where the table's own foreign key points at the table.
 - **Error navigation.** Not built: the commands are not.
 - **The marker.** In the desktop looks the first column of the row's key
   shows a minus before its value, which is struck through with the

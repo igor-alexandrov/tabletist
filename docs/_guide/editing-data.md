@@ -265,11 +265,22 @@ transaction: new rows first, then changed rows, then deleted rows.
 the rows are gone from the grid, and the selection is on the row that
 stood after them.
 
+Where another table's foreign key points at the rows you delete, Review
+SQL says what the save does there, under its statements: how many rows
+that table loses (`ON DELETE CASCADE`), or how many have the key cleared
+(`ON DELETE SET NULL`). The production confirmation shows the same lines.
+Only the rows that point at yours directly are counted, and until the
+count is in a line stands without its number.
+
 - If someone else deleted the row first, the save still goes through,
   and a line says which row was already gone.
-- If the database refuses a delete (a foreign key still points at the
-  row, most often), nothing is saved. The row stays marked and shows the
-  database's message.
+- If the database refuses a delete because a foreign key still points
+  at the row, nothing is saved. The row stays marked and says how many
+  rows of which table point at it, and **Open rows** opens them (`gd` in
+  the Omarchy look). Any other refusal shows the database's message.
+- Where a table's rows point at other rows of the same table, a row is
+  deleted before the row it points at, so marking a parent and its
+  children deletes them together.
 
 Rows cannot be deleted on a read-only connection, in a view, or in a
 table without a primary key or unique index. The key and the button say

@@ -8,6 +8,15 @@
 
 **Tech Stack:** Rust 1.98, `tokio-postgres`, `mysql_async`, `rusqlite`; egui/eframe (the crmne forks). Spec: `docs/superpowers/specs/2026-10-12-deleting-rows-design.md` ("spec N" is a section of its Behavior, "test N" an entry of its Tests). Runs 1 and 2: `docs/superpowers/plans/2026-10-12-deleting-rows-1-save.md` and `2026-10-12-deleting-rows-2-marking.md`, both built, in pull request `igor-alexandrov/tabletist#120`.
 
+Status: built on 2026-10-13, one commit per task. Each task's blocks are the plan's as written, but for these:
+
+- Task 2: the test's table is the Bookshop's `genres` (`testing::genres_structure`, with rows of the test's own), not a table made by hand.
+- Task 4: `Taken::asked` notes an effect that nothing can count as failed, so it stays without a number. A second test in `src/edit.rs` holds how the counts of one key are added up.
+- Task 5: the sentence is `pending_bar::holder_said`, which takes the look's way with the app's own words. A test holds that only a foreign key's refusal is asked about.
+- Task 6: `Action::FollowForeignKey` keeps its two fields. Giving it a list made the action enum lopsided (clippy's `large_enum_variant`: its largest variant is `Backend`, in 157 places). A new `Action::OpenFiltered { tab, object, by }` is what a follow holds while the target's tab has changes, and what the rows that hold a row are opened by. `genres_structure` gains its own key in `referenced_by`, for the test of a table that points at itself.
+- Task 6: the row panel's Open rows is a button under the sentence, left-aligned; the pending bar's stands with its other buttons and folds into its menu with them.
+- 1Password locked again before task 6's commit: its tree was staged, task 7 written beside it unstaged, and the two committed in order once signing worked.
+
 ---
 
 ## Before you start

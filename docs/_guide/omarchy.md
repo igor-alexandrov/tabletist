@@ -92,7 +92,7 @@ list instead.
 | Ctrl+Alt+Left and Right | Previous and next page |
 | `/` | Filter with a WHERE line |
 | Ctrl+F | Filter bar |
-| `gd` | Follow the selected foreign key |
+| `gd` | Follow the selected foreign key. On a row whose delete a foreign key refused, open the rows that hold it |
 | `v` then `y` | Copy the cell |
 | `R` | Reload |
 | Ctrl+C | Cancel the running query |
