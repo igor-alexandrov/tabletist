@@ -169,7 +169,9 @@ impl App {
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
-            notice: loaded_connections.problem,
+            // A file that could not be read, or one that was read for
+            // the last time: either is said once the window is up.
+            notice: loaded_connections.problem.or(loaded_connections.moved),
             host_keys,
             host_keys_error,
             titlebar: TitleBar::default(),
@@ -4496,7 +4498,11 @@ mod tests {
             )
         };
         let app = start();
-        assert_eq!(app.notice, None);
+        let notice = app.notice.clone().unwrap();
+        assert!(
+            notice.starts_with("Your connections are now kept in connections.toml."),
+            "{notice}"
+        );
         assert_eq!(app.connections.connections.len(), 14);
         // Both files are the backend's to write: the connections, and
         // when each last connected, which the old file kept with them.
@@ -4509,6 +4515,7 @@ mod tests {
         std::fs::create_dir_all(used.parent().unwrap()).unwrap();
         crate::util::save_json(&used, &app.connections.last_used).unwrap();
         let again = start();
+        assert_eq!(again.notice, None);
         assert_eq!(again.connections, app.connections);
         assert_eq!((saves_of(&again, &new), saves_of(&again, &used)), (0, 0));
         assert_eq!(std::fs::read_to_string(&old).unwrap(), fixture);

@@ -104,9 +104,13 @@ pub struct Loaded {
     /// Whether the times of last use are to be written: they came from
     /// `connections.json`, which kept them.
     pub save_last_used: bool,
-    /// Why `connections.toml` could not be read, as the user is told. The
-    /// file was kept aside and the store is empty.
+    /// Why the file of connections could not be read, as the user is
+    /// told. The store is empty.
     pub problem: Option<String>,
+    /// That the connections were read from `connections.json` and are now
+    /// kept in `connections.toml`, as the user is told. Said whenever the
+    /// older file is read, so that it never comes back unseen.
+    pub moved: Option<String>,
 }
 
 /// `connections.json` as either of its versions wrote it.
@@ -258,6 +262,28 @@ impl StoredConnections {
     }
 }
 
+/// A path's last part, as the user is told it.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The file a `connections.toml` that could not be read was kept as, when
+/// one is there: `connections.toml.bad`, or with a number after it, beside
+/// where the file is, which behind a link is where the link leads.
+fn kept_aside(path: &Path) -> Option<std::path::PathBuf> {
+    let file = crate::util::resolve_link(path).unwrap_or_else(|_| path.to_path_buf());
+    let kept = format!("{}.bad", file_name(&file));
+    let mut found: Vec<_> = std::fs::read_dir(file.parent()?)
+        .ok()?
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|beside| file_name(beside).starts_with(&kept))
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
 impl SavedConnections {
     /// The connections a start has: from `connections.toml`, else from an
     /// older version's `connections.json`, else none. It writes nothing:
@@ -271,7 +297,14 @@ impl SavedConnections {
         let text = match std::fs::read(&path) {
             Ok(bytes) => String::from_utf8(bytes).map_err(|error| error.to_string()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Self::load_legacy(&dirs.legacy_connections_file());
+                // Not there because it was kept aside: the older file is
+                // then no first start's, but what the connections were on
+                // the day they moved. It must not come back in their
+                // place, with the access of that day.
+                return match kept_aside(&path) {
+                    Some(aside) => Self::missing(&path, &aside, dirs),
+                    None => Self::load_legacy(&dirs.legacy_connections_file()),
+                };
             }
             Err(error) => Err(error.to_string()),
         };
@@ -295,15 +328,31 @@ impl SavedConnections {
         }
     }
 
+    /// What a start has when `connections.toml` is gone and `aside` is a
+    /// file it was kept as: no connection, said again at every start until
+    /// the file is mended or removed.
+    fn missing(path: &Path, aside: &Path, dirs: &AppDirs) -> Loaded {
+        Loaded {
+            store: Self {
+                connections: Vec::new(),
+                last_used: crate::util::load_json(&dirs.last_used_file()),
+            },
+            problem: Some(format!(
+                "{} is not there, and {} is: a file that could not be read was kept under \
+                 that name. Mend it and give it its name back, or remove it. No connection \
+                 was loaded.",
+                file_name(path),
+                file_name(aside)
+            )),
+            ..Loaded::default()
+        }
+    }
+
     /// What a start has of a file of connections that cannot be read: no
     /// connection, and the reason for the user, with where the file is
     /// now. It is kept aside, where that can be done.
     fn unreadable(path: &Path, problem: &str, last_used: BTreeMap<String, u64>) -> Loaded {
-        let name = |path: &Path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        };
+        let name = file_name;
         let now = match crate::util::keep_aside(path, problem) {
             Some(aside) => format!(
                 "It was kept beside itself as {}, and no connection was loaded.",
@@ -352,6 +401,12 @@ impl SavedConnections {
             save_last_used: !store.last_used.is_empty(),
             store,
             problem: None,
+            moved: Some(format!(
+                "Your connections are now kept in {}. They were read from {}, which is left \
+                 as it was.",
+                file::NAME,
+                file_name(path)
+            )),
         }
     }
 
@@ -675,6 +730,97 @@ mod tests {
         assert_eq!(mended.problem, None);
     }
 
+    /// A file that could not be read is kept aside, and then it is not
+    /// there. The older file beside it is what the connections were on the
+    /// day of the move: it must not come back in their place at the next
+    /// start, with the environments and the access of that day.
+    #[test]
+    fn the_older_file_does_not_come_back_for_a_file_kept_aside() {
+        let (dirs, _dir) = dirs();
+        let path = dirs.connections_file();
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
+        // Moved, then changed by its user, then broken by a typo.
+        let mut store = SavedConnections::load(&dirs).store;
+        let kept = store.connections[0].clone();
+        store.connections.truncate(1);
+        store.mark_used(&kept.id, 1_800_000_000);
+        store.save(&path).unwrap();
+        crate::util::save_json(&dirs.last_used_file(), &store.last_used).unwrap();
+        let good = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{good}oops\n")).unwrap();
+        let first = SavedConnections::load(&dirs);
+        assert!(first.problem.is_some());
+        assert!(first.store.connections.is_empty());
+        // The next start, and the one after: said again, and nothing of
+        // the older file read or written over the newer times.
+        for _ in 0..2 {
+            let next = SavedConnections::load(&dirs);
+            assert!(next.store.connections.is_empty());
+            assert!(!next.save && !next.save_last_used);
+            assert_eq!(next.store.last_used(&kept.id), Some(1_800_000_000));
+            assert_eq!(
+                next.problem.as_deref(),
+                Some(
+                    "connections.toml is not there, and connections.toml.bad is: a file that \
+                     could not be read was kept under that name. Mend it and give it its name \
+                     back, or remove it. No connection was loaded."
+                )
+            );
+        }
+        // Mended and given its name back, it is the user's one connection.
+        let aside = path.with_file_name("connections.toml.bad");
+        std::fs::write(&path, good).unwrap();
+        std::fs::remove_file(aside).unwrap();
+        let mended = SavedConnections::load(&dirs);
+        assert_eq!(mended.store, store);
+        assert_eq!(mended.problem, None);
+    }
+
+    /// The same behind a link, as a dotfiles manager leaves the file: it
+    /// is kept aside where the link leads, and the link stays.
+    #[test]
+    fn the_older_file_does_not_come_back_behind_a_link_either() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let (dirs, dir) = dirs();
+        let path = dirs.connections_file();
+        let target = dir.path().join("dotfiles").join("connections.toml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "version = 3\noops\n").unwrap();
+        crate::util::symlink_file(&target, &path);
+        let fixture = include_str!("../tests/fixtures/connections-v1.json");
+        std::fs::write(dirs.legacy_connections_file(), fixture).unwrap();
+        assert!(SavedConnections::load(&dirs).problem.is_some());
+        assert!(target.with_file_name("connections.toml.bad").exists());
+        let next = SavedConnections::load(&dirs);
+        assert!(next.store.connections.is_empty());
+        assert!(!next.save);
+        let problem = next.problem.unwrap();
+        assert!(
+            problem.starts_with("connections.toml is not there, and connections.toml.bad is"),
+            "{problem}"
+        );
+    }
+
+    /// What is wrong with a file is shown and logged. It never repeats a
+    /// value: a person may have written a password where the file asks
+    /// how the password is kept.
+    #[test]
+    fn what_is_said_of_a_file_does_not_repeat_what_was_written_in_it() {
+        let (dirs, _dir) = dirs();
+        let text = "version = 3\n\n[[connections]]\nname = \"A\"\ndriver = \"postgres\"\n\
+                    password = \"hunter2\"\n";
+        std::fs::write(dirs.connections_file(), text).unwrap();
+        let problem = SavedConnections::load(&dirs).problem.unwrap();
+        assert!(!problem.contains("hunter2"), "{problem}");
+        assert!(
+            problem.starts_with("connections.toml could not be read (line 6: "),
+            "{problem}"
+        );
+    }
+
     /// The new file wins: once it is there the old one is not read, even
     /// with other connections in it.
     #[test]
@@ -860,6 +1006,14 @@ mod tests {
         let first = SavedConnections::load(&dirs);
         assert!(first.save && first.save_last_used);
         assert_eq!(first.problem, None);
+        // The user is told once: the connections are where they were not.
+        assert_eq!(
+            first.moved.as_deref(),
+            Some(
+                "Your connections are now kept in connections.toml. They were read from \
+                 connections.json, which is left as it was."
+            )
+        );
         assert_eq!(first.store, self::fixture().0);
         // What the app then has the backend write.
         first.store.save(&dirs.connections_file()).unwrap();
@@ -871,6 +1025,7 @@ mod tests {
         let again = SavedConnections::load(&dirs);
         assert_eq!(again.store, first.store);
         assert!(!again.save && !again.save_last_used);
+        assert_eq!(again.moved, None);
         let kept = std::fs::read_to_string(dirs.legacy_connections_file()).unwrap();
         assert_eq!(kept, fixture);
     }

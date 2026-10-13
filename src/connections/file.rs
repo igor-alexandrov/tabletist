@@ -21,6 +21,9 @@ use crate::util::toml_string;
 /// `connections.json`.
 pub(super) const VERSION: u32 = 3;
 
+/// The file's name, as the user is told it.
+pub(super) const NAME: &str = "connections.toml";
+
 const HEADER: &str = "\
 # Tabletist's saved connections. No password is kept here: those are in the
 # system's keyring.
@@ -119,12 +122,32 @@ fn line_of(text: &str, offset: usize) -> usize {
     before.iter().filter(|byte| **byte == b'\n').count() + 1
 }
 
+/// The parser's word for what is wrong, without the value it quotes: a
+/// problem is logged and shown, and a person may have written a password
+/// where the file asks how the password is kept (`password = "hunter2"`).
+/// The line says where to look. A key's name is no value, and stays.
+fn without_values(message: &str) -> String {
+    let said = if message.starts_with("unknown variant ") || message.starts_with("invalid value: ")
+    {
+        "a value the key cannot have"
+    } else if message.starts_with("invalid type: ") {
+        "a value of the wrong kind"
+    } else {
+        return message.to_owned();
+    };
+    // The last one: a value may hold the same words.
+    match message.rsplit_once(", expected ") {
+        Some((_, expected)) => format!("{said}, expected {expected}"),
+        None => said.to_owned(),
+    }
+}
+
 /// Reads the file's text. Any error is the whole file's: nothing of a file
 /// that is wrong somewhere is used, so nothing of it is lost to a save.
 pub(super) fn read(text: &str) -> Result<Read, Problem> {
     let file: File = toml::from_str(text).map_err(|error| Problem {
         line: error.span().map(|span| line_of(text, span.start)),
-        what: error.message().to_owned(),
+        what: without_values(error.message()),
     })?;
     let whole = |what: String| Problem { line: None, what };
     if file.version > VERSION {
@@ -674,21 +697,33 @@ auth = "key-file"
             (
                 entry.replace("\"sqlite\"", "\"oracle\""),
                 6,
-                "unknown variant `oracle`",
+                "a value the key cannot have, expected one of `postgres`",
             ),
             (
                 format!("{entry}environment = \"test\"\n"),
                 7,
-                "unknown variant `test`",
+                "a value the key cannot have, expected one of `local`",
             ),
-            (format!("{entry}tls = \"on\"\n"), 7, "unknown variant `on`"),
+            (
+                format!("{entry}tls = \"on\"\n"),
+                7,
+                "a value the key cannot have, expected one of `disable`",
+            ),
             (
                 format!("{entry}password = \"hunter2\"\n"),
                 7,
-                "unknown variant `hunter2`",
+                "a value the key cannot have, expected one of `none`, `keyring`, `ask`",
             ),
-            (format!("{entry}port = 70000\n"), 7, "invalid value"),
-            (format!("{entry}read_only = \"yes\"\n"), 7, "invalid type"),
+            (
+                format!("{entry}port = 70000\n"),
+                7,
+                "a value the key cannot have, expected u16",
+            ),
+            (
+                format!("{entry}read_only = \"yes\"\n"),
+                7,
+                "a value of the wrong kind, expected a boolean",
+            ),
             // A key that must be there.
             (
                 "\n[[connections]]\nid = \"a\"\ndriver = \"sqlite\"\n".to_owned(),
@@ -711,6 +746,34 @@ auth = "key-file"
                 "{problem}"
             );
         }
+    }
+
+    /// A person may well write a password where the file asks how the
+    /// password is kept. What is wrong with the file is logged and shown,
+    /// so it says where and never what was written.
+    #[test]
+    fn a_value_that_is_wrong_is_never_repeated() {
+        let entry = "\n[[connections]]\nid = \"a\"\nname = \"A\"\ndriver = \"postgres\"\n";
+        for line in [
+            "password = \"hunter2\"",
+            "ssh_secret = \"hunter2\"",
+            "password = hunter2",
+            "password = 'hunter2'",
+            "port = \"hunter2\"",
+            "read_only = \"hunter2\"",
+            "tls = \"hunter2\"",
+            "environment = \"hunter2\"",
+            "password = [\"hunter2\"]",
+            "password = { hunter2 = true }",
+        ] {
+            let problem = problem(&format!("{entry}{line}\n"));
+            let said = problem.to_string();
+            assert!(!said.contains("hunter2"), "{line}: {said}");
+            assert_eq!(problem.line, Some(7), "{line}: {said}");
+        }
+        // And as a driver's name, which is on another line.
+        let said = problem(&entry.replace("postgres", "hunter2")).to_string();
+        assert!(!said.contains("hunter2"), "{said}");
     }
 
     #[test]

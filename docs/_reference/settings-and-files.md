@@ -151,13 +151,19 @@ cannot have, is an error and not something it skips: a line such as
 file cannot be read, Tabletist starts with no connections, says which line
 is wrong, and keeps the file beside itself as `connections.toml.bad` (or
 `.bad.1` when that name is taken: the notice says which). Fix the line and
-rename the file back. When each connection last connected is kept.
+rename the file back. When each connection last connected is kept. What
+Tabletist says of the line never repeats a value written on it.
+
+Until you rename the file back or remove it, every start says that it is
+there, and loads no connection.
 
 Versions before this one kept the connections in `connections.json`.
 Tabletist reads that file once, at the first start that finds no
-`connections.toml`, writes the two files above from it, and leaves it
-where it is. If that file cannot be read, it is kept aside in the same
-way and nothing is written for it, so it is read again once it is mended.
+`connections.toml`, writes the two files above from it, tells you, and
+leaves it where it is. It is not read in place of a `connections.toml`
+that was kept aside. If the old file itself cannot be read, it is kept
+aside in the same way and nothing is written for it, so it is read again
+once it is mended.
 
 ## Command-line options
 
