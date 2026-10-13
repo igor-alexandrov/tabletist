@@ -82,6 +82,38 @@ pub struct RowDelete {
     pub key: Vec<(String, Value)>,
 }
 
+/// How many rows one `DELETE` of a save names, at most.
+pub const MAX_RUN: usize = 100;
+
+/// The save's deletes, cut into runs in their order: neighbours whose
+/// keys name the same columns in the same order, at most [`MAX_RUN`] of
+/// them, go in one statement ([`crate::Dialect::delete_run`]). `built`
+/// says of each row whether its own statement could be built
+/// ([`crate::Dialect::delete_row`]): one that could not is a run of its
+/// own, since no statement holds it. Every row is in exactly one run.
+pub fn delete_runs(deletes: &[RowDelete], built: &[bool]) -> Vec<std::ops::Range<usize>> {
+    let same_columns = |a: &RowDelete, b: &RowDelete| {
+        a.key.len() == b.key.len() && a.key.iter().zip(&b.key).all(|(a, b)| a.0 == b.0)
+    };
+    let sent = |row: usize| built.get(row).copied().unwrap_or(false);
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for (row, delete) in deletes.iter().enumerate() {
+        let joins = runs.last().is_some_and(|run| {
+            sent(row)
+                && sent(run.start)
+                && run.len() < MAX_RUN
+                && deletes
+                    .get(run.start)
+                    .is_some_and(|first| same_columns(first, delete))
+        });
+        match runs.last_mut() {
+            Some(run) if joins => run.end = row + 1,
+            _ => runs.push(row..row + 1),
+        }
+    }
+    runs
+}
+
 /// What a cell becomes: NULL, text the database turns into the column's
 /// type, or what the database makes itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -495,6 +527,37 @@ pub(crate) fn changed_since_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn by(columns: &[&str], id: i64) -> RowDelete {
+        RowDelete {
+            key: columns
+                .iter()
+                .map(|column| ((*column).to_owned(), Value::Int(id)))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn deletes_are_cut_into_runs_of_neighbours_with_the_same_key() {
+        let rows: Vec<RowDelete> = (0..250).map(|id| by(&["id"], id)).collect();
+        let built = vec![true; rows.len()];
+        assert_eq!(delete_runs(&rows, &built), [0..100, 100..200, 200..250]);
+        // A key of other columns begins a run, and so does one in another
+        // order.
+        let rows = [
+            by(&["id"], 1),
+            by(&["id"], 2),
+            by(&["book_id", "author_id"], 3),
+            by(&["author_id", "book_id"], 4),
+            by(&["author_id", "book_id"], 5),
+        ];
+        assert_eq!(delete_runs(&rows, &[true; 5]), [0..2, 2..3, 3..5]);
+        // A row that was not built stands alone, between two runs.
+        let rows: Vec<RowDelete> = (0..5).map(|id| by(&["id"], id)).collect();
+        let built = [true, true, false, true, true];
+        assert_eq!(delete_runs(&rows, &built), [0..2, 2..3, 3..5]);
+        assert!(delete_runs(&[], &[]).is_empty());
+    }
 
     fn cell(column: &str) -> CellChange {
         CellChange {
