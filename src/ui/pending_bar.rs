@@ -321,6 +321,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let blocked = app
         .save_blocked(tab, id)
         .map(|block| block_text(block, counts.to_fix, locale));
+    // The row the bar's line is of, where its delete was refused and the
+    // rows that hold it were counted.
+    let held = match &edits.note {
+        Some(Note::FailedDelete { row, .. }) => {
+            let doomed = edits.deleted.get(row);
+            doomed
+                .and_then(|doomed| doomed.holder.as_ref())
+                .map(|_| *row)
+        }
+        _ => None,
+    };
+    let open_rows = gettext(locale, "Open rows");
     // What the tab's new rows still need: the column, or how many.
     let lacking = app.lacking(tab, id);
     let needs = match lacking.as_slice() {
@@ -404,6 +416,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             // One button under two names, so the keyboard stays on it.
             let review_name = if reviewing { &hide } else { &review };
             let review_button = || ButtonSpec::new(review_name).quiet().keyed("review-sql");
+            // The rows that hold a row whose delete was refused, while the
+            // bar says who they are.
+            let open_button = || ButtonSpec::new(&open_rows).quiet();
             let cancel_button = || ButtonSpec::new(&cancel).label(&cancel_save).quiet();
             let room = full.width() - 2.0 * SIDE;
             let lead = DOT + 10.0;
@@ -411,6 +426,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 let mut beside = BETWEEN + ButtonSpec::new(&discard).width(ui, &look);
                 if pending {
                     beside += BETWEEN + review_button().width(ui, &look);
+                }
+                if held.is_some() {
+                    beside += BETWEEN + open_button().width(ui, &look);
                 }
                 if saving {
                     beside += BETWEEN + cancel_button().width(ui, &look);
@@ -470,6 +488,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     let action = Action::ReviewEdits { tab, id, show };
                     rows.push((row(review_name, None), action));
                 }
+                if let Some(row_held) = held {
+                    let action = Action::OpenHolders {
+                        tab,
+                        id,
+                        row: row_held,
+                    };
+                    rows.push((row(&open_rows, None), action));
+                }
                 // The reducer ignores it under a save: it is not offered.
                 let unoffered = saving.then_some(&*busy);
                 rows.push((row(&discard, unoffered), Action::DiscardEdits { tab, id }));
@@ -506,6 +532,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     let at = place(ui, &button);
                     if button.show_at(ui, at, &look, &palette).clicked() {
                         actions.push(Action::ReviewEdits { tab, id, show });
+                    }
+                }
+                if let Some(row) = held {
+                    let button = open_button();
+                    let at = place(ui, &button);
+                    if button.show_at(ui, at, &look, &palette).clicked() {
+                        actions.push(Action::OpenHolders { tab, id, row });
                     }
                 }
                 if saving {

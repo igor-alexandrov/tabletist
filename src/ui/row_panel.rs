@@ -943,11 +943,26 @@ fn draw(
                 let said = crate::ui::pending_bar::database_said(error);
                 top = form_note(ui, full, top, &said, &look, &palette);
             }
-            // And who holds the row, once that was counted.
+            // And who holds the row, once that was counted, with what
+            // opens those rows. The terminal's key for it is on its error
+            // line.
             if let Some(holder) = doomed.and_then(|doomed| doomed.holder.as_ref()) {
                 let own = |words: &str| look.label(words);
                 let said = crate::ui::pending_bar::holder_said(holder, locale, own);
                 top = form_note(ui, full, top, &said, &look, &palette);
+                if !look.terminal {
+                    let word = gettext(locale, "Open rows");
+                    let button = widgets::ButtonSpec::new(&word);
+                    let width = button.width(ui, &look);
+                    let place =
+                        Rect::from_min_size(pos2(full.left() + side, top + 6.0), vec2(width, 22.0));
+                    top = place.bottom() + 8.0;
+                    widgets::hline(ui, full.x_range(), top - 0.5, divider);
+                    if button.show_at(ui, place, &look, &palette).clicked() {
+                        let row = cell.row;
+                        actions.push(Action::OpenHolders { tab, id, row });
+                    }
+                }
             }
             // A copy says what it was made as at the form's top, above
             // its fields and what a table without a key says.

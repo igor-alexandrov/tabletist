@@ -1218,8 +1218,15 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
                         let own = |words: &str| look.label(words);
                         super::pending_bar::holder_said(holder, locale, own)
                     });
+                // With the key that opens those rows.
+                let key = crate::ui::keys::written(
+                    ui.ctx(),
+                    &look,
+                    crate::keymap::Command::OpenReferencedRow,
+                );
+                let open = look.label(&gettext(locale, "open rows"));
                 return Some(match held {
-                    Some(held) => format!("! {number}:  {failure} · {held}"),
+                    Some(held) => format!("! {number}:  {failure} · {held} · {key} {open}"),
                     None => format!("! {number}:  {failure}"),
                 });
             }

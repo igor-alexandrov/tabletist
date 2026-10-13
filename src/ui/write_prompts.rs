@@ -100,7 +100,8 @@ fn doing(held: &Held, terminal: bool) -> &'static str {
             Action::ApplyFilters { .. }
             | Action::ClearFilters { .. }
             | Action::DropFilter { .. }
-            | Action::FollowForeignKey { .. } => "filtering",
+            | Action::FollowForeignKey { .. }
+            | Action::OpenFiltered { .. } => "filtering",
             Action::SwitchDatabase { .. } => "switching database",
             Action::CloseConnTab(_) | Action::Disconnect(_) | Action::Connect { .. } => {
                 "disconnecting"

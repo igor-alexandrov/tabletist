@@ -1925,7 +1925,21 @@ fn letters(
                 }
             }
             (Some(Command::OpenReferencedRow), Some(object_tab)) => {
-                actions.push(Action::FollowSelectedKey { tab, object_tab });
+                // On a row whose delete a foreign key refused, the rows
+                // that hold it: what the error line names the key for.
+                let held = app.workspace(tab).and_then(|workspace| {
+                    let object = workspace.object_tab(object_tab)?;
+                    let row = object.selection?.row;
+                    let doomed = object.edits.deleted.get(&row)?;
+                    doomed.holder.as_ref().map(|_| row)
+                });
+                match held {
+                    Some(row) => {
+                        let id = object_tab;
+                        actions.push(Action::OpenHolders { tab, id, row });
+                    }
+                    None => actions.push(Action::FollowSelectedKey { tab, object_tab }),
+                }
             }
             (Some(Command::CopyCells), Some(_)) => {
                 if let Some(text) = app.copy_text(false) {

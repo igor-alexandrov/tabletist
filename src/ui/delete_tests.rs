@@ -1027,6 +1027,126 @@ fn the_terminal_says_who_holds_a_row() {
     let tree = harness.settle();
     let labels = crate::testing::labels(&tree);
     let line = labels.iter().find(|label| label.starts_with("! 1: "));
-    let said = "1 row in book_reviews still points at this row";
-    assert!(line.is_some_and(|label| label.contains(said)), "{labels:?}");
+    // With the key that opens them.
+    let said = "1 row in book_reviews still points at this row · gd open rows";
+    assert!(
+        line.is_some_and(|label| label.ends_with(said)),
+        "{labels:?}"
+    );
+}
+
+/// A row of `publishers` whose delete was refused, held by three rows of
+/// `book_reviews`.
+fn held_publisher(look: Look) -> (Harness, ConnTabId, TabId) {
+    let (mut harness, tab, id) = publishers_in(look);
+    mark(&mut harness, tab, id, 0);
+    refuse(&mut harness, tab, id, refused("787", None, None));
+    let (request, _) = counts_asked(&harness).last().cloned().unwrap();
+    answer_count(&mut harness, tab, request, 3);
+    (harness, tab, id)
+}
+
+/// The table the workspace has in front, and its filter rows.
+fn in_front(harness: &Harness, tab: ConnTabId) -> (String, Vec<(String, String)>) {
+    let workspace = harness.app.workspace(tab).unwrap();
+    let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
+    let rows = object.filter.rows.iter();
+    (
+        object.object.name.clone(),
+        rows.map(|row| (row.column.clone(), row.value.clone()))
+            .collect(),
+    )
+}
+
+fn the_publishers_reviews() -> (String, Vec<(String, String)>) {
+    let by = ("publisher_id".to_owned(), "9100000000000000001".to_owned());
+    ("book_reviews".to_owned(), vec![by])
+}
+
+/// Spec 5: Open rows, in the pending bar, opens the referencing table
+/// filtered to the rows that point at the row. The publishers' tab keeps
+/// its mark.
+#[test]
+fn open_rows_in_the_bar_opens_the_rows_that_hold_the_row() {
+    for look in desktop() {
+        let (mut harness, tab, id) = held_publisher(look);
+        // Only the bar's: the row panel has one too.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.settle();
+        assert_eq!(button(&mut harness, "Open rows"), (true, None));
+        harness.click("Open rows");
+        harness.settle();
+        assert_eq!(in_front(&harness, tab), the_publishers_reviews());
+        assert!(edits(&harness, tab, id).deleted.contains_key(&0));
+    }
+}
+
+/// And the button under the sentence in the row panel does.
+#[test]
+fn open_rows_in_the_row_panel_opens_the_rows_that_hold_the_row() {
+    let (mut harness, tab, id) = held_publisher(Look::macos());
+    let row = 0;
+    harness.app.apply(Action::OpenHolders { tab, id, row });
+    harness.settle();
+    assert_eq!(in_front(&harness, tab), the_publishers_reviews());
+    // The panel names it, beside the bar's.
+    let (mut harness, _tab, _id) = held_publisher(Look::macos());
+    let tree = harness.settle();
+    let named = |(_, node): &&(egui::accesskit::NodeId, egui::accesskit::Node)| {
+        node.label() == Some("Open rows")
+    };
+    assert_eq!(tree.nodes.iter().filter(named).count(), 2);
+}
+
+/// In the Omarchy look `gd` on the row opens them.
+#[test]
+fn gd_on_a_refused_row_opens_the_rows_that_hold_it() {
+    let (mut harness, tab, _id) = held_publisher(Look::omarchy());
+    type_key(&mut harness, Key::G, "g");
+    type_key(&mut harness, Key::D, "d");
+    assert_eq!(in_front(&harness, tab), the_publishers_reviews());
+}
+
+/// A row that is not held has nothing to open: the action does nothing,
+/// and no button offers it.
+#[test]
+fn a_row_nothing_holds_has_no_rows_to_open() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    mark(&mut harness, tab, id, 0);
+    let row = 0;
+    harness.app.apply(Action::OpenHolders { tab, id, row });
+    harness.settle();
+    assert_eq!(in_front(&harness, tab).0, "publishers");
+    assert!(!harness.has("Open rows"));
+}
+
+/// Where the table points at itself the rows that hold a row are in the
+/// tab that has the mark: opening them would drop its page, so the app
+/// asks first, as it does for any tab that holds changes.
+#[test]
+fn open_rows_asks_first_where_the_rows_are_the_tabs_own() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let (tab, id) = harness.genres();
+    harness.settle();
+    // Fiction, which Crime stands under.
+    mark(&mut harness, tab, id, 0);
+    refuse(&mut harness, tab, id, refused("787", None, None));
+    let sent = harness.app.backend.sent.iter();
+    let asked = sent.filter_map(|command| match command {
+        Command::CountRows { request, query, .. } if !query.filters.is_empty() => Some(*request),
+        _ => None,
+    });
+    let mut asked = asked;
+    let request = asked.next_back().expect("who holds Fiction was asked");
+    answer_count(&mut harness, tab, request, 1);
+    let row = 0;
+    harness.app.apply(Action::OpenHolders { tab, id, row });
+    harness.settle();
+    assert!(matches!(
+        harness.app.dialog,
+        Some(crate::model::Dialog::Leave(_))
+    ));
+    // Nothing was dropped: the mark and its page stand.
+    assert!(edits(&harness, tab, id).deleted.contains_key(&0));
 }

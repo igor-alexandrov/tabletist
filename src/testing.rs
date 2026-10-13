@@ -877,6 +877,16 @@ pub fn genres_structure() -> tabletist_db::Structure {
             ref_columns: vec!["id".into()],
             ..tabletist_db::ForeignKeyInfo::default()
         }],
+        // The same key, seen from the row it points at: it holds a genre
+        // that has genres under it.
+        referenced_by: vec![tabletist_db::ReferencingKey {
+            name: None,
+            schema: "main".into(),
+            table: "genres".into(),
+            columns: vec!["parent_id".into()],
+            ref_columns: vec!["id".into()],
+            on_delete: "NO ACTION".into(),
+        }],
         ..tabletist_db::Structure::default()
     }
 }

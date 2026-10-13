@@ -617,7 +617,7 @@ impl App {
                         ))
                     });
                 if let Some((object, column, value)) = target {
-                    self.follow_foreign_key(tab, object, column, value);
+                    self.follow_foreign_key(tab, object, vec![(column, value)]);
                 }
             }
             Action::FocusWhere(tab) => {
@@ -665,7 +665,20 @@ impl App {
                 object,
                 column,
                 value,
-            } => self.follow_foreign_key(tab, object, column, value),
+            } => self.follow_foreign_key(tab, object, vec![(column, value)]),
+            Action::OpenFiltered { tab, object, by } => {
+                self.follow_foreign_key(tab, object, by);
+            }
+            Action::OpenHolders { tab, id, row } => {
+                let holder = self
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(id))
+                    .and_then(|object| object.edits.deleted.get(&row)?.holder.clone());
+                if let Some(holder) = holder {
+                    let by = holder.columns.into_iter().zip(holder.values).collect();
+                    self.follow_foreign_key(tab, holder.table, by);
+                }
+            }
             Action::RefreshTree(tab) => self.refresh_tree(tab),
             Action::OpenObject {
                 tab,
@@ -3634,15 +3647,10 @@ impl App {
         self.fetch_rows(tab, new_id);
     }
 
-    /// Opens `object` filtered to the rows whose `column` is `value`: where
-    /// a foreign key points.
-    fn follow_foreign_key(
-        &mut self,
-        tab: ConnTabId,
-        object: ObjectRef,
-        column: String,
-        value: String,
-    ) {
+    /// Opens `object` filtered to the rows that hold each value of `by` in
+    /// its column: where a foreign key points, or the rows that point at a
+    /// row.
+    fn follow_foreign_key(&mut self, tab: ConnTabId, object: ObjectRef, by: Vec<(String, String)>) {
         let kind = self
             .workspace(tab)
             .and_then(|workspace| workspace.tree.object_info(&object))
@@ -3662,21 +3670,19 @@ impl App {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|opened| opened.edits.holds());
         if holds {
-            let follow = Action::FollowForeignKey {
-                tab,
-                object,
-                column,
-                value,
-            };
+            let follow = Action::OpenFiltered { tab, object, by };
             self.hold(Held::Action(Box::new(follow)), vec![(tab, id)]);
             return;
         }
         if let Some(opened) = self.object_tab_mut(tab, id) {
-            opened.filter.rows = vec![crate::model::FilterRow {
-                column,
-                op: tabletist_db::FilterOp::Eq,
-                value,
-            }];
+            let rows = by
+                .into_iter()
+                .map(|(column, value)| crate::model::FilterRow {
+                    column,
+                    op: tabletist_db::FilterOp::Eq,
+                    value,
+                });
+            opened.filter.rows = rows.collect();
         }
         self.apply_filters(tab, id);
         if let Some(workspace) = self.workspace_mut(tab) {

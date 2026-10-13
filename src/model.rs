@@ -170,6 +170,15 @@ pub enum Action {
         column: String,
         value: String,
     },
+    /// Open a table filtered to the rows that hold each value of `by` in
+    /// its column: what following a key comes to, held while the table's
+    /// tab has changes to ask about. The rows that hold a row are found by
+    /// a key of any number of columns.
+    OpenFiltered {
+        tab: ConnTabId,
+        object: ObjectRef,
+        by: Vec<(String, String)>,
+    },
     RefreshTree(ConnTabId),
     OpenObject {
         tab: ConnTabId,
@@ -411,6 +420,13 @@ pub enum Action {
     RestoreRow {
         tab: ConnTabId,
         id: TabId,
+    },
+    /// Open the rows that hold the page's row `row`, whose delete a
+    /// foreign key refused: their table, filtered to them.
+    OpenHolders {
+        tab: ConnTabId,
+        id: TabId,
+        row: usize,
     },
     /// Put back a cell's loaded value: `cell`, or the active cell where
     /// none is named, as the keys ask.
