@@ -299,9 +299,18 @@ mod sqlite {
 
     /// A Bookshop of the test's own, on a session that cannot write.
     pub(super) async fn bookshop() -> (Connection, tempfile::TempDir) {
+        bookshop_with("").await
+    }
+
+    /// A Bookshop to which `more` was added before its session opened.
+    async fn bookshop_with(more: &str) -> (Connection, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bookshop.db");
         tabletist_db::fixtures::write_sqlite_bookshop(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(more)
+            .unwrap();
         let connection = Connection::connect_with(
             &ConnectSpec::sqlite(&path),
             &Secrets::default(),
@@ -367,6 +376,100 @@ mod sqlite {
         )
         .await;
         assert_eq!(found, [[text("where?"), text("Lanterns")]]);
+    }
+
+    /// The check reads an agent's text, and a view's text is the
+    /// database's. SQLite reads both, and with the session's schema not
+    /// trusted it refuses a view that reads a pragma or calls a function
+    /// that is not harmless, for an agent as for anyone. So a view is no
+    /// way around what an agent's own statement may not do.
+    #[tokio::test]
+    async fn what_a_view_may_not_do_is_sqlites_to_refuse() {
+        let (connection, _dir) = bookshop_with(
+            "CREATE VIEW customer_columns AS SELECT name FROM pragma_table_info('customers');
+             CREATE VIEW tokenizers AS SELECT fts3_tokenizer('simple') AS found;",
+        )
+        .await;
+        for (sql, what) in [
+            ("SELECT name FROM customer_columns", "pragma_table_info"),
+            ("SELECT found FROM tokenizers", "fts3_tokenizer"),
+            (
+                "SELECT title FROM books WHERE id IN (SELECT count(*) FROM customer_columns)",
+                "pragma_table_info",
+            ),
+        ] {
+            // The text names a view and nothing else, so the check passes.
+            let error = asked(&connection, sql, &[], LIMITS).await.unwrap_err();
+            let said = error.to_string();
+            assert!(said.starts_with("unsafe use of "), "{sql}: {said}");
+            assert!(said.contains(what), "{sql}: {said}");
+        }
+        // The session reads on, and nothing changed.
+        the_bookshop_is_stocked(&connection, "sqlite").await;
+    }
+
+    /// The fence lists what a read does. SQLite's own full-text and R*Tree
+    /// tables do more than read columns when they are first opened, and
+    /// are read all the same.
+    #[tokio::test]
+    async fn sqlites_own_virtual_tables_are_read_for_an_agent() {
+        let (connection, _dir) = bookshop_with(
+            "CREATE VIRTUAL TABLE blurbs USING fts5(body);
+             INSERT INTO blurbs VALUES ('A salt road to the sea'), ('Notes on bread');
+             CREATE VIRTUAL TABLE shelves USING rtree(id, left, right);
+             INSERT INTO shelves VALUES (1, 0, 2), (2, 5, 9);",
+        )
+        .await;
+        let found = read(
+            &connection,
+            "SELECT body FROM blurbs WHERE blurbs MATCH ?",
+            &[Param::Text("salt".into())],
+            "sqlite",
+        )
+        .await;
+        assert_eq!(found, [[text("A salt road to the sea")]]);
+        let found = read(
+            &connection,
+            "SELECT id FROM shelves WHERE left >= ? ORDER BY id",
+            &[Param::Int(1)],
+            "sqlite",
+        )
+        .await;
+        assert_eq!(found, [[Value::Int(2)]]);
+    }
+
+    /// What an ordinary read asks of SQLite beside its tables' columns is
+    /// on the fence's list.
+    #[tokio::test]
+    async fn the_shapes_of_a_read_pass_sqlites_own_reading() {
+        let (connection, _dir) = bookshop().await;
+        for (sql, rows) in [
+            // A view, and an aggregate over a join.
+            ("SELECT email FROM recent_orders", 7),
+            (
+                "SELECT a.name, count(*), max(b.price) FROM books b \
+                 JOIN authors a ON a.id = b.author_id GROUP BY a.name",
+                6,
+            ),
+            (
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) \
+                 SELECT i FROM n",
+                3,
+            ),
+            ("SELECT value FROM json_each('[1, 2]')", 2),
+            (
+                "SELECT title FROM books WHERE title LIKE 'The %' ORDER BY title COLLATE NOCASE",
+                3,
+            ),
+            (
+                "SELECT lower(title), length(title), date(published) FROM books WHERE id = 3",
+                1,
+            ),
+            ("EXPLAIN QUERY PLAN SELECT title FROM books", 1),
+        ] {
+            let answered = read(&connection, sql, &[], "sqlite").await;
+            assert_eq!(answered.len(), rows, "{sql}");
+        }
     }
 
     /// SQLite does not ask the progress handler while it waits for another

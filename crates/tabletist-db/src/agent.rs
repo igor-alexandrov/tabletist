@@ -626,6 +626,11 @@ fn words_read(dialect: Dialect, pieces: &[Piece]) -> Result<(), Refusal> {
             },
             Piece::Open | Piece::Other => continue,
         };
+        // A pragma read as a table is one by its name alone, whatever its
+        // quotes: SQLite asks for no parenthesis after it.
+        if pragma_table(dialect, text) {
+            return Err(Refusal::FunctionNotAllowed(text.clone()));
+        }
         let next = pieces.get(index + 1);
         // A name with a parenthesis after it is a call, in an expression
         // or in a table's place, whatever its quotes.
@@ -670,9 +675,23 @@ fn locks_after(next: Option<&Piece>) -> bool {
     )
 }
 
+/// Whether `name` is one of SQLite's table-valued pragmas,
+/// `pragma_table_info` and the rest. A `PRAGMA` statement is refused, and
+/// this is its other spelling, which SQLite reads as a table: in a `FROM`
+/// with no parenthesis after it, its argument a condition on the hidden
+/// column `arg`. So a column that is named so is refused with it.
+fn pragma_table(dialect: Dialect, name: &str) -> bool {
+    match dialect {
+        Dialect::Sqlite => name
+            .get(..7)
+            .is_some_and(|start| start.eq_ignore_ascii_case("pragma_")),
+        Dialect::Postgres | Dialect::MySql => false,
+    }
+}
+
 /// Refuses a function on the dialect's list, by its name without its
 /// schema: `pg_catalog.pg_sleep(1)` is `pg_sleep`.
-fn function_allowed(dialect: Dialect, name: &str) -> Result<(), Refusal> {
+pub(crate) fn function_allowed(dialect: Dialect, name: &str) -> Result<(), Refusal> {
     let lower = name.to_ascii_lowercase();
     let (names, prefixes) = effects(dialect);
     if names.contains(&lower.as_str()) || prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
@@ -779,10 +798,9 @@ fn effects(dialect: Dialect) -> (&'static [&'static str], &'static [&'static str
                 "edit",
                 "fts3_tokenizer",
             ],
-            // The table-valued forms of the pragmas, `pragma_table_info`
-            // and the rest: a `PRAGMA` statement is refused, and so is its
-            // other spelling.
-            &["pragma_"],
+            // The table-valued pragmas are `pragma_table`'s: they need no
+            // parenthesis to be read.
+            &[],
         ),
     }
 }
@@ -1719,6 +1737,54 @@ mod tests {
             (Dialect::Sqlite, "SELECT 'load_extension(''x'')'"),
         ] {
             assert!(read(dialect, sql).is_ok(), "{dialect:?}: {sql}");
+        }
+    }
+
+    /// SQLite reads a table-valued pragma as a table: no parenthesis has to
+    /// follow its name, and its argument can be a condition on the hidden
+    /// column `arg`. So the name is refused wherever it stands.
+    #[test]
+    fn a_pragma_read_as_a_table_needs_no_parenthesis_to_be_refused() {
+        for (sql, name) in [
+            (
+                "SELECT * FROM pragma_table_info WHERE arg = 'customers'",
+                "pragma_table_info",
+            ),
+            (
+                "SELECT name FROM pragma_database_list",
+                "pragma_database_list",
+            ),
+            ("SELECT * FROM PRAGMA_Optimize", "PRAGMA_Optimize"),
+            (
+                "SELECT * FROM main.pragma_integrity_check",
+                "pragma_integrity_check",
+            ),
+            // In quotes it is the same table.
+            (
+                "SELECT * FROM \"pragma_table_info\" WHERE arg = 'customers'",
+                "pragma_table_info",
+            ),
+            (
+                "SELECT * FROM [pragma_function_list]",
+                "pragma_function_list",
+            ),
+            (
+                "SELECT title FROM books WHERE id IN (SELECT cid FROM pragma_table_info)",
+                "pragma_table_info",
+            ),
+        ] {
+            assert_eq!(
+                refused(Dialect::Sqlite, sql),
+                Refusal::FunctionNotAllowed(name.into()),
+                "{sql}"
+            );
+        }
+        // The same letters in a string are text, and the other two
+        // databases have no such tables.
+        assert!(read(Dialect::Sqlite, "SELECT 'pragma_table_info'").is_ok());
+        for dialect in [Dialect::Postgres, Dialect::MySql] {
+            let sql = "SELECT cid FROM pragma_table_info";
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}");
         }
     }
 

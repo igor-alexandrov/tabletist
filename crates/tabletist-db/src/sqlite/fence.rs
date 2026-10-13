@@ -1,10 +1,11 @@
 //! The fences around text that is not the app's own. SQLite asks a
 //! connection's authorizer whenever it prepares a statement, after its own
-//! parse, so what a SQL editor script or a table's raw WHERE may do is
-//! decided here on what SQLite read, not on what our tokenizer made of the
-//! text. `Conn::open` installs the authorizer; a fence goes up around a
-//! script's statement and around a page or count query, and is down for
-//! everything the app runs itself.
+//! parse, so what a SQL editor script, a table's raw WHERE or an agent's
+//! statement may do is decided here on what SQLite read, not on what our
+//! tokenizer made of the text. `Conn::open` installs the authorizer; a
+//! fence goes up around a script's statement, around a page or count query
+//! and around an agent's statement, and is down for everything the app
+//! runs itself.
 //!
 //! The authorizer is `tabletist-sqlite-ffi`'s, not rusqlite's, which panics
 //! on a name that is not UTF-8, whatever the fence. Here such a name arrives
@@ -12,11 +13,14 @@
 //! for a name a fence refuses: those are ASCII, and so is every pragma's
 //! name that SQLite knows.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rusqlite::ffi;
 use tabletist_sqlite_ffi::{Action, Authorization};
+
+use crate::Dialect;
+use crate::agent::{Refusal, function_allowed};
 
 /// Whose text SQLite is preparing, which decides what it may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +32,8 @@ pub(super) enum Fence {
     Script = 1,
     /// A table's page or count, which holds the raw WHERE.
     Filter = 2,
+    /// A statement an agent sent, which passed `agent::check_read`.
+    Agent = 3,
 }
 
 /// What SQLite may do for text behind `fence`. Asked after SQLite's own
@@ -81,6 +87,29 @@ pub(super) fn authorize(fence: Fence, action: &Action<'_>) -> Authorization {
             }
             _ => true,
         },
+        // An agent's statement is one read, by a check that reads its
+        // text. SQLite reads it again here, and what the two make of it
+        // can differ: a view of the database's own can call a function or
+        // read a pragma that the text never names. So this fence lists
+        // what a read does and refuses the rest, where the other two list
+        // what to refuse.
+        Fence::Agent => match action.code {
+            ffi::SQLITE_SELECT | ffi::SQLITE_READ | ffi::SQLITE_RECURSIVE => true,
+            // The check's list of functions with effects, asked of the
+            // names SQLite found.
+            ffi::SQLITE_FUNCTION => action
+                .second
+                .is_some_and(|name| function_allowed(Dialect::Sqlite, name).is_ok()),
+            // What FTS5 asks for as it reads, and no other pragma: one
+            // read as a table (`pragma_table_info`) arrives here too, with
+            // its argument as its value or with none.
+            ffi::SQLITE_PRAGMA => action.second.is_none() && pragma_is(action, "data_version"),
+            // The write statements R*Tree prepares when a table connects,
+            // which a SELECT does not run. Running one is `query_only`'s
+            // to refuse, as behind a filter.
+            ffi::SQLITE_INSERT | ffi::SQLITE_UPDATE | ffi::SQLITE_DELETE => true,
+            _ => false,
+        },
     };
     if allowed {
         Authorization::Allow
@@ -97,29 +126,86 @@ fn pragma_is(action: &Action<'_>, name: &str) -> bool {
         .is_some_and(|asked| asked.eq_ignore_ascii_case(name))
 }
 
-/// Which fence is up, shared with the authorizer SQLite calls.
+/// What an agent is told of an action its fence denied: a function by its
+/// name, a pragma by its own, and the rest by what kind of statement asks
+/// for it.
+fn refusal(action: &Action<'_>) -> Refusal {
+    let what = match (action.code, action.first, action.second) {
+        (ffi::SQLITE_FUNCTION, _, Some(name)) => {
+            return Refusal::FunctionNotAllowed(name.to_owned());
+        }
+        (ffi::SQLITE_FUNCTION, _, None) => "a function without a name".to_owned(),
+        (ffi::SQLITE_PRAGMA, Some(name), _) => format!("PRAGMA {name}"),
+        (ffi::SQLITE_PRAGMA, None, _) => "a PRAGMA".to_owned(),
+        (ffi::SQLITE_ATTACH, ..) => "ATTACH".to_owned(),
+        (ffi::SQLITE_DETACH, ..) => "DETACH".to_owned(),
+        (ffi::SQLITE_TRANSACTION | ffi::SQLITE_SAVEPOINT, ..) => {
+            "a transaction statement".to_owned()
+        }
+        _ => "a statement that is not a read".to_owned(),
+    };
+    Refusal::NotAllowed(what)
+}
+
+/// Which fence is up, shared with the authorizer SQLite calls, and what
+/// an agent's fence denied since it went up.
 #[derive(Clone, Default)]
-pub(super) struct Fences(Arc<AtomicU8>);
+pub(super) struct Fences(Arc<Shared>);
+
+#[derive(Default)]
+struct Shared {
+    up: AtomicU8,
+    refused: Mutex<Option<Refusal>>,
+}
 
 impl Fences {
     /// Puts `fence` up until the returned value drops. Fences do not nest:
     /// the drop takes down whatever is up.
     pub(super) fn fence(&self, fence: Fence) -> Fenced<'_> {
         debug_assert_eq!(self.current(), Fence::Off, "fences do not nest");
-        self.0.store(fence as u8, Ordering::SeqCst);
+        if let Ok(mut refused) = self.0.refused.lock() {
+            *refused = None;
+        }
+        self.0.up.store(fence as u8, Ordering::SeqCst);
         Fenced(self)
     }
 
     /// The fence that is up, for the authorizer.
     pub(super) fn current(&self) -> Fence {
-        match self.0.load(Ordering::SeqCst) {
+        match self.0.up.load(Ordering::SeqCst) {
             0 => Fence::Off,
             1 => Fence::Script,
-            // Only the three are ever stored. A byte that is none of them
-            // counts as the strictest: `Filter` denies all that `Script`
-            // does, so nothing runs unfenced over it.
-            _ => Fence::Filter,
+            2 => Fence::Filter,
+            // Only the four are ever stored. A byte that is none of them
+            // counts as the strictest: `Agent` denies all that `Filter`
+            // does, and `Filter` all that `Script` does, so nothing runs
+            // unfenced over it.
+            _ => Fence::Agent,
         }
+    }
+
+    /// The authorizer's answer for the fence that is up. SQLite says only
+    /// "not authorized" of a statement it refuses, so what an agent's
+    /// fence denies is kept, the first of it, for the run to say.
+    pub(super) fn ask(&self, action: &Action<'_>) -> Authorization {
+        let fence = self.current();
+        let answer = authorize(fence, action);
+        if fence == Fence::Agent
+            && answer == Authorization::Deny
+            && let Ok(mut refused) = self.0.refused.lock()
+        {
+            refused.get_or_insert_with(|| refusal(action));
+        }
+        answer
+    }
+
+    /// What an agent's fence denied since the last fence went up.
+    pub(super) fn refused(&self) -> Option<Refusal> {
+        self.0
+            .refused
+            .lock()
+            .ok()
+            .and_then(|refused| refused.clone())
     }
 }
 
@@ -128,7 +214,7 @@ pub(super) struct Fenced<'a>(&'a Fences);
 
 impl Drop for Fenced<'_> {
     fn drop(&mut self) {
-        self.0.0.store(Fence::Off as u8, Ordering::SeqCst);
+        self.0.0.up.store(Fence::Off as u8, Ordering::SeqCst);
     }
 }
 
@@ -271,6 +357,168 @@ mod tests {
     }
 
     #[test]
+    fn an_agents_statement_may_only_read() {
+        let pragma = |name, value| action(ffi::SQLITE_PRAGMA, Some(name), value);
+        let function = |name| action(ffi::SQLITE_FUNCTION, None, Some(name));
+        let through_a_view = Action {
+            source: Some("recent_orders"),
+            ..action(ffi::SQLITE_READ, Some("orders"), Some("email"))
+        };
+        let table = [
+            (action(ffi::SQLITE_SELECT, None, None), true),
+            (action(ffi::SQLITE_READ, Some("books"), Some("title")), true),
+            (through_a_view, true),
+            (action(ffi::SQLITE_RECURSIVE, None, None), true),
+            (function("count"), true),
+            (function("json_extract"), true),
+            // The check's list for SQLite, asked of what SQLite read: in
+            // whatever letters, and from inside a view too.
+            (function("load_extension"), false),
+            (function("LOAD_EXTENSION"), false),
+            (function("fts3_tokenizer"), false),
+            (function("readfile"), false),
+            (action(ffi::SQLITE_FUNCTION, None, None), false),
+            // What FTS5 asks as it reads, and no other pragma: not one
+            // without a value, which a filter may read.
+            (pragma("data_version", None), true),
+            (pragma("data_version", Some("1")), false),
+            (pragma("table_info", Some("customers")), false),
+            (pragma("database_list", None), false),
+            (pragma("optimize", None), false),
+            (pragma("integrity_check", None), false),
+            (pragma("query_only", None), false),
+            // What R*Tree prepares when a table connects. Running one is
+            // `query_only`'s to refuse.
+            (action(ffi::SQLITE_INSERT, Some("places_node"), None), true),
+            (action(ffi::SQLITE_DELETE, Some("places_node"), None), true),
+            (
+                action(ffi::SQLITE_UPDATE, Some("places_node"), Some("data")),
+                true,
+            ),
+            // Everything else, by not being on the list.
+            (action(ffi::SQLITE_TRANSACTION, Some("BEGIN"), None), false),
+            (
+                action(ffi::SQLITE_SAVEPOINT, Some("BEGIN"), Some("s")),
+                false,
+            ),
+            (action(ffi::SQLITE_ATTACH, Some("other.db"), None), false),
+            (action(ffi::SQLITE_DETACH, Some("other"), None), false),
+            (action(ffi::SQLITE_CREATE_TABLE, Some("t"), None), false),
+            (action(ffi::SQLITE_CREATE_TEMP_VIEW, Some("v"), None), false),
+            (action(ffi::SQLITE_DROP_TABLE, Some("books"), None), false),
+            (
+                action(ffi::SQLITE_ALTER_TABLE, Some("main"), Some("books")),
+                false,
+            ),
+            (action(ffi::SQLITE_ANALYZE, Some("books"), None), false),
+            (
+                action(ffi::SQLITE_REINDEX, Some("books_title"), None),
+                false,
+            ),
+            (
+                action(ffi::SQLITE_CREATE_VTABLE, Some("t"), Some("fts5")),
+                false,
+            ),
+            // A code SQLite does not have yet.
+            (action(9_999, None, None), false),
+        ];
+        for (action, allowed) in table {
+            let expected = if allowed {
+                Authorization::Allow
+            } else {
+                Authorization::Deny
+            };
+            assert_eq!(authorize(Fence::Agent, &action), expected, "{action:?}");
+            // `Fences::current` counts on this: what a filter may not do,
+            // an agent's statement may not do either.
+            if authorize(Fence::Filter, &action) == Authorization::Deny {
+                assert_eq!(expected, Authorization::Deny, "{action:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn what_an_agents_statement_was_denied_is_kept_for_the_run_to_say() {
+        let fences = Fences::default();
+        let asked = fences.clone();
+        let pragma = action(ffi::SQLITE_PRAGMA, Some("table_info"), Some("customers"));
+        let function = action(ffi::SQLITE_FUNCTION, None, Some("load_extension"));
+        let read = action(ffi::SQLITE_READ, Some("books"), Some("title"));
+        {
+            let _fenced = fences.fence(Fence::Agent);
+            assert_eq!(asked.ask(&read), Authorization::Allow);
+            assert_eq!(fences.refused(), None);
+            assert_eq!(asked.ask(&pragma), Authorization::Deny);
+            // The first denial is the one that is told.
+            assert_eq!(asked.ask(&function), Authorization::Deny);
+            assert_eq!(
+                fences.refused(),
+                Some(Refusal::NotAllowed("PRAGMA table_info".into()))
+            );
+        }
+        // A fence that goes up starts with nothing denied.
+        {
+            let _fenced = fences.fence(Fence::Agent);
+            assert_eq!(fences.refused(), None);
+            assert_eq!(asked.ask(&function), Authorization::Deny);
+            assert_eq!(
+                fences.refused(),
+                Some(Refusal::FunctionNotAllowed("load_extension".into()))
+            );
+        }
+        // Only an agent's fence keeps one: a script's denial is SQLite's
+        // own error, as before.
+        let _fenced = fences.fence(Fence::Script);
+        let begin = action(ffi::SQLITE_TRANSACTION, Some("BEGIN"), None);
+        assert_eq!(asked.ask(&begin), Authorization::Deny);
+        assert_eq!(fences.refused(), None);
+    }
+
+    #[test]
+    fn a_denial_is_named_by_what_sqlite_was_asked() {
+        let named = |code, first, second| refusal(&action(code, first, second));
+        let not_allowed = |what: &str| Refusal::NotAllowed(what.into());
+        assert_eq!(
+            named(ffi::SQLITE_FUNCTION, None, Some("load_extension")),
+            Refusal::FunctionNotAllowed("load_extension".into())
+        );
+        assert_eq!(
+            named(ffi::SQLITE_PRAGMA, Some("table_info"), Some("customers")),
+            not_allowed("PRAGMA table_info")
+        );
+        assert_eq!(
+            named(ffi::SQLITE_ATTACH, Some("other.db"), None),
+            not_allowed("ATTACH")
+        );
+        assert_eq!(
+            named(ffi::SQLITE_DETACH, Some("other"), None),
+            not_allowed("DETACH")
+        );
+        for code in [ffi::SQLITE_TRANSACTION, ffi::SQLITE_SAVEPOINT] {
+            assert_eq!(
+                named(code, Some("BEGIN"), None),
+                not_allowed("a transaction statement")
+            );
+        }
+        // Anything else is a statement that is no read, whatever it is.
+        for code in [ffi::SQLITE_CREATE_TABLE, ffi::SQLITE_ANALYZE, 9_999] {
+            assert_eq!(
+                named(code, Some("t"), None),
+                not_allowed("a statement that is not a read")
+            );
+        }
+        // A name SQLite did not give.
+        assert_eq!(
+            named(ffi::SQLITE_PRAGMA, None, None),
+            not_allowed("a PRAGMA")
+        );
+        assert_eq!(
+            named(ffi::SQLITE_FUNCTION, None, None),
+            not_allowed("a function without a name")
+        );
+    }
+
+    #[test]
     fn a_fence_is_up_until_its_guard_drops() {
         let fences = Fences::default();
         let asked = fences.clone();
@@ -285,8 +533,8 @@ mod tests {
     #[test]
     fn a_byte_that_is_no_fence_counts_as_the_strictest_one() {
         let fences = Fences::default();
-        fences.0.store(7, Ordering::SeqCst);
-        assert_eq!(fences.current(), Fence::Filter);
+        fences.0.up.store(7, Ordering::SeqCst);
+        assert_eq!(fences.current(), Fence::Agent);
     }
 
     // Only a debug build checks it.
