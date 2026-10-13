@@ -6,13 +6,14 @@
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rusqlite::config::DbConfig;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 
 use crate::adapter::Adapter;
+use crate::agent::{Limits, Param, Read, Sent, count_mismatch};
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
@@ -152,6 +153,12 @@ fn begin(connection: &rusqlite::Connection, mode: ScriptMode) -> Result<()> {
 /// is a `COMMIT` when every statement succeeded (see `end_write`). One
 /// that finds its transaction gone before a statement ends with
 /// `LeftTransaction`.
+///
+/// `sent` is there when the run is of an agent's one statement: its values
+/// are bound, and the run has a deadline, after which the statement that
+/// runs is interrupted as a stop interrupts it. A statement that waits
+/// for another connection's lock does not run, and is not interrupted: so
+/// that wait is held to the run's time as well, for the run's length.
 fn script(
     connection: &rusqlite::Connection,
     fences: &Fences,
@@ -159,6 +166,7 @@ fn script(
     limit: usize,
     mode: ScriptMode,
     stop: &StopFlag,
+    sent: Option<Sent<'_>>,
 ) -> Result<ScriptOutcome> {
     let mut outcome = ScriptOutcome::default();
     if stop.is_stopped() {
@@ -188,11 +196,45 @@ fn script(
     }
     // SQLite calls this every 1000 virtual machine steps; `true` interrupts
     // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
+    // The deadline is SQLite's statement timeout: it has no other.
     let watching = stop.clone();
-    connection.progress_handler(1_000, Some(move || watching.is_stopped()));
-    let ran = statements(connection, fences, texts, limit, mode, stop, &mut outcome);
+    let deadline = sent.and_then(|sent| deadline(Instant::now(), sent.timeout));
+    connection.progress_handler(
+        1_000,
+        Some(move || watching.is_stopped() || deadline.is_some_and(|at| Instant::now() >= at)),
+    );
+    let params = sent.map(|sent| sent.params);
+    // The cleanup's `set_session_pragmas` puts the session's own wait back.
+    let held = match sent {
+        Some(sent) => connection
+            .busy_timeout(Duration::from_millis(u64::from(sent.timeout_ms())))
+            .map_err(map_error),
+        None => Ok(()),
+    };
+    let ran = held.and_then(|()| {
+        statements(
+            connection,
+            fences,
+            texts,
+            limit,
+            mode,
+            stop,
+            params,
+            &mut outcome,
+        )
+    });
     // Removed before the cleanup, so a stop cannot interrupt it.
     connection.progress_handler(0, None::<fn() -> bool>);
+    if sent.is_some()
+        && let Some(result) = outcome.results.last_mut()
+        && let StatementOutcome::Error { error, .. } = &result.outcome
+        && waited_out(error)
+    {
+        // The wait was the run's whole time: the statement is one that
+        // ran out of it, as one the deadline interrupts is.
+        result.outcome = StatementOutcome::Cancelled;
+        outcome.stopped = true;
+    }
     if mode == ScriptMode::Write {
         return end_write(connection, stop, ran, outcome);
     }
@@ -287,6 +329,26 @@ fn end_transaction(connection: &rusqlite::Connection) -> Result<()> {
     attempt().or_else(|_| attempt()).map_err(map_error)
 }
 
+/// Whether a statement failed because a lock on the file did not come in
+/// the time the session waits for one: SQLITE_BUSY, which is 5, under
+/// whatever the extended code adds above its low byte.
+fn waited_out(error: &Error) -> bool {
+    let Error::Query {
+        code: Some(code), ..
+    } = error
+    else {
+        return false;
+    };
+    code.parse::<i32>().is_ok_and(|code| code & 0xff == 5)
+}
+
+/// When a run that began at `start` is over its `timeout`: `None` for a
+/// time so long that the clock cannot hold its end, which never comes.
+fn deadline(start: Instant, timeout: Duration) -> Option<Instant> {
+    start.checked_add(timeout)
+}
+
+#[allow(clippy::too_many_arguments)] // one call site
 fn statements(
     connection: &rusqlite::Connection,
     fences: &Fences,
@@ -294,6 +356,7 @@ fn statements(
     limit: usize,
     mode: ScriptMode,
     stop: &StopFlag,
+    params: Option<&[Param]>,
     outcome: &mut ScriptOutcome,
 ) -> Result<()> {
     for text in texts {
@@ -339,7 +402,7 @@ fn statements(
         // rollback after the run are the app's.
         let result = {
             let _fenced = fences.fence(Fence::Script);
-            statement(connection, text, limit)
+            statement(connection, text, limit, params)
         };
         let result = match result {
             Ok(result) => result,
@@ -382,10 +445,14 @@ fn counts_changes(text: &str) -> bool {
         .is_some_and(|word| matches!(word.as_str(), "INSERT" | "UPDATE" | "DELETE" | "REPLACE"))
 }
 
+/// Runs one statement. `params` are an agent's values for its
+/// placeholders: the SQL editor has none, and SQLite reads a placeholder
+/// without a value as NULL.
 fn statement(
     connection: &rusqlite::Connection,
     text: &str,
     limit: usize,
+    params: Option<&[Param]>,
 ) -> Result<StatementOutcome> {
     // SQLite names an unaliased column after its text, so a comment after
     // the last token would end up in the name.
@@ -402,6 +469,18 @@ fn statement(
     // for the first, and the run's checks cover what a pragma that got past
     // would have done by then.
     let mut statement = connection.prepare(text).map_err(map_error)?;
+    if let Some(params) = params {
+        // SQLite's own count, which is the one that holds.
+        let counted = statement.parameter_count();
+        if counted != params.len() {
+            return Err(count_mismatch(counted, params.len()));
+        }
+        for (index, param) in params.iter().enumerate() {
+            statement
+                .raw_bind_parameter(index + 1, bound(param))
+                .map_err(map_error)?;
+        }
+    }
     let declared = declared_columns(connection, &statement, text)?;
     if declared.is_empty() {
         let changed = statement.raw_execute().map_err(map_error)?;
@@ -429,6 +508,20 @@ fn statement(
         rows: values,
         truncated,
     })
+}
+
+/// An agent's value as SQLite binds it. Text stays text, whatever it
+/// reads as: a filter's value is typed into a box, and an agent's comes
+/// with its type.
+fn bound(param: &Param) -> rusqlite::types::Value {
+    use rusqlite::types::Value as Sqlite;
+    match param {
+        Param::Null => Sqlite::Null,
+        Param::Bool(flag) => Sqlite::Integer(i64::from(*flag)),
+        Param::Int(number) => Sqlite::Integer(*number),
+        Param::Float(number) => Sqlite::Real(*number),
+        Param::Text(text) => Sqlite::Text(text.clone()),
+    }
 }
 
 fn to_sqlite(value: &Value) -> rusqlite::types::Value {
@@ -1030,7 +1123,42 @@ impl Adapter for Conn {
         let guard = StopOnDrop(Some(stop.clone()));
         let fences = self.fences.clone();
         let outcome = self
-            .run(move |connection| script(connection, &fences, &texts, limit, mode, &stop))
+            .run(move |connection| script(connection, &fences, &texts, limit, mode, &stop, None))
+            .await;
+        guard.disarm();
+        outcome
+    }
+
+    /// See [`crate::Connection::run_agent_read`]. One blocking job, as a
+    /// script is. The progress handler that checks `stop` also checks the
+    /// run's deadline.
+    async fn run_read(
+        &self,
+        read: &Read,
+        limits: Limits,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let stop = stop.clone();
+        let guard = StopOnDrop(Some(stop.clone()));
+        let fences = self.fences.clone();
+        let texts = vec![read.text().to_owned()];
+        let params = read.params().to_vec();
+        let outcome = self
+            .run(move |connection| {
+                let sent = Sent {
+                    params: &params,
+                    timeout: limits.timeout,
+                };
+                script(
+                    connection,
+                    &fences,
+                    &texts,
+                    limits.rows as usize,
+                    ScriptMode::ReadOnly,
+                    &stop,
+                    Some(sent),
+                )
+            })
             .await;
         guard.disarm();
         outcome
@@ -2628,5 +2756,96 @@ mod tests {
         let (conn, _dir) = fixture().await;
         let result = conn.describe(&ObjectRef::new("main", "nope")).await;
         assert!(matches!(result, Err(Error::Query { .. })), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn sqlites_own_count_of_placeholders_is_the_one_that_holds() {
+        let (conn, _dir) = fixture().await;
+        let one = [Param::Int(1)];
+        let ran = conn
+            .run(move |connection| statement(connection, "SELECT ?, ?", 10, Some(&one)))
+            .await;
+        assert_eq!(ran, Err(count_mismatch(2, 1)));
+        let ran = conn
+            .run(|connection| statement(connection, "SELECT 1", 10, Some(&[Param::Null])))
+            .await;
+        assert_eq!(ran, Err(count_mismatch(0, 1)));
+        // The SQL editor sends no values, and its statement is not
+        // counted: SQLite reads a placeholder without one as NULL.
+        let ran = conn
+            .run(|connection| statement(connection, "SELECT ?, ?", 10, None))
+            .await
+            .unwrap();
+        let StatementOutcome::Rows { rows, .. } = ran else {
+            panic!("{ran:?}");
+        };
+        assert_eq!(rows, [[Value::Null, Value::Null]]);
+    }
+
+    #[test]
+    fn an_agents_value_is_bound_as_its_own_type() {
+        use rusqlite::types::Value as Sqlite;
+        assert_eq!(bound(&Param::Null), Sqlite::Null);
+        assert_eq!(bound(&Param::Bool(true)), Sqlite::Integer(1));
+        assert_eq!(bound(&Param::Int(-7)), Sqlite::Integer(-7));
+        assert_eq!(bound(&Param::Float(1.5)), Sqlite::Real(1.5));
+        // Not the number a filter's typed text would become.
+        assert_eq!(bound(&Param::Text("5".into())), Sqlite::Text("5".into()));
+    }
+
+    #[test]
+    fn a_wait_that_ran_out_is_told_by_its_result_code() {
+        let failed = |code: Option<&str>| Error::Query {
+            code: code.map(str::to_owned),
+            message: "database is locked".into(),
+            detail: None,
+            hint: None,
+            named: Box::default(),
+        };
+        // SQLITE_BUSY, and its extended codes: _RECOVERY, _SNAPSHOT,
+        // _TIMEOUT.
+        for code in ["5", "261", "517", "773"] {
+            assert!(waited_out(&failed(Some(code))), "{code}");
+        }
+        // SQLITE_ERROR, SQLITE_LOCKED, a constraint, a code that is no
+        // number, and none.
+        for code in [Some("1"), Some("6"), Some("2067"), Some("busy"), None] {
+            assert!(!waited_out(&failed(code)), "{code:?}");
+        }
+        assert!(!waited_out(&Error::Cancelled));
+    }
+
+    /// The wait for a lock is the run's for its length, and the session's
+    /// five seconds again after it.
+    #[tokio::test]
+    async fn an_agents_run_puts_the_wait_for_a_lock_back() {
+        /// How long the session waits for a lock, in milliseconds.
+        async fn wait(conn: &Conn) -> Result<i64> {
+            conn.run(|connection| {
+                connection
+                    .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+                    .map_err(map_error)
+            })
+            .await
+        }
+        let (conn, _dir) = fixture().await;
+        assert_eq!(wait(&conn).await, Ok(5_000));
+        let read = crate::agent::check_read(Dialect::Sqlite, "SELECT 1", &[]).unwrap();
+        let limits = Limits {
+            rows: 10,
+            timeout: Duration::from_millis(250),
+        };
+        conn.run_read(&read, limits, &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(wait(&conn).await, Ok(5_000));
+    }
+
+    #[test]
+    fn a_deadline_too_far_for_the_clock_never_comes() {
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+        assert_eq!(deadline(start, second), Some(start + second));
+        assert_eq!(deadline(start, Duration::MAX), None);
     }
 }

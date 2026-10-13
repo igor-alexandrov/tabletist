@@ -6,14 +6,17 @@
 
 use std::time::{Duration, Instant};
 
+use bytes::BytesMut;
 use tokio_postgres::SimpleQueryMessage;
 use tokio_postgres::error::SqlState;
+use tokio_postgres::types::{Format, FromSql, IsNull, ToSql, Type, to_sql_checked};
 
-use super::{Conn, column_metas, first_text, query_error, row_values};
+use super::{Conn, column_metas, first_text, query_error, row_values, unexpected};
+use crate::agent::{Limits, Param, Read, Sent, count_mismatch};
 use crate::script::{cannot_start, cleanup_failed, retry_cancelled, statement_failed};
 use crate::{
     ColumnMeta, Dialect, Error, Result, ScriptMode, ScriptOutcome, StatementOutcome,
-    StatementResult, StopFlag,
+    StatementResult, StopFlag, Value,
 };
 
 mod write;
@@ -36,34 +39,126 @@ impl Conn {
         if mode == ScriptMode::Write {
             return write::run(&client, texts, limit as usize, stop).await;
         }
-        let mut outcome = ScriptOutcome::default();
-        let tx = match open(&client).await {
-            // A lost session ends the run here: nothing to close.
-            Ok(Tx::Open) => {
-                statements(&client, texts, limit as usize, mode, stop, &mut outcome).await?
-            }
-            // A cancel landed on the opening queries: no results.
-            Ok(tx) => {
-                outcome.stopped = true;
-                tx
-            }
-            Err(error) if error.is_connection_lost() => return Err(error),
-            // The transaction could not start, say because the session is
-            // stuck in a failed one. The next run would fail the same way,
-            // so the session is closed, after an attempt to end what is
-            // open.
-            Err(error) => {
-                stop.finish();
-                close(&client, Tx::Aborted).await.ok();
-                return Err(cannot_start(ScriptMode::ReadOnly, &error));
-            }
-        };
-        // From here on a cancel would land on the cleanup: tell the
-        // backend to stop repeating its cancel.
-        stop.finish();
-        close(&client, tx).await?;
-        Ok(outcome)
+        read_only(&client, texts, limit as usize, stop, None).await
     }
+
+    /// See [`crate::Connection::run_agent_read`]: the run of a script of
+    /// one statement that only reads, with the statement's values bound
+    /// and the server's own timeout set for the transaction. Awaited to
+    /// its end, as [`Self::script`] is.
+    pub(super) async fn agent_read(
+        &self,
+        read: &Read,
+        limits: Limits,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let client = self.client.lock().await;
+        let texts = [read.text().to_owned()];
+        let sent = Sent {
+            params: read.params(),
+            timeout: limits.timeout,
+        };
+        read_only(&client, &texts, limits.rows as usize, stop, Some(sent)).await
+    }
+}
+
+/// The run that only reads: its transaction, its statements, and the
+/// close. `sent` is there when the run is of an agent's one statement.
+async fn read_only(
+    client: &tokio_postgres::Client,
+    texts: &[String],
+    limit: usize,
+    stop: &StopFlag,
+    sent: Option<Sent<'_>>,
+) -> Result<ScriptOutcome> {
+    let mut outcome = ScriptOutcome::default();
+    let tx = match open(client, sent).await {
+        // A lost session ends the run here: nothing to close.
+        Ok(Tx::Open) => {
+            let params = sent.map(|sent| sent.params);
+            let mode = ScriptMode::ReadOnly;
+            statements(client, texts, limit, mode, stop, params, &mut outcome).await?
+        }
+        // A cancel landed on the opening queries: no results.
+        Ok(tx) => {
+            outcome.stopped = true;
+            tx
+        }
+        Err(error) if error.is_connection_lost() => return Err(error),
+        // The transaction could not start, say because the session is
+        // stuck in a failed one. The next run would fail the same way,
+        // so the session is closed, after an attempt to end what is
+        // open.
+        Err(error) => {
+            stop.finish();
+            close(client, Tx::Aborted).await.ok();
+            return Err(cannot_start(ScriptMode::ReadOnly, &error));
+        }
+    };
+    // From here on a cancel would land on the cleanup: tell the
+    // backend to stop repeating its cancel.
+    stop.finish();
+    close(client, tx).await?;
+    Ok(outcome)
+}
+
+/// An agent's value as PostgreSQL is sent it: in text, which the server
+/// reads as the type it gave the placeholder, the way it reads a quoted
+/// literal. So one kind of value fills a placeholder of any type, and a
+/// value its type does not take is the server's error. A value is never
+/// written into the statement.
+impl ToSql for Param {
+    fn to_sql(
+        &self,
+        _: &Type,
+        out: &mut BytesMut,
+    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        let text = match self {
+            Self::Null => return Ok(IsNull::Yes),
+            Self::Bool(true) => "true".to_owned(),
+            Self::Bool(false) => "false".to_owned(),
+            Self::Int(number) => number.to_string(),
+            Self::Float(number) => number.to_string(),
+            Self::Text(text) => text.clone(),
+        };
+        out.extend_from_slice(text.as_bytes());
+        Ok(IsNull::No)
+    }
+
+    fn accepts(_: &Type) -> bool {
+        true
+    }
+
+    fn encode_format(&self, _: &Type) -> Format {
+        Format::Text
+    }
+
+    to_sql_checked!();
+}
+
+/// A value of a plan, which the server sends as it is written whatever
+/// the protocol: `EXPLAIN` answers in text, JSON or XML.
+struct Plan(String);
+
+impl<'a> FromSql<'a> for Plan {
+    fn from_sql(
+        _: &Type,
+        raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Self(std::str::from_utf8(raw)?.to_owned()))
+    }
+
+    fn accepts(kind: &Type) -> bool {
+        *kind == Type::TEXT || *kind == Type::JSON || *kind == Type::XML
+    }
+}
+
+/// `params` as the driver takes a statement's values.
+fn values(params: &[Param]) -> Vec<&(dyn ToSql + Sync)> {
+    params
+        .iter()
+        .map(|param| param as &(dyn ToSql + Sync))
+        .collect()
 }
 
 /// What a SQL editor row statement runs as: `DECLARE` with this prefix,
@@ -91,8 +186,20 @@ enum Tx {
 /// a transaction read-write once it has a snapshot, whatever a statement
 /// tries. `Aborted` when a cancel landed on these queries; an `Err` that is
 /// not a lost session means the transaction could not start.
-async fn open(client: &tokio_postgres::Client) -> Result<Tx> {
-    for step in ["BEGIN READ ONLY", "SELECT 1", "SAVEPOINT tabletist_guard"] {
+///
+/// An agent's run also sets the server's own statement timeout, for the
+/// transaction: the rollback that ends the run takes it away. Before the
+/// savepoint, so that it holds whatever the guard does with that. The
+/// statement cannot lift it: the refusal stops every `SET`, and the check
+/// `set_config`. No lock timeout beside it: a wait for a lock is part of
+/// the statement's time.
+async fn open(client: &tokio_postgres::Client, sent: Option<Sent<'_>>) -> Result<Tx> {
+    let timeout = sent.map(|sent| format!("SET LOCAL statement_timeout = {}", sent.timeout_ms()));
+    let steps = ["BEGIN READ ONLY", "SELECT 1"]
+        .into_iter()
+        .chain(timeout.as_deref())
+        .chain(["SAVEPOINT tabletist_guard"]);
+    for step in steps {
         match client.batch_execute(step).await.map_err(query_error) {
             Ok(()) => {}
             Err(Error::Cancelled) => return Ok(Tx::Aborted),
@@ -104,13 +211,15 @@ async fn open(client: &tokio_postgres::Client) -> Result<Tx> {
 
 /// Runs the statements in order, up to the first that fails or is
 /// stopped, and says where that leaves the transaction. `Err` is a lost
-/// session.
+/// session. `params` are an agent's values for its one statement: a script
+/// has none.
 async fn statements(
     client: &tokio_postgres::Client,
     texts: &[String],
     limit: usize,
     mode: ScriptMode,
     stop: &StopFlag,
+    params: Option<&[Param]>,
     outcome: &mut ScriptOutcome,
 ) -> Result<Tx> {
     for text in texts {
@@ -150,7 +259,7 @@ async fn statements(
             return Ok(tx);
         }
         let started = Instant::now();
-        let (result, tx) = run_statement(client, text, limit, mode, stop).await?;
+        let (result, tx) = run_statement(client, text, limit, mode, stop, params).await?;
         outcome.stopped |= result == StatementOutcome::Cancelled;
         let last = !matches!(
             result,
@@ -379,14 +488,46 @@ fn rows_outcome(
     }
 }
 
+/// A plan's rows from the extended protocol: at most `limit` of them, and
+/// `truncated` when there were more.
+fn plan_outcome(
+    columns: Vec<ColumnMeta>,
+    answered: &[tokio_postgres::Row],
+    limit: usize,
+) -> StatementOutcome {
+    let line = |row: &tokio_postgres::Row| -> Result<Vec<Value>> {
+        (0..row.len())
+            .map(|index| {
+                let value: Option<Plan> = row.try_get(index).map_err(unexpected)?;
+                Ok(value.map_or(Value::Null, |Plan(text)| Value::Text(text.into())))
+            })
+            .collect()
+    };
+    match answered.iter().take(limit).map(line).collect() {
+        Ok(rows) => StatementOutcome::Rows {
+            columns,
+            rows,
+            truncated: answered.len() > limit,
+        },
+        Err(error) => StatementOutcome::Error {
+            error,
+            position: None,
+        },
+    }
+}
+
 /// Runs one statement of a script inside its transaction, and says where
 /// that leaves the transaction. `Err` is a lost session.
+///
+/// `params` are an agent's values. The SQL editor has none, and its
+/// statement with a placeholder is the server's error, as before.
 async fn run_statement(
     client: &tokio_postgres::Client,
     text: &str,
     limit: usize,
     mode: ScriptMode,
     stop: &StopFlag,
+    params: Option<&[Param]>,
 ) -> Result<(StatementOutcome, Tx)> {
     // The driver cannot put a NUL in a message, and fails in a way that
     // reads as a lost session. Nothing is sent: the transaction stays open.
@@ -404,10 +545,23 @@ async fn run_statement(
     // statement hidden in one piece. A prepare error is the outcome; the
     // text never runs another way. Only the columns are kept: the prepared
     // statement itself is closed here.
-    let columns = match client.prepare(text).await {
-        Ok(prepared) => column_metas(&prepared),
+    let prepared = match client.prepare(text).await {
+        Ok(prepared) => prepared,
         Err(error) => return failed(error, Some(0)),
     };
+    let columns = column_metas(&prepared);
+    if let Some(params) = params {
+        // The server's own count, which is the one that holds. Nothing
+        // ran: the transaction stays open.
+        let counted = prepared.params().len();
+        if counted != params.len() {
+            let error = count_mismatch(counted, params.len());
+            let position = None;
+            return Ok((StatementOutcome::Error { error, position }, Tx::Open));
+        }
+    }
+    // Without values a statement runs as it always did.
+    let params = params.unwrap_or_default();
     if columns.is_empty() {
         return match client.simple_query(text).await {
             Ok(messages) => {
@@ -438,7 +592,16 @@ async fn run_statement(
     if mode == ScriptMode::ReadOnly && cursor_statement(text) {
         // Its own call, and a newline, so a trailing -- comment ends there.
         let declare = format!("{CURSOR_PREFIX}{text}\n");
-        if let Err(error) = client.batch_execute(&declare).await {
+        // Values are bound where the cursor is declared, which takes the
+        // other protocol: the cursor keeps them, and its rows are fetched
+        // as text like any other's.
+        let declared = if params.is_empty() {
+            client.batch_execute(&declare).await
+        } else {
+            let bound = client.execute(declare.as_str(), &values(params)).await;
+            bound.map(drop)
+        };
+        if let Err(error) = declared {
             return failed(error, Some(CURSOR_PREFIX.chars().count()));
         }
         // Nothing failed: the transaction is still usable.
@@ -457,6 +620,13 @@ async fn run_statement(
             SimpleQueryMessage::Row(row) => Some(row),
             _ => None,
         }));
+    } else if !params.is_empty() {
+        // An `EXPLAIN` with values, the one statement of an agent's that
+        // is no cursor. Its rows come by the protocol that binds them.
+        return match client.query(text, &values(params)).await {
+            Ok(rows) => Ok((plan_outcome(columns, &rows, limit), Tx::Open)),
+            Err(error) => failed(error, Some(0)),
+        };
     } else {
         // SHOW, EXPLAIN and the like, and every statement with rows of a
         // run that writes: stream, keep limit + 1, drop the rest.
@@ -491,6 +661,9 @@ mod tests {
         let _check = |conn: &Conn, texts: Vec<String>, stop: &StopFlag| {
             send(&conn.run_script(texts, 10, ScriptMode::ReadOnly, stop));
             send(&conn.server_version());
+        };
+        let _agent = |conn: &Conn, read: &Read, limits: Limits, stop: &StopFlag| {
+            send(&conn.run_read(read, limits, stop));
         };
     }
 
@@ -548,6 +721,93 @@ mod tests {
         assert_eq!(unlocked(Err(Error::Cancelled)), Ok(()));
         let lost = Error::ConnectionLost("reset".into());
         assert_eq!(unlocked(Err(lost.clone())), Err(lost));
+    }
+
+    #[test]
+    fn an_agents_value_is_sent_as_text_for_a_placeholder_of_any_type() {
+        let sent = |param: Param| {
+            let mut out = BytesMut::new();
+            let null = matches!(param.to_sql(&Type::INT4, &mut out).unwrap(), IsNull::Yes);
+            (null, String::from_utf8(out.to_vec()).unwrap())
+        };
+        let text = |text: &str| (false, text.to_owned());
+        assert_eq!(sent(Param::Null), (true, String::new()));
+        assert_eq!(sent(Param::Bool(true)), text("true"));
+        assert_eq!(sent(Param::Bool(false)), text("false"));
+        assert_eq!(sent(Param::Int(i64::MIN)), text("-9223372036854775808"));
+        assert_eq!(sent(Param::Float(1.5)), text("1.5"));
+        // No exponent, which is one spelling fewer for the server to read.
+        assert_eq!(sent(Param::Float(1e21)), text("1000000000000000000000"));
+        // As it is: nothing is quoted, because nothing is written into SQL.
+        assert_eq!(sent(Param::Text("it's".into())), text("it's"));
+        for kind in [Type::INT4, Type::TEXT, Type::TIMESTAMPTZ, Type::INT4_ARRAY] {
+            assert!(<Param as ToSql>::accepts(&kind), "{kind}");
+            let format = Param::Int(1).encode_format(&kind);
+            assert!(matches!(format, Format::Text), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_plan_is_read_from_the_types_explain_answers_in() {
+        for kind in [Type::TEXT, Type::JSON, Type::XML] {
+            assert!(<Plan as FromSql>::accepts(&kind), "{kind}");
+        }
+        // Not from a type whose binary form is not its text.
+        for kind in [Type::INT4, Type::JSONB, Type::BYTEA] {
+            assert!(!<Plan as FromSql>::accepts(&kind), "{kind}");
+        }
+        let Plan(line) = Plan::from_sql(&Type::TEXT, b"Seq Scan on books").unwrap();
+        assert_eq!(line, "Seq Scan on books");
+        assert!(Plan::from_sql(&Type::TEXT, &[0xC3, 0x28]).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_servers_own_count_of_placeholders_is_the_one_that_holds() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let client = conn.client.lock().await;
+        let stop = StopFlag::new();
+        let mode = ScriptMode::ReadOnly;
+        for (text, sent, counted) in [
+            ("SELECT $1::int, $2::int", vec![Param::Int(1)], 2),
+            ("SELECT 1", vec![Param::Int(1)], 0),
+            // One placeholder written twice is one value.
+            ("SELECT $1::int + $1::int", vec![Param::Int(1); 2], 1),
+        ] {
+            let ran = run_statement(&client, text, 10, mode, &stop, Some(&sent)).await;
+            let error = count_mismatch(counted, sent.len());
+            let position = None;
+            let refused = StatementOutcome::Error { error, position };
+            // Nothing ran, so nothing failed.
+            assert_eq!(ran, Ok((refused, Tx::Open)), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_agents_run_has_the_servers_timeout_for_its_transaction_only() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        assert_eq!(setting(&conn, "statement_timeout").await, "0");
+        {
+            let client = conn.client.lock().await;
+            let sent = Sent {
+                params: &[],
+                timeout: Duration::from_millis(250),
+            };
+            assert_eq!(open(&client, Some(sent)).await, Ok(Tx::Open));
+        }
+        assert_eq!(setting(&conn, "statement_timeout").await, "250ms");
+        // A lock is waited for as long as the statement may run, no less.
+        assert_eq!(setting(&conn, "lock_timeout").await, "0");
+        {
+            let client = conn.client.lock().await;
+            close(&client, Tx::Open).await.unwrap();
+        }
+        assert_eq!(setting(&conn, "statement_timeout").await, "0");
     }
 
     /// One test at a time uses the `probe` table: creating it twice at once
@@ -744,7 +1004,7 @@ mod tests {
         };
         let conn = session(&url).await;
         let client = conn.client.lock().await;
-        assert_eq!(open(&client).await, Ok(Tx::Open));
+        assert_eq!(open(&client, None).await, Ok(Tx::Open));
         // What the first two statements of the script would have done.
         client
             .batch_execute("SET search_path = pg_catalog")
@@ -761,6 +1021,7 @@ mod tests {
             10,
             ScriptMode::ReadOnly,
             &stop,
+            None,
             &mut outcome,
         )
         .await;
@@ -783,27 +1044,27 @@ mod tests {
         let conn = session(&url).await;
         {
             let client = conn.client.lock().await;
-            assert_eq!(open(&client).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok(Tx::Open));
             assert_eq!(in_transaction(&client).await, Ok(Tx::Open));
             assert_eq!(close(&client, Tx::Open).await, Ok(()));
             // Closed: no transaction is left.
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
 
-            assert_eq!(open(&client).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok(Tx::Open));
             assert!(client.batch_execute("SELECT 1 / 0").await.is_err());
             assert_eq!(in_transaction(&client).await, Ok(Tx::Aborted));
             assert_eq!(close(&client, Tx::Open).await, Ok(()));
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
 
             // Another transaction is not the script's, block or not.
-            assert_eq!(open(&client).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok(Tx::Open));
             client.batch_execute("COMMIT AND CHAIN").await.unwrap();
             assert_eq!(close(&client, Tx::Open).await, Err(Error::LeftReadOnly));
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
 
             // Nor is it once it failed (a cancel that landed on a check):
             // a failed block does not say whose it is, its savepoint does.
-            assert_eq!(open(&client).await, Ok(Tx::Open));
+            assert_eq!(open(&client, None).await, Ok(Tx::Open));
             client.batch_execute("COMMIT AND CHAIN").await.unwrap();
             assert!(client.batch_execute("SELECT 1 / 0").await.is_err());
             assert_eq!(in_transaction(&client).await, Ok(Tx::Aborted));

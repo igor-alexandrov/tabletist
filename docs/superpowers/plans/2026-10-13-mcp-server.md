@@ -396,12 +396,24 @@ layer at the same value plus one second:
 
 | Driver | Statement | Notes |
 |---|---|---|
-| PostgreSQL | `SET LOCAL statement_timeout = <ms>` and `SET LOCAL lock_timeout = <ms>` | Local to the transaction. The agent cannot change them: every `SET` and `set_config` is refused |
+| PostgreSQL | `SET LOCAL statement_timeout = <ms>` | Local to the transaction. The agent cannot change it: every `SET` and `set_config` is refused |
 | MySQL | `SET SESSION max_execution_time = <ms>` | Applies to `SELECT`, which is all a read runs. MariaDB: `SET SESSION max_statement_time = <seconds>`. The cleanup's reset puts it back |
 | SQLite | A deadline in the progress handler the script run already installs | `sqlite.rs:192`. In process, so it is exact |
 
 A statement the server stops is `timeout`, and its transaction is rolled
 back like any other.
+
+**Corrected on 2026-10-13, from the draft of Phase 1a's second run**
+(`2026-10-13-mcp-server-1a-2-agent-read.md`). Two things:
+
+- This table first set PostgreSQL's `lock_timeout` beside the statement
+  timeout. The statement's time includes its wait for a lock, and
+  PostgreSQL's manual calls a lock timeout of the same size pointless.
+- On MySQL a statement can lift the session's limits from inside: the
+  optimizer hints `/*+ MAX_EXECUTION_TIME(n) */` and
+  `/*+ SET_VAR(max_execution_time = n) */` replace the time limit, and
+  `/*+ SET_VAR(sql_select_limit = n) */` the row limit of B.5. Seen on MySQL
+  8.4. The checker refuses a hint comment on MySQL (`not_allowed`).
 
 ### B.2 Parsing
 
@@ -501,9 +513,17 @@ SQLite. A parameter is a JSON string, number, boolean or null.
 |---|---|---|
 | SQLite | rusqlite binds them | |
 | MySQL | The prepared protocol the script run already uses. It refuses a statement with a `?` today because it had no values (`mysql/script.rs:447`) | |
-| PostgreSQL | The statement is prepared first, as today, which gives each parameter's type. Each `$n` token (a token of `sql::tokenize`, never a text search) is then replaced by a literal from the writer that filters and saves already use, cast to that type | Rows are read as text through the simple-query protocol. tokio-postgres's other protocol always asks for binary results (`Some(1)` in its `query.rs`), and the crate has no binary decoders. `Dialect::bind` already inlines literals on PostgreSQL for this reason (`dialect.rs:301-309`), with `standard_conforming_strings = on` set at connect (`pg.rs:182`) and guarded by the refusal list |
+| PostgreSQL | The statement is prepared first, as today, which gives the server's count of its parameters. The values are then bound, each in text format, on the `DECLARE … CURSOR FOR` the script run already sends, by the extended protocol. The rows come as before, as text, through `FETCH` | Rows are read as text through the simple-query protocol, and tokio-postgres's other protocol always asks for binary results (`Some(1)` in its `query.rs`). A cursor keeps the two apart: its parameters are bound where it is declared, and its rows are fetched by a simple query. A value chooses its own format (`ToSql::encode_format`), and in text the server reads it as the parameter's type, as it reads a quoted literal |
 
-The log keeps the agent's text and its parameters, not the inlined text.
+**Corrected on 2026-10-13, from the draft of Phase 1a's second run.** This
+table first had each `$n` replaced in the text by a quoted literal. That
+needed a second reading of the statement to find the `$n` tokens, and a
+value became SQL text. Bound on the `DECLARE`, a value is never part of the
+statement, on any of the three. An `EXPLAIN` with parameters is no cursor:
+it runs by the extended protocol, and its rows (text, JSON or XML) are read
+as text.
+
+The log keeps the agent's text and its parameters.
 
 ### B.3 Hidden tables
 
@@ -692,6 +712,8 @@ cheap in general: it is the query run again as a count. The plan:
 
 **What is missing: a cap on size.** A row limit does not bound an answer.
 One `jsonb` cell can be megabytes, and it would go into the agent's context.
+The cap is measured on the answer as JSON, so it is built where the JSON is
+written: Phase 1b, not 1a as this plan first had it (changed on 2026-10-13).
 
 - A cell longer than 2,000 characters is cut and marked, with its full
   length.
@@ -1275,6 +1297,9 @@ and no snapshot material is committed. UI tests go through `src/testing.rs`
 `email` and `phone`), `order_items` (with a cascading foreign key), a view
 `recent_orders` that reads `orders.email`, a view `customer_names` over
 `customers`, and on PostgreSQL and MySQL a function that reads `customers`.
+The function comes with Phase 1c, which is the first to test one. On each
+server the Bookshop has a database of its own, `bookshop`: its `orders` is
+not the driver fixture's.
 SQLite runs everywhere. PostgreSQL and MySQL run where the suite has a
 server, under `TABLETIST_TEST_PG_URL` and `TABLETIST_TEST_MYSQL_URL`, and
 print "skipped" without one, as the existing suites do. `ci.yml` names the
@@ -1401,15 +1426,17 @@ off until the person turns it on.
 **1a. The enforcement core. No server, nothing visible.**
 
 - Runs: three, each its own plan and pull request. The read checker
-  (`2026-10-13-mcp-server-1a-1-read-checker.md`), then the drivers, then
-  SQLite's `Fence::Agent`. The check for writes moves to Phase 2.
+  (`2026-10-13-mcp-server-1a-1-read-checker.md`), then the drivers
+  (`2026-10-13-mcp-server-1a-2-agent-read.md`), then SQLite's
+  `Fence::Agent`. The check for writes moves to Phase 2, and the size cap
+  on an answer to 1b.
 - Files: `crates/tabletist-db/src/agent.rs` and `agent/` (the checker, the
-  function lists, the agent policy type), `sql.rs` (parameter tokens),
-  `script.rs`, `pg/script.rs`, `mysql/script.rs`, `sqlite.rs` (parameters,
-  the statement timeout, the size cap), `sqlite/fence.rs` (`Fence::Agent`),
-  `fixtures/` (Bookshop), `tests/agent.rs`, `Cargo.toml` (`sqlparser`),
-  `.github/workflows/ci.yml` (the new test file).
-- Risks: the parameter inlining on PostgreSQL. sqlparser's reading of each
+  function lists, the run's limits and answer), `pg/script.rs`,
+  `mysql/script.rs`, `sqlite.rs` (parameters, the statement timeout),
+  `sqlite/fence.rs` (`Fence::Agent`), `fixtures/` (Bookshop),
+  `compose/mysql-init.sql` (its database), `tests/agent.rs`, `Cargo.toml`
+  (`sqlparser`), `.github/workflows/ci.yml` (the new test file).
+- Risks: binding parameters on PostgreSQL. sqlparser's reading of each
   dialect. A change to `run_script` that the SQL editor feels.
 - Tests: F.2 without hidden tables and masking. The existing script suites,
   unchanged and green.
@@ -1428,6 +1455,8 @@ log, and the UI to turn it on. Both looks.**
   (`_reference/settings-and-files.md`, `connections.md`,
   `keyboard-shortcuts.md`, `_guide/omarchy.md`, `macos.md`, a new
   `_guide/agents.md`).
+- Also here, from 1a: the size cap on an answer (B.5), beside the code
+  that writes the answer as JSON.
 - Risks: the relay on Windows (A.2). The first second process of this app.
   A second session to a database for each connection an agent uses. The
   settings pane switch.

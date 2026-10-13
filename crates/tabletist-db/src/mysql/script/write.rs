@@ -155,7 +155,7 @@ async fn statements(
             }
         }
         let started = Instant::now();
-        let result = run_statement(conn, text, limit).await?;
+        let result = run_statement(conn, text, limit, None).await?;
         outcome.stopped |= matches!(result, StatementOutcome::Cancelled);
         let last = !matches!(
             result,

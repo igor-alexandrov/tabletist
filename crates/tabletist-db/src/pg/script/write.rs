@@ -21,7 +21,16 @@ pub(super) async fn run(
     let tx = match open(client).await {
         // A lost session ends the run here: nothing to close.
         Ok(Tx::Open) => {
-            statements(client, texts, limit, ScriptMode::Write, stop, &mut outcome).await?
+            statements(
+                client,
+                texts,
+                limit,
+                ScriptMode::Write,
+                stop,
+                None,
+                &mut outcome,
+            )
+            .await?
         }
         // A cancel landed on the opening queries: no results.
         Ok(tx) => {

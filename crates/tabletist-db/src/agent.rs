@@ -11,20 +11,27 @@
 //! [`Refusal`] is why: a code an agent may match on, and a sentence it can
 //! act on.
 //!
-//! The check is the first fence, not the only one. What passes it runs as
-//! any read-only script does ([`crate::ScriptMode::ReadOnly`]): prepared
-//! alone by the database, in a read-only transaction that is rolled back.
-//! A write this check took for a read is refused there.
+//! The check is the first fence, not the only one. What passes it runs
+//! through [`crate::Connection::run_agent_read`], as any read-only script
+//! does ([`crate::ScriptMode::ReadOnly`]): prepared alone by the database,
+//! in a read-only transaction that is rolled back. A write this check took
+//! for a read is refused there. [`Limits`] is how much a read may take,
+//! and [`Answer`] what it gave.
 
 use std::fmt;
 
 use sqlparser::ast::{Query, SetExpr, Statement, UtilityOption};
 use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
-use sqlparser::tokenizer::{Token, Tokenizer};
+use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
 use crate::sql::TokenKind;
 use crate::{Dialect, sql};
+
+mod run;
+
+pub use run::{Answer, Limits};
+pub(crate) use run::{Sent, answer, count_mismatch};
 
 /// The longest statement that is read at all, in bytes.
 pub const MAX_SQL_BYTES: usize = 100_000;
@@ -64,18 +71,32 @@ impl fmt::Debug for Param {
     }
 }
 
-/// A statement that passed [`check_read`]. Its `Debug` output leaves the
-/// text out, as [`sql::Statement`]'s does.
-#[derive(Clone, PartialEq, Eq)]
+/// A statement that passed [`check_read`], with what it was checked
+/// against: [`crate::Connection::run_agent_read`] runs these values on a
+/// database of this dialect, and no others. Its `Debug` output leaves the
+/// text and the values out, as [`sql::Statement`]'s does.
+#[derive(Clone, PartialEq)]
 pub struct Read {
+    dialect: Dialect,
     text: String,
+    params: Vec<Param>,
     explains: bool,
 }
 
 impl Read {
+    /// The dialect the statement was checked for.
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
     /// The statement, without the white space and the `;` around it.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The values for its placeholders, in the placeholders' order.
+    pub fn params(&self) -> &[Param] {
+        &self.params
     }
 
     /// Whether it is an `EXPLAIN` of a query, which answers with a plan
@@ -88,6 +109,8 @@ impl Read {
 impl fmt::Debug for Read {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Read")
+            .field("dialect", &self.dialect)
+            .field("params", &self.params.len())
             .field("explains", &self.explains)
             .finish_non_exhaustive()
     }
@@ -280,7 +303,9 @@ pub fn check_read(dialect: Dialect, sql: &str, params: &[Param]) -> Result<Read,
     let text = statement.text.as_str();
     let explains = on_a_deep_stack(|| read_parsed(dialect, text, params))??;
     Ok(Read {
+        dialect,
         text: text.to_owned(),
+        params: params.to_vec(),
         explains,
     })
 }
@@ -313,6 +338,7 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
     let tokens = Tokenizer::new(parser, text)
         .tokenize()
         .map_err(|_| unread())?;
+    hints_read(dialect, &tokens, text)?;
     let statements = Parser::new(parser)
         .with_tokens(tokens.clone())
         .parse_statements()
@@ -358,6 +384,30 @@ fn read_parsed(dialect: Dialect, text: &str, params: &[Param]) -> Result<bool, R
     words_read(dialect, &own_words(dialect, text))?;
     params_match(dialect, &placeholders, params)?;
     Ok(explains)
+}
+
+/// Refuses a MySQL statement with an optimizer hint, in either reading of
+/// its comments. A comment that begins `/*+` is one to MySQL, and three
+/// hints undo what a run sets for its session: `SET_VAR(sql_select_limit =
+/// …)` lifts the row limit, and `MAX_EXECUTION_TIME(…)` and
+/// `SET_VAR(max_execution_time = …)` the timeout. Seen on MySQL 8.4. The
+/// same text is a comment and nothing more to PostgreSQL and SQLite.
+fn hints_read(dialect: Dialect, tokens: &[Token], text: &str) -> Result<(), Refusal> {
+    match dialect {
+        Dialect::MySql => {}
+        Dialect::Postgres | Dialect::Sqlite => return Ok(()),
+    }
+    let parsed = tokens.iter().any(|token| match token {
+        Token::Whitespace(Whitespace::MultiLineComment(body)) => body.starts_with('+'),
+        _ => false,
+    });
+    let own = sql::tokenize(dialect, text).iter().any(|token| {
+        matches!(token.kind, TokenKind::Comment) && text[token.range.clone()].starts_with("/*+")
+    });
+    if parsed || own {
+        return Err(Refusal::NotAllowed("a /*+ */ optimizer hint".into()));
+    }
+    Ok(())
 }
 
 /// Text the parser could not read. What does not even begin as a query is
@@ -984,7 +1034,63 @@ mod tests {
     #[test]
     fn what_passed_prints_without_its_text() {
         let read = read(Dialect::Postgres, "SELECT title FROM books").unwrap();
-        assert_eq!(format!("{read:?}"), "Read { explains: false, .. }");
+        assert_eq!(
+            format!("{read:?}"),
+            "Read { dialect: Postgres, params: 0, explains: false, .. }"
+        );
+    }
+
+    #[test]
+    fn what_passed_keeps_what_it_was_checked_against() {
+        let sent = [Param::Int(4), Param::Text("Lanterns".into())];
+        let read = check_read(
+            Dialect::MySql,
+            "SELECT title FROM books WHERE id = ? OR title = ?",
+            &sent,
+        )
+        .unwrap();
+        assert_eq!(read.dialect(), Dialect::MySql);
+        assert_eq!(read.params(), sent);
+        // Its values are counted when it is printed, and not shown.
+        assert_eq!(
+            format!("{read:?}"),
+            "Read { dialect: MySql, params: 2, explains: false, .. }"
+        );
+    }
+
+    #[test]
+    fn a_mysql_optimizer_hint_is_refused() {
+        // Each of the first three undoes what a run sets for its session.
+        for sql in [
+            "SELECT /*+ MAX_EXECUTION_TIME(600000) */ title FROM books",
+            "SELECT /*+ SET_VAR(max_execution_time = 0) */ title FROM books",
+            "SELECT /*+SET_VAR(sql_select_limit=100000)*/ title FROM books",
+            "SELECT title FROM books WHERE id IN (SELECT /*+ NO_MERGE() */ book_id FROM order_items)",
+            "SELECT title FROM books /*+ not where MySQL reads one */",
+            "EXPLAIN SELECT /*+ MAX_EXECUTION_TIME(600000) */ title FROM books",
+        ] {
+            let refusal = refused(Dialect::MySql, sql);
+            assert_eq!(refusal, not_allowed("a /*+ */ optimizer hint"), "{sql}");
+            assert_eq!(
+                refusal.to_string(),
+                "a /*+ */ optimizer hint is not available to agents."
+            );
+        }
+        // No hint: a comment that only looks like one, and the same
+        // characters in a string and in a line comment.
+        for sql in [
+            "SELECT title FROM books /* + a note */",
+            "SELECT title FROM books /* a note /*+ */",
+            "SELECT '/*+ MAX_EXECUTION_TIME(1) */' FROM books",
+            "SELECT title FROM books -- /*+ MAX_EXECUTION_TIME(1) */",
+        ] {
+            assert!(read(Dialect::MySql, sql).is_ok(), "{sql}");
+        }
+        // To the other two it is a comment.
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let sql = "SELECT /*+ SeqScan(books) */ title FROM books";
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}");
+        }
     }
 
     #[test]

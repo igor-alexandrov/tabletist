@@ -12,6 +12,7 @@ use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{SimpleQueryMessage, Socket};
 
 use crate::adapter::Adapter;
+use crate::agent::{Limits, Read};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
     Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
@@ -824,6 +825,15 @@ impl Adapter for Conn {
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         self.script(&texts, limit, mode, stop).await
+    }
+
+    async fn run_read(
+        &self,
+        read: &Read,
+        limits: Limits,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        self.agent_read(read, limits, stop).await
     }
 
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
