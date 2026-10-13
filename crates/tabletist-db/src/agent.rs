@@ -17,8 +17,9 @@ use std::fmt;
 
 use sqlparser::ast::{Query, SetExpr, Statement, UtilityOption};
 use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
-use sqlparser::tokenizer::Tokenizer;
+use sqlparser::tokenizer::{Token, Tokenizer};
 
 use crate::{Dialect, sql};
 
@@ -248,8 +249,9 @@ fn was(count: usize) -> String {
 /// `UNION` and the like) or an `EXPLAIN` of one that does not run it.
 ///
 /// Refused, with nothing run: more than one statement; a statement
-/// [`sql::refusal`] refuses; a statement that writes; every other kind of
-/// statement; and text the parser cannot read.
+/// [`sql::refusal`] refuses; anything that writes, locks or selects `INTO`,
+/// at any depth; every other kind of statement; and text the parser cannot
+/// read.
 pub fn check_read(dialect: Dialect, sql: &str, params: &[Param]) -> Result<Read, Refusal> {
     if sql.len() > MAX_SQL_BYTES {
         return Err(Refusal::TooLarge(Large::Statement));
@@ -305,7 +307,7 @@ fn read_parsed(dialect: Dialect, text: &str) -> Result<bool, Refusal> {
         .tokenize()
         .map_err(|_| unread())?;
     let statements = Parser::new(parser)
-        .with_tokens(tokens)
+        .with_tokens(tokens.clone())
         .parse_statements()
         .map_err(|_| unread())?;
     // The splitter found one. A parser that finds another count read the
@@ -343,6 +345,7 @@ fn read_parsed(dialect: Dialect, text: &str) -> Result<bool, Refusal> {
         }
         other => return Err(not_a_read(dialect, text, other)),
     };
+    tokens_read(dialect, &tokens)?;
     Ok(explains)
 }
 
@@ -402,7 +405,8 @@ fn named(dialect: Dialect, text: &str) -> String {
 
 /// Whether the statement's outermost query is one the three databases
 /// have, and its body reads. What is nested in it is not walked: a tree is
-/// as deep as its text is long.
+/// as deep as its text is long, and [`tokens_read`] reads every level of it
+/// without descending.
 fn query_reads(query: &Query) -> Result<(), Refusal> {
     // Named field by field: a field a later sqlparser adds must be decided
     // for here before this compiles.
@@ -441,6 +445,76 @@ fn query_reads(query: &Query) -> Result<(), Refusal> {
         SetExpr::Merge(_) => Err(Refusal::NotReadOnly(Writes::Merge)),
         SetExpr::Table(_) => Err(Refusal::NotAllowed("TABLE".into())),
     }
+}
+
+/// Reads the tokens of a statement the parser took for a query, and
+/// refuses what a read may not hold at any depth: a word that writes or
+/// locks, an assignment.
+///
+/// On tokens and not on the tree, for two reasons. A tree is as deep as
+/// its text is long, and walking one costs far more stack than dropping it.
+/// And a word is refused wherever the parser put it: this does not depend
+/// on which kind of expression sqlparser makes of it.
+///
+/// It errs toward refusing. `SELECT delete FROM notes` reads a column, on
+/// a database that lets one be named so without quotes, and is refused as
+/// a `DELETE`: a name in quotes passes.
+fn tokens_read(dialect: Dialect, tokens: &[Token]) -> Result<(), Refusal> {
+    let code: Vec<&Token> = tokens
+        .iter()
+        .filter(|token| !matches!(token, Token::Whitespace(_)))
+        .collect();
+    for (index, token) in code.iter().enumerate() {
+        let next = code.get(index + 1).copied();
+        match token {
+            // MySQL's `@total := @total + 1`: session state a rollback
+            // does not undo. PostgreSQL spells a named argument so.
+            Token::Assignment => match dialect {
+                Dialect::MySql => {
+                    return Err(Refusal::NotAllowed("An assignment to a variable".into()));
+                }
+                Dialect::Postgres | Dialect::Sqlite => {}
+            },
+            Token::Word(word) => {
+                // `INSERT('abc', 1, 1, 'x')` is one of MySQL's functions.
+                if matches!(next, Some(Token::LParen)) {
+                    continue;
+                }
+                if word.quote_style.is_some() {
+                    continue;
+                }
+                let writes = match word.keyword {
+                    Keyword::INSERT => Writes::Insert,
+                    Keyword::UPDATE => Writes::Update,
+                    Keyword::DELETE => Writes::Delete,
+                    Keyword::MERGE => Writes::Merge,
+                    Keyword::INTO => Writes::Into,
+                    // `FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR
+                    // KEY SHARE`. `substring(title FROM 1 FOR 3)` is not one.
+                    Keyword::FOR if locks_after(next) => Writes::Lock,
+                    // `TABLE books`: a table named where no later check of
+                    // table names looks. `SELECT * FROM books` says the same.
+                    Keyword::TABLE => return Err(Refusal::NotAllowed("TABLE".into())),
+                    _ => continue,
+                };
+                return Err(Refusal::NotReadOnly(writes));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Whether the token after a `FOR` begins a locking clause.
+fn locks_after(next: Option<&Token>) -> bool {
+    let Some(Token::Word(word)) = next else {
+        return false;
+    };
+    word.quote_style.is_none()
+        && matches!(
+            word.keyword,
+            Keyword::UPDATE | Keyword::SHARE | Keyword::NO | Keyword::KEY
+        )
 }
 
 #[cfg(test)]
@@ -929,5 +1003,159 @@ mod tests {
             });
             assert_eq!(answer, Ok(()), "{piece}");
         }
+    }
+
+    #[test]
+    fn a_write_inside_a_query_is_refused() {
+        for (sql, writes) in [
+            (
+                "WITH gone AS (DELETE FROM book_covers WHERE id = 9 RETURNING *) \
+                 SELECT * FROM gone",
+                Writes::Delete,
+            ),
+            (
+                "WITH added AS (INSERT INTO books (title) VALUES ('Emma') RETURNING id) \
+                 SELECT * FROM added",
+                Writes::Insert,
+            ),
+            (
+                "WITH changed AS (UPDATE book_covers SET kind = 'ebook' RETURNING id) \
+                 SELECT * FROM changed",
+                Writes::Update,
+            ),
+            (
+                "SELECT * FROM books WHERE id IN (WITH gone AS (DELETE FROM book_covers \
+                 RETURNING book_id) SELECT book_id FROM gone)",
+                Writes::Delete,
+            ),
+        ] {
+            assert_eq!(
+                refused(Dialect::Postgres, sql),
+                Refusal::NotReadOnly(writes),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn select_into_is_refused() {
+        for (dialect, sql) in [
+            (Dialect::Postgres, "SELECT * INTO books_copy FROM books"),
+            (
+                Dialect::Postgres,
+                "SELECT * INTO TEMP books_copy FROM books",
+            ),
+            (
+                Dialect::MySql,
+                "SELECT title INTO @title FROM books LIMIT 1",
+            ),
+        ] {
+            assert_eq!(
+                refused(dialect, sql),
+                Refusal::NotReadOnly(Writes::Into),
+                "{dialect:?}: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_locking_clause_is_refused_at_any_depth() {
+        for (dialect, sql) in [
+            (
+                Dialect::Postgres,
+                "SELECT * FROM books WHERE id IN (SELECT book_id FROM book_covers FOR UPDATE)",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT * FROM (SELECT * FROM books FOR SHARE) b",
+            ),
+            (
+                Dialect::MySql,
+                "SELECT * FROM (SELECT * FROM books FOR UPDATE) b",
+            ),
+        ] {
+            assert_eq!(
+                refused(dialect, sql),
+                Refusal::NotReadOnly(Writes::Lock),
+                "{dialect:?}: {sql}"
+            );
+        }
+        // FOR in another place is no lock.
+        for dialect in [Dialect::Postgres, Dialect::MySql] {
+            let sql = "SELECT substring(title FROM 1 FOR 3) FROM books";
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}");
+        }
+    }
+
+    #[test]
+    fn table_in_a_querys_place_is_refused() {
+        assert_eq!(
+            refused(Dialect::Postgres, "SELECT 1 UNION TABLE books"),
+            not_allowed("TABLE")
+        );
+        // sqlparser does not read these at all.
+        for sql in [
+            "TABLE books",
+            "SELECT * FROM authors WHERE id IN (TABLE books)",
+        ] {
+            assert_eq!(refused(Dialect::Postgres, sql), Refusal::NotParsed, "{sql}");
+        }
+    }
+
+    #[test]
+    fn an_assignment_to_a_variable_is_refused_on_mysql() {
+        assert_eq!(
+            refused(Dialect::MySql, "SELECT @total := @total + 1 FROM orders"),
+            not_allowed("An assignment to a variable")
+        );
+        // Reading one changes nothing.
+        assert!(read(Dialect::MySql, "SELECT @total").is_ok());
+        // PostgreSQL's older spelling of a named argument.
+        assert!(read(Dialect::Postgres, "SELECT make_interval(days := 2)").is_ok());
+    }
+
+    #[test]
+    fn a_word_in_quotes_in_a_string_or_in_a_comment_is_no_statement() {
+        for (dialect, sql) in [
+            (
+                Dialect::Postgres,
+                "SELECT \"delete\", \"into\", \"table\", \"update\" FROM notes",
+            ),
+            (
+                Dialect::Postgres,
+                "SELECT 'DELETE FROM books', $$ INSERT INTO books $$ -- UPDATE books\nFROM notes",
+            ),
+            (
+                Dialect::MySql,
+                "SELECT `delete`, `into` FROM notes /* FOR UPDATE */",
+            ),
+            (Dialect::Sqlite, "SELECT [delete], \"into\" FROM notes"),
+        ] {
+            assert!(read(dialect, sql).is_ok(), "{dialect:?}: {sql}");
+        }
+        // Without quotes it is taken for the statement: the check errs
+        // toward refusing.
+        assert_eq!(
+            refused(Dialect::Postgres, "SELECT delete FROM notes"),
+            Refusal::NotReadOnly(Writes::Delete)
+        );
+    }
+
+    #[test]
+    fn a_function_named_like_a_write_is_a_function() {
+        assert!(
+            read(
+                Dialect::MySql,
+                "SELECT INSERT(title, 1, 1, 'E'), REPLACE(title, 'a', 'b') FROM books"
+            )
+            .is_ok()
+        );
+        assert!(
+            read(
+                Dialect::Sqlite,
+                "SELECT replace(title, 'a', 'b') FROM books"
+            )
+            .is_ok()
+        );
     }
 }
