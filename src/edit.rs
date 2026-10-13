@@ -2223,6 +2223,76 @@ pub fn shown_lines(
         .collect()
 }
 
+/// The page's rows marked for deletion, in the order a save deletes them:
+/// a row before the row it points at, where a foreign key of the table
+/// points at the table itself (`object`). A key that holds would refuse
+/// the parent while its child is there, though the save deletes both.
+/// Rows that point at each other in a circle, and rows nothing orders,
+/// keep the page's order.
+fn delete_order(object: &ObjectRef, table: &Table<'_>) -> Vec<usize> {
+    let marked: Vec<usize> = table.deleted.keys().copied().collect();
+    let own: Vec<(Vec<usize>, Vec<usize>)> = table
+        .structure
+        .map(|structure| structure.foreign_keys.as_slice())
+        .unwrap_or_default()
+        .iter()
+        // SQLite matches a table's name without regard to ASCII case, and
+        // a key that names another schema's table is not the table's own.
+        .filter(|key| {
+            key.ref_table.eq_ignore_ascii_case(&object.name)
+                && (key.ref_schema.is_empty() || key.ref_schema == object.schema)
+        })
+        .filter_map(|key| {
+            let place = |name: &String| {
+                let mut columns = table.page.columns.iter();
+                columns.position(|column| column.name == *name)
+            };
+            let from: Option<Vec<usize>> = key.columns.iter().map(place).collect();
+            let to: Option<Vec<usize>> = key.ref_columns.iter().map(place).collect();
+            let (from, to) = (from?, to?);
+            (!from.is_empty() && from.len() == to.len()).then_some((from, to))
+        })
+        .collect();
+    if own.is_empty() || marked.len() < 2 {
+        return marked;
+    }
+    let values = |row: usize, cols: &[usize]| -> Option<Vec<&Value>> {
+        let held = table.page.rows.get(row)?;
+        let values: Vec<&Value> = cols.iter().filter_map(|&col| held.get(col)).collect();
+        // A key with a NULL in it points at no row.
+        (values.len() == cols.len() && values.iter().all(|value| !value.is_null()))
+            .then_some(values)
+    };
+    // Whether `child` points at `parent`.
+    let points_at = |child: usize, parent: usize| {
+        child != parent
+            && own.iter().any(|(from, to)| {
+                matches!(
+                    (values(child, from), values(parent, to)),
+                    (Some(a), Some(b)) if a.iter().zip(&b).all(|(a, b)| same_value(a, b))
+                )
+            })
+    };
+    // A row is taken once no row still waiting points at it. A pass that
+    // takes none has found a circle: what is left keeps its order.
+    let mut order = Vec::with_capacity(marked.len());
+    let mut waiting = marked;
+    while !waiting.is_empty() {
+        let free: Vec<usize> = waiting
+            .iter()
+            .copied()
+            .filter(|&row| !waiting.iter().any(|&other| points_at(other, row)))
+            .collect();
+        if free.is_empty() {
+            order.append(&mut waiting);
+            break;
+        }
+        waiting.retain(|row| !free.contains(row));
+        order.extend(free);
+    }
+    order
+}
+
 /// Where each part of a change set came from. An answer names a part by
 /// its place in the set.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -2301,9 +2371,10 @@ pub fn change_set(
             new: pending.new.clone(),
         });
     }
-    // The rows to delete, in the page's order.
+    // The rows to delete: a row before the row it points at, else in the
+    // page's order.
     let mut deletes = Vec::new();
-    for &row in table.deleted.keys() {
+    for row in delete_order(object, table) {
         deletes.push(RowDelete {
             key: key_of(table.page.rows.get(row)?)?,
         });
@@ -2522,6 +2593,71 @@ mod tests {
             new: NewValue::Text(text.into()),
             state: State::Ready,
         }
+    }
+
+    /// The Bookshop's `genres`, which point at themselves, with these
+    /// rows: (id, the genre it stands under).
+    fn genres(rows: &[(i64, Option<i64>)]) -> (Structure, RowPage) {
+        let mut page = crate::testing::genres_page();
+        page.rows = rows
+            .iter()
+            .map(|(id, parent)| {
+                vec![
+                    Value::Int(*id),
+                    parent.map_or(Value::Null, Value::Int),
+                    Value::Text(format!("genre {id}").into()),
+                ]
+            })
+            .collect();
+        (crate::testing::genres_structure(), page)
+    }
+
+    /// A row is deleted before the row it points at.
+    #[test]
+    fn a_child_is_deleted_before_its_parent() {
+        // Fiction (1), under it Crime (2), under that Noir (3); Poetry (4).
+        let (structure, page) = genres(&[(1, None), (2, Some(1)), (3, Some(2)), (4, None)]);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        for row in [0, 1, 2, 3] {
+            edits.mark(row);
+        }
+        let table = marked_covers(&structure, &page, &edits);
+        let (changes, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        let ids: Vec<&Value> = changes.deletes.iter().map(|row| &row.key[0].1).collect();
+        // Each child before its parent: what must hold.
+        let at = |id: i64| {
+            let mut ids = ids.iter();
+            ids.position(|value| **value == Value::Int(id)).unwrap()
+        };
+        assert!(at(3) < at(2) && at(2) < at(1));
+        // The rows nothing points at go first, in the page's order: Noir
+        // and Poetry, then Crime, then Fiction.
+        assert_eq!(
+            ids,
+            [
+                &Value::Int(3),
+                &Value::Int(4),
+                &Value::Int(2),
+                &Value::Int(1)
+            ]
+        );
+        // What the answer names by its place is the page's row.
+        assert_eq!(sent.deletes, [2, 3, 1, 0]);
+    }
+
+    /// Rows that point at each other keep the page's order: no order
+    /// deletes them, and the database says so.
+    #[test]
+    fn rows_in_a_circle_keep_the_pages_order() {
+        let (structure, page) = genres(&[(1, Some(2)), (2, Some(1))]);
+        let object = ObjectRef::new("main", "genres");
+        let mut edits = Edits::default();
+        edits.mark(0);
+        edits.mark(1);
+        let table = marked_covers(&structure, &page, &edits);
+        let (_, sent) = change_set(&object, &table, &edits.cells).unwrap();
+        assert_eq!(sent.deletes, [0, 1]);
     }
 
     /// Spec 1 and test 1: a mark, and the mark taken back.
