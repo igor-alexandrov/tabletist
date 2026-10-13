@@ -4529,6 +4529,7 @@ mod tests {
             changes: 1,
             rows: 1,
             added: 0,
+            deleted: 0,
             lines: Vec::new(),
             refused: None,
         };

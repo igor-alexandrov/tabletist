@@ -114,6 +114,13 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
                 say("cannot be sent:")
             )
         }
+        Line::Delete(row) => format!("-- {} {} {row}", say("delete"), say("row")),
+        Line::DeleteRefused { row, reason } => format!(
+            "-- {} {} {row} · {} {reason}",
+            say("delete"),
+            say("row"),
+            say("cannot be sent:")
+        ),
         Line::Sql(_) => return None,
     })
 }
@@ -138,8 +145,9 @@ fn comment_color(line: &Line, palette: &Palette) -> Color32 {
         | Line::Unsendable
         | Line::NewBlocked(_)
         | Line::NewRequired(_)
-        | Line::NewRefused(_) => Tone::Danger.color(palette),
-        Line::Row(_) | Line::Check(_) | Line::New | Line::Sql(_) => {
+        | Line::NewRefused(_)
+        | Line::DeleteRefused { .. } => Tone::Danger.color(palette),
+        Line::Row(_) | Line::Check(_) | Line::New | Line::Delete(_) | Line::Sql(_) => {
             sql_text::color_of(TokenKind::Comment, palette)
         }
     }
@@ -334,7 +342,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             widgets::hline(ui, head.x_range(), head.top() + 0.5, palette.outline);
             widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.outline);
             if look.terminal {
-                let counts = (review.added, review.changes, review.rows);
+                let counts = (review.added, review.changes, review.rows, review.deleted);
                 terminal_head(ui, head, side, counts, typing, skin);
                 let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT), full.max);
                 asked = terminal_foot(ui, foot, side, read_only, skin);
@@ -467,7 +475,7 @@ fn terminal_head(
     ui: &egui::Ui,
     head: Rect,
     side: f32,
-    (added, changes, rows): (usize, usize, usize),
+    (added, changes, rows, deleted): (usize, usize, usize, usize),
     typing: bool,
     skin: Skin<'_>,
 ) {
@@ -477,15 +485,19 @@ fn terminal_head(
         locale,
     } = skin;
     let y = head.center().y;
-    // The new rows, then the changes and their rows, each where there is
-    // any: "pending · 1 new row · 2 changes · 1 row".
+    // The new rows, then the changes and their rows, then the rows to
+    // delete, each where there is any: "pending · 1 new row · 2 changes
+    // · 1 row · 1 to delete".
     let mut counts = vec![skin.say("pending")];
     if added > 0 {
         counts.push(look.label(&counted(locale, added, "new row", "new rows")));
     }
-    if changes > 0 || added == 0 {
+    if changes > 0 || (added == 0 && deleted == 0) {
         counts.push(look.label(&counted(locale, changes, "change", "changes")));
         counts.push(look.label(&counted(locale, rows, "row", "rows")));
+    }
+    if deleted > 0 {
+        counts.push(format!("{deleted} {}", skin.say("to delete")));
     }
     let counts = counts.join(" · ");
     let counts = Text::one(look, TextRole::OGroup, &counts, palette.text);
@@ -687,6 +699,18 @@ mod tests {
         assert_eq!(
             read(Line::Row("id 2".into())).as_deref(),
             Some("-- row id 2")
+        );
+        assert_eq!(
+            read(Line::Delete("id 9".into())).as_deref(),
+            Some("-- delete row id 9")
+        );
+        let refused = Line::DeleteRefused {
+            row: "id 9".into(),
+            reason: "no".into(),
+        };
+        assert_eq!(
+            read(refused).as_deref(),
+            Some("-- delete row id 9 · cannot be sent: no")
         );
         let check = Line::Check(vec![
             ("kind".into(), "'print'".into()),

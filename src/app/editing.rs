@@ -458,6 +458,10 @@ impl App {
                             let new = sent.inserts.get(index).copied();
                             object.edits.fail_insert(new, error);
                         }
+                        Part::Delete(index) => {
+                            let row = sent.deletes.get(index).copied();
+                            object.edits.fail_delete(row, error);
+                        }
                     }
                     // The row panel says what stands against a cell.
                     object.fields = None;
