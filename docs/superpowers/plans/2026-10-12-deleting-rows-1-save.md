@@ -8,6 +8,13 @@
 
 **Tech Stack:** Rust 1.98, `tokio-postgres`, `mysql_async`, `rusqlite` (bundled SQLite). Spec: `docs/superpowers/specs/2026-10-12-deleting-rows-design.md` ("spec N" below is a section of its Behavior, "test N" an entry of its Tests).
 
+Status: built on 2026-10-12, one commit per task. Each task's blocks are the plan's as written, but for these:
+
+- Task 4, step 2: six of the eight SQLite tests failed before the driver deleted, as the step says, but not the six it names, and with "no such column: id": from task 3 on the comparison of the rows a save read is given the deletes' keys, and no read of theirs yet. So between tasks 3 and 4 a set with deletes was refused on every engine, not written with nothing deleted. `sqlite_writes_new_rows_before_it_deletes` failed with the rest, and `sqlite_refuses_a_key_the_table_spells_otherwise` passed, for that reason and not its own.
+- Task 4: `sqlite_refuses_a_key_the_table_spells_otherwise` asserts the error's words ("spells ID another way"), since any error passed it.
+- Task 6: `delete` matches a cancel and a lost session itself, as the drivers' loops do, and does not go through `own`.
+- PostgreSQL's and MySQL's seven tests each were compiled and not run: no server can be started in the session. CI runs them.
+
 ---
 
 ## Before you start
