@@ -779,8 +779,8 @@ async fn delete_many(
             execute(conn, SAVEPOINT).await?;
             match delete(conn, sql, stop).await? {
                 Ok(deleted) => Some(deleted),
-                // Busy: sent again row by row, each row could wait as
-                // long.
+                // Busy: not sent again row by row, since each row could
+                // wait as long. The save ends on the run's first row.
                 Err(error) if Dialect::MySql.busy(&error) => {
                     return Ok(Some(Applied::FailedDelete {
                         delete: first,

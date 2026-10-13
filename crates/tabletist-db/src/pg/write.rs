@@ -240,8 +240,8 @@ async fn delete_many(
             {
                 Ok(messages) => Some(touched(&messages)),
                 Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
-                // Busy: sent again row by row, each row could wait as
-                // long.
+                // Busy: not sent again row by row, since each row could
+                // wait as long. The save ends on the run's first row.
                 Err(error) if Dialect::Postgres.busy(&error) => {
                     return Ok(Some(Applied::FailedDelete {
                         delete: first,
