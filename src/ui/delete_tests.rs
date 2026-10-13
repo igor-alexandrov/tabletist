@@ -1150,3 +1150,37 @@ fn open_rows_asks_first_where_the_rows_are_the_tabs_own() {
     // Nothing was dropped: the mark and its page stand.
     assert!(edits(&harness, tab, id).deleted.contains_key(&0));
 }
+
+/// A key of the table that points at the table and deletes or clears: the
+/// save took, or changed, rows it did not name, some perhaps on the page.
+/// The page is read again, and the count with it, where a key that holds
+/// leaves the page to be patched.
+#[test]
+fn a_delete_that_reaches_rows_of_its_own_table_reads_the_page_again() {
+    for (on_delete, reads) in [("CASCADE", true), ("SET NULL", true), ("NO ACTION", false)] {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake_as(false);
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "genres"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        let mut structure = crate::testing::genres_structure();
+        structure.referenced_by[0].on_delete = on_delete.into();
+        harness.answer_structure(structure);
+        harness.answer_rows(crate::testing::genres_page());
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        // Crime, which nothing on the page stands under.
+        mark(&mut harness, tab, id, 1);
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.answer_written(written(Vec::new()));
+        let workspace = harness.app.workspace(tab).unwrap();
+        let object = workspace.object_tab(id).unwrap();
+        assert_eq!(object.rows.is_loading(), reads, "{on_delete}");
+        // Patched, the page has lost the row; read again, it waits.
+        let rows = object.page().map(|page| page.rows.len());
+        assert_eq!(rows == Some(1), !reads, "{on_delete}");
+        assert!(object.edits.deleted.is_empty(), "{on_delete}");
+    }
+}

@@ -1916,9 +1916,22 @@ impl App {
                 if !already.is_empty() {
                     object.edits.note = Some(Note::AlreadyDeleted(already));
                 }
+                // A key of the table that points at the table and acts on
+                // a delete: the database deleted rows the save did not
+                // name, or cleared their key, and some may be on this
+                // page. Only a read says which.
+                let reaches_its_own = !saving.deletes.is_empty()
+                    && object.structure.value.as_ref().is_some_and(|structure| {
+                        structure.referenced_by.iter().any(|key| {
+                            key.schema == object.object.schema
+                                && key.table.eq_ignore_ascii_case(&object.object.name)
+                                && key.acts().is_some()
+                        })
+                    });
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
                     let wide = |row: &Vec<tabletist_db::Value>| row.len() == page.columns.len();
-                    rows.len() == saving.rows.len()
+                    !reaches_its_own
+                        && rows.len() == saving.rows.len()
                         && rows.iter().all(wide)
                         && saving.rows.iter().all(|&at| at < page.rows.len())
                         && saving.deletes.iter().all(|&at| at < page.rows.len())
@@ -2030,11 +2043,16 @@ impl App {
                         elapsed,
                     });
                 } else {
-                    // The table is not the one the page was read from, or a
+                    // The table is not the one the page was read from, a
                     // new row came back unknown (a table with a trigger,
-                    // MySQL without a key to find it by): read it again. A
+                    // MySQL without a key to find it by), or a delete
+                    // reached rows the save did not name: read it again. A
                     // new row is nowhere until the page says where.
                     object.off_new_rows();
+                    // How many rows the table lost is not known either.
+                    if reaches_its_own {
+                        self.reset_count(tab, id);
+                    }
                     self.fetch_rows(tab, id);
                 }
                 // Written either way, and the set is empty: what was held
