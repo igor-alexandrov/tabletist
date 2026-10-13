@@ -116,6 +116,7 @@ pub fn comment(line: &Line, locale: Locale) -> Option<String> {
             )
         }
         Line::Delete(row) => format!("-- {} {} {row}", say("delete"), say("row")),
+        Line::DeleteRun(rows) => format!("-- {} {rows} {}", say("delete"), say("rows")),
         Line::DeleteRefused { row, reason } => format!(
             "-- {} {} {row} · {} {reason}",
             say("delete"),
@@ -184,9 +185,12 @@ fn comment_color(line: &Line, palette: &Palette) -> Color32 {
         | Line::DeleteRefused { .. } => Tone::Danger.color(palette),
         // What a statement does beyond what it says: a warning.
         Line::Also(_) => Tone::Warning.color(palette),
-        Line::Row(_) | Line::Check(_) | Line::New | Line::Delete(_) | Line::Sql(_) => {
-            sql_text::color_of(TokenKind::Comment, palette)
-        }
+        Line::Row(_)
+        | Line::Check(_)
+        | Line::New
+        | Line::Delete(_)
+        | Line::DeleteRun(_)
+        | Line::Sql(_) => sql_text::color_of(TokenKind::Comment, palette),
     }
 }
 
@@ -740,6 +744,10 @@ mod tests {
         assert_eq!(
             read(Line::Delete("id 9".into())).as_deref(),
             Some("-- delete row id 9")
+        );
+        assert_eq!(
+            read(Line::DeleteRun(3)).as_deref(),
+            Some("-- delete 3 rows")
         );
         let also = |effect: Effect| read(Line::Also(effect));
         let covers = || "book_covers".to_owned();
