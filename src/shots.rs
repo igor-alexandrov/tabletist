@@ -395,11 +395,12 @@ const DELETED: &str = "2026-10-04 09:30:00";
 /// user reaches it, through the model, so it is the same state in every
 /// look: the bar, the tints and the dialogs on macOS and Windows; the mode
 /// line, the gutter and the error line on Omarchy.
-const EDITING: [(&str, Scene); 16] = [
+const EDITING: [(&str, Scene); 17] = [
     ("edit-new-row", edit_new_row),
     ("edit-new-row-filled", edit_new_row_filled),
     ("edit-new-row-failed", edit_new_row_failed),
     ("edit-pending", edit_pending),
+    ("edit-delete-row", edit_delete_row),
     ("edit-review", edit_review),
     ("edit-field", edit_field),
     ("edit-key-picker", edit_key_picker),
@@ -619,6 +620,18 @@ fn edit_pending(harness: &mut Harness) {
     let (tab, id) = editable(harness);
     retire_image(harness, tab, id);
     retype(harness, tab, id, (3, BOOK_ID), "107233x");
+    step_aside(harness, tab, id);
+}
+
+/// A row marked for deletion beside a changed one: the row's own fill and
+/// bar, its values struck through, the minus before its key (the
+/// terminal's `-` in the gutter), and the bar that counts it.
+fn edit_delete_row(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    let cell = CellPos { row: 2, col: 0 };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+    harness.app.apply(Action::DeleteRow { tab, id });
     step_aside(harness, tab, id);
 }
 
