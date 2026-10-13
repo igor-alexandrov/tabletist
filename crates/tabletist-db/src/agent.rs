@@ -11,10 +11,12 @@
 //! [`Refusal`] is why: a code an agent may match on, and a sentence it can
 //! act on.
 //!
-//! The check is the first fence, not the only one. What passes it runs as
-//! any read-only script does ([`crate::ScriptMode::ReadOnly`]): prepared
-//! alone by the database, in a read-only transaction that is rolled back.
-//! A write this check took for a read is refused there.
+//! The check is the first fence, not the only one. What passes it runs
+//! through [`crate::Connection::run_agent_read`], as any read-only script
+//! does ([`crate::ScriptMode::ReadOnly`]): prepared alone by the database,
+//! in a read-only transaction that is rolled back. A write this check took
+//! for a read is refused there. [`Limits`] is how much a read may take,
+//! and [`Answer`] what it gave.
 
 use std::fmt;
 
@@ -25,6 +27,11 @@ use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
 use crate::sql::TokenKind;
 use crate::{Dialect, sql};
+
+mod run;
+
+pub use run::{Answer, Limits};
+pub(crate) use run::{Sent, answer, count_mismatch};
 
 /// The longest statement that is read at all, in bytes.
 pub const MAX_SQL_BYTES: usize = 100_000;

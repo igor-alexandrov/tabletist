@@ -1,5 +1,6 @@
 //! What the adapter of every database provides.
 
+use crate::agent::{Limits, Read};
 use crate::{
     CancelHandle, ChangeSet, Lookup, LookupPage, ObjectInfo, ObjectRef, Result, RowPage, RowQuery,
     ScriptMode, ScriptOutcome, StopFlag, Structure, WriteOutcome,
@@ -40,6 +41,11 @@ pub(crate) trait Adapter {
         mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome>;
+
+    /// `read` has passed [`crate::agent::check_read`] for this database's
+    /// dialect. The outcome is a read-only script's of one statement.
+    async fn run_read(&self, read: &Read, limits: Limits, stop: &StopFlag)
+    -> Result<ScriptOutcome>;
 
     /// `changes` have passed their own check, and the session may write.
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome>;

@@ -6,7 +6,8 @@
 //! session opened [`Access::Writable`]. Everything else stays fenced there
 //! as on a read-only session: row fetches, counts and lookups run in read-only
 //! transactions (on SQLite under `query_only`), and a script run in
-//! [`ScriptMode::ReadOnly`] cannot write.
+//! [`ScriptMode::ReadOnly`] cannot write. Neither can
+//! [`Connection::run_agent_read`], which is such a run of one statement.
 
 mod adapter;
 pub mod agent;
@@ -224,6 +225,42 @@ impl Connection {
             Inner::Postgres(conn) => conn.run_script(texts, limit, mode, stop).await,
             Inner::MySql(conn) => conn.run_script(texts, limit, mode, stop).await,
         }
+    }
+
+    /// Runs a statement that passed [`agent::check_read`], as a script of
+    /// one statement runs in [`ScriptMode::ReadOnly`]: prepared alone, in
+    /// a read-only transaction that is rolled back, keeping at most
+    /// `limits.rows` rows.
+    ///
+    /// Two things a script does not have. The values the statement was
+    /// checked with are bound to its placeholders by the database's own
+    /// protocol, and are never written into its text. And the database
+    /// itself ends the statement after `limits.timeout`, which answers
+    /// [`Error::Timeout`]; a caller keeps a timer of its own behind it, as
+    /// for any script.
+    ///
+    /// A statement that failed is its error, and one `stop` ended is
+    /// [`Error::Cancelled`]. A `read` that was checked for another
+    /// dialect than this session's is refused, with nothing sent.
+    ///
+    /// The future must be awaited to its end, as [`Self::run_script`]'s.
+    pub async fn run_agent_read(
+        &self,
+        read: &agent::Read,
+        limits: agent::Limits,
+        stop: &StopFlag,
+    ) -> Result<agent::Answer> {
+        if read.dialect() != self.dialect() {
+            return Err(Error::query(
+                "the statement was checked for another kind of database",
+            ));
+        }
+        let outcome = match &self.inner {
+            Inner::Sqlite(conn) => conn.run_read(read, limits, stop).await,
+            Inner::Postgres(conn) => conn.run_read(read, limits, stop).await,
+            Inner::MySql(conn) => conn.run_read(read, limits, stop).await,
+        }?;
+        agent::answer(outcome, stop)
     }
 
     /// The server's name and version for the footer: `PostgreSQL 17.2`,
