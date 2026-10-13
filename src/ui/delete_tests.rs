@@ -7,6 +7,7 @@
 
 use egui::{Key, Modifiers};
 
+use super::duplicate_tests::button;
 use super::insert_audit_tests::{
     add, covers_as, covers_in, edits, painted, select, selected, set, type_key,
 };
@@ -568,4 +569,76 @@ fn the_production_confirm_of_deletes_alone_names_no_change() {
     harness.app.apply(Action::WriteEdits { tab, id });
     harness.settle();
     assert!(harness.has("Save 2 deleted rows to production?"));
+}
+
+/// Spec 1 and 6: the panel's Delete marks the row, by its plain name.
+#[test]
+fn the_panels_delete_marks_the_row() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        select(&mut harness, tab, id, (1, 2));
+        assert_eq!(button(&mut harness, "Delete"), (true, None));
+        harness.click("Delete");
+        harness.settle();
+        assert!(edits(&harness, tab, id).deleted.contains_key(&1));
+    }
+}
+
+/// Spec 3: the line at the panel's top, its Restore, and Delete that
+/// waits with the line's words.
+#[test]
+fn a_marked_rows_panel_says_so_and_restores_it() {
+    for look in desktop() {
+        let (mut harness, tab, id) = covers_in(look);
+        mark(&mut harness, tab, id, 1);
+        assert!(harness.has("Will be deleted on save"));
+        assert_eq!(button(&mut harness, "Restore"), (true, None));
+        assert_eq!(
+            button(&mut harness, "Delete"),
+            (false, Some("Will be deleted on save".into()))
+        );
+        harness.click("Restore");
+        harness.settle();
+        assert!(edits(&harness, tab, id).deleted.is_empty());
+        assert!(!harness.has("Will be deleted on save"));
+    }
+}
+
+/// The Omarchy look's line names the key that restores, and its footer
+/// names it as a key that works.
+#[test]
+fn the_terminals_panel_names_the_key_that_restores() {
+    let (mut harness, tab, id) = covers_in(Look::omarchy());
+    mark(&mut harness, tab, id, 1);
+    assert!(harness.has("will be deleted on save · dd restore"));
+    assert!(painted(&harness, "dd restore"));
+}
+
+/// Spec 2 and 6: where the row cannot be deleted, Delete is disabled with
+/// the reason as its description.
+#[test]
+fn the_panels_delete_says_why_it_cannot_be_pressed() {
+    let table = tabletist_db::ObjectKind::Table;
+    let (mut harness, tab, id) = covers_as(Look::macos(), table, true);
+    select(&mut harness, tab, id, (1, 2));
+    assert_eq!(
+        button(&mut harness, "Delete"),
+        (false, Some("Read-only connection".into()))
+    );
+}
+
+/// Spec 5: the row a delete was refused for shows the database's words in
+/// its panel, under the line that says it is marked.
+#[test]
+fn a_refused_deletes_panel_shows_what_the_database_said() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    mark(&mut harness, tab, id, 1);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedDelete {
+        delete: 0,
+        error: tabletist_db::Error::query("FOREIGN KEY constraint failed"),
+    }));
+    harness.settle();
+    assert!(harness.has("Will be deleted on save"));
+    assert!(harness.has("FOREIGN KEY constraint failed."));
 }

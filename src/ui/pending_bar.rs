@@ -120,7 +120,7 @@ pub fn note_line(
 
 /// The database's own words about a statement that failed, after its code
 /// when it gave one.
-fn database_said(error: &Error) -> String {
+pub(crate) fn database_said(error: &Error) -> String {
     match error {
         Error::Query {
             code: Some(code),

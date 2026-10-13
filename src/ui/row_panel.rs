@@ -525,6 +525,11 @@ fn draw(
                 if lock == Lock::ReadOnly {
                     return look.label(&gettext(locale, "Read-only connection"));
                 }
+                // A row marked for deletion says what will become of it,
+                // not why it cannot be edited.
+                if lock == Lock::Deleting {
+                    return look.label(&gettext(locale, "Will be deleted on save"));
+                }
                 lock_said(&object.object.name, lock)
             });
             let structure = source.structure;
@@ -871,7 +876,23 @@ fn draw(
             // A row no field of which can be edited says why, once, in a
             // line under the header: a lock, and the reason.
             let mut top = header.bottom();
-            if let Some(reason) = locked.as_deref().filter(|_| source.table) {
+            // The row is marked for deletion: its line has Restore, and
+            // under it what the database said of a delete it refused.
+            let doomed = object
+                .filter(|_| form.locked == Some(Lock::Deleting))
+                .and_then(|object| object.edits.deleted.get(&cell.row));
+            let marked = doomed.is_some();
+            // The terminal's line ends with the key that restores.
+            let restore_key = crate::ui::keys::written(ui.ctx(), &look, Command::DeleteRow);
+            let reason = locked.as_deref().map(|reason| {
+                if marked && look.terminal {
+                    let restore = look.label(&gettext(locale, "restore"));
+                    format!("{reason} · {restore_key} {restore}")
+                } else {
+                    reason.to_owned()
+                }
+            });
+            if let Some(reason) = reason.as_deref().filter(|_| source.table) {
                 let role = caption(&look);
                 let height = 9.0 + line_of(ui, role, &look) + 9.0 + 1.0;
                 let strip = Rect::from_min_size(pos2(full.left(), top), vec2(full.width(), height));
@@ -883,21 +904,44 @@ fn draw(
                 widgets::hline(ui, strip.x_range(), strip.bottom() - 0.5, divider);
                 let y = strip.center().y - 0.5;
                 let mut x = strip.left() + side;
-                if !look.terminal {
+                // A lock for a row that cannot be edited. A marked row is
+                // not locked away: it has what takes the mark off.
+                if !look.terminal && !marked {
                     Icon::Lock.image(palette.dim, 11.0).paint_at(
                         ui,
                         Rect::from_center_size(pos2(x + 5.5, y), vec2(11.0, 11.0)),
                     );
                     x += 17.0;
                 }
-                let room = strip.right() - side - x;
+                let mut right = strip.right() - side;
+                if marked && !look.terminal {
+                    let word = gettext(locale, "Restore");
+                    let button = widgets::ButtonSpec::new(&word);
+                    let width = button.width(ui, &look);
+                    let place =
+                        Rect::from_min_size(pos2(right - width, y - 11.0), vec2(width, 22.0));
+                    right = place.left() - 8.0;
+                    if button.show_at(ui, place, &look, &palette).clicked() {
+                        actions.push(Action::RestoreRow { tab, id });
+                    }
+                }
+                let room = right - x;
                 // Cut at the panel's side, as a field's label is.
                 let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
                 let shown = crate::ui::grid::ellipsize(reason, room, false, measure);
-                widgets::paint_text(ui, x, y, Text::one(&look, role, &shown, palette.dim));
+                // What will be lost is said in the danger's colour.
+                let color = if marked { palette.danger } else { palette.dim };
+                widgets::paint_text(ui, x, y, Text::one(&look, role, &shown, color));
                 // The whole of it for a screen reader, cut or not.
                 let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(room.max(1.0), 16.0));
                 widgets::announce(ui, place, reason);
+            }
+            // What the database said of the row's delete in the last
+            // save, where it refused it: under the line that says the row
+            // is marked.
+            if let Some(error) = doomed.and_then(|doomed| doomed.failed.as_ref()) {
+                let said = crate::ui::pending_bar::database_said(error);
+                top = form_note(ui, full, top, &said, &look, &palette);
             }
             // A copy says what it was made as at the form's top, above
             // its fields and what a table without a key says.
@@ -966,9 +1010,28 @@ fn draw(
                     };
                     lock.map(|lock| lock_said(&object.object.name, lock))
                 });
-                let why = (locked.as_deref(), no_copy.as_deref());
-                if editing_footer(ui, foot, why, &look, &palette, locale) {
+                // Why the row cannot be deleted, in Delete's own words:
+                // what keeps it from being edited, or, in the looks whose
+                // line has Restore, that it is marked already. The
+                // terminal's key restores a marked row, and says so.
+                let no_delete = object.and_then(|object| {
+                    if marked {
+                        let said = gettext(locale, "Will be deleted on save");
+                        return (!look.terminal).then(|| said.into_owned());
+                    }
+                    let lock = Table::of(workspace, object)?.no_delete(cell.row)?;
+                    let table = format::display_safe(&object.object.name);
+                    Some(crate::ui::cell_editor::delete_said(
+                        lock, &table, &look, locale,
+                    ))
+                });
+                let why = (locked.as_deref(), no_copy.as_deref(), no_delete.as_deref());
+                let (copy, delete) = editing_footer(ui, foot, why, marked, &look, &palette, locale);
+                if copy {
                     actions.push(Action::DuplicateRow { tab, id });
+                }
+                if delete {
+                    actions.push(Action::DeleteRow { tab, id });
                 }
             }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
@@ -3081,11 +3144,12 @@ fn attachment_card(
 fn editing_footer(
     ui: &mut egui::Ui,
     rect: Rect,
-    (locked, no_copy): (Option<&str>, Option<&str>),
+    (locked, no_copy, no_delete): (Option<&str>, Option<&str>, Option<&str>),
+    marked: bool,
     look: &Look,
     palette: &Palette,
     locale: crate::i18n::Locale,
-) -> bool {
+) -> (bool, bool) {
     let side = side(look);
     if !look.terminal {
         ui.painter()
@@ -3101,25 +3165,23 @@ fn editing_footer(
             palette.surface_hover
         },
     );
-    // In the look's words, as the row's reason is: the terminal's in its
-    // lower case.
-    let later = look.label(&gettext(locale, "Deleting rows arrives in a later version"));
-    // Why Delete cannot be pressed: the row's reason, where it has one.
-    let no_delete = locked.unwrap_or(&later);
     let inner = rect.shrink2(vec2(side, 0.0));
     let gap = 6.0;
     let top = rect.top() + 1.0 + if look.terminal { 10.0 } else { 12.0 };
     let role = widgets::body(look);
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
     let mut copy = false;
+    let mut delete = false;
     let height = if look.terminal {
         // Two equal cells, the keys in the text colour. What waits is
         // dashed, at 55%. A key that works is whole.
         let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
-        let (duplicate, delete) = (key(Command::DuplicateRow), key(Command::DeleteRow));
+        let (duplicate, delete_key) = (key(Command::DuplicateRow), key(Command::DeleteRow));
+        // On a marked row the key takes the mark off again.
+        let deletes = if marked { "restore" } else { "delete" };
         let keys = [
             (&duplicate, "duplicate", no_copy),
-            (&delete, "delete", Some(no_delete)),
+            (&delete_key, deletes, no_delete),
         ];
         let width = (inner.width() - gap) / 2.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
@@ -3173,7 +3235,7 @@ fn editing_footer(
         // 6, the word.
         let labels = [
             (Icon::Copy, gettext(locale, "Duplicate"), no_copy),
-            (Icon::Trash2, gettext(locale, "Delete"), Some(no_delete)),
+            (Icon::Trash2, gettext(locale, "Delete"), no_delete),
         ];
         let widths: Vec<f32> = labels
             .iter()
@@ -3192,9 +3254,9 @@ fn editing_footer(
                 Some(why) => button.disabled(why),
                 None => button,
             };
-            // Only Duplicate does anything yet: the first of the two.
             let clicked = button.show_at(ui, place, look, palette).clicked();
             copy |= clicked && index == 0;
+            delete |= clicked && index == 1;
         }
         32.0
     };
@@ -3202,15 +3264,21 @@ fn editing_footer(
     // terminal look's head names its keys, and a row that cannot be edited
     // says why at the top of the panel.
     if look.terminal || locked.is_some() {
-        return copy;
+        return (copy, delete);
     }
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
     let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
-    let key = crate::ui::keys::written(ui.ctx(), look, Command::OpenInspector);
+    // And, as the design's hint ends, the keys that copy and delete.
+    let key = |command| crate::ui::keys::written(ui.ctx(), look, command);
     let click = gettext(locale, "Click a value or press");
     let edit = gettext(locale, "to edit");
-    let said = format!("{click} {key} {edit}");
+    let said = format!(
+        "{click} {} {edit} · {} · {}",
+        key(Command::OpenInspector),
+        key(Command::DuplicateRow),
+        key(Command::DeleteRow)
+    );
     // Cut at the panel's side, as a field's label is.
     let shown = crate::ui::grid::ellipsize(&said, inner.width(), false, measure);
     let hint = Text::one(look, note_role, &shown, palette.dim);
@@ -3221,7 +3289,7 @@ fn editing_footer(
         vec2(inner.width().max(1.0), 16.0),
     );
     widgets::announce(ui, place, &said);
-    copy
+    (copy, delete)
 }
 
 /// A dashed 1 pt outline round `rect`.

@@ -19179,7 +19179,7 @@ mod tests {
     }
 
     #[test]
-    fn the_row_panels_duplicate_can_be_pressed_and_delete_waits() {
+    fn the_row_panels_duplicate_and_delete_can_be_pressed() {
         for look in Look::ALL {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (1, 1));
@@ -19190,10 +19190,10 @@ mod tests {
                     .map(|(_, enabled)| enabled)
                     .collect::<Vec<_>>()
             };
-            assert_eq!(pressable(&mut harness), [true, false], "{}", look.name);
+            assert_eq!(pressable(&mut harness), [true, true], "{}", look.name);
             // With a value pending as without.
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-            assert_eq!(pressable(&mut harness), [true, false], "{}", look.name);
+            assert_eq!(pressable(&mut harness), [true, true], "{}", look.name);
             // The panel is no mode to put it in: no button edits the row.
             let edit = if look.terminal { "e edit" } else { "Edit" };
             assert!(!has_button(&mut harness, edit), "{}", look.name);
@@ -23969,7 +23969,9 @@ mod tests {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (1, 1));
             let inspector = key_of(&look, crate::keymap::Command::OpenInspector);
-            let how = format!("Click a value or press {inspector} to edit");
+            let copy = key_of(&look, crate::keymap::Command::DuplicateRow);
+            let delete = key_of(&look, crate::keymap::Command::DeleteRow);
+            let how = format!("Click a value or press {inspector} to edit · {copy} · {delete}");
             assert_eq!(times_painted(&harness, "e edit"), 0, "{}", look.name);
             if look.terminal {
                 assert!(painted(&harness, "[ ] prev/next"));
