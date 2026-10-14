@@ -7407,3 +7407,7 @@ Then run the workspace's tests once with the servers, as `AGENTS.md` has it.
 Run on 2026-10-13, inline, one commit for each task. Every step showed what it says above, the three breakages of Task 7 among them, and the files the tasks changed are byte for byte the draft's. The last state passed the workspace's tests with PostgreSQL and MySQL up: 23 test binaries, 3,342 passed, none failed.
 
 One step was wrong as written, and is corrected above: the last check compared `src` with `main`, and a worktree's own `main` can be months behind. It is `origin/main` that the app's sources are the same as.
+
+## After the pull request's review
+
+The review found nothing to stop the merge, and one sentence that said too much: the crate's own description had "Every call is written to the Log", where a call that is no tool's is the protocol's error and no entry, as "What this run settles" has it and `tests/tools.rs` asserts. The sentence in `src/lib.rs` now says which calls. The diffs above have it as it was.

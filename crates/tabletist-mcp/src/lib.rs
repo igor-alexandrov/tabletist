@@ -1,8 +1,10 @@
 //! The MCP server through which agents use Tabletist's connections.
 //!
 //! An agent's tools only read. A refusal is a tool's result, with a code
-//! that does not change and a sentence the agent can act on. Every call is
-//! written to the [`Log`].
+//! that does not change and a sentence the agent can act on. Every call a
+//! tool answers or refuses is written to the [`Log`]. A call that is no
+//! tool's (an unknown name, an argument a tool does not take) is the
+//! protocol's error, and no entry.
 //!
 //! A statement passes [`tabletist_db::agent::check_read`] before it reaches
 //! a database, runs in a read-only transaction that is rolled back, and its
