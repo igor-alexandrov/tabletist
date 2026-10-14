@@ -69,7 +69,6 @@ use crate::app::App;
 use crate::model::{Action, ConnTabContent};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    notice(app, ui);
     let fill = app.palette.window;
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
@@ -95,13 +94,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
-/// keyring write that failed), until dismissed.
-fn notice(app: &mut App, ui: &mut egui::Ui) {
+/// keyring write that failed), until dismissed. The screen draws it under
+/// the bar that leads the window, which on macOS is the title bar: the
+/// window's own buttons keep their line. Returns its height, nothing when
+/// there is no notice.
+pub(crate) fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
     let Some(message) = app.notice.clone() else {
-        return;
+        return 0.0;
     };
     let mut actions = Vec::new();
-    egui::Panel::top(egui::Id::new("notice"))
+    let shown = egui::Panel::top(egui::Id::new("notice"))
         .resizable(false)
         .show_separator_line(false)
         .frame(
@@ -111,11 +113,14 @@ fn notice(app: &mut App, ui: &mut egui::Ui) {
         )
         .show(ui, |ui| notice_line(app, ui, &message, &mut actions));
     app.actions.extend(actions);
+    shown.response.rect.height()
 }
 
-/// What a notice stands on.
+/// What a notice stands on: the warning colour, faint, laid on the
+/// window's. Solid, so that nothing under it shows through: at the top of
+/// a macOS window that is the dark that stands behind the whole window.
 fn notice_fill(palette: &crate::theme::Palette) -> egui::Color32 {
-    palette.warning.gamma_multiply(0.15)
+    palette.window.blend(palette.warning.gamma_multiply(0.15))
 }
 
 /// A notice on one line: what it says, and at the right the button that
@@ -7772,6 +7777,54 @@ mod tests {
             assert!(harness.has(label), "{label}");
         }
         assert!(!harness.has("File"));
+    }
+
+    #[test]
+    fn a_notice_stands_under_the_bar_that_leads_the_window() {
+        let message = "Could not save the password in the keyring.";
+        for look in Look::ALL {
+            // The picker's title is where it is without a notice: on
+            // macOS, on the line of the window's own buttons.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.settle();
+            let title = if look.terminal {
+                "connections"
+            } else {
+                "Connections"
+            };
+            let before = harness.painted_rect(title).expect("the title");
+            harness.app.notice = Some(message.into());
+            harness.settle();
+            assert_eq!(harness.painted_rect(title), Some(before), "{}", look.name);
+            let shown = harness.painted_rect(message).expect("the notice");
+            assert!(shown.top() >= before.bottom(), "{}", look.name);
+            // And the connection bar's name, in a workspace.
+            harness.app.notice = None;
+            harness.connect_fake();
+            harness.settle();
+            let before = harness.painted_rect("Fixture").expect("the bar");
+            harness.app.notice = Some(message.into());
+            harness.settle();
+            assert_eq!(
+                harness.painted_rect("Fixture"),
+                Some(before),
+                "{}",
+                look.name
+            );
+            let shown = harness.painted_rect(message).expect("the notice");
+            assert!(shown.top() >= before.bottom(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_notice_is_solid_so_nothing_under_it_shows_through() {
+        for palette in [
+            crate::theme::Palette::light(),
+            crate::theme::Palette::dark(),
+        ] {
+            assert_eq!(super::notice_fill(&palette).a(), 255);
+        }
     }
 
     #[test]

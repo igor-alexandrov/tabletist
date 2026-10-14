@@ -190,6 +190,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.painter()
         .rect_filled(header, CornerRadius::ZERO, header_fill);
     widgets::hline(ui, header.x_range(), header.bottom() - 0.5, palette.outline);
+    // The notice, under the header: the window's own buttons keep its line.
+    let mut under = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
+        pos2(full.left(), header.bottom()),
+        full.max,
+    )));
+    let below = header.bottom() + super::notice(app, &mut under);
     let y = header.top() + header_line(&look);
     let mut x = header.left() + side.max(inset + 12.0);
     let title = if look.terminal {
@@ -263,10 +269,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let focus = std::mem::take(&mut picker.focus_search);
         let (field, style, hint) = if look.terminal {
             // The terminal filters on its own line under the header.
-            let line = Rect::from_min_size(
-                pos2(full.left(), header.bottom()),
-                vec2(full.width(), FILTER_LINE),
-            );
+            let line =
+                Rect::from_min_size(pos2(full.left(), below), vec2(full.width(), FILTER_LINE));
             widgets::hline(ui, line.x_range(), line.bottom() - 0.5, palette.outline);
             (
                 Rect::from_min_max(
@@ -385,9 +389,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     // The list.
     let top = if look.terminal {
-        header.bottom() + FILTER_LINE
+        below + FILTER_LINE
     } else {
-        header.bottom()
+        below
     };
     let body = Rect::from_min_max(pos2(full.left(), top), pos2(full.right(), footer.top()));
     let mut list = ui.new_child(egui::UiBuilder::new().max_rect(body));
