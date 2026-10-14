@@ -148,12 +148,20 @@ impl<T: AsyncRead + Unpin> AsyncRead for Watched<T> {
         let before = buffer.filled().len();
         let polled = Pin::new(&mut self.io).poll_read(context, buffer);
         if let Poll::Ready(Ok(())) = &polled {
+            // Each message is measured to its end: the one this read
+            // finishes, with what earlier reads had of it, any that is
+            // whole within the read, and what the read leaves unfinished.
             let read = &buffer.filled()[before..];
-            self.line = match read.iter().rposition(|byte| *byte == b'\n') {
-                Some(end) => read.len() - end - 1,
-                None => self.line + read.len(),
-            };
-            if self.line > MAX_MESSAGE_BYTES {
+            let (mut line, mut longest) = (self.line, 0);
+            for (nth, piece) in read.split(|byte| *byte == b'\n').enumerate() {
+                line = match nth {
+                    0 => line + piece.len(),
+                    _ => piece.len(),
+                };
+                longest = longest.max(line);
+            }
+            self.line = line;
+            if longest > MAX_MESSAGE_BYTES {
                 return Poll::Ready(Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "a message longer than the server reads",
@@ -336,6 +344,61 @@ mod tests {
         ) -> Poll<std::io::Result<()>> {
             Poll::Pending
         }
+    }
+
+    /// A client that sends what it is given, a piece at each read.
+    struct Pieces(std::collections::VecDeque<Vec<u8>>);
+
+    impl AsyncRead for Pieces {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if let Some(piece) = self.0.pop_front() {
+                buffer.put_slice(&piece);
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// What the reads of `pieces` come to: whether each was let through.
+    async fn let_through(pieces: Vec<Vec<u8>>) -> Vec<bool> {
+        let count = pieces.len();
+        let client = Pieces(pieces.into());
+        let mut watched = Watched::new(client, Stop::new(), CancellationToken::new());
+        let mut buffer = vec![0; 2 * MAX_MESSAGE_BYTES];
+        let mut read = Vec::new();
+        for _ in 0..count {
+            read.push(watched.read(&mut buffer).await.is_ok());
+        }
+        read
+    }
+
+    #[tokio::test]
+    async fn a_message_is_measured_to_its_end_wherever_a_read_ends() {
+        let letters = |count: usize| vec![b'x'; count];
+        let ended_and_begun = |count: usize| {
+            let mut piece = letters(count);
+            piece.extend_from_slice(b"\n{\"next\":");
+            piece
+        };
+        // A message of exactly the most, in two reads, the second of which
+        // ends it and begins the next.
+        let most = let_through(vec![letters(MAX_MESSAGE_BYTES - 10), ended_and_begun(10)]).await;
+        assert_eq!(most, [true, true]);
+        // One byte more, the same way: the read that ends it is refused,
+        // though what it leaves unfinished is short.
+        let over = let_through(vec![letters(MAX_MESSAGE_BYTES - 10), ended_and_begun(11)]).await;
+        assert_eq!(over, [true, false]);
+        // A message that is whole within one read, between two others.
+        let mut between = b"{}\n".to_vec();
+        between.extend(letters(MAX_MESSAGE_BYTES + 1));
+        between.extend_from_slice(b"\n{}");
+        assert_eq!(let_through(vec![between]).await, [false]);
+        // And one that never ends.
+        let endless = let_through(vec![letters(MAX_MESSAGE_BYTES), letters(1)]).await;
+        assert_eq!(endless, [true, false]);
     }
 
     /// Whatever the SDK is waiting in when the transport is shut, it is
