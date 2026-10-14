@@ -153,6 +153,12 @@ impl AppDirs {
         dir
     }
 
+    /// What agents may do, as the app last showed it: what a change made
+    /// outside the app is held against (`agents_shown`).
+    pub fn agents_shown_file(&self) -> PathBuf {
+        self.state.join("agents_shown.json")
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.state.join("tabletist.log")
     }
@@ -221,6 +227,10 @@ mod tests {
         assert_eq!(
             dirs.agents_log_file(),
             PathBuf::from("/root/state/agents.sqlite3")
+        );
+        assert_eq!(
+            dirs.agents_shown_file(),
+            PathBuf::from("/root/state/agents_shown.json")
         );
         // Without a runtime directory, with the state.
         assert_eq!(dirs.agents_dir(), PathBuf::from("/root/state"));
