@@ -2,12 +2,14 @@
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// Command-line flags.
 #[derive(Debug, Parser)]
 #[command(name = "tabletist", version, about = "A native database client")]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Sub>,
     /// Log at debug level.
     #[arg(long)]
     pub verbose: bool,
@@ -20,6 +22,17 @@ pub struct Cli {
     /// With --demo: the window's inner size, as WIDTHxHEIGHT.
     #[arg(long, requires = "demo", value_parser = parse_size)]
     pub demo_size: Option<[f32; 2]>,
+}
+
+/// What `tabletist` can be asked to do besides opening its window.
+#[derive(Debug, Subcommand)]
+pub enum Sub {
+    /// Connect an agent to the running Tabletist, over stdin and stdout.
+    Mcp {
+        /// The folder of the app's socket and key, for tests.
+        #[arg(long, hide = true)]
+        endpoint: Option<PathBuf>,
+    },
 }
 
 fn parse_size(text: &str) -> Result<[f32; 2], String> {
@@ -46,7 +59,13 @@ pub const APP_ID: &str = "dev.tabletist.Tabletist";
 /// build on Windows has no console, and an app launched from a menu has no
 /// terminal, so stderr alone would be a silent exit.
 pub fn run() -> std::process::ExitCode {
-    match main() {
+    let cli = Cli::parse();
+    // Before the logger, the settings and the window: the relay writes
+    // nothing but the protocol to stdout and shows no dialog.
+    if let Some(Sub::Mcp { endpoint }) = cli.command {
+        return crate::relay::main(endpoint);
+    }
+    match main(cli) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             report_startup_error(&error);
@@ -78,8 +97,7 @@ fn report_startup_error(error: &anyhow::Error) {
         .show();
 }
 
-pub fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+pub fn main(cli: Cli) -> anyhow::Result<()> {
     // Demo runs use a throwaway profile: nothing touches the user's files.
     // It lives until the window closes and is removed when `main` returns.
     let demo_root = if cli.demo {
@@ -118,6 +136,10 @@ pub fn main() -> anyhow::Result<()> {
             );
             let mut app = App::new(dirs, settings, backend);
             app.attach(&cc.egui_ctx, !demo);
+            // Not for a demo: its profile and its keyring are throwaway.
+            if !demo {
+                app.serve_agents();
+            }
             if demo {
                 demo_setup(&mut app);
             }

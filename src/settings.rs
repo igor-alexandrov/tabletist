@@ -59,6 +59,11 @@ pub struct Settings {
     pub sql_limit: u32,
     /// Seconds before a SQL editor run is cancelled; `None` waits forever.
     pub sql_timeout_secs: Option<u32>,
+    /// The MCP server agents use the saved connections through. Off until
+    /// the person turns it on: nothing listens before.
+    pub mcp_enabled: bool,
+    /// Days the log of agents' calls keeps a call.
+    pub mcp_log_days: u32,
 }
 
 /// A key of the settings file.
@@ -71,12 +76,14 @@ pub enum Key {
     ShowSystemSchemas,
     SqlLimit,
     SqlTimeoutSecs,
+    McpEnabled,
+    McpLogDays,
     Theme,
 }
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 8] = [
+    pub const ALL: [Key; 10] = [
         Self::PageSize,
         Self::Timestamps,
         Self::GroupDigits,
@@ -84,6 +91,8 @@ impl Key {
         Self::ShowSystemSchemas,
         Self::SqlLimit,
         Self::SqlTimeoutSecs,
+        Self::McpEnabled,
+        Self::McpLogDays,
         Self::Theme,
     ];
 
@@ -97,6 +106,8 @@ impl Key {
             Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
             Self::SqlLimit => ("editor", "sql_limit"),
             Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
+            Self::McpEnabled => ("mcp", "enabled"),
+            Self::McpLogDays => ("mcp", "log_days"),
             Self::Theme => ("appearance", "theme"),
         }
     }
@@ -384,6 +395,10 @@ impl Settings {
     /// The timeouts (seconds) the SQL editor's Timeout menu offers; `None`
     /// is no timeout.
     pub const SQL_TIMEOUTS: [Option<u32>; 5] = [Some(10), Some(30), Some(60), Some(300), None];
+    /// Days the log of agents' calls keeps a call, at least and at most: a
+    /// day, and ten years.
+    pub const MIN_MCP_LOG_DAYS: u32 = 1;
+    pub const MAX_MCP_LOG_DAYS: u32 = 3_650;
 
     /// The SQL editor's timeout as a duration; `None` waits forever.
     pub fn sql_timeout(&self) -> Option<std::time::Duration> {
@@ -470,6 +485,8 @@ impl Settings {
             Key::SqlLimit => self.sql_limit.to_string(),
             // TOML has no null: no timeout is no seconds.
             Key::SqlTimeoutSecs => self.sql_timeout_secs.unwrap_or(0).to_string(),
+            Key::McpEnabled => self.mcp_enabled.to_string(),
+            Key::McpLogDays => self.mcp_log_days.to_string(),
             Key::Theme => toml_string(self.custom_theme.as_deref()?),
         })
     }
@@ -515,6 +532,9 @@ impl Settings {
             .clamp(Self::MIN_PAGE_SIZE, Self::MAX_PAGE_SIZE);
         self.sql_limit = Self::valid_sql_limit(self.sql_limit);
         self.sql_timeout_secs = Self::valid_sql_timeout(self.sql_timeout_secs);
+        self.mcp_log_days = self
+            .mcp_log_days
+            .clamp(Self::MIN_MCP_LOG_DAYS, Self::MAX_MCP_LOG_DAYS);
         self
     }
 
@@ -540,6 +560,8 @@ impl Settings {
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
             Key::SqlLimit => number.map(|number| self.sql_limit = number),
             Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
+            Key::McpEnabled => flag.map(|flag| self.mcp_enabled = flag),
+            Key::McpLogDays => number.map(|number| self.mcp_log_days = number),
             Key::Theme => text.map(|name| self.custom_theme = Some(name.to_owned())),
         }
         .is_some()
@@ -694,6 +716,8 @@ impl Default for Settings {
             custom_theme: None,
             sql_limit: 1_000,
             sql_timeout_secs: Some(30),
+            mcp_enabled: false,
+            mcp_log_days: 30,
         }
     }
 }
@@ -713,6 +737,8 @@ mod tests {
         assert_eq!(settings.custom_theme, None);
         assert_eq!(settings.sql_limit, 1_000);
         assert_eq!(settings.sql_timeout_secs, Some(30));
+        assert!(!settings.mcp_enabled);
+        assert_eq!(settings.mcp_log_days, 30);
         assert_eq!(
             settings.sql_timeout(),
             Some(std::time::Duration::from_secs(30))
@@ -745,6 +771,10 @@ show_system_schemas = false
 [editor]
 sql_limit        = 1000
 sql_timeout_secs = 30  # 0 waits forever
+
+[mcp]
+enabled  = false
+log_days = 30
 "
         );
     }
@@ -791,6 +821,8 @@ sql_timeout_secs = 30  # 0 waits forever
             custom_theme: Some("My \"Nord\".json".into()),
             sql_limit: 100,
             sql_timeout_secs: None,
+            mcp_enabled: true,
+            mcp_log_days: 7,
         };
         let text = settings.to_toml();
         let loaded = Settings::from_toml(&text);
@@ -815,6 +847,8 @@ sql_timeout_secs = 30  # 0 waits forever
                 (Key::ShowSystemSchemas, 9),
                 (Key::SqlLimit, 12),
                 (Key::SqlTimeoutSecs, 13),
+                (Key::McpEnabled, 16),
+                (Key::McpLogDays, 17),
             ]
         );
     }
@@ -912,6 +946,26 @@ sql_timeout_secs = 30  # 0 waits forever
         assert_eq!(loaded.settings.sql_timeout_secs, Some(1));
         let loaded = Settings::from_toml("[editor]\nsql_timeout_secs = 0\n");
         assert_eq!(loaded.settings.sql_timeout(), None);
+        // The log of agents' calls keeps a call a day at least, and ten
+        // years at most.
+        let loaded = Settings::from_toml("[mcp]\nlog_days = 0\n");
+        assert_eq!(loaded.settings.mcp_log_days, Settings::MIN_MCP_LOG_DAYS);
+        let loaded = Settings::from_toml("[mcp]\nlog_days = 100000\n");
+        assert_eq!(loaded.settings.mcp_log_days, Settings::MAX_MCP_LOG_DAYS);
+    }
+
+    #[test]
+    fn agents_are_turned_on_in_the_file_and_nothing_else_turns_them_on() {
+        let loaded = Settings::from_toml("[mcp]\nenabled = true\nlog_days = 90\n");
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert!(loaded.settings.mcp_enabled);
+        assert_eq!(loaded.settings.mcp_log_days, 90);
+        // A value that is no flag is no yes.
+        for text in ["[mcp]\nenabled = \"true\"\n", "[mcp]\nenabled = 1\n"] {
+            let loaded = Settings::from_toml(text);
+            assert_eq!(loaded.invalid, vec![2], "{text}");
+            assert!(!loaded.settings.mcp_enabled, "{text}");
+        }
     }
 
     #[test]

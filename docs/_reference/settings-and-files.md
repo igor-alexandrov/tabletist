@@ -41,6 +41,10 @@ show_system_schemas = false
 [editor]
 sql_limit = 1000
 sql_timeout_secs = 30
+
+[mcp]
+enabled = false
+log_days = 30
 ```
 
 | Key | Values | Default |
@@ -53,8 +57,11 @@ sql_timeout_secs = 30
 | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
 | `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |
 | `appearance.theme` | The name of a palette file in the `themes` folder | Not set |
+| `mcp.enabled` | `true` lets agents reach the connections you open to them, through `tabletist mcp`. Linux and macOS | `false` |
+| `mcp.log_days` | 1 to 3650 days. How long the log of agents' calls keeps a call | `30` |
 
-`show_system_schemas` and `theme` are set only in the file. The SQL
+`show_system_schemas`, `theme` and the two `mcp` keys are set only in the
+file. The SQL
 editor's **Limit** and **Timeout** menus set the two `editor` keys.
 
 A line that cannot be read is ignored, keeps its default, and is reported
@@ -83,6 +90,15 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `connections.moved` | State | A note that your connections are kept in `connections.toml` |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
+| `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
+| `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key it must send, and the lock the app holds while it listens. The first two are there while agents are on |
+
+The runtime folder is `/run/user/<your user id>/tabletist` on Linux, where
+the system makes `/run/user` for you, and `~/.local/state/tabletist` where
+it does not, whatever `XDG_STATE_HOME` says: an agent may start
+`tabletist mcp` without your variables. macOS has none, and uses the state
+folder, or `.tabletist` in your home folder when the state folder's path is
+too long for a socket.
 
 Passwords are kept in the system keyring, never in these files.
 [Read about passwords]({% link _reference/connections.md %}#passwords).
@@ -148,8 +164,8 @@ What agents may do on a connection is its `[connections.agents]` table:
 and `timeout_secs`, how long a statement may run (1 to 60). Without the
 table, or a key of it, a connection is `off`, with 500 rows and 10 seconds.
 A file in which a connection has the table says `version = 4`, and one in
-which none has it stays `version = 3`. Nothing in Tabletist uses the table
-yet: it is read and kept.
+which none has it stays `version = 3`. Agents use the table only while
+`[mcp] enabled` is `true` in `settings.toml`.
 
 Edit the file while Tabletist is closed. Tabletist writes the whole file
 again when you change a connection, so a comment you add is not kept.
@@ -188,6 +204,7 @@ read once more, remove `connections.moved` as well.
 | `--verbose` | Logs at debug level |
 | `--version` | Prints the version |
 | `--help` | Lists the options |
+| `mcp` | Connects an agent to the running Tabletist, over its stdin and stdout. An agent starts it. When Tabletist is not running, or agents are off in it, it says so to the agent and ends |
 
 `--help` also lists `--demo-shot`, which saves a picture of the demo's
 window to a file, and `--demo-size`, which sets that window's size.

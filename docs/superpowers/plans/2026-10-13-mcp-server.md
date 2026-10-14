@@ -35,6 +35,13 @@ the backend's gateway, and agents in `connections.toml`. G cuts the second
 run in two, as it said it might. A.1, C.1, F.4, G and question 19 are
 corrected where its draft showed otherwise.
 
+**Built on 2026-10-14: the second part of Phase 1b's second run** (`2026-10-14-mcp-server-1b-2b-stdio.md`):
+the `[mcp]` settings, the endpoint, the key and the relay, and the keychain
+on macOS. Four departures were agreed the same day, each where it stands:
+the key beside the socket, the app's answer to the relay's first line
+(A.2), the website's reference for the files (G), and the check of changes
+made outside the app moved to the first control that turns agents on (C.2).
+
 Each phase below gets its own plan under `docs/superpowers/plans/` before any
 code is written, as every batch of work in this repository does.
 
@@ -177,9 +184,13 @@ What its draft's review showed it must also do:
   brings up a prompt to unlock it: on Linux the Secret Service would ask
   for a collection whose item a read finds locked, so the item is looked
   for first and a locked one is not read (`SecretStore::read_quietly`).
-  Windows asks nothing of a read. **On macOS a locked keychain is asked to
-  be unlocked by the system, and the keyring crate has no call that says
-  not to**: open for the second part, which makes the server reachable.
+  Windows asks nothing of a read. On macOS the keychain is told to ask
+  nothing while it reads for an agent (`SecKeychain::
+  disable_user_interaction`, in `security-framework`, which the keychain
+  store is built on): a locked keychain, and an item that would ask whether
+  Tabletist may read it, answer that they would have to, and are not read.
+  The switch is the process's, and the keyring thread, the only one that
+  uses the keychain, does one job at a time (`2026-10-14-mcp-server-1b-2b-stdio.md`).
 - **Look again after a wait.** A call that waited for the connection, or
   for its connect, takes the connection as it is once it has it: turned
   Off meanwhile, it runs nothing; changed, it is opened anew.
@@ -247,6 +258,30 @@ and `eframe::run_native` (`src/entrypoint.rs:81-161`):
 
 So the protocol lives in one place, the app, and an old relay keeps working
 with a newer app.
+
+**As built** (`2026-10-14-mcp-server-1b-2b-stdio.md`). Agreed on 2026-10-14, where it went otherwise:
+
+- **The key is beside the socket**, `mcp.key` in the endpoint's directory
+  (`AppDirs::agents_dir`), not in the state directory: the relay finds both
+  in one place, and a test points it at another with `--endpoint`. On
+  Linux the directory is `/run/user/<id>/tabletist`, found by the user's
+  id and not by `XDG_RUNTIME_DIR`, which an agent may leave out of the
+  relay's environment; else the state directory. It is made 0700, and one
+  that is not the user's to change is refused. The key is written before
+  the socket is made, so that a relay never reads an ended start's.
+- **The app answers the relay's line** with one of its own, `"ok"` or a
+  refusal with its reason, so that a wrong key, or too many agents, reaches
+  the agent as the answer to its first request and not as a closed pipe.
+- The relay's line is JSON: the key, its version, and its working
+  directory, whose last part names the session's project. Each line may
+  have 16 KiB and must come within five seconds.
+- A socket that answers is another Tabletist's: the server does not start,
+  and says so. One that does not answer was left by a Tabletist that ended,
+  and is replaced. The socket and the key are removed when the server
+  stops, the socket only while it is the one the server made.
+- At most 32 agents at once, counted once they have the key, and at most
+  64 connections waiting to say their line. A second Tabletist that finds
+  the socket answering does not start, and does not open the log either.
 
 **When the app is not running.** A clear error, and no launch:
 
@@ -1188,6 +1223,11 @@ notify   = true
   edit in an editor reaches `App::apply_settings` (`src/app.rs:2894-2921`),
   which starts or stops the server. See C.2 for the one edit that is not
   applied as it stands.
+- **As built** (`2026-10-14-mcp-server-1b-2b-stdio.md`): `enabled` and `log_days` (1 to 3,650, else
+  brought into range). `listen` comes with HTTP (1d) and `notify` with the
+  notification for a new agent (the fourth run): a key that does nothing
+  would be written into every file. A change of `log_days` while the
+  server runs is the log's from then on, and stops no session.
 
 **HTTP tokens: `agents.json`** in the state directory, 0600, through
 `util::write_atomic`: `{ "id", "name", "sha256", "created" }` for each. Not
@@ -1330,6 +1370,12 @@ control is still worth having:
 It also catches a synced dotfile and a restored backup. It does not stop a
 program that edits the remembered copy as well. Writes still wait for the
 person either way.
+
+**Moved on 2026-10-14: built with the first control that turns agents on**
+(the third run's **Turn on**). Until then the files are the only way to
+turn agents on, and a check that refused changes made outside the app would
+refuse the only one there is. So after Phase 1b's second run a program that
+can edit both files can turn agents on for itself, as E says of a shell.
 
 ### C.3 Hidden tables and masked columns when the schema changes
 
@@ -1916,7 +1962,7 @@ is off until the person turns it on.
 | Part | Runs | State on 2026-10-13 |
 |---|---|---|
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
-| 1b. The server over stdio, with its interface | 5, below | The first is built (`2026-10-13-mcp-server-1b-1-server.md`). Nothing the others wait for is open |
+| 1b. The server over stdio, with its interface | 6, below | The first two are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md` and `2026-10-14-mcp-server-1b-2b-stdio.md`). Nothing the others wait for is open |
 | 1b on Windows: the way in | 1 | After 1b (question 14) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
 | 1d. HTTP with tokens | 1 | After stdio (question 9) |
@@ -1984,7 +2030,7 @@ can see what agents do and stop them.
 |---|---|---|---|
 | **1b-1. The server, with nothing to start it** | The `tabletist-mcp` crate: the server on `rmcp`, the gateway's trait, `list_connections`, `describe_schema` and `run_query` over `agent::check_read` and `Connection::run_agent_read`, the size cap on an answer (B.5), the refusal codes (B.8), the log's store (C.1) | Nothing. No setting, no transport and no command reaches it | F.1 in process, F.4 but its interface, F.5 in process |
 | **1b-2a. The backend's gateway** (built: `2026-10-14-mcp-server-1b-2a-gateway.md`) | `[connections.agents]` with access, rows and timeout, which makes the connections file version 4. `Command::Agents` and `Event::Agents`, the backend's gateway with its own sessions on each database, and the server started and stopped by the backend, with the log's retention. The SDK held out of the app's log | Nothing: no setting starts the server, and no transport reaches it | The connections file, the gateway on SQLite, PostgreSQL and MySQL, the backend's start and stop, the log's filter |
-| **1b-2b. Turning it on from the files, and stdio** | The `[mcp]` keys in `settings.toml`, and the app that starts and stops the server with them and sends the backend what agents may use. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS. The keychain on macOS (A.1). The website's reference for the files | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings file, `tests/cli.rs` |
+| **1b-2b. Turning it on from the files, and stdio** (built: `2026-10-14-mcp-server-1b-2b-stdio.md`) | The `[mcp]` keys in `settings.toml`, and the app that starts and stops the server with them and sends the backend what agents may use. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS. The keychain on macOS (A.1). The website's reference for the files | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings file, `tests/cli.rs` |
 | **1b-3. The Agents tab's frame** | The third kind of tab. The sidebar entry with its five states. The ways in: the key, `ga`, `:agents`, quick open. The three empty states, with **Turn on** and **Copy**. The keymap and the help | Open the tab in any state, see which state the connection is in, turn the server on from the tab | F.7: the entry's states, the ways in, one tab for a window, the empty states, nothing opening or focusing by itself |
 | **1b-4. What agents are doing** | `App::agents`. The sessions that are here and "Also:". The feed. **Stop session** and **Stop agents here**. The Log view as a list for this connection, with All connections. The notification for an agent that connects | See each agent and each call as it happens, stop one agent or all on a connection, read the log | F.7: one connection, the stops, closing the tab, the log's default. F.4's interface |
 | **1b-5. Letting agents in** | Settings › Agents, with the switch between panes. The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** and **Show Agents tab** pointing at them. The website: a new guide, and the reference pages | Everything Phase 1 draws, without a file edited by hand | The interface tests of Settings, Connections and the editor. The keymap. `docs/bin/check` |
@@ -1995,10 +2041,12 @@ can see what agents do and stop them.
   **Settings…** come in the fifth, with the editor's section and the pane
   they open. Omarchy's keys for them come with them.
 - **What may be released between runs.** After any of them. After the
-  second the server can be turned on only from a file, off by default and
-  not documented. After the third and fourth a person can turn it on and
+  second the server can be turned on only from a file, off by default. The
+  website's reference describes the files and `tabletist mcp` from then on
+  (agreed on 2026-10-14): a person who finds the keys in their file can
+  read what they do. After the third and fourth a person can turn it on and
   watch it, and still cannot open a connection to agents without editing a
-  file. The website says nothing of Agents until the fifth.
+  file. The website's guide to Agents waits for the fifth.
 - **Questions the runs meet.** Four are open and not marked as ones to
   wait for. Each is built as this plan has it unless it is answered before
   its run: what the log keeps of a call's values (18) in the first, which

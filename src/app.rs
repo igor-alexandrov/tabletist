@@ -8,7 +8,9 @@ use tabletist_db::{
     Driver, Error, FilterOp, HostKeys, ObjectKind, ObjectRef, Secrets, Sort, SortDir, SshStage,
 };
 
-use crate::backend::{CancelReason, Command, Event, Opened, RequestId, StateFile};
+use crate::backend::{
+    AgentsCommand, AgentsEvent, CancelReason, Command, Event, Opened, RequestId, StateFile,
+};
 use crate::completion::Need;
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::edit::EditorPlace;
@@ -123,6 +125,9 @@ pub struct App {
     /// The window is closing: it was asked to, and no tab holds edits any
     /// more, or the user gave them up.
     pub closing: bool,
+    /// The agent server is the app's to start and stop
+    /// ([`App::serve_agents`]): not in tests, nor in the demo.
+    serves_agents: bool,
     next_id: u64,
 }
 
@@ -183,6 +188,7 @@ impl App {
             lookup_delay: crate::key_picker::DELAY,
             lookups: Vec::new(),
             closing: false,
+            serves_agents: false,
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -2796,9 +2802,22 @@ impl App {
                 };
                 self.apply_settings(settings);
             }
-            // Nothing in the app starts the agent server yet: that comes
-            // with its settings. The backend logs what happens to it.
-            Event::Agents(_) => {}
+            // What the person turned on in the file and does not get is
+            // said. The backend logs the rest.
+            Event::Agents(event) => match event {
+                AgentsEvent::Started { kept_aside: None } | AgentsEvent::Stopped => {}
+                AgentsEvent::Started {
+                    kept_aside: Some(path),
+                } => {
+                    self.notice = Some(format!(
+                        "The log of agents' calls could not be read. It was kept aside as {}, and a new one begun.",
+                        path.display()
+                    ));
+                }
+                AgentsEvent::Failed(said) => {
+                    self.notice = Some(format!("Agents could not be served: {said}."));
+                }
+            },
             Event::SettingsFileOpened { with, result } => {
                 if let Err(error) = result {
                     let path = self.dirs.settings_file();
@@ -2959,6 +2978,7 @@ impl App {
             path: self.dirs.known_hosts_file(),
             file: StateFile::KnownHosts(self.host_keys.clone()),
         });
+        self.send_agents_policy();
     }
 
     /// Remembers that `tab`'s saved connection connected now.
@@ -3000,6 +3020,47 @@ impl App {
             path: self.dirs.connections_file(),
             file: StateFile::Connections(self.connections.clone()),
         });
+        // Every change to a connection is saved: what agents may use
+        // changes with it.
+        self.send_agents_policy();
+    }
+
+    /// Takes the agent server on: tells the backend what agents may use,
+    /// and starts the server where the settings say. From then on the
+    /// settings start and stop it. Called once, as the window opens.
+    pub fn serve_agents(&mut self) {
+        self.serves_agents = true;
+        self.send_agents_policy();
+        if self.settings.mcp_enabled {
+            self.start_agents();
+        }
+    }
+
+    /// Tells the backend which connections agents may use, and the SSH host
+    /// keys the person trusts. Sent while the server is off too: it keeps
+    /// them for when it starts.
+    fn send_agents_policy(&mut self) {
+        if !self.serves_agents {
+            return;
+        }
+        let connections = crate::backend::agentable(&self.connections.connections);
+        self.backend.send(Command::Agents(AgentsCommand::Policy {
+            connections,
+            host_keys: self.host_keys.clone(),
+        }));
+    }
+
+    fn start_agents(&mut self) {
+        if !crate::endpoint::AVAILABLE {
+            log::warn!("agents are turned on, and cannot reach Tabletist on this system yet");
+            self.notice = Some("Agents cannot reach Tabletist on this system yet.".into());
+            return;
+        }
+        self.backend.send(Command::Agents(AgentsCommand::Start {
+            log: self.dirs.agents_log_file(),
+            log_days: self.settings.mcp_log_days,
+            endpoint: Some(self.dirs.agents_dir()),
+        }));
     }
 
     /// Sends the settings to the backend to be written. Only
@@ -3088,6 +3149,18 @@ impl App {
         if old.custom_theme != self.settings.custom_theme {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
+        }
+        if self.serves_agents {
+            match (old.mcp_enabled, self.settings.mcp_enabled) {
+                (false, true) => self.start_agents(),
+                (true, false) => self.backend.send(Command::Agents(AgentsCommand::Stop)),
+                (true, true) if old.mcp_log_days != self.settings.mcp_log_days => {
+                    let days = self.settings.mcp_log_days;
+                    self.backend
+                        .send(Command::Agents(AgentsCommand::LogDays(days)));
+                }
+                _ => {}
+            }
         }
     }
 
@@ -5276,6 +5349,122 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// What the app asked the backend to do with the agent server.
+    fn agents_sent(app: &App) -> Vec<&AgentsCommand> {
+        app.backend
+            .sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::Agents(agents) => Some(agents),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_settings_start_and_stop_the_agent_server_once_the_app_serves_it() {
+        let (mut app, dir) = app();
+        let dirs = AppDirs::at(dir.path());
+        // Not before: tests and the demo never start it.
+        app.change_settings(|settings| settings.mcp_enabled = true);
+        assert!(agents_sent(&app).is_empty());
+        app.serve_agents();
+        let start = |app: &App, days: u32| {
+            agents_sent(app).iter().any(|sent| {
+                matches!(sent, AgentsCommand::Start { log, log_days, endpoint }
+                    if *log == dirs.agents_log_file()
+                        && *log_days == days
+                        && endpoint.as_deref() == Some(dirs.agents_dir().as_path()))
+            })
+        };
+        // What agents may use comes first: none of the connections, here.
+        assert!(matches!(
+            agents_sent(&app).first(),
+            Some(AgentsCommand::Policy { connections, .. }) if connections.is_empty()
+        ));
+        // Not on a system it cannot be reached on, which says so.
+        assert_eq!(start(&app, 30), crate::endpoint::AVAILABLE);
+        assert_eq!(app.notice.is_some(), !crate::endpoint::AVAILABLE);
+        app.backend.sent.clear();
+        app.change_settings(|settings| settings.mcp_log_days = 90);
+        assert!(matches!(
+            agents_sent(&app)[..],
+            [AgentsCommand::LogDays(90)]
+        ));
+        app.backend.sent.clear();
+        app.change_settings(|settings| settings.mcp_enabled = false);
+        assert!(matches!(agents_sent(&app)[..], [AgentsCommand::Stop]));
+        // Off, the days change nothing it would be told.
+        app.backend.sent.clear();
+        app.change_settings(|settings| settings.mcp_log_days = 7);
+        assert!(agents_sent(&app).is_empty());
+        // And an edit of the file turns it on as the app does.
+        let text = Settings {
+            mcp_enabled: true,
+            ..app.settings.clone()
+        }
+        .to_toml();
+        app.apply_event(Event::SettingsFile { text, own: false });
+        assert!(app.settings.mcp_enabled);
+        assert_eq!(start(&app, 7), crate::endpoint::AVAILABLE);
+    }
+
+    #[test]
+    fn agents_are_told_of_each_change_to_what_they_may_use() {
+        let (mut app, _dir) = app();
+        let policy = |app: &App| match agents_sent(app).last() {
+            Some(AgentsCommand::Policy {
+                connections,
+                host_keys,
+            }) => (
+                connections
+                    .iter()
+                    .map(|connection| connection.name.clone())
+                    .collect::<Vec<_>>(),
+                host_keys.clone(),
+            ),
+            other => panic!("{other:?}"),
+        };
+        app.serve_agents();
+        assert_eq!(policy(&app).0, Vec::<String>::new());
+        // A connection agents may read, saved in the dialog.
+        app.apply(Action::NewConnection);
+        form(&mut app).name = "Disk".into();
+        form(&mut app).sqlite_path = "/tmp/disk.db".into();
+        form(&mut app).agents.access = crate::connections::AgentAccess::Read;
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(policy(&app).0, ["Disk · local"]);
+        // A host key trusted.
+        app.trust("bastion", 22, "SHA256:F1");
+        assert_eq!(policy(&app).1.fingerprint("bastion", 22), Some("SHA256:F1"));
+    }
+
+    #[test]
+    fn what_the_agent_server_could_not_do_is_said() {
+        let (mut app, _dir) = app();
+        app.apply_event(Event::Agents(AgentsEvent::Started { kept_aside: None }));
+        app.apply_event(Event::Agents(AgentsEvent::Stopped));
+        assert_eq!(app.notice, None);
+        // What the backend says, with the app's words before it, once.
+        app.apply_event(Event::Agents(AgentsEvent::Failed(
+            crate::endpoint::ANOTHER_SERVES.into(),
+        )));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Agents could not be served: another Tabletist is serving agents already.")
+        );
+        app.apply_event(Event::Agents(AgentsEvent::Started {
+            kept_aside: Some("/state/agents.sqlite3.bad".into()),
+        }));
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("/state/agents.sqlite3.bad")),
+            "{:?}",
+            app.notice
+        );
     }
 
     fn settings_saves(app: &App) -> Vec<&Settings> {
