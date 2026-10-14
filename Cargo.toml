@@ -77,10 +77,11 @@ tabletist-mcp = { path = "crates/tabletist-mcp" }
 # over. In the tree through tabletist-mcp, which hands one to every call.
 tokio-util = "0.7"
 # The backend runtime: one OS thread running tokio, where every database
-# call happens (src/backend.rs). `net` and `io-util` for the socket agents
-# reach the app through (src/backend/agents/listen.rs), which tabletist-db
-# turns on already: nothing new is built.
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "net", "io-util"] }
+# call happens (src/backend.rs). `net` for the socket agents reach the app
+# through, `io-util` and `io-std` for `tabletist mcp`, which copies its
+# stdin and stdout to it (src/relay.rs). tabletist-db turns the first two
+# on already: nothing new is built.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "net", "io-util", "io-std"] }
 # Native file dialogs (portal on Linux), built on the UI thread and awaited
 # on the backend runtime.
 rfd = "0.17"
