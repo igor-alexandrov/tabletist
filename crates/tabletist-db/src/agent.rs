@@ -219,11 +219,9 @@ impl fmt::Display for Refusal {
                         );
                     }
                 };
-                write!(
-                    f,
-                    "run_query only runs reads, and this is {what}. Use propose_write to change \
-                     data."
-                )
+                // No more than that: which tool changes data, if any does, is
+                // for the server that has the tools to say.
+                write!(f, "run_query only runs reads, and this is {what}.")
             }
             Self::NotAllowed(what) | Self::FunctionNotAllowed(what) => {
                 write!(f, "{what} is not available to agents.")
@@ -439,8 +437,8 @@ fn plans_only(option: &UtilityOption) -> bool {
     )
 }
 
-/// Why a statement that is not a query is refused: a write is told about
-/// `propose_write`, everything else is named by its first word.
+/// Why a statement that is not a query is refused: a write is told what it
+/// is, everything else is named by its first word.
 fn not_a_read(dialect: Dialect, text: &str, statement: &Statement) -> Refusal {
     match statement {
         Statement::Insert(_) => Refusal::NotReadOnly(Writes::Insert),
@@ -933,23 +931,19 @@ mod tests {
             ),
             (
                 Refusal::NotReadOnly(Writes::Insert),
-                "run_query only runs reads, and this is an INSERT. Use propose_write to change \
-                 data.",
+                "run_query only runs reads, and this is an INSERT.",
             ),
             (
                 Refusal::NotReadOnly(Writes::Update),
-                "run_query only runs reads, and this is an UPDATE. Use propose_write to change \
-                 data.",
+                "run_query only runs reads, and this is an UPDATE.",
             ),
             (
                 Refusal::NotReadOnly(Writes::Delete),
-                "run_query only runs reads, and this is a DELETE. Use propose_write to change \
-                 data.",
+                "run_query only runs reads, and this is a DELETE.",
             ),
             (
                 Refusal::NotReadOnly(Writes::Merge),
-                "run_query only runs reads, and this is a MERGE. Use propose_write to change \
-                 data.",
+                "run_query only runs reads, and this is a MERGE.",
             ),
             (
                 Refusal::NotReadOnly(Writes::Into),
