@@ -136,6 +136,10 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
             );
             let mut app = App::new(dirs, settings, backend);
             app.attach(&cc.egui_ctx, !demo);
+            // Not for a demo: its profile and its keyring are throwaway.
+            if !demo {
+                app.serve_agents();
+            }
             if demo {
                 demo_setup(&mut app);
             }
