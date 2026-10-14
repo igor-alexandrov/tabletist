@@ -42,6 +42,15 @@ the key beside the socket, the app's answer to the relay's first line
 (A.2), the website's reference for the files (G), and the check of changes
 made outside the app moved to the first control that turns agents on (C.2).
 
+**Built on 2026-10-14: the first part of Phase 1b's third run** (`2026-10-14-mcp-server-1b-3a-agents-tab.md`):
+the Agents tab, its entry in the sidebar, the ways in, the three empty
+states with **Turn on** and **Copy**, and the sessions the app learns of.
+G cuts the third run in two, agreed the same day: the app must know who is
+connected before it can say that nobody is, so the sessions came forward
+from the fourth run, and the check of changes made outside the app (C.2)
+is the second part. What the run draws otherwise than the boards is in
+D.4.
+
 Each phase below gets its own plan under `docs/superpowers/plans/` before any
 code is written, as every batch of work in this repository does.
 
@@ -480,8 +489,12 @@ struct AgentSession {
   client's title, else its name, without control characters, at most 64
   characters), the project, when it connected, its count of calls, and the
   stop. The project is given by whoever hands the transport over. Asking the
-  client for its roots is left for later. `last_call_at`, `connections` and
-  `state` come with the tab that shows them, in the fourth run.
+  client for its roots is left for later. `last_call_at` and `connections`
+  came with the Agents tab (`2026-10-14-mcp-server-1b-3a-agents-tab.md`), which needs them to say who is here;
+  `state` comes with the feed, in the fourth run. The server tells the
+  backend when a session opens or ends, names its agent, or calls
+  (`Server::changes`), and the backend tells the app
+  (`AgentsEvent::Sessions`).
 
 **Where a session is** (added on 2026-10-13, for the Agents tab). The tab
 covers one connection, and a session belongs to none: the agent names a
@@ -1376,6 +1389,8 @@ person either way.
 turn agents on, and a check that refused changes made outside the app would
 refuse the only one there is. So after Phase 1b's second run a program that
 can edit both files can turn agents on for itself, as E says of a shell.
+**Moved again on 2026-10-14**: the third run is cut in two, and the check is
+its second part (1b-3b), right after **Turn on** (`2026-10-14-mcp-server-1b-3a-agents-tab.md`).
 
 ### C.3 Hidden tables and masked columns when the schema changes
 
@@ -1599,7 +1614,27 @@ What keeps an approval the person's own:
   window's own session, so it waits for a window that is still connecting.
 
 **Empty states.** In the Activity view's place, by the state the sidebar
-entry shows:
+entry shows.
+
+**As built in Phase 1b's third run** (`2026-10-14-mcp-server-1b-3a-agents-tab.md`). Where it draws otherwise than
+the boards, each comes with what it needs:
+
+- The Activity and Log switch, **Show log**, and "The log still shows past
+  calls" come with the Log view (the fourth run). "Last agent" in the box
+  "On this connection" too: it is read from the log.
+- **Allow agents…**, **Other agents…**, **Settings…** and the header's
+  "Change in Connections" come with the editor's section and Settings ›
+  Agents (the fifth run). The Off state has no button until then.
+- "and propose changes you approve here" comes with writes (Phase 2), and
+  so do the Waiting state of the entry and the count on the tab.
+- With an agent here the tab lists the sessions that are here, without
+  **Stop session**, "Also:" or the feed (the fourth run).
+- A session's line says how long ago it connected ("connected 4 min
+  ago"): the app reads no local clock. The status bar says "Server: stdio"
+  until HTTP (1d).
+- The macOS entry is lit by an accent outline while its tab is in front,
+  which the boards do not draw. Omarchy's empty states are the look's
+  empty state, from the top left, without the boards' box.
 
 | State | Title | Body | Actions |
 |---|---|---|---|
@@ -1962,7 +1997,7 @@ is off until the person turns it on.
 | Part | Runs | State on 2026-10-13 |
 |---|---|---|
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
-| 1b. The server over stdio, with its interface | 6, below | The first two are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md` and `2026-10-14-mcp-server-1b-2b-stdio.md`). Nothing the others wait for is open |
+| 1b. The server over stdio, with its interface | 7, below | The first two and a half are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md` and `2026-10-14-mcp-server-1b-3a-agents-tab.md`). Nothing the others wait for is open |
 | 1b on Windows: the way in | 1 | After 1b (question 14) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
 | 1d. HTTP with tokens | 1 | After stdio (question 9) |
@@ -2031,7 +2066,8 @@ can see what agents do and stop them.
 | **1b-1. The server, with nothing to start it** | The `tabletist-mcp` crate: the server on `rmcp`, the gateway's trait, `list_connections`, `describe_schema` and `run_query` over `agent::check_read` and `Connection::run_agent_read`, the size cap on an answer (B.5), the refusal codes (B.8), the log's store (C.1) | Nothing. No setting, no transport and no command reaches it | F.1 in process, F.4 but its interface, F.5 in process |
 | **1b-2a. The backend's gateway** (built: `2026-10-14-mcp-server-1b-2a-gateway.md`) | `[connections.agents]` with access, rows and timeout, which makes the connections file version 4. `Command::Agents` and `Event::Agents`, the backend's gateway with its own sessions on each database, and the server started and stopped by the backend, with the log's retention. The SDK held out of the app's log | Nothing: no setting starts the server, and no transport reaches it | The connections file, the gateway on SQLite, PostgreSQL and MySQL, the backend's start and stop, the log's filter |
 | **1b-2b. Turning it on from the files, and stdio** (built: `2026-10-14-mcp-server-1b-2b-stdio.md`) | The `[mcp]` keys in `settings.toml`, and the app that starts and stops the server with them and sends the backend what agents may use. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS. The keychain on macOS (A.1). The website's reference for the files | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings file, `tests/cli.rs` |
-| **1b-3. The Agents tab's frame** | The third kind of tab. The sidebar entry with its five states. The ways in: the key, `ga`, `:agents`, quick open. The three empty states, with **Turn on** and **Copy**. The keymap and the help | Open the tab in any state, see which state the connection is in, turn the server on from the tab | F.7: the entry's states, the ways in, one tab for a window, the empty states, nothing opening or focusing by itself |
+| **1b-3a. The Agents tab's frame** (built: `2026-10-14-mcp-server-1b-3a-agents-tab.md`) | The third kind of tab. The sidebar entry with its states but Waiting. The ways in: the key, `ga`, `:agents`, quick open. The three empty states, with **Turn on** and **Copy**. The sessions the app learns of, and those that are here. The keymap and the help | Open the tab in any state, see which state the connection is in and who is here, turn the server on from the tab | F.7: the entry's states, the ways in, one tab for a window, the empty states, nothing opening or focusing by itself |
+| **1b-3b. Changes made outside the app** | C.2: the agent settings the app last showed, kept in the state directory, and a change from outside that makes agents more able held back until the person keeps it | A program that edits the files cannot turn agents on unseen | C.2's cases |
 | **1b-4. What agents are doing** | `App::agents`. The sessions that are here and "Also:". The feed. **Stop session** and **Stop agents here**. The Log view as a list for this connection, with All connections. The notification for an agent that connects | See each agent and each call as it happens, stop one agent or all on a connection, read the log | F.7: one connection, the stops, closing the tab, the log's default. F.4's interface |
 | **1b-5. Letting agents in** | Settings › Agents, with the switch between panes. The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** and **Show Agents tab** pointing at them. The website: a new guide, and the reference pages | Everything Phase 1 draws, without a file edited by hand | The interface tests of Settings, Connections and the editor. The keymap. `docs/bin/check` |
 
