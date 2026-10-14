@@ -10,14 +10,40 @@ publish = false
 workspace = true
 
 [dependencies]
-# The log is written on the runtime's blocking pool.
-tokio = { version = "1", features = ["rt"] }
+# The official Rust SDK of the Model Context Protocol: the lifecycle, the
+# messages and the transport, which change faster than this app should have
+# to follow (the protocol dropped its handshake in 2026-07-28, and the SDK
+# serves both). Only `protocol` names its types. Without its defaults: no
+# macros (three tools, their schemas written by hand) and no base64.
+# `server` is the role, and brings the transport over anything that reads
+# and writes. It adds rmcp, schemars with its derive, pastey, dyn-clone and
+# ref-cast; the rest of what it needs is in the tree.
+rmcp = { version = "3.5", default-features = false, features = ["server"] }
+# The check on a statement, the run of a read, and the catalog's types.
+# Never `ConnectSpec` or `Secrets`: this crate reaches a database only
+# through `Gateway`, which opens a connection by its id.
+tabletist-db = { path = "../tabletist-db" }
+# The runtime the server's tasks run on, its timers, and the bounds a
+# transport is served through.
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "io-util"] }
+# `CancellationToken`: how a call, a session and the server are stopped. The
+# SDK hands one to each request, and it is in the tree through it.
+tokio-util = "0.7"
+# Tool arguments and answers are JSON.
+serde_json = "1"
 # The log of calls, a SQLite file. The crate and its bundled SQLite that
 # tabletist-db builds: nothing new.
 rusqlite = { version = "0.37", features = ["bundled"] }
+# A session's id in the log, which must not repeat from one start of the
+# app to the next.
+uuid = { version = "1", features = ["v4"] }
+# One line for each call in the app's log: the tool, the result, the time.
+log = "0.4"
 
 [dev-dependencies]
-# The tests' runtime.
-tokio = { version = "1", features = ["rt", "macros"] }
+# The SDK's client, for the tests that call the server as an agent does.
+rmcp = { version = "3.5", default-features = false, features = ["client"] }
+# The tests' runtime, on more than one thread, as the app's is.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # A directory of its own for each test's files.
 tempfile = "3"

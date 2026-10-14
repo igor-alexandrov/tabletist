@@ -1,7 +1,26 @@
 //! The MCP server through which agents use Tabletist's connections.
 //!
-//! So far it is the [`Log`] of calls, and nothing that makes a call.
+//! An agent's tools only read. A refusal is a tool's result, with a code
+//! that does not change and a sentence the agent can act on. Every call is
+//! written to the [`Log`].
+//!
+//! The crate reaches a database only through a [`Gateway`], which lists the
+//! connections an agent may name and opens one by its id. None of its types
+//! holds where a database is or what opens it, so no tool can send that.
+//!
+//! Nothing here listens, and nothing in the app starts it yet: a
+//! [`Server`] serves whatever transport it is handed.
 
+mod gateway;
 mod log;
+mod protocol;
+mod refusal;
+mod server;
+mod stop;
+mod tools;
 
+pub use gateway::{Failure, Gateway, Listed, Schemas, Session};
 pub use log::{Entry, Log, LogError, Opened};
+pub use refusal::{Refused, code};
+pub use server::{Origin, Server, SessionInfo, Transport};
+pub use tools::{Tool, all as tools};
