@@ -91,13 +91,9 @@ pub fn main() -> anyhow::Result<()> {
         Some(root) => AppDirs::at(root.path()),
         None => AppDirs::discover(),
     };
-    let mut logging = fastframe_log::Logging::new("tabletist", env!("CARGO_PKG_VERSION")).filter(
-        if cli.verbose {
-            "info,tabletist=debug,tabletist_db=debug"
-        } else {
-            "warn,tabletist=info"
-        },
-    );
+    let mut logging = fastframe_log::Logging::new("tabletist", env!("CARGO_PKG_VERSION"))
+        .filter(log_filter(cli.verbose))
+        .redact(without_agents_words);
     // fastframe-log would create the log's folder itself, but with default
     // permissions; made here first, it is private to the user.
     if let Err(error) = dirs.ensure() {
@@ -385,9 +381,86 @@ impl eframe::App for Window {
     }
 }
 
+/// What the app's log takes, at its usual level and at `--verbose`.
+///
+/// Never a line of the MCP server's SDK (`rmcp`, and `tracing`, which
+/// writes lines of its own for the SDK's spans) or of `sqlparser`, which
+/// reads an agent's statement: they write what a client sent, a
+/// statement and its values among it, and `tabletist.log` holds none of
+/// that (`AGENTS.md`). `RUST_LOG`, where it is set, takes the filter's
+/// place as a whole: [`without_agents_words`] is what holds then.
+fn log_filter(verbose: bool) -> &'static str {
+    match verbose {
+        true => "info,tabletist=debug,tabletist_db=debug,rmcp=off,tracing=off,sqlparser=off",
+        false => "warn,tabletist=info,rmcp=off,tracing=off,sqlparser=off",
+    }
+}
+
+/// The crates whose lines can hold what an agent sent.
+const AGENTS_WORDS: [&str; 3] = ["rmcp", "tracing", "sqlparser"];
+
+/// A line of one of [`AGENTS_WORDS`] without its words, for when a
+/// `RUST_LOG` lets it through: that the line was there, and nothing of it.
+fn without_agents_words(
+    record: &log::Record<'_>,
+    _message: &str,
+) -> Option<std::borrow::Cow<'static, str>> {
+    let target = record.target();
+    let theirs = AGENTS_WORDS
+        .iter()
+        .any(|crate_name| target == *crate_name || target.starts_with(&format!("{crate_name}::")));
+    theirs.then_some(std::borrow::Cow::Borrowed(
+        "(a line left out: it can hold what an agent sent)",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_that_can_hold_an_agents_words_is_written_without_them() {
+        let line = |target: &str| {
+            let record = log::Record::builder()
+                .target(target)
+                .level(log::Level::Debug)
+                .args(format_args!("received request SELECT email FROM customers"))
+                .build();
+            without_agents_words(&record, "received request SELECT email FROM customers")
+        };
+        for target in [
+            "rmcp",
+            "rmcp::service",
+            "tracing::span",
+            "sqlparser::parser",
+        ] {
+            let written = line(target).expect(target);
+            assert!(!written.contains("SELECT"), "{target}: {written}");
+        }
+        // Every other crate's line is as it was, the app's own among them.
+        for target in [
+            "tabletist",
+            "tabletist_mcp::server",
+            "zbus",
+            "rmcpx",
+            "tracingfoo",
+        ] {
+            assert_eq!(line(target), None, "{target}");
+        }
+    }
+
+    #[test]
+    fn the_log_takes_nothing_of_what_writes_an_agents_words() {
+        for verbose in [false, true] {
+            let filter = log_filter(verbose);
+            for theirs in AGENTS_WORDS {
+                let off = format!("{theirs}=off");
+                assert!(filter.split(',').any(|said| said == off), "{filter}");
+            }
+            // And the app's own crates are as they were.
+            assert!(filter.contains("tabletist="), "{filter}");
+        }
+    }
 
     #[test]
     fn demo_mode_never_uses_the_os_keyring() {
