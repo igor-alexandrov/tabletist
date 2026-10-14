@@ -37,6 +37,7 @@ back.
 | Ctrl+H, Ctrl+L | Move between the parts of the window |
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
+| `:agents` | Show the Agents tab |
 | `?` | The list of keys |
 
 Quick open has no key in the Omarchy look. `/` in the sidebar filters its
@@ -80,6 +81,7 @@ list instead.
 | `/` | Filter the list |
 | `t` | Switch between tree and flat |
 | `R` | Reload the list |
+| `ga` | Show the Agents tab |
 | Ctrl+B | Hide the sidebar |
 
 ### A table
@@ -93,12 +95,20 @@ list instead.
 | `/` | Filter with a WHERE line |
 | Ctrl+F | Filter bar |
 | `gd` | Follow the selected foreign key. On a row whose delete a foreign key refused, open the rows that hold it |
+| `ga` | Show the Agents tab |
 | `v` then `y` | Copy the cell |
 | `R` | Reload |
 | Ctrl+C | Cancel the running query |
 
 The Structure and Data views are clicked: switching between them has no
 key. Nor has copying a whole row.
+
+### The Agents tab
+
+| Keys | Do |
+| --- | --- |
+| `y` | Copy the command that connects an agent |
+| `o` | Turn the agent server on, while it is off |
 
 ### The Structure view
 

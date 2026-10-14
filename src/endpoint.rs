@@ -141,12 +141,31 @@ pub async fn read_line<R: AsyncRead + Unpin>(
     }
 }
 
+/// The command, once worked out.
+static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Works [`agent_command`] out on a thread of its own, once: it looks at
+/// the disk, in every folder of the `PATH`, which the UI thread must not
+/// wait on (`AGENTS.md`). The app calls it as it starts.
+pub fn work_out_agent_command() {
+    if AVAILABLE && COMMAND.get().is_none() {
+        std::thread::spawn(|| {
+            agent_command();
+        });
+    }
+}
+
+/// [`agent_command`] where it is worked out already: what the UI reads.
+pub fn agent_command_ready() -> Option<&'static str> {
+    COMMAND.get().map(String::as_str)
+}
+
 /// The command that connects Claude Code, the agent the boards name, to
 /// this Tabletist: `claude mcp add tabletist -- tabletist mcp`, with this
 /// program's whole path where `tabletist` on the `PATH` is not this
-/// program (the app bundle on macOS). Worked out once.
+/// program (the app bundle on macOS). Worked out once, by looking at the
+/// disk: never on the UI thread, which asks [`agent_command_ready`].
 pub fn agent_command() -> &'static str {
-    static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     COMMAND.get_or_init(|| {
         let exe = std::env::current_exe().ok();
         let on_path = std::env::var_os("PATH").and_then(|path| {
@@ -300,6 +319,17 @@ mod tests {
             command_for("tabletist mcp"),
             "claude mcp add tabletist -- tabletist mcp"
         );
+    }
+
+    #[test]
+    fn the_command_is_ready_once_it_is_worked_out() {
+        let command = agent_command();
+        assert_eq!(agent_command_ready(), Some(command));
+        assert!(
+            command.starts_with("claude mcp add tabletist -- "),
+            "{command}"
+        );
+        assert!(command.ends_with(" mcp"), "{command}");
     }
 
     #[tokio::test]

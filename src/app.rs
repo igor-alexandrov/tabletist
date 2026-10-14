@@ -204,6 +204,9 @@ impl App {
         };
         let tab = app.picker_tab();
         app.tabs.push(tab);
+        // What the Agents tab copies looks at the disk: done off the UI
+        // thread, now, for when it is shown.
+        crate::endpoint::work_out_agent_command();
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
         // which a connection had no id yet.
@@ -3503,8 +3506,6 @@ impl App {
         Some((tab, self.workspace(tab)?.active_sql_tab()?.id))
     }
 
-    /// Opens an empty SQL editor after the workspace's other tabs, with the
-    /// limit and timeout of the settings, and shows it.
     /// Shows the workspace's Agents tab, opening it at the end of the
     /// strip where it is not open yet. Only what the person does calls
     /// it: nothing the server says opens the tab or brings it forward.
@@ -3549,6 +3550,8 @@ impl App {
         Some(self.agents.of(self.settings.mcp_enabled, access, conn))
     }
 
+    /// Opens an empty SQL editor after the workspace's other tabs, with the
+    /// limit and timeout of the settings, and shows it.
     fn new_sql_tab(&mut self, tab: ConnTabId) {
         let id = TabId(self.next_id());
         let request = RequestId(self.next_id());
@@ -4108,8 +4111,6 @@ impl App {
         }
     }
 
-    /// Loaded objects of `tab`'s connection that match `query`, best first,
-    /// at most 50.
     /// What quick open lists for `query`: the Agents tab first where what
     /// is typed is the start of "agents", two letters at least, and agents
     /// can reach the app; then the objects. Fewer letters, or letters
@@ -4125,6 +4126,8 @@ impl App {
             .collect()
     }
 
+    /// Loaded objects of `tab`'s connection that match `query`, best first,
+    /// at most 50.
     pub fn quick_open_matches(&self, tab: ConnTabId, query: &str) -> Vec<(ObjectRef, ObjectKind)> {
         let Some(workspace) = self.workspace(tab) else {
             return Vec::new();

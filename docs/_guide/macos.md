@@ -53,6 +53,7 @@ a Mac keyboard labels Delete.
 | Cmd+Shift+[ and ] | Previous and next tab |
 | Cmd+W | Close the tab |
 | Cmd+B | Show or hide the sidebar |
+| Cmd+Alt+A | Show the Agents tab |
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
 | `?` | The list of keys |

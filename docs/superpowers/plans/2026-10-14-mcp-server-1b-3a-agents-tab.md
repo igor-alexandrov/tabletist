@@ -3251,3 +3251,9 @@ Not done here, and left for the review of the pull request:
 
 - **The by-hand check with Claude Code** needs the app's window, and no session here has a display. It is Igor's to run once, as "After the last task" says.
 - **macOS and Windows** run in CI alone. Two tests run on Windows only: that nothing of agents shows there, and that quick open offers no Agents tab.
+
+## After the pull request's review
+
+- **The command that Copy copies looked at the disk on the UI thread**, in every folder of the `PATH`, the first time the tab was drawn (`AGENTS.md` keeps the disk off it). The app now works it out on a thread of its own as it starts (`endpoint::work_out_agent_command`), and the tab reads it once it is ready (`agent_command_ready`), with "…" until then.
+- The guides' keyboard sections name the new keys too: ⌥⌘A on macOS, `:agents` and `ga` on Omarchy, and the tab's `y` and `o`.
+- Two doc comments had been left above the new functions instead of their own (`new_sql_tab`, `quick_open_matches`).

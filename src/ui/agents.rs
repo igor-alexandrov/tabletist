@@ -16,9 +16,13 @@ use crate::ui::{states, widgets};
 pub const COPIED_COMMAND: &str = "Copied the command";
 
 /// Puts the command that connects an agent on the clipboard, and says so.
+/// Nothing while it is still being worked out, which takes a moment once,
+/// as the app starts.
 pub fn copy_command(ctx: &egui::Context, locale: crate::i18n::Locale) {
-    ctx.copy_text(crate::endpoint::agent_command().to_owned());
-    crate::ui::toast::say(ctx, &gettext(locale, COPIED_COMMAND));
+    if let Some(command) = crate::endpoint::agent_command_ready() {
+        ctx.copy_text(command.to_owned());
+        crate::ui::toast::say(ctx, &gettext(locale, COPIED_COMMAND));
+    }
 }
 
 /// The height of the tab's line at its top, and of its status bar.
@@ -245,7 +249,13 @@ fn none_connected(
     let copy_width = copy.width(ui, look);
     let height = states::button_height(look);
     let mono = TextRole::pick(look, TextRole::GridCell, TextRole::OBody);
-    let command = crate::endpoint::agent_command();
+    // Worked out off the UI thread as the app starts: a moment's "…" until
+    // then, and a frame asked for to show it.
+    let command = crate::endpoint::agent_command_ready().unwrap_or_else(|| {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+        "…"
+    });
     let fits = (room - 8.0 - copy_width - 24.0).clamp(0.0, 520.0);
     let shown = crate::ui::grid::ellipsize(command, fits, true, |text| {
         mono.width(&ctx, look.faces, text)
