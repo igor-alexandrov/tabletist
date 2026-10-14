@@ -17,6 +17,10 @@ pub struct AppDirs {
     /// network, and Windows makes several system calls. None of that
     /// belongs in a frame.
     pub home: Option<PathBuf>,
+    /// The user's runtime directory, where there is one (Linux's
+    /// `/run/user/<id>`): what lives as long as the session, the agents'
+    /// endpoint. Elsewhere, and in tests, that is in `state`.
+    pub runtime: Option<PathBuf>,
 }
 
 impl AppDirs {
@@ -24,6 +28,7 @@ impl AppDirs {
     /// `~/.local/state/tabletist` on Linux.
     pub fn discover() -> Self {
         let home = BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+        let runtime = runtime_dir();
         match ProjectDirs::from("dev", "tabletist", "Tabletist") {
             Some(project) => Self {
                 config: project.config_dir().to_path_buf(),
@@ -32,6 +37,7 @@ impl AppDirs {
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| project.data_local_dir().to_path_buf()),
                 home,
+                runtime,
             },
             None => Self::at(
                 &std::env::current_dir()
@@ -48,6 +54,7 @@ impl AppDirs {
             config: root.join("config"),
             state: root.join("state"),
             home: None,
+            runtime: None,
         }
     }
 
@@ -109,6 +116,38 @@ impl AppDirs {
         self.state.join("connections.moved")
     }
 
+    /// The log of every call agents made, kept for the days the settings
+    /// say (`[mcp] log_days`).
+    pub fn agents_log_file(&self) -> PathBuf {
+        self.state.join("agents.sqlite3")
+    }
+
+    /// Where `tabletist mcp` reaches the running app: the directory of its
+    /// socket, `mcp.sock`, and of the key a relay sends first, `mcp.key`.
+    /// Private to the user: made 0700 by the app before it listens.
+    /// `tabletist` in the runtime directory where there is one, else the
+    /// state directory. On macOS a socket's path may have 103 bytes, which
+    /// a long home directory can pass: then `.tabletist` in the home
+    /// directory, which is shorter by 45.
+    ///
+    /// The relay finds it from what an agent starts it with, which may be
+    /// no more than `HOME`, `PATH` and a few others: so nothing here comes
+    /// from `XDG_RUNTIME_DIR` or `TMPDIR`.
+    pub fn agents_dir(&self) -> PathBuf {
+        let dir = match &self.runtime {
+            Some(runtime) => runtime.join("tabletist"),
+            None => self.state.clone(),
+        };
+        #[cfg(target_os = "macos")]
+        if let Some(home) = &self.home
+            && dir.join(crate::endpoint::SOCKET).as_os_str().len()
+                > crate::endpoint::MAX_SOCKET_PATH
+        {
+            return home.join(".tabletist");
+        }
+        dir
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.state.join("tabletist.log")
     }
@@ -116,6 +155,23 @@ impl AppDirs {
     pub fn panic_log(&self) -> PathBuf {
         self.state.join("panic.log")
     }
+}
+
+/// `/run/user/<id>`, where the system made it for this user: found by the
+/// user's id, which is the owner of the process's own `/proc` entry.
+#[cfg(target_os = "linux")]
+fn runtime_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let user = std::fs::metadata("/proc/self").ok()?.uid();
+    let dir = PathBuf::from(format!("/run/user/{user}"));
+    let found = std::fs::metadata(&dir).ok()?;
+    (found.is_dir() && found.uid() == user).then_some(dir)
+}
+
+/// None but on Linux.
+#[cfg(not(target_os = "linux"))]
+fn runtime_dir() -> Option<PathBuf> {
+    None
 }
 
 #[cfg(test)]
@@ -157,6 +213,17 @@ mod tests {
         assert_eq!(dirs.labels_file(), PathBuf::from("/root/state/labels.json"));
         assert_eq!(dirs.log_file(), PathBuf::from("/root/state/tabletist.log"));
         assert_eq!(dirs.panic_log(), PathBuf::from("/root/state/panic.log"));
+        assert_eq!(
+            dirs.agents_log_file(),
+            PathBuf::from("/root/state/agents.sqlite3")
+        );
+        // Without a runtime directory, with the state.
+        assert_eq!(dirs.agents_dir(), PathBuf::from("/root/state"));
+        let dirs = AppDirs {
+            runtime: Some(PathBuf::from("/run/user/1000")),
+            ..dirs
+        };
+        assert_eq!(dirs.agents_dir(), PathBuf::from("/run/user/1000/tabletist"));
     }
 
     #[test]
@@ -173,6 +240,19 @@ mod tests {
         dirs.ensure().unwrap();
         assert!(dirs.config.is_dir());
         assert!(dirs.state.is_dir());
+    }
+
+    /// The relay and the app find one directory, whatever the agent left
+    /// out of the relay's environment.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_runtime_directory_is_the_users_own_and_no_variables() {
+        use std::os::unix::fs::MetadataExt;
+        if let Some(dir) = runtime_dir() {
+            let user = std::fs::metadata("/proc/self").unwrap().uid();
+            assert_eq!(dir, PathBuf::from(format!("/run/user/{user}")));
+        }
+        assert_eq!(AppDirs::discover().runtime, runtime_dir());
     }
 
     #[test]

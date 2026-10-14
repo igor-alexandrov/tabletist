@@ -5,6 +5,7 @@ pub mod backend;
 pub mod completion;
 pub mod connections;
 pub mod edit;
+pub mod endpoint;
 pub mod entrypoint;
 pub mod env;
 pub mod i18n;
