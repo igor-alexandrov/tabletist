@@ -314,6 +314,46 @@ fn what_the_server_says_while_it_is_off_is_not_kept() {
 }
 
 #[test]
+fn more_sessions_than_the_tab_has_room_for_scroll_to_the_last() {
+    let (mut harness, tab) = connected(Look::macos());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    let many: Vec<_> = (0..40)
+        .map(|n| session(&harness, Some(tab), &format!("Agent {n}")))
+        .collect();
+    said(&mut harness, AgentsEvent::Sessions(many));
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    let status = harness
+        .painted_rect("40 agents here · Server: stdio")
+        .unwrap();
+    // The last row, the agent that called first, is under the status bar,
+    // out of sight, until scrolled.
+    let last = "Agent 0 · tabletist-repo · connected just now · 14 calls · Runs as dev";
+    let seen = |harness: &Harness| {
+        harness
+            .painted_rect("Agent 0  tabletist-repo · connected just now · 14 calls · Runs as dev")
+            .is_some_and(|row| row.bottom() <= status.top())
+    };
+    assert!(!seen(&harness));
+    assert!(harness.has(last));
+    let middle = harness.size / 2.0;
+    for _ in 0..20 {
+        harness.frame(vec![
+            egui::Event::PointerMoved(middle.to_pos2()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -400.0),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            },
+        ]);
+    }
+    harness.settle();
+    assert!(seen(&harness));
+}
+
+#[test]
 fn closing_the_tab_stops_nothing() {
     let (mut harness, tab) = connected(Look::macos());
     harness.app.settings.mcp_enabled = true;

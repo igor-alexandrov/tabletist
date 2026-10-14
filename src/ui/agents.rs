@@ -345,6 +345,29 @@ fn sessions_here(
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
 ) {
     let row = if look.terminal { 22.0 } else { 44.0 };
+    // More sessions than the tab has the height for scroll, under its
+    // header and above its status bar.
+    let mut area = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    egui::ScrollArea::vertical()
+        .id_salt("agents-sessions")
+        .auto_shrink([false, false])
+        .show(&mut area, |ui| {
+            let height = 12.0 + row * sessions.len() as f32 + 12.0;
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), height), egui::Sense::hover());
+            session_rows(ui, rect, sessions, runs_as, (look, palette, locale));
+        });
+}
+
+/// The sessions' rows in `rect`, from its top: one for each, `row` high.
+fn session_rows(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    sessions: &[tabletist_mcp::SessionInfo],
+    runs_as: Option<&str>,
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+) {
+    let row = if look.terminal { 22.0 } else { 44.0 };
     let mut top = rect.top() + 12.0;
     let now = std::time::SystemTime::now();
     for session in sessions {
