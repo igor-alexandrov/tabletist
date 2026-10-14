@@ -2158,7 +2158,11 @@ The ones Phase 1 waits for are marked.
     with the start of its id after it ("Bookshop · dev (1f0c2a9e)"). The
     planned " (2)" moved: turning the first Off made the second "Bookshop ·
     dev", and an agent's next call reached another database. A name now
-    never comes to mean another one: at worst it means none.
+    means one database for as long as the connections called the same are
+    the same ones: turning one Off or on changes no name. When one of them
+    is added or removed, the others' names change with it (the review of
+    the pull request found that an add and then a remove gave the bare
+    name to another), and an agent learns them from `list_connections`.
 20. An `UPDATE` or `DELETE` without a `WHERE`: a warning on the card, as
     planned, or refused outright for agents?
 

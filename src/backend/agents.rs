@@ -46,9 +46,11 @@ pub struct Agentable {
 ///
 /// An agent calls a connection by its name and its environment. Where two
 /// saved connections would be called the same, Off or not, each is called
-/// that with the start of its id after it, for good: a name an agent was
-/// given never comes to mean another database, when a connection is
-/// added, turned Off or removed. At worst it means none.
+/// that with the start of its id after it. So a name means one database for
+/// as long as the connections called the same are the same ones: turning
+/// one Off, or on, changes no name. When one of them is added or removed
+/// the names of the others change with it, the bare name among them, and
+/// an agent learns the new ones from `list_connections`.
 pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
     let called = |saved: &SavedConnection| match saved.environment.named(Platform::Native) {
         Some(environment) => format!("{} · {environment}", saved.name),
@@ -305,8 +307,30 @@ pub struct AppGateway {
 struct Inner {
     keyring: Keyring,
     policy: Mutex<Policy>,
-    /// A connection's turn, and its session while it is open.
+    /// A connection's turn, and its session while it is open. A turn is
+    /// never taken out of the map: a call that holds it, or waits for it,
+    /// would then be beside a call that took a new one.
     turns: Mutex<HashMap<ConnectionId, Arc<tokio::sync::Mutex<Option<Open>>>>>,
+    /// Counted up by [`AppGateway::close_all`]: a session opened before it
+    /// is closed when its call lets it go.
+    epoch: std::sync::atomic::AtomicU64,
+}
+
+impl Inner {
+    fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether a session opened for `opened_for` in `epoch` may be kept for
+    /// the next call: the connection is still that, and nothing closed
+    /// every session since.
+    fn keeps(&self, opened_for: &Agentable, epoch: u64) -> bool {
+        epoch == self.epoch()
+            && lock(&self.policy)
+                .connections
+                .iter()
+                .any(|agentable| agentable == opened_for)
+    }
 }
 
 #[derive(Default)]
@@ -322,6 +346,8 @@ struct Open {
     /// opened again.
     opened_for: Agentable,
     used: Instant,
+    /// [`Inner::epoch`] when it was opened.
+    epoch: u64,
 }
 
 impl AppGateway {
@@ -331,43 +357,47 @@ impl AppGateway {
                 keyring,
                 policy: Mutex::default(),
                 turns: Mutex::default(),
+                epoch: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
 
     /// The connections agents may use from now on. One that is not among
-    /// them any more is closed once its call, if it has one, is over.
+    /// them any more, or not as it was, is closed now if no call holds it,
+    /// else once its call is over.
     pub fn set_policy(&self, connections: Vec<Agentable>, host_keys: HostKeys) {
-        let ids: Vec<ConnectionId> = connections
-            .iter()
-            .map(|agentable| agentable.id.clone())
-            .collect();
         *lock(&self.inner.policy) = Policy {
             connections,
             host_keys,
         };
-        lock(&self.inner.turns).retain(|id, _| ids.contains(id));
+        self.close_free(|open| !self.inner.keeps(&open.opened_for, open.epoch));
     }
 
-    /// Closes every connection no call holds, and lets the others go when
-    /// their calls are over.
+    /// Closes every connection no call holds, and the others once their
+    /// calls are over.
     pub fn close_all(&self) {
-        lock(&self.inner.turns).clear();
+        self.inner
+            .epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.close_free(|_| true);
     }
 
-    /// Closes the connections that have had nothing to do for `idle`.
-    pub fn close_idle(&self, idle: Duration) {
+    /// Closes each session no call holds that `closes` says to.
+    fn close_free(&self, closes: impl Fn(&Open) -> bool) {
         let turns: Vec<_> = lock(&self.inner.turns).values().cloned().collect();
         for turn in turns {
-            // One that is in use is not idle.
             if let Ok(mut open) = turn.try_lock()
-                && open
-                    .as_ref()
-                    .is_some_and(|open| open.used.elapsed() >= idle)
+                && open.as_ref().is_some_and(&closes)
             {
                 *open = None;
             }
         }
+    }
+
+    /// Closes the connections that have had nothing to do for `idle`. One
+    /// that is in use is not idle.
+    pub fn close_idle(&self, idle: Duration) {
+        self.close_free(|open| open.used.elapsed() >= idle);
     }
 
     fn find(&self, id: &str) -> Option<(Agentable, HostKeys)> {
@@ -412,11 +442,15 @@ impl Gateway for AppGateway {
         };
         // The policy may have changed while the call waited: the
         // connection as it is now, or none.
-        let (agentable, host_keys) = self.find(id).ok_or(Failure::Unavailable)?;
-        // Changed since it was opened: opened again as it is now.
+        let Some((agentable, host_keys)) = self.find(id) else {
+            *open = None;
+            return Err(Failure::Unavailable);
+        };
+        // Changed since it was opened, or opened before every session was
+        // closed: opened again as it is now.
         if open
             .as_ref()
-            .is_some_and(|open| open.opened_for != agentable)
+            .is_some_and(|open| open.opened_for != agentable || open.epoch != self.inner.epoch())
         {
             *open = None;
         }
@@ -434,6 +468,7 @@ impl Gateway for AppGateway {
                 connection,
                 opened_for: agentable.clone(),
                 used: Instant::now(),
+                epoch: self.inner.epoch(),
             });
         }
         let cancel = open
@@ -442,6 +477,7 @@ impl Gateway for AppGateway {
             .ok_or(Failure::Unavailable)?;
         Ok(AppSession {
             open,
+            gateway: Arc::clone(&self.inner),
             database: agentable.spec.database.clone(),
             stop: stop.clone(),
             cancel,
@@ -504,18 +540,26 @@ async fn connect(
 /// A connection's session, held by one call.
 pub struct AppSession {
     open: OwnedMutexGuard<Option<Open>>,
+    gateway: Arc<Inner>,
     database: String,
     stop: CancellationToken,
     cancel: CancelHandle,
-    /// Set when the session answered that it is lost or no longer what it
-    /// was opened as: it is closed when the call lets it go, and the next
-    /// call opens it again.
+    /// Set when the session answered that it is lost: it is closed when the
+    /// call lets it go, and the next call opens it again.
     lost: std::sync::atomic::AtomicBool,
 }
 
+/// As the call lets the session go: closed when it was lost, when its
+/// connection was turned Off or changed meanwhile, or when every session
+/// was closed meanwhile. Else kept for the next call.
 impl Drop for AppSession {
     fn drop(&mut self) {
-        if self.lost.load(std::sync::atomic::Ordering::SeqCst) {
+        let lost = self.lost.load(std::sync::atomic::Ordering::SeqCst);
+        let kept = self
+            .open
+            .as_ref()
+            .is_some_and(|open| self.gateway.keeps(&open.opened_for, open.epoch));
+        if lost || !kept {
             *self.open = None;
         } else if let Some(open) = self.open.as_mut() {
             open.used = Instant::now();
@@ -754,8 +798,7 @@ mod tests {
                 pair("cccc3333-z", "Shop · dev (cccc3333)"),
             ]
         );
-        // One removed: what was shared is no more, and nobody is called
-        // as a removed one was.
+        // One removed: the others keep theirs while two are left.
         assert_eq!(
             names(&[b.clone(), c.clone()]),
             [
@@ -763,6 +806,9 @@ mod tests {
                 pair("cccc3333-z", "Shop · dev (cccc3333)"),
             ]
         );
+        // Alone again, the last takes the bare name. An agent that learnt
+        // "Shop · dev" when it was a's would now read c: what the names
+        // keep is no more than the doc of `agentable` says.
         assert_eq!(
             names(std::slice::from_ref(&c)),
             [pair("cccc3333-z", "Shop · dev")]
@@ -937,6 +983,57 @@ mod tests {
         drop(holding);
     }
 
+    #[test]
+    fn a_name_two_connections_came_to_share_changes_for_both() {
+        let file = || ConnectSpec::sqlite("/tmp/bookshop.db");
+        let x = saved("aaaa1111-x", "Shop", Environment::Dev, file());
+        let y = saved("bbbb2222-y", "Shop", Environment::Dev, file());
+        let names = |saved: &[SavedConnection]| -> Vec<String> {
+            agentable(saved)
+                .into_iter()
+                .map(|agentable| agentable.name)
+                .collect()
+        };
+        assert_eq!(names(std::slice::from_ref(&x)), ["Shop · dev"]);
+        // Another called the same is added: neither is the bare name now.
+        assert_eq!(
+            names(&[x.clone(), y.clone()]),
+            ["Shop · dev (aaaa1111)", "Shop · dev (bbbb2222)"]
+        );
+        // And the first removed: the bare name is the second's.
+        assert_eq!(names(&[y]), ["Shop · dev"]);
+    }
+
+    #[tokio::test]
+    async fn a_turn_is_kept_while_a_call_holds_it_whatever_the_policy_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ConnectSpec::sqlite(bookshop(dir.path(), "bookshop.db"));
+        let mut connection = saved("shop", "Bookshop", Environment::Dev, spec);
+        connection.agents.timeout_secs = 1;
+        let gateway = gateway(connection.clone());
+        let stop = CancellationToken::new();
+        let holding = gateway.open("shop", &stop).await.unwrap();
+        // Off, and Read again, while the call holds the session.
+        let mut off = connection.clone();
+        off.agents.access = AgentAccess::Off;
+        gateway.set_policy(agentable(&[off]), HostKeys::default());
+        gateway.set_policy(agentable(&[connection]), HostKeys::default());
+        // Every session closed, too.
+        gateway.close_all();
+        // Still one call at a time.
+        assert!(matches!(
+            gateway.open("shop", &stop).await,
+            Err(Failure::Busy)
+        ));
+        let turn = Arc::clone(&lock(&gateway.inner.turns)[&ConnectionId("shop".into())]);
+        drop(holding);
+        // Let go, it is closed: every session was closed while it was held.
+        assert!(turn.try_lock().unwrap().is_none());
+        let next = gateway.open("shop", &stop).await.unwrap();
+        let count = read(&next, Dialect::Sqlite, "SELECT count(*) FROM books").await;
+        assert_eq!(the_int(&count.unwrap()), 12);
+    }
+
     #[tokio::test]
     async fn a_connection_taken_away_or_changed_is_not_used_as_it_was() {
         let dir = tempfile::tempdir().unwrap();
@@ -977,7 +1074,8 @@ mod tests {
             gateway.open("shop", &stop).await,
             Err(Failure::Unavailable)
         ));
-        assert!(lock(&gateway.inner.turns).is_empty());
+        let turn = Arc::clone(&lock(&gateway.inner.turns)[&ConnectionId("shop".into())]);
+        assert!(turn.try_lock().unwrap().is_none(), "closed");
     }
 
     #[tokio::test]

@@ -3229,3 +3229,14 @@ Expected: all clean, and every test passes. On 2026-10-14, with both servers up:
 ## After the run
 
 Run on 2026-10-14, inline, one commit for each task. Every step showed what it says above, and the files the tasks changed are byte for byte the draft's. The last state passed the workspace's tests with PostgreSQL and MySQL up: 23 test binaries, 3,371 passed, none failed.
+
+## After the pull request's review
+
+The review found four things, each fixed after the run, with a test where one fits. The diffs above have the code as it was.
+
+- **The keyring's quiet read failed open.** It looked for a locked item and otherwise read: had its search looked for the item otherwise than the keyring crate keeps it, it would have found nothing and the read would have asked to unlock. It now reads only an item it found unlocked, and one it did not find is a password not found (`secrets::item`).
+- **A turn could be dropped while a call held it.** `set_policy` took a connection that went Off out of the map of turns, and `close_all` emptied it: a connection turned Off and on again, or a stop, while a call ran gave the next call a turn of its own, beside the first. A turn now stays in the map. A session that a change or a stop retired is closed at once when no call holds it, else when its call lets it go (`Inner::keeps`, `Inner::epoch`).
+- **Names kept less than the doc said.** "What this run settles" has a name never come to mean another database. An add and then a remove of a connection called the same gives the bare name to the one left. The doc of `agentable` and the master plan's question 19 now say what holds: a name means one database while the connections called the same are the same ones. A test walks the add and the remove.
+- **The website's reference** (`_reference/settings-and-files.md`) describes the `[connections.agents]` table and the file's two versions, which "What this run leaves out" had left to the second part: a table written by hand is read and kept now.
+
+The comment on `AppSession::lost` said it is also set when a session is no longer what it was opened as. Only a lost session sets it: it says so now.
