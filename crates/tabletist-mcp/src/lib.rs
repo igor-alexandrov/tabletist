@@ -4,6 +4,10 @@
 //! that does not change and a sentence the agent can act on. Every call is
 //! written to the [`Log`].
 //!
+//! A statement passes [`tabletist_db::agent::check_read`] before it reaches
+//! a database, runs in a read-only transaction that is rolled back, and its
+//! answer is kept under a size.
+//!
 //! The crate reaches a database only through a [`Gateway`], which lists the
 //! connections an agent may name and opens one by its id. None of its types
 //! holds where a database is or what opens it, so no tool can send that.
@@ -11,6 +15,7 @@
 //! Nothing here listens, and nothing in the app starts it yet: a
 //! [`Server`] serves whatever transport it is handed.
 
+mod answer;
 mod gateway;
 mod log;
 mod protocol;
@@ -19,6 +24,7 @@ mod server;
 mod stop;
 mod tools;
 
+pub use answer::{MAX_ANSWER_BYTES, MAX_CELL_CHARS};
 pub use gateway::{Failure, Gateway, Listed, Schemas, Session};
 pub use log::{Entry, Log, LogError, Opened};
 pub use refusal::{Refused, code};

@@ -308,7 +308,7 @@ impl<G: Gateway> Server<G> {
             Some(why) => refuse(Refused::session_ended(why)),
             None if before >= MAX_CALLS_AT_ONCE => refuse(Refused::too_many_calls()),
             None => {
-                let work = tools::call(&self.inner.gateway, name, arguments);
+                let work = tools::call(&self.inner.gateway, &stop, name, arguments);
                 tokio::pin!(work);
                 tokio::select! {
                     done = &mut work => done,

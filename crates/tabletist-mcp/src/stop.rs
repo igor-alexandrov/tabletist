@@ -74,6 +74,12 @@ impl Stop {
         nearest
     }
 
+    /// For a gateway, which ends what a session is doing when this is
+    /// cancelled.
+    pub fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+
     pub async fn ended(&self) {
         self.token.cancelled().await;
     }
