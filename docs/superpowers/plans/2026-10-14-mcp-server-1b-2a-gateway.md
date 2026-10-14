@@ -3244,3 +3244,5 @@ The comment on `AppSession::lost` said it is also set when a session is no longe
 A second review found that the epoch of a new session was read once its connect was done: a stop while it opened was missed, and the session stayed open while the server was off. It is read before the connect now.
 
 A third found that a log whose open panicked on the blocking pool left a start without an answer and without a line in the app's log. It is answered `Failed` and logged, as a log that could not be opened is.
+
+A fourth found that `tokio_postgres` writes the statement it prepares or runs, with its values, at debug, which a `RUST_LOG` lets through, and a server's notice at info, which `--verbose` did. Its lines are off in both filters and blanked by the rewriter, as the SDK's are. `mysql_async` writes none: its spans are behind its `tracing` feature, which is not built.

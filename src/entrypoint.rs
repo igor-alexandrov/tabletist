@@ -384,20 +384,25 @@ impl eframe::App for Window {
 /// What the app's log takes, at its usual level and at `--verbose`.
 ///
 /// Never a line of the MCP server's SDK (`rmcp`, and `tracing`, which
-/// writes lines of its own for the SDK's spans) or of `sqlparser`, which
-/// reads an agent's statement: they write what a client sent, a
-/// statement and its values among it, and `tabletist.log` holds none of
-/// that (`AGENTS.md`). `RUST_LOG`, where it is set, takes the filter's
+/// writes lines of its own for the SDK's spans), of `sqlparser`, which
+/// reads an agent's statement, or of `tokio_postgres`, which writes the
+/// statement it runs and its values at debug, and a server's notice at
+/// info: they write what a client sent, or what its statement made the
+/// server say, and `tabletist.log` holds none of that (`AGENTS.md`). `RUST_LOG`, where it is set, takes the filter's
 /// place as a whole: [`without_agents_words`] is what holds then.
 fn log_filter(verbose: bool) -> &'static str {
     match verbose {
-        true => "info,tabletist=debug,tabletist_db=debug,rmcp=off,tracing=off,sqlparser=off",
-        false => "warn,tabletist=info,rmcp=off,tracing=off,sqlparser=off",
+        true => {
+            "info,tabletist=debug,tabletist_db=debug,rmcp=off,tracing=off,sqlparser=off,tokio_postgres=off"
+        }
+        false => "warn,tabletist=info,rmcp=off,tracing=off,sqlparser=off,tokio_postgres=off",
     }
 }
 
-/// The crates whose lines can hold what an agent sent.
-const AGENTS_WORDS: [&str; 3] = ["rmcp", "tracing", "sqlparser"];
+/// The crates whose lines can hold what an agent sent. `mysql_async`
+/// writes no line of its own: its spans are behind a feature that is not
+/// built.
+const AGENTS_WORDS: [&str; 4] = ["rmcp", "tracing", "sqlparser", "tokio_postgres"];
 
 /// A line of one of [`AGENTS_WORDS`] without its words, for when a
 /// `RUST_LOG` lets it through: that the line was there, and nothing of it.
@@ -433,6 +438,8 @@ mod tests {
             "rmcp::service",
             "tracing::span",
             "sqlparser::parser",
+            "tokio_postgres::query",
+            "tokio_postgres::connection",
         ] {
             let written = line(target).expect(target);
             assert!(!written.contains("SELECT"), "{target}: {written}");
@@ -444,6 +451,7 @@ mod tests {
             "zbus",
             "rmcpx",
             "tracingfoo",
+            "tokio_postgres_rustls",
         ] {
             assert_eq!(line(target), None, "{target}");
         }
