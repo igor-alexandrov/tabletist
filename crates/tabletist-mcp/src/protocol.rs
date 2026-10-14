@@ -119,6 +119,16 @@ impl<T> Watched<T> {
     }
 }
 
+impl<T> Watched<T> {
+    /// Whether the transport was shut, for the half that writes. Asked at
+    /// every write, flush and close, so that whichever of them is waiting
+    /// is woken when it is: a pipe makes a flush wait where a transport in
+    /// memory makes a write wait.
+    fn shut_for_writing(&mut self, context: &mut Context<'_>) -> bool {
+        self.shut.is_cancelled() || self.shut_writing.as_mut().poll(context).is_ready()
+    }
+}
+
 fn was_shut() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::ConnectionAborted,
@@ -160,7 +170,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Watched<T> {
         context: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        if self.shut.is_cancelled() || self.shut_writing.as_mut().poll(context).is_ready() {
+        if self.shut_for_writing(context) {
             return Poll::Ready(Err(was_shut()));
         }
         let polled = Pin::new(&mut self.io).poll_write(context, bytes);
@@ -174,7 +184,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Watched<T> {
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if self.shut.is_cancelled() {
+        if self.shut_for_writing(context) {
             return Poll::Ready(Err(was_shut()));
         }
         Pin::new(&mut self.io).poll_flush(context)
@@ -184,7 +194,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Watched<T> {
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if self.shut.is_cancelled() {
+        if self.shut_for_writing(context) {
             // Shut already: there is nothing more to say to this client.
             return Poll::Ready(Ok(()));
         }
@@ -280,6 +290,79 @@ fn result(reply: Reply) -> CallToolResult {
                 "message": refused.message,
             }));
             result
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    /// A transport whose client takes nothing and sends nothing: a write
+    /// goes into a buffer, and a read, a flush and a close never end.
+    struct Stuck;
+
+    impl AsyncRead for Stuck {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Stuck {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    /// Whatever the SDK is waiting in when the transport is shut, it is
+    /// woken: a duplex in memory only ever makes a write wait, and a pipe
+    /// or a buffered writer makes a flush wait.
+    #[tokio::test]
+    async fn whatever_waits_on_the_transport_ends_when_it_is_shut() {
+        for waits_in in ["read", "flush", "close"] {
+            let shut = CancellationToken::new();
+            let mut watched = Watched::new(Stuck, Stop::new(), shut.clone());
+            let waiting = tokio::spawn(async move {
+                match waits_in {
+                    "read" => watched.read(&mut [0; 8]).await.is_err(),
+                    "flush" => watched.flush().await.is_err(),
+                    // Nothing more is said to a client the transport was
+                    // taken from, so its close is done.
+                    _ => watched.shutdown().await.is_ok(),
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!waiting.is_finished(), "{waits_in}");
+            shut.cancel();
+            let ended = tokio::time::timeout(Duration::from_secs(5), waiting).await;
+            assert!(
+                ended.is_ok_and(|ended| ended.is_ok_and(|as_it_should| as_it_should)),
+                "a {waits_in} that waited was not woken"
+            );
         }
     }
 }

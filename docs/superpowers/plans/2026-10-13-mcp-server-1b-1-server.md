@@ -7411,3 +7411,5 @@ One step was wrong as written, and is corrected above: the last check compared `
 ## After the pull request's review
 
 The review found nothing to stop the merge, and one sentence that said too much: the crate's own description had "Every call is written to the Log", where a call that is no tool's is the protocol's error and no entry, as "What this run settles" has it and `tests/tools.rs` asserts. The sentence in `src/lib.rs` now says which calls. The diffs above have it as it was.
+
+A second review, of the commit after it, found one defect. `Watched` promised that once the transport is shut every read and write fails, "a waiting one too", and a flush or a close that was already waiting was never woken: only a write asked the shut's own future. The test of a client that reads nothing could not show it, since a transport in memory makes a write wait and never a flush, where a pipe or a buffered writer makes the flush wait. A write, a flush and a close now ask the same thing (`Watched::shut_for_writing`), and `protocol.rs` has its first test of its own, on a transport whose read, flush and close never end. It failed for the flush before the change.
