@@ -7380,7 +7380,7 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps
-git diff --stat main -- src
+git diff --stat origin/main -- src
 ```
 
 Expected: all clean, and every test passes. On 2026-10-13, with both servers up: 23 test binaries, 3,342 passed, 0 failed, 22 ignored.
@@ -7401,3 +7401,9 @@ Then run the workspace's tests once with the servers, as `AGENTS.md` has it.
 - **Left open, and said above.** A client that floods and reads nothing costs a few hundred bytes a call. `Gateway::open` is the implementation's to bound: the server's timer starts when it has the session.
 - **Names.** `Gateway`, `Session`, `Listed`, `Schemas`, `Failure`, `Refused`, `code`, `Stop`, `Why`, `Tool`, `Invalid`, `Note`, `Done`, `Arguments`, `Reply`, `Live`, `Server`, `Origin`, `Transport`, `SessionInfo`, `Log`, `Entry`, `Opened`, `LogError`, `Watched`, `Handler` are spelled the same in every task. `Why::Timeout`, `within` and `GRACE` arrive in Task 5, and `Stop::token` in Task 4, each with its first caller: before that the compiler would call it dead.
 - **Every commit stands.** Each task's state was built and tested as a whole. After Task 3 an agent can list connections and nothing else. After Task 4 it can read. `describe_schema` comes after the stops, in Task 6: it is the simpler tool, and nothing waits for it.
+
+## After the run
+
+Run on 2026-10-13, inline, one commit for each task. Every step showed what it says above, the three breakages of Task 7 among them, and the files the tasks changed are byte for byte the draft's. The last state passed the workspace's tests with PostgreSQL and MySQL up: 23 test binaries, 3,342 passed, none failed.
+
+One step was wrong as written, and is corrected above: the last check compared `src` with `main`, and a worktree's own `main` can be months behind. It is `origin/main` that the app's sources are the same as.
