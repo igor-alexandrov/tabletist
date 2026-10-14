@@ -24,6 +24,12 @@ list at the end, and the sections they change say so. With 5, 6, 15 and 16
 before them, no question marked as one Phase 1 waits for is open. Phase 1c
 has two of its own (8 and 13). G cuts 1b into five runs.
 
+**Built on 2026-10-13: Phase 1b's first run** (`2026-10-13-mcp-server-1b-1-server.md`), the
+server with nothing to start it. This plan named the tools and left open
+what each takes and answers: that run's plan says. A.1, A.4, A.5, B.5, B.8,
+C.1, F.1 and G are corrected where its draft showed otherwise, each where it
+changed.
+
 Each phase below gets its own plan under `docs/superpowers/plans/` before any
 code is written, as every batch of work in this repository does.
 
@@ -146,6 +152,16 @@ have no session at all. So the `Gateway`, implemented in the backend beside
   Off, when the connection is edited or deleted, and when the server stops.
 - An approved write gets a writable session of its own, opened when the
   person approves and closed when the write ends (B.7).
+
+**The trait, as built** (Phase 1b's first run). `Gateway::connections()`
+lists the connections agents may use. `Gateway::open(id, stop)` gives a
+`Session` for one call, with `schemas`, `objects`, `describe` and `read`,
+and cancelling `stop` ends whatever the session is doing. An agent names a
+connection, the tools find that name among `connections()`, and the session
+is opened by the connection's id, which is also what the log keeps: the
+name is the agent's word for it and can change. One call at a time, `busy`
+and the idle close are the implementation's to keep, behind `open`. The first run has the trait, and for its tests a gateway over SQLite
+files. The backend's own is the second run's.
 
 **Secrets.** The `Worker` owns the `Keyring` (`src/backend.rs:1567`). The
 gateway reads `connection/{id}/password` and `connection/{id}/ssh-secret`
@@ -310,7 +326,7 @@ HTTP agents with **Remove**, and says which is which (question 17).
 | Tool schemas | `Tool { name, title, description, input_schema, output_schema, annotations }`, each schema a JSON object. Written by hand with `serde_json::json!` for four tools. No macro (`macros` off) | The same JSON |
 | Cancellation | `RequestContext::ct`, a token cancelled when `notifications/cancelled` arrives | To write |
 | Progress | `peer.notify_progress(..)` when the request carried a progress token | To write |
-| Cost | New crates. Stdio: `rmcp`, `schemars` and `pastey` and their few dependencies; `tracing`, `chrono`, `tokio-util`, `futures`, `thiserror` and `uuid` are in `Cargo.lock` already. HTTP: `hyper`, `hyper-util`, `http`, `http-body`, `http-body-util`, `httparse`, `tower-service`, `sse-stream` and `tokio-stream`, none of which is in the tree today | No new crate for stdio. hyper and friends for HTTP all the same |
+| Cost | New crates. Stdio: `rmcp`, `schemars`, `schemars_derive`, `serde_derive_internals`, `pastey`, `dyn-clone`, `ref-cast` and `ref-cast-impl` (counted in Phase 1b's first run), and `tokio-stream` for the tests; `tracing`, `chrono`, `tokio-util`, `futures`, `thiserror` and `uuid` are in `Cargo.lock` already. HTTP: `hyper`, `hyper-util`, `http`, `http-body`, `http-body-util`, `httparse`, `tower-service`, `sse-stream` and `tokio-stream`, none of which is in the tree today | No new crate for stdio. hyper and friends for HTTP all the same |
 | Risk | A release every week or two (3.4.0 on 2026-09-15, 3.5.1 on 2026-10-05). Apache-2.0. Needs Rust 1.88; the workspace is on 1.98 | Ours to keep up with a protocol that changed three times in a year |
 
 Why rmcp: the protocol moves faster than this app should have to follow, and
@@ -323,10 +339,35 @@ and `transport-async-rw` in Phase 1b, `transport-streamable-http-server` in
 Phase 1d. The `auth` (OAuth), `client` and `macros` features stay off; the
 `client` feature is a dev-dependency for the test harness.
 
+In Phase 1b's first run the feature is `server` alone, which turns
+`transport-async-rw` on itself. The tests also build `tracing` with its
+`log` feature, as the app's build does, so that they see what the SDK
+writes to the app's log (C.1).
+
 **Tool annotations.** `readOnlyHint: true` on `list_connections`,
 `describe_schema` and `run_query`. `destructiveHint: true` on
 `propose_write`. They are hints for the client's own prompts. Nothing here
 relies on them.
+
+**What the tools take and answer** was left to Phase 1b's first run. Its
+plan has the table (`2026-10-13-mcp-server-1b-1-server.md`, "What this run settles"). In
+short:
+
+- `list_connections()`: for each connection its `name`, `engine`,
+  `parameters` (`$1, $2` or `?`), `access`, `rows` and `timeout_s`. The
+  engine and the placeholder are not on the board: an agent cannot write a
+  statement without them.
+- `describe_schema(connection, tables?)`: without `tables`, the names of the
+  tables and views of the connection's own schema. With them (at most 20),
+  what each is made of.
+- `run_query(connection, sql, params?)`: `columns`, `rows` as arrays,
+  `row_count`, `truncated`, `truncated_by`, `took_ms`.
+- An answer is its JSON as text, once, with no structured content beside
+  it: a client that hands a model both would hand it the rows twice, and
+  the transport would carry three times the size. A refusal has both, as
+  B.8 says: it is small.
+- No tool declares an output schema.
+- An argument a tool does not have is refused, not ignored.
 
 **The long wait in `propose_write`.** The call stays open until the person
 answers or five minutes pass:
@@ -368,6 +409,13 @@ struct AgentSession {
 - The agent's name is whatever the client says, in `initialize` or in a
   request's `_meta`. It is a label, not an identity. Only an HTTP token's
   name is something the person chose.
+- Built in Phase 1b's first run: the id (a UUID, since the log keeps it
+  from one start of the app to the next), the transport, the label (the
+  client's title, else its name, without control characters, at most 64
+  characters), the project, when it connected, its count of calls, and the
+  stop. The project is given by whoever hands the transport over. Asking the
+  client for its roots is left for later. `last_call_at`, `connections` and
+  `state` come with the tab that shows them, in the fourth run.
 
 **Where a session is** (added on 2026-10-13, for the Agents tab). The tab
 covers one connection, and a session belongs to none: the agent names a
@@ -409,6 +457,23 @@ connection in each call.
   or the stream ends (HTTP).
 - The agent's read session on the database is kept for the next agent,
   unless a cleanup failed, in which case it is closed, as the backend does.
+- A call the person stopped answers `server_stopped` whatever it had got
+  to, an answer too, and whatever else ended it besides: its timer, or the
+  SDK's own cancel when the session closes. The person's stop wins from
+  wherever it was given, the server's as a session's.
+- **A client that closes its end** (found in the first run's draft). The SDK
+  goes on answering for five seconds after a client closed its writing end,
+  which is right for one that sent its calls and waits, and it cancels
+  nothing. When it has let the transport go, the server ends what still
+  runs. A write that fails ends the session's calls at once: nobody will
+  read an answer.
+- **A client that reads nothing.** A session that was stopped is closed all
+  the same. Its calls are given five seconds to answer, and three seconds
+  after that the server takes the transport from the SDK, which would wait
+  on it for good.
+- **What a session may take.** A message of more than a megabyte ends the
+  session, since the SDK reads a line into memory however long it is. A
+  session runs sixteen calls at once, and the next is refused (`busy`).
 
 "Stop agents here" stops each session that is here, as "Stop session" does,
 and withdraws every write waiting on this connection. A session that also
@@ -813,6 +878,20 @@ written: Phase 1b, not 1a as this plan first had it (changed on 2026-10-13).
 - An answer is at most 256 kB as JSON. Past that, rows are dropped from the
   end and the answer says it was cut by size.
 
+**As built** (Phase 1b's first run). A text that is cut is
+`{"cut": <its first 2,000 characters>, "characters": <its length>}`, and a
+binary value is `{"binary_bytes": <its size>}`: a database's value is never
+an object, so neither can be taken for data. The size is 256,000 bytes, of
+an answer that is sent once (A.4). The columns count: an answer whose
+columns alone pass the size is refused (`too_large`), since two hundred
+columns with names of two thousand letters are 400 kB without a row, from a
+statement of under three kilobytes.
+`describe_schema` is held to the size as well, the names it was asked for
+among it. **"N of M" is not built yet**: the
+count is a change to the three drivers, a run of its own in `tabletist-db`
+before the fourth run of 1b shows the number. Until then an answer that was
+cut says so, and not of how many.
+
 **Settings.** Rows per answer: 100, 500 (default), 1,000 or 5,000. Statement
 timeout: 5, 10 (default), 30 or 60 seconds. `MAX_SQL_LIMIT` is 10,000 for
 the editor (`src/settings.rs:399-401`); agents get half of that at most.
@@ -949,7 +1028,7 @@ The codes are stable. The sentences may be reworded.
 | `connection_unavailable` | Tabletist could not open Bookshop · staging. Open it in Tabletist to see why. | The password is asked for each time, the SSH host is not trusted, the keyring is locked, the connect failed. The reason is never sent: it can name a host or a user |
 | `too_many_statements` | Send one statement per call. | B.2 |
 | `not_parsed` | Tabletist could not read this statement, so it was not run. | B.2 |
-| `not_read_only` | run_query only runs reads. Use propose_write for DELETE FROM book_covers WHERE id = 9. | A write, `INTO`, `FOR UPDATE` |
+| `not_read_only` | run_query only runs reads. Use propose_write for DELETE FROM book_covers WHERE id = 9. | A write, `INTO`, `FOR UPDATE`. Until Phase 2 has `propose_write` the sentence ends at what the statement is ("run_query only runs reads, and this is a DELETE."): the pointer is the server's to add, not the check's |
 | `not_allowed` | CREATE TABLE is not available to agents. | DDL, `COPY`, `SET`, `DO`, transaction control, upserts, `RETURNING` and the rest |
 | `not_a_write` | propose_write takes one INSERT, UPDATE or DELETE. Use run_query for a SELECT. | |
 | `write_not_allowed` | Bookshop · staging is read-only for agents. | `propose_write` on a Read connection |
@@ -957,12 +1036,12 @@ The codes are stable. The sentences may be reworded.
 | `system_catalog` | The system catalogs are not available on this connection. Use describe_schema. | B.3 |
 | `masked_column_used` | orders.email is masked. It can be selected, not filtered, joined, sorted or computed on. | B.4 |
 | `function_not_allowed` | pg_sleep is not available to agents. | B.2 |
-| `invalid_params` | The statement has 2 parameters and 1 was sent. | Count, or a value that is not a string, number, boolean or null |
-| `too_large` | The statement is larger than 100 kB. | |
+| `invalid_params` | The statement has 2 parameters and 1 was sent. | Count, or a value that is not a string, number, boolean or null, or a whole number past 64 bits signed |
+| `too_large` | The statement is larger than 100 kB. | Also more than 20 tables in one `describe_schema`, a table's name of more than 1,000 bytes, and an answer whose columns alone pass its size |
 | `timeout` | The query was stopped after 10 s, this connection's limit. | The statement timeout |
-| `busy` | Another agent's query is running on this connection. Try again. | A.1 |
+| `busy` | Another agent's query is running on this connection. Try again. | A.1. Also a session's seventeenth call at once: "Too many calls at once. Wait for an answer before the next call." |
 | `rate_limited` | Too many calls. Try again in 20 s. | E.5 |
-| `query_failed` | The database's own error, with its code. | A syntax error, a missing column. Without the detail and hint lines on a connection that hides or masks something |
+| `query_failed` | The database's own error, with its code. | A syntax error, a missing column. Without the detail and hint lines on a connection that hides or masks something. At most 2,000 characters, as every sentence is. The log keeps the code and not the words (C.1) |
 | `denied` | The person's note, or "The request was denied." | B.7 |
 | `timed_out` | No answer in 5 minutes. Nothing ran. | B.7 |
 | `count_changed` | B.7 | |
@@ -978,13 +1057,16 @@ Protocol and HTTP answers, for calls that never reach a tool:
 
 | Case | JSON-RPC | HTTP |
 |---|---|---|
-| An unknown tool, a missing argument, an argument of the wrong type | -32602 | 200 |
+| An unknown tool, a missing argument, an argument of the wrong type, an argument the tool does not have | -32602 | 200 |
 | An unknown method | -32601 | 200 |
 | Not JSON | -32700 | 400 |
 | No token, or an unknown one | | 401 |
 | `Host` or `Origin` | | 403 |
 | A wrong path, method, content type or size | | 404, 405, 415, 413 |
 | The server is stopping | | 503 |
+
+A protocol error's sentence never repeats what the agent sent: the SDK
+writes each one to the app's log (C.1).
 
 ## C. Data and settings
 
@@ -1096,7 +1178,7 @@ CREATE TABLE calls (
   result        TEXT    NOT NULL,   -- ok | refused | error | timeout | waiting |
                                     -- approved | denied | timed_out | cancelled | stopped
   code          TEXT,
-  message       TEXT,               -- the refusal's sentence, or the database's message
+  message       TEXT,               -- the refusal's sentence; a database's error by its code
   note          TEXT,               -- the person's, on a denial
   ran_as        TEXT,               -- "read-only transaction" | "one transaction, committed" | …
   rows          INTEGER,            -- returned to the agent, or affected
@@ -1132,11 +1214,50 @@ CREATE INDEX calls_result     ON calls (result, at_ms);
 - **Export.** The rows that pass the current filters, as CSV or as JSON
   Lines, through the save dialog the app already has (`rfd`), written on the
   backend runtime.
+- **As built** (Phase 1b's first run): the file with the whole table, an
+  entry for each call a tool answered or refused, and `forget_before`. A
+  protocol error is no entry. A call whose entry cannot be written is
+  answered all the same, with an error in the app's log: Phase 2 decides
+  that again for a write. The schedule of retention comes with what starts
+  the server (the second run), the filters, the search and the export with
+  the Log view (the fourth).
+- **`message` is not the database's message** (corrected in the first run).
+  A database quotes what it could not read, and that can be a row's value:
+  SQLite's "bad JSON path" names the path, which a statement can take from
+  a column. The agent may read the row, so its sentence has the words. The
+  log holds no row, so for a database's error it keeps "The database
+  refused the statement (code 42703)." and nothing else. F.4's search of
+  the file found this.
+- **A log that is only locked is not a broken one.** A file is kept aside
+  when it is no database, a damaged one, or of another schema. One that
+  could not be looked into is an error, and stays where it is. What the
+  server does without its log is the second run's to say.
+- The file's mode is set whether the file was there or not.
 
 **The app's own log is another thing.** `tabletist.log` never holds SQL
 (`AGENTS.md`, and the editor spec's "The SQL text is never logged"). That
 stays true. The MCP code logs a tool's name, a code and a duration there,
 nothing more.
+
+**The SDK writes to the app's log itself** (found in Phase 1b's first
+run). `rmcp` traces through the `tracing` crate, and the app is built with
+that crate's `log` feature on (through `calloop`, on Linux), which sends
+what is traced to the app's log. What it writes is what a client sent:
+
+- at `info`, what a client calls itself, every notification whole (a
+  cancel's reason, a progress message), and each cancel;
+- at `warn`, every protocol error with the request's id, which is the
+  client's to choose, and for an unknown method its name;
+- at `debug`, every request whole: the statement and its values.
+
+`sqlparser`, which the check reads a statement with, writes each word at
+`debug`, and `tracing` writes lines of its own for the SDK's spans. So the
+app's log takes no line of the three. The second run, which links the
+server into the app, turns them off in the app's filter
+(`src/entrypoint.rs`), with a test that a session leaves nothing an agent
+sent in `tabletist.log`. The first run's `tests/secrets.rs` holds every
+other crate's lines to that, and shows what the SDK's hold. `AGENTS.md` has
+the rule.
 
 ### C.2 Migration, and what agents cannot change
 
@@ -1587,6 +1708,9 @@ both.
 
 - The harness starts the server with a `Gateway` over the SQLite fixture, a
   scripted approver and a clock it controls, and gives the test a client.
+  The first run of 1b has the gateway and the client
+  (`crates/tabletist-mcp/tests/support/`). The approver and the clock come
+  with Phase 2, which is the first to wait for a person.
 - **In process:** rmcp's client (a dev-dependency) over `tokio::io::duplex`.
   Most tests use this.
 - **Stdio, end to end:** the built binary, `tabletist mcp --endpoint
@@ -1751,7 +1875,7 @@ is off until the person turns it on.
 | Part | Runs | State on 2026-10-13 |
 |---|---|---|
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
-| 1b. The server over stdio, with its interface | 5, below | Next. Nothing it waits for is open |
+| 1b. The server over stdio, with its interface | 5, below | The first is built (`2026-10-13-mcp-server-1b-1-server.md`). Nothing the others wait for is open |
 | 1b on Windows: the way in | 1 | After 1b (question 14) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
 | 1d. HTTP with tokens | 1 | After stdio (question 9) |
@@ -1817,8 +1941,8 @@ can see what agents do and stop them.
 
 | Run | What it builds | What a user can do after it | Tests |
 |---|---|---|---|
-| **1b-1. The server, with nothing to start it** | The `tabletist-mcp` crate: the server on `rmcp`, the gateway to the connections, `list_connections`, `describe_schema` and `run_query` over `agent::check_read` and `Connection::run_agent_read`, the size cap on an answer (B.5), the refusal codes (B.8), the log's store (C.1) | Nothing. No setting, no transport and no command reaches it | F.1 in process, F.4 but its interface, F.5 in process |
-| **1b-2. Turning it on from the files, and stdio** | The `[mcp]` keys in `settings.toml`. `[connections.agents]` with access, rows and timeout, which makes the connections file version 4. `Command::Mcp` and `Event::Mcp`, and the server started and stopped with the setting. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings and connections files, `tests/cli.rs` |
+| **1b-1. The server, with nothing to start it** | The `tabletist-mcp` crate: the server on `rmcp`, the gateway's trait, `list_connections`, `describe_schema` and `run_query` over `agent::check_read` and `Connection::run_agent_read`, the size cap on an answer (B.5), the refusal codes (B.8), the log's store (C.1) | Nothing. No setting, no transport and no command reaches it | F.1 in process, F.4 but its interface, F.5 in process |
+| **1b-2. Turning it on from the files, and stdio** | The `[mcp]` keys in `settings.toml`. `[connections.agents]` with access, rows and timeout, which makes the connections file version 4. `Command::Mcp` and `Event::Mcp`, the backend's gateway with its own sessions on each database, and the server started and stopped with the setting. The schedule of the log's retention, and the SDK held out of the app's log. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings and connections files, `tests/cli.rs` |
 | **1b-3. The Agents tab's frame** | The third kind of tab. The sidebar entry with its five states. The ways in: the key, `ga`, `:agents`, quick open. The three empty states, with **Turn on** and **Copy**. The keymap and the help | Open the tab in any state, see which state the connection is in, turn the server on from the tab | F.7: the entry's states, the ways in, one tab for a window, the empty states, nothing opening or focusing by itself |
 | **1b-4. What agents are doing** | `App::agents`. The sessions that are here and "Also:". The feed. **Stop session** and **Stop agents here**. The Log view as a list for this connection, with All connections. The notification for an agent that connects | See each agent and each call as it happens, stop one agent or all on a connection, read the log | F.7: one connection, the stops, closing the tab, the log's default. F.4's interface |
 | **1b-5. Letting agents in** | Settings › Agents, with the switch between panes. The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** and **Show Agents tab** pointing at them. The website: a new guide, and the reference pages | Everything Phase 1 draws, without a file edited by hand | The interface tests of Settings, Connections and the editor. The keymap. `docs/bin/check` |
@@ -1835,12 +1959,19 @@ can see what agents do and stop them.
   file. The website says nothing of Agents until the fifth.
 - **Questions the runs meet.** Four are open and not marked as ones to
   wait for. Each is built as this plan has it unless it is answered before
-  its run: what the log keeps of a call's values (18) and the name an agent
-  sees for a connection (19) in the first, the notification for a new agent
-  (17) in the fourth, "Stop all agents" (11) in the fifth.
-- **Sizes.** The first and the fifth are the largest. The first is the one
-  with the risk: `rmcp`, the gateway's own sessions on each database, and
-  the first log.
+  its run: what the log keeps of a call's values (18) in the first, which
+  built it as planned, in full: up to 100 kB of a call's statement and as
+  much of its values. Values past that are kept as their start and their
+  length, which is still JSON, so that every entry can be read. The name an agent sees for a connection (19)
+  in the second, with the gateway that names the connections. The
+  notification for a new agent (17) in the fourth, "Stop all agents" (11) in
+  the fifth.
+- **Sizes.** The first had the risk of `rmcp` and of the first log. The
+  gateway's own sessions on each database went to the second run with the
+  backend's gateway, which makes the second the largest: its plan may cut it
+  in two, the gateway and the files, then the endpoint and the relay.
+- **"N of M"** (B.5) is a run of its own in `tabletist-db`, at any time
+  before the fourth.
 
 **1b on Windows: the way in.** One run, after 1b (question 14): the named
 pipe, the relay from the GUI binary or a console target if that fails
