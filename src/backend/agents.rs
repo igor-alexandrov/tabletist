@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +26,9 @@ use crate::connections::{AgentAccess, ConnectionId, PasswordMode, SavedConnectio
 use crate::env::Platform;
 use crate::model::SecretKind;
 use crate::secrets::{Keyring, password_account, ssh_account};
+
+#[cfg(unix)]
+mod listen;
 
 /// A connection agents may use, as the server is given it: what opens it,
 /// and what an agent calls it. Its password is not here: the gateway reads
@@ -123,9 +127,17 @@ pub enum AgentsCommand {
         host_keys: HostKeys,
     },
     /// Starts the server, with its log at `log`, which keeps calls for
-    /// `log_days` days. Answered with [`AgentsEvent::Started`] or
+    /// `log_days` days, listening in `endpoint` for `tabletist mcp`
+    /// (`AppDirs::agents_dir`). Without one nothing reaches it, which the
+    /// tests of the gateway want. Answered with [`AgentsEvent::Started`] or
     /// [`AgentsEvent::Failed`].
-    Start { log: PathBuf, log_days: u32 },
+    Start {
+        log: PathBuf,
+        log_days: u32,
+        endpoint: Option<PathBuf>,
+    },
+    /// The log keeps calls for these days from now on.
+    LogDays(u32),
     /// Stops it: every session ends, and the connections are closed.
     /// Answered with [`AgentsEvent::Stopped`].
     Stop,
@@ -138,8 +150,8 @@ pub enum AgentsEvent {
     Started {
         kept_aside: Option<PathBuf>,
     },
-    /// It could not start: its log could not be opened. Why, for the
-    /// person.
+    /// It could not start: its log could not be opened, or it could not
+    /// listen. Why, for the person.
     Failed(String),
     Stopped,
 }
@@ -162,6 +174,8 @@ const CONNECT_TIME: Duration = Duration::from_secs(20);
 pub(super) struct Running {
     server: tabletist_mcp::Server<AppGateway>,
     chores: tokio::task::JoinHandle<()>,
+    #[cfg(unix)]
+    listening: Option<listen::Listening>,
 }
 
 /// The server's part of the worker: the gateway, whatever the server is
@@ -175,6 +189,8 @@ pub(super) struct Agents {
     /// Held by a start from the opening of its log to its end: two starts
     /// must not open the one file at once.
     starting: Arc<tokio::sync::Mutex<()>>,
+    /// The days the log keeps a call, which its chores read each time.
+    log_days: Arc<AtomicU32>,
 }
 
 impl Agents {
@@ -184,6 +200,7 @@ impl Agents {
             running: Arc::default(),
             turn: Arc::default(),
             starting: Arc::default(),
+            log_days: Arc::default(),
         }
     }
 
@@ -193,7 +210,18 @@ impl Agents {
                 connections,
                 host_keys,
             } => self.gateway.set_policy(connections, host_keys),
-            AgentsCommand::Start { log, log_days } => {
+            AgentsCommand::LogDays(days) => {
+                self.log_days
+                    .store(days, std::sync::atomic::Ordering::SeqCst);
+            }
+            AgentsCommand::Start {
+                log,
+                log_days,
+                endpoint,
+            } => {
+                self.log_days
+                    .store(log_days, std::sync::atomic::Ordering::SeqCst);
+                let log_days = Arc::clone(&self.log_days);
                 let turn = {
                     let mut turn = lock(&self.turn);
                     *turn += 1;
@@ -208,6 +236,16 @@ impl Agents {
                     let _starting = starting.lock().await;
                     let overtaken = || *lock(&current) != turn;
                     if overtaken() {
+                        return;
+                    }
+                    // Before the log: another Tabletist's server has it open,
+                    // and one of another version would set it aside.
+                    if lock(&running).is_none()
+                        && endpoint.as_deref().is_some_and(served_by_another)
+                    {
+                        log::error!("the agent server did not start: another one serves agents");
+                        let said = "agents could not reach it: another Tabletist is serving agents already";
+                        outbox.emit(super::Event::Agents(AgentsEvent::Failed(said.into())));
                         return;
                     }
                     let opened = tokio::task::spawn_blocking(move || Log::open(&log)).await;
@@ -247,8 +285,26 @@ impl Agents {
                     if let Some(before) = running.take() {
                         before.stop();
                     }
+                    // Once the server before it has let its socket go.
+                    let listening = match listening(endpoint.as_deref(), &server) {
+                        Ok(listening) => listening,
+                        Err(error) => {
+                            log::error!("the agent server did not start: {error}");
+                            server.stop();
+                            let said = format!("agents could not reach it: {error}");
+                            outbox.emit(super::Event::Agents(AgentsEvent::Failed(said)));
+                            return;
+                        }
+                    };
+                    #[cfg(not(unix))]
+                    let () = listening;
                     let chores = tokio::spawn(chores(opened.log, gateway, log_days));
-                    *running = Some(Running { server, chores });
+                    *running = Some(Running {
+                        server,
+                        chores,
+                        #[cfg(unix)]
+                        listening,
+                    });
                     log::info!("the agent server started");
                     // Said under the lock a stop takes, so that no Stopped
                     // is said before it.
@@ -272,20 +328,60 @@ impl Agents {
 }
 
 impl Running {
+    /// Stops the server, then the endpoint, whose socket and key go with
+    /// it.
     fn stop(self) {
         self.server.stop();
         self.chores.abort();
+        #[cfg(unix)]
+        drop(self.listening);
+    }
+}
+
+/// Listens in `endpoint` for `server`, where there is one.
+#[cfg(unix)]
+fn listening(
+    endpoint: Option<&std::path::Path>,
+    server: &tabletist_mcp::Server<AppGateway>,
+) -> Result<Option<listen::Listening>, String> {
+    endpoint
+        .map(|dir| listen::listen(dir, server.clone()))
+        .transpose()
+}
+
+/// Whether another Tabletist serves agents in `dir`.
+#[cfg(unix)]
+fn served_by_another(dir: &std::path::Path) -> bool {
+    listen::served_by_another(dir)
+}
+
+/// Nothing serves agents here yet.
+#[cfg(not(unix))]
+fn served_by_another(_dir: &std::path::Path) -> bool {
+    false
+}
+
+/// Nothing listens here yet (`endpoint::AVAILABLE`).
+#[cfg(not(unix))]
+fn listening(
+    endpoint: Option<&std::path::Path>,
+    _server: &tabletist_mcp::Server<AppGateway>,
+) -> Result<(), String> {
+    match endpoint {
+        Some(_) => Err("agents cannot reach Tabletist on this system yet".into()),
+        None => Ok(()),
     }
 }
 
 /// What the server does from time to time while it runs: closes the
 /// connections no agent has used for a while, and forgets calls older than
 /// the log keeps. The first time as it starts.
-async fn chores(log: Log, gateway: AppGateway, log_days: u32) {
-    let keep = Duration::from_secs(u64::from(log_days.max(1)) * 24 * 60 * 60);
+async fn chores(log: Log, gateway: AppGateway, log_days: Arc<AtomicU32>) {
     let mut forgot: Option<Instant> = None;
     loop {
         if forgot.is_none_or(|at| at.elapsed() >= RETENTION_EVERY) {
+            let days = log_days.load(std::sync::atomic::Ordering::SeqCst).max(1);
+            let keep = Duration::from_secs(u64::from(days) * 24 * 60 * 60);
             let before = SystemTime::now()
                 .checked_sub(keep)
                 .and_then(|before| before.duration_since(UNIX_EPOCH).ok())
@@ -1327,6 +1423,7 @@ mod tests {
         backend.send(Command::Agents(AgentsCommand::Start {
             log: path.clone(),
             log_days: 30,
+            endpoint: None,
         }));
         assert_eq!(
             match backend.wait(WAIT) {
@@ -1363,6 +1460,7 @@ mod tests {
         backend.send(Command::Agents(AgentsCommand::Start {
             log: dir.path().join("no-such-folder").join("agents.sqlite3"),
             log_days: 30,
+            endpoint: None,
         }));
         match backend.wait(WAIT) {
             Some(Event::Agents(AgentsEvent::Failed(said))) => {
@@ -1375,6 +1473,33 @@ mod tests {
         }
     }
 
+    /// Another Tabletist serves agents: this one's server does not start,
+    /// and does not open the log the other has open, which one of another
+    /// version would set aside.
+    #[cfg(unix)]
+    #[test]
+    fn a_start_where_another_tabletist_serves_agents_leaves_its_log_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = dir.path().join("run");
+        std::fs::create_dir(&at).unwrap();
+        let _another =
+            std::os::unix::net::UnixListener::bind(at.join(crate::endpoint::SOCKET)).unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Agents(AgentsCommand::Start {
+            log: path.clone(),
+            log_days: 30,
+            endpoint: Some(at),
+        }));
+        match backend.wait(WAIT) {
+            Some(Event::Agents(AgentsEvent::Failed(said))) => {
+                assert!(said.contains("another Tabletist"), "{said}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!path.exists());
+    }
+
     #[test]
     fn starts_and_stops_one_after_another_leave_the_last_one_standing() {
         let dir = tempfile::tempdir().unwrap();
@@ -1384,6 +1509,7 @@ mod tests {
             Command::Agents(AgentsCommand::Start {
                 log: path.clone(),
                 log_days: 30,
+                endpoint: None,
             })
         };
         backend.send(start());
