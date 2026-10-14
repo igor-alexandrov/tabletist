@@ -72,12 +72,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let layout = app.layout();
     let hints = HINTS.map(|(command, label)| (app.keymap.key(layout, command), label));
     let sql_key = app.keymap.key(layout, Command::NewSqlTab);
+    // The Agents entry, where agents can reach the app: what it says, and
+    // the key that shows the tab.
+    // The terminal look names the letters from the tree and the grid, as
+    // the others name their chord.
+    let agents_key = match look.terminal {
+        true => app
+            .keymap
+            .key_in(layout, Command::ShowAgents, crate::keymap::Scope::Grid),
+        false => app.keymap.key(layout, Command::ShowAgents),
+    };
+    let agents = app
+        .agents_here(tab)
+        .filter(|_| crate::endpoint::AVAILABLE)
+        .map(|here| (here, agents_key));
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
     if workspace.sidebar_hidden {
         return;
     }
+    let agents_front = workspace.agents_in_front();
     let rows = workspace.tree.visible_rows(workspace.driver, show_system);
     let schemas = workspace
         .tree
@@ -288,7 +303,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                 });
             }
-            let footer = if look.terminal { FOOTER } else { SQL_FOOTER };
+            let footer = footer_height(&look, agents.is_some());
             let body = ui.available_height() - footer;
             ui.allocate_ui(vec2(full.width(), body.max(0.0)), |ui| {
                 // The tree is one Tab stop, not one for each row: with the
@@ -360,11 +375,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         ui.add_space(8.0);
                     });
             });
+            let skin = (locale, &look, &palette);
             if look.terminal {
                 terminal_footer(ui, full, &hints, &look, &palette);
+                if let Some((here, key)) = &agents {
+                    agents_line(ui, full, tab, (here, key, agents_front), skin, &mut actions);
+                }
             } else {
-                let skin = (locale, &look, &palette);
                 sql_button(ui, full, tab, &sql_key, skin, &mut actions);
+                if let Some((here, key)) = &agents {
+                    agents_button(ui, full, tab, (here, key, agents_front), skin, &mut actions);
+                }
             }
             if lit {
                 focus::pane_border(ui, full, &look, &palette);
@@ -424,6 +445,164 @@ fn terminal_footer(
 /// The room under the tree for the SQL Editor button (macOS and standard):
 /// a rule, then 10 above and 12 below a 34 pt button.
 const SQL_FOOTER: f32 = 1.0 + 10.0 + 34.0 + 12.0;
+
+/// What the Agents entry adds above the footer: a 34 pt button and 8
+/// under it, or in the terminal look a line and 6 under it.
+const AGENTS_BUTTON: f32 = 34.0 + 8.0;
+const AGENTS_LINE: f32 = 22.0 + 6.0;
+
+/// The room under the tree, with the Agents entry where it shows.
+fn footer_height(look: &Look, agents: bool) -> f32 {
+    match (look.terminal, agents) {
+        (true, false) => FOOTER,
+        (true, true) => FOOTER + AGENTS_LINE,
+        (false, false) => SQL_FOOTER,
+        (false, true) => SQL_FOOTER + AGENTS_BUTTON,
+    }
+}
+
+/// What the Agents entry says of the connection, in which colour, and
+/// whether a dot leads it: an agent is here.
+fn agents_said(
+    here: &crate::model::AgentsHere,
+    look: &Look,
+    palette: &Palette,
+    locale: Locale,
+) -> (String, egui::Color32, bool) {
+    use crate::model::AgentsHere;
+    let said = match here {
+        AgentsHere::ServerOff => gettext(locale, "Server off").into_owned(),
+        AgentsHere::OffHere => gettext(locale, "Off here").into_owned(),
+        AgentsHere::NoneConnected => gettext(locale, "None connected").into_owned(),
+        AgentsHere::Connected { agent, .. } => agent.clone(),
+    };
+    let color = match here {
+        AgentsHere::ServerOff | AgentsHere::OffHere => palette.dim,
+        AgentsHere::NoneConnected => palette.secondary,
+        AgentsHere::Connected { .. } => crate::ui::states::Tone::Success.color(palette),
+    };
+    let said = look.label(&said);
+    (said, color, matches!(here, AgentsHere::Connected { .. }))
+}
+
+/// The dot that leads an agent's name: painted, as not every face has
+/// the glyph. Its right edge at `right`.
+fn agent_dot(ui: &egui::Ui, right: f32, y: f32, color: egui::Color32) {
+    ui.painter().circle_filled(pos2(right - 3.5, y), 3.5, color);
+}
+
+/// The Agents entry of macOS and Windows: a button above SQL Editor, as
+/// wide, its state at its right, lit while the tab is in front. It shows
+/// the tab, and never opens it by itself.
+fn agents_button(
+    ui: &mut egui::Ui,
+    full: Rect,
+    tab: ConnTabId,
+    (here, key, front): (&crate::model::AgentsHere, &Written, bool),
+    (locale, look, palette): (Locale, &Look, &Palette),
+    actions: &mut Vec<Action>,
+) {
+    let top = full.bottom() - SQL_FOOTER - AGENTS_BUTTON;
+    let rect = Rect::from_min_size(
+        pos2(full.left() + 12.0, top + 1.0 + 10.0),
+        vec2(full.width() - 24.0, 34.0),
+    );
+    let label = gettext(locale, "Agents");
+    let (said, color, dot) = agents_said(here, look, palette, locale);
+    let read = format!("{label}, {said}");
+    let response = ButtonSpec::new(&label)
+        .label(&read)
+        .icon(Icon::SquareTerminal)
+        .padding(10.0)
+        .gap(8.0)
+        .justified()
+        .show_at(ui, rect, look, palette)
+        .on_hover_text(format!("{label} · {}", key.as_str()));
+    // Lit while the tab is in front.
+    if front {
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(look.radius),
+            egui::Stroke::new(1.5, palette.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    // The state gives way at its end to the label and the icon: an agent
+    // may call itself 64 letters long.
+    let role = widgets::secondary(look);
+    let used = 10.0 + 14.0 + 8.0 + TextRole::UiBody.width(ui.ctx(), look.faces, &label) + 16.0;
+    let room = (rect.width() - used - 10.0 - if dot { 12.0 } else { 0.0 }).max(0.0);
+    let said = crate::ui::grid::ellipsize(&said, room, false, |text| {
+        role.width(ui.ctx(), look.faces, text)
+    });
+    let laid = Text::one(look, role, &said, color).layout(ui.ctx());
+    let left = rect.right() - 10.0 - laid.width();
+    laid.paint_left(ui.painter(), left, rect.center().y);
+    if dot {
+        agent_dot(ui, left - 5.0, rect.center().y, color);
+    }
+    if response.clicked() {
+        actions.push(Action::ShowAgents(tab));
+    }
+}
+
+/// The Agents entry of the terminal look: the line above the key hints,
+/// `agents`, its state, and the key that shows the tab.
+fn agents_line(
+    ui: &mut egui::Ui,
+    full: Rect,
+    tab: ConnTabId,
+    (here, key, front): (&crate::model::AgentsHere, &Written, bool),
+    (locale, look, palette): (Locale, &Look, &Palette),
+    actions: &mut Vec<Action>,
+) {
+    let top = full.bottom() - FOOTER - AGENTS_LINE;
+    let rect = Rect::from_min_size(
+        pos2(full.left() + 8.0, top + 2.0),
+        vec2(full.width() - 16.0, 22.0),
+    );
+    let label = look.label(&gettext(locale, "Agents"));
+    let (said, color, dot) = agents_said(here, look, palette, locale);
+    let response = ui.interact(rect, Id::new(("agents-entry", tab.0)), Sense::click());
+    response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, format!("{label}, {said}")));
+    let fill = if front || response.hovered() {
+        palette.surface
+    } else {
+        palette.panel
+    };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::ZERO, fill);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(1.0, palette.outline),
+        egui::StrokeKind::Inside,
+    );
+    let role = TextRole::OCaption;
+    Text::one(look, role, &label, palette.text)
+        .layout(ui.ctx())
+        .paint_left(ui.painter(), rect.left() + 8.0, rect.center().y);
+    let keys = Text::one(look, role, key.as_str(), palette.accent).layout(ui.ctx());
+    let right = rect.right() - 8.0;
+    keys.paint_left(ui.painter(), right - keys.width(), rect.center().y);
+    // The state gives way at its end to the label and the key.
+    let used = 8.0 + role.width(ui.ctx(), look.faces, &label) + 16.0;
+    let room =
+        (right - keys.width() - 10.0 - rect.left() - used - if dot { 12.0 } else { 0.0 }).max(0.0);
+    let said = crate::ui::grid::ellipsize(&said, room, false, |text| {
+        role.width(ui.ctx(), look.faces, text)
+    });
+    let state = Text::one(look, role, &said, color).layout(ui.ctx());
+    let left = right - keys.width() - 10.0 - state.width();
+    state.paint_left(ui.painter(), left, rect.center().y);
+    if dot {
+        agent_dot(ui, left - 5.0, rect.center().y, color);
+    }
+    if response.clicked() {
+        actions.push(Action::ShowAgents(tab));
+    }
+}
 
 /// The button that opens a SQL editor, with its keys: as wide as the
 /// sidebar, 12 in from its sides.

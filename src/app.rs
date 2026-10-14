@@ -903,6 +903,7 @@ impl App {
                             let (columns, rows, _) = sql.shown_rows()?;
                             ("query", columns, rows)
                         }
+                        Tab::Agents(_) => return None,
                     };
                     let tabletist_db::Value::Bytes(bytes) = rows.get(row)?.get(col)? else {
                         return None;
@@ -1388,6 +1389,8 @@ impl App {
                 }
             }
             Action::NewSqlTab(tab) => self.new_sql_tab(tab),
+            Action::ShowAgents(tab) => self.show_agents(tab),
+            Action::TurnAgentsOn => self.change_settings(|settings| settings.mcp_enabled = true),
             Action::RunSql { tab, sql_tab, all } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.completion = None;
@@ -1766,8 +1769,11 @@ impl App {
                     workspace.tree = Tree::default();
                     workspace.catalog_changed();
                     // The other database has other objects, but a SQL
-                    // editor's text is the user's work: it stays.
-                    workspace.tabs.retain(|open| matches!(open, Tab::Sql(_)));
+                    // editor's text is the user's work: it stays, and so
+                    // does the connection's Agents tab.
+                    workspace
+                        .tabs
+                        .retain(|open| matches!(open, Tab::Sql(_) | Tab::Agents(_)));
                     workspace.recent.clear();
                     workspace.active_tab = workspace
                         .active_tab
@@ -3484,6 +3490,42 @@ impl App {
 
     /// Opens an empty SQL editor after the workspace's other tabs, with the
     /// limit and timeout of the settings, and shows it.
+    /// Shows the workspace's Agents tab, opening it at the end of the
+    /// strip where it is not open yet. Only what the person does calls
+    /// it: nothing the server says opens the tab or brings it forward.
+    fn show_agents(&mut self, tab: ConnTabId) {
+        if !crate::endpoint::AVAILABLE {
+            return;
+        }
+        let id = TabId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let shown = workspace.agents_tab().unwrap_or_else(|| {
+            workspace
+                .tabs
+                .push(Tab::Agents(crate::model::AgentsTab { id }));
+            id
+        });
+        workspace.active_tab = Some(shown);
+        workspace.pane = Pane::Grid;
+    }
+
+    /// What an agent calls the workspace's connection, Off or not: its
+    /// saved name and environment, as `list_connections` says them. The
+    /// tab's own name where the connection is saved no more.
+    pub fn agents_name(&self, tab: ConnTabId) -> Option<String> {
+        let workspace = self.workspace(tab)?;
+        let saved = &self.connections.connections;
+        let names = crate::backend::agent_names(saved);
+        let found = saved
+            .iter()
+            .zip(names)
+            .find(|(saved, _)| saved.id == workspace.conn_id)
+            .map(|(_, name)| name);
+        Some(found.unwrap_or_else(|| workspace.name.clone()))
+    }
+
     /// What the workspace's Agents entry and tab say of its connection.
     pub fn agents_here(&self, tab: ConnTabId) -> Option<crate::model::AgentsHere> {
         let workspace = self.workspace(tab)?;

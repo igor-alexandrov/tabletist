@@ -2,6 +2,12 @@
 //! state directly.
 
 pub mod about;
+pub mod agents;
+// Where agents can reach the app: elsewhere nothing of them shows, which
+// the last test of `agents` holds.
+#[cfg(test)]
+#[cfg(unix)]
+mod agents_tests;
 pub mod cell_editor;
 #[cfg(test)]
 mod complete_tests;

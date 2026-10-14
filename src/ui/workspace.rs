@@ -93,8 +93,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let sql = app
                 .workspace(tab)
                 .is_some_and(|workspace| workspace.active_sql_tab().is_some());
+            let agents = app
+                .workspace(tab)
+                .is_some_and(crate::model::Workspace::agents_in_front);
             match active {
                 Some(sql_tab) if sql => super::sql_editor::show(app, ui, tab, sql_tab),
+                Some(_) if agents => super::agents::show(app, ui, tab),
                 Some(object_tab) => {
                     super::data_view::header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {

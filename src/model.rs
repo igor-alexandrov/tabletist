@@ -610,6 +610,12 @@ pub enum Action {
     CancelQuery(ConnTabId),
     /// Open a SQL editor in the connection tab's workspace and show it.
     NewSqlTab(ConnTabId),
+    /// Show the workspace's Agents tab: open it at the end of the strip
+    /// where it is not open yet.
+    ShowAgents(ConnTabId),
+    /// Turn the agent server on, from the Agents tab: a change of the
+    /// settings, which starts it. No connection's access changes.
+    TurnAgentsOn,
     /// Run the statement at the editor's cursor, or every statement.
     RunSql {
         tab: ConnTabId,
@@ -2465,13 +2471,15 @@ impl ObjectTab {
     }
 }
 
-/// One open tab in a workspace. Both kinds are boxed: an object tab is
-/// much larger than a SQL editor, and a SQL editor much larger than a
-/// pointer (clippy's large_enum_variant either way).
+/// One open tab in a workspace. A table and a SQL editor are boxed: an
+/// object tab is much larger than a SQL editor, and a SQL editor much
+/// larger than a pointer (clippy's large_enum_variant either way).
 #[derive(Debug)]
 pub enum Tab {
     Object(Box<ObjectTab>),
     Sql(Box<SqlTab>),
+    /// What agents do on the workspace's connection. One at most.
+    Agents(AgentsTab),
 }
 
 impl Tab {
@@ -2479,42 +2487,45 @@ impl Tab {
         match self {
             Self::Object(object) => object.id,
             Self::Sql(sql) => sql.id,
+            Self::Agents(agents) => agents.id,
         }
     }
 
     pub fn as_object(&self) -> Option<&ObjectTab> {
         match self {
             Self::Object(object) => Some(object.as_ref()),
-            Self::Sql(_) => None,
+            Self::Sql(_) | Self::Agents(_) => None,
         }
     }
 
     pub fn as_object_mut(&mut self) -> Option<&mut ObjectTab> {
         match self {
             Self::Object(object) => Some(object.as_mut()),
-            Self::Sql(_) => None,
+            Self::Sql(_) | Self::Agents(_) => None,
         }
     }
 
     pub fn as_sql(&self) -> Option<&SqlTab> {
         match self {
             Self::Sql(sql) => Some(sql.as_ref()),
-            Self::Object(_) => None,
+            Self::Object(_) | Self::Agents(_) => None,
         }
     }
 
     pub fn as_sql_mut(&mut self) -> Option<&mut SqlTab> {
         match self {
             Self::Sql(sql) => Some(sql.as_mut()),
-            Self::Object(_) => None,
+            Self::Object(_) | Self::Agents(_) => None,
         }
     }
 
-    /// What the tab is loading; closing it cancels these.
+    /// What the tab is loading; closing it cancels these. The Agents tab
+    /// loads nothing of the session's.
     pub fn pending(&self) -> Vec<RequestId> {
         match self {
             Self::Object(object) => object.pending().collect(),
             Self::Sql(sql) => sql.run.pending.into_iter().collect(),
+            Self::Agents(_) => Vec::new(),
         }
     }
 
@@ -2524,6 +2535,14 @@ impl Tab {
     pub fn is_preview(&self) -> bool {
         matches!(self, Self::Object(object) if !object.pinned && !object.edits.holds())
     }
+}
+
+/// The Agents tab: the app's own view of what agents do on the
+/// workspace's connection. What it shows lives in [`AgentsState`], not
+/// here: closing the tab stops nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentsTab {
+    pub id: TabId,
 }
 
 /// What the app knows of the agent server: the sessions open on it, as
@@ -3403,6 +3422,7 @@ impl Workspace {
         match self.tab(self.active_tab?)? {
             Tab::Object(object) => (object.view == ObjectView::Data).then_some(object.id),
             Tab::Sql(sql) => sql.selected_row().map(|_| sql.id),
+            Tab::Agents(_) => None,
         }
     }
 
@@ -3413,6 +3433,19 @@ impl Workspace {
 
     pub fn object_tabs_mut(&mut self) -> impl Iterator<Item = &mut ObjectTab> {
         self.tabs.iter_mut().filter_map(Tab::as_object_mut)
+    }
+
+    /// The Agents tab, where it is open.
+    pub fn agents_tab(&self) -> Option<TabId> {
+        self.tabs.iter().find_map(|open| match open {
+            Tab::Agents(agents) => Some(agents.id),
+            Tab::Object(_) | Tab::Sql(_) => None,
+        })
+    }
+
+    /// Whether the tab in front is the Agents tab.
+    pub fn agents_in_front(&self) -> bool {
+        self.active_tab.is_some() && self.active_tab == self.agents_tab()
     }
 
     /// The SQL editors, in strip order.

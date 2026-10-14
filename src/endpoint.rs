@@ -95,7 +95,19 @@ pub fn same_key(given: &str, key: &str) -> bool {
 /// agent started in, without control characters, at most 64 characters.
 pub fn project(cwd: &str) -> Option<String> {
     let last = std::path::Path::new(cwd).file_name()?.to_string_lossy();
-    let name: String = last.chars().filter(|c| !c.is_control()).take(64).collect();
+    // Nothing that moves the cursor, turns the line around or cannot be
+    // seen, as an agent's own name (`tabletist_mcp`'s `label`).
+    let unseen = |c: char| {
+        c.is_control()
+            || matches!(
+                c,
+                '\u{200B}'..='\u{200F}'
+                    | '\u{2028}'..='\u{202E}'
+                    | '\u{2060}'..='\u{2069}'
+                    | '\u{FEFF}'
+            )
+    };
+    let name: String = last.chars().filter(|c| !unseen(*c)).take(64).collect();
     (!name.is_empty()).then_some(name)
 }
 
@@ -126,6 +138,67 @@ pub async fn read_line<R: AsyncRead + Unpin>(
             ));
         }
         line.push(byte[0]);
+    }
+}
+
+/// The command that connects Claude Code, the agent the boards name, to
+/// this Tabletist: `claude mcp add tabletist -- tabletist mcp`, with this
+/// program's whole path where `tabletist` on the `PATH` is not this
+/// program (the app bundle on macOS). Worked out once.
+pub fn agent_command() -> &'static str {
+    static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    COMMAND.get_or_init(|| {
+        let exe = std::env::current_exe().ok();
+        let on_path = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(EXE))
+                .find(|file| file.is_file())
+        });
+        command_for(&relay_for(exe.as_deref(), on_path.as_deref()))
+    })
+}
+
+/// This program's file name.
+const EXE: &str = if cfg!(windows) {
+    "tabletist.exe"
+} else {
+    "tabletist"
+};
+
+/// What adds `relay` to Claude Code as Tabletist's MCP server.
+fn command_for(relay: &str) -> String {
+    format!("claude mcp add tabletist -- {relay}")
+}
+
+/// How an agent starts the relay: `tabletist mcp` when `on_path`, the
+/// program a shell finds by that name, is `exe`, this program; else
+/// `exe`'s whole path, as a shell reads it.
+fn relay_for(exe: Option<&std::path::Path>, on_path: Option<&std::path::Path>) -> String {
+    let same = |a: &std::path::Path, b: &std::path::Path| match (
+        std::fs::canonicalize(a),
+        std::fs::canonicalize(b),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    match exe {
+        Some(exe) if !on_path.is_some_and(|found| same(exe, found)) => {
+            format!("{} mcp", shell_word(&exe.to_string_lossy()))
+        }
+        _ => "tabletist mcp".to_owned(),
+    }
+}
+
+/// `word` as a POSIX shell reads it back: as it is when nothing in it is
+/// special, else in single quotes.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%,=".contains(c));
+    match plain {
+        true => word.to_owned(),
+        false => format!("'{}'", word.replace('\'', "'\\''")),
     }
 }
 
@@ -171,6 +244,10 @@ mod tests {
             project(&format!("/x/{}", "a".repeat(100))).unwrap().len(),
             64
         );
+        assert_eq!(
+            project("/home/ada/repo\u{202e}gnp.exe\u{200b}").as_deref(),
+            Some("repognp.exe")
+        );
     }
 
     #[test]
@@ -196,6 +273,33 @@ mod tests {
         let newer: Hello =
             serde_json::from_str(r#"{"key":"k","version":"9","cwd":null,"shell":"zsh"}"#).unwrap();
         assert_eq!(newer.cwd, None);
+    }
+
+    #[test]
+    fn the_command_starts_this_program_and_quotes_its_path_where_it_must() {
+        use std::path::Path;
+        let exe = Path::new("/usr/bin/tabletist");
+        assert_eq!(relay_for(Some(exe), Some(exe)), "tabletist mcp");
+        // Another tabletist on the PATH, or none: this one, by its path.
+        let other = Path::new("/opt/old/tabletist");
+        assert_eq!(relay_for(Some(exe), Some(other)), "/usr/bin/tabletist mcp");
+        assert_eq!(relay_for(Some(exe), None), "/usr/bin/tabletist mcp");
+        let bundle = Path::new("/Applications/Tabletist.app/Contents/MacOS/tabletist");
+        assert_eq!(
+            relay_for(Some(bundle), None),
+            "/Applications/Tabletist.app/Contents/MacOS/tabletist mcp"
+        );
+        let spaced = Path::new("/Users/ada/My Apps/Tabletist's/tabletist");
+        assert_eq!(
+            relay_for(Some(spaced), None),
+            "'/Users/ada/My Apps/Tabletist'\\''s/tabletist' mcp"
+        );
+        // Not known at all: the name.
+        assert_eq!(relay_for(None, None), "tabletist mcp");
+        assert_eq!(
+            command_for("tabletist mcp"),
+            "claude mcp add tabletist -- tabletist mcp"
+        );
     }
 
     #[tokio::test]
