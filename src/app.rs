@@ -65,6 +65,14 @@ pub struct TitleBar {
     pub inset: f32,
 }
 
+/// What quick open lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// The window's Agents tab.
+    Agents,
+    Object(ObjectRef, ObjectKind),
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -1581,7 +1589,7 @@ impl App {
                     Some(Dialog::QuickOpen(open)) => (open.tab, open.query.clone()),
                     _ => return,
                 };
-                let count = self.quick_open_matches(tab, &query).len();
+                let count = self.quick_open_found(tab, &query).len();
                 if let Some(Dialog::QuickOpen(open)) = &mut self.dialog {
                     open.selected = (open.selected as isize + step)
                         .clamp(0, count.saturating_sub(1) as isize)
@@ -1593,15 +1601,22 @@ impl App {
                     return;
                 };
                 let (tab, query, selected) = (open.tab, open.query.clone(), open.selected);
-                let matches = self.quick_open_matches(tab, &query);
-                if let Some((object, kind)) = matches.get(selected).or(matches.first()).cloned() {
-                    self.dialog = None;
-                    self.apply(Action::OpenObject {
-                        tab,
-                        object,
-                        kind,
-                        pin: true,
-                    });
+                let found = self.quick_open_found(tab, &query);
+                match found.get(selected).or(found.first()).cloned() {
+                    Some(Found::Agents) => {
+                        self.dialog = None;
+                        self.apply(Action::ShowAgents(tab));
+                    }
+                    Some(Found::Object(object, kind)) => {
+                        self.dialog = None;
+                        self.apply(Action::OpenObject {
+                            tab,
+                            object,
+                            kind,
+                            pin: true,
+                        });
+                    }
+                    None => {}
                 }
             }
             Action::ToggleFilterBar(tab) => {
@@ -4095,6 +4110,21 @@ impl App {
 
     /// Loaded objects of `tab`'s connection that match `query`, best first,
     /// at most 50.
+    /// What quick open lists for `query`: the Agents tab first where what
+    /// is typed is the start of "agents", two letters at least, and agents
+    /// can reach the app; then the objects. Fewer letters, or letters
+    /// that are only somewhere in the word, are a table's.
+    pub fn quick_open_found(&self, tab: ConnTabId, query: &str) -> Vec<Found> {
+        let typed = query.trim().to_lowercase();
+        let agents = crate::endpoint::AVAILABLE && typed.len() >= 2 && "agents".starts_with(&typed);
+        let objects = self.quick_open_matches(tab, query).into_iter();
+        agents
+            .then_some(Found::Agents)
+            .into_iter()
+            .chain(objects.map(|(object, kind)| Found::Object(object, kind)))
+            .collect()
+    }
+
     pub fn quick_open_matches(&self, tab: ConnTabId, query: &str) -> Vec<(ObjectRef, ObjectKind)> {
         let Some(workspace) = self.workspace(tab) else {
             return Vec::new();
@@ -5422,6 +5452,16 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Quick open has no Agents tab to offer where agents cannot reach the
+    /// app.
+    #[cfg(not(unix))]
+    #[test]
+    fn quick_open_offers_no_agents_where_they_cannot_reach_the_app() {
+        let (app, _dir) = app();
+        let tab = app.active_tab_id();
+        assert!(!app.quick_open_found(tab, "agents").contains(&Found::Agents));
     }
 
     #[test]

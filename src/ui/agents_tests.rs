@@ -130,6 +130,82 @@ fn with_several_agents_here_the_one_that_called_last_is_named() {
 }
 
 #[test]
+fn every_way_in_shows_the_one_tab_and_none_opens_it_by_itself() {
+    let (mut harness, tab) = connected(Look::macos());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    // Nothing the server says opens the tab.
+    said(&mut harness, AgentsEvent::Started { kept_aside: None });
+    let here = session(&harness, Some(tab), "Claude Code");
+    said(&mut harness, AgentsEvent::Sessions(vec![here]));
+    assert_eq!(agents_tabs(&harness, tab), 0);
+    // The entry.
+    harness.click("Agents, Claude Code");
+    harness.settle();
+    assert!(front(&harness, tab));
+    // Another tab in front: what the server says leaves it there.
+    let query = harness.add_sql_tab(tab);
+    harness.app.apply(Action::ActivateTab { tab, id: query });
+    said(&mut harness, AgentsEvent::Sessions(Vec::new()));
+    said(&mut harness, AgentsEvent::Stopped);
+    assert!(!front(&harness, tab));
+    // The key: the same tab.
+    harness.press(
+        egui::Key::A,
+        egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+    );
+    harness.settle();
+    assert!(front(&harness, tab));
+    assert_eq!(agents_tabs(&harness, tab), 1);
+    // Quick open, from the words that ask for it.
+    harness.app.apply(Action::ActivateTab { tab, id: query });
+    harness.app.apply(Action::OpenQuickOpen);
+    if let Some(crate::model::Dialog::QuickOpen(open)) = &mut harness.app.dialog {
+        open.query = "age".into();
+    }
+    harness.settle();
+    assert_eq!(
+        harness.app.quick_open_found(tab, "age").first(),
+        Some(&crate::app::Found::Agents)
+    );
+    harness.app.apply(Action::QuickOpenPick);
+    assert!(front(&harness, tab));
+    assert_eq!(agents_tabs(&harness, tab), 1);
+    // One letter, or letters only somewhere in the word, are a table's.
+    for typed in ["a", "s", "gen", "act"] {
+        assert_ne!(
+            harness.app.quick_open_found(tab, typed).first(),
+            Some(&crate::app::Found::Agents),
+            "{typed}"
+        );
+    }
+    // And with nothing typed, quick open is the objects'.
+    assert!(
+        !harness
+            .app
+            .quick_open_found(tab, "")
+            .contains(&crate::app::Found::Agents)
+    );
+}
+
+#[test]
+fn omarchy_shows_the_tab_with_ga_and_with_the_agents_line() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    // From the grid.
+    super::tests::type_key(&mut harness, egui::Key::G, "g");
+    super::tests::type_key(&mut harness, egui::Key::A, "a");
+    assert!(front(&harness, tab));
+    assert_eq!(agents_tabs(&harness, tab), 1);
+    // From another tab, by the prompt's line.
+    let query = harness.add_sql_tab(tab);
+    harness.app.apply(Action::ActivateTab { tab, id: query });
+    harness.app.workspace_mut(tab).unwrap().command = Some("agents".into());
+    harness.app.apply(Action::RunCommand(tab));
+    assert!(front(&harness, tab));
+    assert_eq!(agents_tabs(&harness, tab), 1);
+}
+
+#[test]
 fn the_tab_shows_its_state_and_its_buttons_do_what_they_say() {
     for look in looks() {
         let (mut harness, tab) = connected(look);
@@ -177,6 +253,30 @@ fn the_tab_shows_its_state_and_its_buttons_do_what_they_say() {
             look.name
         );
     }
+}
+
+#[test]
+fn omarchys_letters_copy_and_turn_on_where_the_tab_offers_them() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    allow(&mut harness, tab, AgentAccess::Read);
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    // `y` copies nothing while the server is off.
+    super::tests::type_key(&mut harness, egui::Key::Y, "y");
+    assert_eq!(crate::ui::toast::said(&harness.ctx), None);
+    super::tests::type_key(&mut harness, egui::Key::O, "o");
+    assert!(harness.app.settings.mcp_enabled);
+    // `o` once more is nothing: the server is on.
+    let before = harness.app.settings.clone();
+    super::tests::type_key(&mut harness, egui::Key::O, "o");
+    assert_eq!(harness.app.settings, before);
+    super::tests::type_key(&mut harness, egui::Key::Y, "y");
+    assert_eq!(
+        crate::ui::toast::said(&harness.ctx).as_deref(),
+        Some("Copied the command")
+    );
+    // This look floats no toast: its status line says it.
+    assert!(harness.has("copied the command"));
 }
 
 #[test]
