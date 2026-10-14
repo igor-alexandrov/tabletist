@@ -5447,8 +5447,9 @@ mod tests {
         app.apply_event(Event::Agents(AgentsEvent::Started { kept_aside: None }));
         app.apply_event(Event::Agents(AgentsEvent::Stopped));
         assert_eq!(app.notice, None);
+        // What the backend says, with the app's words before it, once.
         app.apply_event(Event::Agents(AgentsEvent::Failed(
-            "another Tabletist is serving agents already".into(),
+            crate::endpoint::ANOTHER_SERVES.into(),
         )));
         assert_eq!(
             app.notice.as_deref(),

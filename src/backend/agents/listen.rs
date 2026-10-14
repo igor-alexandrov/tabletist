@@ -85,7 +85,7 @@ pub(super) fn listen(dir: &Path, server: Server<AppGateway>) -> Result<Listening
             // A socket that answers is another Tabletist's, serving its
             // agents. One that does not was left by a Tabletist that ended.
             if served_by_another(dir) {
-                return Err("another Tabletist is serving agents already".into());
+                return Err(endpoint::ANOTHER_SERVES.into());
             }
             std::fs::remove_file(&socket).map_err(|error| {
                 format!("could not remove an old {}: {error}", socket.display())
@@ -348,7 +348,7 @@ mod tests {
         let at = dir.path().join("run");
         let first = listen(&at, server(dir.path())).unwrap();
         let said = listen(&at, server(dir.path())).err().unwrap();
-        assert!(said.contains("another Tabletist"), "{said}");
+        assert_eq!(said, endpoint::ANOTHER_SERVES);
         let key = std::fs::read_to_string(at.join(endpoint::KEY)).unwrap();
         // The first is as it was.
         let (_, answer) = say(&at, &hello(&key)).await;

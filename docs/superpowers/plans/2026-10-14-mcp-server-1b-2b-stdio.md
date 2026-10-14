@@ -3013,3 +3013,7 @@ Not done here, and left for the review of the pull request:
 
 - **The by-hand check with Claude Code** needs the app's window, and no session here has a display. It is Igor's to run once, as "After the last task" says.
 - **macOS and Windows** run in CI alone. Task 3's test is the first that runs on macOS only.
+
+## After the pull request's review
+
+The review found that a start which failed was said twice over: the backend began its reason with "agents could not reach it: ", and the app put "Agents could not be served: " before that. The backend now says the reason alone (`endpoint::ANOTHER_SERVES`, or what `listen` said), and the app's test is of the reason the backend sends.

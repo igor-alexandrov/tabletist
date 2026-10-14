@@ -244,8 +244,8 @@ impl Agents {
                         && endpoint.as_deref().is_some_and(served_by_another)
                     {
                         log::error!("the agent server did not start: another one serves agents");
-                        let said = "agents could not reach it: another Tabletist is serving agents already";
-                        outbox.emit(super::Event::Agents(AgentsEvent::Failed(said.into())));
+                        let said = crate::endpoint::ANOTHER_SERVES.to_owned();
+                        outbox.emit(super::Event::Agents(AgentsEvent::Failed(said)));
                         return;
                     }
                     let opened = tokio::task::spawn_blocking(move || Log::open(&log)).await;
@@ -291,8 +291,7 @@ impl Agents {
                         Err(error) => {
                             log::error!("the agent server did not start: {error}");
                             server.stop();
-                            let said = format!("agents could not reach it: {error}");
-                            outbox.emit(super::Event::Agents(AgentsEvent::Failed(said)));
+                            outbox.emit(super::Event::Agents(AgentsEvent::Failed(error)));
                             return;
                         }
                     };
@@ -1492,8 +1491,9 @@ mod tests {
             endpoint: Some(at),
         }));
         match backend.wait(WAIT) {
+            // Said as it is: the app puts its own words before it.
             Some(Event::Agents(AgentsEvent::Failed(said))) => {
-                assert!(said.contains("another Tabletist"), "{said}");
+                assert_eq!(said, crate::endpoint::ANOTHER_SERVES);
             }
             other => panic!("{other:?}"),
         }

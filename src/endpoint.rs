@@ -20,6 +20,10 @@ pub const AVAILABLE: bool = cfg!(unix);
 /// the relay says its line.
 pub const NOT_RUNNING: &str = "Tabletist is not running, or agents are off in it. Open Tabletist, turn agents on, then reconnect.";
 
+/// Why a server does not start where another Tabletist serves agents
+/// already: the person is told it after the app's own words.
+pub const ANOTHER_SERVES: &str = "another Tabletist is serving agents already";
+
 /// The socket's name in the directory.
 pub const SOCKET: &str = "mcp.sock";
 
