@@ -305,6 +305,23 @@ fn the_tab_names_the_connection_as_an_agent_does_and_counts_only_who_is_here() {
 }
 
 #[test]
+fn a_start_that_failed_leaves_nobody_here() {
+    let (mut harness, tab) = connected(Look::macos());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    let here = session(&harness, Some(tab), "Claude Code");
+    said(&mut harness, AgentsEvent::Sessions(vec![here]));
+    assert!(harness.has("Agents, Claude Code"));
+    // A start while a server ran stops it first, then fails to listen.
+    said(
+        &mut harness,
+        AgentsEvent::Failed(crate::endpoint::ANOTHER_SERVES.into()),
+    );
+    assert!(harness.app.agents.sessions.is_empty());
+    assert!(harness.has("Agents, None connected"));
+}
+
+#[test]
 fn what_the_server_says_while_it_is_off_is_not_kept() {
     let (mut harness, tab) = connected(Look::macos());
     allow(&mut harness, tab, AgentAccess::Read);

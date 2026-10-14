@@ -2849,7 +2849,10 @@ impl App {
                         path.display()
                     ));
                 }
+                // A start that failed stopped the server before it, if one
+                // ran: nobody is on it any more.
                 AgentsEvent::Failed(said) => {
+                    self.agents.sessions.clear();
                     self.notice = Some(format!("Agents could not be served: {said}."));
                 }
             },
