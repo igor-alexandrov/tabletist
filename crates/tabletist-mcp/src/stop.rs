@@ -9,6 +9,9 @@ use tokio_util::sync::CancellationToken;
 /// Why a call was stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Why {
+    /// It ran past the connection's time, and the database had not ended
+    /// it by itself.
+    Timeout,
     /// The client cancelled the call, or is gone.
     Client,
     /// The person stopped the session or the server.
@@ -141,5 +144,21 @@ mod tests {
         session.end(Why::Stopped);
         call.end(Why::Client);
         assert_eq!(call.why(), Some(Why::Stopped));
+    }
+
+    #[test]
+    fn a_timer_gives_way_to_the_person_and_to_nobody_else() {
+        let session = Stop::new();
+        let call = session.child();
+        call.end(Why::Timeout);
+        session.end(Why::Stopped);
+        assert_eq!(call.why(), Some(Why::Stopped));
+
+        // A client that is gone does not outrank the call's own timer.
+        let session = Stop::new();
+        let call = session.child();
+        call.end(Why::Timeout);
+        session.end(Why::Client);
+        assert_eq!(call.why(), Some(Why::Timeout));
     }
 }

@@ -43,7 +43,9 @@ log = "0.4"
 [dev-dependencies]
 # The SDK's client, for the tests that call the server as an agent does.
 rmcp = { version = "3.5", default-features = false, features = ["client"] }
-# The tests' runtime, on more than one thread, as the app's is.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# The tests' runtime, on more than one thread, as the app's is. `test-util`:
+# a paused clock for the test of the server's own timer, which waits ten
+# seconds and two more.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
 # A directory of its own for each test's files.
 tempfile = "3"

@@ -145,6 +145,7 @@ impl Refused {
             Error::Agent(refusal) => refusal.into(),
             Error::Timeout => Self::timeout(limits.timeout),
             Error::Cancelled => match why {
+                Some(Why::Timeout) => Self::timeout(limits.timeout),
                 Some(Why::Stopped) => Self::stopped(),
                 // Or the database ended it, and nobody here asked.
                 Some(Why::Client) | None => Self::cancelled(),
@@ -360,6 +361,7 @@ mod tests {
             (Some(Why::Stopped), "server_stopped", "stopped"),
             // The database ended it, and nobody here asked.
             (None, "cancelled", "cancelled"),
+            (Some(Why::Timeout), "timeout", "timeout"),
         ];
         for (why, code, result) in cases {
             let refused = database(Error::Cancelled, why);

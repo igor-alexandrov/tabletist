@@ -6,6 +6,8 @@
 
 mod support;
 
+use std::time::Duration;
+
 use rmcp::model::ErrorCode;
 use rmcp::service::ServiceError;
 use serde_json::{Value as Json, json};
@@ -432,4 +434,36 @@ async fn run_query_takes_its_arguments_and_no_others() {
         assert_eq!(invalid(&agent, "run_query", arguments).await, said);
     }
     agent.close().await;
+}
+
+#[tokio::test]
+async fn a_second_call_on_a_connection_waits_its_turn_and_then_is_busy() {
+    let shop = Shop::new();
+    // Only the server's own timer ends the first call: a second and two
+    // more. The second call waits the connection's one second.
+    shop.without_the_databases_timeout();
+    let brief = Limits {
+        timeout: Duration::from_secs(1),
+        ..LIMITS
+    };
+    shop.list("Bookshop · brief", &shop.bookshop(), brief);
+    let (server, _log) = server(&shop);
+    let (first, second) = (Agent::connect(&server).await, Agent::connect(&server).await);
+    let on_brief = |sql: String| json!({ "connection": "Bookshop · brief", "sql": sql });
+    let (long, waiting) =
+        tokio::join!(first.call("run_query", on_brief(support::slow(6))), async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            second.call("run_query", on_brief("SELECT 1".into())).await
+        });
+    assert_eq!(waiting.refused(), "busy");
+    assert_eq!(
+        waiting.text,
+        "Another agent's query is running on this connection. Try again."
+    );
+    assert_eq!(long.refused(), "timeout");
+    // Its turn comes once the first call has ended.
+    let again = second.call("run_query", on_brief("SELECT 1".into())).await;
+    assert!(!again.is_error);
+    first.close().await;
+    second.close().await;
 }

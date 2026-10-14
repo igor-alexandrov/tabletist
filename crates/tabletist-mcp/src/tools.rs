@@ -5,9 +5,11 @@
 mod connections;
 mod query;
 
+use std::future::Future;
 use std::time::Duration;
 
 use serde_json::{Map, Value as Json, json};
+use tabletist_db::agent::Limits;
 
 use crate::gateway::{Failure, Gateway, Listed};
 use crate::refusal::Refused;
@@ -76,6 +78,10 @@ pub(crate) struct Done {
     pub note: Note,
 }
 
+/// How long past its connection's time a call is left before this crate
+/// ends it: the database's own timeout comes first, and says more.
+pub(crate) const GRACE: Duration = Duration::from_secs(2);
+
 /// Runs the tool called `name`.
 pub(crate) async fn call<G: Gateway>(
     gateway: &G,
@@ -142,6 +148,20 @@ fn find<G: Gateway>(gateway: &G, name: &str) -> Result<Listed, Refused> {
         .ok_or_else(|| Refused::unknown_connection(name))
 }
 
+/// Awaits `work` to its end, and ends the call when it runs past its
+/// connection's time by [`GRACE`]. The work is never dropped: once the call
+/// is ended it is the gateway that brings it to its end.
+async fn within<T>(stop: &Stop, limits: Limits, work: impl Future<Output = T>) -> T {
+    tokio::pin!(work);
+    tokio::select! {
+        done = &mut work => done,
+        () = tokio::time::sleep(limits.timeout.saturating_add(GRACE)) => {
+            stop.end(Why::Timeout);
+            work.await
+        }
+    }
+}
+
 /// What the work on a connection comes to. A call the person stopped
 /// answers that, whatever it had got to: an agent that was stopped is
 /// given nothing more.
@@ -177,6 +197,40 @@ fn schema(properties: Json, required: &[&str]) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ten_seconds() -> Limits {
+        Limits {
+            rows: 500,
+            timeout: Duration::from_secs(10),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn work_that_runs_past_its_time_is_ended_and_awaited_all_the_same() {
+        let stop = Stop::new();
+        // Work that ends only once it is told to, as a gateway's does.
+        let work = async {
+            stop.ended().await;
+            "ended"
+        };
+        let started = tokio::time::Instant::now();
+        assert_eq!(within(&stop, ten_seconds(), work).await, "ended");
+        assert_eq!(started.elapsed(), Duration::from_secs(10) + GRACE);
+        assert_eq!(stop.why(), Some(Why::Timeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn work_the_database_ends_in_its_own_time_is_left_alone() {
+        let stop = Stop::new();
+        // Past the connection's time, and within what the database is given
+        // to end the statement by itself.
+        let work = async {
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            7
+        };
+        assert_eq!(within(&stop, ten_seconds(), work).await, 7);
+        assert_eq!(stop.why(), None);
+    }
 
     #[test]
     fn the_log_keeps_what_was_sent_up_to_the_size_a_statement_may_have() {
