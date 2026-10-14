@@ -5787,6 +5787,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn the_bar_names_every_change_in_one_sentence() {
+        let (mut app, _dir) = app();
+        changed_outside(&mut app);
+        let mut other = crate::testing::fixture_connection();
+        other.id = crate::connections::ConnectionId::new();
+        other.name = "Ledger".into();
+        other.agents.access = crate::connections::AgentAccess::Read;
+        app.connections.upsert(other);
+        app.check_agents();
+        assert_eq!(
+            crate::ui::agents_held_said(&app).as_deref(),
+            Some(
+                "Agent access was changed outside Tabletist: the agent server was turned on, \
+                 agents may read Shop · dev, and agents may read Ledger · dev. Until you \
+                 answer, agents may not. Keep it, or put it back?"
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn put_back_writes_what_the_person_was_shown_into_the_files() {
         let (mut app, dir) = app();
         let id = changed_outside(&mut app);

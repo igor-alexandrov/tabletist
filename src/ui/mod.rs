@@ -201,7 +201,10 @@ pub fn agents_held_said(app: &App) -> Option<String> {
         .collect();
     let changes = match parts.as_slice() {
         [one] => one.clone(),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        // A catalog may join them otherwise, and in another order.
+        [rest @ .., last] => crate::i18n::gettext(locale, "{rest}, and {last}")
+            .replace("{rest}", &rest.join(&crate::i18n::gettext(locale, ", ")))
+            .replace("{last}", last),
         [] => return None,
     };
     Some(
