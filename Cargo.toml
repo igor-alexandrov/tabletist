@@ -119,6 +119,11 @@ skrifa = { version = "0.44", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+# The keychain store above is built on it. To tell the keychain to ask the
+# person nothing while it reads for an agent (`secrets::NativeStore::
+# read_quietly`), which the store has no call for. The version and the
+# features the store builds: nothing new is built.
+security-framework = "3.7"
 # The unified title bar the tabs share with the window buttons.
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }

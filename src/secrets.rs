@@ -101,6 +101,29 @@ fn native_error(error: keyring_core::Error) -> SecretError {
 }
 
 impl NativeStore {
+    /// A read that the keychain is told to ask nothing for: for the
+    /// process, until it ends. The keyring thread is the only one here that
+    /// uses the keychain, and it does one job at a time, so no read that a
+    /// person is there for falls in between.
+    #[cfg(target_os = "macos")]
+    fn read_asking_nothing(&mut self, account: &str) -> Result<Option<String>, SecretError> {
+        use security_framework::os::macos::keychain::SecKeychain;
+        let entry = self.entry(account)?;
+        let _quiet =
+            SecKeychain::disable_user_interaction().map_err(|_| SecretError::Unavailable)?;
+        match entry.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(error) => Err(quiet_error(&error).unwrap_or_else(|| native_error(error))),
+        }
+    }
+
+    /// Elsewhere the read asks nothing as it is, or was looked into first.
+    #[cfg(not(target_os = "macos"))]
+    fn read_asking_nothing(&mut self, account: &str) -> Result<Option<String>, SecretError> {
+        self.read(account)
+    }
+
     fn entry(&mut self, account: &str) -> Result<keyring_core::Entry, SecretError> {
         if self.store.is_none() {
             #[cfg(target_os = "linux")]
@@ -134,9 +157,9 @@ impl SecretStore for NativeStore {
     /// that was not found is not read either: should the search look for
     /// it otherwise than the keyring crate keeps it, the cost is a
     /// password not found, never a prompt. Windows asks nothing of a read.
-    /// On macOS a locked keychain is asked to be unlocked by the system,
-    /// and no call of the keyring crate says not to: that is not kept from
-    /// happening here.
+    /// On macOS the keychain is told to ask nothing while it reads: a
+    /// locked one, and an item that would ask whether Tabletist may read
+    /// it, answer that they would have to, and are not read.
     fn read_quietly(&mut self, account: &str) -> Result<Option<String>, SecretError> {
         #[cfg(target_os = "linux")]
         match linux_item(account)? {
@@ -144,7 +167,7 @@ impl SecretStore for NativeStore {
             Item::Locked => return Err(SecretError::Locked),
             Item::Missing => return Ok(None),
         }
-        self.read(account)
+        self.read_asking_nothing(account)
     }
 
     fn write(&mut self, account: &str, secret: &str) -> Result<(), SecretError> {
@@ -159,6 +182,24 @@ impl SecretStore for NativeStore {
             Err(error) => Err(native_error(error)),
         }
     }
+}
+
+/// What a quiet read's error says, where it is the keychain's answer that
+/// it would have had to ask: `errSecInteractionNotAllowed`. That is a
+/// locked keychain, or an item that would ask whether Tabletist may read it
+/// (after an update the system does not know for the same app). Either is
+/// `Locked` here: the keychain is locked to agents until the person has
+/// answered it once, from the app.
+#[cfg(target_os = "macos")]
+fn quiet_error(error: &keyring_core::Error) -> Option<SecretError> {
+    const INTERACTION_NOT_ALLOWED: i32 = -25308;
+    let keyring_core::Error::PlatformFailure(inner) = error else {
+        return None;
+    };
+    inner
+        .downcast_ref::<security_framework::base::Error>()
+        .filter(|inner| inner.code() == INTERACTION_NOT_ALLOWED)
+        .map(|_| SecretError::Locked)
 }
 
 /// How the Secret Service holds an account's item.
@@ -322,6 +363,21 @@ mod tests {
             keyring.read_quietly("a").wait().await,
             Ok(Some("hunter2".into()))
         );
+    }
+
+    /// What the keychain answers a read it was told to ask nothing for,
+    /// where it would have had to: locked, which the gateway refuses.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_keychain_that_would_have_to_ask_is_locked_to_a_quiet_read() {
+        let would_ask = security_framework::base::Error::from_code(-25308);
+        let error = keyring_core::Error::PlatformFailure(Box::new(would_ask));
+        assert_eq!(quiet_error(&error), Some(SecretError::Locked));
+        // Any other failure is the store's, as a read says it.
+        let other = security_framework::base::Error::from_code(-25300);
+        let error = keyring_core::Error::PlatformFailure(Box::new(other));
+        assert_eq!(quiet_error(&error), None);
+        assert_eq!(quiet_error(&keyring_core::Error::NoEntry), None);
     }
 
     #[tokio::test]
