@@ -14,6 +14,18 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
 - Database, network, and disk work runs on the backend runtime
   (`src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.
+- `crates/tabletist-mcp`, the MCP server agents use, has none either. It
+  reaches a database only through its `Gateway`, which lists the connections
+  an agent may name and opens one by its id, and never names `ConnectSpec`,
+  `Secrets` or `HostKeys`: its `tests/secrets.rs` reads its sources. Only
+  its `protocol` module names the SDK's types.
+- What an agent sent (a statement, a value, a name) goes into the log of
+  calls and nowhere else: not into the app's log, and not into a protocol
+  error. And nothing a database holds goes into either log: its error's
+  words can quote a row, so the log of calls keeps the error's code. The
+  SDK (`rmcp`, and `tracing` for its spans) and `sqlparser` write what a
+  client sent to the `log` crate themselves, so the app's log takes no line
+  of theirs.
 - Code that depends on the database engine matches on `Driver` or `Dialect`
   and names every variant: no `==`, `!=`, `matches!` or `_` arm. A new engine
   then fails to compile wherever nobody has decided for it.

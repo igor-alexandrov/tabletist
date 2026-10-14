@@ -49,3 +49,8 @@ rmcp = { version = "3.5", default-features = false, features = ["client"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
 # A directory of its own for each test's files.
 tempfile = "3"
+# The app is built with this crate's `log` feature on (calloop turns it on,
+# on Linux), and with it what the SDK traces goes to the app's log. On here
+# too, so that the test which reads the app's log reads what the app would
+# write, on every platform.
+tracing = { version = "0.1", features = ["log"] }
