@@ -911,6 +911,26 @@ pub enum TestState {
     },
 }
 
+/// The schema a connection opens on, of those it lists: the one named as
+/// its database (MySQL's databases are its schemas), else `public` or
+/// `main`, else the only one there is.
+pub fn first_schema(schemas: &[String], database: &str) -> Option<String> {
+    schemas
+        .iter()
+        .find(|schema| !database.is_empty() && **schema == database)
+        .or_else(|| {
+            schemas
+                .iter()
+                .find(|schema| *schema == "public" || *schema == "main")
+        })
+        .or(if schemas.len() == 1 {
+            schemas.first()
+        } else {
+            None
+        })
+        .cloned()
+}
+
 /// The connection dialog's fields while it is open.
 pub struct ConnectionForm {
     /// `Some` when editing a saved connection, `None` for a new one.

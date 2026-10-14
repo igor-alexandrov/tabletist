@@ -70,6 +70,12 @@ fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 # The database layer (no UI dependencies).
 tabletist-db = { path = "crates/tabletist-db" }
+# The MCP server agents reach the saved connections through. The backend
+# runs it, and is its gateway to the databases (src/backend/agents.rs).
+tabletist-mcp = { path = "crates/tabletist-mcp" }
+# `CancellationToken`: how the server tells its gateway that a call is
+# over. In the tree through tabletist-mcp, which hands one to every call.
+tokio-util = "0.7"
 # The backend runtime: one OS thread running tokio, where every database
 # call happens (src/backend.rs).
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }

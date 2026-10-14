@@ -2530,22 +2530,12 @@ impl App {
                 }
                 workspace.catalog_changed();
                 let database = workspace.spec.database.clone();
-                let default = workspace.tree.schemas.value.as_ref().and_then(|schemas| {
-                    schemas
-                        .iter()
-                        .find(|schema| !database.is_empty() && **schema == database)
-                        .or_else(|| {
-                            schemas
-                                .iter()
-                                .find(|schema| *schema == "public" || *schema == "main")
-                        })
-                        .or(if schemas.len() == 1 {
-                            schemas.first()
-                        } else {
-                            None
-                        })
-                        .cloned()
-                });
+                let default = workspace
+                    .tree
+                    .schemas
+                    .value
+                    .as_ref()
+                    .and_then(|schemas| crate::model::first_schema(schemas, &database));
                 if let Some(schema) = default {
                     self.expand_schema(tab, &schema);
                 }

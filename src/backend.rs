@@ -18,6 +18,10 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::connections::SavedConnections;
 use crate::secrets::{Keyring, SecretString};
 
+mod agents;
+
+pub use agents::{Agentable, AppGateway, agentable};
+
 /// Wakes the UI from any thread. The default does nothing (tests).
 #[derive(Clone)]
 pub struct Waker(Arc<dyn Fn() + Send + Sync>);
