@@ -7,19 +7,20 @@
 //! is read-only at the database, whatever the connection's own box says.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tabletist_db::agent::{Answer, Limits, Read};
 use tabletist_db::{
     Access, CancelHandle, ConnectSpec, Connection, Error, HostKeys, ObjectInfo, ObjectRef, Secrets,
     StopFlag, Structure,
 };
-use tabletist_mcp::{Failure, Gateway, Listed, Schemas, Session};
+use tabletist_mcp::{Failure, Gateway, Listed, Log, Schemas, Session};
 use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
-use super::{CANCEL_AGAIN, lock, longer, send_cancel};
+use super::{CANCEL_AGAIN, Outbox, lock, longer, send_cancel};
 use crate::connections::{AgentAccess, ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Platform;
 use crate::model::SecretKind;
@@ -110,9 +111,189 @@ fn short_id(id: &ConnectionId, length: usize) -> String {
         .collect()
 }
 
+/// What the backend is told of the server.
+#[derive(Debug)]
+pub enum AgentsCommand {
+    /// The connections agents may use, and the SSH host keys the user
+    /// trusts. Sent whenever either changes. Kept while the server is off.
+    Policy {
+        connections: Vec<Agentable>,
+        host_keys: HostKeys,
+    },
+    /// Starts the server, with its log at `log`, which keeps calls for
+    /// `log_days` days. Answered with [`AgentsEvent::Started`] or
+    /// [`AgentsEvent::Failed`].
+    Start { log: PathBuf, log_days: u32 },
+    /// Stops it: every session ends, and the connections are closed.
+    /// Answered with [`AgentsEvent::Stopped`].
+    Stop,
+}
+
+/// What the backend tells of the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentsEvent {
+    /// It runs. `kept_aside` is where a log that could not be read was put.
+    Started {
+        kept_aside: Option<PathBuf>,
+    },
+    /// It could not start: its log could not be opened. Why, for the
+    /// person.
+    Failed(String),
+    Stopped,
+}
+
+/// How long a connection an agent used is kept open with nothing to do.
+const IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// How often the server's chores are done: closing what is idle, and,
+/// every [`RETENTION_EVERY`], forgetting old calls.
+const CHORES_EVERY: Duration = Duration::from_secs(60);
+
+/// How often the log forgets what is older than it keeps.
+const RETENTION_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// How long opening a connection for an agent may take, an SSH tunnel's
 /// among it.
 const CONNECT_TIME: Duration = Duration::from_secs(20);
+
+/// The server in the backend, while it runs.
+pub(super) struct Running {
+    server: tabletist_mcp::Server<AppGateway>,
+    chores: tokio::task::JoinHandle<()>,
+}
+
+/// The server's part of the worker: the gateway, whatever the server is
+/// doing, and the server while it runs.
+pub(super) struct Agents {
+    gateway: AppGateway,
+    running: Arc<Mutex<Option<Running>>>,
+    /// Counted up by each start and stop, so that a start whose log is
+    /// still opening when a stop comes runs nothing, and says nothing.
+    turn: Arc<Mutex<u64>>,
+    /// Held by a start from the opening of its log to its end: two starts
+    /// must not open the one file at once.
+    starting: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Agents {
+    pub fn new(keyring: Keyring) -> Self {
+        Self {
+            gateway: AppGateway::new(keyring),
+            running: Arc::default(),
+            turn: Arc::default(),
+            starting: Arc::default(),
+        }
+    }
+
+    pub fn handle(&mut self, command: AgentsCommand, outbox: &Outbox) {
+        match command {
+            AgentsCommand::Policy {
+                connections,
+                host_keys,
+            } => self.gateway.set_policy(connections, host_keys),
+            AgentsCommand::Start { log, log_days } => {
+                let turn = {
+                    let mut turn = lock(&self.turn);
+                    *turn += 1;
+                    *turn
+                };
+                let gateway = self.gateway.clone();
+                let running = Arc::clone(&self.running);
+                let current = Arc::clone(&self.turn);
+                let starting = Arc::clone(&self.starting);
+                let outbox = outbox.clone();
+                tokio::spawn(async move {
+                    let _starting = starting.lock().await;
+                    let overtaken = || *lock(&current) != turn;
+                    if overtaken() {
+                        return;
+                    }
+                    let opened = tokio::task::spawn_blocking(move || Log::open(&log)).await;
+                    let opened = match opened {
+                        Ok(Ok(opened)) => opened,
+                        Ok(Err(error)) => {
+                            log::error!("the agent server did not start: {error}");
+                            // A stop or a later start came meanwhile: theirs
+                            // is the last word.
+                            if !overtaken() {
+                                let said = format!(
+                                    "the log of agents' calls could not be opened: {error}"
+                                );
+                                outbox.emit(super::Event::Agents(AgentsEvent::Failed(said)));
+                            }
+                            return;
+                        }
+                        Err(_) => return,
+                    };
+                    let server = tabletist_mcp::Server::new(
+                        gateway.clone(),
+                        opened.log.clone(),
+                        env!("CARGO_PKG_VERSION"),
+                    );
+                    let mut running = lock(&running);
+                    // A stop came while the log was opening.
+                    if overtaken() {
+                        return;
+                    }
+                    if let Some(before) = running.take() {
+                        before.stop();
+                    }
+                    let chores = tokio::spawn(chores(opened.log, gateway, log_days));
+                    *running = Some(Running { server, chores });
+                    log::info!("the agent server started");
+                    // Said under the lock a stop takes, so that no Stopped
+                    // is said before it.
+                    outbox.emit(super::Event::Agents(AgentsEvent::Started {
+                        kept_aside: opened.kept_aside,
+                    }));
+                });
+            }
+            AgentsCommand::Stop => {
+                *lock(&self.turn) += 1;
+                let mut running = lock(&self.running);
+                if let Some(running) = running.take() {
+                    running.stop();
+                }
+                self.gateway.close_all();
+                log::info!("the agent server stopped");
+                outbox.emit(super::Event::Agents(AgentsEvent::Stopped));
+            }
+        }
+    }
+}
+
+impl Running {
+    fn stop(self) {
+        self.server.stop();
+        self.chores.abort();
+    }
+}
+
+/// What the server does from time to time while it runs: closes the
+/// connections no agent has used for a while, and forgets calls older than
+/// the log keeps. The first time as it starts.
+async fn chores(log: Log, gateway: AppGateway, log_days: u32) {
+    let keep = Duration::from_secs(u64::from(log_days.max(1)) * 24 * 60 * 60);
+    let mut forgot: Option<Instant> = None;
+    loop {
+        if forgot.is_none_or(|at| at.elapsed() >= RETENTION_EVERY) {
+            let before = SystemTime::now()
+                .checked_sub(keep)
+                .and_then(|before| before.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |before| {
+                    i64::try_from(before.as_millis()).unwrap_or(i64::MAX)
+                });
+            match log.forget_before(before).await {
+                Ok(0) => {}
+                Ok(gone) => log::info!("the agents' log forgot {gone} calls"),
+                Err(error) => log::warn!("the agents' log could not forget old calls: {error}"),
+            }
+            forgot = Some(Instant::now());
+        }
+        gateway.close_idle(IDLE);
+        tokio::time::sleep(CHORES_EVERY).await;
+    }
+}
 
 /// The gateway of the app's MCP server: the saved connections an agent
 /// may use, and a session of its own for each. A clone is the same gateway.
@@ -445,9 +626,12 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     use super::*;
+    use crate::backend::{Backend, Command, Event, Waker};
     use crate::connections::Agents as AgentSettings;
     use crate::env::Environment;
     use crate::secrets::SecretString;
+
+    const WAIT: Duration = Duration::from_secs(20);
 
     fn saved(id: &str, name: &str, environment: Environment, spec: ConnectSpec) -> SavedConnection {
         SavedConnection {
@@ -935,6 +1119,118 @@ mod tests {
         let entries = log.latest(10).await.unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].connection_id.as_deref(), Some("shop"));
+    }
+
+    #[test]
+    fn the_backend_starts_and_stops_the_server_and_keeps_its_log_to_its_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        // A call of long ago, and one of now.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let log = Log::open(&path).unwrap().log;
+            for at_ms in [
+                1_000,
+                i64::try_from(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis(),
+                )
+                .unwrap(),
+            ] {
+                let entry = tabletist_mcp::Entry {
+                    at_ms,
+                    session: "s".into(),
+                    agent: "a".into(),
+                    transport: "stdio".into(),
+                    tool: "list_connections".into(),
+                    result: "ok".into(),
+                    ..tabletist_mcp::Entry::default()
+                };
+                log.record(entry).await.unwrap();
+            }
+        });
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Agents(AgentsCommand::Start {
+            log: path.clone(),
+            log_days: 30,
+        }));
+        assert_eq!(
+            match backend.wait(WAIT) {
+                Some(Event::Agents(event)) => event,
+                other => panic!("{other:?}"),
+            },
+            AgentsEvent::Started { kept_aside: None }
+        );
+        // Retention runs as the server starts.
+        let deadline = Instant::now() + WAIT;
+        let left = loop {
+            let left = runtime.block_on(async {
+                Log::open(&path)
+                    .unwrap()
+                    .log
+                    .latest(10)
+                    .await
+                    .unwrap()
+                    .len()
+            });
+            if left == 1 || Instant::now() > deadline {
+                break left;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(left, 1, "the call of long ago is forgotten");
+        backend.send(Command::Agents(AgentsCommand::Stop));
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Agents(AgentsEvent::Stopped))
+        ));
+        // A log that cannot be made: the server does not start, and says
+        // why.
+        backend.send(Command::Agents(AgentsCommand::Start {
+            log: dir.path().join("no-such-folder").join("agents.sqlite3"),
+            log_days: 30,
+        }));
+        match backend.wait(WAIT) {
+            Some(Event::Agents(AgentsEvent::Failed(said))) => {
+                assert!(
+                    said.starts_with("the log of agents' calls could not be opened"),
+                    "{said}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn starts_and_stops_one_after_another_leave_the_last_one_standing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let start = || {
+            Command::Agents(AgentsCommand::Start {
+                log: path.clone(),
+                log_days: 30,
+            })
+        };
+        backend.send(start());
+        backend.send(start());
+        backend.send(Command::Agents(AgentsCommand::Stop));
+        backend.send(start());
+        let mut said = Vec::new();
+        while let Some(Event::Agents(event)) = backend.wait(Duration::from_secs(2)) {
+            said.push(event);
+        }
+        assert_eq!(
+            said,
+            [
+                AgentsEvent::Stopped,
+                AgentsEvent::Started { kept_aside: None }
+            ],
+            "{said:?}"
+        );
+        assert!(!dir.path().join("agents.sqlite3.bad").exists());
     }
 
     /// A server's connection from a test URL, its password in the keyring.

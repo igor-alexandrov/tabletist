@@ -2796,6 +2796,9 @@ impl App {
                 };
                 self.apply_settings(settings);
             }
+            // Nothing in the app starts the agent server yet: that comes
+            // with its settings. The backend logs what happens to it.
+            Event::Agents(_) => {}
             Event::SettingsFileOpened { with, result } => {
                 if let Err(error) = result {
                     let path = self.dirs.settings_file();
