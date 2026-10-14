@@ -30,6 +30,11 @@ what each takes and answers: that run's plan says. A.1, A.4, A.5, B.5, B.8,
 C.1, F.1 and G are corrected where its draft showed otherwise, each where it
 changed.
 
+**Built on 2026-10-14: the first part of Phase 1b's second run** (`2026-10-14-mcp-server-1b-2a-gateway.md`):
+the backend's gateway, and agents in `connections.toml`. G cuts the second
+run in two, as it said it might. A.1, C.1, F.4, G and question 19 are
+corrected where its draft showed otherwise.
+
 Each phase below gets its own plan under `docs/superpowers/plans/` before any
 code is written, as every batch of work in this repository does.
 
@@ -162,6 +167,32 @@ is opened by the connection's id, which is also what the log keeps: the
 name is the agent's word for it and can change. One call at a time, `busy`
 and the idle close are the implementation's to keep, behind `open`. The first run has the trait, and for its tests a gateway over SQLite
 files. The backend's own is the second run's.
+
+**The backend's gateway, as built** (`2026-10-14-mcp-server-1b-2a-gateway.md`). `AppGateway` keeps a session
+of its own for each connection an agent has used, opened read-only with the
+connection's secrets from the keyring, and hands it to one call at a time.
+What its draft's review showed it must also do:
+
+- **Ask the person nothing.** A read of the keyring for an agent never
+  brings up a prompt to unlock it: on Linux the Secret Service would ask
+  for a collection whose item a read finds locked, so the item is looked
+  for first and a locked one is not read (`SecretStore::read_quietly`).
+  Windows asks nothing of a read. **On macOS a locked keychain is asked to
+  be unlocked by the system, and the keyring crate has no call that says
+  not to**: open for the second part, which makes the server reachable.
+- **Look again after a wait.** A call that waited for the connection, or
+  for its connect, takes the connection as it is once it has it: turned
+  Off meanwhile, it runs nothing; changed, it is opened anew.
+- **Open a lost session again.** A session the database ended answers that
+  it is lost, and is closed when the call lets it go, so the next call
+  opens it again.
+- **Let a stop's cancels land.** The cancels a stop sends are awaited
+  before the session is let go, so that none lands on the next call's
+  statement, as the backend's own are.
+- A connect may take 20 seconds, an SSH tunnel's among it. A session no
+  call has used for ten minutes is closed, looked at every minute.
+- The first schema is the app's own rule (`model::first_schema`), which the
+  workspace's tree and the gateway share.
 
 **Secrets.** The `Worker` owns the `Keyring` (`src/backend.rs:1567`). The
 gateway reads `connection/{id}/password` and `connection/{id}/ssh-secret`
@@ -1085,6 +1116,12 @@ an agent's settings are. Where they are kept changes:
   is read strictly, so a Tabletist that does not know the table refuses
   the file and keeps it aside, where the JSON was read past what it did not
   know. Agents are not turned off by a downgrade. They are not read at all.
+  **As built** (`2026-10-14-mcp-server-1b-2a-gateway.md`): a file whose connections have no agent settings
+  is still written as version 3, so that only a file that holds some is
+  refused by an older Tabletist. The table is `access` (`off` or `read`),
+  `rows` (1 to 5,000) and `timeout_secs` (1 to 60), and a key left out
+  takes what a connection starts with. A duplicated connection starts Off
+  for agents, as every new one does.
 - When each connection last connected is in the state directory
   (`last_used.json`), so a connect no longer writes the connections.
 - "Stop agents here" (A.5) writes `access = "off"` and keeps the level that
@@ -1252,10 +1289,12 @@ what is traced to the app's log. What it writes is what a client sent:
 
 `sqlparser`, which the check reads a statement with, writes each word at
 `debug`, and `tracing` writes lines of its own for the SDK's spans. So the
-app's log takes no line of the three. The second run, which links the
-server into the app, turns them off in the app's filter
-(`src/entrypoint.rs`), with a test that a session leaves nothing an agent
-sent in `tabletist.log`. The first run's `tests/secrets.rs` holds every
+app's log takes no line of the three. **As built** (`2026-10-14-mcp-server-1b-2a-gateway.md`), which links the
+server into the app: the app's filter turns the three off
+(`entrypoint::log_filter`), and because a `RUST_LOG` takes that filter's
+place as a whole, the logger's rewriter blanks any line of theirs that a
+`RUST_LOG` lets through (`entrypoint::without_agents_words`), so that the
+line is there and none of its words. The first run's `tests/secrets.rs` holds every
 other crate's lines to that, and shows what the SDK's hold. `AGENTS.md` has
 the rule.
 
@@ -1786,7 +1825,9 @@ runs on tokio's paused clock, which the workspace already uses in tests
 - A file that cannot be opened is set aside and a new one made.
 - `connections.json`: a file with `agents` loads and saves unchanged. The
   version 1 fixture (`tests/fixtures/connections-v1.json`) loads with every
-  connection Off.
+  connection Off. Since the move to TOML that is `connections.toml`'s, in
+  `src/connections/file.rs`: version 3 and 4, a table with keys left out,
+  limits refused past their bounds.
 
 ### F.5 Credentials never appear
 
@@ -1942,7 +1983,8 @@ can see what agents do and stop them.
 | Run | What it builds | What a user can do after it | Tests |
 |---|---|---|---|
 | **1b-1. The server, with nothing to start it** | The `tabletist-mcp` crate: the server on `rmcp`, the gateway's trait, `list_connections`, `describe_schema` and `run_query` over `agent::check_read` and `Connection::run_agent_read`, the size cap on an answer (B.5), the refusal codes (B.8), the log's store (C.1) | Nothing. No setting, no transport and no command reaches it | F.1 in process, F.4 but its interface, F.5 in process |
-| **1b-2. Turning it on from the files, and stdio** | The `[mcp]` keys in `settings.toml`. `[connections.agents]` with access, rows and timeout, which makes the connections file version 4. `Command::Mcp` and `Event::Mcp`, the backend's gateway with its own sessions on each database, and the server started and stopped with the setting. The schedule of the log's retention, and the SDK held out of the app's log. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings and connections files, `tests/cli.rs` |
+| **1b-2a. The backend's gateway** (built: `2026-10-14-mcp-server-1b-2a-gateway.md`) | `[connections.agents]` with access, rows and timeout, which makes the connections file version 4. `Command::Agents` and `Event::Agents`, the backend's gateway with its own sessions on each database, and the server started and stopped by the backend, with the log's retention. The SDK held out of the app's log | Nothing: no setting starts the server, and no transport reaches it | The connections file, the gateway on SQLite, PostgreSQL and MySQL, the backend's start and stop, the log's filter |
+| **1b-2b. Turning it on from the files, and stdio** | The `[mcp]` keys in `settings.toml`, and the app that starts and stops the server with them and sends the backend what agents may use. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS. The keychain on macOS (A.1). The website's reference for the files | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings file, `tests/cli.rs` |
 | **1b-3. The Agents tab's frame** | The third kind of tab. The sidebar entry with its five states. The ways in: the key, `ga`, `:agents`, quick open. The three empty states, with **Turn on** and **Copy**. The keymap and the help | Open the tab in any state, see which state the connection is in, turn the server on from the tab | F.7: the entry's states, the ways in, one tab for a window, the empty states, nothing opening or focusing by itself |
 | **1b-4. What agents are doing** | `App::agents`. The sessions that are here and "Also:". The feed. **Stop session** and **Stop agents here**. The Log view as a list for this connection, with All connections. The notification for an agent that connects | See each agent and each call as it happens, stop one agent or all on a connection, read the log | F.7: one connection, the stops, closing the tab, the log's default. F.4's interface |
 | **1b-5. Letting agents in** | Settings › Agents, with the switch between panes. The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** and **Show Agents tab** pointing at them. The website: a new guide, and the reference pages | Everything Phase 1 draws, without a file edited by hand | The interface tests of Settings, Connections and the editor. The keymap. `docs/bin/check` |
@@ -1968,8 +2010,9 @@ can see what agents do and stop them.
   the fifth.
 - **Sizes.** The first had the risk of `rmcp` and of the first log. The
   gateway's own sessions on each database went to the second run with the
-  backend's gateway, which makes the second the largest: its plan may cut it
-  in two, the gateway and the files, then the endpoint and the relay.
+  backend's gateway, which made the second the largest: it is cut in two,
+  the gateway and the files (1b-2a), then the settings, the endpoint and
+  the relay (1b-2b).
 - **"N of M"** (B.5) is a run of its own in `tabletist-db`, at any time
   before the fourth.
 
@@ -2109,10 +2152,13 @@ The ones Phase 1 waits for are marked.
     gate for stdio, which has none.
 18. Should the log keep parameters in full? They can hold personal data.
     The alternative keeps their types and lengths.
-19. The agent-facing name of a connection is its name and environment
-    ("Bookshop · dev"). Two visible connections with the same one get
-    " (2)" on the second. Or should the editor refuse to save agent access
-    for a name that is taken?
+19. Settled on 2026-10-14, otherwise than planned (`2026-10-14-mcp-server-1b-2a-gateway.md`): a connection
+    is its name and environment ("Bookshop · dev"). Where two saved
+    connections would be called the same, Off or not, each is called that
+    with the start of its id after it ("Bookshop · dev (1f0c2a9e)"). The
+    planned " (2)" moved: turning the first Off made the second "Bookshop ·
+    dev", and an agent's next call reached another database. A name now
+    never comes to mean another one: at worst it means none.
 20. An `UPDATE` or `DELETE` without a `WHERE`: a warning on the card, as
     planned, or refused outright for agents?
 
