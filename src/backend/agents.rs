@@ -211,9 +211,17 @@ impl Agents {
                         return;
                     }
                     let opened = tokio::task::spawn_blocking(move || Log::open(&log)).await;
-                    let opened = match opened {
-                        Ok(Ok(opened)) => opened,
-                        Ok(Err(error)) => {
+                    let failed = match opened {
+                        Ok(Ok(opened)) => Ok(opened),
+                        Ok(Err(error)) => Err(error.to_string()),
+                        // The open panicked on the blocking pool. It is
+                        // answered all the same: whoever started waits for
+                        // a word.
+                        Err(_) => Err("opening it failed".to_owned()),
+                    };
+                    let opened = match failed {
+                        Ok(opened) => opened,
+                        Err(error) => {
                             log::error!("the agent server did not start: {error}");
                             // A stop or a later start came meanwhile: theirs
                             // is the last word.
@@ -225,7 +233,6 @@ impl Agents {
                             }
                             return;
                         }
-                        Err(_) => return,
                     };
                     let server = tabletist_mcp::Server::new(
                         gateway.clone(),
