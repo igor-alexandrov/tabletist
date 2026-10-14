@@ -104,9 +104,10 @@ async fn objects_have_kinds_and_estimates() {
     assert_eq!(find("users").kind, ObjectKind::Table);
     assert_eq!(find("active_users").kind, ObjectKind::View);
     assert_eq!(find("weird \"name\"").kind, ObjectKind::Table);
-    // InnoDB estimates are approximate.
+    // InnoDB estimates are approximate: one CI run said 151,167 of the
+    // 100,000 rows.
     let estimate = find("big").estimated_rows.unwrap();
-    assert!((50_000..=150_000).contains(&estimate), "{estimate}");
+    assert!((50_000..=200_000).contains(&estimate), "{estimate}");
     let names: Vec<&str> = objects.iter().map(|object| object.name.as_str()).collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
