@@ -56,6 +56,12 @@ impl fmt::Display for SecretError {
 
 pub trait SecretStore: Send {
     fn read(&mut self, account: &str) -> Result<Option<String>, SecretError>;
+    /// Reads without asking the person for anything: where the store would
+    /// have to be unlocked first, it answers [`SecretError::Locked`] and
+    /// asks nothing. For a read nobody at the screen asked for.
+    fn read_quietly(&mut self, account: &str) -> Result<Option<String>, SecretError> {
+        self.read(account)
+    }
     fn write(&mut self, account: &str, secret: &str) -> Result<(), SecretError>;
     fn delete(&mut self, account: &str) -> Result<(), SecretError>;
 }
@@ -122,6 +128,25 @@ impl SecretStore for NativeStore {
         }
     }
 
+    /// On Linux the Secret Service asks the person to unlock a collection
+    /// whose item a read finds locked: so the item is looked for first,
+    /// which asks nothing, and read only when it was found unlocked. One
+    /// that was not found is not read either: should the search look for
+    /// it otherwise than the keyring crate keeps it, the cost is a
+    /// password not found, never a prompt. Windows asks nothing of a read.
+    /// On macOS a locked keychain is asked to be unlocked by the system,
+    /// and no call of the keyring crate says not to: that is not kept from
+    /// happening here.
+    fn read_quietly(&mut self, account: &str) -> Result<Option<String>, SecretError> {
+        #[cfg(target_os = "linux")]
+        match linux_item(account)? {
+            Item::Unlocked => {}
+            Item::Locked => return Err(SecretError::Locked),
+            Item::Missing => return Ok(None),
+        }
+        self.read(account)
+    }
+
     fn write(&mut self, account: &str, secret: &str) -> Result<(), SecretError> {
         self.entry(account)?
             .set_password(secret)
@@ -133,6 +158,44 @@ impl SecretStore for NativeStore {
             Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(error) => Err(native_error(error)),
         }
+    }
+}
+
+/// How the Secret Service holds an account's item.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Item {
+    /// Every item the search found is unlocked: a read asks nothing.
+    Unlocked,
+    /// One at least is locked: a read would ask to unlock it.
+    Locked,
+    /// None was found.
+    Missing,
+}
+
+/// How the Secret Service holds the account's item. Searching asks the
+/// person nothing, and sends no secret.
+#[cfg(target_os = "linux")]
+fn linux_item(account: &str) -> Result<Item, SecretError> {
+    use secret_service::EncryptionType;
+    use secret_service::blocking::SecretService;
+    let service =
+        SecretService::connect(EncryptionType::Plain).map_err(|_| SecretError::Unavailable)?;
+    // The attributes `zbus-secret-service-keyring-store` gives an entry it
+    // makes without a target (its `Specifier::search_attributes`).
+    let found = service
+        .search_items(HashMap::from([("service", SERVICE), ("username", account)]))
+        .map_err(|_| SecretError::Unavailable)?;
+    Ok(item(found.locked.len(), found.unlocked.len()))
+}
+
+/// What a search's locked and unlocked counts say of an item.
+#[cfg(target_os = "linux")]
+fn item(locked: usize, unlocked: usize) -> Item {
+    match (locked, unlocked) {
+        (0, 0) => Item::Missing,
+        (0, _) => Item::Unlocked,
+        _ => Item::Locked,
     }
 }
 
@@ -212,6 +275,12 @@ impl Keyring {
         self.run(move |store| store.read(&account))
     }
 
+    /// [`SecretStore::read_quietly`]: a read nobody at the screen asked for.
+    pub fn read_quietly(&self, account: &str) -> Pending<Option<String>> {
+        let account = account.to_owned();
+        self.run(move |store| store.read_quietly(&account))
+    }
+
     pub fn write(&self, account: &str, secret: SecretString) -> Pending<()> {
         let account = account.to_owned();
         self.run(move |store| store.write(&account, &secret.0))
@@ -226,6 +295,34 @@ impl Keyring {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_quiet_read_reads_only_an_item_it_found_unlocked() {
+        assert_eq!(item(0, 1), Item::Unlocked);
+        assert_eq!(item(0, 2), Item::Unlocked);
+        // A read would ask to unlock the locked one, whatever else it found.
+        assert_eq!(item(1, 0), Item::Locked);
+        assert_eq!(item(1, 1), Item::Locked);
+        // Not found, perhaps by a search that looked otherwise than the
+        // keyring crate keeps it: not read, so asked nothing.
+        assert_eq!(item(0, 0), Item::Missing);
+    }
+
+    #[tokio::test]
+    async fn a_quiet_read_of_a_store_that_never_asks_is_a_read() {
+        let keyring = Keyring::memory();
+        assert_eq!(keyring.read_quietly("a").wait().await, Ok(None));
+        keyring
+            .write("a", SecretString("hunter2".into()))
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            keyring.read_quietly("a").wait().await,
+            Ok(Some("hunter2".into()))
+        );
+    }
 
     #[tokio::test]
     async fn the_memory_keyring_stores_reads_and_deletes() {

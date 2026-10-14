@@ -18,6 +18,10 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::connections::SavedConnections;
 use crate::secrets::{Keyring, SecretString};
 
+mod agents;
+
+pub use agents::{Agentable, AgentsCommand, AgentsEvent, AppGateway, agentable};
+
 /// Wakes the UI from any thread. The default does nothing (tests).
 #[derive(Clone)]
 pub struct Waker(Arc<dyn Fn() + Send + Sync>);
@@ -184,6 +188,8 @@ pub enum Command {
     Flush {
         done: mpsc::Sender<()>,
     },
+    /// The MCP server: what agents may use, and whether it runs.
+    Agents(AgentsCommand),
 }
 
 /// The contents of a state file the backend saves.
@@ -336,6 +342,8 @@ pub enum Event {
         with: Opened,
         result: Result<(), String>,
     },
+    /// What came of an [`AgentsCommand`].
+    Agents(AgentsEvent),
 }
 
 /// What the settings file was handed to.
@@ -1584,6 +1592,8 @@ struct Worker {
     connecting: std::collections::HashSet<SessionId>,
     /// Watches and reads the settings file. Dropping it ends both.
     settings_watch: Option<SettingsReader>,
+    /// The MCP server, its gateway and what agents may use.
+    agents: agents::Agents,
     #[cfg(test)]
     watched: Watched,
 }
@@ -1592,6 +1602,7 @@ impl Worker {
     fn new(outbox: Outbox, keyring: Keyring) -> (Self, tokio_mpsc::UnboundedReceiver<Ready>) {
         let (ready, ready_rx) = tokio_mpsc::unbounded_channel();
         let worker = Self {
+            agents: agents::Agents::new(keyring.clone()),
             outbox,
             keyring,
             saves: Saves::default(),
@@ -1849,6 +1860,7 @@ impl Worker {
                     let _ = done.send(());
                 });
             }
+            Command::Agents(command) => self.agents.handle(command, &self.outbox),
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {
@@ -1890,7 +1902,8 @@ fn session_of(command: &Command) -> SessionId {
         | Command::WatchSettings { .. }
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
-        | Command::Flush { .. } => SessionId(0),
+        | Command::Flush { .. }
+        | Command::Agents(_) => SessionId(0),
     }
 }
 
@@ -1917,7 +1930,8 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::WatchSettings { .. }
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
-        | Command::Flush { .. } => None,
+        | Command::Flush { .. }
+        | Command::Agents(_) => None,
     }
 }
 
@@ -2002,7 +2016,8 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::WatchSettings { .. }
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
-        | Command::Flush { .. } => return,
+        | Command::Flush { .. }
+        | Command::Agents(_) => return,
     };
     outbox.emit(event);
 }
@@ -2283,7 +2298,8 @@ async fn run_session(
             | Command::WatchSettings { .. }
             | Command::EditSettingsFile { .. }
             | Command::RevealSettingsFile { .. }
-            | Command::Flush { .. } => None,
+            | Command::Flush { .. }
+            | Command::Agents(_) => None,
         };
         end.command = None;
         {
@@ -4389,6 +4405,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/a.db"),
+            agents: Default::default(),
         });
         StateFile::Connections(connections)
     }

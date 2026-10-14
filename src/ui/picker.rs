@@ -1138,6 +1138,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: tabletist_db::ConnectSpec::sqlite("/tmp/fixture.db"),
+            agents: Default::default(),
         };
         let picker = crate::model::ConnTabId(1);
         let open = crate::model::ConnTabId(2);

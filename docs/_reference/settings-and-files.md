@@ -143,6 +143,14 @@ A tunnel is the connection's `[connections.ssh]` table: `host`, and
 optionally `port` and `user`, `auth` (`password`, `key-file` or `agent`),
 and with `key-file` the `key` to use.
 
+What agents may do on a connection is its `[connections.agents]` table:
+`access` (`off` or `read`), `rows`, the most rows of an answer (1 to 5000),
+and `timeout_secs`, how long a statement may run (1 to 60). Without the
+table, or a key of it, a connection is `off`, with 500 rows and 10 seconds.
+A file in which a connection has the table says `version = 4`, and one in
+which none has it stays `version = 3`. Nothing in Tabletist uses the table
+yet: it is read and kept.
+
 Edit the file while Tabletist is closed. Tabletist writes the whole file
 again when you change a connection, so a comment you add is not kept.
 

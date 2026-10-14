@@ -2530,22 +2530,12 @@ impl App {
                 }
                 workspace.catalog_changed();
                 let database = workspace.spec.database.clone();
-                let default = workspace.tree.schemas.value.as_ref().and_then(|schemas| {
-                    schemas
-                        .iter()
-                        .find(|schema| !database.is_empty() && **schema == database)
-                        .or_else(|| {
-                            schemas
-                                .iter()
-                                .find(|schema| *schema == "public" || *schema == "main")
-                        })
-                        .or(if schemas.len() == 1 {
-                            schemas.first()
-                        } else {
-                            None
-                        })
-                        .cloned()
-                });
+                let default = workspace
+                    .tree
+                    .schemas
+                    .value
+                    .as_ref()
+                    .and_then(|schemas| crate::model::first_schema(schemas, &database));
                 if let Some(schema) = default {
                     self.expand_schema(tab, &schema);
                 }
@@ -2806,6 +2796,9 @@ impl App {
                 };
                 self.apply_settings(settings);
             }
+            // Nothing in the app starts the agent server yet: that comes
+            // with its settings. The backend logs what happens to it.
+            Event::Agents(_) => {}
             Event::SettingsFileOpened { with, result } => {
                 if let Err(error) = result {
                     let path = self.dirs.settings_file();
@@ -4880,6 +4873,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/local.db"),
+            agents: Default::default(),
         };
         let id = saved.id.clone();
         app.connections.upsert(saved);
@@ -8372,6 +8366,7 @@ mod tests {
             password: mode,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let id = saved.id.clone();
         app.connections.upsert(saved);
@@ -9356,6 +9351,7 @@ mod tests {
             password: PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let conn = saved.id.clone();
         app.connections.upsert(saved);
@@ -9464,6 +9460,7 @@ mod tests {
                 password: PasswordMode::None,
                 ssh_secret: PasswordMode::None,
                 spec,
+                agents: Default::default(),
             };
             let id = saved.id.clone();
             app.connections.upsert(saved);

@@ -37,6 +37,7 @@ fn saved() -> SavedConnection {
         password: PasswordMode::None,
         ssh_secret: PasswordMode::None,
         spec,
+        agents: Default::default(),
     }
 }
 
@@ -73,6 +74,7 @@ fn edit_production(harness: &mut Harness) {
         password: PasswordMode::Keyring,
         ssh_secret: PasswordMode::None,
         spec,
+        agents: Default::default(),
     });
     harness.app.apply(Action::EditConnection(id));
     if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
@@ -2304,6 +2306,7 @@ mod mock {
                 password: PasswordMode::None,
                 ssh_secret: PasswordMode::None,
                 spec,
+                agents: Default::default(),
             });
             if let Some(used) = used {
                 harness.app.connections.mark_used(&id, used);

@@ -911,6 +911,26 @@ pub enum TestState {
     },
 }
 
+/// The schema a connection opens on, of those it lists: the one named as
+/// its database (MySQL's databases are its schemas), else `public` or
+/// `main`, else the only one there is.
+pub fn first_schema(schemas: &[String], database: &str) -> Option<String> {
+    schemas
+        .iter()
+        .find(|schema| !database.is_empty() && **schema == database)
+        .or_else(|| {
+            schemas
+                .iter()
+                .find(|schema| *schema == "public" || *schema == "main")
+        })
+        .or(if schemas.len() == 1 {
+            schemas.first()
+        } else {
+            None
+        })
+        .cloned()
+}
+
 /// The connection dialog's fields while it is open.
 pub struct ConnectionForm {
     /// `Some` when editing a saved connection, `None` for a new one.
@@ -922,6 +942,9 @@ pub struct ConnectionForm {
     pub environment: Option<crate::env::Environment>,
     /// Read-only as saved: `None` until the user sets it.
     pub read_only: Option<bool>,
+    /// What agents may do on the connection, as it was saved. The dialog
+    /// has no control for it yet, so an edit keeps it.
+    pub agents: crate::connections::Agents,
     /// Put the keyboard in Name on the next frame (a new connection).
     pub focus_name: bool,
     pub driver: Driver,
@@ -1032,6 +1055,7 @@ impl Default for ConnectionForm {
             name: String::new(),
             environment: None,
             read_only: None,
+            agents: crate::connections::Agents::default(),
             focus_name: true,
             driver: Driver::Sqlite,
             sqlite_path: String::new(),
@@ -1170,6 +1194,7 @@ impl ConnectionForm {
             name: saved.name.clone(),
             environment: Some(saved.environment),
             read_only: saved.read_only,
+            agents: saved.agents,
             focus_name: false,
             driver: spec.driver,
             sqlite_path: spec
@@ -1416,6 +1441,7 @@ impl ConnectionForm {
             password,
             ssh_secret,
             spec,
+            agents: self.agents,
         })
     }
 }
@@ -4675,6 +4701,24 @@ mod tests {
         assert!(back.ssh_secret_is_saved());
         back.ssh_port = "2222".into();
         assert!(back.ssh_secret_is_stale(), "another port, another server");
+    }
+
+    #[test]
+    fn an_edit_keeps_what_agents_may_do_on_the_connection() {
+        let mut saved = ssh_form().to_saved().unwrap();
+        saved.agents = crate::connections::Agents {
+            access: crate::connections::AgentAccess::Read,
+            rows: 1_000,
+            timeout_secs: 30,
+        };
+        let mut edited = ConnectionForm::from_saved(&saved);
+        edited.name = "Production".into();
+        let again = edited.to_saved().unwrap();
+        assert_eq!(again.name, "Production");
+        assert_eq!(again.agents, saved.agents);
+        // A new connection starts Off.
+        let new = ssh_form().to_saved().unwrap();
+        assert_eq!(new.agents, crate::connections::Agents::default());
     }
 
     #[test]

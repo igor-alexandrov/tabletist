@@ -136,6 +136,7 @@ fn the_connections_list_shows_each_environment_in_its_colours() {
                     password: crate::connections::PasswordMode::None,
                     ssh_secret: crate::connections::PasswordMode::None,
                     spec: tabletist_db::ConnectSpec::sqlite(format!("/tmp/bookshop-{env:?}.db")),
+                    agents: Default::default(),
                 });
         }
         harness.settle();

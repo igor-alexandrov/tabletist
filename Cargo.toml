@@ -70,6 +70,12 @@ fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 # The database layer (no UI dependencies).
 tabletist-db = { path = "crates/tabletist-db" }
+# The MCP server agents reach the saved connections through. The backend
+# runs it, and is its gateway to the databases (src/backend/agents.rs).
+tabletist-mcp = { path = "crates/tabletist-mcp" }
+# `CancellationToken`: how the server tells its gateway that a call is
+# over. In the tree through tabletist-mcp, which hands one to every call.
+tokio-util = "0.7"
 # The backend runtime: one OS thread running tokio, where every database
 # call happens (src/backend.rs).
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
@@ -102,6 +108,11 @@ notify = "8.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 # The desktop's Secret Service (GNOME Keyring, KWallet) over D-Bus.
 zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-crypto-rust"] }
+# The Secret Service itself, which the store above is built on, with the
+# same features: nothing new is built. To ask whether an entry is locked
+# before it is read, which the store's read would answer with a prompt to
+# unlock it (`secrets::linux_locked`), for a read an agent's call made.
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
 # Checks that the desktop's monospace font parses before egui loads it (egui
 # panics on a font it cannot read). The version epaint already uses.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }

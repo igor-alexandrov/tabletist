@@ -2872,6 +2872,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: tabletist_db::ConnectSpec::sqlite(format!("/tmp/{name}.db")),
+            agents: Default::default(),
         };
         let id = saved.id.clone();
         harness.app.connections.upsert(saved);
@@ -2973,6 +2974,7 @@ mod tests {
                     password: crate::connections::PasswordMode::None,
                     ssh_secret: crate::connections::PasswordMode::None,
                     spec,
+                    agents: Default::default(),
                 });
             let tree = harness.settle();
             // The row may cut the name short, so find it by how it starts.
@@ -3044,6 +3046,7 @@ mod tests {
                 password: crate::connections::PasswordMode::Ask,
                 ssh_secret: crate::connections::PasswordMode::None,
                 spec,
+                agents: Default::default(),
             });
         harness.click("Connect to Production");
         harness.click("Cancel");
@@ -3436,6 +3439,7 @@ mod tests {
                 password: crate::connections::PasswordMode::None,
                 ssh_secret: crate::connections::PasswordMode::None,
                 spec,
+                agents: Default::default(),
             });
         harness.click("Connect to Production");
         let Command::Connect {
@@ -7822,6 +7826,7 @@ mod tests {
             password: crate::connections::PasswordMode::Ask,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let conn = saved.id.clone();
         harness.app.connections.upsert(saved);
@@ -7854,6 +7859,7 @@ mod tests {
             password: crate::connections::PasswordMode::Ask,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let conn = saved.id.clone();
         harness.app.connections.upsert(saved);
@@ -8421,6 +8427,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let id = saved.id.clone();
         harness.app.connections.upsert(saved);
@@ -9329,6 +9336,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let conn = saved.id.clone();
         harness.app.connections.upsert(saved);
@@ -9354,6 +9362,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let conn = saved.id.clone();
         harness.app.connections.upsert(saved);

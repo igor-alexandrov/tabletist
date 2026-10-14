@@ -91,6 +91,15 @@ jobs:
       - run: cargo test --locked -p tabletist-db --lib --test postgres --test insert_audit --test lookup --test delete_rows --test agent
         env:
           TABLETIST_TEST_PG_URL: postgres://tabletist:tabletist@localhost:55432/tabletist
+      # The app's gateway for the MCP server, which opens its own sessions.
+      # The app builds with its GUI, which wants these.
+      - name: GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - run: cargo test --locked --lib backend::agents
+        env:
+          TABLETIST_TEST_PG_URL: postgres://tabletist:tabletist@localhost:55432/tabletist
 
   mysql:
     name: mysql integration
@@ -103,6 +112,15 @@ jobs:
       - name: Start MySQL
         run: docker compose up -d --wait mysql
       - run: cargo test --locked -p tabletist-db --lib --test mysql --test insert_audit --test lookup --test delete_rows --test agent
+        env:
+          TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53306/tabletist
+      # The app's gateway for the MCP server, which opens its own sessions.
+      # The app builds with its GUI, which wants these.
+      - name: GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - run: cargo test --locked --lib backend::agents
         env:
           TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53306/tabletist
 

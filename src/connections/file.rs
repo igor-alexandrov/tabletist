@@ -13,13 +13,21 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tabletist_db::{ConnectSpec, Driver, SshAuth, SshSpec, TlsMode};
 
-use super::{ConnectionId, PasswordMode, SavedConnection};
+use super::{
+    AgentAccess, Agents, ConnectionId, MAX_AGENT_ROWS, MAX_AGENT_TIMEOUT_SECS, PasswordMode,
+    SavedConnection,
+};
 use crate::env::Environment;
 use crate::util::toml_string;
 
 /// The file's format. 3 is the first that is TOML: 1 and 2 were
-/// `connections.json`.
-pub(super) const VERSION: u32 = 3;
+/// `connections.json`. 4 has a connection's settings for agents, and a file
+/// that has none is written as 3: a Tabletist that does not know them
+/// refuses only a file it would lose them from.
+pub(super) const VERSION: u32 = 4;
+
+/// The first version of this file.
+const FIRST_VERSION: u32 = 3;
 
 /// The file's name, as the user is told it.
 pub(super) const NAME: &str = "connections.toml";
@@ -94,6 +102,18 @@ struct Entry {
     tls: TlsMode,
     ca_file: Option<PathBuf>,
     ssh: Option<Tunnel>,
+    agents: Option<AgentsTable>,
+}
+
+/// What agents may do on a connection, as the file has it. A key left out
+/// takes what a connection starts with.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentsTable {
+    #[serde(default)]
+    access: AgentAccess,
+    rows: Option<u32>,
+    timeout_secs: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -157,9 +177,9 @@ pub(super) fn read(text: &str) -> Result<Read, Problem> {
             file.version
         )));
     }
-    if file.version < VERSION {
+    if file.version < FIRST_VERSION {
         return Err(whole(format!(
-            "it says version {}, and the first version of this file is {VERSION}",
+            "it says version {}, and the first version of this file is {FIRST_VERSION}",
             file.version
         )));
     }
@@ -196,6 +216,10 @@ impl Entry {
             Some(tunnel) => Some(tunnel.spec(&self.name)?),
             None => None,
         };
+        let agents = match self.agents {
+            Some(table) => table.agents(&self.name)?,
+            None => Agents::default(),
+        };
         Ok(SavedConnection {
             id,
             name: self.name,
@@ -214,7 +238,31 @@ impl Entry {
                 ca_file: self.ca_file,
                 ssh,
             },
+            agents,
         })
+    }
+}
+
+impl AgentsTable {
+    fn agents(self, connection: &str) -> Result<Agents, String> {
+        let starts = Agents::default();
+        let agents = Agents {
+            access: self.access,
+            rows: self.rows.unwrap_or(starts.rows),
+            timeout_secs: self.timeout_secs.unwrap_or(starts.timeout_secs),
+        };
+        if !(1..=MAX_AGENT_ROWS).contains(&agents.rows) {
+            return Err(format!(
+                "connection {connection:?}: agents' `rows` is from 1 to {MAX_AGENT_ROWS}"
+            ));
+        }
+        if !(1..=MAX_AGENT_TIMEOUT_SECS).contains(&agents.timeout_secs) {
+            return Err(format!(
+                "connection {connection:?}: agents' `timeout_secs` is from 1 to \
+                 {MAX_AGENT_TIMEOUT_SECS}"
+            ));
+        }
+        Ok(agents)
     }
 }
 
@@ -306,7 +354,11 @@ fn tls(mode: TlsMode) -> &'static str {
 /// except a server's own (host, port, user, database, TLS), which a person
 /// looks for.
 pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> {
-    let mut out = format!("{HEADER}version = {VERSION}\n");
+    let version = match connections.iter().any(|saved| !saved.agents.is_default()) {
+        true => VERSION,
+        false => FIRST_VERSION,
+    };
+    let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
         let spec = &connection.spec;
         let server = match spec.driver {
@@ -350,31 +402,44 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
         }
         out.push_str("\n[[connections]]\n");
         lines.write(&mut out);
-        let Some(ssh) = &spec.ssh else {
-            continue;
-        };
-        let mut lines = Lines::default();
-        lines.text("host", &ssh.host);
-        if let Some(port) = ssh.port {
-            lines.bare("port", port);
+        if let Some(ssh) = &spec.ssh {
+            tunnel(ssh, &mut out)?;
         }
-        if !ssh.user.is_empty() {
-            lines.text("user", &ssh.user);
+        if !connection.agents.is_default() {
+            let mut lines = Lines::default();
+            lines.text("access", connection.agents.access.key());
+            lines.bare("rows", connection.agents.rows);
+            lines.bare("timeout_secs", connection.agents.timeout_secs);
+            out.push_str("\n[connections.agents]\n");
+            lines.write(&mut out);
         }
-        match &ssh.auth {
-            SshAuth::Password => lines.text("auth", "password"),
-            SshAuth::Agent => lines.text("auth", "agent"),
-            SshAuth::KeyFile { path } => {
-                lines.text("auth", "key-file");
-                if !path.as_os_str().is_empty() {
-                    lines.path("key", path)?;
-                }
-            }
-        }
-        out.push_str("\n[connections.ssh]\n");
-        lines.write(&mut out);
     }
     Ok(out)
+}
+
+/// A connection's SSH tunnel, as a table of its own.
+fn tunnel(ssh: &SshSpec, out: &mut String) -> std::io::Result<()> {
+    let mut lines = Lines::default();
+    lines.text("host", &ssh.host);
+    if let Some(port) = ssh.port {
+        lines.bare("port", port);
+    }
+    if !ssh.user.is_empty() {
+        lines.text("user", &ssh.user);
+    }
+    match &ssh.auth {
+        SshAuth::Password => lines.text("auth", "password"),
+        SshAuth::Agent => lines.text("auth", "agent"),
+        SshAuth::KeyFile { path } => {
+            lines.text("auth", "key-file");
+            if !path.as_os_str().is_empty() {
+                lines.path("key", path)?;
+            }
+        }
+    }
+    out.push_str("\n[connections.ssh]\n");
+    lines.write(out);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -390,6 +455,7 @@ mod tests {
             password: PasswordMode::None,
             ssh_secret: PasswordMode::None,
             spec,
+            agents: Default::default(),
         }
     }
 
@@ -677,9 +743,9 @@ auth = "key-file"
                 "unknown field `read_onyl`",
             ),
             (
-                format!("{entry}\n[connections.agents]\naccess = \"read\"\n"),
-                8,
-                "unknown field `agents`",
+                format!("{entry}\n[connections.agents]\naccess = \"read\"\nrowz = 9\n"),
+                10,
+                "unknown field `rowz`",
             ),
             (
                 format!(
@@ -781,13 +847,112 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 4\n"),
-            "it is version 4 of the file, written by a newer Tabletist; this one reads version 3"
+            said("version = 5\n"),
+            "it is version 5 of the file, written by a newer Tabletist; this one reads version 4"
         );
         assert_eq!(
             said("version = 2\n"),
             "it says version 2, and the first version of this file is 3"
         );
+    }
+
+    fn with_agents(access: AgentAccess, rows: u32, timeout_secs: u32) -> Vec<SavedConnection> {
+        let mut connections = bookshop();
+        connections[2].agents = Agents {
+            access,
+            rows,
+            timeout_secs,
+        };
+        connections
+    }
+
+    #[test]
+    fn what_agents_may_do_is_a_table_of_its_own_in_version_four() {
+        let connections = with_agents(AgentAccess::Read, 1_000, 30);
+        let text = write(&connections).unwrap();
+        assert!(text.contains("\nversion = 4\n"), "{text}");
+        assert!(
+            text.ends_with(
+                r#"sqlite_path = "/home/ada/bookshop.db"
+
+[connections.agents]
+access       = "read"
+rows         = 1000
+timeout_secs = 30
+"#
+            ),
+            "{text}"
+        );
+        assert_eq!(read(&text).unwrap().connections, connections);
+        // Limits set while access is Off are kept, and so is the table.
+        let off = with_agents(AgentAccess::Off, 100, 10);
+        let text = write(&off).unwrap();
+        assert!(text.contains("access       = \"off\""), "{text}");
+        assert_eq!(read(&text).unwrap().connections, off);
+    }
+
+    #[test]
+    fn a_file_without_agents_is_written_and_read_as_version_three() {
+        let text = write(&bookshop()).unwrap();
+        assert!(
+            text.contains("\nversion = 3\n") && !text.contains("agents"),
+            "{text}"
+        );
+        let read = read(&text).unwrap();
+        assert!(
+            read.connections
+                .iter()
+                .all(|saved| saved.agents == Agents::default())
+        );
+        // And one of version 4 without them is read the same.
+        let four = text.replace("\nversion = 3\n", "\nversion = 4\n");
+        assert_eq!(super::read(&four).unwrap().connections, bookshop());
+    }
+
+    #[test]
+    fn what_agents_may_do_takes_a_connections_start_for_a_key_left_out() {
+        let text = format!(
+            "{}\n[connections.agents]\naccess = \"read\"\n",
+            write(&bookshop()).unwrap()
+        );
+        let agents = read(&text).unwrap().connections[2].agents;
+        assert_eq!(
+            agents,
+            Agents {
+                access: AgentAccess::Read,
+                ..Agents::default()
+            }
+        );
+        // A table that says nothing is Off.
+        let empty = format!("{}\n[connections.agents]\n", write(&bookshop()).unwrap());
+        assert_eq!(
+            read(&empty).unwrap().connections[2].agents,
+            Agents::default()
+        );
+    }
+
+    #[test]
+    fn what_agents_may_do_is_refused_outside_its_limits() {
+        let said = |table: &str| {
+            let text = format!(
+                "{}\n[connections.agents]\n{table}\n",
+                write(&bookshop()).unwrap()
+            );
+            read(&text).unwrap_err().to_string()
+        };
+        let rows = "connection \"Bookshop on disk\": agents' `rows` is from 1 to 5000";
+        assert_eq!(said("rows = 0"), rows);
+        assert_eq!(said("rows = 5001"), rows);
+        assert_eq!(
+            said("timeout_secs = 61"),
+            "connection \"Bookshop on disk\": agents' `timeout_secs` is from 1 to 60"
+        );
+        // An access there is not, and a key there is not, without the value.
+        let access = said("access = \"read_and_write\"");
+        assert!(access.contains("a value the key cannot have"), "{access}");
+        assert!(!access.contains("read_and_write"), "{access}");
+        let key = said("rowz = 9");
+        assert!(key.contains("unknown field `rowz`"), "{key}");
     }
 
     #[test]
