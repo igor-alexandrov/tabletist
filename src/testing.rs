@@ -516,6 +516,7 @@ fn fixture_connection() -> SavedConnection {
         password: crate::connections::PasswordMode::None,
         ssh_secret: crate::connections::PasswordMode::None,
         spec: ConnectSpec::sqlite("/tmp/fixture.db"),
+        agents: Default::default(),
     }
 }
 

@@ -4389,6 +4389,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/a.db"),
+            agents: Default::default(),
         });
         StateFile::Connections(connections)
     }

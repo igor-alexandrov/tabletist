@@ -4880,6 +4880,7 @@ mod tests {
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/local.db"),
+            agents: Default::default(),
         };
         let id = saved.id.clone();
         app.connections.upsert(saved);
@@ -8372,6 +8373,7 @@ mod tests {
             password: mode,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let id = saved.id.clone();
         app.connections.upsert(saved);
@@ -9356,6 +9358,7 @@ mod tests {
             password: PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
+            agents: Default::default(),
         };
         let conn = saved.id.clone();
         app.connections.upsert(saved);
@@ -9464,6 +9467,7 @@ mod tests {
                 password: PasswordMode::None,
                 ssh_secret: PasswordMode::None,
                 spec,
+                agents: Default::default(),
             };
             let id = saved.id.clone();
             app.connections.upsert(saved);

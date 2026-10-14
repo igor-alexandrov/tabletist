@@ -36,6 +36,62 @@ pub enum PasswordMode {
     Ask,
 }
 
+/// What agents may do on a connection, through the MCP server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAccess {
+    /// Agents do not see the connection at all.
+    #[default]
+    Off,
+    /// Agents may read it, in read-only transactions.
+    Read,
+}
+
+impl AgentAccess {
+    /// The word a file keeps it as.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Read => "read",
+        }
+    }
+}
+
+/// A connection's settings for agents. A connection that was never given
+/// any is Off, with the limits every connection starts with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Agents {
+    pub access: AgentAccess,
+    /// The most rows of an answer.
+    pub rows: u32,
+    /// How long a statement of an agent's may run.
+    pub timeout_secs: u32,
+}
+
+/// The most rows an agent's answer may be given: half of what the SQL
+/// editor may keep.
+pub const MAX_AGENT_ROWS: u32 = 5_000;
+
+/// The longest an agent's statement may be given to run.
+pub const MAX_AGENT_TIMEOUT_SECS: u32 = 60;
+
+impl Default for Agents {
+    fn default() -> Self {
+        Self {
+            access: AgentAccess::Off,
+            rows: 500,
+            timeout_secs: 10,
+        }
+    }
+}
+
+impl Agents {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedConnection {
     pub id: ConnectionId,
@@ -52,6 +108,10 @@ pub struct SavedConnection {
     #[serde(default)]
     pub ssh_secret: PasswordMode,
     pub spec: ConnectSpec,
+    /// What agents may do on it. The JSON of older versions has none, and
+    /// reads as Off.
+    #[serde(default, skip_serializing_if = "Agents::is_default")]
+    pub agents: Agents,
 }
 
 impl SavedConnection {
@@ -82,7 +142,8 @@ pub fn access(read_only: Option<bool>, environment: Environment) -> tabletist_db
 
 /// The format of `connections.toml`. 1 and 2 were `connections.json`: 2
 /// dropped the colour a connection used to keep beside its environment,
-/// and the `test` environment. 3 is the first that is TOML.
+/// and the `test` environment. 3 is the first that is TOML. 4 has what
+/// agents may do on a connection, and a file without that is still 3.
 pub const VERSION: u32 = file::VERSION;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -246,6 +307,7 @@ impl StoredConnection {
             password: self.password,
             ssh_secret: self.ssh_secret,
             spec: self.spec,
+            agents: Default::default(),
         };
         (saved, note)
     }
@@ -513,6 +575,9 @@ impl SavedConnections {
         let mut copy = self.connections[index].clone();
         copy.id = ConnectionId::new();
         copy.name = format!("{} copy", copy.name);
+        // A new connection, which starts Off for agents as every new one
+        // does: the person lets agents in on each connection by itself.
+        copy.agents.access = AgentAccess::Off;
         let new_id = copy.id.clone();
         self.connections.insert(index + 1, copy);
         Some(new_id)
@@ -619,6 +684,7 @@ mod tests {
             password: PasswordMode::None,
             ssh_secret: PasswordMode::None,
             spec: ConnectSpec::sqlite(file),
+            agents: Default::default(),
         }
     }
 
@@ -987,6 +1053,23 @@ mod tests {
         assert!(store.remove(&original.id).is_some());
         assert!(store.get(&original.id).is_none());
         assert!(store.duplicate(&original.id).is_none());
+    }
+
+    #[test]
+    fn a_duplicate_is_off_for_agents_and_keeps_its_limits() {
+        let mut store = SavedConnections::default();
+        let mut original = saved("Bookshop", "/b.db");
+        original.agents = Agents {
+            access: AgentAccess::Read,
+            rows: 1_000,
+            timeout_secs: 30,
+        };
+        store.upsert(original.clone());
+        let copy = store.duplicate(&original.id).unwrap();
+        let copied = store.get(&copy).unwrap().agents;
+        assert_eq!(copied.access, AgentAccess::Off);
+        assert_eq!((copied.rows, copied.timeout_secs), (1_000, 30));
+        assert_eq!(store.get(&original.id).unwrap().agents, original.agents);
     }
 
     #[test]

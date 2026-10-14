@@ -204,6 +204,7 @@ pub fn demo_setup(app: &mut App) {
         password: crate::connections::PasswordMode::None,
         ssh_secret: crate::connections::PasswordMode::None,
         spec: tabletist_db::ConnectSpec::sqlite(&path),
+        agents: Default::default(),
     };
     let conn = saved.id.clone();
     app.connections.upsert(saved);
