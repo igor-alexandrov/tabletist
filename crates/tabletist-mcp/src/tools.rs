@@ -4,6 +4,7 @@
 
 mod connections;
 mod query;
+mod schema;
 
 use std::future::Future;
 use std::time::Duration;
@@ -27,7 +28,7 @@ pub struct Tool {
 
 /// Every tool. Each of them only reads.
 pub fn all() -> Vec<Tool> {
-    vec![connections::tool(), query::tool()]
+    vec![connections::tool(), schema::tool(), query::tool()]
 }
 
 /// A call that is not one of a tool's: the protocol's error, not a tool's
@@ -91,6 +92,7 @@ pub(crate) async fn call<G: Gateway>(
 ) -> Result<Done, Invalid> {
     match name {
         connections::NAME => connections::call(gateway, arguments),
+        schema::NAME => schema::call(gateway, stop, arguments).await,
         query::NAME => query::call(gateway, stop, arguments).await,
         _ => Err(Invalid::UnknownTool),
     }
@@ -244,7 +246,7 @@ mod tests {
     #[test]
     fn the_tools_are_told_as_they_are() {
         let names: Vec<&str> = all().iter().map(|tool| tool.name).collect();
-        assert_eq!(names, ["list_connections", "run_query"]);
+        assert_eq!(names, ["list_connections", "describe_schema", "run_query"]);
         for tool in all() {
             assert_eq!(tool.input["type"], json!("object"), "{}", tool.name);
             assert!(!tool.description.is_empty() && !tool.title.is_empty());
@@ -255,7 +257,7 @@ mod tests {
     fn a_tool_that_is_not_there_is_answered_with_the_ones_that_are() {
         assert_eq!(
             Invalid::UnknownTool.message(),
-            "Unknown tool. Tabletist has list_connections, run_query."
+            "Unknown tool. Tabletist has list_connections, describe_schema, run_query."
         );
     }
 

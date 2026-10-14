@@ -39,7 +39,7 @@ async fn an_agent_is_told_the_tools_and_that_each_only_reads() {
     let agent = Agent::connect(&server).await;
     let tools = agent.client.list_all_tools().await.unwrap();
     let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
-    assert_eq!(names, ["list_connections", "run_query"]);
+    assert_eq!(names, ["list_connections", "describe_schema", "run_query"]);
     for tool in &tools {
         let annotations = tool.annotations.as_ref().unwrap();
         assert_eq!(annotations.read_only_hint, Some(true), "{}", tool.name);
@@ -85,7 +85,7 @@ async fn a_call_that_is_no_tools_is_the_protocols_error() {
     // The sentence never repeats what was sent, here a name.
     assert_eq!(
         invalid(&agent, "drop_everything", json!({})).await,
-        "Unknown tool. Tabletist has list_connections, run_query."
+        "Unknown tool. Tabletist has list_connections, describe_schema, run_query."
     );
     assert_eq!(
         invalid(&agent, "list_connections", json!({ "all": true })).await,
@@ -466,4 +466,155 @@ async fn a_second_call_on_a_connection_waits_its_turn_and_then_is_busy() {
     assert!(!again.is_error);
     first.close().await;
     second.close().await;
+}
+
+#[tokio::test]
+async fn describe_schema_lists_the_tables_and_views() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    let called = agent
+        .call("describe_schema", json!({ "connection": DEV }))
+        .await;
+    let answer = called.answer();
+    assert_eq!(answer["schema"], json!("main"));
+    let tables: Vec<(&str, &str)> = answer["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|table| {
+            (
+                table["name"].as_str().unwrap(),
+                table["kind"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        tables,
+        [
+            ("authors", "table"),
+            ("book_covers", "table"),
+            ("books", "table"),
+            ("customer_names", "view"),
+            ("customers", "table"),
+            ("order_items", "table"),
+            ("orders", "table"),
+            ("publishers", "table"),
+            ("recent_orders", "view"),
+        ]
+    );
+    assert!(answer.get("truncated").is_none());
+    assert!(answer.get("other_schemas").is_none(), "SQLite has the one");
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn describe_schema_says_what_a_table_is_made_of() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["order_items", "no_such_table", "orders"] }),
+        )
+        .await;
+    let answer = called.answer();
+    assert_eq!(answer["not_found"], json!(["no_such_table"]));
+    let tables = answer["tables"].as_array().unwrap();
+    assert_eq!(tables.len(), 2);
+    let items = &tables[0];
+    assert_eq!(items["name"], json!("order_items"));
+    assert_eq!(items["kind"], json!("table"));
+    assert!(items.get("schema").is_none(), "its own schema goes unsaid");
+    assert_eq!(items["primary_key"], json!(["id"]));
+    let columns = items["columns"].as_array().unwrap();
+    assert_eq!(columns.len(), 5);
+    assert_eq!(
+        columns[3],
+        json!({ "name": "quantity", "type": "INTEGER", "nullable": false })
+    );
+    let to_orders = items["foreign_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|key| key["references"] == json!("orders"))
+        .unwrap();
+    assert_eq!(
+        to_orders,
+        &json!({
+            "columns": ["order_id"],
+            "references": "orders",
+            "referenced_columns": ["id"],
+            "on_delete": "CASCADE",
+        })
+    );
+    // And from the other side.
+    let orders = &tables[1];
+    assert_eq!(
+        orders["referenced_by"],
+        json!([{ "table": "order_items", "columns": ["order_id"], "on_delete": "CASCADE" }])
+    );
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn describe_schema_takes_so_many_tables_at_once() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    let many: Vec<String> = (0..21).map(|n| format!("t{n}")).collect();
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": many }),
+        )
+        .await;
+    assert_eq!(called.refused(), "too_large");
+    assert_eq!(
+        called.text,
+        "describe_schema describes at most 20 tables in one call."
+    );
+    // And a name is no longer than a table's can be: what was asked for
+    // comes back in the answer, and goes into the log.
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["books", "x".repeat(1_001)] }),
+        )
+        .await;
+    assert_eq!(called.refused(), "too_large");
+    assert_eq!(called.text, "A table's name is at most 1000 bytes.");
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["books", "x".repeat(1_000)] }),
+        )
+        .await;
+    assert_eq!(called.answer()["not_found"], json!(["x".repeat(1_000)]));
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn describe_schema_takes_a_list_of_names_and_knows_no_connection_that_is_off() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    assert_eq!(
+        invalid(
+            &agent,
+            "describe_schema",
+            json!({ "connection": DEV, "tables": [1] })
+        )
+        .await,
+        "describe_schema: `tables` is a list of strings."
+    );
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": "Bookshop · production" }),
+        )
+        .await;
+    assert_eq!(called.refused(), "unknown_connection");
+    agent.close().await;
 }
