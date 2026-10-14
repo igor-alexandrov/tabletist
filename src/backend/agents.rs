@@ -56,6 +56,30 @@ pub struct Agentable {
 /// the names of the others change with it, the bare name among them, and
 /// an agent learns the new ones from `list_connections`.
 pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
+    saved
+        .iter()
+        .zip(agent_names(saved))
+        .filter(|(saved, _)| match saved.agents.access {
+            AgentAccess::Off => false,
+            AgentAccess::Read => true,
+        })
+        .map(|(saved, name)| Agentable {
+            id: saved.id.clone(),
+            name,
+            spec: saved.spec.clone(),
+            password: saved.password,
+            ssh_secret: saved.ssh_secret,
+            limits: Limits {
+                rows: saved.agents.rows,
+                timeout: Duration::from_secs(u64::from(saved.agents.timeout_secs)),
+            },
+        })
+        .collect()
+}
+
+/// What an agent calls each of `saved`, in its order, Off or not, by the
+/// rule [`agentable`] says.
+pub fn agent_names(saved: &[SavedConnection]) -> Vec<String> {
     let called = |saved: &SavedConnection| match saved.environment.named(Platform::Native) {
         Some(environment) => format!("{} · {environment}", saved.name),
         None => saved.name.clone(),
@@ -88,25 +112,7 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
             }
         })
         .collect();
-    saved
-        .iter()
-        .zip(names)
-        .filter(|(saved, _)| match saved.agents.access {
-            AgentAccess::Off => false,
-            AgentAccess::Read => true,
-        })
-        .map(|(saved, name)| Agentable {
-            id: saved.id.clone(),
-            name,
-            spec: saved.spec.clone(),
-            password: saved.password,
-            ssh_secret: saved.ssh_secret,
-            limits: Limits {
-                rows: saved.agents.rows,
-                timeout: Duration::from_secs(u64::from(saved.agents.timeout_secs)),
-            },
-        })
-        .collect()
+    names
 }
 
 /// The first `length` letters and digits of an id.
@@ -154,6 +160,10 @@ pub enum AgentsEvent {
     /// listen. Why, for the person.
     Failed(String),
     Stopped,
+    /// The sessions that are open, the oldest first: said whenever one
+    /// opens or ends, names its agent, or makes a call. None is said after
+    /// [`AgentsEvent::Stopped`].
+    Sessions(Vec<tabletist_mcp::SessionInfo>),
 }
 
 /// How long a connection an agent used is kept open with nothing to do.
@@ -174,6 +184,8 @@ const CONNECT_TIME: Duration = Duration::from_secs(20);
 pub(super) struct Running {
     server: tabletist_mcp::Server<AppGateway>,
     chores: tokio::task::JoinHandle<()>,
+    /// Tells the app of the sessions as they change.
+    watching: tokio::task::JoinHandle<()>,
     #[cfg(unix)]
     listening: Option<listen::Listening>,
 }
@@ -285,6 +297,8 @@ impl Agents {
                     if let Some(before) = running.take() {
                         before.stop();
                     }
+                    // Before it listens: no session opens unseen.
+                    let changes = server.changes();
                     // Once the server before it has let its socket go.
                     let listening = match listening(endpoint.as_deref(), &server) {
                         Ok(listening) => listening,
@@ -298,9 +312,11 @@ impl Agents {
                     #[cfg(not(unix))]
                     let () = listening;
                     let chores = tokio::spawn(chores(opened.log, gateway, log_days));
+                    let watching = tokio::spawn(sessions(server.clone(), changes, outbox.clone()));
                     *running = Some(Running {
                         server,
                         chores,
+                        watching,
                         #[cfg(unix)]
                         listening,
                     });
@@ -332,6 +348,7 @@ impl Running {
     fn stop(self) {
         self.server.stop();
         self.chores.abort();
+        self.watching.abort();
         #[cfg(unix)]
         drop(self.listening);
     }
@@ -369,6 +386,23 @@ fn listening(
     match endpoint {
         Some(_) => Err("agents cannot reach Tabletist on this system yet".into()),
         None => Ok(()),
+    }
+}
+
+/// Tells the app of the server's sessions as it starts, and each time they
+/// change, until the server stops.
+async fn sessions(
+    server: tabletist_mcp::Server<AppGateway>,
+    mut changes: tokio::sync::watch::Receiver<()>,
+    outbox: Outbox,
+) {
+    loop {
+        changes.mark_unchanged();
+        let open = server.open_sessions();
+        outbox.emit(super::Event::Agents(AgentsEvent::Sessions(open)));
+        if changes.changed().await.is_err() {
+            return;
+        }
     }
 }
 
@@ -1425,7 +1459,7 @@ mod tests {
             endpoint: None,
         }));
         assert_eq!(
-            match backend.wait(WAIT) {
+            match told(&mut backend, WAIT) {
                 Some(Event::Agents(event)) => event,
                 other => panic!("{other:?}"),
             },
@@ -1451,7 +1485,7 @@ mod tests {
         assert_eq!(left, 1, "the call of long ago is forgotten");
         backend.send(Command::Agents(AgentsCommand::Stop));
         assert!(matches!(
-            backend.wait(WAIT),
+            told(&mut backend, WAIT),
             Some(Event::Agents(AgentsEvent::Stopped))
         ));
         // A log that cannot be made: the server does not start, and says
@@ -1461,7 +1495,7 @@ mod tests {
             log_days: 30,
             endpoint: None,
         }));
-        match backend.wait(WAIT) {
+        match told(&mut backend, WAIT) {
             Some(Event::Agents(AgentsEvent::Failed(said))) => {
                 assert!(
                     said.starts_with("the log of agents' calls could not be opened"),
@@ -1490,7 +1524,7 @@ mod tests {
             log_days: 30,
             endpoint: Some(at),
         }));
-        match backend.wait(WAIT) {
+        match told(&mut backend, WAIT) {
             // Said as it is: the app puts its own words before it.
             Some(Event::Agents(AgentsEvent::Failed(said))) => {
                 assert_eq!(said, crate::endpoint::ANOTHER_SERVES);
@@ -1498,6 +1532,27 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_server_says_its_sessions_as_it_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Agents(AgentsCommand::Start {
+            log: dir.path().join("agents.sqlite3"),
+            log_days: 30,
+            endpoint: None,
+        }));
+        // None yet, said without a change to wait for: a session that
+        // opened before the app heard of the start is not missed.
+        let mut sessions = None;
+        while let Some(Event::Agents(event)) = backend.wait(WAIT) {
+            if let AgentsEvent::Sessions(open) = event {
+                sessions = Some(open);
+                break;
+            }
+        }
+        assert_eq!(sessions, Some(Vec::new()));
     }
 
     #[test]
@@ -1517,7 +1572,7 @@ mod tests {
         backend.send(Command::Agents(AgentsCommand::Stop));
         backend.send(start());
         let mut said = Vec::new();
-        while let Some(Event::Agents(event)) = backend.wait(Duration::from_secs(2)) {
+        while let Some(Event::Agents(event)) = told(&mut backend, Duration::from_secs(2)) {
             said.push(event);
         }
         assert_eq!(
@@ -1529,6 +1584,17 @@ mod tests {
             "{said:?}"
         );
         assert!(!dir.path().join("agents.sqlite3.bad").exists());
+    }
+
+    /// The backend's next event but the sessions, which it says beside
+    /// what the server does.
+    fn told(backend: &mut Backend, wait: Duration) -> Option<Event> {
+        loop {
+            match backend.wait(wait)? {
+                Event::Agents(AgentsEvent::Sessions(_)) => {}
+                event => return Some(event),
+            }
+        }
     }
 
     /// A server's connection from a test URL, its password in the keyring.

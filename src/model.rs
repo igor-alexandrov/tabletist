@@ -2526,6 +2526,75 @@ impl Tab {
     }
 }
 
+/// What the app knows of the agent server: the sessions open on it, as
+/// the backend last said them. Empty while the server is off.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentsState {
+    pub sessions: Vec<tabletist_mcp::SessionInfo>,
+}
+
+/// What the sidebar's Agents entry says of a connection, and which state
+/// its tab shows. A write that waits for the person comes with writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentsHere {
+    /// The server is off in the settings, whatever the connection allows.
+    ServerOff,
+    /// This connection's access is Off: agents do not see it.
+    OffHere,
+    /// Agents may use it, and none has named it.
+    NoneConnected,
+    /// An agent is working here: the one that called last, of `count`.
+    Connected { agent: String, count: usize },
+}
+
+impl AgentsState {
+    /// The sessions that are here: those whose calls have named `conn`,
+    /// the one that called last first.
+    pub fn here(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
+        let mut here: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|session| session.connections.contains(&conn.0))
+            .collect();
+        here.sort_by_key(|session| std::cmp::Reverse(session.last_call_at));
+        here
+    }
+
+    /// The state of `conn` for its Agents entry and tab: the server's
+    /// switch first, then the connection's access, then who is here.
+    /// `access` is `None` for a connection that is saved no more.
+    pub fn of(
+        &self,
+        enabled: bool,
+        access: Option<crate::connections::AgentAccess>,
+        conn: &ConnectionId,
+    ) -> AgentsHere {
+        use crate::connections::AgentAccess;
+        if !enabled {
+            return AgentsHere::ServerOff;
+        }
+        match access {
+            None | Some(AgentAccess::Off) => AgentsHere::OffHere,
+            Some(AgentAccess::Read) => {
+                let here = self.here(conn);
+                match here.first() {
+                    None => AgentsHere::NoneConnected,
+                    Some(last) => AgentsHere::Connected {
+                        agent: agent_name(last),
+                        count: here.len(),
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// What a session's agent is called on screen: what its client says it
+/// is, or "Agent" until it has said.
+pub fn agent_name(session: &tabletist_mcp::SessionInfo) -> String {
+    session.agent.clone().unwrap_or_else(|| "Agent".to_owned())
+}
+
 /// Which pane of a SQL tab's results shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResultPane {
@@ -3510,6 +3579,49 @@ impl std::fmt::Debug for PasswordPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_connections_agents_state_is_the_server_then_its_access_then_who_called_last() {
+        use crate::connections::AgentAccess::{Off, Read};
+        let conn = ConnectionId("shop".into());
+        let session = |agent: &str, connections: &[&str], at: u64| tabletist_mcp::SessionInfo {
+            id: agent.into(),
+            agent: Some(agent.into()),
+            project: None,
+            transport: tabletist_mcp::Transport::Stdio,
+            connected_at: std::time::SystemTime::UNIX_EPOCH,
+            calls: 1,
+            connections: connections.iter().map(|id| (*id).to_owned()).collect(),
+            last_call_at: Some(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at),
+            ),
+        };
+        let mut state = AgentsState::default();
+        // The server off says so whatever the connection allows, Off too.
+        assert_eq!(state.of(false, Some(Read), &conn), AgentsHere::ServerOff);
+        assert_eq!(state.of(false, Some(Off), &conn), AgentsHere::ServerOff);
+        assert_eq!(state.of(true, Some(Off), &conn), AgentsHere::OffHere);
+        // A connection that is saved no more is Off.
+        assert_eq!(state.of(true, None, &conn), AgentsHere::OffHere);
+        assert_eq!(state.of(true, Some(Read), &conn), AgentsHere::NoneConnected);
+        // Elsewhere, or nowhere yet, is not here.
+        state.sessions = vec![session("Cursor", &["other"], 9), session("Zed", &[], 9)];
+        assert_eq!(state.of(true, Some(Read), &conn), AgentsHere::NoneConnected);
+        state
+            .sessions
+            .push(session("Claude Code", &["other", "shop"], 5));
+        state.sessions.push(session("Cline", &["shop"], 7));
+        assert_eq!(
+            state.of(true, Some(Read), &conn),
+            AgentsHere::Connected {
+                agent: "Cline".into(),
+                count: 2
+            }
+        );
+        assert_eq!(state.here(&conn).len(), 2);
+        // Its access Off, nobody is here for it.
+        assert_eq!(state.of(true, Some(Off), &conn), AgentsHere::OffHere);
+    }
 
     /// The Bookshop's covers, `rows` of them, as a tab holds them.
     fn covers(rows: usize) -> ObjectTab {

@@ -128,6 +128,8 @@ pub struct App {
     /// The agent server is the app's to start and stop
     /// ([`App::serve_agents`]): not in tests, nor in the demo.
     serves_agents: bool,
+    /// What the agent server said of its sessions last.
+    pub agents: crate::model::AgentsState,
     next_id: u64,
 }
 
@@ -189,6 +191,7 @@ impl App {
             lookups: Vec::new(),
             closing: false,
             serves_agents: false,
+            agents: crate::model::AgentsState::default(),
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -2805,7 +2808,15 @@ impl App {
             // What the person turned on in the file and does not get is
             // said. The backend logs the rest.
             Event::Agents(event) => match event {
-                AgentsEvent::Started { kept_aside: None } | AgentsEvent::Stopped => {}
+                // A server that stops has no session open. One that starts
+                // says its sessions itself, the first time as it starts.
+                AgentsEvent::Stopped => self.agents.sessions.clear(),
+                AgentsEvent::Started { kept_aside: None } => {}
+                // What a server said as it stopped is not the server now.
+                AgentsEvent::Sessions(open) if self.settings.mcp_enabled => {
+                    self.agents.sessions = open;
+                }
+                AgentsEvent::Sessions(_) => {}
                 AgentsEvent::Started {
                     kept_aside: Some(path),
                 } => {
@@ -3473,6 +3484,14 @@ impl App {
 
     /// Opens an empty SQL editor after the workspace's other tabs, with the
     /// limit and timeout of the settings, and shows it.
+    /// What the workspace's Agents entry and tab say of its connection.
+    pub fn agents_here(&self, tab: ConnTabId) -> Option<crate::model::AgentsHere> {
+        let workspace = self.workspace(tab)?;
+        let conn = &workspace.conn_id;
+        let access = self.connections.get(conn).map(|saved| saved.agents.access);
+        Some(self.agents.of(self.settings.mcp_enabled, access, conn))
+    }
+
     fn new_sql_tab(&mut self, tab: ConnTabId) {
         let id = TabId(self.next_id());
         let request = RequestId(self.next_id());
