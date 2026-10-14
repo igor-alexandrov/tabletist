@@ -442,6 +442,15 @@ impl Backend {
             })
             .expect("spawn the backend thread");
         let runtime = handle_rx.recv().ok();
+        // What the Agents tab copies looks at the disk, in every folder of
+        // the `PATH`: worked out here, once, for when the tab is shown.
+        if crate::endpoint::AVAILABLE
+            && let Some(runtime) = &runtime
+        {
+            runtime.spawn_blocking(|| {
+                crate::endpoint::agent_command();
+            });
+        }
         Self {
             commands: Some(command_tx),
             events: event_rx,

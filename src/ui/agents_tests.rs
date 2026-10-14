@@ -257,7 +257,7 @@ fn the_tab_shows_its_state_and_its_buttons_do_what_they_say() {
 
 #[test]
 fn omarchys_letters_copy_and_turn_on_where_the_tab_offers_them() {
-    // Worked out, as the app's start does off the UI thread.
+    // Worked out, as the backend's start does off the UI thread.
     crate::endpoint::agent_command();
     let (mut harness, tab) = connected(Look::omarchy());
     allow(&mut harness, tab, AgentAccess::Read);

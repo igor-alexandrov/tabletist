@@ -204,9 +204,6 @@ impl App {
         };
         let tab = app.picker_tab();
         app.tabs.push(tab);
-        // What the Agents tab copies looks at the disk: done off the UI
-        // thread, now, for when it is shown.
-        crate::endpoint::work_out_agent_command();
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
         // which a connection had no id yet.

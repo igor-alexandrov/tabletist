@@ -144,17 +144,6 @@ pub async fn read_line<R: AsyncRead + Unpin>(
 /// The command, once worked out.
 static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Works [`agent_command`] out on a thread of its own, once: it looks at
-/// the disk, in every folder of the `PATH`, which the UI thread must not
-/// wait on (`AGENTS.md`). The app calls it as it starts.
-pub fn work_out_agent_command() {
-    if AVAILABLE && COMMAND.get().is_none() {
-        std::thread::spawn(|| {
-            agent_command();
-        });
-    }
-}
-
 /// [`agent_command`] where it is worked out already: what the UI reads.
 pub fn agent_command_ready() -> Option<&'static str> {
     COMMAND.get().map(String::as_str)
@@ -164,7 +153,8 @@ pub fn agent_command_ready() -> Option<&'static str> {
 /// this Tabletist: `claude mcp add tabletist -- tabletist mcp`, with this
 /// program's whole path where `tabletist` on the `PATH` is not this
 /// program (the app bundle on macOS). Worked out once, by looking at the
-/// disk: never on the UI thread, which asks [`agent_command_ready`].
+/// disk: on the backend's runtime as it starts (`Backend::start_with`),
+/// never on the UI thread, which asks [`agent_command_ready`].
 pub fn agent_command() -> &'static str {
     COMMAND.get_or_init(|| {
         let exe = std::env::current_exe().ok();
