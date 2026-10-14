@@ -154,8 +154,8 @@ const CHORES_EVERY: Duration = Duration::from_secs(60);
 /// How often the log forgets what is older than it keeps.
 const RETENTION_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// How long opening a connection for an agent may take, an SSH tunnel's
-/// among it.
+/// How long opening a connection for an agent may take, its read of the
+/// keyring and an SSH tunnel's among it.
 const CONNECT_TIME: Duration = Duration::from_secs(20);
 
 /// The server in the backend, while it runs.
@@ -501,15 +501,30 @@ impl Gateway for AppGateway {
 /// opened without the person, and neither can one whose keyring is locked
 /// or whose SSH host is not trusted yet. Why it failed goes to the app's
 /// log, never to the agent: it can name a host or a user.
+///
+/// All of it within [`CONNECT_TIME`]: the keyring does one job at a time,
+/// and a read for a tab may be waiting on the person to unlock it.
 async fn connect(
     keyring: &Keyring,
     agentable: &Agentable,
     host_keys: &HostKeys,
 ) -> Result<Connection, Failure> {
-    let unavailable = |why: &str| {
-        log::warn!("an agent's call could not open a connection: {why}");
-        Failure::Unavailable
-    };
+    match tokio::time::timeout(CONNECT_TIME, opened(keyring, agentable, host_keys)).await {
+        Ok(opened) => opened,
+        Err(_) => Err(unavailable("it took too long to open")),
+    }
+}
+
+fn unavailable(why: &str) -> Failure {
+    log::warn!("an agent's call could not open a connection: {why}");
+    Failure::Unavailable
+}
+
+async fn opened(
+    keyring: &Keyring,
+    agentable: &Agentable,
+    host_keys: &HostKeys,
+) -> Result<Connection, Failure> {
     let mut secrets = Secrets::default();
     let needed = [
         (
@@ -539,12 +554,9 @@ async fn connect(
             },
         }
     }
-    let opening = Connection::connect_with(&agentable.spec, &secrets, host_keys, Access::ReadOnly);
-    match tokio::time::timeout(CONNECT_TIME, opening).await {
-        Ok(Ok(connection)) => Ok(connection),
-        Ok(Err(error)) => Err(unavailable(&error.to_string())),
-        Err(_) => Err(unavailable("it took too long to open")),
-    }
+    Connection::connect_with(&agentable.spec, &secrets, host_keys, Access::ReadOnly)
+        .await
+        .map_err(|error| unavailable(&error.to_string()))
 }
 
 /// A connection's session, held by one call.
@@ -949,6 +961,58 @@ mod tests {
             !asked.load(std::sync::atomic::Ordering::SeqCst),
             "a read that would prompt"
         );
+    }
+
+    /// A keyring whose job before an agent's is a read for a tab, waiting
+    /// on the person to unlock it: every read waits until `answered` is
+    /// dropped.
+    struct Waiting(std::sync::mpsc::Receiver<()>);
+
+    impl crate::secrets::SecretStore for Waiting {
+        fn read(&mut self, _account: &str) -> Result<Option<String>, crate::secrets::SecretError> {
+            let _ = self.0.recv();
+            Ok(None)
+        }
+
+        fn write(
+            &mut self,
+            _account: &str,
+            _secret: &str,
+        ) -> Result<(), crate::secrets::SecretError> {
+            Ok(())
+        }
+
+        fn delete(&mut self, _account: &str) -> Result<(), crate::secrets::SecretError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_keyring_that_does_not_answer_holds_the_connection_no_longer_than_a_connect() {
+        let mut kept = saved(
+            "kept",
+            "Kept",
+            Environment::Dev,
+            ConnectSpec {
+                driver: tabletist_db::Driver::Postgres,
+                host: "db.example.invalid".into(),
+                port: 5432,
+                ..ConnectSpec::default()
+            },
+        );
+        kept.password = PasswordMode::Keyring;
+        let (answered, waits) = std::sync::mpsc::channel();
+        let gateway = AppGateway::new(Keyring::start(Waiting(waits)));
+        gateway.set_policy(agentable(&[kept]), HostKeys::default());
+        let started = tokio::time::Instant::now();
+        let opened = gateway.open("kept", &CancellationToken::new()).await;
+        assert!(matches!(opened, Err(Failure::Unavailable)));
+        assert_eq!(started.elapsed(), CONNECT_TIME);
+        // And the connection is free for the next call, which waits as long.
+        let opened = gateway.open("kept", &CancellationToken::new()).await;
+        assert!(matches!(opened, Err(Failure::Unavailable)));
+        assert_eq!(started.elapsed(), 2 * CONNECT_TIME);
+        drop(answered);
     }
 
     #[tokio::test]

@@ -3246,3 +3246,5 @@ A second review found that the epoch of a new session was read once its connect 
 A third found that a log whose open panicked on the blocking pool left a start without an answer and without a line in the app's log. It is answered `Failed` and logged, as a log that could not be opened is.
 
 A fourth found that `tokio_postgres` writes the statement it prepares or runs, with its values, at debug, which a `RUST_LOG` lets through, and a server's notice at info, which `--verbose` did. Its lines are off in both filters and blanked by the rewriter, as the SDK's are. `mysql_async` writes none: its spans are behind its `tracing` feature, which is not built.
+
+A fifth found that a keyring busy with a tab's read, waiting on the person to unlock it, held an agent's call, and the connection's turn with it, past the connect's 20 seconds. The read was not without end: the keyring's own wait gives up after 20 seconds. But the read and the connect each had their 20, so a call could hold the turn for 40. The whole of the open, the read among it, is now within one `CONNECT_TIME`.
