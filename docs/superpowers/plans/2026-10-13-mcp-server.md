@@ -1961,7 +1961,8 @@ can see what agents do and stop them.
   wait for. Each is built as this plan has it unless it is answered before
   its run: what the log keeps of a call's values (18) in the first, which
   built it as planned, in full: up to 100 kB of a call's statement and as
-  much of its values, cut there. The name an agent sees for a connection (19)
+  much of its values. Values past that are kept as their start and their
+  length, which is still JSON, so that every entry can be read. The name an agent sees for a connection (19)
   in the second, with the gateway that names the connections. The
   notification for a new agent (17) in the fourth, "Stop all agents" (11) in
   the fifth.

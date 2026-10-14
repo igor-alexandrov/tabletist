@@ -60,7 +60,7 @@ pub async fn call<G: Gateway>(
     let given = arguments.list("params")?.unwrap_or_default();
     let mut note = Note {
         sql: Some(kept(sql)),
-        params: (!given.is_empty()).then(|| kept(&Json::Array(given.to_vec()).to_string())),
+        params: (!given.is_empty()).then(|| kept_values(given)),
         ..Note::default()
     };
     let answer = run(gateway, stop, connection, sql, given, &mut note).await;
@@ -100,6 +100,29 @@ async fn run<G: Gateway>(
     note.matched = written.cut.is_none().then_some(written.rows as u64);
     note.took = Some(answer.elapsed);
     Ok(written.json)
+}
+
+/// An agent's values as the log keeps them: the list as it came, as JSON.
+/// Where that is more than the log keeps of a call, its start and its
+/// length, which is JSON too: whoever reads the log reads every entry.
+fn kept_values(given: &[Json]) -> String {
+    let whole = Json::Array(given.to_vec()).to_string();
+    if whole.len() <= agent::MAX_SQL_BYTES {
+        return whole;
+    }
+    // A start that fits once it is written as a string: a quote mark in it
+    // takes two bytes then, so the start is halved until it does.
+    let mut end = agent::MAX_SQL_BYTES / 2;
+    loop {
+        while !whole.is_char_boundary(end) {
+            end -= 1;
+        }
+        let kept = json!({ "cut": &whole[..end], "bytes": whole.len() }).to_string();
+        if kept.len() <= agent::MAX_SQL_BYTES {
+            return kept;
+        }
+        end /= 2;
+    }
 }
 
 /// An agent's values as the check takes them. A value is a string, a
@@ -160,6 +183,27 @@ mod tests {
                 Param::Bool(true),
                 Param::Null,
             ]
+        );
+    }
+
+    #[test]
+    fn the_log_keeps_values_whole_or_their_start_and_always_as_json() {
+        let short = [json!("it's"), json!(7), Json::Null];
+        assert_eq!(kept_values(&short), r#"["it's",7,null]"#);
+
+        // Every letter a quote mark: written as a string it is twice as
+        // long, and what is kept still fits.
+        let long = [json!("\"".repeat(80_000)), json!("é".repeat(40_000))];
+        let whole = Json::Array(long.to_vec()).to_string();
+        let kept = kept_values(&long);
+        assert!(kept.len() <= agent::MAX_SQL_BYTES, "{}", kept.len());
+        let read: Json = serde_json::from_str(&kept).unwrap();
+        assert_eq!(read["bytes"], json!(whole.len()));
+        let start = read["cut"].as_str().unwrap();
+        assert!(
+            whole.starts_with(start) && start.len() >= 10_000,
+            "{}",
+            start.len()
         );
     }
 

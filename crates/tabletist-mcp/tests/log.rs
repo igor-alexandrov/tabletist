@@ -215,6 +215,39 @@ async fn a_refusal_is_an_entry_with_its_code_whatever_refused_the_call() {
 }
 
 #[tokio::test]
+async fn values_too_long_to_keep_are_kept_as_their_start_and_still_as_json() {
+    let shop = Shop::new();
+    let (server, log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    // One value of 150,000 letters, with quote marks in it: more than the
+    // log keeps of a call.
+    let long = format!("\"zq\" {}", "x".repeat(150_000));
+    for params in [json!([long, 7]), json!(["short", 7])] {
+        let called = agent
+            .call(
+                "run_query",
+                json!({ "connection": DEV, "sql": "SELECT length(?), ?", "params": params }),
+            )
+            .await;
+        assert!(!called.is_error, "{}", called.text);
+    }
+    agent.close().await;
+    let read = entries(&log).await;
+    let kept = read[0].params.as_deref().unwrap();
+    assert!(kept.len() <= 100_000, "{}", kept.len());
+    let kept: serde_json::Value = serde_json::from_str(kept).expect("what the log keeps is JSON");
+    assert_eq!(kept["bytes"], json!(150_013));
+    assert!(
+        kept["cut"]
+            .as_str()
+            .unwrap()
+            .starts_with("[\"\\\"zq\\\" xxx")
+    );
+    // Values that fit are kept as they came.
+    assert_eq!(read[1].params.as_deref(), Some("[\"short\",7]"));
+}
+
+#[tokio::test]
 async fn an_answer_that_was_cut_does_not_say_how_many_rows_there_were() {
     let shop = Shop::new();
     let few = tabletist_db::agent::Limits {

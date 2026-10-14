@@ -73,7 +73,8 @@ pub struct Entry {
     pub connection: Option<String>,
     pub tool: String,
     pub sql: Option<String>,
-    /// The statement's values, as JSON.
+    /// The statement's values, as JSON: the list as it came, or, where
+    /// that is more than 100 kB, `{"cut": its start, "bytes": its length}`.
     pub params: Option<String>,
     /// The tables `describe_schema` was asked for.
     pub request: Option<String>,

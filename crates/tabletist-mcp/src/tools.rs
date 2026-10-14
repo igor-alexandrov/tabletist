@@ -60,7 +60,7 @@ pub(crate) struct Note {
     /// found.
     pub connection: Option<(String, String)>,
     pub sql: Option<String>,
-    /// The values, as the JSON they came in.
+    /// The values, as JSON: as they came, or their start and their length.
     pub params: Option<String>,
     /// The tables `describe_schema` was asked for.
     pub request: Option<String>,
