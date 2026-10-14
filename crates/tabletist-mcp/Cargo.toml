@@ -1,0 +1,23 @@
+[package]
+name = "tabletist-mcp"
+version = "0.1.0"
+description = "The MCP server through which agents use Tabletist's connections"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The log is written on the runtime's blocking pool.
+tokio = { version = "1", features = ["rt"] }
+# The log of calls, a SQLite file. The crate and its bundled SQLite that
+# tabletist-db builds: nothing new.
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[dev-dependencies]
+# The tests' runtime.
+tokio = { version = "1", features = ["rt", "macros"] }
+# A directory of its own for each test's files.
+tempfile = "3"
