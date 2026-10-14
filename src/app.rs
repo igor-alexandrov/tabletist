@@ -138,6 +138,12 @@ pub struct App {
     serves_agents: bool,
     /// What the agent server said of its sessions last.
     pub agents: crate::model::AgentsState,
+    /// What agents may do, as the app last showed it (`agents_shown.json`).
+    agents_shown: crate::agents_shown::Shown,
+    /// What was changed outside the app and lets agents do more than that:
+    /// held, the narrower setting in force, until the person keeps it or
+    /// puts it back.
+    pub agents_held: Vec<crate::agents_shown::Raised>,
     next_id: u64,
 }
 
@@ -166,6 +172,7 @@ impl App {
             let spec = &saved.spec;
             Some(crate::labels::database_key(spec.driver, &spec.database))
         });
+        let agents_shown = crate::agents_shown::Shown::load(&dirs.agents_shown_file());
         let mut app = Self {
             dirs,
             settings,
@@ -200,6 +207,8 @@ impl App {
             closing: false,
             serves_agents: false,
             agents: crate::model::AgentsState::default(),
+            agents_shown,
+            agents_held: Vec::new(),
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -221,6 +230,9 @@ impl App {
                 file: StateFile::ConnectionsMoved,
             });
         }
+        // What the files let agents do against what was last shown: the
+        // connections are read now alone, the settings at every edit too.
+        app.check_agents();
         if adopted {
             app.save_labels();
         }
@@ -1398,7 +1410,9 @@ impl App {
             }
             Action::NewSqlTab(tab) => self.new_sql_tab(tab),
             Action::ShowAgents(tab) => self.show_agents(tab),
-            Action::TurnAgentsOn => self.change_settings(|settings| settings.mcp_enabled = true),
+            Action::TurnAgentsOn => self.turn_agents_on(),
+            Action::KeepAgentChanges(said) => self.keep_agent_changes(&said),
+            Action::PutBackAgentChanges(said) => self.put_back_agent_changes(&said),
             Action::RunSql { tab, sql_tab, all } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.completion = None;
@@ -2834,7 +2848,7 @@ impl App {
                 AgentsEvent::Stopped => self.agents.sessions.clear(),
                 AgentsEvent::Started { kept_aside: None } => {}
                 // What a server said as it stopped is not the server now.
-                AgentsEvent::Sessions(open) if self.settings.mcp_enabled => {
+                AgentsEvent::Sessions(open) if self.agents_on() => {
                     self.agents.sessions = open;
                 }
                 AgentsEvent::Sessions(_) => {}
@@ -3056,7 +3070,8 @@ impl App {
             file: StateFile::Connections(self.connections.clone()),
         });
         // Every change to a connection is saved: what agents may use
-        // changes with it.
+        // changes with it. One deleted is held no more.
+        self.check_agents();
         self.send_agents_policy();
     }
 
@@ -3066,8 +3081,140 @@ impl App {
     pub fn serve_agents(&mut self) {
         self.serves_agents = true;
         self.send_agents_policy();
-        if self.settings.mcp_enabled {
+        if self.agents_on() {
             self.start_agents();
+        }
+    }
+
+    /// Whether the agent server is on: the settings say so, and that is not
+    /// held.
+    pub fn agents_on(&self) -> bool {
+        use crate::agents_shown::Raised;
+        self.settings.mcp_enabled && !self.agents_held.contains(&Raised::Server)
+    }
+
+    /// What agents may do on `saved` now: its access, or what was shown
+    /// where a change made outside the app is held.
+    pub fn agents_access(&self, saved: &SavedConnection) -> crate::connections::AgentAccess {
+        use crate::agents_shown::Raised;
+        let held = self
+            .agents_held
+            .iter()
+            .any(|raise| matches!(raise, Raised::Access { id, .. } if *id == saved.id));
+        match held {
+            true => self.agents_shown.access_of(&saved.id),
+            false => saved.agents.access,
+        }
+    }
+
+    /// Compares what the files let agents do with what was last shown:
+    /// what lets them do more is held, what lets them do less is taken and
+    /// remembered. Where agents cannot reach the app nothing is held.
+    pub(crate) fn check_agents(&mut self) {
+        if !crate::endpoint::AVAILABLE {
+            return;
+        }
+        let enabled = self.settings.mcp_enabled;
+        let (raised, lowered) = self
+            .agents_shown
+            .compare(enabled, &self.connections.connections);
+        if !raised.is_empty() && raised != self.agents_held {
+            // Which connections, and to what, is the person's to read.
+            log::warn!(
+                "agent access was changed outside the app, and is held until the person answers"
+            );
+        }
+        self.agents_held = raised;
+        if lowered {
+            self.save_agents_shown();
+        }
+    }
+
+    /// Writes what agents may do, as the app shows it now.
+    fn save_agents_shown(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.agents_shown_file(),
+            file: StateFile::AgentsShown(self.agents_shown.clone()),
+        });
+    }
+
+    /// What is still held of what the bar said, `said`: a change that came
+    /// after the bar was drawn is not the person's answer.
+    fn held_of(&self, said: &[crate::agents_shown::Raised]) -> Vec<crate::agents_shown::Raised> {
+        self.agents_held
+            .iter()
+            .filter(|raise| said.contains(raise))
+            .cloned()
+            .collect()
+    }
+
+    /// The person keeps what was changed outside the app, as the bar said
+    /// it: it is what they were shown from now on, and in force.
+    fn keep_agent_changes(&mut self, said: &[crate::agents_shown::Raised]) {
+        let kept = self.held_of(said);
+        if kept.is_empty() {
+            return;
+        }
+        let was_on = self.agents_on();
+        self.agents_shown.keep(&kept);
+        self.save_agents_shown();
+        self.check_agents();
+        self.agents_changed(was_on);
+    }
+
+    /// The person puts back what was changed outside the app, as the bar
+    /// said it: the files say again what they were shown, the settings
+    /// first, then the connections.
+    fn put_back_agent_changes(&mut self, said: &[crate::agents_shown::Raised]) {
+        use crate::agents_shown::Raised;
+        let back = self.held_of(said);
+        if back.contains(&Raised::Server) {
+            self.change_settings(|settings| settings.mcp_enabled = false);
+        }
+        let mut changed = false;
+        for raise in back {
+            let Raised::Access { id, .. } = raise else {
+                continue;
+            };
+            if let Some(mut saved) = self.connections.get(&id).cloned() {
+                saved.agents.access = self.agents_shown.access_of(&id);
+                self.connections.upsert(saved);
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_connections();
+        }
+        self.check_agents();
+    }
+
+    /// Turns the server on from the Agents tab: the person's own doing.
+    /// Where the settings say it is on already and that is held, it is
+    /// kept.
+    fn turn_agents_on(&mut self) {
+        use crate::agents_shown::Raised;
+        if !self.settings.mcp_enabled {
+            self.change_settings(|settings| settings.mcp_enabled = true);
+            return;
+        }
+        let was_on = self.agents_on();
+        self.agents_shown.keep(&[Raised::Server]);
+        self.save_agents_shown();
+        self.check_agents();
+        self.agents_changed(was_on);
+    }
+
+    /// Tells the backend what agents may use, and starts or stops the
+    /// server, after what agents may do changed.
+    fn agents_changed(&mut self, was_on: bool) {
+        if !self.serves_agents {
+            return;
+        }
+        self.send_agents_policy();
+        match (was_on, self.agents_on()) {
+            (false, true) => self.start_agents(),
+            (true, false) => self.backend.send(Command::Agents(AgentsCommand::Stop)),
+            _ => {}
         }
     }
 
@@ -3078,7 +3225,18 @@ impl App {
         if !self.serves_agents {
             return;
         }
-        let connections = crate::backend::agentable(&self.connections.connections);
+        // What a change made outside the app holds back is not sent.
+        let shown: Vec<SavedConnection> = self
+            .connections
+            .connections
+            .iter()
+            .map(|saved| {
+                let mut now = saved.clone();
+                now.agents.access = self.agents_access(saved);
+                now
+            })
+            .collect();
+        let connections = crate::backend::agentable(&shown);
         self.backend.send(Command::Agents(AgentsCommand::Policy {
             connections,
             host_keys: self.host_keys.clone(),
@@ -3151,6 +3309,11 @@ impl App {
             saved,
             ..file
         };
+        // The app's own controls show what they turn on: never held.
+        if !self.settings.mcp_enabled && settings.mcp_enabled {
+            self.agents_shown.enabled = true;
+            self.save_agents_shown();
+        }
         self.apply_settings(settings);
         self.save_settings();
     }
@@ -3159,6 +3322,7 @@ impl App {
     /// Every change comes through here, from the app or from the file, and
     /// nothing is written here: saving is [`App::change_settings`]'s.
     pub fn apply_settings(&mut self, new: Settings) {
+        let was_on = self.agents_on();
         let old = std::mem::replace(&mut self.settings, new);
         if old.timestamps != self.settings.timestamps {
             let full = self.settings.timestamps == crate::settings::Timestamps::Full;
@@ -3185,8 +3349,10 @@ impl App {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
         }
+        // An edit of the file that turns the server on is held.
+        self.check_agents();
         if self.serves_agents {
-            match (old.mcp_enabled, self.settings.mcp_enabled) {
+            match (was_on, self.agents_on()) {
                 (false, true) => self.start_agents(),
                 (true, false) => self.backend.send(Command::Agents(AgentsCommand::Stop)),
                 (true, true) if old.mcp_log_days != self.settings.mcp_log_days => {
@@ -3245,7 +3411,7 @@ impl App {
             form.message = Some("This connection was deleted.".into());
             return;
         }
-        let saved = match form.to_saved() {
+        let mut saved = match form.to_saved() {
             Ok(saved) => saved,
             Err(message) => {
                 form.message = Some(message);
@@ -3263,6 +3429,14 @@ impl App {
         let previous = self.connections.get(&saved.id).map(|c| c.password);
         let previous_ssh = self.connections.get(&saved.id).map(|c| c.ssh_secret);
         self.dialog = None;
+        // The dialog has no control for what agents may do: an edit keeps
+        // what the file says now, not what the dialog opened with. A change
+        // made outside the app stays held, and one put back stays back.
+        saved.agents = self
+            .connections
+            .get(&saved.id)
+            .map(|saved| saved.agents)
+            .unwrap_or_default();
         self.connections.upsert(saved.clone());
         self.save_connections();
         if saved.password == PasswordMode::Keyring {
@@ -3546,8 +3720,11 @@ impl App {
     pub fn agents_here(&self, tab: ConnTabId) -> Option<crate::model::AgentsHere> {
         let workspace = self.workspace(tab)?;
         let conn = &workspace.conn_id;
-        let access = self.connections.get(conn).map(|saved| saved.agents.access);
-        Some(self.agents.of(self.settings.mcp_enabled, access, conn))
+        let access = self
+            .connections
+            .get(conn)
+            .map(|saved| self.agents_access(saved));
+        Some(self.agents.of(self.agents_on(), access, conn))
     }
 
     /// Opens an empty SQL editor after the workspace's other tabs, with the
@@ -5504,7 +5681,8 @@ mod tests {
         app.backend.sent.clear();
         app.change_settings(|settings| settings.mcp_log_days = 7);
         assert!(agents_sent(&app).is_empty());
-        // And an edit of the file turns it on as the app does.
+        // An edit of the file that turns it on is held: the app turned it
+        // off last, and that is what the person was shown.
         let text = Settings {
             mcp_enabled: true,
             ..app.settings.clone()
@@ -5512,7 +5690,231 @@ mod tests {
         .to_toml();
         app.apply_event(Event::SettingsFile { text, own: false });
         assert!(app.settings.mcp_enabled);
+        // Where agents cannot reach the app nothing is held, and nothing
+        // starts either.
+        assert!(!start(&app, 7));
+        assert_eq!(app.agents_on(), !crate::endpoint::AVAILABLE);
+        // Kept, it starts.
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
         assert_eq!(start(&app, 7), crate::endpoint::AVAILABLE);
+    }
+
+    /// What the files say beside an app that serves agents: the server on,
+    /// and a connection agents may read, which nobody in the app turned on.
+    #[cfg(unix)]
+    fn changed_outside(app: &mut App) -> crate::connections::ConnectionId {
+        let mut saved = crate::testing::fixture_connection();
+        saved.name = "Shop".into();
+        saved.agents.access = crate::connections::AgentAccess::Read;
+        let id = saved.id.clone();
+        app.connections.upsert(saved);
+        app.settings.mcp_enabled = true;
+        app.check_agents();
+        id
+    }
+
+    #[cfg(unix)]
+    fn agents_shown_saved(app: &App) -> Option<crate::agents_shown::Shown> {
+        app.backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Save {
+                    file: StateFile::AgentsShown(shown),
+                    ..
+                } => Some(shown.clone()),
+                _ => None,
+            })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_made_outside_the_app_is_held_until_the_person_keeps_it() {
+        use crate::agents_shown::Raised;
+        let (mut app, _dir) = app();
+        let id = changed_outside(&mut app);
+        assert_eq!(
+            app.agents_held,
+            [
+                Raised::Server,
+                Raised::Access {
+                    id: id.clone(),
+                    to: crate::connections::AgentAccess::Read
+                }
+            ]
+        );
+        // Held: the server is off, and the connection is not sent.
+        app.serve_agents();
+        assert!(matches!(
+            agents_sent(&app)[..],
+            [AgentsCommand::Policy { connections, .. }] if connections.is_empty()
+        ));
+        assert_eq!(
+            crate::ui::agents_held_said(&app).as_deref(),
+            Some(
+                "Agent access was changed outside Tabletist: the agent server was turned on, \
+                 and agents may read Shop · dev. Until you answer, agents may not. Keep it, or \
+                 put it back?"
+            )
+        );
+        // Kept: in force, and what the person was shown from now on.
+        app.backend.sent.clear();
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert!(matches!(
+            agents_sent(&app)[..],
+            [AgentsCommand::Policy { connections, .. }, AgentsCommand::Start { .. }]
+                if connections.len() == 1
+        ));
+        let shown = agents_shown_saved(&app).expect("what was shown is saved");
+        assert!(shown.enabled);
+        assert_eq!(shown.access_of(&id), crate::connections::AgentAccess::Read);
+        // Taken back in the file: at once, and remembered. (What an edit
+        // of the file comes to: its event's way into the settings.)
+        app.backend.sent.clear();
+        app.apply_settings(Settings {
+            mcp_enabled: false,
+            ..app.settings.clone()
+        });
+        assert!(matches!(agents_sent(&app)[..], [AgentsCommand::Stop]));
+        assert_eq!(
+            agents_shown_saved(&app).map(|shown| shown.enabled),
+            Some(false)
+        );
+        assert!(app.agents_held.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn put_back_writes_what_the_person_was_shown_into_the_files() {
+        let (mut app, dir) = app();
+        let id = changed_outside(&mut app);
+        app.serve_agents();
+        app.backend.sent.clear();
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert!(!app.settings.mcp_enabled);
+        assert!(
+            settings_saves(&app)
+                .iter()
+                .any(|settings| !settings.mcp_enabled)
+        );
+        let path = AppDirs::at(dir.path()).connections_file();
+        match saved(&app, &path) {
+            Some(StateFile::Connections(stored)) => {
+                let shop = stored
+                    .connections
+                    .iter()
+                    .find(|saved| saved.id == id)
+                    .unwrap();
+                assert_eq!(shop.agents.access, crate::connections::AgentAccess::Off);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            !agents_sent(&app)
+                .iter()
+                .any(|sent| matches!(sent, AgentsCommand::Start { .. }))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_the_app_itself_turns_on_is_never_held() {
+        let (mut app, _dir) = app();
+        app.serve_agents();
+        app.apply(Action::TurnAgentsOn);
+        assert!(app.agents_held.is_empty());
+        assert!(app.agents_on());
+        // Turn on, while the file's own turning on is held, keeps it.
+        let (mut app, _dir) = self::app();
+        changed_outside(&mut app);
+        app.apply(Action::TurnAgentsOn);
+        assert!(app.agents_on());
+        assert_eq!(app.agents_held.len(), 1, "the connection is still held");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keep_and_put_back_answer_only_what_the_bar_said() {
+        use crate::agents_shown::Raised;
+        use crate::connections::AgentAccess;
+        // The bar says the connection; the server's turning on comes in
+        // after it was drawn, before the click is applied.
+        let outside = |app: &mut App| {
+            let mut saved = crate::testing::fixture_connection();
+            saved.agents.access = AgentAccess::Read;
+            let id = saved.id.clone();
+            app.connections.upsert(saved);
+            app.check_agents();
+            let said = app.agents_held.clone();
+            app.settings.mcp_enabled = true;
+            app.check_agents();
+            assert_eq!(app.agents_held.len(), 2);
+            (id, said)
+        };
+        let (mut app, _dir) = app();
+        app.serve_agents();
+        let (id, said) = outside(&mut app);
+        app.backend.sent.clear();
+        app.apply(Action::KeepAgentChanges(said));
+        assert_eq!(app.agents_held, [Raised::Server]);
+        assert!(!app.agents_on());
+        assert!(
+            !agents_sent(&app)
+                .iter()
+                .any(|sent| matches!(sent, AgentsCommand::Start { .. }))
+        );
+        assert_eq!(
+            agents_shown_saved(&app).map(|shown| shown.enabled),
+            Some(false)
+        );
+        assert_eq!(
+            app.agents_access(app.connections.get(&id).unwrap()),
+            AgentAccess::Read
+        );
+        // Put back is as narrow: the server's turning on stays held, and
+        // stays in the file.
+        let (mut app, _dir) = self::app();
+        let (id, said) = outside(&mut app);
+        app.apply(Action::PutBackAgentChanges(said));
+        assert_eq!(app.agents_held, [Raised::Server]);
+        assert!(app.settings.mcp_enabled);
+        assert_eq!(
+            app.connections.get(&id).unwrap().agents.access,
+            AgentAccess::Off
+        );
+        // Nothing still held of it: nothing to do.
+        app.apply(Action::KeepAgentChanges(Vec::new()));
+        assert_eq!(app.agents_held, [Raised::Server]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_of_something_else_keeps_nothing_that_is_held() {
+        use crate::connections::AgentAccess;
+        let (mut app, _dir) = app();
+        let id = changed_outside(&mut app);
+        app.apply(Action::EditConnection(id.clone()));
+        form(&mut app).name = "Shop renamed".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(
+            app.agents_held
+                .iter()
+                .any(|raise| matches!(raise, crate::agents_shown::Raised::Access { id: held, .. } if *held == id))
+        );
+        // Put back while the dialog is open: its save keeps what the file
+        // says then, not what the dialog opened with.
+        app.apply(Action::EditConnection(id.clone()));
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        form(&mut app).name = "Shop again".into();
+        app.apply(Action::SaveConnection { connect: false });
+        let saved = app.connections.get(&id).unwrap();
+        assert_eq!(saved.name, "Shop again");
+        assert_eq!(saved.agents.access, AgentAccess::Off);
+        assert!(app.agents_held.is_empty());
+        assert_eq!(app.agents_access(saved), AgentAccess::Off);
     }
 
     #[test]
@@ -5533,12 +5935,19 @@ mod tests {
         };
         app.serve_agents();
         assert_eq!(policy(&app).0, Vec::<String>::new());
-        // A connection agents may read, saved in the dialog.
+        // A connection saved in the dialog: Off, which the dialog has no
+        // control to change.
         app.apply(Action::NewConnection);
         form(&mut app).name = "Disk".into();
         form(&mut app).sqlite_path = "/tmp/disk.db".into();
-        form(&mut app).agents.access = crate::connections::AgentAccess::Read;
         app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(policy(&app).0, Vec::<String>::new());
+        // Agents may read it: the file says so, and the person keeps it.
+        let mut saved = app.connections.connections[0].clone();
+        saved.agents.access = crate::connections::AgentAccess::Read;
+        app.connections.upsert(saved);
+        app.save_connections();
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
         assert_eq!(policy(&app).0, ["Disk · local"]);
         // A host key trusted.
         app.trust("bastion", 22, "SHA256:F1");

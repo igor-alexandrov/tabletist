@@ -505,7 +505,7 @@ impl Harness {
 }
 
 /// The saved connection the fake session stands for.
-fn fixture_connection() -> SavedConnection {
+pub(crate) fn fixture_connection() -> SavedConnection {
     SavedConnection {
         id: ConnectionId::new(),
         name: "Fixture".into(),

@@ -22,12 +22,16 @@ fn connected(look: Look) -> (Harness, ConnTabId) {
     (harness, tab)
 }
 
-/// Sets what agents may do on `tab`'s saved connection.
+/// Sets what agents may do on `tab`'s saved connection, as the person
+/// who keeps it: a change of the files that is not held.
 fn allow(harness: &mut Harness, tab: ConnTabId, access: AgentAccess) {
     let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
     let mut saved = harness.app.connections.get(&conn).unwrap().clone();
     saved.agents.access = access;
     harness.app.connections.upsert(saved);
+    harness.app.check_agents();
+    let held = harness.app.agents_held.clone();
+    harness.app.apply(Action::KeepAgentChanges(held));
 }
 
 /// A session of `agent` whose calls have named `tab`'s connection, or

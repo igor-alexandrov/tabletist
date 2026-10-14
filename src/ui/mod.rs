@@ -116,6 +116,47 @@ pub(crate) fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
     shown.response.rect.height()
 }
 
+/// What the held bar says: what was changed outside the app, and the
+/// question. `None` with nothing held.
+pub fn agents_held_said(app: &App) -> Option<String> {
+    use crate::agents_shown::Raised;
+    if app.agents_held.is_empty() {
+        return None;
+    }
+    let locale = app.locale;
+    let saved = &app.connections.connections;
+    let names = crate::backend::agent_names(saved);
+    let parts: Vec<String> = app
+        .agents_held
+        .iter()
+        .map(|raise| match raise {
+            Raised::Server => {
+                crate::i18n::gettext(locale, "the agent server was turned on").into_owned()
+            }
+            Raised::Access { id, .. } => {
+                let name = saved
+                    .iter()
+                    .zip(&names)
+                    .find(|(saved, _)| saved.id == *id)
+                    .map_or(id.0.as_str(), |(_, name)| name.as_str());
+                crate::i18n::gettext(locale, "agents may read {name}").replace("{name}", name)
+            }
+        })
+        .collect();
+    let changes = match parts.as_slice() {
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        [] => return None,
+    };
+    Some(
+        crate::i18n::gettext(
+            locale,
+            "Agent access was changed outside Tabletist: {changes}. Until you answer, agents may not. Keep it, or put it back?",
+        )
+        .replace("{changes}", &changes),
+    )
+}
+
 /// What a notice stands on: the warning colour, faint, laid on the
 /// window's. Solid, so that nothing under it shows through: at the top of
 /// a macOS window that is the dark that stands behind the whole window.
