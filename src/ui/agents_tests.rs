@@ -22,12 +22,16 @@ fn connected(look: Look) -> (Harness, ConnTabId) {
     (harness, tab)
 }
 
-/// Sets what agents may do on `tab`'s saved connection.
+/// Sets what agents may do on `tab`'s saved connection, as the person
+/// who keeps it: a change of the files that is not held.
 fn allow(harness: &mut Harness, tab: ConnTabId, access: AgentAccess) {
     let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
     let mut saved = harness.app.connections.get(&conn).unwrap().clone();
     saved.agents.access = access;
     harness.app.connections.upsert(saved);
+    harness.app.check_agents();
+    let held = harness.app.agents_held.clone();
+    harness.app.apply(Action::KeepAgentChanges(held));
 }
 
 /// A session of `agent` whose calls have named `tab`'s connection, or
@@ -368,6 +372,82 @@ fn more_sessions_than_the_tab_has_room_for_scroll_to_the_last() {
     }
     harness.settle();
     assert!(seen(&harness));
+}
+
+/// What the files say, changed outside the app: the server on, and agents
+/// may read `tab`'s connection.
+#[cfg(unix)]
+fn changed_outside(harness: &mut Harness, tab: ConnTabId) {
+    let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+    let mut saved = harness.app.connections.get(&conn).unwrap().clone();
+    saved.agents.access = AgentAccess::Read;
+    harness.app.connections.upsert(saved);
+    harness.app.settings.mcp_enabled = true;
+    harness.app.check_agents();
+    harness.settle();
+}
+
+#[cfg(unix)]
+#[test]
+fn the_held_bar_says_what_changed_and_its_buttons_answer_it() {
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        harness.settle();
+        let bar = harness.painted_rect("Fixture").expect("the connection bar");
+        changed_outside(&mut harness, tab);
+        let said = crate::ui::agents_held_said(&harness.app).unwrap();
+        assert!(said.contains("agents may read Fixture · dev"), "{said}");
+        assert!(harness.has(&said), "{}", look.name);
+        // Under the connection bar, which stays at the window's top.
+        assert_eq!(harness.painted_rect("Fixture"), Some(bar), "{}", look.name);
+        let shown = harness.painted_rect(&said).expect("the bar's words");
+        assert!(shown.top() >= bar.bottom(), "{}", look.name);
+        // Held, the entry says what is in force.
+        assert!(harness.has(&entry(&look, "Server off")), "{}", look.name);
+        harness.click("Keep");
+        harness.settle();
+        assert!(harness.app.agents_held.is_empty(), "{}", look.name);
+        assert!(!harness.has(&said), "{}", look.name);
+        assert!(
+            harness.has(&entry(&look, "None connected")),
+            "{}",
+            look.name
+        );
+        // Changed again, and put back.
+        harness.app.settings.mcp_enabled = false;
+        harness.app.check_agents();
+        changed_outside(&mut harness, tab);
+        assert!(!harness.app.agents_held.is_empty(), "{}", look.name);
+        harness.click("Put back");
+        harness.settle();
+        assert!(harness.app.agents_held.is_empty(), "{}", look.name);
+        assert!(!harness.app.settings.mcp_enabled, "{}", look.name);
+        assert!(harness.has(&entry(&look, "Server off")), "{}", look.name);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn while_a_change_is_held_the_tab_says_what_is_in_force() {
+    use crate::agents_shown::Raised;
+    let (mut harness, tab) = connected(Look::macos());
+    changed_outside(&mut harness, tab);
+    // A report of sessions while the server's turning on is held is not
+    // taken: the server is off.
+    let here = session(&harness, Some(tab), "Claude Code");
+    said(&mut harness, AgentsEvent::Sessions(vec![here.clone()]));
+    assert!(harness.app.agents.sessions.is_empty());
+    // The server's turning on is kept, the connection's access is not.
+    harness
+        .app
+        .apply(Action::KeepAgentChanges(vec![Raised::Server]));
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    assert!(harness.has(&entry(&Look::macos(), "Off here")));
+    assert!(harness.has("Agents on Fixture · dev · Off"));
+    assert!(!harness.has("Agents on Fixture · dev · Read"));
+    said(&mut harness, AgentsEvent::Sessions(vec![here]));
+    assert_eq!(harness.app.agents.sessions.len(), 1);
 }
 
 #[test]

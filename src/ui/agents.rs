@@ -47,8 +47,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .get(&conn)
         .map_or(workspace.environment, |saved| saved.environment);
     let runs_as = environment.named(crate::env::Platform::Native);
-    // What the connection allows, whether the server runs or not.
-    let allowed = app.connections.get(&conn).map(|saved| saved.agents.access);
+    // What the connection allows, whether the server runs or not: what is
+    // in force, where a change made outside the app is held.
+    let allowed = app
+        .connections
+        .get(&conn)
+        .map(|saved| app.agents_access(saved));
     let access = look.label(&match allowed {
         Some(crate::connections::AgentAccess::Read) => gettext(locale, "Read"),
         Some(crate::connections::AgentAccess::Off) | None => gettext(locale, "Off"),

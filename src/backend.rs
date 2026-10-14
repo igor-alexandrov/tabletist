@@ -203,6 +203,8 @@ pub enum StateFile {
     KnownHosts(HostKeys),
     Settings(crate::settings::Settings),
     Labels(crate::labels::Labels),
+    /// What agents may do, as the app last showed it.
+    AgentsShown(crate::agents_shown::Shown),
 }
 
 impl StateFile {
@@ -216,6 +218,7 @@ impl StateFile {
             Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
             Self::Settings(settings) => settings.save(path),
             Self::Labels(labels) => labels.save(path),
+            Self::AgentsShown(shown) => shown.save(path),
         }
     }
 }

@@ -36,8 +36,9 @@ pub enum PasswordMode {
     Ask,
 }
 
-/// What agents may do on a connection, through the MCP server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// What agents may do on a connection, through the MCP server. In the
+/// order of what it lets them do, the least first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentAccess {
     /// Agents do not see the connection at all.

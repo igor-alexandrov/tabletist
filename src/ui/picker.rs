@@ -190,12 +190,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.painter()
         .rect_filled(header, CornerRadius::ZERO, header_fill);
     widgets::hline(ui, header.x_range(), header.bottom() - 0.5, palette.outline);
-    // The notice, under the header: the window's own buttons keep its line.
+    // The notices, under the header: the window's own buttons keep its line.
     let mut under = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
         pos2(full.left(), header.bottom()),
         full.max,
     )));
-    let below = header.bottom() + super::notice(app, &mut under);
+    let below = header.bottom() + super::notices(app, &mut under);
     let y = header.top() + header_line(&look);
     let mut x = header.left() + side.max(inset + 12.0);
     let title = if look.terminal {

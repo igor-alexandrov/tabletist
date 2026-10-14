@@ -91,6 +91,7 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
+| `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access |
 | `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key it must send, and the lock the app holds while it listens. The first two are there while agents are on |
 
 The runtime folder is `/run/user/<your user id>/tabletist` on Linux, where
@@ -166,6 +167,22 @@ table, or a key of it, a connection is `off`, with 500 rows and 10 seconds.
 A file in which a connection has the table says `version = 4`, and one in
 which none has it stays `version = 3`. Agents use the table only while
 `[mcp] enabled` is `true` in `settings.toml`.
+
+### Agent access changed outside Tabletist
+
+A change to either file that lets agents do more than Tabletist last
+showed you is not applied at once: turning `[mcp] enabled` on, or a
+connection's `access` up from `off`. Tabletist says what changed in a bar
+under the top of the window, and until you answer, agents may do what they
+could before. **Keep** applies the change. **Put back** undoes it in the
+files: it turns `[mcp] enabled` off, or sets the connection's `access`
+back to `off`, and leaves your other settings and connections as they
+are. A change that lets agents do less applies at once.
+
+Turning agents on in Tabletist itself, with **Turn on** in a connection's
+Agents tab, is never held. Tabletist keeps what it showed you in
+`agents_shown.json`. Without that file, the first time a version with this
+check starts, whatever you turned on by hand is held once.
 
 Edit the file while Tabletist is closed. Tabletist writes the whole file
 again when you change a connection, so a comment you add is not kept.

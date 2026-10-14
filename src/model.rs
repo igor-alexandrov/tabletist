@@ -616,6 +616,12 @@ pub enum Action {
     /// Turn the agent server on, from the Agents tab: a change of the
     /// settings, which starts it. No connection's access changes.
     TurnAgentsOn,
+    /// Keep what was changed outside the app and lets agents do more: what
+    /// the bar said, and only what is still held of it.
+    KeepAgentChanges(Vec<crate::agents_shown::Raised>),
+    /// Put back what was changed outside the app: the narrower setting, in
+    /// the files. What the bar said, as Keep.
+    PutBackAgentChanges(Vec<crate::agents_shown::Raised>),
     /// Run the statement at the editor's cursor, or every statement.
     RunSql {
         tab: ConnTabId,
@@ -949,7 +955,7 @@ pub struct ConnectionForm {
     /// Read-only as saved: `None` until the user sets it.
     pub read_only: Option<bool>,
     /// What agents may do on the connection, as it was saved. The dialog
-    /// has no control for it yet, so an edit keeps it.
+    /// has no control for it yet: saving takes what the file says then.
     pub agents: crate::connections::Agents,
     /// Put the keyboard in Name on the next frame (a new connection).
     pub focus_name: bool,

@@ -93,12 +93,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     toast::show(app, ui.ctx());
 }
 
+/// What the screen draws under the bar that leads the window, which on
+/// macOS is the title bar, so that the window's own buttons keep their
+/// line: what was changed outside the app and is held, then the notice.
+/// Returns their height.
+pub(crate) fn notices(app: &mut App, ui: &mut egui::Ui) -> f32 {
+    agents_held(app, ui) + notice(app, ui)
+}
+
 /// A problem worth the user's attention that belongs to no one tab (a
-/// keyring write that failed), until dismissed. The screen draws it under
-/// the bar that leads the window, which on macOS is the title bar: the
-/// window's own buttons keep their line. Returns its height, nothing when
-/// there is no notice.
-pub(crate) fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
+/// keyring write that failed), until dismissed. Returns its height,
+/// nothing when there is no notice.
+fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
     let Some(message) = app.notice.clone() else {
         return 0.0;
     };
@@ -114,6 +120,100 @@ pub(crate) fn notice(app: &mut App, ui: &mut egui::Ui) -> f32 {
         .show(ui, |ui| notice_line(app, ui, &message, &mut actions));
     app.actions.extend(actions);
     shown.response.rect.height()
+}
+
+/// What was changed outside the app and lets agents do more, held until
+/// the person keeps it or puts it back: a bar of its own, in both looks,
+/// which no dismissal takes away. Returns its height, nothing when nothing
+/// is held.
+fn agents_held(app: &mut App, ui: &mut egui::Ui) -> f32 {
+    let Some(said) = agents_held_said(app) else {
+        return 0.0;
+    };
+    let (look, palette, locale) = (app.look, app.palette, app.locale);
+    // The buttons answer what the bar says, not what a later change holds.
+    let held = app.agents_held.clone();
+    let mut actions = Vec::new();
+    let shown = egui::Panel::top(egui::Id::new("agents-held"))
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(
+            Frame::new()
+                .fill(notice_fill(&palette))
+                .inner_margin(egui::Margin::symmetric(12, 8)),
+        )
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (keep, back) = (
+                    crate::i18n::gettext(locale, "Keep"),
+                    crate::i18n::gettext(locale, "Put back"),
+                );
+                // The buttons' room, then the words wrap in the rest.
+                let pad = 2.0 * ui.spacing().button_padding.x;
+                let width =
+                    |text: &str| widgets::body(&look).width(ui.ctx(), look.faces, text) + pad;
+                let buttons = width(&keep) + width(&back) + 24.0;
+                let room = (ui.available_width() - buttons).max(0.0);
+                crate::typography::Text::one(&look, widgets::body(&look), &said, palette.text)
+                    .wrap(room)
+                    .layout(ui.ctx())
+                    .label(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::button(ui, &keep, &look).clicked() {
+                        actions.push(Action::KeepAgentChanges(held.clone()));
+                    }
+                    if widgets::button(ui, &back, &look).clicked() {
+                        actions.push(Action::PutBackAgentChanges(held.clone()));
+                    }
+                });
+            });
+        });
+    app.actions.extend(actions);
+    shown.response.rect.height()
+}
+
+/// What the held bar says: what was changed outside the app, and the
+/// question. `None` with nothing held.
+pub fn agents_held_said(app: &App) -> Option<String> {
+    use crate::agents_shown::Raised;
+    if app.agents_held.is_empty() {
+        return None;
+    }
+    let locale = app.locale;
+    let saved = &app.connections.connections;
+    let names = crate::backend::agent_names(saved);
+    let parts: Vec<String> = app
+        .agents_held
+        .iter()
+        .map(|raise| match raise {
+            Raised::Server => {
+                crate::i18n::gettext(locale, "the agent server was turned on").into_owned()
+            }
+            Raised::Access { id, .. } => {
+                let name = saved
+                    .iter()
+                    .zip(&names)
+                    .find(|(saved, _)| saved.id == *id)
+                    .map_or(id.0.as_str(), |(_, name)| name.as_str());
+                crate::i18n::gettext(locale, "agents may read {name}").replace("{name}", name)
+            }
+        })
+        .collect();
+    let changes = match parts.as_slice() {
+        [one] => one.clone(),
+        // A catalog may join them otherwise, and in another order.
+        [rest @ .., last] => crate::i18n::gettext(locale, "{rest}, and {last}")
+            .replace("{rest}", &rest.join(&crate::i18n::gettext(locale, ", ")))
+            .replace("{last}", last),
+        [] => return None,
+    };
+    Some(
+        crate::i18n::gettext(
+            locale,
+            "Agent access was changed outside Tabletist: {changes}. Until you answer, agents may not. Keep it, or put it back?",
+        )
+        .replace("{changes}", &changes),
+    )
 }
 
 /// What a notice stands on: the warning colour, faint, laid on the

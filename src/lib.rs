@@ -1,5 +1,6 @@
 //! Tabletist: a native database client.
 
+pub mod agents_shown;
 pub mod app;
 pub mod backend;
 pub mod completion;
