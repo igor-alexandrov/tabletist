@@ -3240,3 +3240,5 @@ The review found four things, each fixed after the run, with a test where one fi
 - **The website's reference** (`_reference/settings-and-files.md`) describes the `[connections.agents]` table and the file's two versions, which "What this run leaves out" had left to the second part: a table written by hand is read and kept now.
 
 The comment on `AppSession::lost` said it is also set when a session is no longer what it was opened as. Only a lost session sets it: it says so now.
+
+A second review found that the epoch of a new session was read once its connect was done: a stop while it opened was missed, and the session stayed open while the server was off. It is read before the connect now.

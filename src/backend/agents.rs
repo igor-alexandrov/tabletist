@@ -455,6 +455,9 @@ impl Gateway for AppGateway {
             *open = None;
         }
         if open.is_none() {
+            // Read before the connect: a close of every session while it
+            // opens makes this one closed when its call lets it go.
+            let epoch = self.inner.epoch();
             let connection = tokio::select! {
                 biased;
                 () = stop.cancelled() => return Err(Error::Cancelled.into()),
@@ -468,7 +471,7 @@ impl Gateway for AppGateway {
                 connection,
                 opened_for: agentable.clone(),
                 used: Instant::now(),
-                epoch: self.inner.epoch(),
+                epoch,
             });
         }
         let cancel = open
