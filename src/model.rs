@@ -610,6 +610,12 @@ pub enum Action {
     CancelQuery(ConnTabId),
     /// Open a SQL editor in the connection tab's workspace and show it.
     NewSqlTab(ConnTabId),
+    /// Show the workspace's Agents tab: open it at the end of the strip
+    /// where it is not open yet.
+    ShowAgents(ConnTabId),
+    /// Turn the agent server on, from the Agents tab: a change of the
+    /// settings, which starts it. No connection's access changes.
+    TurnAgentsOn,
     /// Run the statement at the editor's cursor, or every statement.
     RunSql {
         tab: ConnTabId,
@@ -2465,13 +2471,15 @@ impl ObjectTab {
     }
 }
 
-/// One open tab in a workspace. Both kinds are boxed: an object tab is
-/// much larger than a SQL editor, and a SQL editor much larger than a
-/// pointer (clippy's large_enum_variant either way).
+/// One open tab in a workspace. A table and a SQL editor are boxed: an
+/// object tab is much larger than a SQL editor, and a SQL editor much
+/// larger than a pointer (clippy's large_enum_variant either way).
 #[derive(Debug)]
 pub enum Tab {
     Object(Box<ObjectTab>),
     Sql(Box<SqlTab>),
+    /// What agents do on the workspace's connection. One at most.
+    Agents(AgentsTab),
 }
 
 impl Tab {
@@ -2479,42 +2487,45 @@ impl Tab {
         match self {
             Self::Object(object) => object.id,
             Self::Sql(sql) => sql.id,
+            Self::Agents(agents) => agents.id,
         }
     }
 
     pub fn as_object(&self) -> Option<&ObjectTab> {
         match self {
             Self::Object(object) => Some(object.as_ref()),
-            Self::Sql(_) => None,
+            Self::Sql(_) | Self::Agents(_) => None,
         }
     }
 
     pub fn as_object_mut(&mut self) -> Option<&mut ObjectTab> {
         match self {
             Self::Object(object) => Some(object.as_mut()),
-            Self::Sql(_) => None,
+            Self::Sql(_) | Self::Agents(_) => None,
         }
     }
 
     pub fn as_sql(&self) -> Option<&SqlTab> {
         match self {
             Self::Sql(sql) => Some(sql.as_ref()),
-            Self::Object(_) => None,
+            Self::Object(_) | Self::Agents(_) => None,
         }
     }
 
     pub fn as_sql_mut(&mut self) -> Option<&mut SqlTab> {
         match self {
             Self::Sql(sql) => Some(sql.as_mut()),
-            Self::Object(_) => None,
+            Self::Object(_) | Self::Agents(_) => None,
         }
     }
 
-    /// What the tab is loading; closing it cancels these.
+    /// What the tab is loading; closing it cancels these. The Agents tab
+    /// loads nothing of the session's.
     pub fn pending(&self) -> Vec<RequestId> {
         match self {
             Self::Object(object) => object.pending().collect(),
             Self::Sql(sql) => sql.run.pending.into_iter().collect(),
+            Self::Agents(_) => Vec::new(),
         }
     }
 
@@ -2524,6 +2535,83 @@ impl Tab {
     pub fn is_preview(&self) -> bool {
         matches!(self, Self::Object(object) if !object.pinned && !object.edits.holds())
     }
+}
+
+/// The Agents tab: the app's own view of what agents do on the
+/// workspace's connection. What it shows lives in [`AgentsState`], not
+/// here: closing the tab stops nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentsTab {
+    pub id: TabId,
+}
+
+/// What the app knows of the agent server: the sessions open on it, as
+/// the backend last said them. Empty while the server is off.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentsState {
+    pub sessions: Vec<tabletist_mcp::SessionInfo>,
+}
+
+/// What the sidebar's Agents entry says of a connection, and which state
+/// its tab shows. A write that waits for the person comes with writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentsHere {
+    /// The server is off in the settings, whatever the connection allows.
+    ServerOff,
+    /// This connection's access is Off: agents do not see it.
+    OffHere,
+    /// Agents may use it, and none has named it.
+    NoneConnected,
+    /// An agent is working here: the one that called last, of `count`.
+    Connected { agent: String, count: usize },
+}
+
+impl AgentsState {
+    /// The sessions that are here: those whose calls have named `conn`,
+    /// the one that called last first.
+    pub fn here(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
+        let mut here: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|session| session.connections.contains(&conn.0))
+            .collect();
+        here.sort_by_key(|session| std::cmp::Reverse(session.last_call_at));
+        here
+    }
+
+    /// The state of `conn` for its Agents entry and tab: the server's
+    /// switch first, then the connection's access, then who is here.
+    /// `access` is `None` for a connection that is saved no more.
+    pub fn of(
+        &self,
+        enabled: bool,
+        access: Option<crate::connections::AgentAccess>,
+        conn: &ConnectionId,
+    ) -> AgentsHere {
+        use crate::connections::AgentAccess;
+        if !enabled {
+            return AgentsHere::ServerOff;
+        }
+        match access {
+            None | Some(AgentAccess::Off) => AgentsHere::OffHere,
+            Some(AgentAccess::Read) => {
+                let here = self.here(conn);
+                match here.first() {
+                    None => AgentsHere::NoneConnected,
+                    Some(last) => AgentsHere::Connected {
+                        agent: agent_name(last),
+                        count: here.len(),
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// What a session's agent is called on screen: what its client says it
+/// is, or "Agent" until it has said.
+pub fn agent_name(session: &tabletist_mcp::SessionInfo) -> String {
+    session.agent.clone().unwrap_or_else(|| "Agent".to_owned())
 }
 
 /// Which pane of a SQL tab's results shows.
@@ -3334,6 +3422,7 @@ impl Workspace {
         match self.tab(self.active_tab?)? {
             Tab::Object(object) => (object.view == ObjectView::Data).then_some(object.id),
             Tab::Sql(sql) => sql.selected_row().map(|_| sql.id),
+            Tab::Agents(_) => None,
         }
     }
 
@@ -3344,6 +3433,19 @@ impl Workspace {
 
     pub fn object_tabs_mut(&mut self) -> impl Iterator<Item = &mut ObjectTab> {
         self.tabs.iter_mut().filter_map(Tab::as_object_mut)
+    }
+
+    /// The Agents tab, where it is open.
+    pub fn agents_tab(&self) -> Option<TabId> {
+        self.tabs.iter().find_map(|open| match open {
+            Tab::Agents(agents) => Some(agents.id),
+            Tab::Object(_) | Tab::Sql(_) => None,
+        })
+    }
+
+    /// Whether the tab in front is the Agents tab.
+    pub fn agents_in_front(&self) -> bool {
+        self.active_tab.is_some() && self.active_tab == self.agents_tab()
     }
 
     /// The SQL editors, in strip order.
@@ -3510,6 +3612,49 @@ impl std::fmt::Debug for PasswordPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_connections_agents_state_is_the_server_then_its_access_then_who_called_last() {
+        use crate::connections::AgentAccess::{Off, Read};
+        let conn = ConnectionId("shop".into());
+        let session = |agent: &str, connections: &[&str], at: u64| tabletist_mcp::SessionInfo {
+            id: agent.into(),
+            agent: Some(agent.into()),
+            project: None,
+            transport: tabletist_mcp::Transport::Stdio,
+            connected_at: std::time::SystemTime::UNIX_EPOCH,
+            calls: 1,
+            connections: connections.iter().map(|id| (*id).to_owned()).collect(),
+            last_call_at: Some(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at),
+            ),
+        };
+        let mut state = AgentsState::default();
+        // The server off says so whatever the connection allows, Off too.
+        assert_eq!(state.of(false, Some(Read), &conn), AgentsHere::ServerOff);
+        assert_eq!(state.of(false, Some(Off), &conn), AgentsHere::ServerOff);
+        assert_eq!(state.of(true, Some(Off), &conn), AgentsHere::OffHere);
+        // A connection that is saved no more is Off.
+        assert_eq!(state.of(true, None, &conn), AgentsHere::OffHere);
+        assert_eq!(state.of(true, Some(Read), &conn), AgentsHere::NoneConnected);
+        // Elsewhere, or nowhere yet, is not here.
+        state.sessions = vec![session("Cursor", &["other"], 9), session("Zed", &[], 9)];
+        assert_eq!(state.of(true, Some(Read), &conn), AgentsHere::NoneConnected);
+        state
+            .sessions
+            .push(session("Claude Code", &["other", "shop"], 5));
+        state.sessions.push(session("Cline", &["shop"], 7));
+        assert_eq!(
+            state.of(true, Some(Read), &conn),
+            AgentsHere::Connected {
+                agent: "Cline".into(),
+                count: 2
+            }
+        );
+        assert_eq!(state.here(&conn).len(), 2);
+        // Its access Off, nobody is here for it.
+        assert_eq!(state.of(true, Some(Off), &conn), AgentsHere::OffHere);
+    }
 
     /// The Bookshop's covers, `rows` of them, as a tab holds them.
     fn covers(rows: usize) -> ObjectTab {

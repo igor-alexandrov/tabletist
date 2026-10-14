@@ -93,8 +93,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let sql = app
                 .workspace(tab)
                 .is_some_and(|workspace| workspace.active_sql_tab().is_some());
+            let agents = app
+                .workspace(tab)
+                .is_some_and(crate::model::Workspace::agents_in_front);
             match active {
                 Some(sql_tab) if sql => super::sql_editor::show(app, ui, tab, sql_tab),
+                Some(_) if agents => super::agents::show(app, ui, tab),
                 Some(object_tab) => {
                     super::data_view::header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {
@@ -2022,6 +2026,13 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (filter_key, sidebar_key) = (key(Command::WhereFilter), key(Command::ToggleSidebar));
     let (copy_key, save_key) = (key(Command::CopyCells), key(Command::SaveChanges));
     let review_key = key(Command::ReviewSql);
+    let (agents_copy_key, agents_on_key) =
+        (key(Command::CopyAgentCommand), key(Command::TurnAgentsOn));
+    // The Agents tab in front: its keys, by the state it shows.
+    let agents = app
+        .workspace(tab)
+        .filter(|workspace| workspace.agents_in_front())
+        .and_then(|_| app.agents_here(tab));
     let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
     let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
@@ -2209,6 +2220,35 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             }
             if editing.pending.is_some() || editing.added.is_some() {
                 structure_hints.push((&review_key, &*review, true));
+            }
+            let (copy_word, on_word) = (gettext(locale, "copy"), gettext(locale, "turn on"));
+            let mut agents_hints: Vec<widgets::Hint<'_>> = match &agents {
+                Some(crate::model::AgentsHere::ServerOff) => {
+                    vec![(&agents_on_key, &*on_word, true)]
+                }
+                Some(
+                    crate::model::AgentsHere::NoneConnected
+                    | crate::model::AgentsHere::Connected { .. },
+                ) => vec![(&agents_copy_key, &*copy_word, true)],
+                Some(crate::model::AgentsHere::OffHere) | None => Vec::new(),
+            };
+            agents_hints.push((&sidebar_key, "tables", true));
+            if agents.is_some() {
+                let left = rect.left() + 12.0;
+                widgets::key_hints(ui, (left, y), &agents_hints, 18.0, &look, &palette);
+                // What was just done (the command copied), at the line's
+                // end: this look floats no toast.
+                if let Some(said) = &editing.said {
+                    let role = TextRole::OSecondary;
+                    let text = Text::one(&look, role, &said.text, said.color);
+                    let width = widgets::paint_text_right(ui, rect.right() - 12.0, y, text);
+                    let place = Rect::from_min_size(
+                        pos2(rect.right() - 12.0 - width, y - 8.0),
+                        vec2(width.max(1.0), 16.0),
+                    );
+                    widgets::announce(ui, place, &said.text);
+                }
+                return;
             }
             let hints: &[widgets::Hint<'_>] = if on_editor {
                 &editor_hints

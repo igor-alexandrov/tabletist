@@ -20,7 +20,7 @@ use crate::secrets::{Keyring, SecretString};
 
 mod agents;
 
-pub use agents::{Agentable, AgentsCommand, AgentsEvent, AppGateway, agentable};
+pub use agents::{Agentable, AgentsCommand, AgentsEvent, AppGateway, agent_names, agentable};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
 #[derive(Clone)]
@@ -442,6 +442,15 @@ impl Backend {
             })
             .expect("spawn the backend thread");
         let runtime = handle_rx.recv().ok();
+        // What the Agents tab copies looks at the disk, in every folder of
+        // the `PATH`: worked out here, once, for when the tab is shown.
+        if crate::endpoint::AVAILABLE
+            && let Some(runtime) = &runtime
+        {
+            runtime.spawn_blocking(|| {
+                crate::endpoint::agent_command();
+            });
+        }
         Self {
             commands: Some(command_tx),
             events: event_rx,

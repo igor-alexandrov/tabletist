@@ -15,7 +15,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Some(Dialog::QuickOpen(open)) => (open.tab, open.query.clone()),
         _ => return,
     };
-    let matches = app.quick_open_matches(tab, &query);
+    let matches = app.quick_open_found(tab, &query);
+    // The Agents entry's right side: the window's connection, and the key.
+    let agents_note = app.agents_name(tab).map(|name| {
+        let key = keymap.key(layout, crate::keymap::Command::ShowAgents);
+        format!("{name} · {}", key.as_str())
+    });
     let Some(Dialog::QuickOpen(open)) = &mut app.dialog else {
         return;
     };
@@ -70,8 +75,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let output = egui::ScrollArea::vertical()
                 .max_height(360.0)
                 .show(ui, |ui| {
-                    for (index, (object, _)) in matches.iter().enumerate() {
-                        let label = crate::ui::format::object_title(object, true);
+                    for (index, found) in matches.iter().enumerate() {
+                        let label = match found {
+                            crate::app::Found::Agents => gettext(locale, "Agents").into_owned(),
+                            crate::app::Found::Object(object, _) => {
+                                crate::ui::format::object_title(object, true)
+                            }
+                        };
+                        let note = match found {
+                            crate::app::Found::Agents => agents_note.as_deref(),
+                            crate::app::Found::Object(..) => None,
+                        };
                         let selected = index == open.selected;
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), look.tree_row),
@@ -117,6 +131,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             rect.center().y,
                             Text::one(&look, role, &shown, color),
                         );
+                        if let Some(note) = note {
+                            let laid = Text::one(
+                                &look,
+                                widgets::secondary(&look),
+                                note,
+                                palette.secondary,
+                            )
+                            .layout(ui.ctx());
+                            laid.paint_left(
+                                ui.painter(),
+                                rect.right() - 10.0 - laid.width(),
+                                rect.center().y,
+                            );
+                        }
                         if reveal && index == open.selected {
                             response.scroll_to_me(None);
                         }

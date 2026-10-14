@@ -60,10 +60,12 @@ pub enum Scope {
     Results,
     /// A prompt or a dialog: nothing under it has the keys.
     Prompt,
+    /// The Agents tab.
+    Agents,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 9] = [
+    pub const ALL: [Scope; 10] = [
         Scope::Global,
         Scope::Connections,
         Scope::Sidebar,
@@ -73,6 +75,7 @@ impl Scope {
         Scope::SqlEditor,
         Scope::Results,
         Scope::Prompt,
+        Scope::Agents,
     ];
 
     /// The scope's name in `settings.toml` (`[keys.<scope>]`).
@@ -87,6 +90,7 @@ impl Scope {
             Self::SqlEditor => "sql-editor",
             Self::Results => "results",
             Self::Prompt => "prompt",
+            Self::Agents => "agents",
         }
     }
 
@@ -327,6 +331,9 @@ commands! {
     // Navigation.
     FindObject,
     NewSqlTab,
+    ShowAgents,
+    CopyAgentCommand,
+    TurnAgentsOn,
     ToggleSidebar,
     PaneLeft,
     PaneDown,
@@ -514,6 +521,15 @@ impl Info {
     }
 }
 
+/// An agents' command's info: answered only where agents can reach the
+/// app (`endpoint::AVAILABLE`).
+const fn agents(info: Info) -> Info {
+    match crate::endpoint::AVAILABLE {
+        true => info,
+        false => info.reserved(),
+    }
+}
+
 impl Command {
     pub fn info(self) -> Info {
         use Command as C;
@@ -549,6 +565,12 @@ impl Command {
             C::FilterConnections => info("Filter the connections", "", Window),
             C::FindObject => info("Find any object", "Find any object", Navigation),
             C::NewSqlTab => info("New SQL editor tab", "New SQL editor tab", Navigation),
+            // Nothing of agents answers where they cannot reach the app.
+            C::ShowAgents => agents(info("Show the Agents tab", "", Navigation)),
+            C::CopyAgentCommand => {
+                agents(info("Copy the command that connects an agent", "", Window))
+            }
+            C::TurnAgentsOn => agents(info("Turn the agent server on", "", Window)),
             C::ToggleSidebar => info("Toggle sidebar", "Toggle sidebar", Navigation),
             C::PaneLeft => info("Pane to the left", PANES, Navigation),
             C::PaneDown => info("Pane below", PANES, Navigation).reserved(),
@@ -783,7 +805,8 @@ impl Binding {
                 | Scope::Sidebar
                 | Scope::Grid
                 | Scope::Inspector
-                | Scope::Results => Mode::Normal,
+                | Scope::Results
+                | Scope::Agents => Mode::Normal,
             },
             set => set,
         }
@@ -816,6 +839,8 @@ const SQL_EDITOR: &[Scope] = &[Scope::SqlEditor];
 const RESULTS: &[Scope] = &[Scope::Results];
 const PROMPT: &[Scope] = &[Scope::Prompt];
 const ROWS: &[Scope] = &[Scope::Grid, Scope::Results];
+const AGENTS: &[Scope] = &[Scope::Agents];
+const TREE_AND_GRID: &[Scope] = &[Scope::Sidebar, Scope::Grid];
 const CELLS: &[Scope] = &[Scope::Grid, Scope::Inspector];
 
 /// The keymap. The rows of the settled table first in each part, then the
@@ -922,6 +947,15 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+t")]),
             keys(&[k("ctrl+t")]),
         ),
+        bind(
+            C::ShowAgents,
+            GLOBAL,
+            keys(&[k("cmd+alt+a")]),
+            keys(&[k(":agents")]),
+        ),
+        bind(C::ShowAgents, TREE_AND_GRID, NONE, keys(&[k("ga")])),
+        bind(C::CopyAgentCommand, AGENTS, NONE, keys(&[k("y")])),
+        bind(C::TurnAgentsOn, AGENTS, NONE, keys(&[k("o")])),
         bind(
             C::ToggleSidebar,
             GLOBAL,

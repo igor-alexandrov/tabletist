@@ -147,8 +147,12 @@ mod mcp {
         let deadline = Instant::now() + WAIT;
         loop {
             for event in backend.poll() {
-                if let Event::Agents(event) = event {
-                    return event;
+                // The sessions as they change are said beside what the
+                // server does.
+                match event {
+                    Event::Agents(AgentsEvent::Sessions(_)) => {}
+                    Event::Agents(event) => return event,
+                    _ => {}
                 }
             }
             assert!(
@@ -279,6 +283,20 @@ mod mcp {
         let stderr = stderr_of(&mut child);
         assert!(!seen.contains(MARKER), "{seen}");
         assert!(!stderr.contains(MARKER), "{stderr}");
+        // The app was told of the session, and where it works.
+        let deadline = Instant::now() + WAIT;
+        let told = loop {
+            let told = backend.poll().into_iter().any(|event| {
+                matches!(&event, Event::Agents(AgentsEvent::Sessions(open))
+                    if open.iter().any(|session| session.connections == ["shop"]
+                        && session.project.as_deref() == Some("bookshop-repo")))
+            });
+            if told || Instant::now() > deadline {
+                break told;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(told, "the backend says where the session works");
         // The log has the calls, under the project's name.
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let entries = runtime.block_on(async {

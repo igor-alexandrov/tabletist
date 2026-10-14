@@ -701,6 +701,7 @@ fastframe_icons::icons! {
         PanelRight => "panel-right",
         Server => "server",
         ShieldAlert => "shield-alert",
+        SquareTerminal => "square-terminal",
         Table => "table-2",
         WifiOff => "wifi-off",
     }

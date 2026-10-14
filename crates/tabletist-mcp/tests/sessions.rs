@@ -70,6 +70,68 @@ async fn a_session_is_known_while_it_is_open() {
 }
 
 #[tokio::test]
+async fn a_session_knows_where_it_works_and_the_server_says_when_that_changes() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let mut changes = server.changes();
+    changes.mark_unchanged();
+    let agent = Agent::connect(&server).await;
+    assert!(changes.has_changed().unwrap(), "a session opened");
+    changes.mark_unchanged();
+    // A call that names no connection is a call all the same.
+    agent.call("list_connections", json!({})).await;
+    assert!(changes.has_changed().unwrap(), "a call");
+    changes.mark_unchanged();
+    let open = &server.open_sessions()[0];
+    assert_eq!(open.connections, Vec::<String>::new());
+    let first = open.last_call_at.unwrap();
+    agent
+        .call(
+            "run_query",
+            json!({ "connection": "Bookshop · dev", "sql": "SELECT 1" }),
+        )
+        .await;
+    assert!(changes.has_changed().unwrap(), "a call on a connection");
+    let open = &server.open_sessions()[0];
+    assert_eq!(open.connections, ["id:Bookshop · dev"]);
+    assert!(open.last_call_at.unwrap() >= first);
+    // Named once, however often.
+    agent
+        .call("describe_schema", json!({ "connection": "Bookshop · dev" }))
+        .await;
+    assert_eq!(server.open_sessions()[0].connections, ["id:Bookshop · dev"]);
+    changes.mark_unchanged();
+    agent.close().await;
+    assert!(changes.has_changed().unwrap(), "a session ended");
+    assert_eq!(server.open_sessions(), []);
+}
+
+#[tokio::test]
+async fn a_session_is_where_its_call_names_from_when_the_call_comes() {
+    use std::time::{Duration, Instant};
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    let arguments = json!({ "connection": "Bookshop · dev", "sql": support::slow(5) });
+    let slow = agent.call("run_query", arguments);
+    let meanwhile = async {
+        // Here while its first call on the connection still runs.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while server.open_sessions()[0].connections.is_empty() {
+            assert!(Instant::now() < deadline, "not here while the call runs");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(server.open_sessions()[0].connections, ["id:Bookshop · dev"]);
+        agent.call("list_connections", json!({})).await;
+        server.open_sessions()[0].last_call_at.unwrap()
+    };
+    let (_, quick) = tokio::join!(slow, meanwhile);
+    // The slow call came first and ended last: it takes no time back.
+    assert!(server.open_sessions()[0].last_call_at.unwrap() >= quick);
+    agent.close().await;
+}
+
+#[tokio::test]
 async fn a_name_a_client_gives_itself_is_a_label_a_person_can_read() {
     let shop = Shop::new();
     let (server, _log) = server(&shop);

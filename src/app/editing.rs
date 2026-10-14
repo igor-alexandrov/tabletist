@@ -1714,6 +1714,7 @@ impl App {
         let sql_tab = workspace.active_sql_tab().map(|sql| sql.id);
         let scope = match table {
             Some(_) => Scope::Grid,
+            None if workspace.agents_in_front() => Scope::Agents,
             None => Scope::SqlEditor,
         };
         // The Structure view's own lines hold while it shows.
@@ -1732,6 +1733,10 @@ impl App {
             }
         };
         let action = match (read, table) {
+            // From any tab of the window, where agents can reach the app.
+            (Typed::Command(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
+                Action::ShowAgents(tab)
+            }
             (Typed::Command(Command::SaveChanges), Some((id, _))) => Action::WriteEdits { tab, id },
             (Typed::Command(Command::DiscardChanges), Some((id, _))) => {
                 Action::DiscardEdits { tab, id }

@@ -506,10 +506,17 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     );
     // The tab in front, whatever has the keyboard in it: a cancel, a run
     // and the `:` prompt are its own from the tree too.
+    // The Agents tab in front: its own keys, and the global ones.
+    let agents = !on_picker
+        && app
+            .workspace(active)
+            .is_some_and(crate::model::Workspace::agents_in_front);
     let front = if on_picker {
         Scope::Connections
     } else if sql.is_some() {
         Scope::SqlEditor
+    } else if agents {
+        Scope::Agents
     } else {
         Scope::Grid
     };
@@ -527,6 +534,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         &[Scope::Inspector]
     } else if on_tree {
         &[Scope::Sidebar]
+    } else if agents {
+        &[Scope::Agents]
     } else if sql.is_some() && sql_grid {
         &[Scope::Results, Scope::SqlEditor]
     } else if sql.is_some() {
@@ -696,6 +705,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // A SQL editor belongs to a workspace: the picker has none to open.
         if in_workspace && on(input, Command::NewSqlTab, Scope::Global).count > 0 {
             actions.push(Action::NewSqlTab(active));
+        }
+        // Where agents can reach the app: nothing of them shows elsewhere.
+        if in_workspace
+            && crate::endpoint::AVAILABLE
+            && on(input, Command::ShowAgents, Scope::Global).count > 0
+        {
+            actions.push(Action::ShowAgents(active));
         }
         if on(input, Command::Connections, Scope::Global).count > 0 {
             actions.push(Action::ShowConnections);
@@ -1651,6 +1667,25 @@ fn held_back(command: Command) -> bool {
     )
 }
 
+/// Whether the Agents tab is in front of `tab`'s workspace and shows the
+/// state whose key this is: the server off (`server_off`), or the one
+/// with the command to copy.
+fn agents_shows(app: &App, tab: ConnTabId, server_off: bool) -> bool {
+    use crate::model::AgentsHere;
+    let front = app
+        .workspace(tab)
+        .is_some_and(crate::model::Workspace::agents_in_front);
+    let here = app.agents_here(tab);
+    front
+        && match server_off {
+            true => here == Some(AgentsHere::ServerOff),
+            false => matches!(
+                here,
+                Some(AgentsHere::NoneConnected | AgentsHere::Connected { .. })
+            ),
+        }
+}
+
 /// Whether `sql` shows a result grid for the keys to move in: its last
 /// run's rows, unless the Messages pane covers them.
 fn shows_grid(sql: &crate::model::SqlTab) -> bool {
@@ -2133,6 +2168,16 @@ fn letters(
         waiting.clear();
         let command = command.filter(|command| !(visual && held_back(*command)));
         match (command, active) {
+            (Some(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
+                actions.push(Action::ShowAgents(tab));
+            }
+            // The Agents tab's own letters, by the state it shows.
+            (Some(Command::CopyAgentCommand), _) if agents_shows(app, tab, false) => {
+                crate::ui::agents::copy_command(ctx, app.locale);
+            }
+            (Some(Command::TurnAgentsOn), _) if agents_shows(app, tab, true) => {
+                actions.push(Action::TurnAgentsOn);
+            }
             (Some(Command::EditCell), _) if edits && alone => {
                 opened = true;
                 actions.extend(edit(crate::model::EditStart::Value));

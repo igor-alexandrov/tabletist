@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value as Json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::Gateway;
@@ -51,6 +51,11 @@ pub struct SessionInfo {
     pub transport: Transport,
     pub connected_at: SystemTime,
     pub calls: u64,
+    /// The connections its calls have named, by id, in the order it first
+    /// named each: where it works.
+    pub connections: Vec<String>,
+    /// When its last call came, once it has made one.
+    pub last_call_at: Option<SystemTime>,
 }
 
 /// What stands for an agent's name until it has given one.
@@ -82,6 +87,17 @@ pub(crate) struct Live {
     in_flight: RwLock<()>,
     /// How many calls are running.
     running: AtomicUsize,
+    /// The connections its calls named, and when the last one came.
+    used: Mutex<Used>,
+    /// The server's, told of each change to the session.
+    changed: Arc<watch::Sender<()>>,
+}
+
+/// Where a session has worked, and when it last did.
+#[derive(Debug, Default)]
+struct Used {
+    connections: Vec<String>,
+    last_call_at: Option<SystemTime>,
 }
 
 impl Live {
@@ -92,8 +108,8 @@ impl Live {
             .map(label)
             .filter(|label| !label.is_empty())
             .unwrap_or_else(|| label(name));
-        if !label.is_empty() {
-            let _ = self.agent.set(label);
+        if !label.is_empty() && self.agent.set(label).is_ok() {
+            self.changed.send_replace(());
         }
     }
 
@@ -104,6 +120,7 @@ impl Live {
     }
 
     fn info(&self) -> SessionInfo {
+        let used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
         SessionInfo {
             id: self.id.clone(),
             agent: self.agent.get().cloned(),
@@ -111,7 +128,23 @@ impl Live {
             transport: self.origin.transport,
             connected_at: self.connected_at,
             calls: self.calls.load(Ordering::Relaxed),
+            connections: used.connections.clone(),
+            last_call_at: used.last_call_at,
         }
+    }
+
+    /// Notes a call that came at `at`, and the connection it named. A call
+    /// that ends after a later one does not take the time back.
+    fn called(&self, at: SystemTime, connection: Option<&str>) {
+        let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+        used.last_call_at = used.last_call_at.max(Some(at));
+        if let Some(id) = connection
+            && !used.connections.iter().any(|named| named == id)
+        {
+            used.connections.push(id.to_owned());
+        }
+        drop(used);
+        self.changed.send_replace(());
     }
 }
 
@@ -159,6 +192,7 @@ impl<G: Gateway> Drop for Open<G> {
         self.server
             .sessions()
             .retain(|open| !Arc::ptr_eq(open, &self.live));
+        self.server.inner.changed.send_replace(());
     }
 }
 
@@ -202,6 +236,9 @@ struct Inner<G> {
     sessions: Mutex<Vec<Arc<Live>>>,
     /// Ended by [`Server::stop`]. Every session's stop is a child of it.
     stop: Stop,
+    /// Sent to when a session opens or ends, names its agent, or makes a
+    /// call: what [`Server::open_sessions`] says has changed.
+    changed: Arc<watch::Sender<()>>,
 }
 
 impl<G: Gateway> Server<G> {
@@ -215,6 +252,7 @@ impl<G: Gateway> Server<G> {
                 version: version.into(),
                 sessions: Mutex::default(),
                 stop: Stop::new(),
+                changed: Arc::new(watch::Sender::new(())),
             }),
         }
     }
@@ -235,8 +273,11 @@ impl<G: Gateway> Server<G> {
             stop: self.inner.stop.child(),
             in_flight: RwLock::new(()),
             running: AtomicUsize::new(0),
+            used: Mutex::default(),
+            changed: Arc::clone(&self.inner.changed),
         });
         self.sessions().push(live.clone());
+        self.inner.changed.send_replace(());
         let open = Open {
             server: self.clone(),
             live: live.clone(),
@@ -246,6 +287,12 @@ impl<G: Gateway> Server<G> {
         live.stop.end(Why::Client);
         let _ = live.in_flight.write().await;
         drop(open);
+    }
+
+    /// Told when what [`Server::open_sessions`] says has changed: a
+    /// session opened or ended, its agent was named, or it made a call.
+    pub fn changes(&self) -> watch::Receiver<()> {
+        self.inner.changed.subscribe()
     }
 
     /// The sessions that are open, the oldest first.
@@ -296,6 +343,20 @@ impl<G: Gateway> Server<G> {
         let started = Instant::now();
         let _in_flight = live.in_flight.read().await;
         let (_running, before) = Running::count(&live.running);
+        // The session works where the call names, from the moment it comes:
+        // a call that runs for seconds is there the while.
+        let named = arguments
+            .get("connection")
+            .and_then(Json::as_str)
+            .and_then(|name| {
+                self.inner
+                    .gateway
+                    .connections()
+                    .into_iter()
+                    .find(|listed| listed.name == name)
+            })
+            .map(|listed| listed.id);
+        live.called(arrived, named.as_deref());
         let stop = live.stop.child();
         let refuse = |refused: Refused| {
             known(name).map(|()| Done {
@@ -321,6 +382,8 @@ impl<G: Gateway> Server<G> {
         }?;
         live.calls.fetch_add(1, Ordering::Relaxed);
         let Done { answer, note } = done;
+        let named = note.connection.as_ref().map(|(id, _)| id.as_str());
+        live.called(arrived, named);
         let reply = match answer {
             // A map of JSON values is always written.
             Ok(json) => Reply::Answer(serde_json::to_string(&json).unwrap_or_default()),

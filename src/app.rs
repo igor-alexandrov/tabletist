@@ -65,6 +65,14 @@ pub struct TitleBar {
     pub inset: f32,
 }
 
+/// What quick open lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// The window's Agents tab.
+    Agents,
+    Object(ObjectRef, ObjectKind),
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -128,6 +136,8 @@ pub struct App {
     /// The agent server is the app's to start and stop
     /// ([`App::serve_agents`]): not in tests, nor in the demo.
     serves_agents: bool,
+    /// What the agent server said of its sessions last.
+    pub agents: crate::model::AgentsState,
     next_id: u64,
 }
 
@@ -189,6 +199,7 @@ impl App {
             lookups: Vec::new(),
             closing: false,
             serves_agents: false,
+            agents: crate::model::AgentsState::default(),
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -900,6 +911,7 @@ impl App {
                             let (columns, rows, _) = sql.shown_rows()?;
                             ("query", columns, rows)
                         }
+                        Tab::Agents(_) => return None,
                     };
                     let tabletist_db::Value::Bytes(bytes) = rows.get(row)?.get(col)? else {
                         return None;
@@ -1385,6 +1397,8 @@ impl App {
                 }
             }
             Action::NewSqlTab(tab) => self.new_sql_tab(tab),
+            Action::ShowAgents(tab) => self.show_agents(tab),
+            Action::TurnAgentsOn => self.change_settings(|settings| settings.mcp_enabled = true),
             Action::RunSql { tab, sql_tab, all } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.completion = None;
@@ -1575,7 +1589,7 @@ impl App {
                     Some(Dialog::QuickOpen(open)) => (open.tab, open.query.clone()),
                     _ => return,
                 };
-                let count = self.quick_open_matches(tab, &query).len();
+                let count = self.quick_open_found(tab, &query).len();
                 if let Some(Dialog::QuickOpen(open)) = &mut self.dialog {
                     open.selected = (open.selected as isize + step)
                         .clamp(0, count.saturating_sub(1) as isize)
@@ -1587,15 +1601,22 @@ impl App {
                     return;
                 };
                 let (tab, query, selected) = (open.tab, open.query.clone(), open.selected);
-                let matches = self.quick_open_matches(tab, &query);
-                if let Some((object, kind)) = matches.get(selected).or(matches.first()).cloned() {
-                    self.dialog = None;
-                    self.apply(Action::OpenObject {
-                        tab,
-                        object,
-                        kind,
-                        pin: true,
-                    });
+                let found = self.quick_open_found(tab, &query);
+                match found.get(selected).or(found.first()).cloned() {
+                    Some(Found::Agents) => {
+                        self.dialog = None;
+                        self.apply(Action::ShowAgents(tab));
+                    }
+                    Some(Found::Object(object, kind)) => {
+                        self.dialog = None;
+                        self.apply(Action::OpenObject {
+                            tab,
+                            object,
+                            kind,
+                            pin: true,
+                        });
+                    }
+                    None => {}
                 }
             }
             Action::ToggleFilterBar(tab) => {
@@ -1763,8 +1784,11 @@ impl App {
                     workspace.tree = Tree::default();
                     workspace.catalog_changed();
                     // The other database has other objects, but a SQL
-                    // editor's text is the user's work: it stays.
-                    workspace.tabs.retain(|open| matches!(open, Tab::Sql(_)));
+                    // editor's text is the user's work: it stays, and so
+                    // does the connection's Agents tab.
+                    workspace
+                        .tabs
+                        .retain(|open| matches!(open, Tab::Sql(_) | Tab::Agents(_)));
                     workspace.recent.clear();
                     workspace.active_tab = workspace
                         .active_tab
@@ -2805,7 +2829,15 @@ impl App {
             // What the person turned on in the file and does not get is
             // said. The backend logs the rest.
             Event::Agents(event) => match event {
-                AgentsEvent::Started { kept_aside: None } | AgentsEvent::Stopped => {}
+                // A server that stops has no session open. One that starts
+                // says its sessions itself, the first time as it starts.
+                AgentsEvent::Stopped => self.agents.sessions.clear(),
+                AgentsEvent::Started { kept_aside: None } => {}
+                // What a server said as it stopped is not the server now.
+                AgentsEvent::Sessions(open) if self.settings.mcp_enabled => {
+                    self.agents.sessions = open;
+                }
+                AgentsEvent::Sessions(_) => {}
                 AgentsEvent::Started {
                     kept_aside: Some(path),
                 } => {
@@ -2814,7 +2846,10 @@ impl App {
                         path.display()
                     ));
                 }
+                // A start that failed stopped the server before it, if one
+                // ran: nobody is on it any more.
                 AgentsEvent::Failed(said) => {
+                    self.agents.sessions.clear();
                     self.notice = Some(format!("Agents could not be served: {said}."));
                 }
             },
@@ -3471,6 +3506,50 @@ impl App {
         Some((tab, self.workspace(tab)?.active_sql_tab()?.id))
     }
 
+    /// Shows the workspace's Agents tab, opening it at the end of the
+    /// strip where it is not open yet. Only what the person does calls
+    /// it: nothing the server says opens the tab or brings it forward.
+    fn show_agents(&mut self, tab: ConnTabId) {
+        if !crate::endpoint::AVAILABLE {
+            return;
+        }
+        let id = TabId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let shown = workspace.agents_tab().unwrap_or_else(|| {
+            workspace
+                .tabs
+                .push(Tab::Agents(crate::model::AgentsTab { id }));
+            id
+        });
+        workspace.active_tab = Some(shown);
+        workspace.pane = Pane::Grid;
+    }
+
+    /// What an agent calls the workspace's connection, Off or not: its
+    /// saved name and environment, as `list_connections` says them. The
+    /// tab's own name where the connection is saved no more.
+    pub fn agents_name(&self, tab: ConnTabId) -> Option<String> {
+        let workspace = self.workspace(tab)?;
+        let saved = &self.connections.connections;
+        let names = crate::backend::agent_names(saved);
+        let found = saved
+            .iter()
+            .zip(names)
+            .find(|(saved, _)| saved.id == workspace.conn_id)
+            .map(|(_, name)| name);
+        Some(found.unwrap_or_else(|| workspace.name.clone()))
+    }
+
+    /// What the workspace's Agents entry and tab say of its connection.
+    pub fn agents_here(&self, tab: ConnTabId) -> Option<crate::model::AgentsHere> {
+        let workspace = self.workspace(tab)?;
+        let conn = &workspace.conn_id;
+        let access = self.connections.get(conn).map(|saved| saved.agents.access);
+        Some(self.agents.of(self.settings.mcp_enabled, access, conn))
+    }
+
     /// Opens an empty SQL editor after the workspace's other tabs, with the
     /// limit and timeout of the settings, and shows it.
     fn new_sql_tab(&mut self, tab: ConnTabId) {
@@ -4030,6 +4109,21 @@ impl App {
             }),
             TreeNode::Object(..) | TreeNode::Empty(_) => {}
         }
+    }
+
+    /// What quick open lists for `query`: the Agents tab first where what
+    /// is typed is the start of "agents", two letters at least, and agents
+    /// can reach the app; then the objects. Fewer letters, or letters
+    /// that are only somewhere in the word, are a table's.
+    pub fn quick_open_found(&self, tab: ConnTabId, query: &str) -> Vec<Found> {
+        let typed = query.trim().to_lowercase();
+        let agents = crate::endpoint::AVAILABLE && typed.len() >= 2 && "agents".starts_with(&typed);
+        let objects = self.quick_open_matches(tab, query).into_iter();
+        agents
+            .then_some(Found::Agents)
+            .into_iter()
+            .chain(objects.map(|(object, kind)| Found::Object(object, kind)))
+            .collect()
     }
 
     /// Loaded objects of `tab`'s connection that match `query`, best first,
@@ -5361,6 +5455,16 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Quick open has no Agents tab to offer where agents cannot reach the
+    /// app.
+    #[cfg(not(unix))]
+    #[test]
+    fn quick_open_offers_no_agents_where_they_cannot_reach_the_app() {
+        let (app, _dir) = app();
+        let tab = app.active_tab_id();
+        assert!(!app.quick_open_found(tab, "agents").contains(&Found::Agents));
     }
 
     #[test]

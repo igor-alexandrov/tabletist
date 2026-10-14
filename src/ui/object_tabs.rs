@@ -39,10 +39,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    // Each tab's id, name, whether it is pinned, whether it is a SQL
-    // editor (never a preview, so it draws like a pinned tab) and whether
-    // it holds changes that are not saved.
-    let tabs: Vec<(TabId, String, bool, bool, bool)> = workspace
+    // Each tab's id, name, whether it is pinned, its kind (a SQL editor
+    // and the Agents tab are never a preview, so they draw like a pinned
+    // tab) and whether it holds changes that are not saved.
+    let tabs: Vec<(TabId, String, bool, Kind, bool)> = workspace
         .tabs
         .iter()
         .map(|open| match open {
@@ -55,13 +55,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 let typed = object.edits.editor.as_ref();
                 let typed = typed.is_some_and(|editor| editor.touched);
                 let unsaved = object.edits.pending() || typed;
-                (object.id, name, object.pinned, false, unsaved)
+                (object.id, name, object.pinned, Kind::Table, unsaved)
             }
             model::Tab::Sql(sql) => (
                 sql.id,
                 format!("{} {}", gettext(locale, "Query"), sql.number),
                 true,
+                Kind::Sql,
+                false,
+            ),
+            model::Tab::Agents(agents) => (
+                agents.id,
+                gettext(locale, "Agents").to_string(),
                 true,
+                Kind::Agents,
                 false,
             ),
         })
@@ -120,7 +127,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                            for (index, (id, name, pinned, sql, unsaved)) in tabs.iter().enumerate()
+                            for (index, (id, name, pinned, kind, unsaved)) in
+                                tabs.iter().enumerate()
                             {
                                 let is_active = Some(*id) == active;
                                 let one = Tab {
@@ -128,7 +136,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     name,
                                     pinned: *pinned,
                                     active: is_active,
-                                    sql: *sql,
+                                    kind: *kind,
                                     unsaved: *unsaved,
                                 };
                                 let response = if look.terminal {
@@ -293,14 +301,22 @@ fn pointer_over(ui: &egui::Ui, response: &egui::Response) -> bool {
 /// alone.
 const MARK: f32 = 8.0;
 
+/// What a tab of the strip holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// A table or a view.
+    Table,
+    Sql,
+    Agents,
+}
+
 /// One tab to draw.
 struct Tab<'a> {
     index: usize,
     name: &'a str,
     pinned: bool,
     active: bool,
-    /// A SQL editor, not a table or view.
-    sql: bool,
+    kind: Kind,
     /// A table with pending changes.
     unsaved: bool,
 }
@@ -340,7 +356,11 @@ fn mac_tab(
     }
     widgets::vline(ui, rect.right() - 0.5, rect.y_range(), palette.border);
     let center = rect.center().y;
-    let icon = if tab.sql { Icon::Code } else { Icon::Table };
+    let icon = match tab.kind {
+        Kind::Table => Icon::Table,
+        Kind::Sql => Icon::Code,
+        Kind::Agents => Icon::SquareTerminal,
+    };
     icon.image(palette.secondary, 14.0).paint_at(
         ui,
         Rect::from_center_size(pos2(rect.left() + 21.0, center), vec2(14.0, 14.0)),
@@ -379,11 +399,11 @@ fn terminal_tab(
     // takes the text colour; a preview tab's reads fainter still.
     let role = TextRole::OBody;
     let number = (tab.index + 1).to_string();
-    // The look's lower case for an editor's name; a table keeps its own.
-    let name = if tab.sql {
-        look.label(tab.name)
-    } else {
-        tab.name.to_owned()
+    // The look's lower case for an editor's name and the Agents tab's; a
+    // table keeps its own.
+    let name = match tab.kind {
+        Kind::Sql | Kind::Agents => look.label(tab.name),
+        Kind::Table => tab.name.to_owned(),
     };
     // A table with pending changes says so after its name.
     let name = if tab.unsaved {
@@ -480,7 +500,7 @@ mod tests {
                                 name,
                                 pinned,
                                 active,
-                                sql: false,
+                                kind: Kind::Table,
                                 unsaved,
                             };
                             widths.push(mac_tab(ui, &tab, bar, &look, &palette).rect.width());
