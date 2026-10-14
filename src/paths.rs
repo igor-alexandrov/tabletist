@@ -125,8 +125,9 @@ impl AppDirs {
     /// Where `tabletist mcp` reaches the running app: the directory of its
     /// socket, `mcp.sock`, and of the key a relay sends first, `mcp.key`.
     /// Private to the user: made 0700 by the app before it listens.
-    /// `tabletist` in the runtime directory where there is one, else the
-    /// state directory. On macOS a socket's path may have 103 bytes, which
+    /// `tabletist` in the runtime directory where there is one. Else, on
+    /// Linux, `~/.local/state/tabletist`, which no variable moves, and
+    /// elsewhere the state directory. On macOS a socket's path may have 103 bytes, which
     /// a long home directory can pass: then `.tabletist` in the home
     /// directory, which is shorter by 45.
     ///
@@ -134,9 +135,13 @@ impl AppDirs {
     /// no more than `HOME`, `PATH` and a few others: so nothing here comes
     /// from `XDG_RUNTIME_DIR` or `TMPDIR`.
     pub fn agents_dir(&self) -> PathBuf {
-        let dir = match &self.runtime {
-            Some(runtime) => runtime.join("tabletist"),
-            None => self.state.clone(),
+        let dir = match (&self.runtime, &self.home) {
+            (Some(runtime), _) => runtime.join("tabletist"),
+            // Where the state directory is when `XDG_STATE_HOME` is not
+            // set, whether it is set or not.
+            #[cfg(target_os = "linux")]
+            (None, Some(home)) => home.join(".local/state/tabletist"),
+            _ => self.state.clone(),
         };
         #[cfg(target_os = "macos")]
         if let Some(home) = &self.home
@@ -224,6 +229,17 @@ mod tests {
             ..dirs
         };
         assert_eq!(dirs.agents_dir(), PathBuf::from("/run/user/1000/tabletist"));
+        // Without one, on Linux, where the state is without a variable.
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            AppDirs {
+                runtime: None,
+                home: Some(PathBuf::from("/home/ada")),
+                ..dirs
+            }
+            .agents_dir(),
+            PathBuf::from("/home/ada/.local/state/tabletist")
+        );
     }
 
     #[test]

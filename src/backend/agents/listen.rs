@@ -41,10 +41,11 @@ impl Drop for Listening {
 
 /// The socket and the key the server made, removed when it stops: each
 /// only while it is the one it made, which a later start may have put
-/// another in the place of.
+/// another in the place of. The directory's lock is let go after them.
 struct Files {
     socket: Option<(PathBuf, (u64, u64))>,
     key: (PathBuf, String),
+    _locked: std::fs::File,
 }
 
 impl Drop for Files {
@@ -61,12 +62,25 @@ impl Drop for Files {
     }
 }
 
-/// Whether a socket in `dir` answers: another Tabletist is serving its
-/// agents there.
+/// The directory's lock, opened, and made where there is none.
+fn lock_file(dir: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dir.join(endpoint::LOCK))
+}
+
+/// Whether another Tabletist is serving its agents in `dir`: it holds the
+/// directory's lock. Asks nothing of its socket, so that its log has no
+/// line of the asking.
 pub(super) fn served_by_another(dir: &Path) -> bool {
-    let socket = dir.join(endpoint::SOCKET);
-    std::fs::symlink_metadata(&socket).is_ok_and(|found| found.file_type().is_socket())
-        && std::os::unix::net::UnixStream::connect(&socket).is_ok()
+    dir.is_dir()
+        && lock_file(dir)
+            .is_ok_and(|file| matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
 }
 
 /// Listens in `dir` for `server`: makes the directory private, a new key,
@@ -79,14 +93,29 @@ pub(super) fn listen(dir: &Path, server: Server<AppGateway>) -> Result<Listening
     // there first is refused, not used.
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("the folder {shown} is not yours to use: {error}"))?;
+    // Held for as long as it listens: a second start stops here, before
+    // it can write its key over this one's.
+    let locked = lock_file(dir).map_err(|error| {
+        format!(
+            "could not open {}: {error}",
+            dir.join(endpoint::LOCK).display()
+        )
+    })?;
+    match locked.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Err(endpoint::ANOTHER_SERVES.into()),
+        Err(std::fs::TryLockError::Error(error)) => {
+            return Err(format!(
+                "could not lock {}: {error}",
+                dir.join(endpoint::LOCK).display()
+            ));
+        }
+    }
     let socket = dir.join(endpoint::SOCKET);
     match std::fs::symlink_metadata(&socket) {
+        // With the lock held, a socket there was left by a Tabletist that
+        // ended.
         Ok(found) if found.file_type().is_socket() => {
-            // A socket that answers is another Tabletist's, serving its
-            // agents. One that does not was left by a Tabletist that ended.
-            if served_by_another(dir) {
-                return Err(endpoint::ANOTHER_SERVES.into());
-            }
             std::fs::remove_file(&socket).map_err(|error| {
                 format!("could not remove an old {}: {error}", socket.display())
             })?;
@@ -101,6 +130,7 @@ pub(super) fn listen(dir: &Path, server: Server<AppGateway>) -> Result<Listening
     let mut files = Files {
         socket: None,
         key: (key_file.clone(), key.clone()),
+        _locked: locked,
     };
     crate::util::write_atomic(&key_file, key.as_bytes())
         .map_err(|error| format!("could not write {}: {error}", key_file.display()))?;
@@ -210,6 +240,8 @@ async fn greet(
     };
     let hello = match read {
         Ok(Ok(Some(line))) => serde_json::from_slice::<Hello>(&line).ok(),
+        // Closed before a byte: nothing was asked, and nothing is said.
+        Ok(Ok(None)) => return,
         _ => None,
     };
     let Some(hello) = hello else {
@@ -343,17 +375,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_socket_that_answers_is_another_tabletists_and_one_that_does_not_is_old() {
+    async fn a_second_start_stops_at_the_lock_and_a_socket_left_by_an_ended_one_is_old() {
         let dir = tempfile::tempdir().unwrap();
         let at = dir.path().join("run");
+        assert!(!served_by_another(&at));
         let first = listen(&at, server(dir.path())).unwrap();
+        let key = std::fs::read_to_string(at.join(endpoint::KEY)).unwrap();
+        assert!(served_by_another(&at));
         let said = listen(&at, server(dir.path())).err().unwrap();
         assert_eq!(said, endpoint::ANOTHER_SERVES);
-        let key = std::fs::read_to_string(at.join(endpoint::KEY)).unwrap();
-        // The first is as it was.
+        // The first is as it was, its key too: the second stopped before it.
+        assert_eq!(
+            std::fs::read_to_string(at.join(endpoint::KEY)).unwrap(),
+            key
+        );
         let (_, answer) = say(&at, &hello(&key)).await;
         assert_eq!(answer, Answer::Ok);
         drop(first);
+        assert!(!served_by_another(&at));
         // A socket left by a Tabletist that ended: nothing answers it.
         drop(std::os::unix::net::UnixListener::bind(at.join(endpoint::SOCKET)).unwrap());
         let _second = listen(&at, server(dir.path())).unwrap();

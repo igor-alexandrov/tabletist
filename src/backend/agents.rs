@@ -1481,8 +1481,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let at = dir.path().join("run");
         std::fs::create_dir(&at).unwrap();
-        let _another =
-            std::os::unix::net::UnixListener::bind(at.join(crate::endpoint::SOCKET)).unwrap();
+        let another = std::fs::File::create(at.join(crate::endpoint::LOCK)).unwrap();
+        another.lock().unwrap();
         let path = dir.path().join("agents.sqlite3");
         let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         backend.send(Command::Agents(AgentsCommand::Start {

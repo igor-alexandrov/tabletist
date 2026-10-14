@@ -27,6 +27,12 @@ pub const ANOTHER_SERVES: &str = "another Tabletist is serving agents already";
 /// The socket's name in the directory.
 pub const SOCKET: &str = "mcp.sock";
 
+/// The name of the file a server holds locked while it listens in the
+/// directory: a second one that finds it locked stops before it touches
+/// the socket or the key. It is never removed: a lock is on the file, and
+/// a start that removed it would lock one another start no longer sees.
+pub const LOCK: &str = "mcp.lock";
+
 /// The key's name in the directory: new each time the server starts.
 pub const KEY: &str = "mcp.key";
 

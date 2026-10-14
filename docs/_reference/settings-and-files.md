@@ -91,10 +91,12 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
-| `mcp.sock`, `mcp.key` | Runtime, else State | Where `tabletist mcp` reaches the app, and the key it must send. There while agents are on |
+| `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key it must send, and the lock the app holds while it listens. The first two are there while agents are on |
 
 The runtime folder is `/run/user/<your user id>/tabletist` on Linux, where
-the system makes `/run/user` for you. macOS has none, and uses the state
+the system makes `/run/user` for you, and `~/.local/state/tabletist` where
+it does not, whatever `XDG_STATE_HOME` says: an agent may start
+`tabletist mcp` without your variables. macOS has none, and uses the state
 folder, or `.tabletist` in your home folder when the state folder's path is
 too long for a socket.
 

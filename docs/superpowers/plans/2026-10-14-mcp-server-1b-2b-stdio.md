@@ -3017,3 +3017,9 @@ Not done here, and left for the review of the pull request:
 ## After the pull request's review
 
 The review found that a start which failed was said twice over: the backend began its reason with "agents could not reach it: ", and the app put "Agents could not be served: " before that. The backend now says the reason alone (`endpoint::ANOTHER_SERVES`, or what `listen` said), and the app's test is of the reason the backend sends.
+
+A second round found three more, each fixed with a test:
+
+- **Two starts at once could leave the one that listens without a key.** Both passed the look at the socket, the second wrote its key over the first's, failed to bind, and removed the key it had written. A server now holds `mcp.lock` in the directory, through `File::try_lock`, from before it looks at the socket to after it has removed it: a second start stops at the lock, before the key. The lock is also how a start learns, before it opens the log, that another Tabletist serves agents.
+- **That look connected to the other's socket**, whose log then had two warnings of a connection that said nothing. It connects no more, and a connection closed before its first byte is no warning.
+- **On Linux without `/run/user/<id>`** the endpoint was the state directory, which `XDG_STATE_HOME` moves, and which an agent may leave out. It is `~/.local/state/tabletist` there now, whatever the variable says.
