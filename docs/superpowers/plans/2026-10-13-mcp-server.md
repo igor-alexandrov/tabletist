@@ -51,6 +51,10 @@ from the fourth run, and the check of changes made outside the app (C.2)
 is the second part. What the run draws otherwise than the boards is in
 D.4.
 
+**Built on 2026-10-14: the second part of Phase 1b's third run** (`2026-10-14-mcp-server-1b-3b-changes-outside.md`):
+C.2's check of the changes made outside the app. What it settled where C.2
+left it open is there.
+
 Each phase below gets its own plan under `docs/superpowers/plans/` before any
 code is written, as every batch of work in this repository does.
 
@@ -1392,6 +1396,40 @@ can edit both files can turn agents on for itself, as E says of a shell.
 **Moved again on 2026-10-14**: the third run is cut in two, and the check is
 its second part (1b-3b), right after **Turn on** (`2026-10-14-mcp-server-1b-3a-agents-tab.md`).
 
+**As built** (`2026-10-14-mcp-server-1b-3b-changes-outside.md`). What it settled where the above left it open:
+
+- What the app last showed is `agents_shown.json` in the state directory:
+  whether the server is on, and each connection's access. `listen` and the
+  lists come with what they are for (1d, 1c, 3a).
+- **A file that is not there, or cannot be read, shows nothing.** So the
+  first start of the version that checks holds whatever was turned on by
+  hand, once, and a person who set agents up through the files keeps it
+  with one click. Taking the files as shown at that start would let a
+  program that removes the file turn agents on unseen.
+- The settings are compared at every edit of the file, the connections at
+  every start (the file is read then alone) and at every save.
+- The app's own controls are what changes the settings through the app
+  (`change_settings`: **Turn on**, later Settings › Agents). The
+  connection dialog has no control for a connection's access yet, so its
+  save keeps what the file says then: a raise made outside stays held,
+  and one put back stays back. The controls that raise it come with 1b-5
+  (`Action::SetAgentAccess`, the editor's Agents section): each marks what
+  it raises as shown, as `change_settings` does for the server.
+- The notice is a bar of its own under the bar that leads the window
+  (on macOS the title bar, so the window's own buttons keep their line),
+  in both looks, which no dismissal takes away: what changed, "Until you
+  answer, agents may not", **Keep** and **Put back**. Both answer what the
+  bar said: a change that comes in after it was drawn waits for its own
+  answer. **Put back** turns the server off or sets the access back in the
+  files, and leaves the rest of them. While a change is held, the Agents
+  entry and tab say what is in force (Server off, or Off here), and the
+  server's sessions are not taken.
+- Where agents cannot reach the app (Windows) nothing is held.
+- Only the server and each connection's access are compared. A Read
+  connection pointed at another server by hand is not held: an agent
+  with the person's shell gains little by it, and the settings and
+  connection files are the person's to edit.
+
 ### C.3 Hidden tables and masked columns when the schema changes
 
 Entries are names: `customers`, `sales.customers`, `orders.email`. A schema
@@ -2067,7 +2105,7 @@ can see what agents do and stop them.
 | **1b-2a. The backend's gateway** (built: `2026-10-14-mcp-server-1b-2a-gateway.md`) | `[connections.agents]` with access, rows and timeout, which makes the connections file version 4. `Command::Agents` and `Event::Agents`, the backend's gateway with its own sessions on each database, and the server started and stopped by the backend, with the log's retention. The SDK held out of the app's log | Nothing: no setting starts the server, and no transport reaches it | The connections file, the gateway on SQLite, PostgreSQL and MySQL, the backend's start and stop, the log's filter |
 | **1b-2b. Turning it on from the files, and stdio** (built: `2026-10-14-mcp-server-1b-2b-stdio.md`) | The `[mcp]` keys in `settings.toml`, and the app that starts and stops the server with them and sends the backend what agents may use. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS. The keychain on macOS (A.1). The website's reference for the files | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings file, `tests/cli.rs` |
 | **1b-3a. The Agents tab's frame** (built: `2026-10-14-mcp-server-1b-3a-agents-tab.md`) | The third kind of tab. The sidebar entry with its states but Waiting. The ways in: the key, `ga`, `:agents`, quick open. The three empty states, with **Turn on** and **Copy**. The sessions the app learns of, and those that are here. The keymap and the help | Open the tab in any state, see which state the connection is in and who is here, turn the server on from the tab | F.7: the entry's states, the ways in, one tab for a window, the empty states, nothing opening or focusing by itself |
-| **1b-3b. Changes made outside the app** | C.2: the agent settings the app last showed, kept in the state directory, and a change from outside that makes agents more able held back until the person keeps it | A program that edits the files cannot turn agents on unseen | C.2's cases |
+| **1b-3b. Changes made outside the app** (built: `2026-10-14-mcp-server-1b-3b-changes-outside.md`) | C.2: the agent settings the app last showed, kept in the state directory, and a change from outside that makes agents more able held back until the person keeps it | A program that edits the files cannot turn agents on unseen | C.2's cases |
 | **1b-4. What agents are doing** | `App::agents`. The sessions that are here and "Also:". The feed. **Stop session** and **Stop agents here**. The Log view as a list for this connection, with All connections. The notification for an agent that connects | See each agent and each call as it happens, stop one agent or all on a connection, read the log | F.7: one connection, the stops, closing the tab, the log's default. F.4's interface |
 | **1b-5. Letting agents in** | Settings › Agents, with the switch between panes. The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** and **Show Agents tab** pointing at them. The website: a new guide, and the reference pages | Everything Phase 1 draws, without a file edited by hand | The interface tests of Settings, Connections and the editor. The keymap. `docs/bin/check` |
 
