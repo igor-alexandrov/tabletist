@@ -17,7 +17,7 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Numbers** | `1240.50` or `1,240.50`. Grouping is for display only: a copy gives the raw value | `1240.50` |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 
-On Linux and macOS a second pane, **Agents**, sets what the `[mcp]` keys
+A second pane, **Agents**, sets what the `[mcp]` keys
 hold, and shows how to connect an agent:
 [Agents]({% link _guide/agents.md %}) is the guide.
 
@@ -69,9 +69,9 @@ notify = true
 | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
 | `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |
 | `appearance.theme` | The name of a palette file in the `themes` folder | Not set |
-| `mcp.enabled` | `true` lets agents reach the connections you open to them, through `tabletist mcp`. Linux and macOS | `false` |
+| `mcp.enabled` | `true` lets agents reach the connections you open to them, through `tabletist mcp` | `false` |
 | `mcp.log_days` | 1 to 3650 days. How long the log of agents' calls keeps a call | `30` |
-| `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS | `true` |
+| `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS, the taskbar button flashing on Windows | `true` |
 
 `show_system_schemas` and `theme` are set only in the file. The SQL
 editor's **Limit** and **Timeout** menus set the two `editor` keys.
@@ -104,14 +104,17 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
 | `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access |
-| `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key it must send, and the lock the app holds while it listens. The first two are there while agents are on |
+| `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key each proves it holds before either says more, and the lock the app holds while it listens. The socket and the key are there while agents are on |
+| `mcp.pipe` | State | On Windows, in the socket's place: the name of the pipe `tabletist mcp` reaches the app by, new each time agents are turned on |
 
 The runtime folder is `/run/user/<your user id>/tabletist` on Linux, where
 the system makes `/run/user` for you, and `~/.local/state/tabletist` where
 it does not, whatever `XDG_STATE_HOME` says: an agent may start
 `tabletist mcp` without your variables. macOS has none, and uses the state
 folder, or `.tabletist` in your home folder when the state folder's path is
-too long for a socket.
+too long for a socket. Windows has none either, and uses the state folder:
+the app listens on a named pipe, whose name is new each time agents are
+turned on, and writes the name there for `tabletist mcp` to find.
 
 Passwords are kept in the system keyring, never in these files.
 [Read about passwords]({% link _reference/connections.md %}#passwords).

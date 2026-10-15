@@ -50,7 +50,7 @@ In the connection dialog:
 | --- | --- |
 | Mod+P | Quick open. In it, Up and Down move, Enter opens and Esc closes |
 | Mod+B | Show or hide the sidebar |
-| Mod+Alt+A | Show the Agents tab (Linux and macOS) |
+| Mod+Alt+A | Show the Agents tab |
 | Mod+W | Close the tab |
 | Mod+Shift+[ and ] | Previous and next tab |
 | F6, Shift+F6 | Next and previous part of the window |

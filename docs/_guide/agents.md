@@ -10,7 +10,7 @@ Protocol (MCP), and Tabletist runs the query on your saved connection,
 with that connection's own login and its limits. Passwords stay in the
 system keyring and never reach the agent.
 
-Agents work on Linux and macOS. On Windows nothing of them shows yet.
+Agents work on Linux, macOS and Windows.
 
 ## What an agent can do
 
@@ -74,8 +74,10 @@ agent, then **Copy** what it takes:
 
 Where `tabletist` on your `PATH` is not the app you run, the command names
 the app by its whole path instead. On macOS that is the program inside the
-app: `/Applications/Tabletist.app/Contents/MacOS/tabletist mcp`. Copy gives
-the one your Tabletist needs.
+app: `/Applications/Tabletist.app/Contents/MacOS/tabletist mcp`. On
+Windows it is where the installer put it, in quotes where the path has a
+space: `"C:\Users\Ada Lovelace\AppData\Local\Programs\Tabletist\tabletist.exe" mcp`.
+Copy gives the one your Tabletist needs.
 
 In the Omarchy look, `y` on the Agents pane copies Claude Code's command.
 
@@ -98,10 +100,10 @@ section.
 
 Each connection window has an Agents tab for its connection. It opens
 from the **Agents** entry at the bottom of the sidebar, from Cmd+Option+A
-on macOS or `ga` and `:agents` in the Omarchy look, from quick open on
-macOS, from Connections, and from **Show Agents tab** in **Settings ›
-Agents**. Nothing
-an agent does opens it for you.
+on macOS, Ctrl+Alt+A on Windows, or `ga` and `:agents` in the Omarchy
+look, from quick open on macOS and Windows, from Connections, and from
+**Show Agents tab** in **Settings › Agents**. Nothing an agent does opens
+it for you.
 
 The tab shows:
 
@@ -120,7 +122,8 @@ long it took. Rows themselves are never logged. **Settings › Agents ›
 Keep the activity log** says for how many days a call is kept.
 
 When an agent connects, Tabletist tells you: a notification on Linux,
-whose **Review** shows the Agents tab, and the Dock icon bouncing on macOS.
+whose **Review** shows the Agents tab, the Dock icon bouncing on macOS,
+and the taskbar button flashing on Windows.
 **Notify when an agent connects** turns it off.
 
 ## Changes made outside Tabletist
