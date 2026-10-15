@@ -1674,6 +1674,39 @@ the boards, each comes with what it needs:
   which the boards do not draw. Omarchy's empty states are the look's
   empty state, from the top left, without the boards' box.
 
+**As built in the first part of Phase 1b's fourth run** (`2026-10-14-mcp-server-1b-4a-activity.md`): the
+sessions with **Stop session**, "Also:" with **Show**, **Stop agents
+here**, and the feed. Where it draws otherwise than the boards:
+
+- The feed's time says how long ago ("just now", "4 min ago"), as the
+  session's line does: the clock comes with the Log view, which needs
+  dates (the fourth run's second part).
+- The feed is the last 300 calls the app heard of since it started, on
+  every connection, each window showing those on its own. A call's
+  statement is kept on one line and cut at 200 characters; its values are
+  not kept. The log has every call whole.
+- The macOS header's "Also:" names the session elsewhere that called
+  last, with **Show**, and counts the others ("and 2 more"). Each window
+  of theirs shows them as here. Where a session works is the connection
+  it named last: a session's connections end with that one
+  (`SessionInfo::connections`).
+- Omarchy's list of sessions moves with `j` and `k`, which the board does
+  not draw: `S` stops the selected session and `enter` shows where a
+  session elsewhere works. The selection is the session's id, so a key
+  lands on the session the person saw however the list reorders. The
+  list is there with nobody here too, beside the way to connect one.
+  Enter is the list's unless the person went to the tree, or a button has
+  the keyboard; the arrows stay the tree's.
+- A call stopped by **Stop session** says, in the feed and to its agent,
+  that the agent server was stopped: the one sentence the server has for
+  a stop. Calls cut off by turning the server off are in the log, not in
+  the feed, which hears nothing once the server is stopped.
+- **Stop agents here** says what it did in the toast (on Omarchy, the
+  status line): "Stopped 2 agents. Access is now Off for Bookshop · dev."
+  The level the access had is not kept beside it yet: **Allow agents…**,
+  which offers it, comes with the fifth run, and with Off and Read alone
+  the level is always Read.
+
 | State | Title | Body | Actions |
 |---|---|---|---|
 | Allowed, no agents yet | No agents connected to Bookshop · dev | "Agents like Claude Code can read this database and propose changes you approve here. Connect one with this command, then ask it about Bookshop." Then the command with **Copy**, and a box "On this connection": access, hidden tables, masked columns, last agent | **Other agents…**, **Show log** |
@@ -2035,7 +2068,7 @@ is off until the person turns it on.
 | Part | Runs | State on 2026-10-13 |
 |---|---|---|
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
-| 1b. The server over stdio, with its interface | 7, below | The first two and a half are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md` and `2026-10-14-mcp-server-1b-3a-agents-tab.md`). Nothing the others wait for is open |
+| 1b. The server over stdio, with its interface | 7, below | The first three and a half are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md` and `2026-10-14-mcp-server-1b-4a-activity.md`). Nothing the others wait for is open |
 | 1b on Windows: the way in | 1 | After 1b (question 14) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
 | 1d. HTTP with tokens | 1 | After stdio (question 9) |
@@ -2106,7 +2139,8 @@ can see what agents do and stop them.
 | **1b-2b. Turning it on from the files, and stdio** (built: `2026-10-14-mcp-server-1b-2b-stdio.md`) | The `[mcp]` keys in `settings.toml`, and the app that starts and stops the server with them and sends the backend what agents may use. The endpoint, the key and the relay, `tabletist mcp`, on Linux and macOS. The keychain on macOS (A.1). The website's reference for the files | With `enabled = true` and an access written by hand, an agent connects over stdio and reads. Nothing in the app shows it yet, and nothing in the app turns it on | F.1 over stdio, F.5 over stdio, the settings file, `tests/cli.rs` |
 | **1b-3a. The Agents tab's frame** (built: `2026-10-14-mcp-server-1b-3a-agents-tab.md`) | The third kind of tab. The sidebar entry with its states but Waiting. The ways in: the key, `ga`, `:agents`, quick open. The three empty states, with **Turn on** and **Copy**. The sessions the app learns of, and those that are here. The keymap and the help | Open the tab in any state, see which state the connection is in and who is here, turn the server on from the tab | F.7: the entry's states, the ways in, one tab for a window, the empty states, nothing opening or focusing by itself |
 | **1b-3b. Changes made outside the app** (built: `2026-10-14-mcp-server-1b-3b-changes-outside.md`) | C.2: the agent settings the app last showed, kept in the state directory, and a change from outside that makes agents more able held back until the person keeps it | A program that edits the files cannot turn agents on unseen | C.2's cases |
-| **1b-4. What agents are doing** | `App::agents`. The sessions that are here and "Also:". The feed. **Stop session** and **Stop agents here**. The Log view as a list for this connection, with All connections. The notification for an agent that connects | See each agent and each call as it happens, stop one agent or all on a connection, read the log | F.7: one connection, the stops, closing the tab, the log's default. F.4's interface |
+| **1b-4a. What agents are doing** (built: `2026-10-14-mcp-server-1b-4a-activity.md`) | `App::agents`'s feed, from `Server::calls`. The sessions that are here and "Also:". **Stop session** and **Stop agents here** | See each agent and each call as it happens, stop one agent or all on a connection | F.7: one connection, the stops, closing the tab |
+| **1b-4b. The log, and a new agent** | The Log view as a list for this connection, with All connections, and **Show log**. The notification for an agent that connects | Read the log, and hear of an agent that connects | F.7: the log's default. F.4's interface |
 | **1b-5. Letting agents in** | Settings › Agents, with the switch between panes. The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** and **Show Agents tab** pointing at them. The website: a new guide, and the reference pages | Everything Phase 1 draws, without a file edited by hand | The interface tests of Settings, Connections and the editor. The keymap. `docs/bin/check` |
 
 - **A button arrives with what it opens.** The empty states of the third
@@ -2269,9 +2303,10 @@ The ones Phase 1 waits for are marked.
 16. Settled on 2026-10-13: this file lives in `docs/superpowers/plans/`,
     which the website leaves out (`docs/_config.yml:113-115`). Under
     `docs/plans/` Jekyll would have copied it to the site as it is.
-17. A new stdio agent: a notification, as planned, or a question the first
-    time a name is seen ("Let Claude Code connect?")? The second is a real
-    gate for stdio, which has none.
+17. Settled on 2026-10-14, as planned: a notification (the fourth run's
+    second part). A new stdio agent: a notification, as planned, or a
+    question the first time a name is seen ("Let Claude Code connect?")?
+    The second is a real gate for stdio, which has none.
 18. Should the log keep parameters in full? They can hold personal data.
     The alternative keeps their types and lengths.
 19. Settled on 2026-10-14, otherwise than planned (`2026-10-14-mcp-server-1b-2a-gateway.md`): a connection

@@ -244,15 +244,16 @@ fn the_tab_shows_its_state_and_its_buttons_do_what_they_say() {
         allow(&mut harness, tab, AgentAccess::Read);
         let here = session(&harness, Some(tab), "Claude Code");
         said(&mut harness, AgentsEvent::Sessions(vec![here]));
-        let name = if look.terminal {
-            "claude code"
+        // In the list at the left in the terminal look, its line over the
+        // calls; in a row with Stop session in the macOS look.
+        let said = if look.terminal {
+            "claude code  tabletist-repo · connected just now · 14 calls · runs as dev"
         } else {
-            "Claude Code"
+            "Claude Code · tabletist-repo · connected just now · 14 calls · Runs as dev"
         };
+        assert!(harness.has(said), "{}", look.name);
         assert!(
-            harness.has(&format!(
-                "{name} · tabletist-repo · connected just now · 14 calls · Runs as dev"
-            )),
+            harness.has(&look.label("No calls on this connection yet.")),
             "{}",
             look.name
         );
@@ -353,7 +354,7 @@ fn more_sessions_than_the_tab_has_room_for_scroll_to_the_last() {
     let last = "Agent 0 · tabletist-repo · connected just now · 14 calls · Runs as dev";
     let seen = |harness: &Harness| {
         harness
-            .painted_rect("Agent 0  tabletist-repo · connected just now · 14 calls · Runs as dev")
+            .painted_rect("Agent 0  tabletist-repo · connected just now · 14 calls")
             .is_some_and(|row| row.bottom() <= status.top())
     };
     assert!(!seen(&harness));
@@ -465,4 +466,294 @@ fn closing_the_tab_stops_nothing() {
     assert_eq!(agents_tabs(&harness, tab), 0);
     assert_eq!(harness.app.agents.sessions.len(), 1);
     assert_eq!(harness.app.backend.sent.len(), sent, "nothing is sent");
+}
+
+/// A saved connection elsewhere, Ledger · staging, and a session of
+/// `agent` that works there and only there.
+fn working_elsewhere(harness: &mut Harness, agent: &str) -> crate::connections::ConnectionId {
+    let mut ledger = crate::testing::fixture_connection();
+    ledger.id = crate::connections::ConnectionId("ledger".into());
+    ledger.name = "Ledger".into();
+    ledger.environment = crate::env::Environment::Staging;
+    harness.app.connections.upsert(ledger.clone());
+    let mut session = session(harness, None, agent);
+    session.connections = vec!["ledger".into()];
+    harness.app.agents.sessions.push(session);
+    ledger.id
+}
+
+/// A call of the session of `agent`'s on `tab`'s connection, or on another.
+fn call(harness: &Harness, tab: Option<ConnTabId>, sql: &str) -> tabletist_mcp::Call {
+    tabletist_mcp::Call {
+        at: SystemTime::now(),
+        session: "session of Claude Code".into(),
+        connection: Some(tab.map_or("ledger".into(), |tab| {
+            harness.app.workspace(tab).unwrap().conn_id.0.clone()
+        })),
+        tool: "run_query".into(),
+        request: Some(sql.into()),
+        result: "ok".into(),
+        message: None,
+        rows: Some(1),
+        columns: Some(1),
+        took: std::time::Duration::from_millis(2),
+    }
+}
+
+#[test]
+fn the_feed_shows_the_calls_on_this_connection_as_they_end() {
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        harness.app.settings.mcp_enabled = true;
+        allow(&mut harness, tab, AgentAccess::Read);
+        let here = session(&harness, Some(tab), "Claude Code");
+        said(&mut harness, AgentsEvent::Sessions(vec![here]));
+        harness.app.apply(Action::ShowAgents(tab));
+        let mine = call(&harness, Some(tab), "SELECT 1");
+        said(&mut harness, AgentsEvent::Called(mine));
+        let theirs = call(&harness, None, "SELECT 2");
+        said(&mut harness, AgentsEvent::Called(theirs));
+        let row = look.label("just now");
+        assert!(
+            harness.has(&format!("{row} · run_query · SELECT 1 · 1 row · 2 ms")),
+            "{}",
+            look.name
+        );
+        assert!(
+            !harness.has(&format!("{row} · run_query · SELECT 2 · 1 row · 2 ms")),
+            "{}",
+            look.name
+        );
+        // A refusal says why, as the log does.
+        let mut refused = call(&harness, Some(tab), "DELETE FROM books");
+        refused.result = "refused".into();
+        refused.message = Some("Only SELECT is read here.".into());
+        refused.rows = None;
+        said(&mut harness, AgentsEvent::Called(refused));
+        assert!(
+            harness.has(&format!(
+                "{row} · run_query · DELETE FROM books · refused · Only SELECT is read here."
+            )),
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[test]
+fn stop_session_and_stop_agents_here_are_the_tabs_buttons() {
+    let (mut harness, tab) = connected(Look::macos());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    harness.app.serve_agents();
+    let here = session(&harness, Some(tab), "Claude Code");
+    said(&mut harness, AgentsEvent::Sessions(vec![here]));
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    let stopped = |harness: &Harness| {
+        harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .filter(|sent| {
+                matches!(sent, crate::backend::Command::Agents(
+                    crate::backend::AgentsCommand::StopSession(id)) if id == "session of Claude Code")
+            })
+            .count()
+    };
+    harness.click("Stop session");
+    harness.settle();
+    assert_eq!(stopped(&harness), 1);
+    harness.click("Stop agents here");
+    harness.settle();
+    assert_eq!(stopped(&harness), 2);
+    let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+    assert_eq!(
+        harness.app.connections.get(&conn).unwrap().agents.access,
+        AgentAccess::Off
+    );
+    assert_eq!(
+        crate::ui::toast::said(&harness.ctx).as_deref(),
+        Some("Stopped 1 agent. Access is now Off for Fixture · dev.")
+    );
+    assert!(harness.has(&entry(&Look::macos(), "Off here")));
+}
+
+#[test]
+fn also_names_who_works_elsewhere_and_show_opens_its_window_on_its_agents() {
+    let (mut harness, tab) = connected(Look::macos());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    let ledger = working_elsewhere(&mut harness, "Cursor");
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    // Said in every state that the header has, nobody here too.
+    assert!(harness.has("Also: Cursor on Ledger · staging"));
+    let mut nowhere = session(&harness, None, "Zed");
+    nowhere.last_call_at = None;
+    harness.app.agents.sessions.push(nowhere);
+    assert!(harness.has("Also: Cursor on Ledger · staging and 1 more"));
+    let windows = harness.app.tabs.len();
+    harness.click("Show");
+    harness.settle();
+    assert_eq!(harness.app.tabs.len(), windows + 1);
+    let shown = harness.app.active_tab_id();
+    let workspace = harness.app.workspace(shown).unwrap();
+    assert_eq!(workspace.conn_id, ledger);
+    assert!(workspace.agents_in_front());
+}
+
+#[test]
+fn omarchys_keys_move_among_the_sessions_stop_one_and_show_where_one_works() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    harness.app.serve_agents();
+    let here = session(&harness, Some(tab), "Claude Code");
+    harness.app.agents.sessions.push(here);
+    let ledger = working_elsewhere(&mut harness, "Cursor");
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    let selected = |harness: &Harness| harness.app.agents_selected(tab).map(|s| s.id.clone());
+    assert_eq!(
+        selected(&harness).as_deref(),
+        Some("session of Claude Code")
+    );
+    // Enter on a session here shows nothing more.
+    let windows = harness.app.tabs.len();
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(harness.app.tabs.len(), windows);
+    super::tests::type_key(&mut harness, egui::Key::J, "j");
+    assert_eq!(selected(&harness).as_deref(), Some("session of Cursor"));
+    // Past the last, it stays.
+    super::tests::type_key(&mut harness, egui::Key::J, "j");
+    assert_eq!(selected(&harness).as_deref(), Some("session of Cursor"));
+    // `S` stops the selected one, wherever it works.
+    super::tests::type_key(&mut harness, egui::Key::S, "S");
+    assert!(harness.app.backend.sent.iter().any(|sent| matches!(sent,
+        crate::backend::Command::Agents(crate::backend::AgentsCommand::StopSession(id))
+            if id == "session of Cursor")));
+    // Enter shows its connection's window, on its Agents tab.
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(harness.app.tabs.len(), windows + 1);
+    let shown = harness.app.active_tab_id();
+    assert_eq!(harness.app.workspace(shown).unwrap().conn_id, ledger);
+    // Back, `k`, and `X` stops who is here and turns access Off.
+    harness.app.apply(Action::ActivateConnTab(tab));
+    super::tests::type_key(&mut harness, egui::Key::K, "k");
+    super::tests::type_key(&mut harness, egui::Key::X, "X");
+    let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+    assert_eq!(
+        harness.app.connections.get(&conn).unwrap().agents.access,
+        AgentAccess::Off
+    );
+    // This look floats no toast: its status line says it.
+    assert!(
+        harness
+            .has(&Look::omarchy().label("Stopped 1 agent. Access is now Off for Fixture · dev."))
+    );
+}
+
+/// Two sessions here: A, which called last, then B.
+fn two_here(harness: &mut Harness, tab: ConnTabId) {
+    let now = SystemTime::now();
+    let mut a = session(harness, Some(tab), "A");
+    a.last_call_at = Some(now);
+    let mut b = session(harness, Some(tab), "B");
+    b.last_call_at = Some(now - std::time::Duration::from_secs(5));
+    said(harness, AgentsEvent::Sessions(vec![a, b]));
+}
+
+#[test]
+fn the_selection_stays_on_the_session_the_person_saw_when_the_list_reorders() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    harness.app.serve_agents();
+    two_here(&mut harness, tab);
+    harness.app.apply(Action::ShowAgents(tab));
+    super::tests::type_key(&mut harness, egui::Key::J, "j");
+    let selected = |harness: &Harness| harness.app.agents_selected(tab).map(|s| s.id.clone());
+    assert_eq!(selected(&harness).as_deref(), Some("session of B"));
+    // B calls: it goes first in the list, and stays the one selected.
+    let mut sessions = harness.app.agents.sessions.clone();
+    sessions[1].last_call_at = Some(SystemTime::now() + std::time::Duration::from_secs(20));
+    said(&mut harness, AgentsEvent::Sessions(sessions.clone()));
+    assert_eq!(selected(&harness).as_deref(), Some("session of B"));
+    super::tests::type_key(&mut harness, egui::Key::S, "S");
+    let stopped: Vec<_> = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .filter_map(|sent| match sent {
+            crate::backend::Command::Agents(crate::backend::AgentsCommand::StopSession(id)) => {
+                Some(id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stopped, ["session of B"]);
+    // B ends: the first is selected, and `k` from it stays there.
+    said(
+        &mut harness,
+        AgentsEvent::Sessions(vec![sessions[0].clone()]),
+    );
+    assert_eq!(selected(&harness).as_deref(), Some("session of A"));
+    super::tests::type_key(&mut harness, egui::Key::K, "k");
+    assert_eq!(selected(&harness).as_deref(), Some("session of A"));
+}
+
+#[test]
+fn with_sessions_here_the_arrows_still_move_in_the_tree_and_enter_leaves_a_button_its_own() {
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        harness.app.settings.mcp_enabled = true;
+        allow(&mut harness, tab, AgentAccess::Read);
+        let here = session(&harness, Some(tab), "Claude Code");
+        said(&mut harness, AgentsEvent::Sessions(vec![here]));
+        harness.app.apply(Action::ShowAgents(tab));
+        harness.settle();
+        let cursor = |harness: &Harness| harness.app.workspace(tab).unwrap().tree.cursor.clone();
+        let before = cursor(&harness);
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        assert_ne!(cursor(&harness), before, "{}", look.name);
+    }
+    // Enter on a focused button is the button's: here, Disconnect.
+    let (mut harness, tab) = connected(Look::omarchy());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    let here = session(&harness, Some(tab), "Claude Code");
+    said(&mut harness, AgentsEvent::Sessions(vec![here]));
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+    harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(harness.app.workspace(tab).is_none(), "disconnected");
+}
+
+#[test]
+fn omarchy_lists_who_works_elsewhere_while_nobody_is_here() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    harness.app.serve_agents();
+    let ledger = working_elsewhere(&mut harness, "Cursor");
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    assert!(harness.has(&entry(&Look::omarchy(), "None connected")));
+    assert!(harness.has("cursor · Ledger · staging · enter shows"));
+    // With the way to connect one beside it.
+    assert!(harness.has(crate::endpoint::agent_command()));
+    // `X` has nobody here to stop: nothing changes.
+    super::tests::type_key(&mut harness, egui::Key::X, "X");
+    let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+    assert_eq!(
+        harness.app.connections.get(&conn).unwrap().agents.access,
+        AgentAccess::Read
+    );
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    let shown = harness.app.active_tab_id();
+    assert_eq!(harness.app.workspace(shown).unwrap().conn_id, ledger);
 }

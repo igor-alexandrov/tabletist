@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value as Json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{RwLock, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::Gateway;
@@ -51,11 +51,52 @@ pub struct SessionInfo {
     pub transport: Transport,
     pub connected_at: SystemTime,
     pub calls: u64,
-    /// The connections its calls have named, by id, in the order it first
-    /// named each: where it works.
+    /// The connections its calls have named, by id, the one it named last
+    /// at the end: where it works, and where it works now.
     pub connections: Vec<String>,
     /// When its last call came, once it has made one.
     pub last_call_at: Option<SystemTime>,
+}
+
+/// A call, as the app shows it as it ends: what the log keeps of it but
+/// its values, with its statement cut to its start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Call {
+    /// When it arrived.
+    pub at: SystemTime,
+    pub session: String,
+    /// The id of the connection it named, where it named one an agent may
+    /// see.
+    pub connection: Option<String>,
+    pub tool: String,
+    /// What it asked: the statement, or the tables, on one line and cut
+    /// to [`CALL_CHARS`] characters.
+    pub request: Option<String>,
+    /// As the log has it: `ok`, `refused`, `error`, `timeout`,
+    /// `cancelled` or `stopped`.
+    pub result: String,
+    /// The refusal's sentence, as the log keeps it.
+    pub message: Option<String>,
+    /// The rows the agent was sent, or the tables it was described.
+    pub rows: Option<u64>,
+    pub columns: Option<u64>,
+    pub took: Duration,
+}
+
+/// The most characters of a call's request [`Server::calls`] tells.
+pub const CALL_CHARS: usize = 200;
+
+/// How many calls [`Server::calls`] holds for a receiver that is behind.
+const CALLS_HELD: usize = 256;
+
+/// `text` on one line, its runs of white space one space, and cut to
+/// [`CALL_CHARS`] characters.
+fn one_line(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(CALL_CHARS) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line,
+    }
 }
 
 /// What stands for an agent's name until it has given one.
@@ -133,15 +174,23 @@ impl Live {
         }
     }
 
-    /// Notes a call that came at `at`, and the connection it named. A call
-    /// that ends after a later one does not take the time back.
+    /// Notes a call that came at `at`, and the connection it named, which
+    /// goes to the end of those it has named. A call that ends after a
+    /// later one takes back neither the time nor the end: the later one
+    /// named where the session works now.
     fn called(&self, at: SystemTime, connection: Option<&str>) {
         let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+        let latest = used.last_call_at.is_none_or(|last| at >= last);
         used.last_call_at = used.last_call_at.max(Some(at));
-        if let Some(id) = connection
-            && !used.connections.iter().any(|named| named == id)
-        {
-            used.connections.push(id.to_owned());
+        if let Some(id) = connection {
+            let named = used.connections.iter().any(|named| named == id);
+            if latest {
+                used.connections.retain(|named| named != id);
+                used.connections.push(id.to_owned());
+            } else if !named {
+                // Where it worked before, which is not where it works now.
+                used.connections.insert(0, id.to_owned());
+            }
         }
         drop(used);
         self.changed.send_replace(());
@@ -239,6 +288,8 @@ struct Inner<G> {
     /// Sent to when a session opens or ends, names its agent, or makes a
     /// call: what [`Server::open_sessions`] says has changed.
     changed: Arc<watch::Sender<()>>,
+    /// Each call, as it ends.
+    calls: broadcast::Sender<Call>,
 }
 
 impl<G: Gateway> Server<G> {
@@ -253,6 +304,7 @@ impl<G: Gateway> Server<G> {
                 sessions: Mutex::default(),
                 stop: Stop::new(),
                 changed: Arc::new(watch::Sender::new(())),
+                calls: broadcast::Sender::new(CALLS_HELD),
             }),
         }
     }
@@ -293,6 +345,12 @@ impl<G: Gateway> Server<G> {
     /// session opened or ended, its agent was named, or it made a call.
     pub fn changes(&self) -> watch::Receiver<()> {
         self.inner.changed.subscribe()
+    }
+
+    /// Told of each call as it ends, once it is in the log. A receiver
+    /// that falls more than a few hundred calls behind loses the oldest.
+    pub fn calls(&self) -> broadcast::Receiver<Call> {
+        self.inner.calls.subscribe()
     }
 
     /// The sessions that are open, the oldest first.
@@ -405,6 +463,22 @@ impl<G: Gateway> Server<G> {
             took.as_millis()
         );
         let (connection_id, connection) = note.connection.unzip();
+        let call = Call {
+            at: arrived,
+            session: live.id.clone(),
+            connection: connection_id.clone(),
+            tool: name.to_owned(),
+            request: note
+                .sql
+                .as_deref()
+                .or(note.request.as_deref())
+                .map(one_line),
+            result: result.to_owned(),
+            message: message.clone(),
+            rows: note.rows,
+            columns: note.columns,
+            took,
+        };
         let entry = Entry {
             at_ms: millis(arrived.duration_since(UNIX_EPOCH).unwrap_or_default()),
             session: live.id.clone(),
@@ -432,6 +506,8 @@ impl<G: Gateway> Server<G> {
             // turn every read into an error.
             log::error!("an agent's call is not in the log: {error}");
         }
+        // Nobody may be listening.
+        let _ = self.inner.calls.send(call);
         Ok(reply)
     }
 }
@@ -450,4 +526,25 @@ fn millis(time: Duration) -> i64 {
 
 fn count(count: u64) -> i64 {
     i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_request_is_told_on_one_line_and_cut() {
+        assert_eq!(
+            super::one_line("SELECT  id,\n\t title\nFROM books "),
+            "SELECT id, title FROM books"
+        );
+        let long = "x".repeat(super::CALL_CHARS + 10);
+        let told = super::one_line(&long);
+        assert_eq!(told.chars().count(), super::CALL_CHARS + 1);
+        assert!(told.ends_with('…'));
+        assert_eq!(
+            super::one_line(&"é".repeat(super::CALL_CHARS))
+                .chars()
+                .count(),
+            super::CALL_CHARS
+        );
+    }
 }

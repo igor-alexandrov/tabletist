@@ -100,6 +100,18 @@ async fn a_session_knows_where_it_works_and_the_server_says_when_that_changes() 
         .call("describe_schema", json!({ "connection": "Bookshop · dev" }))
         .await;
     assert_eq!(server.open_sessions()[0].connections, ["id:Bookshop · dev"]);
+    // Another, then the first again: the one it named last is at the end,
+    // where it works now.
+    shop.list("Bookshop · staging", &shop.bookshop(), support::LIMITS);
+    for name in ["Bookshop · staging", "Bookshop · dev"] {
+        agent
+            .call("describe_schema", json!({ "connection": name }))
+            .await;
+    }
+    assert_eq!(
+        server.open_sessions()[0].connections,
+        ["id:Bookshop · staging", "id:Bookshop · dev"]
+    );
     changes.mark_unchanged();
     agent.close().await;
     assert!(changes.has_changed().unwrap(), "a session ended");
@@ -128,6 +140,39 @@ async fn a_session_is_where_its_call_names_from_when_the_call_comes() {
     let (_, quick) = tokio::join!(slow, meanwhile);
     // The slow call came first and ended last: it takes no time back.
     assert!(server.open_sessions()[0].last_call_at.unwrap() >= quick);
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn a_call_that_ends_after_a_later_one_leaves_the_session_where_the_later_one_named() {
+    use std::time::{Duration, Instant};
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    shop.list("Bookshop · staging", &shop.bookshop(), support::LIMITS);
+    let agent = Agent::connect(&server).await;
+    let arguments = json!({ "connection": "Bookshop · dev", "sql": support::slow(2) });
+    let slow = agent.call("run_query", arguments);
+    let meanwhile = async {
+        // Once the slow call is on dev, a quick one on staging, which
+        // ends first.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while server.open_sessions()[0].connections.is_empty() {
+            assert!(Instant::now() < deadline, "not here while the call runs");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        agent
+            .call(
+                "describe_schema",
+                json!({ "connection": "Bookshop · staging" }),
+            )
+            .await;
+    };
+    tokio::join!(slow, meanwhile);
+    // The slow call ended last, and staging was named last.
+    assert_eq!(
+        server.open_sessions()[0].connections,
+        ["id:Bookshop · dev", "id:Bookshop · staging"]
+    );
     agent.close().await;
 }
 
@@ -192,4 +237,52 @@ async fn stopping_the_server_ends_every_session_and_serves_no_new_one() {
     served.await.unwrap();
     drop(transport);
     assert_eq!(server.open_sessions(), []);
+}
+
+#[tokio::test]
+async fn each_call_is_told_as_it_ends_without_its_values() {
+    let shop = Shop::new();
+    let (server, log) = server(&shop);
+    let mut calls = server.calls();
+    let agent = Agent::connect(&server).await;
+    agent
+        .call(
+            "run_query",
+            json!({
+                "connection": "Bookshop · dev",
+                "sql": "SELECT id,\n       title\n  FROM books WHERE id = ?",
+                "params": [1],
+            }),
+        )
+        .await;
+    let call = calls.recv().await.unwrap();
+    assert_eq!(call.session, server.open_sessions()[0].id);
+    assert_eq!(call.connection.as_deref(), Some("id:Bookshop · dev"));
+    assert_eq!(call.tool, "run_query");
+    assert_eq!(
+        call.request.as_deref(),
+        Some("SELECT id, title FROM books WHERE id = ?")
+    );
+    assert_eq!(
+        (call.result.as_str(), call.message.as_deref()),
+        ("ok", None)
+    );
+    assert_eq!((call.rows, call.columns), (Some(1), Some(2)));
+    // In the log by the time it is told.
+    assert_eq!(support::entries(&log).await.len(), 1);
+    // A refusal says why, as the log does; a call that names no
+    // connection is told with none.
+    agent
+        .call(
+            "run_query",
+            json!({ "connection": "Payroll", "sql": "SELECT 1" }),
+        )
+        .await;
+    let refused = calls.recv().await.unwrap();
+    assert_eq!(
+        (refused.result.as_str(), refused.connection.as_deref()),
+        ("refused", None)
+    );
+    assert!(refused.message.unwrap().contains("Payroll"));
+    agent.close().await;
 }

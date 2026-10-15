@@ -2029,11 +2029,20 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let review_key = key(Command::ReviewSql);
     let (agents_copy_key, agents_on_key) =
         (key(Command::CopyAgentCommand), key(Command::TurnAgentsOn));
+    let (agents_move_key, agents_stop_key, agents_here_key) = (
+        key(Command::MoveInAgentSessions),
+        key(Command::StopAgentSession),
+        key(Command::StopAgentsHere),
+    );
     // The Agents tab in front: its keys, by the state it shows.
     let agents = app
         .workspace(tab)
         .filter(|workspace| workspace.agents_in_front())
         .and_then(|_| app.agents_here(tab));
+    // Whether its list has sessions, elsewhere ones too.
+    let agents_listed = app
+        .workspace(tab)
+        .is_some_and(|workspace| !app.agents.listed(&workspace.conn_id).is_empty());
     let (run_key, run_all_key) = (key(Command::RunStatement), key(Command::RunAll));
     let (leave_key, complete_key) = (key(Command::LeaveEditor), key(Command::InsertCompletion));
     let (keep_key, next_key) = (key(Command::KeepEdit), key(Command::CommitNext));
@@ -2223,14 +2232,29 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 structure_hints.push((&review_key, &*review, true));
             }
             let (copy_word, on_word) = (gettext(locale, "copy"), gettext(locale, "turn on"));
+            let stop_words = [
+                gettext(locale, "sessions"),
+                gettext(locale, "stop session"),
+                gettext(locale, "stop agents here"),
+            ];
             let mut agents_hints: Vec<widgets::Hint<'_>> = match &agents {
                 Some(crate::model::AgentsHere::ServerOff) => {
                     vec![(&agents_on_key, &*on_word, true)]
                 }
-                Some(
-                    crate::model::AgentsHere::NoneConnected
-                    | crate::model::AgentsHere::Connected { .. },
-                ) => vec![(&agents_copy_key, &*copy_word, true)],
+                Some(crate::model::AgentsHere::NoneConnected) if agents_listed => vec![
+                    (&agents_move_key, &*stop_words[0], true),
+                    (&agents_stop_key, &*stop_words[1], true),
+                    (&agents_copy_key, &*copy_word, true),
+                ],
+                Some(crate::model::AgentsHere::NoneConnected) => {
+                    vec![(&agents_copy_key, &*copy_word, true)]
+                }
+                Some(crate::model::AgentsHere::Connected { .. }) => vec![
+                    (&agents_move_key, &*stop_words[0], true),
+                    (&agents_stop_key, &*stop_words[1], true),
+                    (&agents_here_key, &*stop_words[2], true),
+                    (&agents_copy_key, &*copy_word, true),
+                ],
                 Some(crate::model::AgentsHere::OffHere) | None => Vec::new(),
             };
             agents_hints.push((&sidebar_key, "tables", true));

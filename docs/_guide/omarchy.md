@@ -109,6 +109,10 @@ key. Nor has copying a whole row.
 | --- | --- |
 | `y` | Copy the command that connects an agent |
 | `o` | Turn the agent server on, while it is off |
+| `j` / `k` | Move among the agents' sessions: those here, then those elsewhere |
+| `S` | Stop the selected session, wherever it works |
+| `X` | Stop every agent here, and turn this connection's access off |
+| Enter | Show the window of the connection the selected agent works on |
 
 ### The Structure view
 

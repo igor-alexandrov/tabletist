@@ -799,7 +799,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                     actions.push(Action::TreeKey { tab, key });
                 }
             }
-            if on(input, Command::OpenObject, Scope::Sidebar).count > 0 {
+            // The terminal look's list of sessions has Enter of its own,
+            // unless the person went to the tree.
+            let list = terminal
+                && agents_lists(app, tab)
+                && app
+                    .workspace(tab)
+                    .is_some_and(|workspace| workspace.pane != crate::model::Pane::Tree);
+            if !list && on(input, Command::OpenObject, Scope::Sidebar).count > 0 {
                 let key = TreeKey::Enter;
                 actions.push(Action::TreeKey { tab, key });
             }
@@ -1686,6 +1693,34 @@ fn agents_shows(app: &App, tab: ConnTabId, server_off: bool) -> bool {
         }
 }
 
+/// Whether the Agents tab of `tab` is in front and lists sessions, here
+/// or elsewhere: what its keys for them need. Not while the server is off
+/// or the connection is Off, whose tabs list none.
+fn agents_lists(app: &App, tab: ConnTabId) -> bool {
+    use crate::model::AgentsHere;
+    let Some(workspace) = app.workspace(tab).filter(|w| w.agents_in_front()) else {
+        return false;
+    };
+    let listing = matches!(
+        app.agents_here(tab),
+        Some(AgentsHere::NoneConnected | AgentsHere::Connected { .. })
+    );
+    listing && !app.agents.listed(&workspace.conn_id).is_empty()
+}
+
+/// Whether the Agents tab of `tab` is in front with agents here: what Stop
+/// agents here needs.
+fn agents_here(app: &App, tab: ConnTabId) -> bool {
+    let front = app
+        .workspace(tab)
+        .is_some_and(crate::model::Workspace::agents_in_front);
+    front
+        && matches!(
+            app.agents_here(tab),
+            Some(crate::model::AgentsHere::Connected { .. })
+        )
+}
+
 /// Whether `sql` shows a result grid for the keys to move in: its last
 /// run's rows, unless the Messages pane covers them.
 fn shows_grid(sql: &crate::model::SqlTab) -> bool {
@@ -2126,6 +2161,35 @@ fn letters(
             )
         })
     };
+    // Enter shows the window of the selected session that works
+    // elsewhere, on its Agents tab. Only then, and never a focused
+    // button's.
+    let elsewhere = app
+        .agents_selected(tab)
+        .filter(|session| {
+            app.workspace(tab)
+                .is_some_and(|workspace| !session.connections.contains(&workspace.conn_id.0))
+        })
+        .and_then(|session| crate::ui::agents::Elsewhere::of(app, session).on);
+    if agents_lists(app, tab)
+        && !crate::ui::focus::on_control(ctx)
+        && let Some((conn, _)) = elsewhere
+        && ctx
+            .input_mut(|input| {
+                asked(
+                    input,
+                    &app.keymap,
+                    layout,
+                    Command::ShowAgentsElsewhere,
+                    Scope::Agents,
+                    true,
+                )
+            })
+            .count
+            > 0
+    {
+        actions.push(Action::ShowAgentsOn(conn));
+    }
     let alone = actions.is_empty() && !pointer && keys <= typed.len() && only_edits;
     // Whether a field or the prompt was asked for: the frame's typing ends
     // there.
@@ -2177,6 +2241,22 @@ fn letters(
             }
             (Some(Command::TurnAgentsOn), _) if agents_shows(app, tab, true) => {
                 actions.push(Action::TurnAgentsOn);
+            }
+            (Some(Command::MoveInAgentSessions), _) if agents_lists(app, tab) => {
+                let step = if char == 'k' { -1 } else { 1 };
+                actions.push(Action::MoveAgentSelection { tab, step });
+            }
+            (Some(Command::StopAgentSession), _) if agents_lists(app, tab) => {
+                if let Some(session) = app.agents_selected(tab) {
+                    actions.push(Action::StopAgentSession(session.id.clone()));
+                }
+            }
+            (Some(Command::StopAgentsHere), _) if agents_here(app, tab) => {
+                let here = app
+                    .workspace(tab)
+                    .map_or(0, |workspace| app.agents.here(&workspace.conn_id).len());
+                let name = app.agents_name(tab).unwrap_or_default();
+                crate::ui::agents::stop_here(ctx, tab, here, &name, app.locale, actions);
             }
             (Some(Command::EditCell), _) if edits && alone => {
                 opened = true;

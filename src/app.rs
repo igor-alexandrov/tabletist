@@ -1411,6 +1411,35 @@ impl App {
             Action::NewSqlTab(tab) => self.new_sql_tab(tab),
             Action::ShowAgents(tab) => self.show_agents(tab),
             Action::TurnAgentsOn => self.turn_agents_on(),
+            Action::StopAgentSession(id) => self.stop_agent_session(id),
+            Action::StopAgentsHere(tab) => self.stop_agents_here(tab),
+            Action::ShowAgentsOn(conn) => self.show_agents_on(conn),
+            Action::MoveAgentSelection { tab, step } => {
+                let Some(conn) = self
+                    .workspace(tab)
+                    .map(|workspace| workspace.conn_id.clone())
+                else {
+                    return;
+                };
+                // From the session shown selected, wherever the list has
+                // put it since.
+                let shown = self.agents_selected(tab).map(|session| session.id.clone());
+                let listed = self.agents.listed(&conn);
+                let at = listed
+                    .iter()
+                    .position(|session| Some(&session.id) == shown.as_ref())
+                    .unwrap_or_default();
+                let to = at
+                    .saturating_add_signed(step)
+                    .min(listed.len().saturating_sub(1));
+                let selected = listed.get(to).map(|session| session.id.clone());
+                if let Some(agents) = self
+                    .workspace_mut(tab)
+                    .and_then(crate::model::Workspace::agents_tab_mut)
+                {
+                    agents.selected = selected;
+                }
+            }
             Action::KeepAgentChanges(said) => self.keep_agent_changes(&said),
             Action::PutBackAgentChanges(said) => self.put_back_agent_changes(&said),
             Action::RunSql { tab, sql_tab, all } => {
@@ -2852,6 +2881,7 @@ impl App {
                     self.agents.sessions = open;
                 }
                 AgentsEvent::Sessions(_) => {}
+                AgentsEvent::Called(call) => self.agents.called(call),
                 AgentsEvent::Started {
                     kept_aside: Some(path),
                 } => {
@@ -3694,11 +3724,89 @@ impl App {
         let shown = workspace.agents_tab().unwrap_or_else(|| {
             workspace
                 .tabs
-                .push(Tab::Agents(crate::model::AgentsTab { id }));
+                .push(Tab::Agents(crate::model::AgentsTab { id, selected: None }));
             id
         });
         workspace.active_tab = Some(shown);
         workspace.pane = Pane::Grid;
+    }
+
+    /// Stops one agent's session. Its line goes when the backend says the
+    /// sessions again.
+    fn stop_agent_session(&mut self, id: String) {
+        if self.serves_agents {
+            self.backend
+                .send(Command::Agents(AgentsCommand::StopSession(id)));
+        }
+    }
+
+    /// Stops every session that is here, wherever else it works too, and
+    /// sets the connection's access to Off and saves it: a stop that an
+    /// agent undoes by connecting again is no stop (A.5, question 21).
+    fn stop_agents_here(&mut self, tab: ConnTabId) {
+        let Some(conn) = self
+            .workspace(tab)
+            .map(|workspace| workspace.conn_id.clone())
+        else {
+            return;
+        };
+        let here: Vec<String> = self
+            .agents
+            .here(&conn)
+            .into_iter()
+            .map(|session| session.id.clone())
+            .collect();
+        for id in here {
+            self.stop_agent_session(id);
+        }
+        if let Some(mut saved) = self.connections.get(&conn).cloned()
+            && saved.agents.access != crate::connections::AgentAccess::Off
+        {
+            saved.agents.access = crate::connections::AgentAccess::Off;
+            self.connections.upsert(saved);
+            self.save_connections();
+        }
+    }
+
+    /// Shows the Agents tab of `conn`'s window, opening the window first
+    /// where there is none. It connects behind the tab as any does.
+    fn show_agents_on(&mut self, conn: crate::connections::ConnectionId) {
+        // Nothing of agents shows where they cannot reach the app.
+        if !crate::endpoint::AVAILABLE {
+            return;
+        }
+        let tab = match self.tab_showing(&conn) {
+            Some(tab) => tab,
+            None => {
+                let Some(saved) = self.connections.get(&conn).cloned() else {
+                    return;
+                };
+                let tab = self.picker_tab();
+                let id = tab.id;
+                self.tabs.push(tab);
+                self.connect_tab(id, saved, Secrets::default());
+                id
+            }
+        };
+        self.apply(Action::ActivateConnTab(tab));
+        self.show_agents(tab);
+    }
+
+    /// The session the Agents tab of `tab` has selected, in the terminal
+    /// look: the first of the list until one is, and where that one has
+    /// ended.
+    pub fn agents_selected(&self, tab: ConnTabId) -> Option<&tabletist_mcp::SessionInfo> {
+        let workspace = self.workspace(tab)?;
+        let selected = workspace.tabs.iter().find_map(|open| match open {
+            Tab::Agents(agents) => Some(agents.selected.as_ref()),
+            Tab::Object(_) | Tab::Sql(_) => None,
+        })?;
+        let listed = self.agents.listed(&workspace.conn_id);
+        listed
+            .iter()
+            .find(|session| Some(&session.id) == selected)
+            .or(listed.first())
+            .copied()
     }
 
     /// What an agent calls the workspace's connection, Off or not: its
@@ -5936,6 +6044,137 @@ mod tests {
         assert_eq!(saved.agents.access, AgentAccess::Off);
         assert!(app.agents_held.is_empty());
         assert_eq!(app.agents_access(saved), AgentAccess::Off);
+    }
+
+    /// A session of Claude Code's that works on `conns`, by their ids.
+    fn agent_session(id: &str, conns: &[&ConnectionId]) -> tabletist_mcp::SessionInfo {
+        tabletist_mcp::SessionInfo {
+            id: id.into(),
+            agent: Some("Claude Code".into()),
+            project: Some("tabletist-repo".into()),
+            transport: tabletist_mcp::Transport::Stdio,
+            connected_at: std::time::SystemTime::now(),
+            calls: 3,
+            connections: conns.iter().map(|conn| conn.0.clone()).collect(),
+            last_call_at: Some(std::time::SystemTime::now()),
+        }
+    }
+
+    #[test]
+    fn a_call_goes_into_the_feed_and_opens_nothing() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.clone();
+        let (active, tabs) = (app.active_tab_id(), app.tabs.len());
+        app.apply_event(Event::Agents(AgentsEvent::Called(tabletist_mcp::Call {
+            at: std::time::SystemTime::now(),
+            session: "one".into(),
+            connection: Some(conn.0.clone()),
+            tool: "run_query".into(),
+            request: Some("SELECT 1".into()),
+            result: "ok".into(),
+            message: None,
+            rows: Some(1),
+            columns: Some(1),
+            took: std::time::Duration::from_millis(2),
+        })));
+        assert_eq!(app.agents.calls_on(&conn).count(), 1);
+        assert_eq!((app.active_tab_id(), app.tabs.len()), (active, tabs));
+        assert_eq!(app.workspace(tab).unwrap().agents_tab(), None);
+    }
+
+    #[test]
+    fn stop_session_asks_the_backend_to_stop_that_one() {
+        let (mut app, _dir) = app();
+        // Not before the app serves agents: tests never start it.
+        app.apply(Action::StopAgentSession("one".into()));
+        assert!(agents_sent(&app).is_empty());
+        app.serve_agents();
+        app.backend.sent.clear();
+        app.apply(Action::StopAgentSession("one".into()));
+        assert!(matches!(
+            agents_sent(&app)[..],
+            [AgentsCommand::StopSession(id)] if id == "one"
+        ));
+    }
+
+    #[test]
+    fn stop_agents_here_stops_who_is_here_and_turns_its_access_off() {
+        use crate::connections::AgentAccess;
+        let (mut app, dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.clone();
+        let mut readable = app.connections.get(&conn).unwrap().clone();
+        readable.agents.access = AgentAccess::Read;
+        app.connections.upsert(readable);
+        app.check_agents();
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
+        app.serve_agents();
+        let other = ConnectionId("other".into());
+        app.agents.sessions = vec![
+            agent_session("here", &[&conn]),
+            agent_session("both", &[&other, &conn]),
+            agent_session("elsewhere", &[&other]),
+        ];
+        app.backend.sent.clear();
+        app.apply(Action::StopAgentsHere(tab));
+        // Each that is here, wherever else it works too: a session cannot
+        // be stopped in part.
+        let stopped: Vec<_> = agents_sent(&app)
+            .into_iter()
+            .filter_map(|sent| match sent {
+                AgentsCommand::StopSession(id) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stopped.len(), 2);
+        assert!(stopped.contains(&"here") && stopped.contains(&"both"));
+        // Off, saved, and told to the backend: an agent that connects
+        // again does not see it.
+        assert_eq!(
+            app.connections.get(&conn).unwrap().agents.access,
+            AgentAccess::Off
+        );
+        let path = AppDirs::at(dir.path()).connections_file();
+        assert!(matches!(
+            saved(&app, &path),
+            Some(StateFile::Connections(stored))
+                if stored.connections.iter().all(|saved| saved.agents.access == AgentAccess::Off)
+        ));
+        assert!(matches!(
+            agents_sent(&app).last(),
+            Some(AgentsCommand::Policy { connections, .. }) if connections.is_empty()
+        ));
+        assert!(app.agents_held.is_empty(), "a lowering is not held");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn show_brings_the_window_of_the_connection_an_agent_works_on_forward() {
+        let (mut app, _dir) = app();
+        let (first, _, _) = connect(&mut app);
+        let elsewhere = with_saved(&mut app);
+        let windows = app.tabs.len();
+        // Not open: its window opens, on its Agents tab, and connects.
+        app.apply(Action::ShowAgentsOn(elsewhere.clone()));
+        assert_eq!(app.tabs.len(), windows + 1);
+        let opened = app.active_tab_id();
+        assert_ne!(opened, first);
+        let workspace = app.workspace(opened).unwrap();
+        assert_eq!(workspace.conn_id, elsewhere);
+        assert!(workspace.agents_in_front());
+        assert!(matches!(
+            app.backend.sent.last(),
+            Some(Command::Connect { .. })
+        ));
+        // Open: brought forward, and nothing more is opened.
+        app.apply(Action::ActivateConnTab(first));
+        app.apply(Action::ShowAgentsOn(elsewhere.clone()));
+        assert_eq!(app.tabs.len(), windows + 1);
+        assert_eq!(app.active_tab_id(), opened);
+        // A connection that is saved no more: nothing.
+        app.apply(Action::ShowAgentsOn(ConnectionId("gone".into())));
+        assert_eq!(app.active_tab_id(), opened);
     }
 
     #[test]

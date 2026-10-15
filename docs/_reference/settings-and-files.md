@@ -166,7 +166,9 @@ and `timeout_secs`, how long a statement may run (1 to 60). Without the
 table, or a key of it, a connection is `off`, with 500 rows and 10 seconds.
 A file in which a connection has the table says `version = 4`, and one in
 which none has it stays `version = 3`. Agents use the table only while
-`[mcp] enabled` is `true` in `settings.toml`.
+`[mcp] enabled` is `true` in `settings.toml`. **Stop agents here**, in a
+connection's Agents tab, stops the agents working on it and sets its
+`access` to `off`, so that an agent that connects again does not see it.
 
 ### Agent access changed outside Tabletist
 

@@ -144,6 +144,9 @@ pub enum AgentsCommand {
     },
     /// The log keeps calls for these days from now on.
     LogDays(u32),
+    /// Stops one session, by its id: its calls answer that the server
+    /// stopped them, and its agent is let go. Nothing where it is gone.
+    StopSession(String),
     /// Stops it: every session ends, and the connections are closed.
     /// Answered with [`AgentsEvent::Stopped`].
     Stop,
@@ -164,6 +167,8 @@ pub enum AgentsEvent {
     /// opens or ends, names its agent, or makes a call. None is said after
     /// [`AgentsEvent::Stopped`].
     Sessions(Vec<tabletist_mcp::SessionInfo>),
+    /// A call ended, and is in the log.
+    Called(tabletist_mcp::Call),
 }
 
 /// How long a connection an agent used is kept open with nothing to do.
@@ -186,6 +191,8 @@ pub(super) struct Running {
     chores: tokio::task::JoinHandle<()>,
     /// Tells the app of the sessions as they change.
     watching: tokio::task::JoinHandle<()>,
+    /// Tells the app of each call as it ends.
+    telling: tokio::task::JoinHandle<()>,
     #[cfg(unix)]
     listening: Option<listen::Listening>,
 }
@@ -225,6 +232,13 @@ impl Agents {
             AgentsCommand::LogDays(days) => {
                 self.log_days
                     .store(days, std::sync::atomic::Ordering::SeqCst);
+            }
+            AgentsCommand::StopSession(id) => {
+                if let Some(running) = lock(&self.running).as_ref()
+                    && running.server.stop_session(&id)
+                {
+                    log::info!("a session of an agent was stopped");
+                }
             }
             AgentsCommand::Start {
                 log,
@@ -297,8 +311,10 @@ impl Agents {
                     if let Some(before) = running.take() {
                         before.stop();
                     }
-                    // Before it listens: no session opens unseen.
+                    // Before it listens: no session opens unseen, and no
+                    // call ends untold.
                     let changes = server.changes();
+                    let calls = server.calls();
                     // Once the server before it has let its socket go.
                     let listening = match listening(endpoint.as_deref(), &server) {
                         Ok(listening) => listening,
@@ -313,10 +329,12 @@ impl Agents {
                     let () = listening;
                     let chores = tokio::spawn(chores(opened.log, gateway, log_days));
                     let watching = tokio::spawn(sessions(server.clone(), changes, outbox.clone()));
+                    let telling = tokio::spawn(called(calls, outbox.clone()));
                     *running = Some(Running {
                         server,
                         chores,
                         watching,
+                        telling,
                         #[cfg(unix)]
                         listening,
                     });
@@ -349,6 +367,7 @@ impl Running {
         self.server.stop();
         self.chores.abort();
         self.watching.abort();
+        self.telling.abort();
         #[cfg(unix)]
         drop(self.listening);
     }
@@ -402,6 +421,19 @@ async fn sessions(
         outbox.emit(super::Event::Agents(AgentsEvent::Sessions(open)));
         if changes.changed().await.is_err() {
             return;
+        }
+    }
+}
+
+/// Tells the app of each call as it ends, until the server stops. One
+/// that falls behind misses the oldest: the log has them all.
+async fn called(mut calls: tokio::sync::broadcast::Receiver<tabletist_mcp::Call>, outbox: Outbox) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match calls.recv().await {
+            Ok(call) => outbox.emit(super::Event::Agents(AgentsEvent::Called(call))),
+            Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => return,
         }
     }
 }
@@ -1586,12 +1618,12 @@ mod tests {
         assert!(!dir.path().join("agents.sqlite3.bad").exists());
     }
 
-    /// The backend's next event but the sessions, which it says beside
-    /// what the server does.
+    /// The backend's next event but the sessions and the calls, which it
+    /// says beside what the server does.
     fn told(backend: &mut Backend, wait: Duration) -> Option<Event> {
         loop {
             match backend.wait(wait)? {
-                Event::Agents(AgentsEvent::Sessions(_)) => {}
+                Event::Agents(AgentsEvent::Sessions(_) | AgentsEvent::Called(_)) => {}
                 event => return Some(event),
             }
         }
