@@ -22,6 +22,7 @@ use crate::{
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+mod hidden;
 mod script;
 mod write;
 
@@ -831,10 +832,10 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
-        _tables: &Tables,
+        tables: &Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
-        self.agent_read(read, limits, stop).await
+        self.agent_read(read, limits, tables, stop).await
     }
 
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {

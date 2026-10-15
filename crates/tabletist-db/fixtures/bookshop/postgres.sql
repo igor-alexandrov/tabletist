@@ -3,6 +3,7 @@
 -- engine. The three files hold the same rows. Keep them deterministic.
 -- Loaded into a database of its own, `bookshop`, which the tests make.
 
+DROP FUNCTION IF EXISTS customer_count();
 DROP VIEW IF EXISTS recent_orders, customer_names;
 DROP TABLE IF EXISTS order_items, orders, customers, book_covers, books, authors, publishers;
 
@@ -157,3 +158,9 @@ INSERT INTO order_items (id, order_id, book_id, quantity, price) VALUES
 CREATE VIEW recent_orders AS
     SELECT id, email, placed_at, total FROM orders WHERE placed_at >= '2026-01-01';
 CREATE VIEW customer_names AS SELECT id, name FROM customers;
+
+-- And a third, a function of the database's own: what it reads, no check
+-- can see. Here alone: SQLite has none to write, and MySQL, which logs its
+-- changes, lets only a user with SUPER write one.
+CREATE FUNCTION customer_count() RETURNS bigint LANGUAGE sql STABLE
+    AS 'SELECT count(*) FROM customers';

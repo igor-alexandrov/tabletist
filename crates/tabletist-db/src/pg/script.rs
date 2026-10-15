@@ -39,7 +39,7 @@ impl Conn {
         if mode == ScriptMode::Write {
             return write::run(&client, texts, limit as usize, stop).await;
         }
-        read_only(&client, texts, limit as usize, stop, None).await
+        read_only(&client, texts, limit as usize, stop, None, None).await
     }
 
     /// See [`crate::Connection::run_agent_read`]: the run of a script of
@@ -50,6 +50,7 @@ impl Conn {
         &self,
         read: &Read,
         limits: Limits,
+        tables: &crate::agent::Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let client = self.client.lock().await;
@@ -58,27 +59,50 @@ impl Conn {
             params: read.params(),
             timeout: limits.timeout,
         };
-        read_only(&client, &texts, limits.rows as usize, stop, Some(sent)).await
+        let hiding = tables.hides_anything().then_some((read, tables));
+        read_only(
+            &client,
+            &texts,
+            limits.rows as usize,
+            stop,
+            Some(sent),
+            hiding,
+        )
+        .await
     }
 }
 
 /// The run that only reads: its transaction, its statements, and the
-/// close. `sent` is there when the run is of an agent's one statement.
+/// close. `sent` is there when the run is of an agent's one statement, and
+/// `hiding` when its connection hides tables: the statement is checked
+/// against them in the transaction, and runs only if it reads none.
 async fn read_only(
     client: &tokio_postgres::Client,
     texts: &[String],
     limit: usize,
     stop: &StopFlag,
     sent: Option<Sent<'_>>,
+    hiding: Option<(&Read, &crate::agent::Tables)>,
 ) -> Result<ScriptOutcome> {
     let mut outcome = ScriptOutcome::default();
     let tx = match open(client, sent).await {
         // A lost session ends the run here: nothing to close.
-        Ok(Tx::Open) => {
-            let params = sent.map(|sent| sent.params);
-            let mode = ScriptMode::ReadOnly;
-            statements(client, texts, limit, mode, stop, params, &mut outcome).await?
-        }
+        Ok(Tx::Open) => match refused_for_hiding(client, hiding).await {
+            Ok(Some((error, tx))) => {
+                outcome.stopped = error == Error::Cancelled;
+                outcome.results.push(StatementResult {
+                    elapsed: Duration::ZERO,
+                    outcome: statement_failed(error, None)?,
+                });
+                tx
+            }
+            Ok(None) => {
+                let params = sent.map(|sent| sent.params);
+                let mode = ScriptMode::ReadOnly;
+                statements(client, texts, limit, mode, stop, params, &mut outcome).await?
+            }
+            Err(error) => return Err(error),
+        },
         // A cancel landed on the opening queries: no results.
         Ok(tx) => {
             outcome.stopped = true;
@@ -100,6 +124,27 @@ async fn read_only(
     stop.finish();
     close(client, tx).await?;
     Ok(outcome)
+}
+
+/// Why an agent's statement may not run on a connection that hides tables
+/// (`super::hidden`), and where that leaves the transaction: open after a
+/// refusal, failed after the server's own error. `None` where it may run,
+/// or where nothing is hidden. `Err` is a lost session.
+async fn refused_for_hiding(
+    client: &tokio_postgres::Client,
+    hiding: Option<(&Read, &crate::agent::Tables)>,
+) -> Result<Option<(Error, Tx)>> {
+    let Some((read, tables)) = hiding else {
+        return Ok(None);
+    };
+    match super::hidden::check(client, read, tables).await {
+        Ok(None) => Ok(None),
+        Ok(Some(refusal @ Error::Agent(_))) => Ok(Some((refusal, Tx::Open))),
+        Ok(Some(error)) => Ok(Some((error, Tx::Aborted))),
+        Err(Error::Cancelled) => Ok(Some((Error::Cancelled, Tx::Aborted))),
+        Err(error) if error.is_connection_lost() => Err(error),
+        Err(error) => Ok(Some((error, Tx::Aborted))),
+    }
 }
 
 /// An agent's value as PostgreSQL is sent it: in text, which the server
@@ -138,7 +183,7 @@ impl ToSql for Param {
 
 /// A value of a plan, which the server sends as it is written whatever
 /// the protocol: `EXPLAIN` answers in text, JSON or XML.
-struct Plan(String);
+pub(super) struct Plan(pub(super) String);
 
 impl<'a> FromSql<'a> for Plan {
     fn from_sql(

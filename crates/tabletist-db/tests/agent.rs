@@ -378,6 +378,21 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
         .await
         .unwrap_err();
     assert_eq!(error, hidden_refusal("orders", None), "{on}");
+    // A function of the database's own, which reads what no check sees:
+    // refused while anything is hidden. The Bookshop has one on PostgreSQL
+    // alone (its fixture says why).
+    if connection.dialect() == Dialect::Postgres {
+        for sql in [
+            "SELECT customer_count()",
+            "SELECT title FROM books WHERE id < customer_count()",
+        ] {
+            let error = hiding(connection, &customers, sql).await.unwrap_err();
+            let refused = Error::Agent(Refusal::FunctionNotAllowed("customer_count".into()));
+            assert_eq!(error, refused, "{on}: {sql}");
+        }
+        let found = count(hiding(connection, &Tables::All, "SELECT customer_count()").await);
+        assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
+    }
     // Nothing hidden: the table reads.
     let found = count(hiding(connection, &Tables::All, "SELECT count(*) FROM customers").await);
     assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
@@ -710,6 +725,14 @@ mod postgres {
             return;
         };
         an_agent_reads_the_bookshop(&connection, "postgres").await;
+    }
+
+    #[tokio::test]
+    async fn a_hidden_table_is_never_read_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_hidden_table_is_never_read(&connection, "postgres").await;
     }
 
     #[tokio::test]

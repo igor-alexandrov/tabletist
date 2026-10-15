@@ -370,6 +370,48 @@ fn system_catalog(dialect: Dialect, schema: Option<&str>, name: &str) -> bool {
     }
 }
 
+/// The query a statement has the database plan: the statement itself, or
+/// the one an `EXPLAIN` explains, from its first word that begins a query
+/// (past `EXPLAIN`'s options in parentheses, `VERBOSE`, MySQL's
+/// `FORMAT=…`). An `EXPLAIN` is planned so too: what its plan names, the
+/// engine reads to make it, statistics included.
+pub(crate) fn planned(read: &Read) -> &str {
+    let text = read.text();
+    if !read.explains() {
+        return text;
+    }
+    let tokens = sql::tokenize(read.dialect(), text);
+    let mut depth = 0_usize;
+    for token in &tokens {
+        let written = &text[token.range.clone()];
+        match (token.kind, written) {
+            (TokenKind::Punctuation, "(") if depth > 0 => depth += 1,
+            (TokenKind::Punctuation, "(") => {
+                // `EXPLAIN (…)` is options; `EXPLAIN (SELECT …)` a query.
+                let after = &text[token.range.end..];
+                let next = sql::words(read.dialect(), after);
+                match next.first().map(String::as_str) {
+                    Some("SELECT" | "WITH" | "VALUES" | "TABLE") => {
+                        return &text[token.range.start..];
+                    }
+                    _ => depth = 1,
+                }
+            }
+            (TokenKind::Punctuation, ")") => depth = depth.saturating_sub(1),
+            (TokenKind::Keyword | TokenKind::Identifier, word)
+                if depth == 0
+                    && ["SELECT", "WITH", "VALUES", "TABLE"]
+                        .iter()
+                        .any(|start| start.eq_ignore_ascii_case(word)) =>
+            {
+                return &text[token.range.start..];
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
 /// `name` as names are compared.
 fn fold(name: &str) -> String {
     name.to_lowercase()
@@ -977,6 +1019,34 @@ mod tests {
         assert_eq!(
             mysql.check_engine_read(Some("mysql"), "tbl"),
             Err(Refusal::SystemCatalog)
+        );
+    }
+
+    #[test]
+    fn an_explain_is_planned_as_the_query_it_explains() {
+        let planned_of = |dialect, sql| planned(&checked(dialect, sql)).to_owned();
+        assert_eq!(
+            planned_of(Dialect::Postgres, "SELECT * FROM books"),
+            "SELECT * FROM books"
+        );
+        assert_eq!(
+            planned_of(
+                Dialect::Postgres,
+                "EXPLAIN (VERBOSE, FORMAT JSON) WITH x AS (SELECT 1) SELECT * FROM x"
+            ),
+            "WITH x AS (SELECT 1) SELECT * FROM x"
+        );
+        assert_eq!(
+            planned_of(Dialect::Postgres, "EXPLAIN VERBOSE SELECT 1"),
+            "SELECT 1"
+        );
+        assert_eq!(
+            planned_of(Dialect::MySql, "EXPLAIN FORMAT=JSON SELECT 1"),
+            "SELECT 1"
+        );
+        assert_eq!(
+            planned_of(Dialect::Sqlite, "EXPLAIN QUERY PLAN SELECT 1"),
+            "SELECT 1"
         );
     }
 
