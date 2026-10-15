@@ -3771,6 +3771,10 @@ impl App {
     /// Shows the Agents tab of `conn`'s window, opening the window first
     /// where there is none. It connects behind the tab as any does.
     fn show_agents_on(&mut self, conn: crate::connections::ConnectionId) {
+        // Nothing of agents shows where they cannot reach the app.
+        if !crate::endpoint::AVAILABLE {
+            return;
+        }
         let tab = match self.tab_showing(&conn) {
             Some(tab) => tab,
             None => {
@@ -6144,6 +6148,7 @@ mod tests {
         assert!(app.agents_held.is_empty(), "a lowering is not held");
     }
 
+    #[cfg(unix)]
     #[test]
     fn show_brings_the_window_of_the_connection_an_agent_works_on_forward() {
         let (mut app, _dir) = app();

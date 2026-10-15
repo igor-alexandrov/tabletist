@@ -1043,5 +1043,12 @@ mod tests {
         }
         harness.app.apply(crate::model::Action::ShowAgents(tab));
         assert_eq!(harness.app.workspace(tab).unwrap().agents_tab(), None);
+        // Nor does Show open the window of a connection that is not open.
+        let mut ledger = crate::testing::fixture_connection();
+        ledger.id = crate::connections::ConnectionId("ledger".into());
+        harness.app.connections.upsert(ledger.clone());
+        let windows = harness.app.tabs.len();
+        harness.app.apply(crate::model::Action::ShowAgentsOn(ledger.id));
+        assert_eq!(harness.app.tabs.len(), windows);
     }
 }
