@@ -1,7 +1,7 @@
 ---
 title: The Omarchy Look
 description: How Tabletist looks and works on Linux, the keys of the Omarchy look, how it follows the Omarchy theme, and how to use your own colors.
-nav_order: 6
+nav_order: 7
 ---
 
 On Linux, Tabletist takes the Omarchy look: square corners, the keyboard
@@ -111,6 +111,7 @@ key. Nor has copying a whole row.
 | --- | --- |
 | `y` | Copy the command that connects an agent |
 | `o` | Turn the agent server on, while it is off |
+| `s` | Settings › Agents, while the server is off or no agent is here |
 | `e` | Allow agents on this connection, while their access is off |
 | `j` / `k` | Move among the agents' sessions: those here, then those elsewhere |
 | `S` | Stop the selected session, wherever it works |
@@ -248,6 +249,9 @@ offers.
 | `j` `k` | Move |
 | `h` `l` | Change the option |
 | Space | Toggle the option |
+| Ctrl+H, Ctrl+L | The pane before or after: General, Agents |
+| Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row |
+| `y` | On the Agents pane: copy the command that connects Claude Code |
 | Ctrl+E | Open `settings.toml` in your editor |
 | `R` | Reset the option |
 | Esc | Close |

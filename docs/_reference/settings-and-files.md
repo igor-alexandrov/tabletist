@@ -17,9 +17,20 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Numbers** | `1240.50` or `1,240.50`. Grouping is for display only: a copy gives the raw value | `1240.50` |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 
+On Linux and macOS a second pane, **Agents**, sets what the `[mcp]` keys
+hold, and shows how to connect an agent:
+[Agents]({% link _guide/agents.md %}) is the guide.
+
+| Option | Choices | Default |
+| --- | --- | --- |
+| **Let agents use Tabletist** | On or off. Off ends every agent's session | Off |
+| **Keep the activity log** | 7, 30, 90 or 365 days | 30 days |
+| **Notify when an agent connects** | On or off | On |
+
 On macOS and Windows the window shows where the settings file is, and can
-reveal it in your file manager, export it, or reset every option. In the
-Omarchy look the file is shown beside the options.
+reveal it in your file manager, export it, or reset the options of the
+pane it shows. On the Agents pane, a reset leaves the server's switch as
+it is. In the Omarchy look the file is shown beside the options.
 
 {% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look, with settings.toml beside the options" width="2880" height="1800" %}
 
@@ -62,8 +73,7 @@ notify = true
 | `mcp.log_days` | 1 to 3650 days. How long the log of agents' calls keeps a call | `30` |
 | `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS | `true` |
 
-`show_system_schemas`, `theme` and the three `mcp` keys are set only in the
-file. The SQL
+`show_system_schemas` and `theme` are set only in the file. The SQL
 editor's **Limit** and **Timeout** menus set the two `editor` keys.
 
 A line that cannot be read is ignored, keeps its default, and is reported
@@ -184,7 +194,7 @@ back to `off`, and leaves your other settings and connections as they
 are. A change that lets agents do less applies at once.
 
 Turning agents on in Tabletist itself, with **Turn on** in a connection's
-Agents tab, is never held. Tabletist keeps what it showed you in
+Agents tab or the switch in **Settings › Agents**, is never held. Tabletist keeps what it showed you in
 `agents_shown.json`. Without that file, the first time a version with this
 check starts, whatever you turned on by hand is held once.
 
