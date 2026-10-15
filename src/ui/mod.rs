@@ -8337,6 +8337,54 @@ mod tests {
     }
 
     #[test]
+    fn holding_backspace_over_a_typed_password_keeps_the_saved_one() {
+        use crate::connections::PasswordMode;
+        use crate::testing::{key, release};
+        use egui::accesskit;
+        let mut harness = Harness::new();
+        let id = add_saved(&mut harness, "Shop");
+        let mut saved = harness.app.connections.get(&id).unwrap().clone();
+        saved.spec = tabletist_db::ConnectSpec::from_url("postgres://me@db.example.com/app")
+            .unwrap()
+            .0;
+        saved.password = PasswordMode::Keyring;
+        harness.app.connections.upsert(saved);
+        harness.app.apply(crate::model::Action::EditConnection(id));
+        let tree = harness.settle();
+        let field = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::PasswordInput)
+            .map(|(id, _)| *id)
+            .expect("the Password field");
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            accesskit::ActionRequest {
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: field,
+                action: accesskit::Action::Focus,
+                data: None,
+            },
+        )]);
+        harness.frame(vec![egui::Event::Text("x".into())]);
+        harness.settle();
+        // Held: the key goes down, deletes the letter, and comes again
+        // with no release between, as a repeat, on the emptied field.
+        for _ in 0..3 {
+            harness.frame(vec![key(Key::Backspace, Modifiers::NONE)]);
+        }
+        harness.frame(vec![release(Key::Backspace, Modifiers::NONE)]);
+        harness.settle();
+        assert_eq!(form(&harness).password, "");
+        assert!(
+            form(&harness).has_saved_password,
+            "a repeat forgets nothing"
+        );
+        // A press of its own does.
+        harness.press(Key::Backspace, Modifiers::NONE);
+        assert!(!form(&harness).has_saved_password);
+    }
+
+    #[test]
     fn the_url_tab_fills_the_parameters_and_returns_to_them() {
         let mut harness = Harness::new();
         new_connection(&mut harness);

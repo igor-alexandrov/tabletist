@@ -660,7 +660,8 @@ fn named(response: &Response, name: &'static str, skin: &Skin) {
 /// it would delete the dots of one shown there. It holds while the field
 /// has the keyboard and was, before it drew, empty and saying the password
 /// is saved (`forgettable`): a key that deletes the last letter typed
-/// leaves the saved password alone.
+/// leaves the saved password alone, and so do its repeats while it is
+/// held.
 fn forget_saved_password(
     ui: &Ui,
     field: &egui::Response,
@@ -677,7 +678,7 @@ fn forget_saved_password(
         let command = Command::FormForgetPassword;
         crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, false)
     });
-    if asked.count > 0 {
+    if asked.fresh {
         actions.push(Action::ForgetSavedPassword);
     }
 }
