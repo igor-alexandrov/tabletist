@@ -28,8 +28,10 @@ use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 use crate::sql::TokenKind;
 use crate::{Dialect, sql};
 
+mod hidden;
 mod run;
 
+pub use hidden::{Catalog, Hidden, Relation, TableName, Tables};
 pub use run::{Answer, Limits};
 pub(crate) use run::{Sent, answer, count_mismatch};
 
@@ -130,9 +132,19 @@ pub enum Refusal {
     /// is, for the sentence.
     NotAllowed(String),
     /// A function with an effect outside its result, by its name as
-    /// written.
+    /// written. Also one the database's users wrote, on a connection that
+    /// hides a table.
     FunctionNotAllowed(String),
     InvalidParams(ParamFault),
+    /// A table the person hides from agents, by its name, and the relation
+    /// the statement named that depends on it, where it named another.
+    TableHidden {
+        name: String,
+        through: Option<String>,
+    },
+    /// The system catalogs, on a connection that hides a table: they
+    /// describe every one.
+    SystemCatalog,
 }
 
 /// What was too large.
@@ -181,6 +193,8 @@ impl Refusal {
             Self::NotAllowed(_) => "not_allowed",
             Self::FunctionNotAllowed(_) => "function_not_allowed",
             Self::InvalidParams(_) => "invalid_params",
+            Self::TableHidden { .. } => "table_hidden",
+            Self::SystemCatalog => "system_catalog",
         }
     }
 }
@@ -247,6 +261,20 @@ impl fmt::Display for Refusal {
             Self::InvalidParams(ParamFault::NotFinite(position)) => {
                 write!(f, "Parameter {position} is not a finite number.")
             }
+            Self::TableHidden {
+                name,
+                through: None,
+            } => write!(f, "{name} is hidden for agents on this connection."),
+            Self::TableHidden {
+                name,
+                through: Some(through),
+            } => write!(
+                f,
+                "{through} reads {name}, which is hidden for agents on this connection."
+            ),
+            Self::SystemCatalog => f.write_str(
+                "The system catalogs are not available on this connection. Use describe_schema.",
+            ),
         }
     }
 }
