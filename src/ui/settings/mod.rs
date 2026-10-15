@@ -340,6 +340,11 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
                     let Some(option) = row.and_then(|row| row.option()) else {
                         return true;
                     };
+                    // The server's switch has no default to put back:
+                    // off, it would end every agent's session.
+                    if asked == Asked::Reset && option == OptionId::AgentsOn {
+                        return true;
+                    }
                     let value = match asked {
                         Asked::Reset => Some(option.default_value()),
                         Asked::Step { forward } => Some(settings.stepped(option, forward)),

@@ -168,6 +168,29 @@ fn the_servers_switch_shows_what_is_in_force_and_keeps_a_change_held_from_outsid
 }
 
 #[test]
+fn reset_option_on_the_servers_switch_leaves_it_on() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    harness.app.apply(Action::TurnAgentsOn);
+    on_the_pane(&mut harness, 0);
+    harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+    assert!(harness.app.agents_on());
+    // Nor does the footer offer it there.
+    harness.click("Reset option");
+    harness.settle();
+    assert!(harness.app.agents_on());
+    // On the log's row it puts the days back.
+    harness
+        .app
+        .apply(Action::SetOption(crate::settings::OptionValue::LogDays(90)));
+    for _ in 0..3 {
+        super::tests::type_key(&mut harness, egui::Key::J, "j");
+    }
+    harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+    assert_eq!(harness.app.settings.mcp_log_days, 30);
+}
+
+#[test]
 fn reset_on_the_agents_pane_puts_back_its_own_options() {
     let mut harness = Harness::new();
     harness.app.change_settings(|settings| {

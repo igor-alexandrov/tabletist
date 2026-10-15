@@ -253,7 +253,7 @@ offers.
 | Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row |
 | `y` | On the Agents pane: copy the command that connects Claude Code |
 | Ctrl+E | Open `settings.toml` in your editor |
-| `R` | Reset the option |
+| `R` | Reset the option. The agent server's switch is left as it is |
 | Esc | Close |
 
 The Mac's keys are in [Tabletist on macOS]({% link _guide/macos.md %}#the-keyboard),

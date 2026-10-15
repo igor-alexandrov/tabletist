@@ -1004,7 +1004,11 @@ fn footer(
     let flip = option
         .and_then(|option| settings.flipped(option))
         .map(Action::SetOption);
-    let reset = option.map(|option| Action::SetOption(option.default_value()));
+    // The server's switch is not reset: off, it would end every agent's
+    // session.
+    let reset = option
+        .filter(|option| *option != OptionId::AgentsOn)
+        .map(|option| Action::SetOption(option.default_value()));
     let edit = Some(Action::EditSettingsFile);
     // `$EDITOR` is a name: the look does not lower-case it.
     let in_editor = skin
