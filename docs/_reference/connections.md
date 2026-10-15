@@ -144,6 +144,14 @@ save the connection. One typed when Tabletist asks for it is saved only
 after the server accepted it. The same goes for an SSH password and a
 key's passphrase.
 
+When you edit a connection whose password is in the keyring, the
+Password field is empty and says it is saved there. To connect without a
+password (a server with trust or peer authentication), put the cursor in
+that field and press Backspace or Delete: the note goes, and the
+connection is saved as needing no password (`password = "none"`), with
+its keyring entry deleted. **Test** then tries the server with no
+password. Type a password instead to replace the saved one.
+
 ## Agents
 
 What AI agents may do on a connection, through `tabletist mcp`. Every

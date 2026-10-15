@@ -70,6 +70,7 @@ list instead.
 | Ctrl+T | Test |
 | Ctrl+S | Save |
 | Ctrl+Enter | Save and connect |
+| Backspace, Delete | In the empty password field: forget the saved password |
 | Esc | Cancel |
 
 {% include shot.html file="omarchy-connection-edit" alt="The connection form in the Omarchy look, for a production database behind an SSH tunnel" width="2200" height="2032" %}

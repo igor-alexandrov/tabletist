@@ -1883,6 +1883,11 @@ impl App {
                     }
                 }
             }
+            Action::ForgetSavedPassword => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.forget_password();
+                }
+            }
             Action::SubmitPassword => {
                 if !matches!(self.dialog, Some(Dialog::Password(_))) {
                     return;
@@ -10628,6 +10633,78 @@ mod tests {
             c,
             Command::StoreSecret { secret: None, account, .. } if *account == password_account(&conn)
         )));
+    }
+
+    #[test]
+    fn forgetting_the_saved_password_saves_the_connection_without_one() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn.clone()));
+        app.apply(Action::ForgetSavedPassword);
+        assert!(!form(&mut app).password_is_saved(), "the hint goes");
+        assert_eq!(form(&mut app).password_mode, PasswordMode::Keyring);
+        app.apply(Action::SaveConnection { connect: true });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::None
+        );
+        // The keyring's copy is deleted, and nothing is read from it.
+        assert!(matches!(
+            sent_secrets(&app).as_slice(),
+            [Command::StoreSecret { secret: None, account, .. }]
+                if *account == password_account(&conn)
+        ));
+        assert!(app.dialog.is_none(), "no password prompt");
+        match app.backend.sent.last() {
+            Some(Command::Connect { secrets, .. }) => assert_eq!(secrets.password, None),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_password_typed_after_forgetting_the_saved_one_replaces_it() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn.clone()));
+        app.apply(Action::ForgetSavedPassword);
+        form(&mut app).password = "new".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+        assert!(matches!(
+            sent_secrets(&app).as_slice(),
+            [Command::StoreSecret { secret: Some(SecretString(p)), .. }] if p == "new"
+        ));
+    }
+
+    #[test]
+    fn a_test_after_forgetting_the_saved_password_sends_none() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn));
+        app.apply(Action::ForgetSavedPassword);
+        app.apply(Action::TestConnection);
+        assert!(sent_secrets(&app).is_empty(), "the keyring is not read");
+        match app.backend.sent.last() {
+            Some(Command::Test { secrets, .. }) => assert_eq!(secrets.password, None),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancelling_after_forgetting_the_saved_password_keeps_it() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn.clone()));
+        app.apply(Action::ForgetSavedPassword);
+        app.apply(Action::CloseDialog);
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+        assert!(sent_secrets(&app).is_empty());
     }
 
     #[test]

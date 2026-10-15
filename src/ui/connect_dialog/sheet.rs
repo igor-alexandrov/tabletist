@@ -18,9 +18,9 @@ use crate::ui::widgets::{self, ButtonSpec};
 use super::choice::{Choice, Group, choose, driver_choice, environment_choice};
 use super::{
     Column, Skin, StatusAt, TLS_MODES, ca_field, connection_line, field_with_button, file_field,
-    hint, input, intercept_warning, keeps, named, note, paint_check, paint_status, row, set_keeps,
-    show_url, ssh_host_field, ssh_host_note, ssh_key_hint, ssh_port_hint, ssh_secret_name,
-    ssh_user_hint, subtitle, title, url_field,
+    forget_saved_password, hint, input, intercept_warning, keeps, named, note, paint_check,
+    paint_status, row, set_keeps, show_url, ssh_host_field, ssh_host_note, ssh_key_hint,
+    ssh_port_hint, ssh_secret_name, ssh_user_hint, subtitle, title, url_field,
 };
 
 /// The stripe in the environment's colour along the macOS dialog's top.
@@ -269,7 +269,7 @@ pub(super) fn body(
                     }
                     Driver::Postgres | Driver::MySql => {
                         fieldset(ui, &skin.say("Server"), skin, |ui| {
-                            server(ui, form, skin);
+                            server(ui, form, skin, actions);
                         });
                         ui.add_space(18.0);
                         fieldset(ui, &skin.say("Security"), skin, |ui| {
@@ -335,7 +335,7 @@ fn identity(
 }
 
 /// macOS: where the server is and who logs in.
-fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
+fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let role = skin.value_role();
     let small = TextRole::Secondary;
     let height = skin.field_height();
@@ -366,25 +366,30 @@ fn server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         }
     });
     ui.add_space(10.0);
+    let forgettable = form.password.is_empty() && form.password_is_saved();
     let saved = if form.password_is_saved() {
         skin.say(skin.saved_hint())
     } else {
         String::new()
     };
+    let mut field = None;
     row(ui, 12.0, &columns, |ui, column| {
         if column == 0 {
-            labelled(ui, &skin.say("Password"), small, skin, |ui| {
+            field = Some(labelled(ui, &skin.say("Password"), small, skin, |ui| {
                 let hint = hint(ui, &saved, TextRole::UiBody, skin);
                 ui.add(
                     input(ui, &mut form.password, TextRole::UiBody, height, skin)
                         .password(true)
                         .hint_text(hint),
                 )
-            });
+            }));
         } else {
             keyring_box(ui, &mut form.password_mode, skin.keyring(), true, skin);
         }
     });
+    if let Some(field) = field {
+        forget_saved_password(ui, &field, forgettable, skin, actions);
+    }
 }
 
 /// macOS: TLS, then the SSH tunnel.

@@ -851,6 +851,9 @@ pub enum Action {
     },
     /// The connection dialog's driver switch.
     SetDriver(Driver),
+    /// Drop the connection dialog's saved database password: saved with
+    /// nothing typed, the connection then needs no password.
+    ForgetSavedPassword,
     SubmitPassword,
     CancelPassword,
     /// Reconnect this tab to another database on the same server.
@@ -1043,7 +1046,8 @@ pub struct ConnectionForm {
     pub tls: TlsMode,
     pub ca_file: String,
     pub password_mode: PasswordMode,
-    /// Editing a connection whose password is in the keyring.
+    /// Editing a connection whose password is in the keyring, until the
+    /// person deletes it from the Password field (`forget_password`).
     pub has_saved_password: bool,
     /// The connection as saved, when editing one. Saved secrets belong to
     /// its servers and are never sent to another one.
@@ -1477,6 +1481,13 @@ impl ConnectionForm {
         self.has_saved_password && !self.same_server()
     }
 
+    /// Drops the saved database password, as deleting it from the Password
+    /// field: saved with nothing typed and the keyring box ticked, the
+    /// connection needs no password, and saving deletes the keyring's copy.
+    pub fn forget_password(&mut self) {
+        self.has_saved_password = false;
+    }
+
     /// Whether a saved SSH secret belongs to the login method now chosen. A
     /// passphrase saved for a key is never used as a password.
     fn ssh_secret_fits_method(&self) -> bool {
@@ -1504,8 +1515,9 @@ impl ConnectionForm {
         let spec = self.to_spec()?;
         let password = match spec.driver {
             Driver::Sqlite => PasswordMode::None,
-            // Nothing typed and nothing saved: a server that needs no
-            // password (trust or peer authentication).
+            // Nothing typed and nothing saved (or the saved one forgotten):
+            // a server that needs no password (trust or peer
+            // authentication).
             Driver::Postgres | Driver::MySql
                 if self.password_mode == PasswordMode::Keyring
                     && self.password.is_empty()

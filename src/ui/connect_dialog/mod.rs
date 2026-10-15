@@ -658,6 +658,32 @@ fn named(response: &Response, name: &'static str, skin: &Skin) {
 
 /// The password's mode as a check box: saved in the keyring, or asked for
 /// on every connect.
+/// The key that deletes the saved password from the Password `field`, as
+/// it would delete the dots of one shown there. It holds while the field
+/// has the keyboard and was, before it drew, empty and saying the password
+/// is saved (`forgettable`): a key that deletes the last letter typed
+/// leaves the saved password alone.
+fn forget_saved_password(
+    ui: &Ui,
+    field: &egui::Response,
+    forgettable: bool,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    if !(forgettable && field.has_focus()) {
+        return;
+    }
+    let keymap = crate::ui::keys::published(ui.ctx());
+    let layout = crate::keymap::Layout::of(skin.look);
+    let asked = ui.input_mut(|input| {
+        let command = Command::FormForgetPassword;
+        crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, false)
+    });
+    if asked.count > 0 {
+        actions.push(Action::ForgetSavedPassword);
+    }
+}
+
 fn keeps(mode: PasswordMode) -> bool {
     mode != PasswordMode::Ask
 }

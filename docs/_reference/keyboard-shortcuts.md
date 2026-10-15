@@ -42,6 +42,7 @@ In the connection dialog:
 | Mod+S | Save |
 | Mod+T | Test |
 | Mod+Enter | Save and connect |
+| Backspace, Delete | In the empty Password field: forget the saved password |
 | Esc | Cancel |
 
 ## The window
