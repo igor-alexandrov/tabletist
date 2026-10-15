@@ -1901,10 +1901,52 @@ impl App {
             }
             Action::EditConnection(id) => {
                 if let Some(saved) = self.connections.get(&id) {
-                    self.dialog = Some(Dialog::Connection(Box::new(ConnectionForm::from_saved(
-                        saved,
-                    ))));
+                    let mut form = ConnectionForm::from_saved(saved);
+                    // What is in force, where a change made outside the
+                    // app is held: what the person was shown.
+                    form.agents.access = self.agents_access(saved);
+                    form.agents_opened = form.agents.access;
+                    self.dialog = Some(Dialog::Connection(Box::new(form)));
                     self.list_ssh_hosts();
+                }
+            }
+            Action::EditAgents { conn, allow } => {
+                self.apply(Action::EditConnection(conn));
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.show_agents = true;
+                    if allow {
+                        form.agents.access = crate::connections::AgentAccess::Read;
+                    }
+                }
+            }
+            Action::SetAgentAccess { conn, access } => self.set_agent_access(&conn, access),
+            Action::OpenAgentAccess(conn) => {
+                let saved = &self.connections.connections;
+                let names = crate::backend::agent_names(saved);
+                let found = saved.iter().zip(&names).find(|(saved, _)| saved.id == conn);
+                if crate::endpoint::AVAILABLE
+                    && let Some((saved, name)) = found
+                {
+                    let chosen = self.agents_access(saved);
+                    self.dialog = Some(Dialog::AgentAccess(Box::new(
+                        crate::model::AgentAccessBox {
+                            conn,
+                            name: name.clone(),
+                            chosen,
+                        },
+                    )));
+                }
+            }
+            Action::MoveAgentAccess(step) => {
+                use crate::connections::AgentAccess;
+                if let Some(Dialog::AgentAccess(asked)) = &mut self.dialog {
+                    let levels = [AgentAccess::Off, AgentAccess::Read];
+                    let at = levels.iter().position(|level| *level == asked.chosen);
+                    let to = at
+                        .unwrap_or_default()
+                        .saturating_add_signed(step)
+                        .min(levels.len() - 1);
+                    asked.chosen = levels[to];
                 }
             }
             Action::DuplicateConnection(id) => {
@@ -3489,6 +3531,7 @@ impl App {
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;
         };
+        let opened = form.agents_opened;
         if !use_typed_url(form) {
             return;
         }
@@ -3504,8 +3547,10 @@ impl App {
             Ok(saved) => saved,
             Err(message) => {
                 form.message = Some(message);
-                // The message names fields: show them.
+                // The message names fields: show them, and the agents'
+                // part where it is one of its own.
                 form.url_mode = false;
+                form.show_agents |= form.agents_to_saved().is_err();
                 return;
             }
         };
@@ -3518,14 +3563,26 @@ impl App {
         let previous = self.connections.get(&saved.id).map(|c| c.password);
         let previous_ssh = self.connections.get(&saved.id).map(|c| c.ssh_secret);
         self.dialog = None;
-        // The dialog has no control for what agents may do: an edit keeps
-        // what the file says now, not what the dialog opened with. A change
+        // What agents may do: an access the person chose in the dialog is
+        // their own, and one they raised is shown, never held. The access
+        // the dialog opened with keeps what the file says now: a change
         // made outside the app stays held, and one put back stays back.
-        saved.agents = self
-            .connections
-            .get(&saved.id)
-            .map(|saved| saved.agents)
-            .unwrap_or_default();
+        match self.connections.get(&saved.id) {
+            Some(was) if saved.agents.access == opened => {
+                saved.agents.access = was.agents.access;
+            }
+            was => {
+                let in_force = was.map(|was| self.agents_access(was)).unwrap_or_default();
+                if saved.agents.access > in_force {
+                    self.agents_shown
+                        .keep(&[crate::agents_shown::Raised::Access {
+                            id: saved.id.clone(),
+                            to: saved.agents.access,
+                        }]);
+                    self.save_agents_shown();
+                }
+            }
+        }
         self.connections.upsert(saved.clone());
         self.save_connections();
         if saved.password == PasswordMode::Keyring {
@@ -3953,6 +4010,37 @@ impl App {
             }
             None => self.apply(Action::ShowConnections),
         }
+    }
+
+    /// Sets what agents may do on `conn`, from the app's own controls: a
+    /// raise is the person's, shown and never held; a lowering applies at
+    /// once. Saved, and the backend told, as any change of the
+    /// connections.
+    fn set_agent_access(
+        &mut self,
+        conn: &crate::connections::ConnectionId,
+        access: crate::connections::AgentAccess,
+    ) {
+        let Some(mut saved) = self.connections.get(conn).cloned() else {
+            return;
+        };
+        if access > self.agents_access(&saved) {
+            self.agents_shown
+                .keep(&[crate::agents_shown::Raised::Access {
+                    id: conn.clone(),
+                    to: access,
+                }]);
+            self.save_agents_shown();
+        }
+        if saved.agents.access == access {
+            // Kept as it was in the file: what was held is in force now.
+            self.check_agents();
+            self.send_agents_policy();
+            return;
+        }
+        saved.agents.access = access;
+        self.connections.upsert(saved);
+        self.save_connections();
     }
 
     /// Stops one agent's session. Its line goes when the backend says the
@@ -6604,6 +6692,131 @@ mod tests {
         app.apply(Action::Disconnect(tab));
         app.apply_event(Event::Agents(AgentsEvent::Reviewed));
         assert!(app.workspace(app.active_tab_id()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_lists_access_is_the_persons_own_raised_or_lowered() {
+        use crate::connections::AgentAccess;
+        let (mut app, dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.backend.sent.clear();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        // Saved, shown, never held, and told to the backend.
+        assert_eq!(
+            app.connections.get(&conn).unwrap().agents.access,
+            AgentAccess::Read
+        );
+        assert!(app.agents_held.is_empty());
+        assert_eq!(
+            agents_shown_saved(&app).map(|shown| shown.access_of(&conn)),
+            Some(AgentAccess::Read)
+        );
+        let path = AppDirs::at(dir.path()).connections_file();
+        assert!(matches!(
+            saved(&app, &path),
+            Some(StateFile::Connections(stored))
+                if stored.connections.iter().any(|saved| saved.agents.access == AgentAccess::Read)
+        ));
+        assert!(matches!(
+            agents_sent(&app).last(),
+            Some(AgentsCommand::Policy { connections, .. }) if connections.len() == 1
+        ));
+        // Lowered: at once.
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Off,
+        });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().agents.access,
+            AgentAccess::Off
+        );
+        assert!(matches!(
+            agents_sent(&app).last(),
+            Some(AgentsCommand::Policy { connections, .. }) if connections.is_empty()
+        ));
+        // The file raised it, held: the list's Read keeps it.
+        let mut raised = app.connections.get(&conn).unwrap().clone();
+        raised.agents.access = AgentAccess::Read;
+        app.connections.upsert(raised);
+        app.check_agents();
+        assert_eq!(app.agents_held.len(), 1);
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        assert!(app.agents_held.is_empty());
+        assert!(matches!(
+            agents_sent(&app).last(),
+            Some(AgentsCommand::Policy { connections, .. }) if connections.len() == 1
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_editors_access_is_the_persons_own_and_allow_agents_chooses_read() {
+        use crate::connections::AgentAccess;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        // Allow agents…: the editor at its Agents part, Read chosen, and
+        // nothing saved until Save.
+        app.apply(Action::EditAgents {
+            conn: conn.clone(),
+            allow: true,
+        });
+        assert!(form(&mut app).show_agents);
+        assert_eq!(form(&mut app).agents.access, AgentAccess::Read);
+        assert_eq!(
+            app.connections.get(&conn).unwrap().agents.access,
+            AgentAccess::Off
+        );
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().agents.access,
+            AgentAccess::Read
+        );
+        assert!(
+            app.agents_held.is_empty(),
+            "the person's own raise is not held"
+        );
+        // Rows and the timeout are checked, and saved.
+        app.apply(Action::EditConnection(conn.clone()));
+        form(&mut app).agents_rows = "0".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            form(&mut app).message.as_deref(),
+            Some("Rows per answer is a number from 1 to 5000.")
+        );
+        form(&mut app).agents_rows = "250".into();
+        form(&mut app).agents_timeout = "61".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            form(&mut app).message.as_deref(),
+            Some("Statement timeout is a number of seconds from 1 to 60.")
+        );
+        form(&mut app).agents_timeout = "30".into();
+        app.apply(Action::SaveConnection { connect: false });
+        let agents = app.connections.get(&conn).unwrap().agents;
+        assert_eq!((agents.rows, agents.timeout_secs), (250, 30));
+        // A new connection given Read in the dialog is shown, not held.
+        app.apply(Action::NewConnection);
+        form(&mut app).name = "Disk".into();
+        form(&mut app).sqlite_path = "/tmp/disk.db".into();
+        form(&mut app).agents.access = AgentAccess::Read;
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(app.agents_held.is_empty());
+        assert_eq!(
+            app.connections
+                .connections
+                .iter()
+                .filter(|saved| saved.agents.access == AgentAccess::Read)
+                .count(),
+            2
+        );
     }
 
     #[test]

@@ -145,7 +145,7 @@ pub(super) fn terminal_row(
 
 /// [`terminal_row`] `height` tall: a row of words or of buttons is as tall
 /// as they are, as the design's rows are.
-fn terminal_row_of(
+pub(super) fn terminal_row_of(
     ui: &mut Ui,
     label: &str,
     height: f32,
@@ -189,7 +189,7 @@ fn cell(ui: &mut Ui, width: f32, skin: &Skin, add: impl FnOnce(&mut Ui) -> Respo
 }
 
 /// The terminal look: a heading over a rule, 8 below the rows before it.
-fn terminal_section(ui: &mut Ui, text: &str, skin: &Skin) {
+pub(super) fn terminal_section(ui: &mut Ui, text: &str, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     ui.add_space(8.0);
     widgets::label(ui, TextRole::OGroup, text, palette.text, look);
@@ -336,6 +336,10 @@ pub(super) fn terminal_body(
                     ui.vertical(draw);
                 }
             });
+            // What agents may do on it, where they can reach the app.
+            if crate::endpoint::AVAILABLE {
+                super::agents::terminal(ui, form, skin);
+            }
         });
 }
 

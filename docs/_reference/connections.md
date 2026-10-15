@@ -34,6 +34,7 @@ already open, and Shift+Enter opens it again.
 | **SSL mode**, **CA certificate** | See [TLS](#tls) |
 | **Connect through SSH tunnel** | See [SSH tunnels](#ssh-tunnels) |
 | **Open read-only** | See [Open read-only](#open-read-only) |
+| **Agents** | See [Agents](#agents) (Linux and macOS) |
 
 **Test** checks the connection without saving it.
 
@@ -142,6 +143,27 @@ A password typed in the connection dialog goes to the keyring when you
 save the connection. One typed when Tabletist asks for it is saved only
 after the server accepted it. The same goes for an SSH password and a
 key's passphrase.
+
+## Agents
+
+What AI agents may do on a connection, through `tabletist mcp`. Every
+connection starts with agents **Off**: they do not see it at all.
+**Read** lets them read it, in read-only transactions, while the agent
+server is on.
+
+- In the picker, the **Agents** column says each connection's access, and
+  its "…" menu changes it. Its **Tables, columns and limits…** opens the
+  connection's **Agents** section, and **Show Agents tab** shows its
+  Agents tab.
+- In the connection's form, the **Agents** section has the access, **Rows
+  per answer** (1 to 5000, 500 at first) and the **Statement timeout** in
+  seconds (1 to 60, 10 at first).
+- An Agents tab that says agents can't use a connection has **Allow
+  agents…**, which opens that section with **Read** chosen. Nothing
+  changes until you save.
+
+The file keeps this in the connection's `[connections.agents]` table: see
+[Settings and Files]({% link _reference/settings-and-files.md %}#the-connections-file).
 
 ## Open read-only
 

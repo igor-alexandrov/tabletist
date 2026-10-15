@@ -143,6 +143,8 @@ pub enum When {
     ConfirmWrite,
     /// The question about a row that changed on the server.
     Conflict,
+    /// The box of what agents may do on a connection, in the terminal look.
+    AgentAccess,
     /// The question about leaving with pending changes.
     Leaving,
     /// The cursor's row is a new one, not saved yet: the row panel is its
@@ -340,6 +342,10 @@ commands! {
     ShowAgentsElsewhere,
     ShowAgentsLog,
     ToggleAgentsLogScope,
+    AllowAgents,
+    ChangeAgentAccess,
+    MoveInAgentLevels,
+    ShowAgentsFromBox,
     ToggleSidebar,
     PaneLeft,
     PaneDown,
@@ -588,6 +594,14 @@ impl Command {
                 agents(info("Show where the selected agent works", "", Window))
             }
             C::ShowAgentsLog => agents(info("Show the log, or what agents do now", "", Window)),
+            C::AllowAgents => agents(info("Allow agents on this connection…", "", Window)),
+            C::ChangeAgentAccess => agents(info(
+                "Change what agents may do on the connection",
+                "",
+                Window,
+            )),
+            C::MoveInAgentLevels => agents(info("Move among what agents may do", "", Prompts)),
+            C::ShowAgentsFromBox => agents(info("Show the connection's Agents tab", "", Prompts)),
             C::ToggleAgentsLogScope => agents(info(
                 "Show every connection's calls in the log, or this one's",
                 "",
@@ -990,6 +1004,16 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ShowAgentsLog, GLOBAL, NONE, keys(&[k(":agents log")])),
         bind(C::ShowAgentsLog, AGENTS, NONE, keys(&[k("l")])),
         bind(C::ToggleAgentsLogScope, AGENTS, NONE, keys(&[k("L")])),
+        bind(C::AllowAgents, AGENTS, NONE, keys(&[k("e")])),
+        bind(C::ChangeAgentAccess, CONNECTIONS, NONE, keys(&[k("a")])),
+        bind(
+            C::MoveInAgentLevels,
+            PROMPT,
+            NONE,
+            keys(&[k("j"), k("k")]).shown("j/k"),
+        )
+        .when(When::AgentAccess),
+        bind(C::ShowAgentsFromBox, PROMPT, NONE, keys(&[k("t")])).when(When::AgentAccess),
         bind(
             C::ToggleSidebar,
             GLOBAL,

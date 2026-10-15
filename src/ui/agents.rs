@@ -88,6 +88,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         crate::keymap::Command::ShowAgentsLog,
         crate::keymap::Scope::Agents,
     );
+    let allow_key = app.keymap.key(layout, crate::keymap::Command::AllowAgents);
     let scope_key = app
         .keymap
         .key(layout, crate::keymap::Command::ToggleAgentsLogScope);
@@ -254,11 +255,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             "Access is Off for this connection, so agents don't see it at all.",
                         ),
                     };
-                    let label = gettext(locale, "Show log");
-                    let button = states::key_button(&label, &log_key, &look);
-                    if states::empty(ui, rect, &notice, vec![button], &look, &palette).is_some() {
-                        let view = AgentsView::Log;
-                        actions.push(Action::ShowAgentsView { tab, view });
+                    let (log_label, allow_label) =
+                        (gettext(locale, "Show log"), gettext(locale, "Allow agents…"));
+                    let mut buttons = vec![states::key_button(&log_label, &log_key, &look)];
+                    // A connection saved no more has nothing to allow.
+                    let saved = app.connections.get(&conn).is_some();
+                    if saved {
+                        let allow = states::key_button(&allow_label, &allow_key, &look).primary();
+                        buttons.push(allow);
+                    }
+                    match states::empty(ui, rect, &notice, buttons, &look, &palette) {
+                        Some(0) => {
+                            let view = AgentsView::Log;
+                            actions.push(Action::ShowAgentsView { tab, view });
+                        }
+                        Some(_) => actions.push(Action::EditAgents {
+                            conn: conn.clone(),
+                            allow: true,
+                        }),
+                        None => {}
                     }
                 }
                 AgentsHere::NoneConnected if look.terminal && !elsewhere.is_empty() => {

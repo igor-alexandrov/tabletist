@@ -651,6 +651,23 @@ pub enum Action {
         tab: ConnTabId,
         step: isize,
     },
+    /// Set what agents may do on a saved connection, from the Connections
+    /// list's menu or Omarchy's box: the person's own, never held.
+    SetAgentAccess {
+        conn: ConnectionId,
+        access: crate::connections::AgentAccess,
+    },
+    /// Open the connection's editor at its Agents part: Tables, columns
+    /// and limits… in the list's menu, and, with `allow`, Allow agents… in
+    /// the Agents tab, with Read chosen. Nothing changes until Save.
+    EditAgents {
+        conn: ConnectionId,
+        allow: bool,
+    },
+    /// Open the terminal look's box of what agents may do on a connection.
+    OpenAgentAccess(ConnectionId),
+    /// Move the box's cursor among the levels.
+    MoveAgentAccess(isize),
     /// Keep what was changed outside the app and lets agents do more: what
     /// the bar said, and only what is still held of it.
     KeepAgentChanges(Vec<crate::agents_shown::Raised>),
@@ -989,9 +1006,20 @@ pub struct ConnectionForm {
     pub environment: Option<crate::env::Environment>,
     /// Read-only as saved: `None` until the user sets it.
     pub read_only: Option<bool>,
-    /// What agents may do on the connection, as it was saved. The dialog
-    /// has no control for it yet: saving takes what the file says then.
+    /// What agents may do on the connection: its access as the person
+    /// chooses it here. Rows and the timeout are typed in the two fields
+    /// below.
     pub agents: crate::connections::Agents,
+    /// The access in force when the dialog opened: a choice other than it
+    /// is the person's own, and the same one keeps what the file says.
+    pub agents_opened: crate::connections::AgentAccess,
+    /// Rows per answer, as typed.
+    pub agents_rows: String,
+    /// The statement's timeout in seconds, as typed.
+    pub agents_timeout: String,
+    /// Bring the Agents part into sight on the next frame: Allow agents…
+    /// and the menu's Tables, columns and limits… open the dialog there.
+    pub show_agents: bool,
     /// Put the keyboard in Name on the next frame (a new connection).
     pub focus_name: bool,
     pub driver: Driver,
@@ -1103,6 +1131,12 @@ impl Default for ConnectionForm {
             environment: None,
             read_only: None,
             agents: crate::connections::Agents::default(),
+            agents_opened: crate::connections::AgentAccess::Off,
+            agents_rows: crate::connections::Agents::default().rows.to_string(),
+            agents_timeout: crate::connections::Agents::default()
+                .timeout_secs
+                .to_string(),
+            show_agents: false,
             focus_name: true,
             driver: Driver::Sqlite,
             sqlite_path: String::new(),
@@ -1242,6 +1276,10 @@ impl ConnectionForm {
             environment: Some(saved.environment),
             read_only: saved.read_only,
             agents: saved.agents,
+            agents_opened: saved.agents.access,
+            agents_rows: saved.agents.rows.to_string(),
+            agents_timeout: saved.agents.timeout_secs.to_string(),
+            show_agents: false,
             focus_name: false,
             driver: spec.driver,
             sqlite_path: spec
@@ -1480,6 +1518,7 @@ impl ConnectionForm {
             }
             _ => self.ssh_secret_mode,
         };
+        let agents = self.agents_to_saved()?;
         Ok(crate::connections::SavedConnection {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),
@@ -1488,7 +1527,32 @@ impl ConnectionForm {
             password,
             ssh_secret,
             spec,
-            agents: self.agents,
+            agents,
+        })
+    }
+
+    /// What agents may do, as the fields say it: the rows and the timeout
+    /// in the ranges a connection may be given.
+    pub fn agents_to_saved(&self) -> Result<crate::connections::Agents, String> {
+        use crate::connections::{MAX_AGENT_ROWS, MAX_AGENT_TIMEOUT_SECS};
+        let within = |text: &str, most: u32| {
+            text.trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|number| (1..=most).contains(number))
+        };
+        let rows = within(&self.agents_rows, MAX_AGENT_ROWS)
+            .ok_or_else(|| format!("Rows per answer is a number from 1 to {MAX_AGENT_ROWS}."))?;
+        let timeout_secs =
+            within(&self.agents_timeout, MAX_AGENT_TIMEOUT_SECS).ok_or_else(|| {
+                format!(
+                    "Statement timeout is a number of seconds from 1 to {MAX_AGENT_TIMEOUT_SECS}."
+                )
+            })?;
+        Ok(crate::connections::Agents {
+            access: self.agents.access,
+            rows,
+            timeout_secs,
         })
     }
 }
@@ -1557,6 +1621,18 @@ pub enum Dialog {
     ConfirmWrite(Box<WritePrompt>),
     /// A save found rows changed on the server: what to do with each.
     Conflict(Box<ConflictPrompt>),
+    /// What agents may do on a connection, in the terminal look's box.
+    AgentAccess(Box<AgentAccessBox>),
+}
+
+/// The terminal look's box of what agents may do on a saved connection.
+#[derive(Debug)]
+pub struct AgentAccessBox {
+    pub conn: ConnectionId,
+    /// As an agent names it: "Bookshop · dev".
+    pub name: String,
+    /// The level the box's cursor is on.
+    pub chosen: crate::connections::AgentAccess,
 }
 
 /// What waits for the user's answer about pending changes.

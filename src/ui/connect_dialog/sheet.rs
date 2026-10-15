@@ -199,7 +199,7 @@ fn select<'a>(
 
 /// macOS: a group of fields in a hairline box, its heading set into the
 /// top edge.
-fn fieldset(ui: &mut Ui, legend: &str, skin: &Skin, add: impl FnOnce(&mut Ui)) {
+pub(super) fn fieldset(ui: &mut Ui, legend: &str, skin: &Skin, add: impl FnOnce(&mut Ui)) {
     let Skin { look, palette, .. } = *skin;
     let legend = Text::one(look, TextRole::Legend, legend, palette.secondary).layout(ui.ctx());
     let half = legend.height() / 2.0;
@@ -279,6 +279,11 @@ pub(super) fn body(
                 }
                 ui.add_space(18.0);
                 safety(ui, form, skin);
+                // What agents may do on it, where they can reach the app.
+                if crate::endpoint::AVAILABLE {
+                    ui.add_space(18.0);
+                    super::agents::sheet(ui, form, skin);
+                }
             }
         });
 }

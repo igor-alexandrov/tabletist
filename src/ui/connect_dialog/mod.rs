@@ -3,6 +3,7 @@
 //! environment's colour; the terminal look a two-column form with its keys
 //! in the footer.
 
+mod agents;
 mod choice;
 mod sheet;
 mod terminal;

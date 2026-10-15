@@ -2,6 +2,7 @@
 //! state directly.
 
 pub mod about;
+pub mod agent_access;
 pub mod agents;
 // Where agents can reach the app: elsewhere nothing of them shows, which
 // the last test of `agents` holds.
@@ -89,6 +90,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     settings::show(app, &ui.ctx().clone());
     write_prompts::show(app, &ui.ctx().clone());
     conflict_prompt::show(app, &ui.ctx().clone());
+    agent_access::show(app, &ui.ctx().clone());
     // Last: it says what was done, whatever is on screen by now.
     toast::show(app, ui.ctx());
 }

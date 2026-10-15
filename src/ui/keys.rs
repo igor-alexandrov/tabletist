@@ -1875,8 +1875,10 @@ fn letters(
         let on_list = !crate::ui::focus::on_control(ctx);
         if let Some(conn) = &selected {
             if on_list {
-                let again = on(Command::ConnectAgain).count > 0;
-                if again || on(Command::Connect).count > 0 {
+                // A press, not what a held Enter repeats: one held in a box
+                // that closed on it is no connect.
+                let again = on(Command::ConnectAgain).fresh;
+                if again || on(Command::Connect).fresh {
                     actions.push(connect(conn, again));
                 }
             }
@@ -1931,6 +1933,9 @@ fn letters(
                 }
                 (Some(Command::DeleteConnection), Some(conn)) if on_list => {
                     actions.push(Action::DeleteConnection(conn.clone()));
+                }
+                (Some(Command::ChangeAgentAccess), Some(conn)) if crate::endpoint::AVAILABLE => {
+                    actions.push(Action::OpenAgentAccess(conn.clone()));
                 }
                 _ => {}
             }
@@ -2252,6 +2257,17 @@ fn letters(
             }
             (Some(Command::TurnAgentsOn), _) if agents_shows(app, tab, true) => {
                 actions.push(Action::TurnAgentsOn);
+            }
+            (Some(Command::AllowAgents), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Activity)
+                    && app.agents_here(tab) == Some(crate::model::AgentsHere::OffHere) =>
+            {
+                if let Some(workspace) = app.workspace(tab)
+                    && app.connections.get(&workspace.conn_id).is_some()
+                {
+                    let conn = workspace.conn_id.clone();
+                    actions.push(Action::EditAgents { conn, allow: true });
+                }
             }
             (Some(Command::ShowAgentsLog), _) if agents_view(app, tab).is_some() => {
                 // `l` shows the log, and the activity again.
