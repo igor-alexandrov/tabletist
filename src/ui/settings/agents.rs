@@ -92,6 +92,8 @@ fn title(ui: &mut Ui, on: bool, skin: &Skin, actions: &mut Vec<Action>) {
     .layout(ui.ctx());
     let said = if cfg!(target_os = "macos") {
         "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in the Keychain."
+    } else if cfg!(windows) {
+        "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in Credential Manager."
     } else {
         "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in the keyring."
     };

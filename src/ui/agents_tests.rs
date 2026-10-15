@@ -400,7 +400,7 @@ fn more_sessions_than_the_tab_has_room_for_scroll_to_the_last() {
 
 /// What the files say, changed outside the app: the server on, and agents
 /// may read `tab`'s connection.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn changed_outside(harness: &mut Harness, tab: ConnTabId) {
     let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
     let mut saved = harness.app.connections.get(&conn).unwrap().clone();
@@ -411,7 +411,7 @@ fn changed_outside(harness: &mut Harness, tab: ConnTabId) {
     harness.settle();
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_held_bar_says_what_changed_and_its_buttons_answer_it() {
     for look in looks() {
@@ -450,7 +450,7 @@ fn the_held_bar_says_what_changed_and_its_buttons_answer_it() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn while_a_change_is_held_the_tab_says_what_is_in_force() {
     use crate::agents_shown::Raised;
@@ -986,7 +986,7 @@ fn a_call_selected_with_j_is_kept_in_sight() {
 }
 
 /// The Connections list with one saved connection, Shop · dev, selected.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn on_the_list(look: Look) -> (Harness, crate::connections::ConnectionId) {
     let mut harness = Harness::new();
     harness.set_look(look);
@@ -1003,12 +1003,12 @@ fn on_the_list(look: Look) -> (Harness, crate::connections::ConnectionId) {
     (harness, conn)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn access_of(harness: &Harness, conn: &crate::connections::ConnectionId) -> AgentAccess {
     harness.app.connections.get(conn).unwrap().agents.access
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_list_says_what_agents_may_do_and_its_menu_changes_it() {
     let (mut harness, conn) = on_the_list(Look::macos());
@@ -1030,7 +1030,7 @@ fn the_list_says_what_agents_may_do_and_its_menu_changes_it() {
     assert!(harness.has("Access through Tabletist (MCP)"));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_lists_menu_shows_the_agents_tab() {
     let (mut harness, conn) = on_the_list(Look::macos());
@@ -1046,7 +1046,7 @@ fn the_lists_menu_shows_the_agents_tab() {
 
 /// Types `text` over what the editor's field labelled `label` holds: the
 /// field is found by the label that names it, as a screen reader finds it.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn type_over(harness: &mut Harness, label: &str, text: &str) {
     use egui::accesskit::Role;
     let tree = harness.settle();
@@ -1072,7 +1072,7 @@ fn type_over(harness: &mut Harness, label: &str, text: &str) {
     harness.settle();
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn omarchys_box_sets_what_agents_may_do_from_the_list() {
     let (mut harness, conn) = on_the_list(Look::omarchy());
@@ -1112,7 +1112,7 @@ fn omarchys_box_sets_what_agents_may_do_from_the_list() {
     assert!(workspace.agents_in_front());
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_editors_agents_part_sets_access_rows_and_timeout() {
     for look in looks() {
@@ -1147,7 +1147,7 @@ fn the_editors_agents_part_sets_access_rows_and_timeout() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn allow_agents_opens_the_editor_with_read_chosen() {
     for look in looks() {
@@ -1183,7 +1183,7 @@ fn allow_agents_opens_the_editor_with_read_chosen() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_editor_opens_at_its_agents_part() {
     for look in looks() {
@@ -1236,7 +1236,7 @@ fn the_editor_opens_at_its_agents_part() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_limits_are_in_sight_when_the_editor_opens_at_them() {
     for (look, size) in [(Look::macos(), 600.0), (Look::omarchy(), 700.0)] {
@@ -1268,7 +1268,7 @@ fn the_limits_are_in_sight_when_the_editor_opens_at_them() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn an_enter_held_or_shifted_in_the_box_does_nothing_behind_it() {
     use egui::{Key, Modifiers};
@@ -1298,7 +1298,7 @@ fn an_enter_held_or_shifted_in_the_box_does_nothing_behind_it() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn no_allow_agents_is_offered_for_a_connection_saved_no_more() {
     let (mut harness, tab) = connected(Look::omarchy());
@@ -1318,7 +1318,7 @@ fn no_allow_agents_is_offered_for_a_connection_saved_no_more() {
     assert!(!offered(&harness));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_agents_column_and_hint_step_back_where_the_window_has_no_room() {
     // macOS at 1024: Last used stays clear of the row's buttons.

@@ -18,9 +18,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-/// Whether agents can reach the app on this system. Not on Windows yet: its
-/// named pipe and its relay are a run of their own.
-pub const AVAILABLE: bool = cfg!(unix);
+/// Whether agents can reach the app on this system: through a socket on
+/// Linux and macOS, a named pipe on Windows.
+pub const AVAILABLE: bool = cfg!(any(unix, windows));
 
 /// What the agent is told when the app is not there to reach, or stops as
 /// the relay says its line.

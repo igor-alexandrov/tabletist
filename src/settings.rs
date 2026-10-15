@@ -64,9 +64,9 @@ pub struct Settings {
     pub mcp_enabled: bool,
     /// Days the log of agents' calls keeps a call.
     pub mcp_log_days: u32,
-    /// Whether an agent that connects is told of: a notification, or on
-    /// macOS the Dock's bounce. The Agents entry says who is here either
-    /// way.
+    /// Whether an agent that connects is told of: a notification, on
+    /// macOS the Dock's bounce, on Windows the taskbar button's flash. The
+    /// Agents entry says who is here either way.
     pub mcp_notify: bool,
 }
 
