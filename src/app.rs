@@ -1440,6 +1440,54 @@ impl App {
                     agents.selected = selected;
                 }
             }
+            Action::ShowAgentsView { tab, view } => {
+                self.show_agents(tab);
+                let shown = self
+                    .workspace_mut(tab)
+                    .and_then(crate::model::Workspace::agents_tab_mut)
+                    .map(|agents| agents.view = view);
+                // The log as it is now, each time it is shown.
+                if shown.is_some() && view == crate::model::AgentsView::Log {
+                    self.read_agents_log(tab, false);
+                }
+            }
+            Action::ToggleAgentsLogScope(tab) => {
+                if let Some(agents) = self
+                    .workspace_mut(tab)
+                    .and_then(crate::model::Workspace::agents_tab_mut)
+                {
+                    agents.log.all = !agents.log.all;
+                    agents.log.selected = None;
+                }
+                self.read_agents_log(tab, false);
+            }
+            Action::MoreAgentsLog(tab) => self.read_agents_log(tab, true),
+            Action::SelectAgentsLogCall { tab, id } => {
+                if let Some(agents) = self
+                    .workspace_mut(tab)
+                    .and_then(crate::model::Workspace::agents_tab_mut)
+                {
+                    agents.log.selected = Some(id);
+                }
+            }
+            Action::MoveAgentsLogSelection { tab, step } => {
+                if let Some(agents) = self
+                    .workspace_mut(tab)
+                    .and_then(crate::model::Workspace::agents_tab_mut)
+                {
+                    let log = &mut agents.log;
+                    let at = log
+                        .selected
+                        .and_then(|id| log.calls.iter().position(|logged| logged.id == id));
+                    let to = match at {
+                        None => 0,
+                        Some(at) => at
+                            .saturating_add_signed(step)
+                            .min(log.calls.len().saturating_sub(1)),
+                    };
+                    log.selected = log.calls.get(to).map(|logged| logged.id);
+                }
+            }
             Action::KeepAgentChanges(said) => self.keep_agent_changes(&said),
             Action::PutBackAgentChanges(said) => self.put_back_agent_changes(&said),
             Action::RunSql { tab, sql_tab, all } => {
@@ -2881,7 +2929,12 @@ impl App {
                     self.agents.sessions = open;
                 }
                 AgentsEvent::Sessions(_) => {}
-                AgentsEvent::Called(call) => self.agents.called(call),
+                AgentsEvent::Called(call) => {
+                    let on = call.connection.clone();
+                    self.agents.called(call);
+                    self.log_called(on.as_deref());
+                }
+                AgentsEvent::LogRead { asked, page } => self.agents_log_read(asked, page),
                 AgentsEvent::Started {
                     kept_aside: Some(path),
                 } => {
@@ -3724,11 +3777,119 @@ impl App {
         let shown = workspace.agents_tab().unwrap_or_else(|| {
             workspace
                 .tabs
-                .push(Tab::Agents(crate::model::AgentsTab { id, selected: None }));
+                .push(Tab::Agents(crate::model::AgentsTab::new(id)));
             id
         });
         workspace.active_tab = Some(shown);
         workspace.pane = Pane::Grid;
+    }
+
+    /// Reads the first page of the Log view of `tab`, or, with `more`, the
+    /// page after its last call. One read at a time.
+    fn read_agents_log(&mut self, tab: ConnTabId, more: bool) {
+        let asked = self.next_id();
+        let log = self.dirs.agents_log_file();
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let conn = workspace.conn_id.0.clone();
+        let Some(agents) = workspace.agents_tab_mut() else {
+            return;
+        };
+        if more && (agents.log.asked.is_some() || !agents.log.more) {
+            return;
+        }
+        let before = more
+            .then(|| agents.log.calls.last().map(|logged| logged.id))
+            .flatten();
+        let connection = (!agents.log.all).then_some(conn);
+        agents.log.asked = Some((asked, more));
+        self.backend.send(Command::Agents(AgentsCommand::ReadLog {
+            log,
+            connection,
+            before,
+            asked,
+        }));
+    }
+
+    /// A page of the log, for the tab that asked for it: the first page in
+    /// the place of what was shown, a later one after it.
+    fn agents_log_read(&mut self, asked: u64, page: Result<tabletist_mcp::Page, String>) {
+        let tabs: Vec<ConnTabId> = self.open_connections().map(|(tab, _)| tab).collect();
+        let mut stale = Vec::new();
+        for tab in tabs {
+            let Some(agents) = self
+                .workspace_mut(tab)
+                .and_then(crate::model::Workspace::agents_tab_mut)
+            else {
+                continue;
+            };
+            let log = &mut agents.log;
+            let Some((_, more)) = log.asked.filter(|(id, _)| *id == asked) else {
+                continue;
+            };
+            log.asked = None;
+            log.read = true;
+            // A call that ended while this read was out: read again, from
+            // the top, once a first page is in.
+            let again = std::mem::take(&mut log.stale) && !more;
+            if again {
+                stale.push(tab);
+            }
+            match &page {
+                Ok(page) => {
+                    if !more {
+                        log.calls.clear();
+                    }
+                    log.calls.extend(page.calls.iter().cloned());
+                    log.total = page.total;
+                    log.more = page.more;
+                    log.failed = None;
+                    // A call that is not on the page any more is not
+                    // selected.
+                    if let Some(id) = log.selected
+                        && !log.calls.iter().any(|logged| logged.id == id)
+                    {
+                        log.selected = None;
+                    }
+                }
+                Err(error) => {
+                    // Its words are the file's and SQLite's, never a call's.
+                    log::warn!("the log of agents' calls could not be read: {error}");
+                    log.failed = Some(error.clone());
+                }
+            }
+        }
+        for tab in stale {
+            self.read_agents_log(tab, false);
+        }
+    }
+
+    /// A call ended: each Log view that shows its connection's calls, on
+    /// its first page, reads it again; one whose read is out, once that
+    /// read is in.
+    fn log_called(&mut self, on: Option<&str>) {
+        let tabs: Vec<ConnTabId> = self.open_connections().map(|(tab, _)| tab).collect();
+        for tab in tabs {
+            let Some(workspace) = self.workspace_mut(tab) else {
+                continue;
+            };
+            let here = on == Some(workspace.conn_id.0.as_str());
+            let Some(agents) = workspace.agents_tab_mut() else {
+                continue;
+            };
+            let log = &mut agents.log;
+            let shows = agents.view == crate::model::AgentsView::Log
+                && log.calls.len() <= crate::backend::LOG_PAGE as usize
+                && (log.all || here);
+            if !shows {
+                continue;
+            }
+            match log.asked {
+                Some(_) => log.stale = true,
+                None => self.read_agents_log(tab, false),
+            }
+        }
     }
 
     /// Stops one agent's session. Its line goes when the backend says the
@@ -6175,6 +6336,153 @@ mod tests {
         // A connection that is saved no more: nothing.
         app.apply(Action::ShowAgentsOn(ConnectionId("gone".into())));
         assert_eq!(app.active_tab_id(), opened);
+    }
+
+    /// The read of the log the app asked for last: whose calls, from
+    /// before which, and its id.
+    fn log_asked(app: &App) -> Option<(Option<String>, Option<i64>, u64)> {
+        agents_sent(app)
+            .into_iter()
+            .rev()
+            .find_map(|sent| match sent {
+                AgentsCommand::ReadLog {
+                    connection,
+                    before,
+                    asked,
+                    ..
+                } => Some((connection.clone(), *before, *asked)),
+                _ => None,
+            })
+    }
+
+    /// A page of `count` calls on `conn`, the newest first, from `top` down.
+    fn log_page(conn: &str, top: i64, count: i64, more: bool) -> tabletist_mcp::Page {
+        let calls = (0..count)
+            .map(|n| tabletist_mcp::Logged {
+                id: top - n,
+                entry: tabletist_mcp::Entry {
+                    at_ms: 1_791_880_982_000,
+                    agent: "Claude Code".into(),
+                    connection_id: Some(conn.into()),
+                    tool: "run_query".into(),
+                    sql: Some(format!("SELECT {n}")),
+                    result: "ok".into(),
+                    ..tabletist_mcp::Entry::default()
+                },
+            })
+            .collect();
+        tabletist_mcp::Page {
+            calls,
+            total: 186,
+            more,
+        }
+    }
+
+    fn agents_log(app: &App, tab: ConnTabId) -> crate::model::AgentsLog {
+        app.workspace(tab)
+            .unwrap()
+            .tabs
+            .iter()
+            .find_map(|open| match open {
+                Tab::Agents(agents) => Some(agents.log.clone()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_log_is_read_a_page_at_a_time_for_this_connection_or_for_all() {
+        use crate::model::AgentsView;
+        let (mut app, dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.0.clone();
+        // Shown on its Log view: this connection's first page, from the
+        // log's file, whether the server runs or not.
+        app.apply(Action::ShowAgentsView {
+            tab,
+            view: AgentsView::Log,
+        });
+        assert!(app.workspace(tab).unwrap().agents_in_front());
+        assert!(matches!(
+            agents_sent(&app).last(),
+            Some(AgentsCommand::ReadLog { log, .. }) if *log == AppDirs::at(dir.path()).agents_log_file()
+        ));
+        let (connection, before, asked) = log_asked(&app).unwrap();
+        assert_eq!((connection.as_deref(), before), (Some(conn.as_str()), None));
+        // An answer to a read that is not the one out is not taken.
+        let page = Ok(log_page(&conn, 500, 200, true));
+        app.apply_event(Event::Agents(AgentsEvent::LogRead {
+            asked: asked + 99,
+            page: page.clone(),
+        }));
+        assert!(!agents_log(&app, tab).read);
+        app.apply_event(Event::Agents(AgentsEvent::LogRead { asked, page }));
+        let log = agents_log(&app, tab);
+        assert_eq!((log.calls.len(), log.total, log.more), (200, 186, true));
+        // More: from before the last call shown, after it.
+        app.apply(Action::SelectAgentsLogCall { tab, id: 499 });
+        app.apply(Action::MoreAgentsLog(tab));
+        let (_, before, asked) = log_asked(&app).unwrap();
+        assert_eq!(before, Some(301));
+        let page = Ok(log_page(&conn, 300, 10, false));
+        app.apply_event(Event::Agents(AgentsEvent::LogRead { asked, page }));
+        let log = agents_log(&app, tab);
+        assert_eq!(
+            (log.calls.len(), log.more, log.selected),
+            (210, false, Some(499))
+        );
+        // Every connection's: read again from the top.
+        app.apply(Action::ToggleAgentsLogScope(tab));
+        let (connection, before, asked) = log_asked(&app).unwrap();
+        assert_eq!((connection, before), (None, None));
+        // A log that cannot be read says why.
+        let page = Err("the log is of version 9".to_owned());
+        app.apply_event(Event::Agents(AgentsEvent::LogRead { asked, page }));
+        let log = agents_log(&app, tab);
+        assert_eq!(log.failed.as_deref(), Some("the log is of version 9"));
+        assert!(log.all);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_call_on_the_connection_reads_the_log_again() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.0.clone();
+        app.apply(Action::ShowAgentsView {
+            tab,
+            view: crate::model::AgentsView::Log,
+        });
+        let (_, _, asked) = log_asked(&app).unwrap();
+        let page = Ok(log_page(&conn, 3, 3, false));
+        app.apply_event(Event::Agents(AgentsEvent::LogRead { asked, page }));
+        let call = |on: &str| tabletist_mcp::Call {
+            at: std::time::SystemTime::now(),
+            session: "one".into(),
+            connection: Some(on.into()),
+            tool: "run_query".into(),
+            request: Some("SELECT 1".into()),
+            result: "ok".into(),
+            message: None,
+            rows: Some(1),
+            columns: Some(1),
+            took: std::time::Duration::from_millis(2),
+        };
+        app.backend.sent.clear();
+        // Another connection's: nothing to read.
+        app.apply_event(Event::Agents(AgentsEvent::Called(call("other"))));
+        assert_eq!(log_asked(&app), None);
+        app.apply_event(Event::Agents(AgentsEvent::Called(call(&conn))));
+        let (on, _, asked) = log_asked(&app).unwrap();
+        assert_eq!(on.as_deref(), Some(conn.as_str()));
+        // One that ends while that read is out, which may not hold it:
+        // read again once it is in.
+        app.apply_event(Event::Agents(AgentsEvent::Called(call(&conn))));
+        assert_eq!(log_asked(&app).unwrap().2, asked);
+        let page = Ok(log_page(&conn, 4, 4, false));
+        app.apply_event(Event::Agents(AgentsEvent::LogRead { asked, page }));
+        assert_ne!(log_asked(&app).unwrap().2, asked);
     }
 
     #[test]
