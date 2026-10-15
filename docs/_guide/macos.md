@@ -87,7 +87,7 @@ a Mac keyboard labels Delete.
 | Cmd+T | Test |
 | Cmd+S | Save |
 | Cmd+Return | Save and connect |
-| Backspace | In the empty Password field: forget the saved password |
+| Backspace, Forward Delete | In the empty Password field: forget the saved password |
 | Esc | Cancel |
 
 ### The sidebar

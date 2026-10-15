@@ -656,8 +656,6 @@ fn named(response: &Response, name: &'static str, skin: &Skin) {
         .accesskit_node_builder(response.id, |node| node.set_label(&*name));
 }
 
-/// The password's mode as a check box: saved in the keyring, or asked for
-/// on every connect.
 /// The key that deletes the saved password from the Password `field`, as
 /// it would delete the dots of one shown there. It holds while the field
 /// has the keyboard and was, before it drew, empty and saying the password
@@ -684,6 +682,8 @@ fn forget_saved_password(
     }
 }
 
+/// The password's mode as a check box: saved in the keyring, or asked for
+/// on every connect.
 fn keeps(mode: PasswordMode) -> bool {
     mode != PasswordMode::Ask
 }
