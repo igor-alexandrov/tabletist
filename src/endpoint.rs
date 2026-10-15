@@ -27,6 +27,11 @@ pub const AVAILABLE: bool = cfg!(any(unix, windows));
 /// the relay says its line.
 pub const NOT_RUNNING: &str = "Tabletist is not running, or agents are off in it. Open Tabletist, turn agents on, then reconnect.";
 
+/// What the agent is told when the app's pipe is there and stays busy, on
+/// Windows: as many connections as the app greets at once are waiting to
+/// prove the key, and a pipe has no queue for the next.
+pub const BUSY: &str = "Tabletist is busy with other connections to it. Try again in a moment.";
+
 /// What the agent is told when what answered at the endpoint could not
 /// prove it holds the key: not this Tabletist, or a key file that changed
 /// since. It was told nothing.

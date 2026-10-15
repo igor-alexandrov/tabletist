@@ -96,6 +96,7 @@ async fn reach(dir: &Path) -> Result<Stream, String> {
             Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+            Err(error) if busy(&error) => return Err(endpoint::BUSY.into()),
             Err(_) => return Err(NOT_RUNNING.into()),
         }
     };
@@ -136,6 +137,14 @@ async fn reach(dir: &Path) -> Result<Stream, String> {
         Some(endpoint::Answer::Refused(said)) => Err(said),
         Some(endpoint::Answer::Prove { .. }) | None => Err(NO_ANSWER.into()),
     }
+}
+
+/// Whether `error` is a pipe that is there and has no instance free: the
+/// app runs, and greets as many as it does at once (`ERROR_PIPE_BUSY`).
+#[cfg(any(unix, windows))]
+fn busy(error: &std::io::Error) -> bool {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    cfg!(windows) && error.raw_os_error() == Some(ERROR_PIPE_BUSY)
 }
 
 /// What the relay says when the app says nothing it can read.
@@ -299,6 +308,15 @@ mod tests {
             let _ = stream.read_to_end(&mut rest).await;
             rest
         })
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_pipe_that_stays_busy_is_said_to_be_busy_not_gone() {
+        let busy_pipe = std::io::Error::from_raw_os_error(231);
+        assert_eq!(busy(&busy_pipe), cfg!(windows));
+        let gone = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(!busy(&gone));
     }
 
     #[cfg(any(unix, windows))]

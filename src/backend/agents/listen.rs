@@ -26,10 +26,12 @@ use crate::endpoint::{self, Answer, Hello, Reply, Side};
 const MAX_SESSIONS: usize = 32;
 
 /// The most connections that have not proved the key yet, from their
-/// [`Hello`] to their [`Reply`]. The next waits in the system's queue, and
-/// holds nothing of the app's: connections that never say anything cannot
-/// use up its descriptors, nor the sessions of the agents that have the
-/// key.
+/// [`Hello`] to their [`Reply`]: connections that never say anything cannot
+/// use up the app's descriptors, nor the sessions of the agents that have
+/// the key. On a socket the next waits in the system's queue, holding
+/// nothing of the app's. A pipe has no queue: its one waiting instance
+/// goes to the next, and those after it find the pipe busy, and are told
+/// so once their relay has tried for its time (`endpoint::BUSY`).
 const MAX_GREETINGS: usize = 64;
 
 /// The endpoint while the server listens on it. Dropped, it listens no
