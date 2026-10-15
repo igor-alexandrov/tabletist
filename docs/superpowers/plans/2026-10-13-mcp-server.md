@@ -1483,6 +1483,41 @@ front when Settings opened. With no connection window open both are
 disabled, with the reason beside them ("Open a connection to see its
 agents"). The board does not draw that case.
 
+**As built in the second part of Phase 1b's fifth run** (`2026-10-15-mcp-server-1b-5b-settings.md`). Where
+it draws otherwise than the boards:
+
+- The nav lists General and Agents, and General alone where agents cannot
+  reach the app (Windows). On Omarchy `ctrl+h` and `ctrl+l` switch panes,
+  and the nav's foot says so.
+- The switch is `mcp.enabled` as it is in force: off while a change made
+  outside the app that turned it on is held. Turning it on is the
+  person's own, as **Turn on** is, and keeps what was held. Turning it off
+  ends every session: it is "Stop all agents" (question 11).
+- The status says "stdio · this computer only" until HTTP (1d), and how
+  many agents are connected. **Show Agents tab** and **Show log** close
+  Settings and show the tab of the window in front, or with Connections
+  in front of the last window open, the way Review does.
+- "Connect an agent" switches between Claude Code's command, Cursor's
+  entry for its `mcp.json`, and for Other the command `tabletist mcp`,
+  each with **Copy** (agreed on 2026-10-15). The list of agents and
+  "Removing it here disconnects it at once." come with HTTP (1d).
+  Omarchy draws the board's box with `y`, and "cursor, others" with the
+  command.
+- The Access box says "Off or Read" and the safety box leaves out writes:
+  both until Phase 2. **Open Connections** closes Settings.
+- The log's row offers 7, 30, 90 and 365 days, with a number set in the
+  file in its place among them. Its small print says the log keeps "never
+  the rows", where the board says "what was returned". "Notify when an
+  agent connects" leaves out writes until Phase 2.
+- Omarchy's rows under the cursor are the switch, the status (`enter`
+  shows the Agents tab), the access (`enter` opens Connections, and the
+  hint names `a`), the log's days (`enter` shows the log) and the
+  notification. The command, the line for other agents and the note are
+  not rows. The hints are shorter than the board's, to fit beside the file
+  at 1440 wide.
+- Reset to defaults puts back the options of the pane it is asked on, and
+  on the Agents pane leaves the server's switch as it is.
+
 ### D.2 The Connections list
 
 Boards: `macOS – Connections, agent access`, `Omarchy – Connections, agent
@@ -1767,6 +1802,11 @@ connects. Where it draws otherwise than the boards:
   log is the switch's, or `l`.
 - The clock is jiff's, in the system's time zone: dates in the log, and
   times in the feed and on a session's line.
+
+**As built in the second part of Phase 1b's fifth run** (`2026-10-15-mcp-server-1b-5b-settings.md`):
+**Settings…** beside **Turn on** with the server off, and **Other
+agents…** beside **Show log** with nobody here, both opening Settings ›
+Agents; on Omarchy `s` in both states, with its hint on the bottom line.
 
 | State | Title | Body | Actions |
 |---|---|---|---|
@@ -2138,7 +2178,7 @@ is off until the person turns it on.
 | Part | Runs | State on 2026-10-13 |
 |---|---|---|
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
-| 1b. The server over stdio, with its interface | 7, below | The first four and a half are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md` and `2026-10-15-mcp-server-1b-5a-access.md`). Nothing the others wait for is open |
+| 1b. The server over stdio, with its interface | 9, below | Built on Linux and macOS (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`). Windows' way in is next |
 | 1b on Windows: the way in | 1 | After 1b (question 14) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
 | 1d. HTTP with tokens | 1 | After stdio (question 9) |
@@ -2212,7 +2252,7 @@ can see what agents do and stop them.
 | **1b-4a. What agents are doing** (built: `2026-10-14-mcp-server-1b-4a-activity.md`) | `App::agents`'s feed, from `Server::calls`. The sessions that are here and "Also:". **Stop session** and **Stop agents here** | See each agent and each call as it happens, stop one agent or all on a connection | F.7: one connection, the stops, closing the tab |
 | **1b-4b. The log, and a new agent** (built: `2026-10-14-mcp-server-1b-4b-log.md`) | The Log view as a list for this connection, with All connections, and **Show log**. The notification for an agent that connects | Read the log, and hear of an agent that connects | F.7: the log's default. F.4's interface |
 | **1b-5a. Letting agents in, per connection** (built: `2026-10-15-mcp-server-1b-5a-access.md`) | The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** in the Agents tab and **Show Agents tab** in the list. The reference pages | A connection is opened to agents, and closed, without a file edited by hand | The interface tests of Connections and the editor. The keymap. `docs/bin/check` |
-| **1b-5b. Settings › Agents** | Settings › Agents, with the switch between panes, **Show Agents tab** and **Show log** there, the Agents tab's **Other agents…** and **Settings…**. The website's guide to Agents | Everything Phase 1 draws | The interface tests of Settings. The keymap. `docs/bin/check` |
+| **1b-5b. Settings › Agents** (built: `2026-10-15-mcp-server-1b-5b-settings.md`) | Settings › Agents, with the switch between panes, **Show Agents tab** and **Show log** there, the Agents tab's **Other agents…** and **Settings…**. The website's guide to Agents | Everything Phase 1 draws | The interface tests of Settings. The keymap. `docs/bin/check` |
 
 - **A button arrives with what it opens.** The empty states of the third
   run have **Turn on** and **Copy** and no other action. **Show log** comes
@@ -2356,7 +2396,8 @@ The ones Phase 1 waits for are marked.
     answers with an error and exits, as planned. No `--launch` flag in
     Phase 1, and no relay that stays up and waits (A.2 says why).
 11. "Stop all agents" switches the server off until it is turned on again.
-    Accepted?
+    Built so in Phase 1b's fifth run (`2026-10-15-mcp-server-1b-5b-settings.md`): it is the switch in
+    Settings › Agents.
 12. Omarchy: `a` and `d` are keys of the Agents tab alone, and in any other
     tab the bottom line ends `ga agents` where the board has `a approve  d
     deny  esc later`. Accepted? The connections screen needs no `:` prompt
