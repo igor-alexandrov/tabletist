@@ -2556,7 +2556,13 @@ pub struct AgentsTab {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentsState {
     pub sessions: Vec<tabletist_mcp::SessionInfo>,
+    /// The last [`FEED_KEPT`] calls, on every connection. The log has
+    /// them all.
+    pub feed: std::collections::VecDeque<tabletist_mcp::Call>,
 }
+
+/// How many calls the app keeps for the feed.
+pub const FEED_KEPT: usize = 300;
 
 /// What the sidebar's Agents entry says of a connection, and which state
 /// its tab shows. A write that waits for the person comes with writes.
@@ -2573,6 +2579,22 @@ pub enum AgentsHere {
 }
 
 impl AgentsState {
+    /// Takes a call that ended into the feed.
+    pub fn called(&mut self, call: tabletist_mcp::Call) {
+        self.feed.push_front(call);
+        self.feed.truncate(FEED_KEPT);
+    }
+
+    /// The feed's calls on `conn`, the newest first.
+    pub fn calls_on<'a>(
+        &'a self,
+        conn: &'a ConnectionId,
+    ) -> impl Iterator<Item = &'a tabletist_mcp::Call> + 'a {
+        self.feed
+            .iter()
+            .filter(move |call| call.connection.as_deref() == Some(conn.0.as_str()))
+    }
+
     /// The sessions that are here: those whose calls have named `conn`,
     /// the one that called last first.
     pub fn here(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
@@ -3660,6 +3682,41 @@ mod tests {
         assert_eq!(state.here(&conn).len(), 2);
         // Its access Off, nobody is here for it.
         assert_eq!(state.of(true, Some(Off), &conn), AgentsHere::OffHere);
+    }
+
+    #[test]
+    fn the_feed_keeps_the_last_calls_and_a_window_sees_those_on_its_connection() {
+        let call = |n: usize, conn: &str| tabletist_mcp::Call {
+            at: std::time::SystemTime::UNIX_EPOCH,
+            session: "s".into(),
+            connection: Some(conn.to_owned()),
+            tool: "run_query".into(),
+            request: Some(format!("SELECT {n}")),
+            result: "ok".into(),
+            message: None,
+            rows: Some(1),
+            columns: Some(1),
+            took: std::time::Duration::from_millis(4),
+        };
+        let mut state = AgentsState::default();
+        for n in 0..FEED_KEPT + 4 {
+            state.called(call(n, if n % 2 == 0 { "shop" } else { "ledger" }));
+        }
+        assert_eq!(state.feed.len(), FEED_KEPT);
+        let shop = ConnectionId("shop".into());
+        let newest: Vec<_> = state
+            .calls_on(&shop)
+            .take(2)
+            .map(|call| call.request.clone().unwrap())
+            .collect();
+        assert_eq!(
+            newest,
+            [
+                format!("SELECT {}", FEED_KEPT + 2),
+                format!("SELECT {FEED_KEPT}")
+            ]
+        );
+        assert_eq!(state.calls_on(&shop).count(), FEED_KEPT / 2);
     }
 
     /// The Bookshop's covers, `rows` of them, as a tab holds them.

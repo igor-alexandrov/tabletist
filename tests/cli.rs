@@ -147,10 +147,10 @@ mod mcp {
         let deadline = Instant::now() + WAIT;
         loop {
             for event in backend.poll() {
-                // The sessions as they change are said beside what the
-                // server does.
+                // The sessions as they change, and the calls as they end,
+                // are said beside what the server does.
                 match event {
-                    Event::Agents(AgentsEvent::Sessions(_)) => {}
+                    Event::Agents(AgentsEvent::Sessions(_) | AgentsEvent::Called(_)) => {}
                     Event::Agents(event) => return event,
                     _ => {}
                 }
@@ -193,6 +193,99 @@ mod mcp {
             stderr.contains(tabletist::endpoint::NOT_RUNNING),
             "{stderr}"
         );
+    }
+
+    /// What the app hears of an agent through the backend: each event of
+    /// agents but the sessions, until `found` says one is the one.
+    fn heard(backend: &mut Backend, found: impl Fn(&AgentsEvent) -> bool) -> AgentsEvent {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            for event in backend.poll() {
+                if let Event::Agents(event) = event
+                    && found(&event)
+                {
+                    return event;
+                }
+            }
+            assert!(Instant::now() < deadline, "the backend did not say it");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn the_app_hears_each_call_and_stops_a_session_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("shop.db");
+        tabletist_db::fixtures::write_sqlite_bookshop(&database).unwrap();
+        let connection = SavedConnection {
+            id: ConnectionId("shop".into()),
+            name: "Bookshop".into(),
+            environment: Environment::Dev,
+            read_only: None,
+            password: PasswordMode::None,
+            ssh_secret: PasswordMode::None,
+            spec: ConnectSpec::sqlite(database),
+            agents: Agents {
+                access: AgentAccess::Read,
+                ..Agents::default()
+            },
+        };
+        let endpoint: PathBuf = dir.path().join("run");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Agents(AgentsCommand::Policy {
+            connections: agentable(&[connection]),
+            host_keys: HostKeys::default(),
+        }));
+        backend.send(Command::Agents(AgentsCommand::Start {
+            log: dir.path().join("agents.sqlite3"),
+            log_days: 30,
+            endpoint: Some(endpoint.clone()),
+        }));
+        assert_eq!(
+            agents_said(&mut backend),
+            AgentsEvent::Started { kept_aside: None }
+        );
+        let mut child = relay(&endpoint, dir.path());
+        let mut stdin = child.stdin.take().unwrap();
+        let lines = lines_of(&mut child);
+        stdin.write_all(&line(&initialize(0))).unwrap();
+        lines.recv_timeout(WAIT).expect("initialized");
+        let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+        stdin.write_all(&line(&initialized)).unwrap();
+        let query = "SELECT count(*)\n  FROM books";
+        let arguments = json!({ "connection": "Bookshop · dev", "sql": query, "params": [] });
+        stdin
+            .write_all(&line(&call(1, "run_query", arguments)))
+            .unwrap();
+        lines.recv_timeout(WAIT).expect("an answer");
+        // The call, as it ended: where, what, and how, without its values.
+        let AgentsEvent::Called(called) = heard(&mut backend, |event| {
+            matches!(event, AgentsEvent::Called(_))
+        }) else {
+            unreachable!()
+        };
+        assert_eq!(called.connection.as_deref(), Some("shop"));
+        assert_eq!(called.tool, "run_query");
+        assert_eq!(
+            called.request.as_deref(),
+            Some("SELECT count(*) FROM books")
+        );
+        assert_eq!((called.result.as_str(), called.rows), ("ok", Some(1)));
+        // Stopped by its id, the session lets its agent go, and the relay
+        // ends.
+        backend.send(Command::Agents(AgentsCommand::StopSession(
+            called.session.clone(),
+        )));
+        assert!(ended(&mut child).success());
+        let gone = heard(
+            &mut backend,
+            |event| matches!(event, AgentsEvent::Sessions(open) if open.is_empty()),
+        );
+        assert_eq!(gone, AgentsEvent::Sessions(Vec::new()));
+        // One that is gone is nothing to stop.
+        backend.send(Command::Agents(AgentsCommand::StopSession(called.session)));
+        backend.send(Command::Agents(AgentsCommand::Stop));
+        assert_eq!(agents_said(&mut backend), AgentsEvent::Stopped);
     }
 
     #[test]

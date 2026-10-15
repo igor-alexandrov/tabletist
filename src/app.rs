@@ -2852,6 +2852,7 @@ impl App {
                     self.agents.sessions = open;
                 }
                 AgentsEvent::Sessions(_) => {}
+                AgentsEvent::Called(call) => self.agents.called(call),
                 AgentsEvent::Started {
                     kept_aside: Some(path),
                 } => {
@@ -5936,6 +5937,29 @@ mod tests {
         assert_eq!(saved.agents.access, AgentAccess::Off);
         assert!(app.agents_held.is_empty());
         assert_eq!(app.agents_access(saved), AgentAccess::Off);
+    }
+
+    #[test]
+    fn a_call_goes_into_the_feed_and_opens_nothing() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.clone();
+        let (active, tabs) = (app.active_tab_id(), app.tabs.len());
+        app.apply_event(Event::Agents(AgentsEvent::Called(tabletist_mcp::Call {
+            at: std::time::SystemTime::now(),
+            session: "one".into(),
+            connection: Some(conn.0.clone()),
+            tool: "run_query".into(),
+            request: Some("SELECT 1".into()),
+            result: "ok".into(),
+            message: None,
+            rows: Some(1),
+            columns: Some(1),
+            took: std::time::Duration::from_millis(2),
+        })));
+        assert_eq!(app.agents.calls_on(&conn).count(), 1);
+        assert_eq!((app.active_tab_id(), app.tabs.len()), (active, tabs));
+        assert_eq!(app.workspace(tab).unwrap().agents_tab(), None);
     }
 
     #[test]
