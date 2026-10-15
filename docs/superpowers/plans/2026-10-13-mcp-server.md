@@ -1335,16 +1335,25 @@ CREATE INDEX calls_result     ON calls (result, at_ms);
 - The schema's version is `PRAGMA user_version`. A file that cannot be
   opened is set aside as `agents.sqlite3.bad`, as `util::keep_aside` does
   for JSON (`src/util.rs:230`), and a new one is made.
-- Searching the SQL is a `LIKE` over the filtered rows. At a few hundred
-  calls a day for thirty days that is fast enough without an index of its
-  own.
+- The search looks in `sql` and `reason` and nowhere else: never in
+  `params`, which can hold what the person typed (D.5, the filter block).
+  It folds case, beyond ASCII too: SQLite's `LIKE` and `lower()` fold
+  ASCII alone, so the match is a function the log registers on its
+  connection, not a bare `LIKE`. It runs over the rows the other filters
+  let through. At a few hundred calls a day for thirty days that is fast
+  enough without an index of its own.
 - **Retention.** When the server starts and every six hours: `DELETE FROM
   calls WHERE at_ms < ?`, then an incremental vacuum. `log_days` is 7, 30
   (default), 90 or 365. There is no "never log": decision 6 says every call
   is logged.
-- **Export.** The rows that pass the current filters, as CSV or as JSON
-  Lines, through the save dialog the app already has (`rfd`), written on the
-  backend runtime.
+- **Export.** Exactly the calls that pass the current filters, the same
+  query as the table and the count, as CSV or as JSON, through the save
+  dialog the app already has (`rfd`), written on the backend runtime. Each
+  call: the SQL, the parameters, the counts (`rows`, `matched`,
+  `columns`, `bytes`), the timing (`at_ms`, `took_ms`, `decided_ms`), the
+  result with its code, the agent, the connection and the reason. Never
+  row data, which the file does not hold anyway. (JSON Lines until
+  2026-10-15; the filter block's rules ask for JSON.)
 - **As built** (Phase 1b's first run): the file with the whole table, an
   entry for each call a tool answered or refused, and `forget_before`. A
   protocol error is no entry. A call whose entry cannot be written is
@@ -1921,21 +1930,141 @@ tab.
 | What | Where |
 |---|---|
 | The table: time, agent, tool, request, rows, ms, result. The connection is a column only under All connections | `src/ui/agents/log.rs`. The grid's row drawing in `src/ui/grid.rs` is for database values. A plain list is enough here |
-| Filters: **This connection** (the default) or All connections, the agent, the result, and a search of the SQL. They are a query to the backend, `Command::Mcp(QueryLog { filter, before, limit })`, answered in pages | `src/backend.rs` |
+| The filter block: Connection, Agent, Result, a search, the count and **Export…**, with a Session chip from Activity. Its rules are below. One filter value is one query to the backend, `Command::Mcp(QueryLog { filter, before, limit })`, answered in pages, which the table, the count and Export all use | `src/backend.rs` |
 | "This connection" is the connection's id. The calls of a connection that was deleted since are under All connections alone | C.1 |
-| The count line: "186 calls · last 30 days · on this computer" | |
+| The count: "186 calls · last 30 days · on this computer", or "12 of 186 calls" under a filter | The filter block, rule 6 |
 | The detail pane, for the selected call: the SQL with its parameters, the rows changed against the count the person was shown ("3 (dry run said 3)"), the time waited, the time taken, who approved, the agent's reason. For a read: what ran, the rows and columns returned, the time, what was masked. And the note that rows are not kept | The parameters are what question 18 asks about: the board shows them in full. The count's words follow question 7 |
 | **Open in SQL editor**: opens a SQL tab with the statement, in Read-only mode, not run. In this window for a call on this connection, and in that connection's window for another. A connection that was deleted since disables it | `Action::NewSqlTab` and the workspace opening in `src/app.rs` |
 | **Export…** | C.1 |
-| Omarchy: `L` shows all connections and back, `/` filters, `enter` details, `o` opens in a SQL tab | D.6 |
+| Omarchy: `L` shows all connections and back, `/` opens the filter line, `enter` applies it (on the list, shows the details), `ctrl+e` exports, `o` opens in a SQL tab | D.6 |
 
 The Log view works with the server off and with access Off: it reads the log
 file, and both empty states say that it still shows past calls. Rows are
 never stored (C.1).
 
+#### The filter block
+
+Settled on 2026-10-15, from the boards `macOS – Agents tab, log` (the
+filter row and the table it filters), `Omarchy – Agents tab, activity,
+approval and log` (the log pane, with `/ filter` and `L`) and
+`macOS – Agents tab, activity and approval` (the link from Activity). It
+is Phase 3b's, apart from the two scopes and the count, which Phase 1b
+built.
+
+**macOS.** One row above the table, left to right:
+
+| Control | Options | Default |
+|---|---|---|
+| **Session** chip | Only when Log was opened from Activity's "See all {n} calls in Log": "Claude Code · since 10:38 ×". Its × removes it. Never a menu | None |
+| **Connection** | This connection · All connections · then each saved connection by name, the ones now set to Off too | This connection |
+| **Agent** | All agents · then each agent seen in the current scope, with its call count, the most recent first | All agents |
+| **Result** | All results · Writes waiting · Approved · Denied · Timed out · Refused · OK · Error | All results |
+| **Search** | A text field, "Search SQL…" | Empty |
+| The count | Plain text, not a control | "186 calls · last 30 days · on this computer" |
+| **Export…** | A button | |
+
+**The rules.**
+
+1. **Combining.** Every active filter combines with AND. The table, the
+   count and Export always show the same set: they are one `filter`.
+2. **The Connection scope.** This connection is the window's connection.
+   All connections, or another connection, shows that connection's calls
+   in this window. The table has the Connection column whenever the scope
+   covers more than one connection (All connections), and not for one
+   connection, this or another. Calls to a connection that is now Off stay
+   searchable: the log is history. A deleted connection is no saved
+   connection, so its calls are under All connections alone.
+3. **The Agent menu** is built from the calls in the current scope and the
+   other filters, all but Agent's own, so it never offers an agent with no
+   match. An agent is the name and the project it connected with
+   (`agent`, `project`): "Claude Code · tabletist-repo". Two projects of one
+   agent are two entries.
+4. **Result**, one value at a time, over the log's `result` (C.1):
+
+   | Choice | `result` |
+   |---|---|
+   | Writes waiting | `waiting`: a `propose_write` not answered yet |
+   | Approved | `approved` |
+   | Denied | `denied` |
+   | Timed out | `timeout` (a read stopped at the connection's limit) and `timed_out` (a write nobody answered in five minutes) |
+   | Refused | `refused`, whatever its code: every refusal code of B.8 whose result is `refused`, `count_changed` too |
+   | OK | `ok` |
+   | Error | `error`: the database's error on a read (`query_failed`) or on an approved write (`write_failed`, `write_unknown`, which Phase 2 logs as `error`). `connection_unavailable` is logged as `error` today and stays under it |
+
+   `cancelled` and `stopped` have no choice of their own: they show under
+   All results alone.
+5. **Search.** A substring of the SQL text or the agent's reason, case
+   folded (C.1). Never the parameters, which can hold values the person
+   typed. The table follows about 150 ms after typing stops. A match is
+   highlighted in the Request column. ⌘F (Ctrl+F on Windows) puts the
+   keys in the field; Esc empties it, and a second Esc leaves it.
+6. **The count.** With no filter: "{total} calls · last {log_days} days ·
+   on this computer". With any filter (the Session chip, Agent, Result or
+   the search): "{shown} of {total} calls". The Connection scope is not a
+   filter here: the total is the scope's. Phase 1b's count is the first
+   form, already the scope's.
+7. **No match.** The table says "No calls match these filters", with
+   **Clear filters**, which sets every control to its default and removes
+   the Session chip.
+8. **The selection.** The detail pane keeps the selected call while it
+   still matches; otherwise the first row is selected; with no rows the
+   pane shows nothing.
+9. **The order** is the newest first, always. There is no sort control in
+   this version.
+10. **Live updates.** A call that ends and matches comes in at the top,
+    and the count follows. One that does not match changes the total
+    alone. Phase 1b already reads a first page again when a call on its
+    connection ends: under a filter it reads the same `filter`.
+11. **Persistence.** The filters live on the tab (`AgentsLog`), so they
+    last while the window is open, and closing the tab or the window
+    resets them, as the scope does today. The link from Activity always
+    replaces the filters there are with its session's.
+12. **Export** writes exactly the filtered set (C.1), after the save
+    dialog, as CSV or JSON: the SQL, the parameters, the counts, the
+    timing, the result, the agent, the connection and the reason. Never
+    row data.
+13. **The source.** Everything reads the log's file (C.1). Filtering never
+    sends a query to a person's database.
+
+**The link from Activity.** "See all {n} calls in Log" on a session's line
+opens Log with that session as the chip, "Claude Code · since 10:38", and
+every other control at its default. The chip is the session's id and the
+time it connected: its calls, on whatever connection the scope holds. The
+link's place and its count are the activity feed's brief
+(`agents-activity-feed-prompt.md`). The board in the canvas does not draw
+the link yet (read on 2026-10-15).
+
+**Omarchy.** The board's log pane:
+
+- `/` opens a filter line at the top of the log pane. It takes words and
+  tokens, which combine with AND:
+
+  | Token | Matches |
+  |---|---|
+  | `agent:cursor` | Cursor's calls (the agent's name, case folded) |
+  | `result:refused` | The refusals; each choice of rule 4 has a token: `waiting`, `approved`, `denied`, `timed_out`, `refused`, `ok`, `error` |
+  | `result:waiting` | The writes waiting |
+  | `conn:all` | All connections |
+  | `conn:"Bookshop · staging"` | That connection |
+  | `session:current` | The session filter, as the link from Activity sets it |
+
+  A plain word searches the SQL and the reason, as on macOS. An unknown
+  token is drawn in red and left out of the filter.
+- `enter` applies the line and `esc` empties it. On the list, `enter` shows
+  the selected call's details, as before.
+- `L` switches between this connection and all connections. `ctrl+e`
+  exports.
+- The pane's header says the count in macOS's words ("log  this
+  connection · 186 calls · last 30 days · on this computer ·
+  L all connections", as built).
+- A token gives the same calls as the macOS control it stands for: one
+  parser makes the same `filter`.
+
 Phase 1b ships the list for this connection, the switch to All connections,
-and the detail line. Phase 3b adds the other filters, the search, the detail
-pane, export and "Open in SQL editor".
+and the detail line. Phase 3b adds the rest of the filter block (each
+connection by name, the agent, the result, the search, the Session chip,
+the count under a filter), the detail pane, export and "Open in SQL
+editor".
 
 ### D.6 The keymap
 
@@ -1957,7 +2086,9 @@ else, and `tests/keys.rs` fails on one spelled in a view.
 | Stop session | `Agents` | the button | `S` | The scope is new. It sits alongside `Global`, whose keys are chords |
 | Stop agents here | `Agents` | the button | `X` | `X` was to be Stop all agents, which is the switch in Settings now. The board draws no key for this one |
 | All connections in the log | `Agents`, the Log view | the filter | `L` | Free in the new scope. `h/l` move in a grid (`:1030`), in lower case |
-| Filter the log, open its details | `Agents`, the Log view | the fields | `/`, `enter` | As in the Connections list |
+| Filter the log, open its details | `Agents`, the Log view | the fields | `/`, `enter` | As in the Connections list. In the filter line `enter` applies it and `esc` empties it |
+| Search the log | `Agents`, the Log view | `cmd+f` puts the keys in "Search SQL…"; `esc` empties it, a second `esc` leaves it | the filter line | `cmd+f` is the filter bar in `Grid` (`:1112` at `54e3d7c`), another scope |
+| Export the log | `Agents`, the Log view | **Export…** | `ctrl+e` | `ctrl+e` is Open in editor in a cell editor (`:1312`), Explain in `SqlEditor` (`:1515`) and Open file on the settings screen (`:1739`), at `54e3d7c`. Other scopes |
 | Open in a SQL tab | `Agents`, the Log view | the button | `o` | `o` is Add row in `Grid` (`:1227`). Another scope |
 | Copy the command, show the log | `Agents`, no agents yet | the buttons | `y`, `l` | |
 | Allow agents…, show the log | `Agents`, Off here | the buttons | `e`, `l` | `e` edits a connection in `Connections` (`:883`), which is what this does |
@@ -2120,7 +2251,18 @@ runs on tokio's paused clock, which the workspace already uses in tests
 - A `propose_write` is one entry that goes from `waiting` to its end.
 - Retention: entries older than `log_days` are gone after the job runs, on
   the paused clock. Newer ones stay.
-- Export matches the filtered view, in both formats.
+- Export holds the calls of the filtered view and no others, in both
+  formats, with no row data: the marker test's table is exported too, and
+  the file searched for the marker.
+- The filter's query, on a log of Bookshop calls: every filter combines
+  with AND; the search finds the SQL and the reason whatever their case,
+  ASCII or not, and never a parameter (a marker in `params` matches
+  nothing); Writes waiting is exactly the `waiting` calls and Refused every
+  `refused` call, of each code; the calls of a connection set to Off since
+  are found; the agents offered are those with a match in the scope and the
+  other filters.
+- No filter reaches a database: run over a gateway that fails every open,
+  each filter and Export read the log alone.
 - A file that cannot be opened is set aside and a new one made.
 - `connections.json`: a file with `agents` loads and saves unchanged. The
   version 1 fixture (`tests/fixtures/connections-v1.json`) loads with every
@@ -2184,6 +2326,31 @@ snapshot material is committed.
   still waits, with the time it had.
 - **The log defaults to This connection.** All connections shows the rest.
   The calls of a deleted connection are under All connections alone.
+- **The filter block** (D.5), over a log of Bookshop calls, in both looks
+  where both have the control:
+  1. The defaults: this connection, all agents, all results, an empty
+     search, and "{total} calls · last 30 days · on this computer".
+  2. The filters combine with AND, and the table, the count and Export
+     hold the same calls.
+  3. The Agent menu lists only agents with a match in the current scope
+     and the other filters.
+  4. The search matches the SQL and the reason in any case, never the
+     parameters.
+  5. Writes waiting and Refused hold exactly the right calls.
+  6. All connections adds the Connection column, and holds the calls of a
+     connection set to Off since. One other connection adds no column.
+  7. The link from Activity sets the Session chip and replaces the other
+     filters. Removing the chip gives back the defaults.
+  8. Clear filters sets everything to its default, the chip gone too.
+  9. The selection stays on a call that still matches, and goes to the
+     first row otherwise; with no rows nothing is selected.
+  10. A call that ends and matches comes in at the top. One that does not
+      changes the total alone.
+  11. Export holds no row data.
+  12. Omarchy's tokens give the same calls as the macOS controls they stand
+      for. An unknown token is left out of the filter.
+  13. Filtering sends no query to a database: the recording backend sees
+      `QueryLog` and no database command.
 - **The empty states:** which one shows for each state. "Allow agents…"
   opens the editor at its Agents section, and until Save nothing is saved
   and nothing is sent: Cancel leaves access Off. "Turn on" starts the server
@@ -2386,11 +2553,14 @@ What follows is the design, kept for if it is taken up again.
 
 **3b. The Log view, in full.** (This was a log window before 2026-10-13.)
 
-- Files: `src/ui/agents/log.rs` (the agent and result filters, the search,
-  the detail pane), `tabletist-mcp` (the queries, export), `src/app.rs`
-  ("Open in SQL editor").
-- Risks: small.
-- Tests: the rest of F.4, the UI tests of the filters.
+- Files: `src/ui/agents/log.rs` (the filter block of D.5: each connection
+  by name, the agent, the result, the search, the Session chip, the count
+  under a filter, Omarchy's filter line; the detail pane), `tabletist-mcp`
+  (the filter's query, the case-folding match, export), `src/app.rs`
+  ("Open in SQL editor", the link from Activity).
+- Risks: small. The Agent menu's query (rule 3) is the one most likely to
+  drift from the table's.
+- Tests: the rest of F.4, and F.7's filter block, headless.
 
 ## Open questions
 
