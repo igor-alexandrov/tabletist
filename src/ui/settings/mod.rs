@@ -1,9 +1,11 @@
-//! The Settings window: every option of the General tab, changed where it
-//! is shown and saved at once. The terminal look draws a screen over the
-//! whole window with its keys in the footer (`terminal.rs`); the other
-//! looks draw a sheet over the dimmed window, with a control for each
-//! option (`sheet.rs`).
+//! The Settings window: the options of its panes, General and, where
+//! agents can reach the app, Agents, each changed where it is shown and
+//! saved at once. The terminal look draws a screen over the whole window
+//! with its keys in the footer (`terminal.rs`); the other looks draw a
+//! sheet over the dimmed window, with a control for each option
+//! (`sheet.rs`, and `agents.rs` for the Agents pane).
 
+mod agents;
 mod file_pane;
 mod sheet;
 mod terminal;
@@ -11,9 +13,9 @@ mod terminal;
 use std::borrow::Cow;
 
 use crate::app::App;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
-use crate::model::{Action, Dialog};
+use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
 
 /// The label of an option's row. English: the caller translates, and the
@@ -24,6 +26,9 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::Timestamps => "Timestamps",
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
+        OptionId::AgentsOn => "Let agents use Tabletist",
+        OptionId::LogDays => "Keep the activity log",
+        OptionId::AgentsNotify => "Notify when an agent connects",
     }
 }
 
@@ -32,8 +37,36 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
     match option {
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
-        OptionId::Timestamps | OptionId::GroupDigits => None,
+        OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
+        OptionId::Timestamps
+        | OptionId::GroupDigits
+        | OptionId::AgentsOn
+        | OptionId::AgentsNotify => None,
     }
+}
+
+/// The days the log keeps a call, as the window writes them.
+pub(super) fn days(locale: Locale, days: u32) -> String {
+    ngettext(locale, "{n} day", "{n} days", days).replace("{n}", &days.to_string())
+}
+
+/// Whether an option of on and off is on.
+pub(super) fn is_on(value: OptionValue) -> bool {
+    matches!(
+        value,
+        OptionValue::ValueTags(true)
+            | OptionValue::AgentsOn(true)
+            | OptionValue::AgentsNotify(true)
+    )
+}
+
+/// The settings as the window shows them: the server's switch as it is in
+/// force, off where a change made outside the app that turned it on is
+/// held.
+pub(super) fn shown(app: &App) -> Settings {
+    let mut settings = app.settings.clone();
+    settings.mcp_enabled = app.agents_on();
+    settings
 }
 
 /// A timestamp as the grid shows one at each precision.
@@ -95,8 +128,39 @@ pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(Said, Optio
             (Word("off"), OptionValue::ValueTags(false)),
             (Word("on"), OptionValue::ValueTags(true)),
         ],
+        OptionId::AgentsOn => vec![
+            (Word("off"), OptionValue::AgentsOn(false)),
+            (Word("on"), OptionValue::AgentsOn(true)),
+        ],
+        OptionId::LogDays => vec![
+            (Word("fewer"), settings.stepped(option, false)),
+            (Word("more"), settings.stepped(option, true)),
+        ],
+        OptionId::AgentsNotify => vec![
+            (Word("off"), OptionValue::AgentsNotify(false)),
+            (Word("on"), OptionValue::AgentsNotify(true)),
+        ],
     }
 }
+
+/// What Enter does on `row`, where it does something: the Agents tab, its
+/// log, or Connections. Showing the tab needs a window: with none open,
+/// nothing.
+pub(super) fn opened(app: &App, row: SettingsRow) -> Option<Vec<Action>> {
+    let show = |view| {
+        app.agents_window()
+            .map(|_| vec![Action::ShowAgentsFromSettings(view)])
+    };
+    match row {
+        SettingsRow::AgentsStatus => show(AgentsView::Activity),
+        SettingsRow::Option(OptionId::LogDays) => show(AgentsView::Log),
+        SettingsRow::AgentsAccess => Some(vec![Action::CloseDialog, Action::ShowConnections]),
+        SettingsRow::Option(_) => None,
+    }
+}
+
+/// What a disabled Show Agents tab and Show log say, with no window open.
+pub(super) const NO_WINDOW: &str = "Open a connection to see its agents";
 
 /// What one of the screen's keys asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +178,14 @@ enum Asked {
     },
     /// Flip the cursor's option, if it has two values.
     Flip,
+    /// Show the next pane (`true`) or the one before.
+    Pane {
+        forward: bool,
+    },
+    /// Open what the cursor's row shows.
+    Open,
+    /// Copy the command that connects an agent.
+    Copy,
 }
 
 /// What `event` asks of the screen, if it is a press of one of its keys,
@@ -133,6 +205,9 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
         Command::SettingsMove,
         Command::SettingsChange,
         Command::SettingsToggle,
+        Command::SettingsPane,
+        Command::SettingsOpenRow,
+        Command::SettingsCopyCommand,
     ];
     // A letter is read as the key that types it, with Shift for its
     // capital and nothing else held.
@@ -148,7 +223,11 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
         _ => None,
     };
     for command in commands {
-        for keys in keymap.chords_now(layout, command, Scope::Prompt, true) {
+        // A pane's two chords are the one before, then the next.
+        for (nth, keys) in keymap
+            .chords_now(layout, command, Scope::Prompt, true)
+            .enumerate()
+        {
             let pressed = match crate::keymap::spell(keys) {
                 Ok(Spelled::Strokes(strokes)) => match strokes.as_slice() {
                     [Stroke::Text(letter)] => typed == Some(*letter),
@@ -173,6 +252,9 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
                 Command::SettingsChange => Asked::Step {
                     forward: matches!(keys, "l" | "right"),
                 },
+                Command::SettingsPane => Asked::Pane { forward: nth == 1 },
+                Command::SettingsOpenRow => Asked::Open,
+                Command::SettingsCopyCommand => Asked::Copy,
                 _ => Asked::Flip,
             });
         }
@@ -188,13 +270,15 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
 /// before it left: the cursor where they moved it, an option as they set
 /// it. `j` then `l` changes the row `j` moved to, and `l` twice steps
 /// twice.
-fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
+fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut Vec<Action>) {
     let free = !super::focus::on_control(ctx);
-    let last = OptionId::ALL.len() - 1;
     // As `App::apply` will have them once it has run the actions so far.
-    let mut cursor = row;
-    let mut settings = app.settings.clone();
+    let mut cursor = dialog.row;
+    let mut pane = dialog.pane;
+    let mut settings = shown(app);
     let keymap = app.keymap.clone();
+    // Copied once the input is let go: the clipboard is the context's.
+    let mut copy = false;
     ctx.input_mut(|input| {
         let held = input.modifiers;
         input.events.retain(|event| {
@@ -212,14 +296,48 @@ fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
                 }
                 Asked::Close => actions.push(Action::CloseDialog),
                 Asked::Move(by) => {
+                    let last = pane.rows().len() - 1;
                     cursor = cursor.saturating_add_signed(by).min(last);
                     actions.push(Action::MoveSettingsRow(by));
                 }
+                Asked::Pane { forward } => {
+                    let listed = SettingsPane::listed();
+                    let at = listed.iter().position(|shown| *shown == pane).unwrap_or(0);
+                    let next = match forward {
+                        true => (at + 1).min(listed.len() - 1),
+                        false => at.saturating_sub(1),
+                    };
+                    if listed[next] != pane {
+                        pane = listed[next];
+                        cursor = 0;
+                        actions.push(Action::ShowSettingsPane(pane));
+                    }
+                }
+                // What the row opens, on a row that opens something: else
+                // the key is left.
+                Asked::Open => {
+                    let opens = pane.rows().get(cursor).and_then(|row| opened(app, *row));
+                    let Some(opens) = opens else {
+                        return true;
+                    };
+                    // A fresh press only: a held Enter would go on to the
+                    // screen it opened.
+                    if !repeat {
+                        actions.extend(opens);
+                    }
+                }
+                Asked::Copy => {
+                    if pane != SettingsPane::Agents {
+                        return true;
+                    }
+                    copy |= !repeat;
+                }
                 Asked::Reset | Asked::Step { .. } | Asked::Flip => {
-                    // A cursor on no row has no option to change: the key
-                    // is left, and the ones above still close the screen
-                    // or move it back onto a row.
-                    let Some(option) = OptionId::ALL.get(cursor).copied() else {
+                    // A cursor on no option has no option to change: the
+                    // key is left, and the ones above still close the
+                    // screen or move it back onto a row.
+                    let row = pane.rows().get(cursor);
+                    let Some(option) = row.and_then(|row| row.option()) else {
                         return true;
                     };
                     let value = match asked {
@@ -236,21 +354,23 @@ fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
             false
         });
     });
+    if copy {
+        crate::ui::agents::copy_command(ctx, app.locale);
+    }
 }
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::Settings(dialog)) = &app.dialog else {
         return;
     };
-    let (row, resetting) = (dialog.row, dialog.resetting);
     let mut actions = Vec::new();
     if app.look.terminal {
         // The screen's keys act on its cursor. The sheet has none: its
         // controls are reached with Tab.
-        keys(app, ctx, row, &mut actions);
-        terminal::show(app, ctx, row, &mut actions);
+        keys(app, ctx, dialog, &mut actions);
+        terminal::show(app, ctx, dialog, &mut actions);
     } else {
-        sheet::show(app, ctx, resetting, &mut actions);
+        sheet::show(app, ctx, dialog, &mut actions);
     }
     app.actions.extend(actions);
 }

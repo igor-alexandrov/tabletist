@@ -782,9 +782,18 @@ pub enum Action {
     ShowAbout,
     /// Show the Settings window.
     ShowSettings,
-    /// Move the Settings window's cursor by this many options.
+    /// Show the Settings window on its Agents pane: from the Agents tab.
+    ShowAgentSettings,
+    /// Show this pane of the Settings window, its cursor on its first row.
+    ShowSettingsPane(SettingsPane),
+    /// Show how this agent is connected, in Settings › Agents.
+    ChooseAgentSetup(crate::endpoint::Agent),
+    /// Close Settings and show the Agents tab on this view: the window's in
+    /// front, or with Connections in front the last window's.
+    ShowAgentsFromSettings(AgentsView),
+    /// Move the Settings window's cursor by this many rows.
     MoveSettingsRow(isize),
-    /// Put the Settings window's cursor on this option.
+    /// Put the Settings window's cursor on this row of its pane.
     SelectSettingsRow(usize),
     /// Set an option. Applied and saved at once.
     SetOption(crate::settings::OptionValue),
@@ -1743,12 +1752,104 @@ pub struct QuickOpen {
 /// them.
 #[derive(Debug, Default)]
 pub struct SettingsDialog {
-    /// The option the keys act on, as an index into
-    /// [`crate::settings::OptionId::ALL`].
+    /// The pane shown.
+    pub pane: SettingsPane,
+    /// The row the keys act on, as an index into the pane's
+    /// [`SettingsPane::rows`].
     pub row: usize,
     /// Reset to defaults was chosen and waits for its answer: the footer
     /// asks in place of its links.
     pub resetting: bool,
+    /// The agent Settings › Agents says how to connect.
+    pub agent: crate::endpoint::Agent,
+}
+
+/// A pane of the Settings window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SettingsPane {
+    #[default]
+    General,
+    /// How agents reach the app. Listed where they can.
+    Agents,
+}
+
+impl SettingsPane {
+    /// The panes the window lists, in order.
+    pub fn listed() -> &'static [SettingsPane] {
+        if crate::endpoint::AVAILABLE {
+            &[Self::General, Self::Agents]
+        } else {
+            &[Self::General]
+        }
+    }
+
+    /// The pane's name. English: the caller translates it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Agents => "Agents",
+        }
+    }
+
+    /// The pane's options, in order.
+    pub fn options(self) -> &'static [crate::settings::OptionId] {
+        match self {
+            Self::General => &crate::settings::OptionId::GENERAL,
+            Self::Agents => &crate::settings::OptionId::AGENTS,
+        }
+    }
+
+    /// What Reset to defaults puts back: the pane's options but the
+    /// server's switch, which turned off would end every agent's session
+    /// for a question about defaults.
+    pub fn reset_options(self) -> &'static [crate::settings::OptionId] {
+        use crate::settings::OptionId;
+        match self {
+            Self::General => &OptionId::GENERAL,
+            Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
+        }
+    }
+
+    /// The rows the terminal look's cursor moves among, in order.
+    pub fn rows(self) -> &'static [SettingsRow] {
+        use crate::settings::OptionId;
+        match self {
+            Self::General => &[
+                SettingsRow::Option(OptionId::PageSize),
+                SettingsRow::Option(OptionId::Timestamps),
+                SettingsRow::Option(OptionId::GroupDigits),
+                SettingsRow::Option(OptionId::ValueTags),
+            ],
+            Self::Agents => &[
+                SettingsRow::Option(OptionId::AgentsOn),
+                SettingsRow::AgentsStatus,
+                SettingsRow::AgentsAccess,
+                SettingsRow::Option(OptionId::LogDays),
+                SettingsRow::Option(OptionId::AgentsNotify),
+            ],
+        }
+    }
+}
+
+/// A row of the terminal look's Settings screen that the cursor can be on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsRow {
+    /// An option, which the keys change.
+    Option(crate::settings::OptionId),
+    /// Whether agents can connect, and who has: Enter shows the Agents tab.
+    AgentsStatus,
+    /// What agents may do, which is set in Connections: Enter opens them.
+    AgentsAccess,
+}
+
+impl SettingsRow {
+    /// The row's option, if it is one.
+    pub fn option(self) -> Option<crate::settings::OptionId> {
+        match self {
+            Self::Option(option) => Some(option),
+            Self::AgentsStatus | Self::AgentsAccess => None,
+        }
+    }
 }
 
 /// Asks whether to trust an SSH host seen for the first time.

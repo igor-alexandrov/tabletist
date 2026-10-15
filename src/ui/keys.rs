@@ -2201,8 +2201,9 @@ fn letters(
                     true,
                 )
             })
-            .count
-            > 0
+            // A press, not what a held Enter repeats: one held on Settings'
+            // status row shows this tab and goes no further.
+            .fresh
     {
         actions.push(Action::ShowAgentsOn(conn));
     }

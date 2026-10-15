@@ -491,6 +491,9 @@ commands! {
     SettingsOpenFile,
     SettingsReset,
     SettingsClose,
+    SettingsPane,
+    SettingsOpenRow,
+    SettingsCopyCommand,
     QuickOpenMove,
     QuickOpenPick,
     QuickOpenClose,
@@ -780,6 +783,17 @@ impl Command {
             C::SettingsOpenFile => info("Open the settings file in $EDITOR", "", Prompts),
             C::SettingsReset => info("Reset the option", "", Prompts),
             C::SettingsClose => info("Close the settings", "", Prompts),
+            C::SettingsPane => info(
+                "Show the next or the previous pane of the settings",
+                "",
+                Prompts,
+            ),
+            C::SettingsOpenRow => info("Open what the settings' row shows", "", Prompts),
+            C::SettingsCopyCommand => agents(info(
+                "Copy the command that connects an agent, in the settings",
+                "",
+                Prompts,
+            )),
             C::QuickOpenMove => info("Move in quick open", "", Prompts),
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
@@ -1710,6 +1724,15 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SettingsToggle, PROMPT, NONE, keys(&[k("space")])).when(When::SettingsScreen),
         bind(C::SettingsOpenFile, PROMPT, NONE, keys(&[k("ctrl+e")])).when(When::SettingsScreen),
         bind(C::SettingsReset, PROMPT, NONE, keys(&[k("R")])).when(When::SettingsScreen),
+        bind(
+            C::SettingsPane,
+            PROMPT,
+            NONE,
+            keys(&[k("ctrl+h"), k("ctrl+l")]).shown("ctrl+h/l"),
+        )
+        .when(When::SettingsScreen),
+        bind(C::SettingsOpenRow, PROMPT, NONE, keys(&[k("enter")])).when(When::SettingsScreen),
+        bind(C::SettingsCopyCommand, PROMPT, NONE, keys(&[k("y")])).when(When::SettingsScreen),
         bind(
             C::SettingsClose,
             PROMPT,
