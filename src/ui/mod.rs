@@ -1621,6 +1621,24 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_sheet_is_as_tall_on_every_pane() {
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            let general = harness.painted_rect("Stored in").expect("the footer");
+            harness.click("Agents");
+            harness.settle();
+            let shown = match &harness.app.dialog {
+                Some(crate::model::Dialog::Settings(dialog)) => Some(dialog.pane),
+                _ => None,
+            };
+            assert_eq!(shown, Some(crate::model::SettingsPane::Agents));
+            // The footer stayed where it was: the sheet kept its height.
+            let agents = harness.painted_rect("Stored in").expect("the footer");
+            assert_eq!(general, agents);
+        }
+    }
+
+    #[test]
     fn the_settings_cursor_moves_with_j_and_k_and_the_arrows() {
         let mut harness = settings_screen();
         assert_eq!(settings_cursor(&harness), 0);

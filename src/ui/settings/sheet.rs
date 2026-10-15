@@ -20,8 +20,10 @@ use crate::ui::widgets::{self, Segment};
 
 use super::{label, path_shown, sample_timestamp, small_print};
 
-/// The sheet at its widest, and what it leaves of the window at each side.
+/// The sheet at its widest and at its tallest, and what it leaves of the
+/// window at each side.
 const WIDTH: f32 = 1040.0;
+const HEIGHT: f32 = 920.0;
 const MARGIN: f32 = 40.0;
 /// The nav, its padding, and one of its items.
 const NAV: f32 = 210.0;
@@ -87,6 +89,9 @@ pub(super) fn show(
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
+    // One height for every pane, whatever it holds: switching panes moves
+    // neither the footer nor the sheet.
+    let height = HEIGHT.min(screen.height() - 2.0 * MARGIN);
     let id = egui::Id::new("settings");
     // Its parts fill it edge to edge: no margin of its own. The shadow is
     // the connection dialog's, the app's other sheet.
@@ -129,7 +134,7 @@ pub(super) fn show(
             // footer stays.
             let ignored = ignored_lines(ui, app.settings_file.invalid.len(), pane.width(), &skin);
             let foot = footer_height(ui, ignored.as_ref(), &skin);
-            let limit = room.top() + screen.height() - 2.0 * MARGIN - foot;
+            let limit = room.top() + height - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
             let mut pane = ui.new_child(builder.layout(egui::Layout::top_down(egui::Align::Min)));
             match dialog.pane {
@@ -139,10 +144,20 @@ pub(super) fn show(
                 }
             }
             let rows = pane.min_rect().bottom();
-            let bottom = rows + foot;
+            // Lower than the rows' end, unless a window too short for even
+            // `ROWS_MIN` of them leaves the sheet shorter than that.
+            let bottom = limit.max(rows) + foot;
+            // The last row leaves its rule to the footer's: where there is
+            // room between them, it has one of its own.
+            if rows < limit - 0.5 {
+                let across = egui::Rangef::new(room.left() + NAV + SIDE, room.right() - SIDE);
+                widgets::hline(ui, across, rows - 0.5, skin.palette.surface);
+            }
             ui.allocate_rect(room.with_max_y(bottom), Sense::hover());
-            let under =
-                Rect::from_min_max(pos2(room.left() + NAV, rows), pos2(room.right(), bottom));
+            let under = Rect::from_min_max(
+                pos2(room.left() + NAV, bottom - foot),
+                pos2(room.right(), bottom),
+            );
             footer(ui, under, app, resetting, ignored.as_ref(), &skin, actions);
             let side = Rect::from_min_max(room.min, pos2(room.left() + NAV, bottom));
             // The sheet's own corners, inside its border.
