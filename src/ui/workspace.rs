@@ -2039,6 +2039,24 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .workspace(tab)
         .filter(|workspace| workspace.agents_in_front())
         .and_then(|_| app.agents_here(tab));
+    // The tab's own `l`, not the prompt's `:agents log`.
+    let (agents_log_key, agents_scope_key) = (
+        app.keymap.key_in(
+            app.layout(),
+            Command::ShowAgentsLog,
+            crate::keymap::Scope::Agents,
+        ),
+        key(Command::ToggleAgentsLogScope),
+    );
+    // Its Log view, while it shows, and whether every connection's.
+    let agents_log = app.workspace(tab).and_then(|workspace| {
+        workspace.tabs.iter().find_map(|open| match open {
+            crate::model::Tab::Agents(agents) if agents.view == crate::model::AgentsView::Log => {
+                Some(agents.log.all)
+            }
+            _ => None,
+        })
+    });
     // Whether its list has sessions, elsewhere ones too.
     let agents_listed = app
         .workspace(tab)
@@ -2257,6 +2275,25 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ],
                 Some(crate::model::AgentsHere::OffHere) | None => Vec::new(),
             };
+            let log_words = [
+                gettext(locale, "log"),
+                gettext(locale, "activity"),
+                gettext(locale, "calls"),
+                gettext(locale, "all connections"),
+                gettext(locale, "this connection"),
+            ];
+            match agents_log {
+                // The Log view's keys in the place of the activity's.
+                Some(all) => {
+                    let scope = if all { &*log_words[4] } else { &*log_words[3] };
+                    agents_hints = vec![
+                        (&agents_log_key, &*log_words[1], true),
+                        (&agents_scope_key, scope, true),
+                        (&agents_move_key, &*log_words[2], true),
+                    ];
+                }
+                None => agents_hints.push((&agents_log_key, &*log_words[0], true)),
+            }
             agents_hints.push((&sidebar_key, "tables", true));
             if agents.is_some() {
                 let left = rect.left() + 12.0;

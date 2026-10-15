@@ -1737,6 +1737,12 @@ impl App {
             (Typed::Command(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 Action::ShowAgents(tab)
             }
+            (Typed::Command(Command::ShowAgentsLog), _) if crate::endpoint::AVAILABLE => {
+                Action::ShowAgentsView {
+                    tab,
+                    view: crate::model::AgentsView::Log,
+                }
+            }
             (Typed::Command(Command::SaveChanges), Some((id, _))) => Action::WriteEdits { tab, id },
             (Typed::Command(Command::DiscardChanges), Some((id, _))) => {
                 Action::DiscardEdits { tab, id }

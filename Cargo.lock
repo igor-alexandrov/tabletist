@@ -5687,6 +5687,7 @@ dependencies = [
  "fastframe-text",
  "fastframe-theme",
  "image",
+ "jiff",
  "keyring-core",
  "log",
  "notify",

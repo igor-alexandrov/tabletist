@@ -3,6 +3,7 @@
 pub mod agents_shown;
 pub mod app;
 pub mod backend;
+pub mod clock;
 pub mod completion;
 pub mod connections;
 pub mod edit;

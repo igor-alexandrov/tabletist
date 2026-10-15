@@ -38,6 +38,7 @@ back.
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
 | `:agents` | Show the Agents tab |
+| `:agents log` | Show the Agents tab's log |
 | `?` | The list of keys |
 
 Quick open has no key in the Omarchy look. `/` in the sidebar filters its
@@ -113,6 +114,9 @@ key. Nor has copying a whole row.
 | `S` | Stop the selected session, wherever it works |
 | `X` | Stop every agent here, and turn this connection's access off |
 | Enter | Show the window of the connection the selected agent works on |
+| `l` | Show the log of agents' calls, and back |
+| `L` | In the log, every connection's calls, or this one's |
+| `j` / `k` | In the log, move among the calls |
 
 ### The Structure view
 

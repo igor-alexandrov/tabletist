@@ -1679,9 +1679,8 @@ fn held_back(command: Command) -> bool {
 /// with the command to copy.
 fn agents_shows(app: &App, tab: ConnTabId, server_off: bool) -> bool {
     use crate::model::AgentsHere;
-    let front = app
-        .workspace(tab)
-        .is_some_and(crate::model::Workspace::agents_in_front);
+    // Its Activity view: the Log view shows neither Turn on nor Copy.
+    let front = agents_view(app, tab) == Some(crate::model::AgentsView::Activity);
     let here = app.agents_here(tab);
     front
         && match server_off {
@@ -1698,7 +1697,10 @@ fn agents_shows(app: &App, tab: ConnTabId, server_off: bool) -> bool {
 /// or the connection is Off, whose tabs list none.
 fn agents_lists(app: &App, tab: ConnTabId) -> bool {
     use crate::model::AgentsHere;
-    let Some(workspace) = app.workspace(tab).filter(|w| w.agents_in_front()) else {
+    if agents_view(app, tab) != Some(crate::model::AgentsView::Activity) {
+        return false;
+    }
+    let Some(workspace) = app.workspace(tab) else {
         return false;
     };
     let listing = matches!(
@@ -1708,12 +1710,21 @@ fn agents_lists(app: &App, tab: ConnTabId) -> bool {
     listing && !app.agents.listed(&workspace.conn_id).is_empty()
 }
 
+/// The view of the Agents tab of `tab`, while the tab is in front.
+fn agents_view(app: &App, tab: ConnTabId) -> Option<crate::model::AgentsView> {
+    let workspace = app
+        .workspace(tab)
+        .filter(|workspace| workspace.agents_in_front())?;
+    workspace.tabs.iter().find_map(|open| match open {
+        crate::model::Tab::Agents(agents) => Some(agents.view),
+        crate::model::Tab::Object(_) | crate::model::Tab::Sql(_) => None,
+    })
+}
+
 /// Whether the Agents tab of `tab` is in front with agents here: what Stop
 /// agents here needs.
 fn agents_here(app: &App, tab: ConnTabId) -> bool {
-    let front = app
-        .workspace(tab)
-        .is_some_and(crate::model::Workspace::agents_in_front);
+    let front = agents_view(app, tab) == Some(crate::model::AgentsView::Activity);
     front
         && matches!(
             app.agents_here(tab),
@@ -2241,6 +2252,25 @@ fn letters(
             }
             (Some(Command::TurnAgentsOn), _) if agents_shows(app, tab, true) => {
                 actions.push(Action::TurnAgentsOn);
+            }
+            (Some(Command::ShowAgentsLog), _) if agents_view(app, tab).is_some() => {
+                // `l` shows the log, and the activity again.
+                let view = match agents_view(app, tab) {
+                    Some(crate::model::AgentsView::Log) => crate::model::AgentsView::Activity,
+                    _ => crate::model::AgentsView::Log,
+                };
+                actions.push(Action::ShowAgentsView { tab, view });
+            }
+            (Some(Command::ToggleAgentsLogScope), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+            {
+                actions.push(Action::ToggleAgentsLogScope(tab));
+            }
+            (Some(Command::MoveInAgentSessions), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+            {
+                let step = if char == 'k' { -1 } else { 1 };
+                actions.push(Action::MoveAgentsLogSelection { tab, step });
             }
             (Some(Command::MoveInAgentSessions), _) if agents_lists(app, tab) => {
                 let step = if char == 'k' { -1 } else { 1 };
