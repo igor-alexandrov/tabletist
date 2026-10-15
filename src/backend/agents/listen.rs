@@ -382,7 +382,7 @@ async fn greet<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     };
     let Some(hello) = hello else {
         log::warn!("a connection to the agent server said nothing it could read");
-        return refuse(&mut stream, "Tabletist could not read what the relay sent.").await;
+        return refuse(&mut stream, endpoint::UNREAD).await;
     };
     // The app's proof first: a relay tells nothing to what cannot give it.
     let challenge = endpoint::new_nonce();

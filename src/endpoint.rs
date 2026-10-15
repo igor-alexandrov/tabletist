@@ -27,6 +27,19 @@ pub const AVAILABLE: bool = cfg!(any(unix, windows));
 /// the relay says its line.
 pub const NOT_RUNNING: &str = "Tabletist is not running, or agents are off in it. Open Tabletist, turn agents on, then reconnect.";
 
+/// What the app says to a first line it cannot read.
+pub const UNREAD: &str = "Tabletist could not read what the relay sent.";
+
+/// What a refusal before the app has proved the key may say: the app's
+/// own sentences for it. Any other text came from what does not hold the
+/// key, and does not reach the agent.
+pub fn refused_before_proof(said: String) -> String {
+    match [NOT_RUNNING, UNREAD].contains(&said.as_str()) {
+        true => said,
+        false => NOT_PROVEN.to_owned(),
+    }
+}
+
 /// What the agent is told when the app's pipe is there and stays busy, on
 /// Windows: as many connections as the app greets at once are waiting to
 /// prove the key, and a pipe has no queue for the next.
