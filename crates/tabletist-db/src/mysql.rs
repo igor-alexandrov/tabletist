@@ -20,7 +20,7 @@ use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOp
 use mysql_common::named_params::ParsedNamedParams;
 
 use crate::adapter::Adapter;
-use crate::agent::{Limits, Read};
+use crate::agent::{Limits, Read, Tables};
 use crate::script::retry_cancelled;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
@@ -516,6 +516,7 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
+        _tables: &Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         self.agent_read(read, limits, stop).await

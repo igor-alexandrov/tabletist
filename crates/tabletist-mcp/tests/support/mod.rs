@@ -210,7 +210,9 @@ impl Session for ShopSession {
             },
         };
         let flag = StopFlag::new();
-        let run = self.connection.run_agent_read(read, limits, &flag);
+        let run =
+            self.connection
+                .run_agent_read(read, limits, &tabletist_db::agent::Tables::All, &flag);
         tokio::pin!(run);
         let answer = tokio::select! {
             answer = &mut run => answer,

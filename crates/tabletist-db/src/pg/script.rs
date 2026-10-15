@@ -663,7 +663,7 @@ mod tests {
             send(&conn.server_version());
         };
         let _agent = |conn: &Conn, read: &Read, limits: Limits, stop: &StopFlag| {
-            send(&conn.run_read(read, limits, stop));
+            send(&conn.run_read(read, limits, &crate::agent::Tables::All, stop));
         };
     }
 

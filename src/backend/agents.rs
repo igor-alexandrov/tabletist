@@ -903,8 +903,14 @@ impl Session for AppSession {
     async fn read(&self, read: &Read, limits: Limits) -> Result<Answer, Failure> {
         let connection = self.connection()?;
         let flag = StopFlag::new();
-        self.ended(Some(&flag), connection.run_agent_read(read, limits, &flag))
-            .await
+        // What the connection hides is the next run's (1c-2): until it
+        // is set there, every table is read as before.
+        let tables = tabletist_db::agent::Tables::All;
+        self.ended(
+            Some(&flag),
+            connection.run_agent_read(read, limits, &tables, &flag),
+        )
+        .await
     }
 }
 

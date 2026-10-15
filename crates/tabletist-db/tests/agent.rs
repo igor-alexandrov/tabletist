@@ -9,7 +9,7 @@
 
 use std::time::{Duration, Instant};
 
-use tabletist_db::agent::{self, Answer, Limits, Param};
+use tabletist_db::agent::{self, Answer, Limits, Param, Refusal, TableName, Tables};
 use tabletist_db::{
     Access, ConnectSpec, Connection, Dialect, Error, HostKeys, ScriptMode, Secrets,
     StatementOutcome, StopFlag, Value, sql,
@@ -117,7 +117,7 @@ async fn asked(
     let read = agent::check_read(connection.dialect(), &sql, params)
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
-        .run_agent_read(&read, limits, &StopFlag::new())
+        .run_agent_read(&read, limits, &Tables::All, &StopFlag::new())
         .await
 }
 
@@ -253,7 +253,9 @@ async fn a_read_that_is_stopped_or_fails_says_so(connection: &Connection, on: &s
     let stopped = StopFlag::new();
     stopped.stop();
     let books = agent::check_read(connection.dialect(), "SELECT title FROM books", &[]).unwrap();
-    let ended = connection.run_agent_read(&books, LIMITS, &stopped).await;
+    let ended = connection
+        .run_agent_read(&books, LIMITS, &Tables::All, &stopped)
+        .await;
     assert_eq!(ended.unwrap_err(), Error::Cancelled, "{on}");
     // The database's own error, in its words.
     let error = asked(connection, "SELECT nope FROM books", &[], LIMITS)
@@ -275,7 +277,7 @@ async fn a_read_checked_for_another_database_is_not_run(connection: &Connection,
     };
     let read = agent::check_read(other, "SELECT title FROM books", &[]).unwrap();
     let error = connection
-        .run_agent_read(&read, LIMITS, &StopFlag::new())
+        .run_agent_read(&read, LIMITS, &Tables::All, &StopFlag::new())
         .await
         .unwrap_err();
     assert_eq!(
@@ -283,6 +285,103 @@ async fn a_read_checked_for_another_database_is_not_run(connection: &Connection,
         "the statement was checked for another kind of database",
         "{on}"
     );
+}
+
+/// A table the person names, in every schema.
+fn named(name: &str) -> TableName {
+    TableName {
+        schema: None,
+        name: name.to_owned(),
+    }
+}
+
+/// What the connection's database answers an agent that sends `sql` on a
+/// connection that hides as `tables` says: its rows, or why not.
+async fn hiding(connection: &Connection, tables: &Tables, sql: &str) -> Result<Answer, Error> {
+    let read = agent::check_read(connection.dialect(), sql, &[])
+        .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
+    connection
+        .run_agent_read(&read, LIMITS, tables, &StopFlag::new())
+        .await
+}
+
+/// Refused as hidden: `name`, read for `through` where that is given.
+fn hidden_refusal(name: &str, through: Option<&str>) -> Error {
+    Error::Agent(Refusal::TableHidden {
+        name: name.to_owned(),
+        through: through.map(str::to_owned),
+    })
+}
+
+/// The hidden-table rows of the plan's F.2 (B.3), on the Bookshop.
+async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
+    let customers = Tables::AllExcept(vec![named("customers")]);
+    let count = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+    // What is not hidden reads as before, views over it too.
+    for (sql, rows) in [
+        ("SELECT count(*) FROM books", 12),
+        ("SELECT count(*) FROM recent_orders", 7),
+    ] {
+        let found = count(hiding(connection, &customers, sql).await);
+        assert_eq!(found, Ok(vec![vec![Value::Int(rows)]]), "{on}: {sql}");
+    }
+    // The hidden table, by every way to it the text gives: by name, in
+    // another case and in quotes, counted, behind EXISTS, in a common
+    // table expression, and through a view.
+    let quoted = match connection.dialect() {
+        Dialect::MySql => "SELECT * FROM `CUSTOMERS`",
+        Dialect::Postgres | Dialect::Sqlite => "SELECT * FROM \"CUSTOMERS\"",
+    };
+    for sql in [
+        "SELECT * FROM customers",
+        "SELECT * FROM Customers c",
+        quoted,
+        "SELECT count(*) FROM customers",
+        "SELECT title FROM books WHERE EXISTS (SELECT 1 FROM customers)",
+        "WITH c AS (SELECT * FROM customers) SELECT * FROM c",
+        "WITH customers AS (SELECT 1 AS id) SELECT * FROM customers",
+    ] {
+        let error = hiding(connection, &customers, sql).await.unwrap_err();
+        assert_eq!(error, hidden_refusal("customers", None), "{on}: {sql}");
+    }
+    let through = hiding(connection, &customers, "SELECT * FROM customer_names").await;
+    assert_eq!(
+        through.unwrap_err(),
+        hidden_refusal("customers", Some("customer_names")),
+        "{on}"
+    );
+    // In a join in parentheses, where the name is not right after the
+    // FROM: read off the text, and by the database's own check besides.
+    let nested = "SELECT * FROM (customers JOIN books ON true)";
+    let error = hiding(connection, &customers, nested).await.unwrap_err();
+    assert!(
+        matches!(&error, Error::Agent(Refusal::TableHidden { name, .. }) if name == "customers"),
+        "{on}: {error:?}"
+    );
+    // The system catalogs describe every table: closed while one is
+    // hidden, open where none is.
+    let catalog = match connection.dialect() {
+        Dialect::Sqlite => "SELECT count(*) FROM sqlite_master",
+        Dialect::Postgres | Dialect::MySql => "SELECT count(*) FROM information_schema.tables",
+    };
+    let error = hiding(connection, &customers, catalog).await.unwrap_err();
+    assert_eq!(error, Error::Agent(Refusal::SystemCatalog), "{on}");
+    assert!(
+        hiding(connection, &Tables::All, catalog).await.is_ok(),
+        "{on}"
+    );
+    // Only a list: the rest is hidden.
+    let only_books = Tables::Only(vec![named("books")]);
+    let found = count(hiding(connection, &only_books, "SELECT count(*) FROM books").await);
+    assert_eq!(found, Ok(vec![vec![Value::Int(12)]]), "{on}");
+    let error = hiding(connection, &only_books, "SELECT * FROM orders")
+        .await
+        .unwrap_err();
+    assert_eq!(error, hidden_refusal("orders", None), "{on}");
+    // Nothing hidden: the table reads.
+    let found = count(hiding(connection, &Tables::All, "SELECT count(*) FROM customers").await);
+    assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
+    the_bookshop_is_stocked(connection, on).await;
 }
 
 /// What every engine is asked.
@@ -333,6 +432,12 @@ mod sqlite {
     async fn an_agent_reads_the_bookshop_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         an_agent_reads_the_bookshop(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_hidden_table_is_never_read_on_sqlite() {
+        let (connection, _dir) = bookshop().await;
+        a_hidden_table_is_never_read(&connection, "sqlite").await;
     }
 
     #[tokio::test]
@@ -639,7 +744,7 @@ mod postgres {
         let twice = "SELECT title FROM books WHERE id = $1 OR author_id = $1 ORDER BY id";
         let read_twice = agent::check_read(Dialect::Postgres, twice, &[Param::Int(3)]).unwrap();
         let found = connection
-            .run_agent_read(&read_twice, LIMITS, &StopFlag::new())
+            .run_agent_read(&read_twice, LIMITS, &Tables::All, &StopFlag::new())
             .await
             .unwrap();
         assert_eq!(found.rows, [[text("Lanterns")], [text("Ninety-One Doors")]]);
@@ -668,7 +773,7 @@ mod postgres {
         let sql = "SELECT '$1', $q$ $1 $q$, title FROM books WHERE id = $1";
         let read = agent::check_read(Dialect::Postgres, sql, &[Param::Int(3)]).unwrap();
         let found = connection
-            .run_agent_read(&read, LIMITS, &StopFlag::new())
+            .run_agent_read(&read, LIMITS, &Tables::All, &StopFlag::new())
             .await
             .unwrap();
         assert_eq!(found.rows, [[text("$1"), text(" $1 "), text("Lanterns")]]);

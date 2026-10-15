@@ -13,7 +13,7 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 
 use crate::adapter::Adapter;
-use crate::agent::{Limits, Param, Read, Sent, count_mismatch};
+use crate::agent::{Catalog, Hidden, Limits, Param, Read, Relation, Sent, Tables, count_mismatch};
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
@@ -1144,6 +1144,7 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
+        tables: &Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let stop = stop.clone();
@@ -1151,8 +1152,21 @@ impl Adapter for Conn {
         let fences = self.fences.clone();
         let texts = vec![read.text().to_owned()];
         let params = read.params().to_vec();
+        let (read, tables) = (read.clone(), tables.clone());
         let outcome = self
             .run(move |connection| {
+                // What is hidden, from the catalog as it is now: a table
+                // made a moment ago is in it.
+                let hidden = match tables.hides_anything() {
+                    true => {
+                        let catalog = agents_catalog(connection)?;
+                        let hidden = Hidden::new(Dialect::Sqlite, &catalog, &tables);
+                        hidden.check_statement(&read).map_err(Error::Agent)?;
+                        Some(Arc::new(hidden))
+                    }
+                    false => None,
+                };
+                let _hiding = fences.hide(hidden);
                 let sent = Sent {
                     params: &params,
                     timeout: limits.timeout,
@@ -1171,6 +1185,35 @@ impl Adapter for Conn {
         guard.disarm();
         outcome
     }
+}
+
+/// The relations of every schema of the file, its own `sqlite_` tables
+/// left out, for what an agent's connection hides. SQLite's authorizer
+/// reports a view's tables as it reads them, so what a view depends on is
+/// not read here.
+fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
+    let mut statement = connection
+        .prepare(
+            "SELECT schema, name FROM pragma_table_list \
+             WHERE type IN ('table', 'view', 'virtual') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+        )
+        .map_err(map_error)?;
+    let relations = statement
+        .query_map([], |row| {
+            Ok(Relation {
+                schema: row.get(0)?,
+                name: row.get(1)?,
+                depends_on: Vec::new(),
+                opaque: false,
+            })
+        })
+        .map_err(map_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_error)?;
+    Ok(Catalog {
+        relations,
+        routines: Vec::new(),
+    })
 }
 
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
@@ -2954,7 +2997,7 @@ mod tests {
             rows: 10,
             timeout: Duration::from_millis(250),
         };
-        conn.run_read(&read, limits, &StopFlag::new())
+        conn.run_read(&read, limits, &crate::agent::Tables::All, &StopFlag::new())
             .await
             .unwrap();
         assert_eq!(wait(&conn).await, Ok(5_000));
