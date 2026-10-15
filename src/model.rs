@@ -918,6 +918,10 @@ pub struct Workspace {
     /// Why the next connect must ask for the password (the saved or typed
     /// one was rejected, or a dialog was open when it was needed).
     pub needs_prompt: Option<String>,
+    /// The keyring had no database password for this keyring connection
+    /// when the attempt read it. A blank answer the server then accepts
+    /// means the server needs none (see `App::adopt_no_password`).
+    pub keyring_empty: bool,
     /// How the SSH password or key passphrase is kept.
     pub ssh_mode: PasswordMode,
     /// Save the typed SSH secret in the keyring once the server accepts it.
@@ -3648,6 +3652,7 @@ impl Workspace {
             databases: Fetch::default(),
             save_password: false,
             needs_prompt: None,
+            keyring_empty: false,
             ssh_mode: saved.ssh_secret,
             save_ssh: false,
             needs_ssh_prompt: None,

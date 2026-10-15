@@ -2411,6 +2411,44 @@ impl App {
         }
     }
 
+    /// After a successful connect: when the keyring had no password for a
+    /// keyring connection and the server took a blank one, the server
+    /// needs none (trust or peer authentication). The connection is saved
+    /// so, and is not asked for again; agents can open it from then on.
+    /// The keyring is left alone: it held nothing.
+    fn adopt_no_password(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        if !std::mem::take(&mut workspace.keyring_empty)
+            || workspace.password_mode != PasswordMode::Keyring
+            || workspace.secrets.password.as_deref() != Some("")
+        {
+            return;
+        }
+        let conn = workspace.conn_id.clone();
+        let Some(saved) = self
+            .connections
+            .connections
+            .iter_mut()
+            .find(|c| c.id == conn)
+        else {
+            return;
+        };
+        if saved.password != PasswordMode::Keyring {
+            return;
+        }
+        saved.password = PasswordMode::None;
+        for tab in &mut self.tabs {
+            if let ConnTabContent::Workspace(workspace) = &mut tab.content
+                && workspace.conn_id == conn
+            {
+                workspace.password_mode = PasswordMode::None;
+            }
+        }
+        self.save_connections();
+    }
+
     /// After a successful connect, saves a password the prompt was asked
     /// to keep.
     fn save_accepted_password(&mut self, tab: ConnTabId) {
@@ -2587,6 +2625,7 @@ impl App {
                 });
                 match adopted {
                     Some(tab) => {
+                        self.adopt_no_password(tab);
                         self.save_accepted_password(tab);
                         self.mark_used(tab);
                         self.after_connect(tab);
@@ -2610,8 +2649,13 @@ impl App {
                 {
                     return;
                 }
-                let rejected = matches!(error, Error::Auth(_))
-                    && workspace.password_mode != PasswordMode::None;
+                // A blank answer the server did not take proves nothing.
+                workspace.keyring_empty = false;
+                // A connection kept as needing no password is asked too:
+                // its server may have started asking for one, and the
+                // prompt is where it is typed (and saved, which keeps it
+                // in the keyring from then on).
+                let rejected = matches!(error, Error::Auth(_));
                 if rejected {
                     // Never resend or save a password the server refused.
                     workspace.secrets.password = None;
@@ -2911,6 +2955,13 @@ impl App {
                         matches!(workspace.status, SessionStatus::Connecting { request } if request == attempt)
                     }) =>
                     {
+                        // Only an empty keyring says the server may need no
+                        // password: a read error leaves its contents unknown.
+                        if !kind.is_ssh()
+                            && let Some(workspace) = self.workspace_mut(tab)
+                        {
+                            workspace.keyring_empty = matches!(result, Ok(None));
+                        }
                         match result {
                         Ok(Some(secret)) => {
                             if let Some(workspace) = self.workspace_mut(tab) {
@@ -10100,6 +10151,232 @@ mod tests {
             "a keyring connection offers to save again"
         );
         assert!(prompt(&mut app).message.is_some());
+    }
+
+    /// Connects `conn` in the active tab and answers its keyring read with
+    /// `result`.
+    fn connect_reading_keyring(
+        app: &mut App,
+        conn: &ConnectionId,
+        result: Result<Option<SecretString>, String>,
+    ) -> ConnTabId {
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        let Some(Command::LoadSecret { request, .. }) = app.backend.sent.last() else {
+            panic!("expected a keyring read")
+        };
+        let request = *request;
+        app.apply(Action::Backend(Event::SecretLoaded { request, result }));
+        tab
+    }
+
+    /// The server takes the last Connect sent.
+    fn accept_last_connect(app: &mut App) {
+        let (session, request, _) = last_connect(app);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Postgres,
+            encrypted: false,
+            access: crate::testing::asked_access(app),
+        }));
+    }
+
+    #[test]
+    fn a_blank_password_taken_where_the_keyring_had_none_saves_no_password() {
+        let (mut app, dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        let tab = connect_reading_keyring(&mut app, &conn, Ok(None));
+        app.apply(Action::SubmitPassword);
+        accept_last_connect(&mut app);
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::None
+        );
+        assert_eq!(
+            app.workspace(tab).unwrap().password_mode,
+            PasswordMode::None
+        );
+        // The keyring held nothing, so nothing is written or removed.
+        assert!(
+            !app.backend
+                .sent
+                .iter()
+                .any(|c| matches!(c, Command::StoreSecret { .. }))
+        );
+        // What the backend is given to write.
+        let path = AppDirs::at(dir.path()).connections_file();
+        let Some(StateFile::Connections(stored)) = saved(&app, &path) else {
+            panic!("the connections were not saved")
+        };
+        let written = dir.path().join("written.toml");
+        stored.save(&written).unwrap();
+        let text = std::fs::read_to_string(&written).unwrap();
+        assert!(
+            text.lines()
+                .any(|line| line.split_whitespace().collect::<Vec<_>>()
+                    == ["password", "=", "\"none\""]),
+            "{text}"
+        );
+        // The next connect neither reads the keyring nor asks.
+        app.backend.sent.clear();
+        app.apply(Action::Connect { tab, conn });
+        assert!(app.dialog.is_none());
+        assert!(sent_secrets(&app).is_empty());
+        assert!(matches!(
+            app.backend.sent.last(),
+            Some(Command::Connect { secrets, .. }) if secrets.password.is_none()
+        ));
+    }
+
+    #[test]
+    fn a_typed_password_taken_where_the_keyring_had_none_is_saved_in_it() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        connect_reading_keyring(&mut app, &conn, Ok(None));
+        prompt(&mut app).password = "typed".into();
+        assert!(prompt(&mut app).save);
+        app.apply(Action::SubmitPassword);
+        accept_last_connect(&mut app);
+        assert!(app.backend.sent.iter().any(|c| matches!(
+            c,
+            Command::StoreSecret { secret: Some(SecretString(p)), .. } if p == "typed"
+        )));
+        answer_last_store(&mut app, Ok(()));
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+    }
+
+    #[test]
+    fn a_blank_password_taken_for_an_ask_connection_keeps_asking() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        app.apply(Action::SubmitPassword);
+        accept_last_connect(&mut app);
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
+        );
+        assert_eq!(app.workspace(tab).unwrap().password_mode, PasswordMode::Ask);
+    }
+
+    #[test]
+    fn a_blank_password_taken_after_a_keyring_error_keeps_the_keyring() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        let tab = connect_reading_keyring(&mut app, &conn, Err("the keyring is locked".into()));
+        app.apply(Action::SubmitPassword);
+        accept_last_connect(&mut app);
+        // What the keyring holds is not known: it may hold the password.
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+        assert_eq!(
+            app.workspace(tab).unwrap().password_mode,
+            PasswordMode::Keyring
+        );
+    }
+
+    #[test]
+    fn a_blank_password_the_server_refused_changes_nothing() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        let tab = connect_reading_keyring(&mut app, &conn, Ok(None));
+        app.apply(Action::SubmitPassword);
+        let (session, request, _) = last_connect(&app);
+        app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: Error::Connect("connection refused".into()),
+        }));
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+        // Nor does the same blank answer taken on the next try: the failure
+        // forgot that the keyring was empty.
+        app.apply(Action::Reconnect(tab));
+        accept_last_connect(&mut app);
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+    }
+
+    #[test]
+    fn a_connection_needing_no_password_is_asked_once_its_server_wants_one() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::None);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        let (session, request, password) = last_connect(&app);
+        assert!(password.is_none());
+        app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: Error::Auth("the server asks for a password".into()),
+        }));
+        assert!(
+            prompt(&mut app)
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("asks for a password")
+        );
+        // Typed and saved, it is kept in the keyring from then on.
+        assert!(prompt(&mut app).save);
+        prompt(&mut app).password = "typed".into();
+        app.apply(Action::SubmitPassword);
+        let (_, _, password) = last_connect(&app);
+        assert_eq!(password.as_deref(), Some("typed"));
+        accept_last_connect(&mut app);
+        answer_last_store(&mut app, Ok(()));
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+        assert_eq!(
+            app.workspace(tab).unwrap().password_mode,
+            PasswordMode::Keyring
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agents_are_told_a_connection_needs_no_password_once_that_is_saved() {
+        use crate::connections::AgentAccess;
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        connect_reading_keyring(&mut app, &conn, Ok(None));
+        app.backend.sent.clear();
+        app.apply(Action::SubmitPassword);
+        accept_last_connect(&mut app);
+        assert!(matches!(
+            agents_sent(&app).last(),
+            Some(AgentsCommand::Policy { connections, .. })
+                if connections.len() == 1
+                    && connections[0].id == conn
+                    && connections[0].password == PasswordMode::None
+        ));
     }
 
     #[test]
