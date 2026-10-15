@@ -485,6 +485,7 @@ commands! {
     FormTest,
     FormSave,
     FormSaveAndConnect,
+    FormForgetPassword,
     FormCancel,
     SettingsMove,
     SettingsChange,
@@ -778,6 +779,7 @@ impl Command {
             C::FormTest => info("Test the connection", "", Prompts),
             C::FormSave => info("Save the connection", "", Prompts),
             C::FormSaveAndConnect => info("Save and connect", "", Prompts),
+            C::FormForgetPassword => info("Forget the saved password", "", Prompts),
             C::FormCancel => info("Cancel", "", Prompts),
             C::SettingsMove => info("Move in the settings", "", Prompts),
             C::SettingsChange => info("Change the option", "", Prompts),
@@ -1706,6 +1708,15 @@ pub const BINDINGS: &[Binding] = {
             PROMPT,
             keys(&[k("cmd+enter")]),
             keys(&[k("ctrl+enter")]),
+        )
+        .when(When::ConnectionForm),
+        // In the Password field while it is empty and says the password
+        // is saved: the keys that would delete the saved one were it shown.
+        bind(
+            C::FormForgetPassword,
+            PROMPT,
+            keys(&[k("backspace"), k("delete")]),
+            keys(&[k("backspace"), k("delete")]),
         )
         .when(When::ConnectionForm),
         bind(C::FormCancel, PROMPT, keys(&[k("esc")]), keys(&[k("esc")]))

@@ -14,10 +14,10 @@ use crate::ui::widgets::{self, ButtonSpec};
 
 use super::choice::{Choice, Group, choose, driver_choice, environment_choice};
 use super::{
-    Skin, StatusAt, TLS_MODES, ca_field, connection_line, field_with_button, file_field, hint,
-    input, intercept_warning, keeps, named, note, paint_status, set_keeps, show_url,
-    ssh_host_field, ssh_host_note, ssh_key_hint, ssh_port_hint, ssh_secret_name, ssh_user_hint,
-    subtitle, title, url_field,
+    Skin, StatusAt, TLS_MODES, ca_field, connection_line, field_with_button, file_field,
+    forget_saved_password, hint, input, intercept_warning, keeps, named, note, paint_status,
+    set_keeps, show_url, ssh_host_field, ssh_host_note, ssh_key_hint, ssh_port_hint,
+    ssh_secret_name, ssh_user_hint, subtitle, title, url_field,
 };
 
 /// The terminal look: one tinted line with the title, the connection, and
@@ -304,7 +304,7 @@ pub(super) fn terminal_body(
                 }
                 Driver::Postgres | Driver::MySql => {
                     terminal_section(ui, &skin.say("Server"), skin);
-                    terminal_server(ui, form, skin);
+                    terminal_server(ui, form, skin, actions);
                     terminal_section(ui, &skin.say("Security"), skin);
                     terminal_security(ui, form, skin, actions);
                 }
@@ -345,7 +345,7 @@ pub(super) fn terminal_body(
 
 /// The terminal look: the host and port on one line, then the database,
 /// the user and the password.
-fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
+fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut Vec<Action>) {
     let role = TextRole::OBody;
     let height = skin.field_height();
     terminal_row(ui, &skin.say("Host : Port"), skin, |ui, _| {
@@ -368,6 +368,7 @@ fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         ui.add(input(ui, &mut form.user, role, height, skin))
             .labelled_by(label);
     });
+    let forgettable = form.password.is_empty() && form.password_is_saved();
     let saved = if form.password_is_saved() {
         skin.say(skin.saved_hint())
     } else {
@@ -376,7 +377,7 @@ fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     terminal_row(ui, &skin.say("Password"), skin, |ui, label| {
         let field = ui.available_width() - terminal_keyring_width(ui, skin) - 10.0;
         ui.spacing_mut().item_spacing.x = 10.0;
-        cell(ui, field, skin, |ui| {
+        let field = cell(ui, field, skin, |ui| {
             let hint = hint(ui, &saved, role, skin);
             ui.add(
                 input(ui, &mut form.password, role, height, skin)
@@ -386,6 +387,7 @@ fn terminal_server(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         })
         .labelled_by(label);
         terminal_keyring(ui, &mut form.password_mode, skin.keyring(), skin);
+        forget_saved_password(ui, &field, forgettable, skin, actions);
     });
 }
 
