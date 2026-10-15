@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use rusqlite::{Connection, ErrorCode, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, Row, params};
 
 /// The schema's version, in `PRAGMA user_version`.
 const VERSION: i64 = 1;
@@ -112,6 +112,25 @@ impl From<rusqlite::Error> for LogError {
     fn from(error: rusqlite::Error) -> Self {
         Self(error.to_string())
     }
+}
+
+/// A call as the log has it, with its place there: what the next page is
+/// read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Logged {
+    pub id: i64,
+    pub entry: Entry,
+}
+
+/// A page of the log, the newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Page {
+    pub calls: Vec<Logged>,
+    /// How many calls the log holds of what was asked: one connection's,
+    /// or every one.
+    pub total: u64,
+    /// Whether there are older ones.
+    pub more: bool,
 }
 
 /// The log, open. A clone writes to the same file.
@@ -264,39 +283,86 @@ impl Log {
 
     /// The last `limit` entries, the newest first.
     pub async fn latest(&self, limit: u32) -> Result<Vec<Entry>, LogError> {
-        self.blocking(move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT at_ms, session, agent, project, transport, connection_id, connection, \
-                 tool, sql, params, request, result, code, message, ran_as, rows, matched, \
-                 columns, bytes, took_ms FROM calls ORDER BY id DESC LIMIT ?1",
-            )?;
-            let entries = statement
-                .query_map([limit], |row| {
-                    Ok(Entry {
-                        at_ms: row.get(0)?,
-                        session: row.get(1)?,
-                        agent: row.get(2)?,
-                        project: row.get(3)?,
-                        transport: row.get(4)?,
-                        connection_id: row.get(5)?,
-                        connection: row.get(6)?,
-                        tool: row.get(7)?,
-                        sql: row.get(8)?,
-                        params: row.get(9)?,
-                        request: row.get(10)?,
-                        result: row.get(11)?,
-                        code: row.get(12)?,
-                        message: row.get(13)?,
-                        ran_as: row.get(14)?,
-                        rows: row.get(15)?,
-                        matched: row.get(16)?,
-                        columns: row.get(17)?,
-                        bytes: row.get(18)?,
-                        took_ms: row.get(19)?,
-                    })
-                })?
-                .collect::<Result<Vec<Entry>, rusqlite::Error>>()?;
-            Ok(entries)
+        let page = self.page(None, None, limit).await?;
+        Ok(page.calls.into_iter().map(|logged| logged.entry).collect())
+    }
+
+    /// The log at `path`, to read it as it is: nothing is made and nothing
+    /// is set aside, so that reading it while the server is off changes
+    /// nothing. `None` where there is no log yet. A write that a crash left
+    /// half done is rolled back as the file is read, which SQLite does on
+    /// any open, and which a connection that may not write cannot do: it
+    /// is opened to write, and never writes.
+    pub fn open_to_read(path: &Path) -> Result<Option<Self>, LogError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(LOCK_WAIT)?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let tables: i64 =
+            connection.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get(0))?;
+        match (version, tables) {
+            // Made, and not written yet.
+            (0, 0) => Ok(None),
+            (VERSION, _) => Ok(Some(Self {
+                connection: Arc::new(Mutex::new(connection)),
+            })),
+            (other, _) => Err(LogError(format!(
+                "the log is of version {other}, and this Tabletist reads version {VERSION}"
+            ))),
+        }
+    }
+
+    /// A page of the log, the newest first: `limit` calls from before the
+    /// one `before` names, those on `connection` alone where it is given.
+    pub async fn page(
+        &self,
+        connection: Option<String>,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Page, LogError> {
+        self.blocking(move |db| {
+            let before = before.unwrap_or(i64::MAX);
+            // One more than asked: whether there are more.
+            let asked = i64::from(limit) + 1;
+            let logged = |row: &Row<'_>| {
+                Ok(Logged {
+                    id: row.get(0)?,
+                    entry: entry_at(row, 1)?,
+                })
+            };
+            // A statement for each: one whose filter is a bound value that
+            // may be nothing is planned without the connection's index.
+            let (mut calls, total) = match &connection {
+                Some(connection) => {
+                    let calls = db
+                        .prepare(&page_of_one())?
+                        .query_map(params![connection, before, asked], logged)?
+                        .collect::<Result<Vec<Logged>, rusqlite::Error>>()?;
+                    let total: i64 = db.query_row(COUNT_OF_ONE, [connection], |row| row.get(0))?;
+                    (calls, total)
+                }
+                None => {
+                    let calls = db
+                        .prepare(&page_of_all())?
+                        .query_map(params![before, asked], logged)?
+                        .collect::<Result<Vec<Logged>, rusqlite::Error>>()?;
+                    let total: i64 =
+                        db.query_row("SELECT count(*) FROM calls", [], |row| row.get(0))?;
+                    (calls, total)
+                }
+            };
+            let more = calls.len() > limit as usize;
+            calls.truncate(limit as usize);
+            Ok(Page {
+                calls,
+                total: u64::try_from(total).unwrap_or_default(),
+                more,
+            })
         })
         .await
     }
@@ -327,6 +393,53 @@ impl Log {
         .await
         .map_err(|error| LogError(format!("the log's task did not end: {error}")))?
     }
+}
+
+/// The columns of an entry, in [`entry_at`]'s order.
+const COLUMNS: &str = "at_ms, session, agent, project, transport, connection_id, connection, \
+    tool, sql, params, request, result, code, message, ran_as, rows, matched, columns, bytes, \
+    took_ms";
+
+/// A page of one connection's calls, through its index.
+fn page_of_one() -> String {
+    format!(
+        "SELECT id, {COLUMNS} FROM calls WHERE connection_id = ?1 AND id < ?2 \
+         ORDER BY id DESC LIMIT ?3"
+    )
+}
+
+/// A page of every connection's calls.
+fn page_of_all() -> String {
+    format!("SELECT id, {COLUMNS} FROM calls WHERE id < ?1 ORDER BY id DESC LIMIT ?2")
+}
+
+/// How many calls one connection has, from its index alone.
+const COUNT_OF_ONE: &str = "SELECT count(*) FROM calls WHERE connection_id = ?1";
+
+/// The entry in `row`, from its column `at` on, in [`COLUMNS`]'s order.
+fn entry_at(row: &Row<'_>, at: usize) -> Result<Entry, rusqlite::Error> {
+    Ok(Entry {
+        at_ms: row.get(at)?,
+        session: row.get(at + 1)?,
+        agent: row.get(at + 2)?,
+        project: row.get(at + 3)?,
+        transport: row.get(at + 4)?,
+        connection_id: row.get(at + 5)?,
+        connection: row.get(at + 6)?,
+        tool: row.get(at + 7)?,
+        sql: row.get(at + 8)?,
+        params: row.get(at + 9)?,
+        request: row.get(at + 10)?,
+        result: row.get(at + 11)?,
+        code: row.get(at + 12)?,
+        message: row.get(at + 13)?,
+        ran_as: row.get(at + 14)?,
+        rows: row.get(at + 15)?,
+        matched: row.get(at + 16)?,
+        columns: row.get(at + 17)?,
+        bytes: row.get(at + 18)?,
+        took_ms: row.get(at + 19)?,
+    })
 }
 
 /// Makes the file when it is not there, and makes it its owner's alone
@@ -405,6 +518,106 @@ mod tests {
         let opened = Log::open(path).unwrap();
         assert_eq!(opened.kept_aside, None);
         opened.log
+    }
+
+    #[tokio::test]
+    async fn the_log_is_read_a_page_at_a_time_for_a_connection_or_for_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = open(&dir.path().join("agents.sqlite3"));
+        for n in 0..5 {
+            let mut call = entry(n, "run_query");
+            call.connection_id = Some(if n % 2 == 0 { "shop" } else { "ledger" }.into());
+            log.record(call).await.unwrap();
+        }
+        let at = |page: &Page| {
+            page.calls
+                .iter()
+                .map(|logged| logged.entry.at_ms)
+                .collect::<Vec<_>>()
+        };
+        let first = log.page(None, None, 2).await.unwrap();
+        assert_eq!((at(&first), first.total, first.more), (vec![4, 3], 5, true));
+        let next = log.page(None, Some(first.calls[1].id), 2).await.unwrap();
+        assert_eq!((at(&next), next.more), (vec![2, 1], true));
+        let shop = log.page(Some("shop".into()), None, 10).await.unwrap();
+        assert_eq!(
+            (at(&shop), shop.total, shop.more),
+            (vec![4, 2, 0], 3, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_log_a_crash_left_mid_write_is_read_as_it_was_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        let log = open(&path);
+        for n in 0..2_000 {
+            log.record(entry(n, "run_query")).await.unwrap();
+        }
+        drop(log);
+        // A writer half way through, which spills to the file: the file
+        // and its journal as a crash leaves them, copied while it holds
+        // them.
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch("PRAGMA cache_size = 1; BEGIN; UPDATE calls SET tool = 'x';")
+            .unwrap();
+        let crashed = dir.path().join("crashed.sqlite3");
+        std::fs::copy(&path, &crashed).unwrap();
+        let journal = |path: &Path| {
+            let mut name = path.as_os_str().to_owned();
+            name.push("-journal");
+            PathBuf::from(name)
+        };
+        std::fs::copy(journal(&path), journal(&crashed)).unwrap();
+        drop(writer);
+        let log = Log::open_to_read(&crashed).unwrap().unwrap();
+        let page = log.page(None, None, 1).await.unwrap();
+        assert_eq!(page.total, 2_000);
+        assert_eq!(page.calls[0].entry.tool, "run_query");
+    }
+
+    #[test]
+    fn one_connections_page_and_count_are_read_through_its_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        drop(open(&path));
+        let db = Connection::open(&path).unwrap();
+        let plan = |sql: &str, values: &[&dyn rusqlite::ToSql]| {
+            let mut statement = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let rows = statement
+                .query_map(values, |row| row.get::<_, String>(3))
+                .unwrap();
+            rows.map(Result::unwrap).collect::<Vec<_>>().join("; ")
+        };
+        let page = plan(&page_of_one(), params!["shop", i64::MAX, 201]);
+        assert!(page.contains("calls_connection"), "{page}");
+        let count = plan(COUNT_OF_ONE, params!["shop"]);
+        assert!(count.contains("calls_connection"), "{count}");
+    }
+
+    #[tokio::test]
+    async fn a_log_opened_to_read_is_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        // None yet, and none made.
+        assert!(Log::open_to_read(&path).unwrap().is_none());
+        assert!(!path.exists());
+        open(&path)
+            .record(entry(7, "describe_schema"))
+            .await
+            .unwrap();
+        let log = Log::open_to_read(&path).unwrap().unwrap();
+        assert_eq!(log.page(None, None, 10).await.unwrap().total, 1);
+        // A file that is not a log is said so, and left where it is.
+        let other = dir.path().join("other.sqlite3");
+        let made = Connection::open(&other).unwrap();
+        made.execute_batch("PRAGMA user_version = 9; CREATE TABLE t (x)")
+            .unwrap();
+        drop(made);
+        assert!(Log::open_to_read(&other).is_err());
+        assert!(other.exists());
+        assert!(!dir.path().join("other.sqlite3.bad").exists());
     }
 
     #[tokio::test]

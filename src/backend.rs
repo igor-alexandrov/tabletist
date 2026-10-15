@@ -20,7 +20,9 @@ use crate::secrets::{Keyring, SecretString};
 
 mod agents;
 
-pub use agents::{Agentable, AgentsCommand, AgentsEvent, AppGateway, agent_names, agentable};
+pub use agents::{
+    Agentable, AgentsCommand, AgentsEvent, AppGateway, LOG_PAGE, agent_names, agentable,
+};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
 #[derive(Clone)]

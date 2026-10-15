@@ -28,7 +28,7 @@ mod tools;
 
 pub use answer::{MAX_ANSWER_BYTES, MAX_CELL_CHARS};
 pub use gateway::{Failure, Gateway, Listed, Schemas, Session};
-pub use log::{Entry, Log, LogError, Opened};
+pub use log::{Entry, Log, LogError, Logged, Opened, Page};
 pub use refusal::{Refused, code};
 pub use server::{CALL_CHARS, Call, Origin, Server, SessionInfo, Transport};
 pub use tools::{Tool, all as tools};

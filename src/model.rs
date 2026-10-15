@@ -630,6 +630,27 @@ pub enum Action {
         tab: ConnTabId,
         step: isize,
     },
+    /// Show the Agents tab on one of its views, opening it where it is not
+    /// open: Show log, `l`, `:agents log`.
+    ShowAgentsView {
+        tab: ConnTabId,
+        view: AgentsView,
+    },
+    /// The Log view: every connection's calls, or this one's again.
+    ToggleAgentsLogScope(ConnTabId),
+    /// The Log view: read the page after the last call shown.
+    MoreAgentsLog(ConnTabId),
+    /// The Log view: select a call, by its place in the log.
+    SelectAgentsLogCall {
+        tab: ConnTabId,
+        id: i64,
+    },
+    /// The Log view: move the selection among the calls, in the terminal
+    /// look.
+    MoveAgentsLogSelection {
+        tab: ConnTabId,
+        step: isize,
+    },
     /// Keep what was changed outside the app and lets agents do more: what
     /// the bar said, and only what is still held of it.
     KeepAgentChanges(Vec<crate::agents_shown::Raised>),
@@ -2567,6 +2588,52 @@ pub struct AgentsTab {
     /// and `enter` shows. Kept by id, since the list puts the session that
     /// called last first: a key lands on the session the person saw.
     pub selected: Option<String>,
+    /// Which of its two views shows.
+    pub view: AgentsView,
+    pub log: AgentsLog,
+}
+
+impl AgentsTab {
+    pub fn new(id: TabId) -> Self {
+        Self {
+            id,
+            selected: None,
+            view: AgentsView::default(),
+            log: AgentsLog::default(),
+        }
+    }
+}
+
+/// The Agents tab's two views: what agents do now, and what they did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentsView {
+    #[default]
+    Activity,
+    Log,
+}
+
+/// The Agents tab's Log view: the log of calls, a page at a time, the
+/// newest first, read from the log's file whether the server runs or not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentsLog {
+    /// Every connection's calls, not this one's alone.
+    pub all: bool,
+    pub calls: Vec<tabletist_mcp::Logged>,
+    /// How many calls the log holds of what is shown.
+    pub total: u64,
+    /// Whether there are older ones to read.
+    pub more: bool,
+    /// The read that is out, and whether it reads on after the last call.
+    pub asked: Option<(u64, bool)>,
+    /// A call ended while a read was out, which may not hold it: the first
+    /// page is read again once that read is in.
+    pub stale: bool,
+    /// Why the log could not be read.
+    pub failed: Option<String>,
+    /// The selected call, by its place in the log.
+    pub selected: Option<i64>,
+    /// Whether it was read once at least.
+    pub read: bool,
 }
 
 /// What the app knows of the agent server: the sessions open on it, as
@@ -2578,6 +2645,9 @@ pub struct AgentsState {
     /// The last [`FEED_KEPT`] calls, on every connection. The log has
     /// them all.
     pub feed: std::collections::VecDeque<tabletist_mcp::Call>,
+    /// The open sessions the person was told of: one notification for
+    /// each session, not for each call.
+    pub told: std::collections::BTreeSet<String>,
 }
 
 /// How many calls the app keeps for the feed.

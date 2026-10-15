@@ -338,6 +338,8 @@ commands! {
     StopAgentSession,
     StopAgentsHere,
     ShowAgentsElsewhere,
+    ShowAgentsLog,
+    ToggleAgentsLogScope,
     ToggleSidebar,
     PaneLeft,
     PaneDown,
@@ -585,6 +587,12 @@ impl Command {
             C::ShowAgentsElsewhere => {
                 agents(info("Show where the selected agent works", "", Window))
             }
+            C::ShowAgentsLog => agents(info("Show the log, or what agents do now", "", Window)),
+            C::ToggleAgentsLogScope => agents(info(
+                "Show every connection's calls in the log, or this one's",
+                "",
+                Window,
+            )),
             C::ToggleSidebar => info("Toggle sidebar", "Toggle sidebar", Navigation),
             C::PaneLeft => info("Pane to the left", PANES, Navigation),
             C::PaneDown => info("Pane below", PANES, Navigation).reserved(),
@@ -979,6 +987,9 @@ pub const BINDINGS: &[Binding] = {
         bind(C::StopAgentSession, AGENTS, NONE, keys(&[k("S")])),
         bind(C::StopAgentsHere, AGENTS, NONE, keys(&[k("X")])),
         bind(C::ShowAgentsElsewhere, AGENTS, NONE, keys(&[k("enter")])),
+        bind(C::ShowAgentsLog, GLOBAL, NONE, keys(&[k(":agents log")])),
+        bind(C::ShowAgentsLog, AGENTS, NONE, keys(&[k("l")])),
+        bind(C::ToggleAgentsLogScope, AGENTS, NONE, keys(&[k("L")])),
         bind(
             C::ToggleSidebar,
             GLOBAL,

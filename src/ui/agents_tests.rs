@@ -45,11 +45,21 @@ fn session(harness: &Harness, tab: Option<ConnTabId>, agent: &str) -> tabletist_
         agent: Some(agent.to_owned()),
         project: Some("tabletist-repo".into()),
         transport: tabletist_mcp::Transport::Stdio,
-        connected_at: SystemTime::now(),
+        connected_at: at(),
         calls: 14,
         connections,
         last_call_at: Some(SystemTime::now()),
     }
+}
+
+/// When the tests' sessions connected and their calls came.
+fn at() -> SystemTime {
+    SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_791_880_982)
+}
+
+/// "connected 10:43", as the clock says it here.
+fn connected_at() -> String {
+    format!("connected {}", crate::clock::hour(at()))
 }
 
 fn said(harness: &mut Harness, event: AgentsEvent) {
@@ -247,11 +257,17 @@ fn the_tab_shows_its_state_and_its_buttons_do_what_they_say() {
         // In the list at the left in the terminal look, its line over the
         // calls; in a row with Stop session in the macOS look.
         let said = if look.terminal {
-            "claude code  tabletist-repo · connected just now · 14 calls · runs as dev"
+            format!(
+                "claude code  tabletist-repo · {} · 14 calls · runs as dev",
+                connected_at()
+            )
         } else {
-            "Claude Code · tabletist-repo · connected just now · 14 calls · Runs as dev"
+            format!(
+                "Claude Code · tabletist-repo · {} · 14 calls · Runs as dev",
+                connected_at()
+            )
         };
-        assert!(harness.has(said), "{}", look.name);
+        assert!(harness.has(&said), "{}", look.name);
         assert!(
             harness.has(&look.label("No calls on this connection yet.")),
             "{}",
@@ -301,7 +317,10 @@ fn the_tab_names_the_connection_as_an_agent_does_and_counts_only_who_is_here() {
     assert!(harness.has("No agents connected to Fixture"));
     let here = session(&harness, Some(tab), "Claude Code");
     said(&mut harness, AgentsEvent::Sessions(vec![here]));
-    assert!(harness.has("Claude Code · tabletist-repo · connected just now · 14 calls"));
+    assert!(harness.has(&format!(
+        "Claude Code · tabletist-repo · {} · 14 calls",
+        connected_at()
+    )));
     assert!(harness.has("1 agent here · Server: stdio"));
     // Its access Off, the agent that worked here is not here.
     allow(&mut harness, tab, AgentAccess::Off);
@@ -351,14 +370,18 @@ fn more_sessions_than_the_tab_has_room_for_scroll_to_the_last() {
         .unwrap();
     // The last row, the agent that called first, is under the status bar,
     // out of sight, until scrolled.
-    let last = "Agent 0 · tabletist-repo · connected just now · 14 calls · Runs as dev";
+    let last = format!(
+        "Agent 0 · tabletist-repo · {} · 14 calls · Runs as dev",
+        connected_at()
+    );
+    let painted = format!("Agent 0  tabletist-repo · {} · 14 calls", connected_at());
     let seen = |harness: &Harness| {
         harness
-            .painted_rect("Agent 0  tabletist-repo · connected just now · 14 calls")
+            .painted_rect(&painted)
             .is_some_and(|row| row.bottom() <= status.top())
     };
     assert!(!seen(&harness));
-    assert!(harness.has(last));
+    assert!(harness.has(&last));
     let middle = harness.size / 2.0;
     for _ in 0..20 {
         harness.frame(vec![
@@ -485,7 +508,7 @@ fn working_elsewhere(harness: &mut Harness, agent: &str) -> crate::connections::
 /// A call of the session of `agent`'s on `tab`'s connection, or on another.
 fn call(harness: &Harness, tab: Option<ConnTabId>, sql: &str) -> tabletist_mcp::Call {
     tabletist_mcp::Call {
-        at: SystemTime::now(),
+        at: at(),
         session: "session of Claude Code".into(),
         connection: Some(tab.map_or("ledger".into(), |tab| {
             harness.app.workspace(tab).unwrap().conn_id.0.clone()
@@ -513,7 +536,7 @@ fn the_feed_shows_the_calls_on_this_connection_as_they_end() {
         said(&mut harness, AgentsEvent::Called(mine));
         let theirs = call(&harness, None, "SELECT 2");
         said(&mut harness, AgentsEvent::Called(theirs));
-        let row = look.label("just now");
+        let row = look.label(&crate::clock::time(at()));
         assert!(
             harness.has(&format!("{row} · run_query · SELECT 1 · 1 row · 2 ms")),
             "{}",
@@ -756,4 +779,208 @@ fn omarchy_lists_who_works_elsewhere_while_nobody_is_here() {
     harness.press(egui::Key::Enter, egui::Modifiers::NONE);
     let shown = harness.app.active_tab_id();
     assert_eq!(harness.app.workspace(shown).unwrap().conn_id, ledger);
+}
+
+/// The id of the log's read the app asked for last, and whose calls.
+fn log_asked(harness: &Harness) -> (u64, Option<String>) {
+    harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|sent| match sent {
+            crate::backend::Command::Agents(crate::backend::AgentsCommand::ReadLog {
+                asked,
+                connection,
+                ..
+            }) => Some((*asked, connection.clone())),
+            _ => None,
+        })
+        .expect("a read of the log")
+}
+
+/// Answers the log's read with one call of Claude Code's.
+fn log_answered(harness: &mut Harness) {
+    let (asked, connection) = log_asked(harness);
+    let entry = tabletist_mcp::Entry {
+        at_ms: 1_791_880_982_000,
+        session: "s".into(),
+        agent: "Claude Code".into(),
+        transport: "stdio".into(),
+        connection_id: connection,
+        connection: Some("Fixture · dev".into()),
+        tool: "run_query".into(),
+        sql: Some("SELECT  id\n  FROM books".into()),
+        result: "ok".into(),
+        rows: Some(3),
+        columns: Some(2),
+        took_ms: Some(4),
+        ..tabletist_mcp::Entry::default()
+    };
+    let page = tabletist_mcp::Page {
+        calls: vec![tabletist_mcp::Logged { id: 5, entry }],
+        total: 1,
+        more: false,
+    };
+    said(
+        harness,
+        AgentsEvent::LogRead {
+            asked,
+            page: Ok(page),
+        },
+    );
+}
+
+#[test]
+fn the_log_lists_the_calls_and_says_what_the_selected_one_came_to() {
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        harness.app.settings.mcp_enabled = true;
+        allow(&mut harness, tab, AgentAccess::Read);
+        harness.app.apply(Action::ShowAgents(tab));
+        harness.settle();
+        // From nobody here: Show log, which reads this connection's calls.
+        harness.click("Show log");
+        harness.settle();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.0.clone();
+        assert_eq!(
+            log_asked(&harness).1.as_deref(),
+            Some(conn.as_str()),
+            "{}",
+            look.name
+        );
+        log_answered(&mut harness);
+        let at = crate::clock::of_millis(1_791_880_982_000);
+        let row = format!(
+            "{} · {} · run_query · SELECT id FROM books · 3 · 4 · ok",
+            look.label(&crate::clock::day(at)),
+            look.label("Claude Code"),
+        );
+        assert!(harness.has(&row), "{}", look.name);
+        assert!(
+            harness.has(&look.label("This connection · 1 call · last 30 days · on this computer")),
+            "{}",
+            look.name
+        );
+        // Selected, it says what it came to, and that rows are not kept.
+        let request = harness
+            .painted_rect("SELECT id FROM books")
+            .expect("the request");
+        super::tests::click_at(&mut harness, request.center());
+        harness.settle();
+        let detail = look.label(&format!(
+            "Claude Code · {} · 3 rows, 2 columns returned · 4 ms · rows themselves are not logged",
+            crate::clock::moment(at),
+        ));
+        assert!(harness.has(&detail), "{}", look.name);
+        // Every connection's calls.
+        if look.terminal {
+            super::tests::type_key(&mut harness, egui::Key::L, "L");
+        } else {
+            harness.click("All connections");
+            harness.settle();
+        }
+        assert_eq!(log_asked(&harness).1, None, "{}", look.name);
+    }
+}
+
+#[test]
+fn omarchy_shows_the_log_with_l_and_the_agents_log_line() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    harness.app.apply(Action::ShowAgents(tab));
+    let view = |harness: &Harness| {
+        harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .tabs
+            .iter()
+            .find_map(|open| match open {
+                crate::model::Tab::Agents(agents) => Some(agents.view),
+                _ => None,
+            })
+    };
+    // With the server off too: the log is the file's.
+    super::tests::type_key(&mut harness, egui::Key::L, "l");
+    assert_eq!(view(&harness), Some(crate::model::AgentsView::Log));
+    super::tests::type_key(&mut harness, egui::Key::L, "l");
+    assert_eq!(view(&harness), Some(crate::model::AgentsView::Activity));
+    // From another tab, by the prompt's line.
+    let query = harness.add_sql_tab(tab);
+    harness.app.apply(Action::ActivateTab { tab, id: query });
+    harness.app.workspace_mut(tab).unwrap().command = Some("agents log".into());
+    harness.app.apply(Action::RunCommand(tab));
+    assert!(front(&harness, tab));
+    assert_eq!(view(&harness), Some(crate::model::AgentsView::Log));
+}
+
+#[test]
+fn in_the_log_view_the_activitys_letters_do_nothing_and_l_is_named() {
+    // Worked out, as the backend's start does off the UI thread.
+    crate::endpoint::agent_command();
+    let (mut harness, tab) = connected(Look::omarchy());
+    allow(&mut harness, tab, AgentAccess::Read);
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    // The status line names the tab's own key for the log, not the
+    // prompt's line.
+    assert!(harness.painted_rect(":agents log").is_none());
+    super::tests::type_key(&mut harness, egui::Key::L, "l");
+    harness.settle();
+    assert!(harness.painted_rect(":agents log").is_none());
+    // The server off: `o` turns nothing on from the log.
+    super::tests::type_key(&mut harness, egui::Key::O, "o");
+    assert!(!harness.app.settings.mcp_enabled);
+    // On: `y` copies nothing from the log.
+    harness.app.settings.mcp_enabled = true;
+    super::tests::type_key(&mut harness, egui::Key::Y, "y");
+    assert_eq!(crate::ui::toast::said(&harness.ctx), None);
+}
+
+#[test]
+fn a_call_selected_with_j_is_kept_in_sight() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    harness.app.apply(Action::ShowAgentsView {
+        tab,
+        view: crate::model::AgentsView::Log,
+    });
+    let (asked, _) = log_asked(&harness);
+    let calls = (0..200)
+        .map(|n| tabletist_mcp::Logged {
+            id: 1_000 - n,
+            entry: tabletist_mcp::Entry {
+                at_ms: 1_791_880_982_000,
+                agent: "Claude Code".into(),
+                tool: "run_query".into(),
+                sql: Some(format!("SELECT {n}")),
+                result: "ok".into(),
+                ..tabletist_mcp::Entry::default()
+            },
+        })
+        .collect();
+    let page = tabletist_mcp::Page {
+        calls,
+        total: 200,
+        more: false,
+    };
+    said(
+        &mut harness,
+        AgentsEvent::LogRead {
+            asked,
+            page: Ok(page),
+        },
+    );
+    // Only the lines in sight are laid out.
+    assert!(harness.painted_rect("SELECT 0").is_some());
+    assert!(harness.painted_rect("SELECT 150").is_none());
+    for _ in 0..61 {
+        super::tests::type_key(&mut harness, egui::Key::J, "j");
+    }
+    harness.settle();
+    harness.settle();
+    let row = harness
+        .painted_rect("SELECT 60")
+        .expect("the selected call");
+    assert!(row.bottom() <= harness.size.y, "{row:?}");
 }

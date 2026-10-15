@@ -5687,6 +5687,7 @@ dependencies = [
  "fastframe-text",
  "fastframe-theme",
  "image",
+ "jiff",
  "keyring-core",
  "log",
  "notify",
@@ -5710,6 +5711,7 @@ dependencies = [
  "windows-native-keyring-store",
  "winit",
  "winresource",
+ "zbus",
  "zbus-secret-service-keyring-store",
 ]
 

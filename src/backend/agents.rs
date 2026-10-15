@@ -29,6 +29,8 @@ use crate::secrets::{Keyring, password_account, ssh_account};
 
 #[cfg(unix)]
 mod listen;
+#[cfg(target_os = "linux")]
+mod notify;
 
 /// A connection agents may use, as the server is given it: what opens it,
 /// and what an agent calls it. Its password is not here: the gateway reads
@@ -147,6 +149,19 @@ pub enum AgentsCommand {
     /// Stops one session, by its id: its calls answer that the server
     /// stopped them, and its agent is let go. Nothing where it is gone.
     StopSession(String),
+    /// Reads a page of the log at `log`, whether the server runs or not:
+    /// the calls on `connection`, or on every one, from before the call
+    /// `before` names. Answered with [`AgentsEvent::LogRead`], `asked`
+    /// with it.
+    ReadLog {
+        log: PathBuf,
+        connection: Option<String>,
+        before: Option<i64>,
+        asked: u64,
+    },
+    /// Tells the person an agent connected, where the desktop takes a
+    /// notification (Linux). Its Review is [`AgentsEvent::Reviewed`].
+    Notify { summary: String, body: String },
     /// Stops it: every session ends, and the connections are closed.
     /// Answered with [`AgentsEvent::Stopped`].
     Stop,
@@ -169,7 +184,18 @@ pub enum AgentsEvent {
     Sessions(Vec<tabletist_mcp::SessionInfo>),
     /// A call ended, and is in the log.
     Called(tabletist_mcp::Call),
+    /// A page of the log, for the [`AgentsCommand::ReadLog`] that `asked`;
+    /// or why it could not be read.
+    LogRead {
+        asked: u64,
+        page: Result<tabletist_mcp::Page, String>,
+    },
+    /// The person clicked Review on a notification.
+    Reviewed,
 }
+
+/// How many calls a page of the log holds.
+pub const LOG_PAGE: u32 = 200;
 
 /// How long a connection an agent used is kept open with nothing to do.
 const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -232,6 +258,24 @@ impl Agents {
             AgentsCommand::LogDays(days) => {
                 self.log_days
                     .store(days, std::sync::atomic::Ordering::SeqCst);
+            }
+            AgentsCommand::ReadLog {
+                log,
+                connection,
+                before,
+                asked,
+            } => {
+                let outbox = outbox.clone();
+                tokio::spawn(async move {
+                    let page = read_log(log, connection, before).await;
+                    outbox.emit(super::Event::Agents(AgentsEvent::LogRead { asked, page }));
+                });
+            }
+            AgentsCommand::Notify { summary, body } => {
+                #[cfg(target_os = "linux")]
+                tokio::spawn(notify::notify(summary, body, outbox.clone()));
+                #[cfg(not(target_os = "linux"))]
+                let _ = (summary, body);
             }
             AgentsCommand::StopSession(id) => {
                 if let Some(running) = lock(&self.running).as_ref()
@@ -422,6 +466,26 @@ async fn sessions(
         if changes.changed().await.is_err() {
             return;
         }
+    }
+}
+
+/// A page of the log at `log`, opened to read: nothing is made or set
+/// aside. No log yet is an empty one.
+async fn read_log(
+    log: PathBuf,
+    connection: Option<String>,
+    before: Option<i64>,
+) -> Result<tabletist_mcp::Page, String> {
+    let opened = tokio::task::spawn_blocking(move || Log::open_to_read(&log))
+        .await
+        .map_err(|_| "opening it failed".to_owned())?
+        .map_err(|error| error.to_string())?;
+    match opened {
+        Some(log) => log
+            .page(connection, before, LOG_PAGE)
+            .await
+            .map_err(|error| error.to_string()),
+        None => Ok(tabletist_mcp::Page::default()),
     }
 }
 
@@ -1564,6 +1628,48 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_log_is_read_with_the_server_off_and_reading_it_makes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let read = |backend: &mut Backend, connection: Option<&str>| {
+            backend.send(Command::Agents(AgentsCommand::ReadLog {
+                log: path.clone(),
+                connection: connection.map(str::to_owned),
+                before: None,
+                asked: 7,
+            }));
+            match told(backend, WAIT) {
+                Some(Event::Agents(AgentsEvent::LogRead { asked: 7, page })) => page.unwrap(),
+                other => panic!("{other:?}"),
+            }
+        };
+        // No log yet: an empty page, and no file made.
+        assert_eq!(read(&mut backend, None), tabletist_mcp::Page::default());
+        assert!(!path.exists());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let log = Log::open(&path).unwrap().log;
+            for on in ["shop", "ledger"] {
+                let entry = tabletist_mcp::Entry {
+                    at_ms: 1,
+                    session: "s".into(),
+                    agent: "Claude Code".into(),
+                    transport: "stdio".into(),
+                    connection_id: Some(on.into()),
+                    tool: "run_query".into(),
+                    result: "ok".into(),
+                    ..tabletist_mcp::Entry::default()
+                };
+                log.record(entry).await.unwrap();
+            }
+        });
+        let shop = read(&mut backend, Some("shop"));
+        assert_eq!((shop.calls.len(), shop.total), (1, 1));
+        assert_eq!(read(&mut backend, None).total, 2);
     }
 
     #[test]
