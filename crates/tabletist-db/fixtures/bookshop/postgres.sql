@@ -3,6 +3,7 @@
 -- engine. The three files hold the same rows. Keep them deterministic.
 -- Loaded into a database of its own, `bookshop`, which the tests make.
 
+DROP VIEW IF EXISTS customer_tally;
 DROP FUNCTION IF EXISTS customer_count();
 DROP VIEW IF EXISTS recent_orders, customer_names;
 DROP TABLE IF EXISTS order_items, orders, customers, book_covers, books, authors, publishers;
@@ -164,3 +165,6 @@ CREATE VIEW customer_names AS SELECT id, name FROM customers;
 -- changes, lets only a user with SUPER write one.
 CREATE FUNCTION customer_count() RETURNS bigint LANGUAGE sql STABLE
     AS 'SELECT count(*) FROM customers';
+-- A view that calls it: it reads `customers`, and its catalog says only
+-- that it calls the function.
+CREATE VIEW customer_tally AS SELECT customer_count() AS customers;

@@ -93,9 +93,14 @@ pub struct Relation {
     pub name: String,
     /// By schema and name. One the catalog does not list is passed over.
     pub depends_on: Vec<(String, String)>,
-    /// Whether what it depends on cannot be known: a view, on a MySQL that
-    /// does not say what its views read. Hidden while anything is.
+    /// Whether what it reads cannot be known: a view on a MySQL that does
+    /// not say what its views read, and a view or a table with a policy
+    /// that calls a function the users wrote. Hidden while anything is.
     pub opaque: bool,
+    /// Whether it is a table a virtual table keeps its data in (SQLite's
+    /// shadow tables), which depends on that one: hidden with it, and not
+    /// for want of its own name in an "Only" list.
+    pub shadow: bool,
 }
 
 /// What a driver reads of its database's catalog for the checks: its
@@ -105,6 +110,10 @@ pub struct Catalog {
     pub relations: Vec<Relation>,
     /// By schema and name. An extension's own are not among them.
     pub routines: Vec<(String, String)>,
+    /// The functions the users wrote that a statement can call without
+    /// naming them: an operator's, a cast's, a type's. While anything is
+    /// hidden, every statement is refused while one is there.
+    pub unnamed_calls: Vec<String>,
 }
 
 /// A relation of the catalog, as [`Hidden`] keeps it.
@@ -137,6 +146,8 @@ pub struct Hidden {
     relations: HashMap<String, Vec<Listed>>,
     /// The users' functions' names, folded, while anything is hidden.
     routines: HashSet<String>,
+    /// [`Catalog::unnamed_calls`], while anything is hidden.
+    unnamed_calls: Vec<String>,
 }
 
 impl Hidden {
@@ -183,17 +194,33 @@ impl Hidden {
                 .collect(),
             false => HashSet::new(),
         };
+        let unnamed_calls = match tables.hides_anything() {
+            true => catalog.unnamed_calls.clone(),
+            false => Vec::new(),
+        };
         Self {
             dialect,
             tables: tables.clone(),
             relations,
             routines,
+            unnamed_calls,
         }
     }
 
     /// Whether anything is hidden.
     pub fn hides_anything(&self) -> bool {
         self.tables.hides_anything()
+    }
+
+    /// Whether `schema` is a schema of the database: one the catalog lists
+    /// a relation of, or the system's.
+    pub fn knows_schema(&self, schema: &str) -> bool {
+        system_catalog(self.dialect, Some(schema), "")
+            || self
+                .relations
+                .values()
+                .flatten()
+                .any(|listed| same(&listed.schema, schema))
     }
 
     /// Checks a relation the engine says the statement reads: by its
@@ -253,6 +280,11 @@ impl Hidden {
     pub fn check_statement(&self, read: &Read) -> Result<(), Refusal> {
         if !self.hides_anything() {
             return Ok(());
+        }
+        // Called by any statement that compares, sorts or casts the wrong
+        // value, whatever it names.
+        if let Some(function) = self.unnamed_calls.first() {
+            return Err(Refusal::FunctionNotAllowed(function.clone()));
         }
         let names = names(read.dialect(), read.text());
         for defined in &names.defined {
@@ -332,7 +364,11 @@ fn hidden_why(
     let relation = &catalog.relations[at];
     // Hidden until worked out, for a cycle.
     why[at] = Some(Some(Why::Named));
-    let found = if relation.opaque || tables.hides(Some(&relation.schema), &relation.name) {
+    let by_name = match (relation.shadow, tables) {
+        (true, Tables::Only(_)) => false,
+        _ => tables.hides(Some(&relation.schema), &relation.name),
+    };
+    let found = if relation.opaque || by_name {
         Some(Why::Named)
     } else {
         depends[at].iter().find_map(|&on| {
@@ -757,6 +793,7 @@ mod tests {
                 .map(|(schema, name)| ((*schema).to_owned(), (*name).to_owned()))
                 .collect(),
             opaque: false,
+            shadow: false,
         }
     }
 
@@ -778,6 +815,7 @@ mod tests {
                 relation("public", "events_2026", &[("public", "events")]),
             ],
             routines: vec![("public".into(), "names".into())],
+            unnamed_calls: Vec::new(),
         }
     }
 
@@ -1047,6 +1085,64 @@ mod tests {
         assert_eq!(
             planned_of(Dialect::Sqlite, "EXPLAIN QUERY PLAN SELECT 1"),
             "SELECT 1"
+        );
+    }
+
+    #[test]
+    fn a_function_no_statement_names_refuses_every_statement_while_anything_is_hidden() {
+        let catalog = Catalog {
+            unnamed_calls: vec!["shelf_eq".into()],
+            ..bookshop()
+        };
+        let hiding = Tables::AllExcept(vec![table(None, "customers")]);
+        let hidden = Hidden::new(Dialect::Postgres, &catalog, &hiding);
+        // An operator the users wrote, which `=` on their type calls.
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM books"),
+            Err(Refusal::FunctionNotAllowed("shelf_eq".into()))
+        );
+        let open = Hidden::new(Dialect::Postgres, &catalog, &Tables::All);
+        assert_eq!(statement(&open, "SELECT * FROM books"), Ok(()));
+    }
+
+    #[test]
+    fn a_shadow_table_goes_with_its_virtual_table() {
+        let catalog = Catalog {
+            relations: vec![
+                relation("main", "notes", &[]),
+                Relation {
+                    shadow: true,
+                    ..relation("main", "notes_data", &[("main", "notes")])
+                },
+            ],
+            ..Catalog::default()
+        };
+        // Listed alone, the virtual table reads its shadow tables.
+        let only = Hidden::new(
+            Dialect::Sqlite,
+            &catalog,
+            &Tables::Only(vec![table(None, "notes")]),
+        );
+        assert_eq!(only.check_engine_read(Some("main"), "notes_data"), Ok(()));
+        // Hidden, it hides them.
+        let except = Hidden::new(
+            Dialect::Sqlite,
+            &catalog,
+            &Tables::AllExcept(vec![table(None, "notes")]),
+        );
+        assert_eq!(
+            except.check_engine_read(Some("main"), "notes_data"),
+            table_hidden("notes", Some("notes_data"))
+        );
+        // Not listed, neither reads.
+        let other = Hidden::new(
+            Dialect::Sqlite,
+            &catalog,
+            &Tables::Only(vec![table(None, "books")]),
+        );
+        assert_eq!(
+            other.check_engine_read(Some("main"), "notes_data"),
+            table_hidden("notes", Some("notes_data"))
         );
     }
 

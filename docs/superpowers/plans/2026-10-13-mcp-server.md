@@ -914,7 +914,9 @@ where it went otherwise:
   view reads, with the view (and a table only `count(*)` or `EXISTS`
   reads, and `sqlite_schema`), so a view is refused by what it reads, and
   the refusal names it. The catalog is `pragma_table_list`, for the names
-  a refusal gives.
+  a refusal gives. A shadow table (FTS5's, R*Tree's) goes with its
+  virtual table: hidden with it, and read with it where an "Only" list
+  names it alone.
 - **PostgreSQL compares by schema and name**, as the plan writes them,
   not by OID. The plan names each relation it scans with its schema: a
   partition (not its parent), a child table under its parent's scan, a
@@ -924,11 +926,23 @@ where it went otherwise:
   (`pg_proc` outside the system's schemas, and not an extension's) are
   refused while anything is hidden. An `EXPLAIN` of the agent's own is
   checked as the query it explains.
+- **A function the statement does not name is refused too** (found by the
+  pull request's review). A view whose rules call a function the users
+  wrote, and a table whose row policy does, is hidden while anything is:
+  no plan shows what the function reads. On MySQL so is a view
+  `VIEW_ROUTINE_USAGE` lists, or every view where the server has no such
+  table, and a call the rewritten query writes `` `db`.`f`() `` is checked
+  as a function. On PostgreSQL a function the users wrote for an operator,
+  a cast, an operator class or a type's input and output runs wherever a
+  value meets it, so while one is there every statement is refused on a
+  connection that hides anything.
 - **MySQL's plan is read twice.** Its JSON names a table by the
   statement's alias where it has one, so a name there is checked only
   where the catalog lists it. The note `SHOW WARNINGS` gives after it
   (code 1003) is the query as the server rewrote it, every table written
-  `` `db`.`table` `` and views expanded: each of those is checked. A plan
+  `` `db`.`table` `` and views expanded: each of those after a `from` or a
+  `join`, or in a schema of the database, is checked (a derived table's
+  column is written with two parts too). A plan
   that cannot be read refuses the query (`not_parsed`). The catalog's own
   queries carry a `LIMIT`, since the run sets `sql_select_limit` for the
   agent's rows.
@@ -940,7 +954,8 @@ where it went otherwise:
   a value. Every name the text gives in a table's place is refused before
   the plan is asked for, so this takes a name the reading misses.
 - **The function of the Bookshop is on PostgreSQL alone**
-  (`customer_count()`, F). MySQL lets only a user with `SUPER` make one
+  (`customer_count()`, and the view `customer_tally` that calls it, F).
+  MySQL lets only a user with `SUPER` make one
   while it logs its changes, so its fixture has none, and MySQL's function
   rule is tested off the server only.
 - **Not refused**: the system's functions that say something of a table

@@ -378,20 +378,32 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
         .await
         .unwrap_err();
     assert_eq!(error, hidden_refusal("orders", None), "{on}");
+    // A derived table's columns are no tables of their own.
+    let derived = "SELECT count(*) FROM (SELECT id FROM books GROUP BY id) d";
+    let found = count(hiding(connection, &only_books, derived).await);
+    assert_eq!(found, Ok(vec![vec![Value::Int(12)]]), "{on}");
     // A function of the database's own, which reads what no check sees:
-    // refused while anything is hidden. The Bookshop has one on PostgreSQL
-    // alone (its fixture says why).
-    if connection.dialect() == Dialect::Postgres {
-        for sql in [
-            "SELECT customer_count()",
-            "SELECT title FROM books WHERE id < customer_count()",
-        ] {
-            let error = hiding(connection, &customers, sql).await.unwrap_err();
-            let refused = Error::Agent(Refusal::FunctionNotAllowed("customer_count".into()));
-            assert_eq!(error, refused, "{on}: {sql}");
+    // refused while anything is hidden, and so is a view that calls it.
+    // The Bookshop has one on PostgreSQL alone (its fixture says why).
+    match connection.dialect() {
+        Dialect::Postgres => {
+            for sql in [
+                "SELECT customer_count()",
+                "SELECT title FROM books WHERE id < customer_count()",
+            ] {
+                let error = hiding(connection, &customers, sql).await.unwrap_err();
+                let refused = Error::Agent(Refusal::FunctionNotAllowed("customer_count".into()));
+                assert_eq!(error, refused, "{on}: {sql}");
+            }
+            let tally = "SELECT * FROM customer_tally";
+            let error = hiding(connection, &customers, tally).await.unwrap_err();
+            assert_eq!(error, hidden_refusal("customer_tally", None), "{on}");
+            let found = count(hiding(connection, &Tables::All, "SELECT customer_count()").await);
+            assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
+            let found = count(hiding(connection, &Tables::All, tally).await);
+            assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
         }
-        let found = count(hiding(connection, &Tables::All, "SELECT customer_count()").await);
-        assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
+        Dialect::MySql | Dialect::Sqlite => {}
     }
     // Nothing hidden: the table reads.
     let found = count(hiding(connection, &Tables::All, "SELECT count(*) FROM customers").await);

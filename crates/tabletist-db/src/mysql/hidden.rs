@@ -96,9 +96,12 @@ fn json_reads(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Result<
     }
 }
 
-/// Checks every table the rewritten query names: each name of two parts,
-/// `` `db`.`table` ``, is one. A column is written with three, and an
-/// alias with one.
+/// Checks every table and every stored function the rewritten query
+/// names. A name of two parts, `` `db`.`table` ``, is a table where a
+/// `from` or a `join` comes before it or its first part is a schema of the
+/// database, and a function where a parenthesis follows it. A base table's
+/// column is written with three parts, a derived table's with two (its
+/// alias and the column's), and an alias with one.
 fn rewritten_reads(note: &str, hidden: &Hidden) -> std::result::Result<(), Refusal> {
     let tokens: Vec<sql::Token> = sql::tokenize(Dialect::MySql, note)
         .into_iter()
@@ -109,8 +112,10 @@ fn rewritten_reads(note: &str, hidden: &Hidden) -> std::result::Result<(), Refus
         (token.kind == TokenKind::QuotedIdentifier && written.starts_with('`'))
             .then(|| written[1..written.len() - 1].replace("``", "`"))
     };
-    let dot =
-        |token: Option<&sql::Token>| token.is_some_and(|token| &note[token.range.clone()] == ".");
+    let written = |token: Option<&sql::Token>, text: &str| {
+        token.is_some_and(|token| note[token.range.clone()].eq_ignore_ascii_case(text))
+    };
+    let dot = |token: Option<&sql::Token>| written(token, ".");
     let mut at = 0;
     while at < tokens.len() {
         let Some(first) = quoted(&tokens[at]) else {
@@ -125,8 +130,16 @@ fn rewritten_reads(note: &str, hidden: &Hidden) -> std::result::Result<(), Refus
             parts.push(part);
             next += 2;
         }
-        if let [schema, table] = parts.as_slice() {
-            hidden.check_engine_read(Some(schema), table)?;
+        if let [schema, name] = parts.as_slice() {
+            let before = at.checked_sub(1).and_then(|before| tokens.get(before));
+            let placed = ["from", "join", "straight_join"]
+                .iter()
+                .any(|word| written(before, word));
+            if written(tokens.get(next), "(") {
+                hidden.check_function(name)?;
+            } else if placed || hidden.knows_schema(schema) {
+                hidden.check_engine_read(Some(schema), name)?;
+            }
         }
         at = next;
     }
@@ -158,6 +171,21 @@ async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
             // No such table on this server.
             _ => Ok(None),
         })?;
+    // The views that call a stored function the users wrote, whose reads
+    // no catalog lists. Where the server does not say, every view.
+    let calling: Option<std::collections::HashSet<(String, String)>> = conn
+        .query(format!(
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.VIEW_ROUTINE_USAGE \
+             WHERE SPECIFIC_SCHEMA NOT IN {SYSTEM} {WHOLE}"
+        ))
+        .await
+        .map(|rows: Vec<(String, String)>| Some(rows.into_iter().collect()))
+        .map_err(query_error)
+        .or_else(|error| match error {
+            Error::ConnectionLost(_) | Error::Cancelled => Err(error),
+            // No such table on this server.
+            _ => Ok(None),
+        })?;
     // What each view reads, by the view.
     let mut reads: std::collections::HashMap<(String, String), Vec<(String, String)>> =
         std::collections::HashMap::new();
@@ -174,11 +202,15 @@ async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
             let depends_on = reads
                 .remove(&(schema.clone(), name.clone()))
                 .unwrap_or_default();
+            let calls = calling
+                .as_ref()
+                .is_none_or(|calling| calling.contains(&(schema.clone(), name.clone())));
             Relation {
+                opaque: view && (usage.is_none() || calls),
                 schema,
                 name,
                 depends_on,
-                opaque: view && usage.is_none(),
+                shadow: false,
             }
         })
         .collect();
@@ -192,6 +224,7 @@ async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
     Ok(Catalog {
         relations,
         routines,
+        unnamed_calls: Vec::new(),
     })
 }
 
@@ -206,10 +239,12 @@ mod tests {
             name: name.into(),
             depends_on: Vec::new(),
             opaque: false,
+            shadow: false,
         };
         let catalog = Catalog {
             relations: vec![relation("books"), relation("customers")],
-            routines: Vec::new(),
+            routines: vec![("bookshop".into(), "customer_count".into())],
+            unnamed_calls: Vec::new(),
         };
         Hidden::new(Dialect::MySql, &catalog, &tables)
     }
@@ -233,6 +268,23 @@ mod tests {
                 through: None
             })
         );
+        // A stored function, as a view that calls it is rewritten.
+        let function = "/* select#1 */ select `bookshop`.`customer_count`() AS `n` \
+                        from `bookshop`.`books`";
+        assert_eq!(
+            rewritten_reads(function, &hidden),
+            Err(Refusal::FunctionNotAllowed("customer_count".into()))
+        );
+        // A derived table's column is no table, also where an "Only" list
+        // hides every name it does not give.
+        let only = bookshop(Tables::Only(vec![TableName {
+            schema: None,
+            name: "books".into(),
+        }]));
+        let derived = "/* select#1 */ select `d`.`id` AS `id` from (/* select#2 */ select \
+                       `bookshop`.`books`.`id` AS `id` from `bookshop`.`books` group by \
+                       `bookshop`.`books`.`id`) `d`";
+        assert_eq!(rewritten_reads(derived, &only), Ok(()));
         // The system's own, as the information schema is rewritten.
         let system = "select `mysql`.`tbl`.`name` AS `TABLE_NAME` from `mysql`.`tables` `tbl`";
         assert_eq!(

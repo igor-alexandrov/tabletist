@@ -15,20 +15,52 @@ use super::query_error;
 use crate::agent::{Catalog, Hidden, Read, Refusal, Relation, Tables, planned};
 use crate::{Dialect, Error, Result};
 
+/// The functions the database's users wrote: not the system's, and not an
+/// extension's. A common table expression of the queries below.
+const USER_ROUTINES: &str = "\
+user_routines AS (
+    SELECT p.oid, n.nspname, p.proname
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND NOT EXISTS (
+            SELECT 1 FROM pg_depend e
+            WHERE e.classid = 'pg_proc'::regclass AND e.objid = p.oid AND e.deptype = 'e'
+        )
+)";
+
 /// Every relation of the database but the system's, each with what it
 /// depends on: the relations a view's or a materialized view's rules
 /// read, and a partition's or a child table's parent. One row for each
-/// relation and each thing it depends on.
-const RELATIONS: &str = "\
-WITH depends AS (
+/// relation and each thing it depends on, and in the last column whether
+/// its rules or a policy on it call a function the users wrote, which
+/// makes what it reads unknown.
+fn relations_sql() -> String {
+    format!(
+        "\
+WITH {USER_ROUTINES},
+depends AS (
     SELECT DISTINCT r.ev_class AS relation, d.refobjid AS depends_on
     FROM pg_rewrite r
     JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
         AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> r.ev_class
     UNION
     SELECT inhrelid, inhparent FROM pg_inherits
+),
+calls AS (
+    SELECT r.ev_class AS relation
+    FROM pg_rewrite r
+    JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+    WHERE d.refclassid = 'pg_proc'::regclass
+        AND d.refobjid IN (SELECT oid FROM user_routines)
+    UNION
+    SELECT pol.polrelid
+    FROM pg_policy pol
+    JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = pol.oid
+    WHERE d.refclassid = 'pg_proc'::regclass
+        AND d.refobjid IN (SELECT oid FROM user_routines)
 )
-SELECT n.nspname, c.relname, dn.nspname, dc.relname
+SELECT n.nspname, c.relname, dn.nspname, dc.relname, c.oid IN (SELECT relation FROM calls)
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN depends ON depends.relation = c.oid
@@ -38,19 +70,34 @@ WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')
     AND n.nspname NOT IN ('pg_catalog', 'information_schema')
     AND n.nspname NOT LIKE 'pg\\_toast%'
     AND n.nspname NOT LIKE 'pg\\_temp%'
-ORDER BY n.nspname, c.relname";
+ORDER BY n.nspname, c.relname"
+    )
+}
 
-/// The functions and procedures the database's users wrote: not the
-/// system's, and not an extension's.
-const ROUTINES: &str = "\
-SELECT DISTINCT n.nspname, p.proname
-FROM pg_proc p
-JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-    AND NOT EXISTS (
-        SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
-    )";
+/// The functions the users wrote, by schema and name.
+fn routines_sql() -> String {
+    format!("WITH {USER_ROUTINES} SELECT DISTINCT nspname, proname FROM user_routines")
+}
+
+/// The functions the users wrote that a statement can call without naming
+/// them: an operator's (and its estimates'), a cast's, an operator class's,
+/// a type's input and output.
+fn unnamed_calls_sql() -> String {
+    format!(
+        "\
+WITH {USER_ROUTINES}
+SELECT DISTINCT u.proname
+FROM user_routines u
+WHERE EXISTS (SELECT 1 FROM pg_operator o WHERE u.oid IN (o.oprcode, o.oprrest, o.oprjoin))
+    OR EXISTS (SELECT 1 FROM pg_cast c WHERE c.castfunc = u.oid)
+    OR EXISTS (SELECT 1 FROM pg_amproc a WHERE a.amproc = u.oid)
+    OR EXISTS (
+        SELECT 1 FROM pg_type t
+        WHERE u.oid IN (t.typinput, t.typoutput, t.typreceive, t.typsend)
+    )
+ORDER BY 1"
+    )
+}
 
 /// Checks `read` against what `tables` hides, in the open transaction.
 /// `Ok(None)`: it may run. `Ok(Some(error))`: it may not, and `error` is
@@ -120,7 +167,7 @@ fn planned_reads(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
 /// The catalog as the open transaction sees it.
 async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
     let mut relations: Vec<Relation> = Vec::new();
-    for row in rows(client, RELATIONS).await? {
+    for row in rows(client, &relations_sql()).await? {
         let (Some(schema), Some(name)) = (row.get(0), row.get(1)) else {
             continue;
         };
@@ -132,7 +179,10 @@ async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
                 schema: schema.to_owned(),
                 name: name.to_owned(),
                 depends_on: Vec::new(),
-                opaque: false,
+                // `t` or `f`, as the simple protocol writes a boolean; what
+                // is neither is taken for a call.
+                opaque: row.get(4) != Some("f"),
+                shadow: false,
             });
         }
         if let (Some(on_schema), Some(on_name), Some(last)) =
@@ -142,14 +192,20 @@ async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
                 .push((on_schema.to_owned(), on_name.to_owned()));
         }
     }
-    let routines = rows(client, ROUTINES)
+    let routines = rows(client, &routines_sql())
         .await?
         .iter()
         .filter_map(|row| Some((row.get(0)?.to_owned(), row.get(1)?.to_owned())))
         .collect();
+    let unnamed_calls = rows(client, &unnamed_calls_sql())
+        .await?
+        .iter()
+        .filter_map(|row| Some(row.get(0)?.to_owned()))
+        .collect();
     Ok(Catalog {
         relations,
         routines,
+        unnamed_calls,
     })
 }
 
@@ -201,6 +257,7 @@ mod tests {
                 .map(|on| ("public".into(), (*on).into()))
                 .collect(),
             opaque: false,
+            shadow: false,
         };
         let catalog = Catalog {
             relations: vec![
@@ -210,6 +267,7 @@ mod tests {
                 relation("events_2026", &["events"]),
             ],
             routines: vec![("public".into(), "names".into())],
+            unnamed_calls: Vec::new(),
         };
         Hidden::new(Dialect::Postgres, &catalog, &tables)
     }
