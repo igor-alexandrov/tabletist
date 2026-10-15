@@ -326,27 +326,38 @@ impl Log {
         limit: u32,
     ) -> Result<Page, LogError> {
         self.blocking(move |db| {
-            let mut statement = db.prepare(&format!(
-                "SELECT id, {COLUMNS} FROM calls \
-                 WHERE (?1 IS NULL OR connection_id = ?1) AND (?2 IS NULL OR id < ?2) \
-                 ORDER BY id DESC LIMIT ?3"
-            ))?;
+            let before = before.unwrap_or(i64::MAX);
             // One more than asked: whether there are more.
-            let mut calls = statement
-                .query_map(params![connection, before, i64::from(limit) + 1], |row| {
-                    Ok(Logged {
-                        id: row.get(0)?,
-                        entry: entry_at(row, 1)?,
-                    })
-                })?
-                .collect::<Result<Vec<Logged>, rusqlite::Error>>()?;
+            let asked = i64::from(limit) + 1;
+            let logged = |row: &Row<'_>| {
+                Ok(Logged {
+                    id: row.get(0)?,
+                    entry: entry_at(row, 1)?,
+                })
+            };
+            // A statement for each: one whose filter is a bound value that
+            // may be nothing is planned without the connection's index.
+            let (mut calls, total) = match &connection {
+                Some(connection) => {
+                    let calls = db
+                        .prepare(&page_of_one())?
+                        .query_map(params![connection, before, asked], logged)?
+                        .collect::<Result<Vec<Logged>, rusqlite::Error>>()?;
+                    let total: i64 = db.query_row(COUNT_OF_ONE, [connection], |row| row.get(0))?;
+                    (calls, total)
+                }
+                None => {
+                    let calls = db
+                        .prepare(&page_of_all())?
+                        .query_map(params![before, asked], logged)?
+                        .collect::<Result<Vec<Logged>, rusqlite::Error>>()?;
+                    let total: i64 =
+                        db.query_row("SELECT count(*) FROM calls", [], |row| row.get(0))?;
+                    (calls, total)
+                }
+            };
             let more = calls.len() > limit as usize;
             calls.truncate(limit as usize);
-            let total: i64 = db.query_row(
-                "SELECT count(*) FROM calls WHERE ?1 IS NULL OR connection_id = ?1",
-                [&connection],
-                |row| row.get(0),
-            )?;
             Ok(Page {
                 calls,
                 total: u64::try_from(total).unwrap_or_default(),
@@ -388,6 +399,22 @@ impl Log {
 const COLUMNS: &str = "at_ms, session, agent, project, transport, connection_id, connection, \
     tool, sql, params, request, result, code, message, ran_as, rows, matched, columns, bytes, \
     took_ms";
+
+/// A page of one connection's calls, through its index.
+fn page_of_one() -> String {
+    format!(
+        "SELECT id, {COLUMNS} FROM calls WHERE connection_id = ?1 AND id < ?2 \
+         ORDER BY id DESC LIMIT ?3"
+    )
+}
+
+/// A page of every connection's calls.
+fn page_of_all() -> String {
+    format!("SELECT id, {COLUMNS} FROM calls WHERE id < ?1 ORDER BY id DESC LIMIT ?2")
+}
+
+/// How many calls one connection has, from its index alone.
+const COUNT_OF_ONE: &str = "SELECT count(*) FROM calls WHERE connection_id = ?1";
 
 /// The entry in `row`, from its column `at` on, in [`COLUMNS`]'s order.
 fn entry_at(row: &Row<'_>, at: usize) -> Result<Entry, rusqlite::Error> {
@@ -548,6 +575,25 @@ mod tests {
         let page = log.page(None, None, 1).await.unwrap();
         assert_eq!(page.total, 2_000);
         assert_eq!(page.calls[0].entry.tool, "run_query");
+    }
+
+    #[test]
+    fn one_connections_page_and_count_are_read_through_its_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        drop(open(&path));
+        let db = Connection::open(&path).unwrap();
+        let plan = |sql: &str, values: &[&dyn rusqlite::ToSql]| {
+            let mut statement = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let rows = statement
+                .query_map(values, |row| row.get::<_, String>(3))
+                .unwrap();
+            rows.map(Result::unwrap).collect::<Vec<_>>().join("; ")
+        };
+        let page = plan(&page_of_one(), params!["shop", i64::MAX, 201]);
+        assert!(page.contains("calls_connection"), "{page}");
+        let count = plan(COUNT_OF_ONE, params!["shop"]);
+        assert!(count.contains("calls_connection"), "{count}");
     }
 
     #[tokio::test]
