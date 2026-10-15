@@ -2259,6 +2259,20 @@ fn letters(
             (Some(Command::TurnAgentsOn), _) if agents_shows(app, tab, true) => {
                 actions.push(Action::TurnAgentsOn);
             }
+            // Settings… with the server off, Other agents… with nobody
+            // here: both are Settings › Agents.
+            (Some(Command::ShowAgentSettings), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Activity)
+                    && matches!(
+                        app.agents_here(tab),
+                        Some(
+                            crate::model::AgentsHere::ServerOff
+                                | crate::model::AgentsHere::NoneConnected
+                        )
+                    ) =>
+            {
+                actions.push(Action::ShowAgentSettings);
+            }
             (Some(Command::AllowAgents), _)
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Activity)
                     && app.agents_here(tab) == Some(crate::model::AgentsHere::OffHere) =>

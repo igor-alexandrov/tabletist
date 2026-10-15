@@ -2029,7 +2029,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let review_key = key(Command::ReviewSql);
     let (agents_copy_key, agents_on_key) =
         (key(Command::CopyAgentCommand), key(Command::TurnAgentsOn));
-    let agents_allow_key = key(Command::AllowAgents);
+    let (agents_allow_key, agents_settings_key) =
+        (key(Command::AllowAgents), key(Command::ShowAgentSettings));
     let (agents_move_key, agents_stop_key, agents_here_key) = (
         key(Command::MoveInAgentSessions),
         key(Command::StopAgentSession),
@@ -2257,23 +2258,27 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             }
             let (copy_word, on_word) = (gettext(locale, "copy"), gettext(locale, "turn on"));
             let allow_word = gettext(locale, "allow agents");
+            let settings_word = gettext(locale, "settings");
             let stop_words = [
                 gettext(locale, "sessions"),
                 gettext(locale, "stop session"),
                 gettext(locale, "stop agents here"),
             ];
             let mut agents_hints: Vec<widgets::Hint<'_>> = match &agents {
-                Some(crate::model::AgentsHere::ServerOff) => {
-                    vec![(&agents_on_key, &*on_word, true)]
-                }
+                Some(crate::model::AgentsHere::ServerOff) => vec![
+                    (&agents_on_key, &*on_word, true),
+                    (&agents_settings_key, &*settings_word, true),
+                ],
                 Some(crate::model::AgentsHere::NoneConnected) if agents_listed => vec![
                     (&agents_move_key, &*stop_words[0], true),
                     (&agents_stop_key, &*stop_words[1], true),
                     (&agents_copy_key, &*copy_word, true),
+                    (&agents_settings_key, &*settings_word, true),
                 ],
-                Some(crate::model::AgentsHere::NoneConnected) => {
-                    vec![(&agents_copy_key, &*copy_word, true)]
-                }
+                Some(crate::model::AgentsHere::NoneConnected) => vec![
+                    (&agents_copy_key, &*copy_word, true),
+                    (&agents_settings_key, &*settings_word, true),
+                ],
                 Some(crate::model::AgentsHere::Connected { .. }) => vec![
                     (&agents_move_key, &*stop_words[0], true),
                     (&agents_stop_key, &*stop_words[1], true),

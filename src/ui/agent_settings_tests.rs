@@ -316,6 +316,34 @@ fn settings_opens_connections_where_access_is_set() {
 }
 
 #[test]
+fn the_agents_tab_opens_its_settings_where_the_server_is_off_and_where_nobody_is_here() {
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        harness.app.apply(Action::ShowAgents(tab));
+        harness.settle();
+        // The server off: Settings…
+        if look.terminal {
+            super::tests::type_key(&mut harness, egui::Key::S, "s");
+        } else {
+            harness.click("Settings…");
+        }
+        harness.settle();
+        assert_eq!(pane(&harness), Some(SettingsPane::Agents), "{}", look.name);
+        harness.app.apply(Action::CloseDialog);
+        // Nobody here: Other agents…
+        harness.app.apply(Action::TurnAgentsOn);
+        harness.settle();
+        if look.terminal {
+            super::tests::type_key(&mut harness, egui::Key::S, "s");
+        } else {
+            harness.click("Other agents…");
+        }
+        harness.settle();
+        assert_eq!(pane(&harness), Some(SettingsPane::Agents), "{}", look.name);
+    }
+}
+
+#[test]
 fn an_enter_held_on_the_status_row_shows_the_agents_tab_and_goes_no_further() {
     let (mut harness, tab) = connected(Look::omarchy());
     harness.app.settings.mcp_enabled = true;

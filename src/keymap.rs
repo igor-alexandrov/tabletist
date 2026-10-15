@@ -343,6 +343,7 @@ commands! {
     ShowAgentsLog,
     ToggleAgentsLogScope,
     AllowAgents,
+    ShowAgentSettings,
     ChangeAgentAccess,
     MoveInAgentLevels,
     ShowAgentsFromBox,
@@ -598,6 +599,7 @@ impl Command {
             }
             C::ShowAgentsLog => agents(info("Show the log, or what agents do now", "", Window)),
             C::AllowAgents => agents(info("Allow agents on this connection…", "", Window)),
+            C::ShowAgentSettings => agents(info("Show the agents' settings", "", Window)),
             C::ChangeAgentAccess => agents(info(
                 "Change what agents may do on the connection",
                 "",
@@ -1019,6 +1021,7 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ShowAgentsLog, AGENTS, NONE, keys(&[k("l")])),
         bind(C::ToggleAgentsLogScope, AGENTS, NONE, keys(&[k("L")])),
         bind(C::AllowAgents, AGENTS, NONE, keys(&[k("e")])),
+        bind(C::ShowAgentSettings, AGENTS, NONE, keys(&[k("s")])),
         bind(C::ChangeAgentAccess, CONNECTIONS, NONE, keys(&[k("a")])),
         bind(
             C::MoveInAgentLevels,
