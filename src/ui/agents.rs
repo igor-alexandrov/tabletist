@@ -1048,7 +1048,9 @@ mod tests {
         ledger.id = crate::connections::ConnectionId("ledger".into());
         harness.app.connections.upsert(ledger.clone());
         let windows = harness.app.tabs.len();
-        harness.app.apply(crate::model::Action::ShowAgentsOn(ledger.id));
+        harness
+            .app
+            .apply(crate::model::Action::ShowAgentsOn(ledger.id));
         assert_eq!(harness.app.tabs.len(), windows);
     }
 }
