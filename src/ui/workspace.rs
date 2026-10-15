@@ -2029,6 +2029,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let review_key = key(Command::ReviewSql);
     let (agents_copy_key, agents_on_key) =
         (key(Command::CopyAgentCommand), key(Command::TurnAgentsOn));
+    let agents_allow_key = key(Command::AllowAgents);
     let (agents_move_key, agents_stop_key, agents_here_key) = (
         key(Command::MoveInAgentSessions),
         key(Command::StopAgentSession),
@@ -2057,6 +2058,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             _ => None,
         })
     });
+    // Whether its connection is saved: one saved no more has nothing to
+    // allow.
+    let agents_saved = app
+        .workspace(tab)
+        .is_some_and(|workspace| app.connections.get(&workspace.conn_id).is_some());
     // Whether its list has sessions, elsewhere ones too.
     let agents_listed = app
         .workspace(tab)
@@ -2250,6 +2256,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 structure_hints.push((&review_key, &*review, true));
             }
             let (copy_word, on_word) = (gettext(locale, "copy"), gettext(locale, "turn on"));
+            let allow_word = gettext(locale, "allow agents");
             let stop_words = [
                 gettext(locale, "sessions"),
                 gettext(locale, "stop session"),
@@ -2273,7 +2280,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     (&agents_here_key, &*stop_words[2], true),
                     (&agents_copy_key, &*copy_word, true),
                 ],
-                Some(crate::model::AgentsHere::OffHere) | None => Vec::new(),
+                Some(crate::model::AgentsHere::OffHere) if agents_saved => {
+                    vec![(&agents_allow_key, &*allow_word, true)]
+                }
+                Some(crate::model::AgentsHere::OffHere) => Vec::new(),
+                None => Vec::new(),
             };
             let log_words = [
                 gettext(locale, "log"),

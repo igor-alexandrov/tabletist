@@ -984,3 +984,313 @@ fn a_call_selected_with_j_is_kept_in_sight() {
         .expect("the selected call");
     assert!(row.bottom() <= harness.size.y, "{row:?}");
 }
+
+/// The Connections list with one saved connection, Shop · dev, selected.
+#[cfg(unix)]
+fn on_the_list(look: Look) -> (Harness, crate::connections::ConnectionId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let mut shop = crate::testing::fixture_connection();
+    shop.name = "Shop".into();
+    let conn = shop.id.clone();
+    harness.app.connections.upsert(shop);
+    let tab = harness.app.active_tab_id();
+    harness.app.apply(Action::SelectConnection {
+        tab,
+        conn: Some(conn.clone()),
+    });
+    harness.settle();
+    (harness, conn)
+}
+
+#[cfg(unix)]
+fn access_of(harness: &Harness, conn: &crate::connections::ConnectionId) -> AgentAccess {
+    harness.app.connections.get(conn).unwrap().agents.access
+}
+
+#[cfg(unix)]
+#[test]
+fn the_list_says_what_agents_may_do_and_its_menu_changes_it() {
+    let (mut harness, conn) = on_the_list(Look::macos());
+    assert!(harness.has("Agents Off"));
+    harness.click("More actions for Shop");
+    harness.settle();
+    harness.click("Agents Read");
+    harness.settle();
+    assert_eq!(access_of(&harness, &conn), AgentAccess::Read);
+    assert!(harness.has("Agents Read"));
+    // Tables, columns and limits…: the editor, at its Agents part. (A
+    // click no pointer made leaves the menu open.)
+    harness.click("Tables, columns and limits…");
+    harness.settle();
+    assert!(matches!(
+        harness.app.dialog,
+        Some(crate::model::Dialog::Connection(_))
+    ));
+    assert!(harness.has("Access through Tabletist (MCP)"));
+}
+
+#[cfg(unix)]
+#[test]
+fn omarchys_box_sets_what_agents_may_do_from_the_list() {
+    let (mut harness, conn) = on_the_list(Look::omarchy());
+    // At the end of the row's line.
+    let line_ends = |harness: &Harness, end: &str| {
+        harness
+            .text_rects
+            .iter()
+            .any(|(text, _)| text.ends_with(end))
+    };
+    assert!(line_ends(&harness, "· agents off"));
+    super::tests::type_key(&mut harness, egui::Key::A, "a");
+    assert!(matches!(
+        harness.app.dialog,
+        Some(crate::model::Dialog::AgentAccess(_))
+    ));
+    assert!(harness.has("agents · Shop · dev"));
+    // `j` to read, Enter sets it.
+    super::tests::type_key(&mut harness, egui::Key::J, "j");
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(harness.app.dialog.is_none());
+    assert_eq!(access_of(&harness, &conn), AgentAccess::Read);
+    harness.settle();
+    assert!(line_ends(&harness, "· agents read"));
+    // Esc leaves it as it was.
+    super::tests::type_key(&mut harness, egui::Key::A, "a");
+    super::tests::type_key(&mut harness, egui::Key::K, "k");
+    harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(harness.app.dialog.is_none());
+    assert_eq!(access_of(&harness, &conn), AgentAccess::Read);
+    // `t`: the connection's window, on its Agents tab.
+    super::tests::type_key(&mut harness, egui::Key::A, "a");
+    super::tests::type_key(&mut harness, egui::Key::T, "t");
+    let shown = harness.app.active_tab_id();
+    let workspace = harness.app.workspace(shown).expect("its window");
+    assert_eq!(workspace.conn_id, conn);
+    assert!(workspace.agents_in_front());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_editors_agents_part_sets_access_rows_and_timeout() {
+    for look in looks() {
+        let (mut harness, conn) = on_the_list(look);
+        harness.app.apply(Action::EditConnection(conn.clone()));
+        harness.settle();
+        harness.click(&look.label("Read"));
+        harness.settle();
+        harness.app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            access_of(&harness, &conn),
+            AgentAccess::Read,
+            "{}",
+            look.name
+        );
+        assert!(harness.app.agents_held.is_empty(), "{}", look.name);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn allow_agents_opens_the_editor_with_read_chosen() {
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        harness.app.settings.mcp_enabled = true;
+        harness.app.apply(Action::ShowAgents(tab));
+        harness.settle();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        if look.terminal {
+            super::tests::type_key(&mut harness, egui::Key::E, "e");
+        } else {
+            harness.click("Allow agents…");
+        }
+        harness.settle();
+        let Some(crate::model::Dialog::Connection(form)) = &harness.app.dialog else {
+            panic!("{}: no editor", look.name);
+        };
+        assert_eq!(form.agents.access, AgentAccess::Read, "{}", look.name);
+        // Nothing until Save.
+        assert_eq!(
+            access_of(&harness, &conn),
+            AgentAccess::Off,
+            "{}",
+            look.name
+        );
+        harness.app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            access_of(&harness, &conn),
+            AgentAccess::Read,
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_editor_opens_at_its_agents_part() {
+    for look in looks() {
+        // A short window, and a server's form: the part is under the fold.
+        let mut harness = Harness::with_size(egui::vec2(1280.0, 520.0));
+        harness.set_look(look);
+        let mut shop = crate::testing::fixture_connection();
+        let (spec, _) =
+            tabletist_db::ConnectSpec::from_url("postgres://demo@localhost:5432/bookshop").unwrap();
+        shop.spec = spec;
+        let conn = shop.id.clone();
+        harness.app.connections.upsert(shop);
+        harness.app.apply(Action::EditConnection(conn.clone()));
+        harness.settle();
+        let heading = if look.terminal {
+            look.label("Agents")
+        } else {
+            "Access through Tabletist (MCP)".to_owned()
+        };
+        let seen = |harness: &Harness| {
+            harness
+                .text_rects
+                .iter()
+                .any(|(text, rect)| *text == heading && rect.bottom() < harness.size.y - 120.0)
+        };
+        assert!(
+            !seen(&harness),
+            "{}: in sight without being asked",
+            look.name
+        );
+        harness.app.apply(Action::CloseDialog);
+        harness.app.apply(Action::EditAgents { conn, allow: false });
+        // A scroll is animated: it lands some frames on.
+        for _ in 0..20 {
+            harness.settle();
+        }
+        let shown = harness
+            .text_rects
+            .iter()
+            .rev()
+            .find(|(text, _)| *text == heading)
+            .map(|(_, rect)| *rect);
+        // In sight, above the dialog's footer.
+        let shown = shown.expect("the Agents part");
+        assert!(
+            shown.bottom() < harness.size.y - 120.0,
+            "{}: {shown:?}",
+            look.name
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_limits_are_in_sight_when_the_editor_opens_at_them() {
+    for (look, size) in [(Look::macos(), 600.0), (Look::omarchy(), 700.0)] {
+        let mut harness = Harness::with_size(egui::vec2(1280.0, size));
+        harness.set_look(look);
+        let mut shop = crate::testing::fixture_connection();
+        let (spec, _) =
+            tabletist_db::ConnectSpec::from_url("postgres://demo@localhost:5432/bookshop").unwrap();
+        shop.spec = spec;
+        let conn = shop.id.clone();
+        harness.app.connections.upsert(shop);
+        harness.app.apply(Action::EditAgents { conn, allow: false });
+        for _ in 0..20 {
+            harness.settle();
+        }
+        let rows = look.label("Rows per answer");
+        let shown = harness
+            .text_rects
+            .iter()
+            .rev()
+            .find(|(text, _)| *text == rows)
+            .map(|(_, rect)| *rect);
+        let shown = shown.unwrap_or_else(|| panic!("{}: no rows per answer", look.name));
+        assert!(
+            shown.bottom() < harness.size.y - 60.0,
+            "{}: {shown:?}",
+            look.name
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_enter_held_or_shifted_in_the_box_does_nothing_behind_it() {
+    use egui::{Key, Modifiers};
+    let (mut harness, conn) = on_the_list(Look::omarchy());
+    let windows = harness.app.tabs.len();
+    super::tests::type_key(&mut harness, Key::A, "a");
+    super::tests::type_key(&mut harness, Key::J, "j");
+    // Shift+Enter is no answer.
+    harness.press(Key::Enter, Modifiers::SHIFT);
+    assert_eq!(access_of(&harness, &conn), AgentAccess::Off);
+    assert!(harness.app.dialog.is_some());
+    // Enter held: it sets the level, and what it repeats connects nothing.
+    for _ in 0..4 {
+        harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+    }
+    harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+    harness.settle();
+    assert_eq!(access_of(&harness, &conn), AgentAccess::Read);
+    assert_eq!(harness.app.tabs.len(), windows);
+    assert!(
+        !harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, crate::backend::Command::Connect { .. }))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn no_allow_agents_is_offered_for_a_connection_saved_no_more() {
+    let (mut harness, tab) = connected(Look::omarchy());
+    harness.app.settings.mcp_enabled = true;
+    harness.app.apply(Action::ShowAgents(tab));
+    harness.settle();
+    let offered = |harness: &Harness| {
+        harness
+            .text_rects
+            .iter()
+            .any(|(text, _)| text.contains("allow agents"))
+    };
+    assert!(offered(&harness));
+    let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+    harness.app.connections.remove(&conn);
+    harness.settle();
+    assert!(!offered(&harness));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_agents_column_and_hint_step_back_where_the_window_has_no_room() {
+    // macOS at 1024: Last used stays clear of the row's buttons.
+    let mut harness = Harness::with_size(egui::vec2(1024.0, 700.0));
+    let mut shop = crate::testing::fixture_connection();
+    shop.name = "Shop".into();
+    let conn = shop.id.clone();
+    harness.app.connections.upsert(shop);
+    let tab = harness.app.active_tab_id();
+    harness.app.apply(Action::SelectConnection {
+        tab,
+        conn: Some(conn),
+    });
+    harness.settle();
+    let used = harness.painted_rect("Last used never").expect("last used");
+    let edit = harness.painted_rect("Edit").expect("Edit");
+    assert!(used.right() < edit.left(), "{used:?} {edit:?}");
+    // Omarchy at 720: the footer's hints stay clear of the keyring's note.
+    let (mut harness, _) = on_the_list(Look::omarchy());
+    harness.size = egui::vec2(720.0, 600.0);
+    harness.settle();
+    let note = harness.painted_rect("secrets: keyring").expect("the note");
+    let hints = harness
+        .text_rects
+        .iter()
+        .filter(|(_, rect)| {
+            (rect.center().y - note.center().y).abs() < 2.0 && rect.left() < note.left()
+        })
+        .map(|(_, rect)| rect.right())
+        .fold(0.0_f32, f32::max);
+    assert!(hints < note.left(), "{hints} {note:?}");
+}

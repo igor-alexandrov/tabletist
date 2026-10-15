@@ -56,6 +56,7 @@ list instead.
 | `yy` then `p` | Duplicate |
 | `dd` | Delete |
 | `/` | Filter the list |
+| `a` | What agents may do on the connection: `j` `k`, Enter to set it, `t` for its Agents tab, Esc |
 | Esc | Cancel connecting |
 
 {% include shot.html file="omarchy-connections" alt="The connection picker in the Omarchy look, with its keys along the bottom" %}
@@ -110,6 +111,7 @@ key. Nor has copying a whole row.
 | --- | --- |
 | `y` | Copy the command that connects an agent |
 | `o` | Turn the agent server on, while it is off |
+| `e` | Allow agents on this connection, while their access is off |
 | `j` / `k` | Move among the agents' sessions: those here, then those elsewhere |
 | `S` | Stop the selected session, wherever it works |
 | `X` | Stop every agent here, and turn this connection's access off |

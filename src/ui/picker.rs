@@ -152,6 +152,9 @@ fn ssh_label(connection: &SavedConnection) -> String {
     }
 }
 
+/// The terminal look's note at the footer's right.
+const TERMINAL_SECRETS: &str = "secrets: keyring";
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let locale = app.locale;
     let palette = app.palette;
@@ -238,6 +241,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         key(Command::MoveInConnections),
         key(Command::FilterConnections),
     );
+    let agent_access = key(Command::ChangeAgentAccess);
     let new = if look.terminal {
         ButtonSpec::new(&new_label)
             .primary()
@@ -337,7 +341,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let footer_side = if look.terminal { 12.0 } else { side };
     let small = widgets::secondary(&look);
     if look.terminal {
-        let hints = [
+        let mut hints = vec![
             (&moves, "move", true),
             (&connect, "connect / show", true),
             (&edit, "edit", true),
@@ -346,6 +350,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             (&delete, "delete", true),
             (&filter, "filter", true),
         ];
+        // Where agents can reach the app.
+        if crate::endpoint::AVAILABLE {
+            hints.push((&agent_access, "agent access", true));
+        }
+        // What does not fit beside the keyring's note gives way, from the
+        // end: the window may be as narrow as 720.
+        let note = widgets::measure(ui, Text::one(&look, small, TERMINAL_SECRETS, palette.dim));
+        let room = footer.width() - 2.0 * footer_side - note - 24.0;
+        while hints.len() > 1 && widgets::key_hints_width(ui, &hints, 16.0, &look, &palette) > room
+        {
+            hints.pop();
+        }
         widgets::key_hints(
             ui,
             (footer.left() + footer_side, footer_y),
@@ -369,7 +385,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let secrets = if look.terminal {
-        "secrets: keyring".to_owned()
+        TERMINAL_SECRETS.to_owned()
     } else if look.faces == theme::Faces::Plex {
         gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
     } else {
@@ -473,6 +489,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 Opening {
                                     tab,
                                     open: app.tab_showing(&connection.id),
+                                    agents: crate::endpoint::AVAILABLE
+                                        .then(|| app.agents_access(connection)),
                                 },
                                 skin,
                                 &mut actions,
@@ -503,6 +521,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 Opening {
                                     tab,
                                     open: app.tab_showing(&connection.id),
+                                    agents: crate::endpoint::AVAILABLE
+                                        .then(|| app.agents_access(connection)),
                                 },
                                 skin,
                                 &mut actions,
@@ -609,6 +629,9 @@ struct RowSkin<'a> {
 struct Opening {
     tab: crate::model::ConnTabId,
     open: Option<crate::model::ConnTabId>,
+    /// What agents may do on it, as in force; `None` where agents cannot
+    /// reach the app, which then shows nothing of them.
+    agents: Option<crate::connections::AgentAccess>,
 }
 
 impl Opening {
@@ -709,8 +732,62 @@ fn row_response(
         if item(ui, "Delete") {
             actions.push(Action::DeleteConnection(id.clone()));
         }
+        if let Some(access) = opening.agents {
+            agents_part(ui, &id, access, (look, palette, locale), actions);
+        }
     });
     response
+}
+
+/// The Agents part of a row's menus: what agents may do on it, the
+/// editor at its Agents part, and its Agents tab.
+fn agents_part(
+    ui: &mut egui::Ui,
+    conn: &ConnectionId,
+    access: crate::connections::AgentAccess,
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    actions: &mut Vec<Action>,
+) {
+    use crate::connections::AgentAccess;
+    menu::heading(ui, &gettext(locale, "Agents"), look, palette);
+    for (level, word) in [(AgentAccess::Off, "Off"), (AgentAccess::Read, "Read")] {
+        let text = gettext(locale, word);
+        let name = format!("{} {text}", gettext(locale, "Agents"));
+        if menu::Item::choice(&text, access == level)
+            .name(&name)
+            .show(ui, look, palette)
+            .clicked()
+            && access != level
+        {
+            actions.push(Action::SetAgentAccess {
+                conn: conn.clone(),
+                access: level,
+            });
+        }
+    }
+    let limits = gettext(locale, "Tables, columns and limits…");
+    if menu::Item::action(&limits)
+        .show(ui, look, palette)
+        .clicked()
+    {
+        actions.push(Action::EditAgents {
+            conn: conn.clone(),
+            allow: false,
+        });
+    }
+    let show = gettext(locale, "Show Agents tab");
+    if menu::Item::action(&show).show(ui, look, palette).clicked() {
+        actions.push(Action::ShowAgentsOn(conn.clone()));
+    }
+}
+
+/// What agents may do, in a word: Off or Read.
+fn agents_level(access: crate::connections::AgentAccess, locale: crate::i18n::Locale) -> String {
+    match access {
+        crate::connections::AgentAccess::Off => gettext(locale, "Off"),
+        crate::connections::AgentAccess::Read => gettext(locale, "Read"),
+    }
+    .into_owned()
 }
 
 /// The words on the button that chooses a row, and its accessible name:
@@ -800,12 +877,24 @@ fn mac_row(
     let bottom = rect.top() + 42.0;
     // The columns: a 6 pt bar, 300 for the name, the host taking the rest,
     // 150 for TLS and SSH, 190 for last use, 110 of room, 250 of actions.
-    let fixed = 6.0 + 300.0 + 150.0 + 190.0 + 110.0 + 250.0;
-    let host_width = (rect.width() - fixed).max(120.0);
+    // Where agents can reach the app, their 140 come out of the room and
+    // the host while the host keeps 160; in a narrower window the column
+    // steps back, and the row is as it was. The menu has the Agents part.
+    let rest = rect.width() - (6.0 + 300.0 + 150.0 + 190.0 + 250.0);
+    let agents_width = match opening.agents {
+        Some(_) if rest >= 140.0 + 160.0 => 140.0,
+        _ => 0.0,
+    };
+    let room = match agents_width > 0.0 {
+        true => (rest - 140.0 - 160.0).min(110.0),
+        false => 110.0,
+    };
+    let host_width = (rest - agents_width - room).max(120.0);
     let name_x = rect.left() + 6.0 + 16.0;
     let host_x = rect.left() + 306.0 + 12.0;
     let security_x = rect.left() + 306.0 + host_width + 12.0;
-    let used_x = rect.left() + 306.0 + host_width + 150.0 + 12.0;
+    let agents_x = security_x + 150.0;
+    let used_x = agents_x + agents_width;
     let name_width = widgets::paint_text(
         ui,
         name_x,
@@ -907,6 +996,24 @@ fn mac_row(
         bottom,
         Text::one(look, small, &ssh_label(connection), palette.dim),
     );
+    // What agents may do: the word over the level, dimmed when Off.
+    if let Some(access) = opening.agents.filter(|_| agents_width > 0.0) {
+        let level = agents_level(access, locale);
+        let color = match access {
+            crate::connections::AgentAccess::Off => palette.dim,
+            crate::connections::AgentAccess::Read => palette.text,
+        };
+        let word = gettext(locale, "Agents");
+        widgets::paint_label(
+            ui,
+            agents_x,
+            top,
+            Text::one(look, small, &word, palette.dim),
+        );
+        widgets::paint_label(ui, agents_x, bottom, Text::one(look, small, &level, color));
+        let place = Rect::from_min_max(pos2(agents_x, rect.top()), pos2(used_x, rect.bottom()));
+        widgets::announce(ui, place, &format!("{word} {level}"));
+    }
     let when = crate::connections::when(store.last_used(&connection.id), now);
     widgets::paint_label(
         ui,
@@ -999,6 +1106,9 @@ fn mac_row(
             .clicked()
         {
             actions.push(Action::DeleteConnection(id.clone()));
+        }
+        if let Some(access) = opening.agents {
+            agents_part(ui, &id, access, (look, palette, locale), actions);
         }
     });
 }
@@ -1095,6 +1205,21 @@ fn terminal_row(
         Some(ssh) => format!("ssh {}", ssh.host),
         None => "no ssh".into(),
     };
+    // What agents may do, at the line's end: "· agents read".
+    let (agents, agents_color) = match opening.agents {
+        Some(access) => (
+            format!(
+                " · {} {}",
+                gettext(locale, "agents"),
+                agents_level(access, locale).to_lowercase()
+            ),
+            match access {
+                crate::connections::AgentAccess::Off => palette.dim,
+                crate::connections::AgentAccess::Read => palette.text,
+            },
+        ),
+        None => (String::new(), palette.dim),
+    };
     // "dev@localhost:5433/bookshop_development · tls verify-full · no ssh",
     // the separators kept with their neighbours as the design writes them.
     widgets::paint_label(
@@ -1106,7 +1231,8 @@ fn terminal_row(
             .space(small, " ")
             .add(small, &tls, tls_color)
             .space(small, " ")
-            .add(small, &format!("· {ssh}"), palette.dim),
+            .add(small, &format!("· {ssh}"), palette.dim)
+            .add(small, &agents, agents_color),
     );
     let when = crate::connections::when(store.last_used(&connection.id), now).to_lowercase();
     widgets::paint_text_right(
@@ -1156,6 +1282,7 @@ mod tests {
         let closed = Opening {
             tab: picker,
             open: None,
+            agents: None,
         };
         assert!(connects(closed.choose(&connection)));
         // Open: choosing it shows that tab, and it can still connect again
@@ -1163,6 +1290,7 @@ mod tests {
         let opened = Opening {
             tab: picker,
             open: Some(open),
+            agents: None,
         };
         assert!(matches!(
             opened.choose(&connection),

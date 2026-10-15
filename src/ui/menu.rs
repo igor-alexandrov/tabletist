@@ -309,6 +309,23 @@ impl<'a> Item<'a> {
     }
 }
 
+/// A heading over a part of a menu: a rule above it and its words muted,
+/// with nothing to pick (the Connections list's Agents part).
+pub fn heading(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) {
+    let shape = Shape::of(ui, look);
+    let role = widgets::secondary(look);
+    let width = 2.0 * shape.inset + role.width(ui.ctx(), look.faces, text);
+    let (rect, _) = ui.allocate_at_least(vec2(width, shape.height), Sense::hover());
+    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.border);
+    widgets::paint_text(
+        ui,
+        rect.left() + shape.inset,
+        rect.center().y,
+        Text::one(look, role, text, palette.dim),
+    );
+    widgets::announce(ui, rect, text);
+}
+
 /// A menu's rows: no room between them, at least `width` across, and a
 /// scroll bar once they are taller than the look lets a menu grow.
 fn rows<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
