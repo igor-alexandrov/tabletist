@@ -64,6 +64,10 @@ pub struct Settings {
     pub mcp_enabled: bool,
     /// Days the log of agents' calls keeps a call.
     pub mcp_log_days: u32,
+    /// Whether an agent that connects is told of: a notification, or on
+    /// macOS the Dock's bounce. The Agents entry says who is here either
+    /// way.
+    pub mcp_notify: bool,
 }
 
 /// A key of the settings file.
@@ -78,12 +82,13 @@ pub enum Key {
     SqlTimeoutSecs,
     McpEnabled,
     McpLogDays,
+    McpNotify,
     Theme,
 }
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 10] = [
+    pub const ALL: [Key; 11] = [
         Self::PageSize,
         Self::Timestamps,
         Self::GroupDigits,
@@ -93,6 +98,7 @@ impl Key {
         Self::SqlTimeoutSecs,
         Self::McpEnabled,
         Self::McpLogDays,
+        Self::McpNotify,
         Self::Theme,
     ];
 
@@ -108,6 +114,7 @@ impl Key {
             Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
             Self::McpEnabled => ("mcp", "enabled"),
             Self::McpLogDays => ("mcp", "log_days"),
+            Self::McpNotify => ("mcp", "notify"),
             Self::Theme => ("appearance", "theme"),
         }
     }
@@ -487,6 +494,7 @@ impl Settings {
             Key::SqlTimeoutSecs => self.sql_timeout_secs.unwrap_or(0).to_string(),
             Key::McpEnabled => self.mcp_enabled.to_string(),
             Key::McpLogDays => self.mcp_log_days.to_string(),
+            Key::McpNotify => self.mcp_notify.to_string(),
             Key::Theme => toml_string(self.custom_theme.as_deref()?),
         })
     }
@@ -562,6 +570,7 @@ impl Settings {
             Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
             Key::McpEnabled => flag.map(|flag| self.mcp_enabled = flag),
             Key::McpLogDays => number.map(|number| self.mcp_log_days = number),
+            Key::McpNotify => flag.map(|flag| self.mcp_notify = flag),
             Key::Theme => text.map(|name| self.custom_theme = Some(name.to_owned())),
         }
         .is_some()
@@ -718,6 +727,7 @@ impl Default for Settings {
             sql_timeout_secs: Some(30),
             mcp_enabled: false,
             mcp_log_days: 30,
+            mcp_notify: true,
         }
     }
 }
@@ -775,6 +785,7 @@ sql_timeout_secs = 30  # 0 waits forever
 [mcp]
 enabled  = false
 log_days = 30
+notify   = true
 "
         );
     }
@@ -823,6 +834,7 @@ log_days = 30
             sql_timeout_secs: None,
             mcp_enabled: true,
             mcp_log_days: 7,
+            mcp_notify: false,
         };
         let text = settings.to_toml();
         let loaded = Settings::from_toml(&text);
@@ -849,6 +861,7 @@ log_days = 30
                 (Key::SqlTimeoutSecs, 13),
                 (Key::McpEnabled, 16),
                 (Key::McpLogDays, 17),
+                (Key::McpNotify, 18),
             ]
         );
     }

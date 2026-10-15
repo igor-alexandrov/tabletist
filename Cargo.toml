@@ -113,6 +113,10 @@ notify = "8.2"
 jiff = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Notifications on the desktop (mako on Omarchy), for an agent that
+# connects. The version and the features the keyring store already brings
+# in: nothing new is built.
+zbus = "5"
 # The desktop's Secret Service (GNOME Keyring, KWallet) over D-Bus.
 zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-crypto-rust"] }
 # The Secret Service itself, which the store above is built on, with the

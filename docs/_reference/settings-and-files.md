@@ -45,6 +45,7 @@ sql_timeout_secs = 30
 [mcp]
 enabled = false
 log_days = 30
+notify = true
 ```
 
 | Key | Values | Default |
@@ -59,8 +60,9 @@ log_days = 30
 | `appearance.theme` | The name of a palette file in the `themes` folder | Not set |
 | `mcp.enabled` | `true` lets agents reach the connections you open to them, through `tabletist mcp`. Linux and macOS | `false` |
 | `mcp.log_days` | 1 to 3650 days. How long the log of agents' calls keeps a call | `30` |
+| `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS | `true` |
 
-`show_system_schemas`, `theme` and the two `mcp` keys are set only in the
+`show_system_schemas`, `theme` and the three `mcp` keys are set only in the
 file. The SQL
 editor's **Limit** and **Timeout** menus set the two `editor` keys.
 

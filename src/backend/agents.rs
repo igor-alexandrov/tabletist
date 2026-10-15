@@ -29,6 +29,8 @@ use crate::secrets::{Keyring, password_account, ssh_account};
 
 #[cfg(unix)]
 mod listen;
+#[cfg(target_os = "linux")]
+mod notify;
 
 /// A connection agents may use, as the server is given it: what opens it,
 /// and what an agent calls it. Its password is not here: the gateway reads
@@ -157,6 +159,9 @@ pub enum AgentsCommand {
         before: Option<i64>,
         asked: u64,
     },
+    /// Tells the person an agent connected, where the desktop takes a
+    /// notification (Linux). Its Review is [`AgentsEvent::Reviewed`].
+    Notify { summary: String, body: String },
     /// Stops it: every session ends, and the connections are closed.
     /// Answered with [`AgentsEvent::Stopped`].
     Stop,
@@ -185,6 +190,8 @@ pub enum AgentsEvent {
         asked: u64,
         page: Result<tabletist_mcp::Page, String>,
     },
+    /// The person clicked Review on a notification.
+    Reviewed,
 }
 
 /// How many calls a page of the log holds.
@@ -263,6 +270,12 @@ impl Agents {
                     let page = read_log(log, connection, before).await;
                     outbox.emit(super::Event::Agents(AgentsEvent::LogRead { asked, page }));
                 });
+            }
+            AgentsCommand::Notify { summary, body } => {
+                #[cfg(target_os = "linux")]
+                tokio::spawn(notify::notify(summary, body, outbox.clone()));
+                #[cfg(not(target_os = "linux"))]
+                let _ = (summary, body);
             }
             AgentsCommand::StopSession(id) => {
                 if let Some(running) = lock(&self.running).as_ref()

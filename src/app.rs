@@ -119,6 +119,9 @@ pub struct App {
     theme_changed: bool,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
+    /// What the next frame asks of the window: to come forward, or the
+    /// Dock's bounce.
+    pub window_asks: Vec<egui::ViewportCommand>,
     /// SQL editors closed since the last frame: what egui keeps for each
     /// (its undo history holds copies of the script) is dropped once a
     /// frame has the `egui::Context` to drop it from.
@@ -201,6 +204,7 @@ impl App {
             follow_desktop: false,
             theme_changed: false,
             window_title: "Tabletist".into(),
+            window_asks: Vec::new(),
             closed_editors: Vec::new(),
             lookup_delay: crate::key_picker::DELAY,
             lookups: Vec::new(),
@@ -2926,6 +2930,7 @@ impl App {
                 AgentsEvent::Started { kept_aside: None } => {}
                 // What a server said as it stopped is not the server now.
                 AgentsEvent::Sessions(open) if self.agents_on() => {
+                    self.tell_of_sessions(&open);
                     self.agents.sessions = open;
                 }
                 AgentsEvent::Sessions(_) => {}
@@ -2935,6 +2940,7 @@ impl App {
                     self.log_called(on.as_deref());
                 }
                 AgentsEvent::LogRead { asked, page } => self.agents_log_read(asked, page),
+                AgentsEvent::Reviewed => self.reviewed(),
                 AgentsEvent::Started {
                     kept_aside: Some(path),
                 } => {
@@ -3892,6 +3898,63 @@ impl App {
         }
     }
 
+    /// Tells the person of each session that opened with its agent named,
+    /// once: a notification on Linux, the Dock's bounce on macOS, while
+    /// `[mcp] notify` is on.
+    fn tell_of_sessions(&mut self, open: &[tabletist_mcp::SessionInfo]) {
+        self.agents
+            .told
+            .retain(|id| open.iter().any(|session| session.id == *id));
+        let mut new = Vec::new();
+        for session in open {
+            if session.agent.is_some() && self.agents.told.insert(session.id.clone()) {
+                new.push(crate::model::agent_name(session));
+            }
+        }
+        if new.is_empty() || !self.settings.mcp_notify {
+            return;
+        }
+        if cfg!(target_os = "macos") {
+            self.window_asks
+                .push(egui::ViewportCommand::RequestUserAttention(
+                    egui::UserAttentionType::Informational,
+                ));
+        }
+        for agent in new {
+            let summary = crate::i18n::gettext(self.locale, "{agent} connected to Tabletist")
+                .replace("{agent}", &agent);
+            let body = crate::i18n::gettext(
+                self.locale,
+                "It can use the connections you allow agents. Review shows what it does.",
+            )
+            .into_owned();
+            self.backend
+                .send(Command::Agents(AgentsCommand::Notify { summary, body }));
+        }
+    }
+
+    /// The person clicked Review: Tabletist comes forward, on the Agents
+    /// tab of the window in front, or on Connections where none is open
+    /// (question 22). A new agent is on no connection yet: it is under
+    /// "Also:" there.
+    fn reviewed(&mut self) {
+        self.window_asks.push(egui::ViewportCommand::Focus);
+        // The window in front; with Connections in front, the last window
+        // there is.
+        let front = self.active_tab_id();
+        let tab = match self.workspace(front) {
+            Some(_) => Some(front),
+            None => self.open_connections().last().map(|(tab, _)| tab),
+        };
+        match tab {
+            Some(tab) => {
+                self.apply(Action::ActivateConnTab(tab));
+                self.apply(Action::ShowAgents(tab));
+            }
+            None => self.apply(Action::ShowConnections),
+        }
+    }
+
     /// Stops one agent's session. Its line goes when the backend says the
     /// sessions again.
     fn stop_agent_session(&mut self, id: String) {
@@ -4796,6 +4859,9 @@ impl App {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
+        }
+        for ask in self.window_asks.drain(..) {
+            ui.ctx().send_viewport_cmd(ask);
         }
         // Asked every frame until the window goes: a window that is
         // closing has nothing else to do.
@@ -6483,6 +6549,61 @@ mod tests {
         let page = Ok(log_page(&conn, 4, 4, false));
         app.apply_event(Event::Agents(AgentsEvent::LogRead { asked, page }));
         assert_ne!(log_asked(&app).unwrap().2, asked);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_that_connects_is_told_of_once_and_review_shows_the_tab() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        app.settings.mcp_enabled = true;
+        app.check_agents();
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
+        let notified = |app: &App| {
+            agents_sent(app)
+                .into_iter()
+                .filter_map(|sent| match sent {
+                    AgentsCommand::Notify { summary, .. } => Some(summary.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut session = agent_session("one", &[]);
+        session.agent = None;
+        // Not before its agent is named.
+        app.apply_event(Event::Agents(AgentsEvent::Sessions(vec![session.clone()])));
+        assert_eq!(notified(&app), Vec::<String>::new());
+        session.agent = Some("Claude Code".into());
+        for _ in 0..2 {
+            app.apply_event(Event::Agents(AgentsEvent::Sessions(vec![session.clone()])));
+        }
+        assert_eq!(notified(&app), ["Claude Code connected to Tabletist"]);
+        assert_eq!(
+            app.window_asks
+                .contains(&egui::ViewportCommand::RequestUserAttention(
+                    egui::UserAttentionType::Informational
+                )),
+            cfg!(target_os = "macos")
+        );
+        // Off in the settings: nobody is told.
+        app.settings.mcp_notify = false;
+        let other = agent_session("two", &[]);
+        app.apply_event(Event::Agents(AgentsEvent::Sessions(vec![session, other])));
+        assert_eq!(notified(&app).len(), 1);
+        // Review: the app comes forward, on the Agents tab of the window
+        // in front.
+        app.window_asks.clear();
+        app.apply_event(Event::Agents(AgentsEvent::Reviewed));
+        assert_eq!(app.window_asks, [egui::ViewportCommand::Focus]);
+        assert!(app.workspace(tab).unwrap().agents_in_front());
+        // With Connections in front, the window there is.
+        app.apply(Action::ShowConnections);
+        app.apply_event(Event::Agents(AgentsEvent::Reviewed));
+        assert_eq!(app.active_tab_id(), tab);
+        // With none open, Connections.
+        app.apply(Action::Disconnect(tab));
+        app.apply_event(Event::Agents(AgentsEvent::Reviewed));
+        assert!(app.workspace(app.active_tab_id()).is_none());
     }
 
     #[test]

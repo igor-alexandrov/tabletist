@@ -5711,6 +5711,7 @@ dependencies = [
  "windows-native-keyring-store",
  "winit",
  "winresource",
+ "zbus",
  "zbus-secret-service-keyring-store",
 ]
 

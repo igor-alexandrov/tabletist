@@ -2645,6 +2645,9 @@ pub struct AgentsState {
     /// The last [`FEED_KEPT`] calls, on every connection. The log has
     /// them all.
     pub feed: std::collections::VecDeque<tabletist_mcp::Call>,
+    /// The open sessions the person was told of: one notification for
+    /// each session, not for each call.
+    pub told: std::collections::BTreeSet<String>,
 }
 
 /// How many calls the app keeps for the feed.
