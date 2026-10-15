@@ -334,6 +334,10 @@ commands! {
     ShowAgents,
     CopyAgentCommand,
     TurnAgentsOn,
+    MoveInAgentSessions,
+    StopAgentSession,
+    StopAgentsHere,
+    ShowAgentsElsewhere,
     ToggleSidebar,
     PaneLeft,
     PaneDown,
@@ -571,6 +575,16 @@ impl Command {
                 agents(info("Copy the command that connects an agent", "", Window))
             }
             C::TurnAgentsOn => agents(info("Turn the agent server on", "", Window)),
+            C::MoveInAgentSessions => agents(info("Move in the agents' sessions", "", Window)),
+            C::StopAgentSession => agents(info("Stop the selected agent's session", "", Window)),
+            C::StopAgentsHere => agents(info(
+                "Stop the agents here, and turn their access off",
+                "",
+                Window,
+            )),
+            C::ShowAgentsElsewhere => {
+                agents(info("Show where the selected agent works", "", Window))
+            }
             C::ToggleSidebar => info("Toggle sidebar", "Toggle sidebar", Navigation),
             C::PaneLeft => info("Pane to the left", PANES, Navigation),
             C::PaneDown => info("Pane below", PANES, Navigation).reserved(),
@@ -956,6 +970,15 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ShowAgents, TREE_AND_GRID, NONE, keys(&[k("ga")])),
         bind(C::CopyAgentCommand, AGENTS, NONE, keys(&[k("y")])),
         bind(C::TurnAgentsOn, AGENTS, NONE, keys(&[k("o")])),
+        bind(
+            C::MoveInAgentSessions,
+            AGENTS,
+            NONE,
+            keys(&[k("j"), k("k")]).shown("j/k"),
+        ),
+        bind(C::StopAgentSession, AGENTS, NONE, keys(&[k("S")])),
+        bind(C::StopAgentsHere, AGENTS, NONE, keys(&[k("X")])),
+        bind(C::ShowAgentsElsewhere, AGENTS, NONE, keys(&[k("enter")])),
         bind(
             C::ToggleSidebar,
             GLOBAL,
