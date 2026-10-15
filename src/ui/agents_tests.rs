@@ -1032,6 +1032,48 @@ fn the_list_says_what_agents_may_do_and_its_menu_changes_it() {
 
 #[cfg(unix)]
 #[test]
+fn the_lists_menu_shows_the_agents_tab() {
+    let (mut harness, conn) = on_the_list(Look::macos());
+    harness.click("More actions for Shop");
+    harness.settle();
+    harness.click("Show Agents tab");
+    harness.settle();
+    let shown = harness.app.active_tab_id();
+    let workspace = harness.app.workspace(shown).expect("its window");
+    assert_eq!(workspace.conn_id, conn);
+    assert!(workspace.agents_in_front());
+}
+
+/// Types `text` over what the editor's field labelled `label` holds: the
+/// field is found by the label that names it, as a screen reader finds it.
+#[cfg(unix)]
+fn type_over(harness: &mut Harness, label: &str, text: &str) {
+    use egui::accesskit::Role;
+    let tree = harness.settle();
+    let named = crate::testing::node(&tree, label, Role::Label)
+        .unwrap_or_else(|| panic!("no label {label:?}"));
+    let field = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::TextInput && node.labelled_by().contains(&named))
+        .map(|(id, _)| *id)
+        .unwrap_or_else(|| panic!("no field labelled {label:?}"));
+    harness.frame(vec![egui::Event::AccessKitActionRequest(
+        egui::accesskit::ActionRequest {
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: field,
+            action: egui::accesskit::Action::Focus,
+            data: None,
+        },
+    )]);
+    harness.settle();
+    harness.press(egui::Key::A, egui::Modifiers::COMMAND);
+    harness.frame(vec![egui::Event::Text(text.into())]);
+    harness.settle();
+}
+
+#[cfg(unix)]
+#[test]
 fn omarchys_box_sets_what_agents_may_do_from_the_list() {
     let (mut harness, conn) = on_the_list(Look::omarchy());
     // At the end of the row's line.
@@ -1075,14 +1117,29 @@ fn omarchys_box_sets_what_agents_may_do_from_the_list() {
 fn the_editors_agents_part_sets_access_rows_and_timeout() {
     for look in looks() {
         let (mut harness, conn) = on_the_list(look);
-        harness.app.apply(Action::EditConnection(conn.clone()));
-        harness.settle();
+        harness.app.apply(Action::EditAgents {
+            conn: conn.clone(),
+            allow: false,
+        });
+        // A scroll is animated: it lands some frames on.
+        for _ in 0..20 {
+            harness.settle();
+        }
         harness.click(&look.label("Read"));
         harness.settle();
+        type_over(&mut harness, &look.label("Rows per answer"), "50");
+        let timeout = if look.terminal {
+            "Timeout, seconds"
+        } else {
+            "Statement timeout, seconds"
+        };
+        type_over(&mut harness, &look.label(timeout), "30");
         harness.app.apply(Action::SaveConnection { connect: false });
+        let agents = &harness.app.connections.get(&conn).unwrap().agents;
+        assert_eq!(agents.access, AgentAccess::Read, "{}", look.name);
         assert_eq!(
-            access_of(&harness, &conn),
-            AgentAccess::Read,
+            (agents.rows, agents.timeout_secs),
+            (50, 30),
             "{}",
             look.name
         );
