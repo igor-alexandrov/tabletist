@@ -9,6 +9,10 @@ pub mod agents;
 #[cfg(test)]
 #[cfg(unix)]
 mod agents_tests;
+// Settings › Agents, which is listed where agents can reach the app.
+#[cfg(test)]
+#[cfg(unix)]
+mod agent_settings_tests;
 pub mod cell_editor;
 #[cfg(test)]
 mod complete_tests;

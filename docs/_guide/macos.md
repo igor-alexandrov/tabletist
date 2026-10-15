@@ -1,7 +1,7 @@
 ---
 title: Tabletist on macOS
 description: How Tabletist looks and works on a Mac, the keys of the macOS look, the Keychain, and where its files are.
-nav_order: 7
+nav_order: 8
 ---
 
 On a Mac, Tabletist has the macOS look: rounded controls, IBM Plex Sans

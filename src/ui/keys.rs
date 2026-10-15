@@ -2201,8 +2201,9 @@ fn letters(
                     true,
                 )
             })
-            .count
-            > 0
+            // A press, not what a held Enter repeats: one held on Settings'
+            // status row shows this tab and goes no further.
+            .fresh
     {
         actions.push(Action::ShowAgentsOn(conn));
     }
@@ -2257,6 +2258,20 @@ fn letters(
             }
             (Some(Command::TurnAgentsOn), _) if agents_shows(app, tab, true) => {
                 actions.push(Action::TurnAgentsOn);
+            }
+            // Settings… with the server off, Other agents… with nobody
+            // here: both are Settings › Agents.
+            (Some(Command::ShowAgentSettings), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Activity)
+                    && matches!(
+                        app.agents_here(tab),
+                        Some(
+                            crate::model::AgentsHere::ServerOff
+                                | crate::model::AgentsHere::NoneConnected
+                        )
+                    ) =>
+            {
+                actions.push(Action::ShowAgentSettings);
             }
             (Some(Command::AllowAgents), _)
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Activity)

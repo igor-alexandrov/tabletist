@@ -343,6 +343,7 @@ commands! {
     ShowAgentsLog,
     ToggleAgentsLogScope,
     AllowAgents,
+    ShowAgentSettings,
     ChangeAgentAccess,
     MoveInAgentLevels,
     ShowAgentsFromBox,
@@ -491,6 +492,9 @@ commands! {
     SettingsOpenFile,
     SettingsReset,
     SettingsClose,
+    SettingsPane,
+    SettingsOpenRow,
+    SettingsCopyCommand,
     QuickOpenMove,
     QuickOpenPick,
     QuickOpenClose,
@@ -595,6 +599,7 @@ impl Command {
             }
             C::ShowAgentsLog => agents(info("Show the log, or what agents do now", "", Window)),
             C::AllowAgents => agents(info("Allow agents on this connection…", "", Window)),
+            C::ShowAgentSettings => agents(info("Show the agents' settings", "", Window)),
             C::ChangeAgentAccess => agents(info(
                 "Change what agents may do on the connection",
                 "",
@@ -780,6 +785,17 @@ impl Command {
             C::SettingsOpenFile => info("Open the settings file in $EDITOR", "", Prompts),
             C::SettingsReset => info("Reset the option", "", Prompts),
             C::SettingsClose => info("Close the settings", "", Prompts),
+            C::SettingsPane => info(
+                "Show the next or the previous pane of the settings",
+                "",
+                Prompts,
+            ),
+            C::SettingsOpenRow => info("Open what the settings' row shows", "", Prompts),
+            C::SettingsCopyCommand => agents(info(
+                "Copy the command that connects an agent, in the settings",
+                "",
+                Prompts,
+            )),
             C::QuickOpenMove => info("Move in quick open", "", Prompts),
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
@@ -1005,6 +1021,7 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ShowAgentsLog, AGENTS, NONE, keys(&[k("l")])),
         bind(C::ToggleAgentsLogScope, AGENTS, NONE, keys(&[k("L")])),
         bind(C::AllowAgents, AGENTS, NONE, keys(&[k("e")])),
+        bind(C::ShowAgentSettings, AGENTS, NONE, keys(&[k("s")])),
         bind(C::ChangeAgentAccess, CONNECTIONS, NONE, keys(&[k("a")])),
         bind(
             C::MoveInAgentLevels,
@@ -1710,6 +1727,15 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SettingsToggle, PROMPT, NONE, keys(&[k("space")])).when(When::SettingsScreen),
         bind(C::SettingsOpenFile, PROMPT, NONE, keys(&[k("ctrl+e")])).when(When::SettingsScreen),
         bind(C::SettingsReset, PROMPT, NONE, keys(&[k("R")])).when(When::SettingsScreen),
+        bind(
+            C::SettingsPane,
+            PROMPT,
+            NONE,
+            keys(&[k("ctrl+h"), k("ctrl+l")]).shown("ctrl+h/l"),
+        )
+        .when(When::SettingsScreen),
+        bind(C::SettingsOpenRow, PROMPT, NONE, keys(&[k("enter")])).when(When::SettingsScreen),
+        bind(C::SettingsCopyCommand, PROMPT, NONE, keys(&[k("y")])).when(When::SettingsScreen),
         bind(
             C::SettingsClose,
             PROMPT,

@@ -26,6 +26,13 @@ pub fn copy_command(ctx: &egui::Context, locale: crate::i18n::Locale) {
     }
 }
 
+/// What the Nobody here state's buttons ask for.
+enum NoneAsk {
+    /// Other agents…: Settings › Agents.
+    Settings,
+    Log,
+}
+
 /// A segment of the macOS look's Activity and Log switch.
 const SEGMENT: f32 = 64.0;
 
@@ -97,6 +104,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .keymap
         .key(layout, crate::keymap::Command::CopyAgentCommand);
     let on_key = app.keymap.key(layout, crate::keymap::Command::TurnAgentsOn);
+    let settings_key = app
+        .keymap
+        .key(layout, crate::keymap::Command::ShowAgentSettings);
     let stop_key = app
         .keymap
         .key(layout, crate::keymap::Command::StopAgentSession);
@@ -239,10 +249,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             "Turn it on to let agents like Claude Code use the connections you allow. It runs only while Tabletist is open, on this computer.",
                         ),
                     };
-                    let label = gettext(locale, "Turn on");
-                    let button = states::key_button(&label, &on_key, &look).primary();
-                    if states::empty(ui, rect, &notice, vec![button], &look, &palette).is_some() {
-                        actions.push(Action::TurnAgentsOn);
+                    let (settings_label, label) =
+                        (gettext(locale, "Settings…"), gettext(locale, "Turn on"));
+                    let buttons = vec![
+                        states::key_button(&settings_label, &settings_key, &look),
+                        states::key_button(&label, &on_key, &look).primary(),
+                    ];
+                    match states::empty(ui, rect, &notice, buttons, &look, &palette) {
+                        Some(0) => actions.push(Action::ShowAgentSettings),
+                        Some(_) => actions.push(Action::TurnAgentsOn),
+                        None => {}
                     }
                 }
                 AgentsHere::OffHere => {
@@ -286,22 +302,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         .frame(Frame::new().fill(palette.window))
                         .show(ui, |ui| {
                             let rect = ui.max_rect();
-                            let keys = (&copy_key, &log_key);
+                            let keys = (&copy_key, &log_key, &settings_key);
                             let said = (&connection[..], &name[..], &access[..]);
                             let style = (&look, &palette, locale);
-                            if none_connected(ui, rect, said, keys, style) {
-                                let view = AgentsView::Log;
-                                actions.push(Action::ShowAgentsView { tab, view });
+                            match none_connected(ui, rect, said, keys, style) {
+                                Some(NoneAsk::Log) => {
+                                    let view = AgentsView::Log;
+                                    actions.push(Action::ShowAgentsView { tab, view });
+                                }
+                                Some(NoneAsk::Settings) => actions.push(Action::ShowAgentSettings),
+                                None => {}
                             }
                         });
                 }
                 AgentsHere::NoneConnected => {
                     let name = app.workspace(tab).map(|w| w.name.clone()).unwrap_or_default();
-                    let keys = (&copy_key, &log_key);
+                    let keys = (&copy_key, &log_key, &settings_key);
                     let said = (&connection[..], &name[..], &access[..]);
-                    if none_connected(ui, rect, said, keys, (&look, &palette, locale)) {
-                        let view = AgentsView::Log;
-                        actions.push(Action::ShowAgentsView { tab, view });
+                    match none_connected(ui, rect, said, keys, (&look, &palette, locale)) {
+                        Some(NoneAsk::Log) => {
+                            let view = AgentsView::Log;
+                            actions.push(Action::ShowAgentsView { tab, view });
+                        }
+                        Some(NoneAsk::Settings) => actions.push(Action::ShowAgentSettings),
+                        None => {}
                     }
                 }
                 AgentsHere::Connected { .. } if look.terminal => {
@@ -381,16 +405,20 @@ fn status_bar(
 }
 
 /// Nobody here: how to connect an agent, the command with Copy beside it,
-/// and what agents may do on this connection. Centred under an icon tile,
-/// or in the terminal look from the top left without one, as an empty
-/// state is (`states::empty`).
+/// and what agents may do on this connection, with Other agents… and Show
+/// log under them. Centred under an icon tile, or in the terminal look
+/// from the top left without one, as an empty state is (`states::empty`).
 fn none_connected(
     ui: &mut egui::Ui,
     rect: Rect,
     (connection, name, access): (&str, &str, &str),
-    (copy_key, log_key): (&crate::keymap::Written, &crate::keymap::Written),
+    (copy_key, log_key, settings_key): (
+        &crate::keymap::Written,
+        &crate::keymap::Written,
+        &crate::keymap::Written,
+    ),
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
-) -> bool {
+) -> Option<NoneAsk> {
     let ctx = ui.ctx().clone();
     let terminal = look.terminal;
     let room = (rect.width() - 2.0 * states::INSET).max(0.0);
@@ -506,13 +534,27 @@ fn none_connected(
         Rect::from_min_size(pos2(facts_left, y), facts.size()),
         &format!("{on_this}: {access_word} {access}"),
     );
-    // Under them, the calls agents made here before.
+    // Under them, how to connect other agents, and the calls agents made
+    // here before.
     y += facts.height() + 18.0;
-    let label = gettext(locale, "Show log");
+    let (other_label, label) = (
+        gettext(locale, "Other agents…"),
+        gettext(locale, "Show log"),
+    );
+    let other = states::key_button(&other_label, settings_key, look);
     let show = states::key_button(&label, log_key, look);
-    let width = show.width(ui, look);
-    let at = Rect::from_min_size(pos2(left(width), y), vec2(width, height));
-    show.show_at(ui, at, look, palette).clicked()
+    let (other_width, width) = (other.width(ui, look), show.width(ui, look));
+    let both = other_width + 8.0 + width;
+    let at = Rect::from_min_size(pos2(left(both), y), vec2(other_width, height));
+    let mut asked = other
+        .show_at(ui, at, look, palette)
+        .clicked()
+        .then_some(NoneAsk::Settings);
+    let at = Rect::from_min_size(pos2(at.right() + 8.0, y), vec2(width, height));
+    if show.show_at(ui, at, look, palette).clicked() {
+        asked = Some(NoneAsk::Log);
+    }
+    asked
 }
 
 /// A session that works elsewhere, as "Also:" names it: its agent, and

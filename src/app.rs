@@ -1608,18 +1608,61 @@ impl App {
                     self.dialog = Some(Dialog::Settings(Box::default()));
                 }
             }
+            Action::ShowAgentSettings => {
+                // From the Agents tab: there is nothing of agents to show
+                // where they cannot reach the app.
+                if crate::endpoint::AVAILABLE && matches!(self.dialog, None | Some(Dialog::Help)) {
+                    self.dialog = Some(Dialog::Settings(Box::new(crate::model::SettingsDialog {
+                        pane: crate::model::SettingsPane::Agents,
+                        ..Default::default()
+                    })));
+                }
+            }
+            Action::ShowSettingsPane(pane) => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog
+                    && crate::model::SettingsPane::listed().contains(&pane)
+                    && dialog.pane != pane
+                {
+                    dialog.pane = pane;
+                    dialog.row = 0;
+                    // The question was about the other pane's options.
+                    dialog.resetting = false;
+                }
+            }
+            Action::ChooseAgentSetup(agent) => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    dialog.agent = agent;
+                }
+            }
+            Action::ShowAgentsFromSettings(view) => {
+                if !matches!(self.dialog, Some(Dialog::Settings(_))) {
+                    return;
+                }
+                let Some(tab) = self.agents_window() else {
+                    return;
+                };
+                self.dialog = None;
+                self.apply(Action::ActivateConnTab(tab));
+                self.apply(Action::ShowAgents(tab));
+                self.apply(Action::ShowAgentsView { tab, view });
+            }
             Action::MoveSettingsRow(by) => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
-                    let last = crate::settings::OptionId::ALL.len() - 1;
+                    let last = dialog.pane.rows().len() - 1;
                     dialog.row = dialog.row.saturating_add_signed(by).min(last);
                 }
             }
             Action::SelectSettingsRow(row) => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog
-                    && row < crate::settings::OptionId::ALL.len()
+                    && row < dialog.pane.rows().len()
                 {
                     dialog.row = row;
                 }
+            }
+            // The server's switch, turned on: the person's own doing, as
+            // Turn on is, which keeps a change made outside that is held.
+            Action::SetOption(crate::settings::OptionValue::AgentsOn(true)) => {
+                self.turn_agents_on();
             }
             Action::SetOption(value) => self.change_settings(|settings| value.set(settings)),
             Action::EditSettingsFile => {
@@ -1654,14 +1697,19 @@ impl App {
             Action::ConfirmResetSettings(reset) => {
                 // An answer to a question that was asked.
                 let asked = match &mut self.dialog {
-                    Some(Dialog::Settings(dialog)) => std::mem::take(&mut dialog.resetting),
-                    _ => false,
+                    Some(Dialog::Settings(dialog)) => {
+                        std::mem::take(&mut dialog.resetting).then_some(dialog.pane)
+                    }
+                    _ => None,
                 };
-                if asked && reset {
-                    // The options the window shows. A key it has no control
-                    // for is not the window's to change.
+                if let Some(pane) = asked
+                    && reset
+                {
+                    // The options of the pane that asked. A key it has no
+                    // control for is not the window's to change, nor is
+                    // the server's switch.
                     self.change_settings(|settings| {
-                        for option in crate::settings::OptionId::ALL {
+                        for option in pane.reset_options() {
                             option.default_value().set(settings);
                         }
                     });
@@ -3324,6 +3372,10 @@ impl App {
     /// kept.
     fn turn_agents_on(&mut self) {
         use crate::agents_shown::Raised;
+        // On already, and in force: nothing to write.
+        if self.agents_on() {
+            return;
+        }
         if !self.settings.mcp_enabled {
             self.change_settings(|settings| settings.mcp_enabled = true);
             return;
@@ -3990,20 +4042,24 @@ impl App {
         }
     }
 
+    /// The window whose Agents tab the app's own ways in show (Review,
+    /// Settings): the one in front; with Connections in front, the last
+    /// window there is. None with no window open.
+    pub fn agents_window(&self) -> Option<ConnTabId> {
+        let front = self.active_tab_id();
+        match self.workspace(front) {
+            Some(_) => Some(front),
+            None => self.open_connections().last().map(|(tab, _)| tab),
+        }
+    }
+
     /// The person clicked Review: Tabletist comes forward, on the Agents
     /// tab of the window in front, or on Connections where none is open
     /// (question 22). A new agent is on no connection yet: it is under
     /// "Also:" there.
     fn reviewed(&mut self) {
         self.window_asks.push(egui::ViewportCommand::Focus);
-        // The window in front; with Connections in front, the last window
-        // there is.
-        let front = self.active_tab_id();
-        let tab = match self.workspace(front) {
-            Some(_) => Some(front),
-            None => self.open_connections().last().map(|(tab, _)| tab),
-        };
-        match tab {
+        match self.agents_window() {
             Some(tab) => {
                 self.apply(Action::ActivateConnTab(tab));
                 self.apply(Action::ShowAgents(tab));
@@ -7151,7 +7207,7 @@ mod tests {
         app.apply(Action::MoveSettingsRow(1));
         assert_eq!(settings_row(&app), Some(1));
         app.apply(Action::MoveSettingsRow(99));
-        assert_eq!(settings_row(&app), Some(OptionId::ALL.len() - 1));
+        assert_eq!(settings_row(&app), Some(OptionId::GENERAL.len() - 1));
         app.apply(Action::SelectSettingsRow(2));
         assert_eq!(settings_row(&app), Some(2));
         app.apply(Action::SelectSettingsRow(99));

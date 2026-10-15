@@ -141,30 +141,73 @@ pub async fn read_line<R: AsyncRead + Unpin>(
     }
 }
 
-/// The command, once worked out.
-static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// The agents Settings says how to connect: each is told in its own way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Agent {
+    /// A command to run once.
+    #[default]
+    ClaudeCode,
+    /// An entry of its `mcp.json`.
+    Cursor,
+    /// Any agent that starts an MCP server over stdio: the command it
+    /// starts.
+    Other,
+}
+
+impl Agent {
+    /// In the order Settings shows them.
+    pub const ALL: [Agent; 3] = [Self::ClaudeCode, Self::Cursor, Self::Other];
+}
+
+/// What connects each agent, once worked out.
+struct Setups {
+    claude_code: String,
+    cursor: String,
+    other: String,
+}
+
+static SETUPS: std::sync::OnceLock<Setups> = std::sync::OnceLock::new();
 
 /// [`agent_command`] where it is worked out already: what the UI reads.
 pub fn agent_command_ready() -> Option<&'static str> {
-    COMMAND.get().map(String::as_str)
+    agent_setup_ready(Agent::ClaudeCode)
+}
+
+/// What connects `agent`, where it is worked out already.
+pub fn agent_setup_ready(agent: Agent) -> Option<&'static str> {
+    let setups = SETUPS.get()?;
+    Some(match agent {
+        Agent::ClaudeCode => &setups.claude_code,
+        Agent::Cursor => &setups.cursor,
+        Agent::Other => &setups.other,
+    })
 }
 
 /// The command that connects Claude Code, the agent the boards name, to
 /// this Tabletist: `claude mcp add tabletist -- tabletist mcp`, with this
 /// program's whole path where `tabletist` on the `PATH` is not this
-/// program (the app bundle on macOS). Worked out once, by looking at the
-/// disk: on the backend's runtime as it starts (`Backend::start_with`),
-/// never on the UI thread, which asks [`agent_command_ready`].
+/// program (the app bundle on macOS). Worked out once, with what connects
+/// the other agents, by looking at the disk: on the backend's runtime as
+/// it starts (`Backend::start_with`), never on the UI thread, which asks
+/// [`agent_setup_ready`].
 pub fn agent_command() -> &'static str {
-    COMMAND.get_or_init(|| {
-        let exe = std::env::current_exe().ok();
-        let on_path = std::env::var_os("PATH").and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join(EXE))
-                .find(|file| file.is_file())
-        });
-        command_for(&relay_for(exe.as_deref(), on_path.as_deref()))
-    })
+    &SETUPS
+        .get_or_init(|| {
+            let exe = std::env::current_exe().ok();
+            let on_path = std::env::var_os("PATH").and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join(EXE))
+                    .find(|file| file.is_file())
+            });
+            let program = program_for(exe.as_deref(), on_path.as_deref());
+            let relay = relay_of(&program);
+            Setups {
+                claude_code: command_for(&relay),
+                cursor: cursor_entry(&program),
+                other: relay,
+            }
+        })
+        .claude_code
 }
 
 /// This program's file name.
@@ -179,10 +222,19 @@ fn command_for(relay: &str) -> String {
     format!("claude mcp add tabletist -- {relay}")
 }
 
-/// How an agent starts the relay: `tabletist mcp` when `on_path`, the
-/// program a shell finds by that name, is `exe`, this program; else
-/// `exe`'s whole path, as a shell reads it.
-fn relay_for(exe: Option<&std::path::Path>, on_path: Option<&std::path::Path>) -> String {
+/// Cursor's entry for Tabletist in its `mcp.json`: `program` started with
+/// `mcp`.
+fn cursor_entry(program: &str) -> String {
+    let command = serde_json::to_string(program).unwrap_or_default();
+    format!(
+        "{{\n  \"mcpServers\": {{\n    \"tabletist\": {{ \"command\": {command}, \"args\": [\"mcp\"] }}\n  }}\n}}"
+    )
+}
+
+/// The program an agent starts as the relay: `tabletist` when `on_path`,
+/// the program a shell finds by that name, is `exe`, this program; else
+/// `exe`'s whole path.
+fn program_for(exe: Option<&std::path::Path>, on_path: Option<&std::path::Path>) -> String {
     let same = |a: &std::path::Path, b: &std::path::Path| match (
         std::fs::canonicalize(a),
         std::fs::canonicalize(b),
@@ -192,10 +244,22 @@ fn relay_for(exe: Option<&std::path::Path>, on_path: Option<&std::path::Path>) -
     };
     match exe {
         Some(exe) if !on_path.is_some_and(|found| same(exe, found)) => {
-            format!("{} mcp", shell_word(&exe.to_string_lossy()))
+            exe.to_string_lossy().into_owned()
         }
-        _ => "tabletist mcp".to_owned(),
+        _ => "tabletist".to_owned(),
     }
+}
+
+/// How a shell starts the relay of `program`.
+fn relay_of(program: &str) -> String {
+    format!("{} mcp", shell_word(program))
+}
+
+/// How an agent starts the relay: `tabletist mcp`, or this program's whole
+/// path as a shell reads it (see [`program_for`]).
+#[cfg(test)]
+fn relay_for(exe: Option<&std::path::Path>, on_path: Option<&std::path::Path>) -> String {
+    relay_of(&program_for(exe, on_path))
 }
 
 /// `word` as a POSIX shell reads it back: as it is when nothing in it is
@@ -320,6 +384,24 @@ mod tests {
             "{command}"
         );
         assert!(command.ends_with(" mcp"), "{command}");
+        // The others start the same relay.
+        let relay = agent_setup_ready(Agent::Other).unwrap();
+        assert_eq!(command, command_for(relay));
+        let cursor = agent_setup_ready(Agent::Cursor).unwrap();
+        assert!(cursor.contains("\"args\": [\"mcp\"]"), "{cursor}");
+    }
+
+    #[test]
+    fn cursors_entry_starts_the_program_by_its_path_as_json_writes_it() {
+        let entry = cursor_entry("tabletist");
+        let read: serde_json::Value = serde_json::from_str(&entry).unwrap();
+        let server = &read["mcpServers"]["tabletist"];
+        assert_eq!(server["command"], "tabletist");
+        assert_eq!(server["args"], serde_json::json!(["mcp"]));
+        // A path a shell would quote is written as JSON writes it.
+        let spaced = "C:\\Program Files\\Tabletist's \"app\"\\tabletist";
+        let read: serde_json::Value = serde_json::from_str(&cursor_entry(spaced)).unwrap();
+        assert_eq!(read["mcpServers"]["tabletist"]["command"], spaced);
     }
 
     #[tokio::test]

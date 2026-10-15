@@ -1,13 +1,14 @@
 //! The Settings window in the looks that are not a terminal's: a sheet
-//! over the dimmed window, with the nav at its left and the tab's options
-//! in rows, each with a control that changes it. Under the rows, the footer
-//! says where the file is and what can be done with it.
+//! over the dimmed window, with the nav of its panes at its left and the
+//! pane's options in rows, each with a control that changes it (the Agents
+//! pane is `agents.rs`'s). Under the rows, the footer says where the file
+//! is and what can be done with it.
 
 use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
-use crate::model::Action;
+use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
 use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
@@ -59,20 +60,26 @@ const LINK: f32 = 18.0;
 
 /// How the sheet draws: the look, the palette and the language.
 #[derive(Clone, Copy)]
-struct Skin<'a> {
-    look: &'a Look,
-    palette: &'a Palette,
-    locale: Locale,
+pub(super) struct Skin<'a> {
+    pub(super) look: &'a Look,
+    pub(super) palette: &'a Palette,
+    pub(super) locale: Locale,
 }
 
 impl Skin<'_> {
     /// `text` translated.
-    fn say(&self, text: &'static str) -> String {
+    pub(super) fn say(&self, text: &'static str) -> String {
         gettext(self.locale, text).into_owned()
     }
 }
 
-pub(super) fn show(app: &App, ctx: &egui::Context, resetting: bool, actions: &mut Vec<Action>) {
+pub(super) fn show(
+    app: &App,
+    ctx: &egui::Context,
+    dialog: &SettingsDialog,
+    actions: &mut Vec<Action>,
+) {
+    let resetting = dialog.resetting;
     let skin = Skin {
         look: &app.look,
         palette: &app.palette,
@@ -108,7 +115,7 @@ pub(super) fn show(app: &App, ctx: &egui::Context, resetting: bool, actions: &mu
             // laid out after it: its fill waits here, under its words, for
             // that height.
             let fill = ui.painter().add(egui::Shape::Noop);
-            nav(ui, room.min, &skin);
+            nav(ui, room.min, dialog.pane, &skin, actions);
             // No bottom of its own: its rows end where `content` is told to
             // end them. The sheet's bottom is the one the frame before left
             // it, and rows held to that would get their height back a
@@ -125,7 +132,12 @@ pub(super) fn show(app: &App, ctx: &egui::Context, resetting: bool, actions: &mu
             let limit = room.top() + screen.height() - 2.0 * MARGIN - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
             let mut pane = ui.new_child(builder.layout(egui::Layout::top_down(egui::Align::Min)));
-            content(&mut pane, &app.settings, limit, &skin, actions);
+            match dialog.pane {
+                SettingsPane::General => content(&mut pane, &app.settings, limit, &skin, actions),
+                SettingsPane::Agents => {
+                    super::agents::content(&mut pane, app, dialog.agent, limit, &skin, actions);
+                }
+            }
             let rows = pane.min_rect().bottom();
             let bottom = rows + foot;
             ui.allocate_rect(room.with_max_y(bottom), Sense::hover());
@@ -163,9 +175,15 @@ pub(super) fn show(app: &App, ctx: &egui::Context, resetting: bool, actions: &mu
     }
 }
 
-/// The window's name and its tabs, down the left from `corner`: the one
-/// tab there is, which is the one shown.
-fn nav(ui: &mut Ui, corner: egui::Pos2, skin: &Skin) {
+/// The window's name and its panes, down the left from `corner`, the one
+/// shown filled: a click shows another.
+fn nav(
+    ui: &mut Ui,
+    corner: egui::Pos2,
+    shown: SettingsPane,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::StateTitle;
     let line = role.row_height(ui.ctx(), look.faces);
@@ -176,24 +194,43 @@ fn nav(ui: &mut Ui, corner: egui::Pos2, skin: &Skin) {
         top + line / 2.0,
         Text::one(look, role, &skin.say("Settings"), palette.text),
     );
-    // Up to the nav's rule at the right.
-    let item = Rect::from_min_size(
-        pos2(corner.x + NAV_PAD.x, top + line + 10.0),
-        vec2(NAV - 1.0 - 2.0 * NAV_PAD.x, NAV_ITEM),
-    );
-    let name = skin.say("General");
-    let button = ui.interact(item, ui.id().with("general"), Sense::click());
-    button.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, true, &name));
-    ui.painter()
-        .rect_filled(item, CornerRadius::same(5), palette.selection);
-    widgets::paint_text(
-        ui,
-        item.left() + 8.0,
-        item.center().y,
-        Text::one(look, TextRole::UiBodyStrong, &name, palette.accent_hover),
-    );
-    // An item of a list: the ring is inside its fill, as a row's is.
-    focus::hint(ui, &button, item, Ring::Inset { radius: 5 });
+    for (index, pane) in SettingsPane::listed().iter().copied().enumerate() {
+        // Up to the nav's rule at the right, 2 apart.
+        let item = Rect::from_min_size(
+            pos2(
+                corner.x + NAV_PAD.x,
+                top + line + 10.0 + index as f32 * (NAV_ITEM + 2.0),
+            ),
+            vec2(NAV - 1.0 - 2.0 * NAV_PAD.x, NAV_ITEM),
+        );
+        let on = pane == shown;
+        let name = skin.say(pane.name());
+        let button = ui.interact(item, ui.id().with(pane.name()), Sense::click());
+        button.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, &name));
+        if button.clicked() && !on {
+            actions.push(Action::ShowSettingsPane(pane));
+        }
+        let (fill, role, color) = if on {
+            (
+                palette.selection,
+                TextRole::UiBodyStrong,
+                palette.accent_hover,
+            )
+        } else if button.hovered() {
+            (palette.surface_hover, TextRole::UiBody, palette.text)
+        } else {
+            (egui::Color32::TRANSPARENT, TextRole::UiBody, palette.text)
+        };
+        ui.painter().rect_filled(item, CornerRadius::same(5), fill);
+        widgets::paint_text(
+            ui,
+            item.left() + 8.0,
+            item.center().y,
+            Text::one(look, role, &name, color),
+        );
+        // An item of a list: the ring is inside its fill, as a row's is.
+        focus::hint(ui, &button, item, Ring::Inset { radius: 5 });
+    }
 }
 
 /// The tab: its title, what it is for, and its options under the heading
@@ -221,7 +258,7 @@ fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &
         .layout(ui.ctx())
         .label(ui);
     ui.add_space(2.0);
-    let column = label_column(ui, skin);
+    let column = label_column(ui, &OptionId::GENERAL, skin);
     let room = (limit - ui.cursor().top()).max(ROWS_MIN);
     egui::ScrollArea::vertical()
         .id_salt("rows")
@@ -230,21 +267,31 @@ fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &
         .show(ui, |ui| {
             // The last row stands on the footer's rule: one of its own
             // right over that would read as a double line.
-            let last = OptionId::ALL.len() - 1;
-            for (index, option) in OptionId::ALL.into_iter().enumerate() {
-                row(ui, option, index < last, column, settings, skin, actions);
+            let last = OptionId::GENERAL.len() - 1;
+            for (index, option) in OptionId::GENERAL.into_iter().enumerate() {
+                row(
+                    ui,
+                    option,
+                    index < last,
+                    column,
+                    settings,
+                    skin,
+                    actions,
+                    None,
+                );
             }
         });
 }
 
 /// How wide the rows' labels have it: `LABEL`, or what the widest small
-/// print takes in a face that writes it wider, so that it stays on one
-/// line. A sheet too narrow for that and the controls takes from the
-/// labels, and the small print wraps.
-fn label_column(ui: &Ui, skin: &Skin) -> f32 {
+/// print of `options` takes in a face that writes it wider, so that it
+/// stays on one line. A sheet too narrow for that and the controls takes
+/// from the labels, and the small print wraps.
+pub(super) fn label_column(ui: &Ui, options: &[OptionId], skin: &Skin) -> f32 {
     let role = TextRole::Secondary;
-    let widest = OptionId::ALL
-        .into_iter()
+    let widest = options
+        .iter()
+        .copied()
         .filter_map(small_print)
         .map(|print| role.width(ui.ctx(), skin.look.faces, &skin.say(print)))
         .fold(LABEL, f32::max);
@@ -252,10 +299,19 @@ fn label_column(ui: &Ui, skin: &Skin) -> f32 {
     widest.ceil().min(room).max(0.0)
 }
 
+/// A button after a row's control: what it says, why it cannot be pressed
+/// while it cannot, and what a press does.
+pub(super) struct After<'a> {
+    pub(super) text: &'a str,
+    pub(super) disabled: Option<&'a str>,
+    pub(super) action: Action,
+}
+
 /// One option's row: its label over its small print in a column `column`
-/// wide, its control, and the hint that shows what the value does, over a
-/// rule when it is `ruled`.
-fn row(
+/// wide, its control and the button `after` it, and the hint that shows
+/// what the value does, over a rule when it is `ruled`.
+#[allow(clippy::too_many_arguments)] // one row: its place, what it shows, what it pushes
+pub(super) fn row(
     ui: &mut Ui,
     option: OptionId,
     ruled: bool,
@@ -263,6 +319,7 @@ fn row(
     settings: &Settings,
     skin: &Skin,
     actions: &mut Vec<Action>,
+    after: Option<After<'_>>,
 ) {
     let Skin { look, palette, .. } = *skin;
     let name = Text::one(
@@ -304,6 +361,19 @@ fn row(
         .max_rect(place);
     let mut line = ui.new_child(builder.layout(centred));
     control(&mut line, option, settings, skin, actions);
+    if let Some(after) = after {
+        line.add_space(HINT_GAP);
+        let mut button = widgets::ButtonSpec::new(after.text);
+        if let Some(reason) = after.disabled {
+            button = button.disabled(reason);
+        }
+        if button
+            .show(&mut line, look.control_height, look, palette)
+            .clicked()
+        {
+            actions.push(after.action);
+        }
+    }
     // Tab reaches a control of a row that is scrolled out of view, where
     // its ring is cut with it: the row comes to the keyboard. Jump, not
     // animate: the next Tab may come at once.
@@ -333,7 +403,8 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::PageSize => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
-        OptionId::ValueTags => SWITCH,
+        OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => SWITCH,
+        OptionId::LogDays => look.control_height,
     }
 }
 
@@ -396,14 +467,48 @@ fn control(
                 actions.push(Action::SetOption(OptionValue::GroupDigits(picked == 0)));
             }
         }
-        OptionId::ValueTags => {
-            if widgets::toggle(ui, settings.value_tags, &name, palette).clicked() {
-                actions.push(Action::SetOption(OptionValue::ValueTags(
-                    !settings.value_tags,
-                )));
+        OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => {
+            let on = super::is_on(settings.value(option));
+            if widgets::toggle(ui, on, &name, palette).clicked()
+                && let Some(flipped) = settings.flipped(option)
+            {
+                actions.push(Action::SetOption(flipped));
             }
         }
+        OptionId::LogDays => {
+            let shown = super::days(skin.locale, settings.mcp_log_days);
+            let dropdown = menu::Dropdown::new("log-days", &shown, MENU);
+            let menu = dropdown.show(ui, look, palette, |ui| {
+                for days in log_days(settings.mcp_log_days) {
+                    let text = super::days(skin.locale, days);
+                    let entry_name = format!("{name} {text}");
+                    let entry = menu::Item::choice(&text, days == settings.mcp_log_days)
+                        .name(&entry_name)
+                        .show(ui, look, palette);
+                    if entry.clicked() {
+                        actions.push(Action::SetOption(OptionValue::LogDays(days)));
+                        ui.close();
+                    }
+                }
+            });
+            menu.response.widget_info(|| {
+                let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, &name);
+                info.current_text_value = Some(shown.clone());
+                info
+            });
+        }
     }
+}
+
+/// The days the log's menu offers: the list, with the days in use in their
+/// place when the file set others.
+fn log_days(current: u32) -> Vec<u32> {
+    let mut days = Settings::LOG_DAYS.to_vec();
+    if !days.contains(&current) {
+        days.push(current);
+        days.sort_unstable();
+    }
+    days
 }
 
 /// A segmented control of `words` for the option called `option`, the one
@@ -466,6 +571,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
+        OptionId::AgentsOn | OptionId::LogDays | OptionId::AgentsNotify => return,
     };
     let text = text.layout(ui.ctx());
     if at.x + text.width() <= right {
@@ -777,6 +883,8 @@ mod tests {
 
     #[test]
     fn a_size_that_is_not_in_the_list_takes_its_place_among_the_others() {
+        assert_eq!(log_days(30), Settings::LOG_DAYS);
+        assert_eq!(log_days(14), [7, 14, 30, 90, 365]);
         assert_eq!(page_sizes(300), Settings::PAGE_SIZES);
         assert_eq!(page_sizes(250), [100, 250, 300, 500, 1_000, 5_000]);
         assert_eq!(page_sizes(9_000), [100, 300, 500, 1_000, 5_000, 9_000]);

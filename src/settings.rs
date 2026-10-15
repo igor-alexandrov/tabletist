@@ -137,16 +137,34 @@ pub enum OptionId {
     Timestamps,
     GroupDigits,
     ValueTags,
+    /// Whether agents can reach the app: `mcp.enabled`.
+    AgentsOn,
+    /// How long the log of agents' calls keeps one: `mcp.log_days`.
+    LogDays,
+    /// Whether a new agent is told of: `mcp.notify`.
+    AgentsNotify,
 }
 
 impl OptionId {
-    /// In the order the window has them.
-    pub const ALL: [OptionId; 4] = [
+    /// Every option, the General pane's and then the Agents pane's.
+    pub const ALL: [OptionId; 7] = [
+        Self::PageSize,
+        Self::Timestamps,
+        Self::GroupDigits,
+        Self::ValueTags,
+        Self::AgentsOn,
+        Self::LogDays,
+        Self::AgentsNotify,
+    ];
+    /// The General pane's, in the order it has them.
+    pub const GENERAL: [OptionId; 4] = [
         Self::PageSize,
         Self::Timestamps,
         Self::GroupDigits,
         Self::ValueTags,
     ];
+    /// The Agents pane's, in the order it has them.
+    pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
 
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
@@ -155,6 +173,9 @@ impl OptionId {
             Self::Timestamps => Key::Timestamps,
             Self::GroupDigits => Key::GroupDigits,
             Self::ValueTags => Key::ValueTags,
+            Self::AgentsOn => Key::McpEnabled,
+            Self::LogDays => Key::McpLogDays,
+            Self::AgentsNotify => Key::McpNotify,
         }
     }
 
@@ -171,6 +192,9 @@ pub enum OptionValue {
     Timestamps(Timestamps),
     GroupDigits(bool),
     ValueTags(bool),
+    AgentsOn(bool),
+    LogDays(u32),
+    AgentsNotify(bool),
 }
 
 impl OptionValue {
@@ -180,6 +204,9 @@ impl OptionValue {
             Self::Timestamps(_) => OptionId::Timestamps,
             Self::GroupDigits(_) => OptionId::GroupDigits,
             Self::ValueTags(_) => OptionId::ValueTags,
+            Self::AgentsOn(_) => OptionId::AgentsOn,
+            Self::LogDays(_) => OptionId::LogDays,
+            Self::AgentsNotify(_) => OptionId::AgentsNotify,
         }
     }
 
@@ -190,6 +217,9 @@ impl OptionValue {
             Self::Timestamps(choice) => settings.timestamps = choice,
             Self::GroupDigits(on) => settings.group_digits = on,
             Self::ValueTags(on) => settings.value_tags = on,
+            Self::AgentsOn(on) => settings.mcp_enabled = on,
+            Self::LogDays(days) => settings.mcp_log_days = days,
+            Self::AgentsNotify(on) => settings.mcp_notify = on,
         }
     }
 }
@@ -406,6 +436,8 @@ impl Settings {
     /// day, and ten years.
     pub const MIN_MCP_LOG_DAYS: u32 = 1;
     pub const MAX_MCP_LOG_DAYS: u32 = 3_650;
+    /// The days the Settings window offers for the log.
+    pub const LOG_DAYS: [u32; 4] = [7, 30, 90, 365];
 
     /// The SQL editor's timeout as a duration; `None` waits forever.
     pub fn sql_timeout(&self) -> Option<std::time::Duration> {
@@ -435,6 +467,9 @@ impl Settings {
             OptionId::Timestamps => OptionValue::Timestamps(self.timestamps),
             OptionId::GroupDigits => OptionValue::GroupDigits(self.group_digits),
             OptionId::ValueTags => OptionValue::ValueTags(self.value_tags),
+            OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
+            OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
+            OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
         }
     }
 
@@ -464,6 +499,20 @@ impl Settings {
             // Grouped is the left of the two.
             OptionId::GroupDigits => OptionValue::GroupDigits(!forward),
             OptionId::ValueTags => OptionValue::ValueTags(forward),
+            OptionId::AgentsOn => OptionValue::AgentsOn(forward),
+            OptionId::LogDays => {
+                let days = self.mcp_log_days;
+                let next = if forward {
+                    Self::LOG_DAYS.into_iter().find(|choice| *choice > days)
+                } else {
+                    Self::LOG_DAYS
+                        .into_iter()
+                        .rev()
+                        .find(|choice| *choice < days)
+                };
+                OptionValue::LogDays(next.unwrap_or(days))
+            }
+            OptionId::AgentsNotify => OptionValue::AgentsNotify(forward),
         }
     }
 
@@ -477,6 +526,9 @@ impl Settings {
             })),
             OptionId::GroupDigits => Some(OptionValue::GroupDigits(!self.group_digits)),
             OptionId::ValueTags => Some(OptionValue::ValueTags(!self.value_tags)),
+            OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
+            OptionId::LogDays => None,
+            OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
         }
     }
 
@@ -1366,9 +1418,15 @@ notify   = true
                 Key::PageSize,
                 Key::Timestamps,
                 Key::GroupDigits,
-                Key::ValueTags
+                Key::ValueTags,
+                Key::McpEnabled,
+                Key::McpLogDays,
+                Key::McpNotify,
             ]
         );
+        // Each pane has its own, and every one is on a pane.
+        let panes = [&OptionId::GENERAL[..], &OptionId::AGENTS[..]].concat();
+        assert_eq!(panes, OptionId::ALL);
         let defaults = Settings::default();
         for option in OptionId::ALL {
             assert_eq!(option.default_value(), defaults.value(option));
@@ -1393,6 +1451,26 @@ notify   = true
         assert_eq!(step(250, false), OptionValue::PageSize(100));
         assert_eq!(step(9_000, true), OptionValue::PageSize(9_000));
         assert_eq!(step(9_000, false), OptionValue::PageSize(5_000));
+    }
+
+    #[test]
+    fn the_logs_days_step_through_their_choices_and_stop_at_the_ends() {
+        let step = |days: u32, forward: bool| {
+            let settings = Settings {
+                mcp_log_days: days,
+                ..Settings::default()
+            };
+            settings.stepped(OptionId::LogDays, forward)
+        };
+        assert_eq!(step(30, true), OptionValue::LogDays(90));
+        assert_eq!(step(30, false), OptionValue::LogDays(7));
+        assert_eq!(step(7, false), OptionValue::LogDays(7));
+        assert_eq!(step(365, true), OptionValue::LogDays(365));
+        // Days set by hand are between two choices.
+        assert_eq!(step(14, true), OptionValue::LogDays(30));
+        assert_eq!(step(1_000, false), OptionValue::LogDays(365));
+        // Nothing to flip: there are more than two.
+        assert_eq!(Settings::default().flipped(OptionId::LogDays), None);
     }
 
     #[test]
