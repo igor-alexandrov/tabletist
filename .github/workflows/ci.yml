@@ -68,7 +68,10 @@ jobs:
       - name: Native keyring round trip
         if: runner.os == 'Windows' || runner.os == 'macOS'
         timeout-minutes: 2
-        run: cargo test --locked --lib secrets::tests::native_store_round_trip -- --ignored --exact
+        # --workspace reuses the build from the test step (same features):
+        # without it the library is built again, which took past the limit
+        # once the release build had run before it.
+        run: cargo test --locked --workspace --lib secrets::tests::native_store_round_trip -- --ignored --exact
       - name: SSH agent (Windows OpenSSH)
         if: runner.os == 'Windows'
         timeout-minutes: 15
