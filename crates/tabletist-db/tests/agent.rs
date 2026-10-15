@@ -994,6 +994,14 @@ mod mysql {
     }
 
     #[tokio::test]
+    async fn a_hidden_table_is_never_read_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_hidden_table_is_never_read(&connection, "mysql").await;
+    }
+
+    #[tokio::test]
     async fn mysql_takes_each_value_as_its_own_type() {
         let Some(connection) = bookshop().await else {
             return;

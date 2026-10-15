@@ -52,7 +52,7 @@ impl Conn {
         if mode == ScriptMode::Write {
             return write::run(&mut conn, texts, limit as usize, stop).await;
         }
-        read_only(&mut conn, texts, limit, self.access, stop, None).await
+        read_only(&mut conn, texts, limit, self.access, stop, None, None).await
     }
 
     /// See [`crate::Connection::run_agent_read`]: the run of a script of
@@ -64,6 +64,7 @@ impl Conn {
         &self,
         read: &Read,
         limits: Limits,
+        tables: &crate::agent::Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let mut conn = self.conn.lock().await;
@@ -78,12 +79,24 @@ impl Conn {
             timeout: limits.timeout,
         };
         let access = self.access;
-        read_only(&mut conn, &texts, limits.rows, access, stop, Some(sent)).await
+        let hiding = tables.hides_anything().then_some((read, tables));
+        read_only(
+            &mut conn,
+            &texts,
+            limits.rows,
+            access,
+            stop,
+            Some(sent),
+            hiding,
+        )
+        .await
     }
 }
 
 /// The run that only reads: its transaction, its statements, and the
-/// close. `sent` is there when the run is of an agent's one statement.
+/// close. `sent` is there when the run is of an agent's one statement, and
+/// `hiding` when its connection hides tables: the statement is checked
+/// against them in the transaction, and runs only if it reads none.
 async fn read_only(
     conn: &mut mysql_async::Conn,
     texts: &[String],
@@ -91,14 +104,25 @@ async fn read_only(
     access: Access,
     stop: &StopFlag,
     sent: Option<Sent<'_>>,
+    hiding: Option<(&Read, &crate::agent::Tables)>,
 ) -> Result<ScriptOutcome> {
     let mut outcome = ScriptOutcome::default();
     let ended = match open(conn, limit, access, sent).await {
         // A lost session ends the run here: nothing to close.
-        Ok(()) => {
-            let params = sent.map(|sent| sent.params);
-            statements(conn, texts, limit as usize, stop, params, &mut outcome).await?
-        }
+        Ok(()) => match refused_for_hiding(conn, hiding).await? {
+            Some(error) => {
+                outcome.stopped = error == Error::Cancelled;
+                outcome.results.push(StatementResult {
+                    elapsed: Duration::ZERO,
+                    outcome: statement_failed(error, None)?,
+                });
+                Ended::Unconfirmed
+            }
+            None => {
+                let params = sent.map(|sent| sent.params);
+                statements(conn, texts, limit as usize, stop, params, &mut outcome).await?
+            }
+        },
         // A cancel landed on the opening queries: no results.
         Err(Error::Cancelled) => {
             outcome.stopped = true;
@@ -115,6 +139,24 @@ async fn read_only(
     stop.finish();
     close(conn, ended, access).await?;
     Ok(outcome)
+}
+
+/// Why an agent's statement may not run on a connection that hides tables
+/// (`super::hidden`): a refusal, the server's own error, or a cancel.
+/// `None` where it may run, or where nothing is hidden. `Err` is a lost
+/// session.
+async fn refused_for_hiding(
+    conn: &mut mysql_async::Conn,
+    hiding: Option<(&Read, &crate::agent::Tables)>,
+) -> Result<Option<Error>> {
+    let Some((read, tables)) = hiding else {
+        return Ok(None);
+    };
+    match super::hidden::check(conn, read, tables).await {
+        Ok(refused) => Ok(refused),
+        Err(error) if error.is_connection_lost() => Err(error),
+        Err(error) => Ok(Some(error)),
+    }
 }
 
 /// Where a session stands relative to the read-only transaction a script
@@ -514,7 +556,7 @@ fn counts_rows(text: &str) -> bool {
 /// An agent's values as the driver takes a statement's: each as its own
 /// type, by the protocol that binds them. A value is never written into
 /// the statement.
-fn bound(params: &[Param]) -> Params {
+pub(super) fn bound(params: &[Param]) -> Params {
     use mysql_async::Value as MySql;
     if params.is_empty() {
         return Params::Empty;
@@ -1023,6 +1065,7 @@ mod tests {
             Access::ReadOnly,
             &stop,
             Some(sent),
+            None,
         )
         .await
         .unwrap();

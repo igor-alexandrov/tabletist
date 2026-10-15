@@ -50,6 +50,7 @@ const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+mod hidden;
 mod script;
 mod write;
 
@@ -516,10 +517,10 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
-        _tables: &Tables,
+        tables: &Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
-        self.agent_read(read, limits, stop).await
+        self.agent_read(read, limits, tables, stop).await
     }
 
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
