@@ -58,6 +58,14 @@ left it open is there.
 Each phase below gets its own plan under `docs/superpowers/plans/` before any
 code is written, as every batch of work in this repository does.
 
+**Dropped on 2026-10-15, for now: Phase 1d, HTTP with tokens.** Phase 1b
+is built on Linux, macOS and Windows, and agents connect over stdio alone,
+which Claude Code, Cursor and any agent that starts an MCP server take.
+Nothing of 1d is planned or built: no network listener, no tokens, no
+"Other" or agent list with Remove in Settings › Agents. A.3 and G's 1d are
+kept as the design for if it is taken up again. Where another section
+says something comes "with HTTP (1d)", it is not planned now.
+
 ## Contents
 
 1. [What the code says, in short](#1-what-the-code-says-in-short)
@@ -359,6 +367,9 @@ otherwise:
 - A new agent flashes the taskbar button, as the Dock bounces on macOS.
 
 ### A.3 HTTP
+
+**Dropped on 2026-10-15, for now** (G, 1d): nothing of this section is
+built or planned. It is kept as the design.
 
 `http://127.0.0.1:7433/mcp`, the Streamable HTTP transport.
 
@@ -2207,7 +2218,7 @@ is off until the person turns it on.
 | 1b. The server over stdio, with its interface | 9, below | Built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`) |
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
-| 1d. HTTP with tokens | 1 | After stdio (question 9) |
+| 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
 (pull request 125, `2026-10-13-connections-toml.md`).
@@ -2333,7 +2344,8 @@ build; no console target.
   by name alone would promise more than it does.
 
 **1d. HTTP with tokens.** Its own pull request, after stdio (settled,
-question 9).
+question 9). **Dropped on 2026-10-15, for now:** not planned or built.
+What follows is the design, kept for if it is taken up again.
 
 - Files: `tabletist-mcp` (the listener, the checks, tokens),
   `Cargo.toml` (`hyper`, `hyper-util`, the rmcp feature), `src/paths.rs`
@@ -2419,7 +2431,7 @@ The ones Phase 1 waits for are marked.
 9. Settled on 2026-10-13: HTTP comes after stdio, as its own pull request
    (1d). Both agents the boards name connect over stdio, and HTTP brings
    the app's first network listener, the tokens and at least nine new
-   crates.
+   crates. Dropped on 2026-10-15, for now: 1d is not planned (G).
 10. Settled on 2026-10-13: `tabletist mcp` when the app is not running
     answers with an error and exits, as planned. No `--launch` flag in
     Phase 1, and no relay that stays up and waits (A.2 says why).
