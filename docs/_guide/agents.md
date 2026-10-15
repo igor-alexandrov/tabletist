@@ -76,7 +76,12 @@ Where `tabletist` on your `PATH` is not the app you run, the command names
 the app by its whole path instead. On macOS that is the program inside the
 app: `/Applications/Tabletist.app/Contents/MacOS/tabletist mcp`. On
 Windows it is where the installer put it, in quotes where the path has a
-space: `"C:\Users\Ada Lovelace\AppData\Local\Programs\Tabletist\tabletist.exe" mcp`.
+space, which the Command Prompt and PowerShell both take:
+
+```sh
+claude mcp add tabletist -- "C:\Users\Ada Lovelace\AppData\Local\Programs\Tabletist\tabletist.exe" mcp
+```
+
 Copy gives the one your Tabletist needs.
 
 In the Omarchy look, `y` on the Agents pane copies Claude Code's command.

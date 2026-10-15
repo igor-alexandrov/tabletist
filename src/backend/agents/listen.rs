@@ -1,5 +1,6 @@
 //! The server's endpoint: the socket `tabletist mcp` connects to on Linux
-//! and macOS, the named pipe on Windows, and the key it must send first.
+//! and macOS, the named pipe on Windows, and the key each side proves it
+//! holds before it says anything else.
 
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -24,10 +25,11 @@ use crate::endpoint::{self, Answer, Hello, Reply, Side};
 /// connections to the databases do not.
 const MAX_SESSIONS: usize = 32;
 
-/// The most connections that have not said their [`Hello`] yet. The next
-/// waits in the system's queue, and holds nothing of the app's: connections
-/// that never say anything cannot use up its descriptors, nor the sessions
-/// of the agents that have the key.
+/// The most connections that have not proved the key yet, from their
+/// [`Hello`] to their [`Reply`]. The next waits in the system's queue, and
+/// holds nothing of the app's: connections that never say anything cannot
+/// use up its descriptors, nor the sessions of the agents that have the
+/// key.
 const MAX_GREETINGS: usize = 64;
 
 /// The endpoint while the server listens on it. Dropped, it listens no

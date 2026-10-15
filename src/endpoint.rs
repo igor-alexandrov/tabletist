@@ -1,6 +1,7 @@
 //! How `tabletist mcp` reaches the running app: a socket in a directory
-//! private to the user (`AppDirs::agents_dir`), and a key beside it that
-//! the relay sends first.
+//! private to the user (`AppDirs::agents_dir`), or on Windows a named pipe
+//! whose name is written there, and a key beside it that each side proves
+//! it holds.
 //!
 //! The relay sends one line, a [`Hello`] with a challenge. The app answers
 //! with its proof that it holds the key, and a challenge of its own
@@ -366,12 +367,15 @@ fn posix_word(word: &str) -> String {
 }
 
 /// `word` as the Command Prompt and PowerShell read it back, as an
-/// argument: as it is when it is made of what neither reads as anything
-/// else, else in double quotes, which keep a space, a comma, a bracket and
-/// an apostrophe as they are. A path on Windows holds no double quote. In
-/// double quotes PowerShell still expands `$` and a backtick, and the
-/// Command Prompt `%NAME%`: a path that holds them is not quoted against
-/// that, and an installed Tabletist's holds none.
+/// argument, as it is in Claude Code's command: as it is when it is made
+/// of what neither reads as anything else, else in double quotes, which
+/// keep a space, a comma, a bracket and an apostrophe as they are. A path
+/// on Windows holds no double quote. In double quotes PowerShell still
+/// expands `$` and a backtick, and the Command Prompt `%NAME%`: a path that
+/// holds them is not quoted against that, and an installed Tabletist's
+/// holds none. A line that starts with a quoted program runs it in the
+/// Command Prompt, and in PowerShell only after `&`: the command for other
+/// agents is what an agent starts, not a line for a shell.
 fn windows_word(word: &str) -> String {
     match plain_word(word, "\\/._-:") {
         true => word.to_owned(),
