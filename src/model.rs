@@ -616,6 +616,20 @@ pub enum Action {
     /// Turn the agent server on, from the Agents tab: a change of the
     /// settings, which starts it. No connection's access changes.
     TurnAgentsOn,
+    /// Stop one agent's session, by its id, wherever it works.
+    StopAgentSession(String),
+    /// Stop every session that is here, and set the connection's access to
+    /// Off, so that an agent that connects again does not see it.
+    StopAgentsHere(ConnTabId),
+    /// Show the Agents tab of a connection's window: the one an agent
+    /// works on elsewhere. Its window is opened first where there is none.
+    ShowAgentsOn(ConnectionId),
+    /// Move the Agents tab's selection among its sessions, in the terminal
+    /// look.
+    MoveAgentSelection {
+        tab: ConnTabId,
+        step: isize,
+    },
     /// Keep what was changed outside the app and lets agents do more: what
     /// the bar said, and only what is still held of it.
     KeepAgentChanges(Vec<crate::agents_shown::Raised>),
@@ -2546,13 +2560,18 @@ impl Tab {
 /// The Agents tab: the app's own view of what agents do on the
 /// workspace's connection. What it shows lives in [`AgentsState`], not
 /// here: closing the tab stops nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentsTab {
     pub id: TabId,
+    /// The terminal look's selected session, by its id: the one `S` stops
+    /// and `enter` shows. Kept by id, since the list puts the session that
+    /// called last first: a key lands on the session the person saw.
+    pub selected: Option<String>,
 }
 
 /// What the app knows of the agent server: the sessions open on it, as
-/// the backend last said them. Empty while the server is off.
+/// the backend last said them, empty while the server is off; and the
+/// calls that ended since the app started, the newest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentsState {
     pub sessions: Vec<tabletist_mcp::SessionInfo>,
@@ -2593,6 +2612,27 @@ impl AgentsState {
         self.feed
             .iter()
             .filter(move |call| call.connection.as_deref() == Some(conn.0.as_str()))
+    }
+
+    /// The sessions that are not here: those that work only elsewhere, and
+    /// those that have named no connection yet. The one that called last
+    /// first, and those that have not called after them.
+    pub fn elsewhere(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
+        let mut elsewhere: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|session| !session.connections.contains(&conn.0))
+            .collect();
+        elsewhere.sort_by_key(|session| std::cmp::Reverse(session.last_call_at));
+        elsewhere
+    }
+
+    /// The sessions that are here, then those that are elsewhere: the
+    /// terminal look's list, which its selection moves in.
+    pub fn listed(&self, conn: &ConnectionId) -> Vec<&tabletist_mcp::SessionInfo> {
+        let mut listed = self.here(conn);
+        listed.extend(self.elsewhere(conn));
+        listed
     }
 
     /// The sessions that are here: those whose calls have named `conn`,
@@ -3471,6 +3511,14 @@ impl Workspace {
         })
     }
 
+    /// The Agents tab, where it is open.
+    pub fn agents_tab_mut(&mut self) -> Option<&mut AgentsTab> {
+        self.tabs.iter_mut().find_map(|open| match open {
+            Tab::Agents(agents) => Some(agents),
+            Tab::Object(_) | Tab::Sql(_) => None,
+        })
+    }
+
     /// Whether the tab in front is the Agents tab.
     pub fn agents_in_front(&self) -> bool {
         self.active_tab.is_some() && self.active_tab == self.agents_tab()
@@ -3717,6 +3765,37 @@ mod tests {
             ]
         );
         assert_eq!(state.calls_on(&shop).count(), FEED_KEPT / 2);
+    }
+
+    #[test]
+    fn a_session_that_does_not_work_here_is_elsewhere_and_one_that_named_none_too() {
+        let session = |agent: &str, connections: &[&str], at: u64| tabletist_mcp::SessionInfo {
+            id: agent.into(),
+            agent: Some(agent.into()),
+            project: None,
+            transport: tabletist_mcp::Transport::Stdio,
+            connected_at: std::time::SystemTime::UNIX_EPOCH,
+            calls: 1,
+            connections: connections.iter().map(|id| (*id).to_owned()).collect(),
+            last_call_at: (at > 0)
+                .then(|| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at)),
+        };
+        let state = AgentsState {
+            sessions: vec![
+                session("Zed", &[], 0),
+                session("Cursor", &["staging"], 3),
+                session("Claude Code", &["staging", "shop"], 9),
+                session("Cline", &["ledger"], 5),
+            ],
+            ..AgentsState::default()
+        };
+        let shop = ConnectionId("shop".into());
+        let names: Vec<_> = state
+            .elsewhere(&shop)
+            .into_iter()
+            .map(|session| session.id.as_str())
+            .collect();
+        assert_eq!(names, ["Cline", "Cursor", "Zed"]);
     }
 
     /// The Bookshop's covers, `rows` of them, as a tab holds them.
