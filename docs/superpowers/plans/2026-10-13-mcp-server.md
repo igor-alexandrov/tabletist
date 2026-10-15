@@ -1500,6 +1500,28 @@ access`.
 | **Show Agents tab** (added on 2026-10-13). macOS: an item of the "…" menu's Agents part. Omarchy: `t` in the box that `a` opens. It opens the connection's window when it has none, and shows its Agents tab | `Action::ShowAgents`, D.4 |
 | The row's Agents column counts the writes waiting on a connection that has no window open ("1 waiting") | Not drawn on a board (question 25) |
 
+**As built in the first part of Phase 1b's fifth run** (`2026-10-15-mcp-server-1b-5a-access.md`). Where it
+draws otherwise than the board:
+
+- `src/ui/menu.rs` nests no menu: the "…" menu and the right-click menu
+  end with an Agents part under a heading of its own, Off and Read with a
+  check on the one in force, **Tables, columns and limits…** and **Show
+  Agents tab**. "Read + approved writes" and "Writes still wait for your
+  approval each time." come with writes (Phase 2). No level is disabled
+  until then: Read is open to every connection.
+- The column's 140 come out of the row's spare room and the host while
+  the host keeps 160; in a narrower window the column steps back, and the
+  menu has the Agents part.
+- Omarchy's row says `· agents read` at the end of its second line.
+  Omarchy's box (`Dialog::AgentAccess`) is `j`/`k`, `enter` to set, `t`
+  for the Agents tab and `esc`; its foot says `a opens this · j/k · t
+  agents tab`. A plain Enter answers it; what a held one repeats does not
+  connect the row behind it once it closes. The list's footer hints give
+  way from the end where the window has no room for them.
+- What the list and the box show and set is what is in force: a change
+  made outside the app that is held shows as what was shown, and the
+  person's own Read keeps it (1b-3b).
+
 ### D.3 The connection editor
 
 Board: `macOS – Edit connection, agent access`, and the right half of the
@@ -1516,6 +1538,17 @@ Omarchy connections board.
 
 Phase 1b builds access, rows and timeout. Phase 1c adds Tables. Phase 3a
 adds Masked columns.
+
+**As built** (`2026-10-15-mcp-server-1b-5a-access.md`): the section after Safety in both looks, Off and Read
+(the third level comes with writes), "Agents use this connection as dev."
+where the connection has an environment, **Rows per answer** (1 to 5000)
+and **Statement timeout** in seconds (1 to 60), checked on Save, and the
+board's note with "Every connection starts with agents Off." for its last
+sentence. The form opens with the access in force; an access the person
+changed is theirs (a raise is shown, never held), and one left as it
+opened keeps what the file says, a change made outside staying held.
+**Allow agents…** and **Tables, columns and limits…** open the form at
+this section.
 
 ### D.4 The Agents tab
 
@@ -2105,7 +2138,7 @@ is off until the person turns it on.
 | Part | Runs | State on 2026-10-13 |
 |---|---|---|
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
-| 1b. The server over stdio, with its interface | 7, below | The first four are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md` and `2026-10-14-mcp-server-1b-4b-log.md`). Nothing the others wait for is open |
+| 1b. The server over stdio, with its interface | 7, below | The first four and a half are built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md` and `2026-10-15-mcp-server-1b-5a-access.md`). Nothing the others wait for is open |
 | 1b on Windows: the way in | 1 | After 1b (question 14) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
 | 1d. HTTP with tokens | 1 | After stdio (question 9) |
@@ -2178,7 +2211,8 @@ can see what agents do and stop them.
 | **1b-3b. Changes made outside the app** (built: `2026-10-14-mcp-server-1b-3b-changes-outside.md`) | C.2: the agent settings the app last showed, kept in the state directory, and a change from outside that makes agents more able held back until the person keeps it | A program that edits the files cannot turn agents on unseen | C.2's cases |
 | **1b-4a. What agents are doing** (built: `2026-10-14-mcp-server-1b-4a-activity.md`) | `App::agents`'s feed, from `Server::calls`. The sessions that are here and "Also:". **Stop session** and **Stop agents here** | See each agent and each call as it happens, stop one agent or all on a connection | F.7: one connection, the stops, closing the tab |
 | **1b-4b. The log, and a new agent** (built: `2026-10-14-mcp-server-1b-4b-log.md`) | The Log view as a list for this connection, with All connections, and **Show log**. The notification for an agent that connects | Read the log, and hear of an agent that connects | F.7: the log's default. F.4's interface |
-| **1b-5. Letting agents in** | Settings › Agents, with the switch between panes. The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** and **Show Agents tab** pointing at them. The website: a new guide, and the reference pages | Everything Phase 1 draws, without a file edited by hand | The interface tests of Settings, Connections and the editor. The keymap. `docs/bin/check` |
+| **1b-5a. Letting agents in, per connection** (built: `2026-10-15-mcp-server-1b-5a-access.md`) | The Connections list's Agents column, its menu and Omarchy's box. The connection editor's Agents section, with **Allow agents…** in the Agents tab and **Show Agents tab** in the list. The reference pages | A connection is opened to agents, and closed, without a file edited by hand | The interface tests of Connections and the editor. The keymap. `docs/bin/check` |
+| **1b-5b. Settings › Agents** | Settings › Agents, with the switch between panes, **Show Agents tab** and **Show log** there, the Agents tab's **Other agents…** and **Settings…**. The website's guide to Agents | Everything Phase 1 draws | The interface tests of Settings. The keymap. `docs/bin/check` |
 
 - **A button arrives with what it opens.** The empty states of the third
   run have **Turn on** and **Copy** and no other action. **Show log** comes
