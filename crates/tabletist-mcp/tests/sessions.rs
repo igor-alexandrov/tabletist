@@ -144,6 +144,39 @@ async fn a_session_is_where_its_call_names_from_when_the_call_comes() {
 }
 
 #[tokio::test]
+async fn a_call_that_ends_after_a_later_one_leaves_the_session_where_the_later_one_named() {
+    use std::time::{Duration, Instant};
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    shop.list("Bookshop · staging", &shop.bookshop(), support::LIMITS);
+    let agent = Agent::connect(&server).await;
+    let arguments = json!({ "connection": "Bookshop · dev", "sql": support::slow(2) });
+    let slow = agent.call("run_query", arguments);
+    let meanwhile = async {
+        // Once the slow call is on dev, a quick one on staging, which
+        // ends first.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while server.open_sessions()[0].connections.is_empty() {
+            assert!(Instant::now() < deadline, "not here while the call runs");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        agent
+            .call(
+                "describe_schema",
+                json!({ "connection": "Bookshop · staging" }),
+            )
+            .await;
+    };
+    tokio::join!(slow, meanwhile);
+    // The slow call ended last, and staging was named last.
+    assert_eq!(
+        server.open_sessions()[0].connections,
+        ["id:Bookshop · dev", "id:Bookshop · staging"]
+    );
+    agent.close().await;
+}
+
+#[tokio::test]
 async fn a_name_a_client_gives_itself_is_a_label_a_person_can_read() {
     let shop = Shop::new();
     let (server, _log) = server(&shop);

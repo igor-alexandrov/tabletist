@@ -176,13 +176,21 @@ impl Live {
 
     /// Notes a call that came at `at`, and the connection it named, which
     /// goes to the end of those it has named. A call that ends after a
-    /// later one does not take the time back.
+    /// later one takes back neither the time nor the end: the later one
+    /// named where the session works now.
     fn called(&self, at: SystemTime, connection: Option<&str>) {
         let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+        let latest = used.last_call_at.is_none_or(|last| at >= last);
         used.last_call_at = used.last_call_at.max(Some(at));
         if let Some(id) = connection {
-            used.connections.retain(|named| named != id);
-            used.connections.push(id.to_owned());
+            let named = used.connections.iter().any(|named| named == id);
+            if latest {
+                used.connections.retain(|named| named != id);
+                used.connections.push(id.to_owned());
+            } else if !named {
+                // Where it worked before, which is not where it works now.
+                used.connections.insert(0, id.to_owned());
+            }
         }
         drop(used);
         self.changed.send_replace(());
