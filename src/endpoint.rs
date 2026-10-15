@@ -337,16 +337,45 @@ fn relay_for(exe: Option<&std::path::Path>, on_path: Option<&std::path::Path>) -
     relay_of(&program_for(exe, on_path))
 }
 
-/// `word` as a POSIX shell reads it back: as it is when nothing in it is
-/// special, else in single quotes.
+/// `word` as this system's shell reads it back: a POSIX shell's, or on
+/// Windows the Command Prompt's and PowerShell's.
 fn shell_word(word: &str) -> String {
-    let plain = !word.is_empty()
+    if cfg!(windows) {
+        windows_word(word)
+    } else {
+        posix_word(word)
+    }
+}
+
+/// Whether `word` is not empty and is made of letters, digits and
+/// `others` alone.
+fn plain_word(word: &str, others: &str) -> bool {
+    !word.is_empty()
         && word
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%,=".contains(c));
-    match plain {
+            .all(|c| c.is_ascii_alphanumeric() || others.contains(c))
+}
+
+/// `word` as a POSIX shell reads it back: as it is when nothing in it is
+/// special, else in single quotes.
+fn posix_word(word: &str) -> String {
+    match plain_word(word, "/._-+:@%,=") {
         true => word.to_owned(),
         false => format!("'{}'", word.replace('\'', "'\\''")),
+    }
+}
+
+/// `word` as the Command Prompt and PowerShell read it back, as an
+/// argument: as it is when it is made of what neither reads as anything
+/// else, else in double quotes, which keep a space, a comma, a bracket and
+/// an apostrophe as they are. A path on Windows holds no double quote. In
+/// double quotes PowerShell still expands `$` and a backtick, and the
+/// Command Prompt `%NAME%`: a path that holds them is not quoted against
+/// that, and an installed Tabletist's holds none.
+fn windows_word(word: &str) -> String {
+    match plain_word(word, "\\/._-:") {
+        true => word.to_owned(),
+        false => format!("\"{word}\""),
     }
 }
 
@@ -478,13 +507,38 @@ mod tests {
         let spaced = Path::new("/Users/ada/My Apps/Tabletist's/tabletist");
         assert_eq!(
             relay_for(Some(spaced), None),
-            "'/Users/ada/My Apps/Tabletist'\\''s/tabletist' mcp"
+            format!("{} mcp", shell_word(&spaced.to_string_lossy()))
         );
         // Not known at all: the name.
         assert_eq!(relay_for(None, None), "tabletist mcp");
         assert_eq!(
             command_for("tabletist mcp"),
             "claude mcp add tabletist -- tabletist mcp"
+        );
+    }
+
+    #[test]
+    fn a_path_is_quoted_as_each_kind_of_shell_reads_it() {
+        assert_eq!(posix_word("/usr/bin/tabletist"), "/usr/bin/tabletist");
+        assert_eq!(
+            posix_word("/Users/ada/My Apps/Tabletist's/tabletist"),
+            "'/Users/ada/My Apps/Tabletist'\\''s/tabletist'"
+        );
+        // A backslash is a POSIX shell's own.
+        assert_eq!(posix_word(r"a\b"), r"'a\b'");
+        assert_eq!(
+            windows_word(r"C:\Tools\tabletist.exe"),
+            r"C:\Tools\tabletist.exe"
+        );
+        assert_eq!(
+            windows_word(r"C:\Users\Ada Lovelace\AppData\Local\Programs\Tabletist\tabletist.exe"),
+            r#""C:\Users\Ada Lovelace\AppData\Local\Programs\Tabletist\tabletist.exe""#
+        );
+        // A comma, which PowerShell reads as a list, and brackets.
+        assert_eq!(windows_word(r"C:\a,b\t.exe"), r#""C:\a,b\t.exe""#);
+        assert_eq!(
+            windows_word(r"C:\Program Files (x86)\t.exe"),
+            r#""C:\Program Files (x86)\t.exe""#
         );
     }
 
