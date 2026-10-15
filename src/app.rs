@@ -120,7 +120,7 @@ pub struct App {
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
     /// What the next frame asks of the window: to come forward, or the
-    /// Dock's bounce.
+    /// Dock's bounce or the taskbar's flash.
     pub window_asks: Vec<egui::ViewportCommand>,
     /// SQL editors closed since the last frame: what egui keeps for each
     /// (its undo history holds copies of the script) is dropped once a
@@ -4008,8 +4008,8 @@ impl App {
     }
 
     /// Tells the person of each session that opened with its agent named,
-    /// once: a notification on Linux, the Dock's bounce on macOS, while
-    /// `[mcp] notify` is on.
+    /// once: a notification on Linux, the Dock's bounce on macOS, the
+    /// taskbar button's flash on Windows, while `[mcp] notify` is on.
     fn tell_of_sessions(&mut self, open: &[tabletist_mcp::SessionInfo]) {
         self.agents
             .told
@@ -4023,7 +4023,7 @@ impl App {
         if new.is_empty() || !self.settings.mcp_notify {
             return;
         }
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", windows)) {
             self.window_asks
                 .push(egui::ViewportCommand::RequestUserAttention(
                     egui::UserAttentionType::Informational,
@@ -6115,7 +6115,7 @@ mod tests {
 
     /// Quick open has no Agents tab to offer where agents cannot reach the
     /// app.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     #[test]
     fn quick_open_offers_no_agents_where_they_cannot_reach_the_app() {
         let (app, _dir) = app();
@@ -6180,7 +6180,7 @@ mod tests {
 
     /// What the files say beside an app that serves agents: the server on,
     /// and a connection agents may read, which nobody in the app turned on.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn changed_outside(app: &mut App) -> crate::connections::ConnectionId {
         let mut saved = crate::testing::fixture_connection();
         saved.name = "Shop".into();
@@ -6192,7 +6192,7 @@ mod tests {
         id
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn agents_shown_saved(app: &App) -> Option<crate::agents_shown::Shown> {
         app.backend
             .sent
@@ -6207,7 +6207,7 @@ mod tests {
             })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn a_change_made_outside_the_app_is_held_until_the_person_keeps_it() {
         use crate::agents_shown::Raised;
@@ -6264,7 +6264,7 @@ mod tests {
         assert!(app.agents_held.is_empty());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn the_bar_names_every_change_in_one_sentence() {
         let (mut app, _dir) = app();
@@ -6285,7 +6285,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn put_back_writes_what_the_person_was_shown_into_the_files() {
         let (mut app, dir) = app();
@@ -6319,7 +6319,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn what_the_app_itself_turns_on_is_never_held() {
         let (mut app, _dir) = app();
@@ -6335,7 +6335,7 @@ mod tests {
         assert_eq!(app.agents_held.len(), 1, "the connection is still held");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn keep_and_put_back_answer_only_what_the_bar_said() {
         use crate::agents_shown::Raised;
@@ -6390,7 +6390,7 @@ mod tests {
         assert_eq!(app.agents_held, [Raised::Server]);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn an_edit_of_something_else_keeps_nothing_that_is_held() {
         use crate::connections::AgentAccess;
@@ -6519,7 +6519,7 @@ mod tests {
         assert!(app.agents_held.is_empty(), "a lowering is not held");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn show_brings_the_window_of_the_connection_an_agent_works_on_forward() {
         let (mut app, _dir) = app();
@@ -6600,7 +6600,7 @@ mod tests {
             .unwrap()
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn the_log_is_read_a_page_at_a_time_for_this_connection_or_for_all() {
         use crate::model::AgentsView;
@@ -6654,7 +6654,7 @@ mod tests {
         assert!(log.all);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn a_call_on_the_connection_reads_the_log_again() {
         let (mut app, _dir) = app();
@@ -6695,7 +6695,7 @@ mod tests {
         assert_ne!(log_asked(&app).unwrap().2, asked);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn an_agent_that_connects_is_told_of_once_and_review_shows_the_tab() {
         let (mut app, _dir) = app();
@@ -6727,7 +6727,7 @@ mod tests {
                 .contains(&egui::ViewportCommand::RequestUserAttention(
                     egui::UserAttentionType::Informational
                 )),
-            cfg!(target_os = "macos")
+            cfg!(any(target_os = "macos", windows))
         );
         // Off in the settings: nobody is told.
         app.settings.mcp_notify = false;
@@ -6750,7 +6750,7 @@ mod tests {
         assert!(app.workspace(app.active_tab_id()).is_none());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn the_lists_access_is_the_persons_own_raised_or_lowered() {
         use crate::connections::AgentAccess;
@@ -6812,7 +6812,7 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn the_editors_access_is_the_persons_own_and_allow_agents_chooses_read() {
         use crate::connections::AgentAccess;

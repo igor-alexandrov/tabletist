@@ -7,11 +7,11 @@ pub mod agents;
 // Where agents can reach the app: elsewhere nothing of them shows, which
 // the last test of `agents` holds.
 #[cfg(test)]
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod agents_tests;
 // Settings › Agents, which is listed where agents can reach the app.
 #[cfg(test)]
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod agent_settings_tests;
 pub mod cell_editor;
 #[cfg(test)]

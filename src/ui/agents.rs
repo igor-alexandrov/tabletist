@@ -1516,7 +1516,7 @@ fn ended(
 mod tests {
     /// Where agents cannot reach the app, nothing of them shows: no entry,
     /// and no tab.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     #[test]
     fn nothing_of_agents_shows_where_they_cannot_reach_the_app() {
         let mut harness = crate::testing::Harness::new();

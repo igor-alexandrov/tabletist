@@ -34,7 +34,7 @@ already open, and Shift+Enter opens it again.
 | **SSL mode**, **CA certificate** | See [TLS](#tls) |
 | **Connect through SSH tunnel** | See [SSH tunnels](#ssh-tunnels) |
 | **Open read-only** | See [Open read-only](#open-read-only) |
-| **Agents** | See [Agents](#agents) (Linux and macOS) |
+| **Agents** | See [Agents](#agents) |
 
 **Test** checks the connection without saving it.
 

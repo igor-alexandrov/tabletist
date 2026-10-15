@@ -332,6 +332,32 @@ sidebar entry, no pane in Settings, no command in the keymap or in quick
 open. The code is the same on all three and its tests run on all three, so
 the look does not fall behind: what waits is the way in.
 
+**As built on Windows** (`2026-10-15-mcp-server-1b-6-windows.md`). Agreed on 2026-10-15, where it went
+otherwise:
+
+- **The pipe's name is new each time the server starts**, a random one
+  under `\\.\pipe\tabletist-mcp-`, and the server writes it to
+  `mcp.pipe` beside `mcp.key` in the state directory, which is the
+  user's own. The fixed name per user that this section planned could be
+  made first by another account, and the relay would send it the key. The
+  relay takes only a name of that form from the file: never another
+  computer's pipe. The first instance is made with `first_pipe_instance`
+  and every one with `reject_remote_clients`; the key still guards the
+  pipe from the other accounts its default access list lets open it.
+- **A pipe cannot be closed one way.** On Windows the end of the agent's
+  stdin ends the relay and the session, where a socket lets the app still
+  answer what it was asked. A client closes stdin once it has its
+  answers.
+- **The relay from the GUI binary works**, and CI holds it: the Windows
+  job also runs the relay's tests on a release build, whose binary a test
+  reads to be sure it is a GUI program. No console target was needed.
+- The command for Claude Code names the installed program by its whole
+  path, in double quotes where it has a space
+  (`%LOCALAPPDATA%\Programs\Tabletist\tabletist.exe`), as the Command
+  Prompt and PowerShell read it. Cursor's entry has the path as JSON
+  writes it.
+- A new agent flashes the taskbar button, as the Dock bounces on macOS.
+
 ### A.3 HTTP
 
 `http://127.0.0.1:7433/mcp`, the Streamable HTTP transport.
@@ -2178,8 +2204,8 @@ is off until the person turns it on.
 | Part | Runs | State on 2026-10-13 |
 |---|---|---|
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
-| 1b. The server over stdio, with its interface | 9, below | Built on Linux and macOS (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`). Windows' way in is next |
-| 1b on Windows: the way in | 1 | After 1b (question 14) |
+| 1b. The server over stdio, with its interface | 9, below | Built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`) |
+| 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
 | 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
 | 1d. HTTP with tokens | 1 | After stdio (question 9) |
 
@@ -2287,6 +2313,8 @@ can see what agents do and stop them.
 pipe, the relay from the GUI binary or a console target if that fails
 (A.2), its test on the Windows CI runner, the taskbar's flash for a
 notification, and the function that says the server is available there.
+Built (`2026-10-15-mcp-server-1b-6-windows.md`): the relay from the GUI binary, tested on CI's release
+build; no console target.
 
 **1c. Hidden tables.**
 

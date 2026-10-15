@@ -27,7 +27,7 @@ use crate::env::Platform;
 use crate::model::SecretKind;
 use crate::secrets::{Keyring, password_account, ssh_account};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod listen;
 #[cfg(target_os = "linux")]
 mod notify;
@@ -219,7 +219,7 @@ pub(super) struct Running {
     watching: tokio::task::JoinHandle<()>,
     /// Tells the app of each call as it ends.
     telling: tokio::task::JoinHandle<()>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     listening: Option<listen::Listening>,
 }
 
@@ -369,7 +369,7 @@ impl Agents {
                             return;
                         }
                     };
-                    #[cfg(not(unix))]
+                    #[cfg(not(any(unix, windows)))]
                     let () = listening;
                     let chores = tokio::spawn(chores(opened.log, gateway, log_days));
                     let watching = tokio::spawn(sessions(server.clone(), changes, outbox.clone()));
@@ -379,7 +379,7 @@ impl Agents {
                         chores,
                         watching,
                         telling,
-                        #[cfg(unix)]
+                        #[cfg(any(unix, windows))]
                         listening,
                     });
                     log::info!("the agent server started");
@@ -412,13 +412,13 @@ impl Running {
         self.chores.abort();
         self.watching.abort();
         self.telling.abort();
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         drop(self.listening);
     }
 }
 
 /// Listens in `endpoint` for `server`, where there is one.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn listening(
     endpoint: Option<&std::path::Path>,
     server: &tabletist_mcp::Server<AppGateway>,
@@ -429,25 +429,25 @@ fn listening(
 }
 
 /// Whether another Tabletist serves agents in `dir`.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn served_by_another(dir: &std::path::Path) -> bool {
     listen::served_by_another(dir)
 }
 
-/// Nothing serves agents here yet.
-#[cfg(not(unix))]
+/// Nothing serves agents here (`endpoint::AVAILABLE`).
+#[cfg(not(any(unix, windows)))]
 fn served_by_another(_dir: &std::path::Path) -> bool {
     false
 }
 
-/// Nothing listens here yet (`endpoint::AVAILABLE`).
-#[cfg(not(unix))]
+/// Nothing listens here (`endpoint::AVAILABLE`).
+#[cfg(not(any(unix, windows)))]
 fn listening(
     endpoint: Option<&std::path::Path>,
     _server: &tabletist_mcp::Server<AppGateway>,
 ) -> Result<(), String> {
     match endpoint {
-        Some(_) => Err("agents cannot reach Tabletist on this system yet".into()),
+        Some(_) => Err("agents cannot reach Tabletist on this system".into()),
         None => Ok(()),
     }
 }
@@ -1605,7 +1605,7 @@ mod tests {
     /// Another Tabletist serves agents: this one's server does not start,
     /// and does not open the log the other has open, which one of another
     /// version would set aside.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn a_start_where_another_tabletist_serves_agents_leaves_its_log_alone() {
         let dir = tempfile::tempdir().unwrap();
