@@ -87,6 +87,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"
 rfd = "0.17"
 # Stable ids for saved connections, so renaming one keeps its identity.
 uuid = { version = "1", features = ["v4"] }
+# The proofs the app and `tabletist mcp` give each other that each holds
+# the key, before either says anything else (src/endpoint.rs). In the tree
+# through russh, on every system: nothing new is built.
+hmac = { version = "0.13", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 
 # One protected-store API for saved passwords; each platform's native
 # provider below. Passwords never go into connections.toml.

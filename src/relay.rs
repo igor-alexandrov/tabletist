@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::endpoint::{self, NOT_RUNNING};
+use crate::endpoint::{self, NOT_RUNNING, Side};
 
 /// How long the relay tries the endpoint: the app may be starting.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const REACH_TIME: Duration = Duration::from_secs(2);
 
 /// How long it waits for the agent's first request, to answer why it
@@ -54,14 +54,44 @@ async fn relay(dir: &Path) -> ExitCode {
     }
 }
 
-/// The app's socket, once it has taken the key. Why not, for the agent.
+/// The app's socket.
 #[cfg(unix)]
-async fn reach(dir: &Path) -> Result<tokio::net::UnixStream, String> {
+type Stream = tokio::net::UnixStream;
+
+/// The app's pipe.
+#[cfg(windows)]
+type Stream = tokio::net::windows::named_pipe::NamedPipeClient;
+
+/// Connects to the app's socket in `dir`.
+#[cfg(unix)]
+async fn connect(dir: &Path) -> std::io::Result<Stream> {
+    tokio::net::UnixStream::connect(dir.join(endpoint::SOCKET)).await
+}
+
+/// Connects to the app's pipe, by the name its server wrote in `dir`. A
+/// name that is not one the app makes is not tried: the key would go to
+/// whatever it names.
+#[cfg(windows)]
+async fn connect(dir: &Path) -> std::io::Result<Stream> {
+    let name = std::fs::read_to_string(dir.join(endpoint::PIPE))?;
+    let name = name.trim();
+    if !endpoint::is_pipe(name) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not a pipe of Tabletist's",
+        ));
+    }
+    // Busy while the server makes its next instance: tried again.
+    tokio::net::windows::named_pipe::ClientOptions::new().open(name)
+}
+
+/// The app's endpoint, once it has taken the key. Why not, for the agent.
+#[cfg(any(unix, windows))]
+async fn reach(dir: &Path) -> Result<Stream, String> {
     use tokio::io::AsyncWriteExt;
-    let socket = dir.join(endpoint::SOCKET);
     let deadline = tokio::time::Instant::now() + REACH_TIME;
     let mut stream = loop {
-        match tokio::net::UnixStream::connect(&socket).await {
+        match connect(dir).await {
             Ok(stream) => break stream,
             Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -69,52 +99,85 @@ async fn reach(dir: &Path) -> Result<tokio::net::UnixStream, String> {
             Err(_) => return Err(NOT_RUNNING.into()),
         }
     };
-    let key = std::fs::read_to_string(dir.join(endpoint::KEY)).map_err(|_| NOT_RUNNING)?;
+    let challenge = endpoint::new_nonce();
     let hello = endpoint::Hello {
-        key: key.trim().to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        cwd: std::env::current_dir()
-            .ok()
-            .map(|cwd| cwd.to_string_lossy().into_owned()),
+        challenge: challenge.clone(),
     };
     stream
         .write_all(&endpoint::line_of(&hello))
         .await
         .map_err(|_| NOT_RUNNING)?;
-    let answer = tokio::time::timeout(
-        endpoint::LINE_TIME,
-        endpoint::read_line(&mut stream, endpoint::MAX_LINE),
-    )
-    .await;
-    let answer = match answer {
-        Ok(Ok(Some(line))) => serde_json::from_slice::<endpoint::Answer>(&line).ok(),
-        _ => None,
+    let (proof, theirs) = match answer(&mut stream).await {
+        Some(endpoint::Answer::Prove { proof, challenge }) => (proof, challenge),
+        Some(endpoint::Answer::Refused(said)) => return Err(said),
+        Some(endpoint::Answer::Ok) | None => return Err(NO_ANSWER.into()),
     };
-    match answer {
+    // Read now, the key of the start that answers. What cannot prove it
+    // holds it is told nothing: not the relay's proof, nor the agent's
+    // first request.
+    let key = std::fs::read_to_string(dir.join(endpoint::KEY)).map_err(|_| NOT_RUNNING)?;
+    let key = key.trim();
+    if !endpoint::same_key(&proof, &endpoint::prove(key, Side::App, &challenge)) {
+        return Err(endpoint::NOT_PROVEN.into());
+    }
+    let reply = endpoint::Reply {
+        proof: endpoint::prove(key, Side::Relay, &theirs),
+        cwd: std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.to_string_lossy().into_owned()),
+    };
+    stream
+        .write_all(&endpoint::line_of(&reply))
+        .await
+        .map_err(|_| NOT_RUNNING)?;
+    match answer(&mut stream).await {
         Some(endpoint::Answer::Ok) => Ok(stream),
         Some(endpoint::Answer::Refused(said)) => Err(said),
-        None => Err("Tabletist did not answer the relay.".into()),
+        Some(endpoint::Answer::Prove { .. }) | None => Err(NO_ANSWER.into()),
     }
 }
 
-/// Nothing to reach here yet (`endpoint::AVAILABLE`).
-#[cfg(not(unix))]
+/// What the relay says when the app says nothing it can read.
+#[cfg(any(unix, windows))]
+const NO_ANSWER: &str = "Tabletist did not answer the relay.";
+
+/// The app's next line, within its time.
+#[cfg(any(unix, windows))]
+async fn answer(stream: &mut Stream) -> Option<endpoint::Answer> {
+    let read = tokio::time::timeout(
+        endpoint::LINE_TIME,
+        endpoint::read_line(stream, endpoint::MAX_LINE),
+    )
+    .await;
+    match read {
+        Ok(Ok(Some(line))) => serde_json::from_slice(&line).ok(),
+        _ => None,
+    }
+}
+
+/// Nothing to reach here (`endpoint::AVAILABLE`).
+#[cfg(not(any(unix, windows)))]
 async fn reach(_dir: &Path) -> Result<std::convert::Infallible, String> {
-    Err("Agents cannot reach Tabletist on this system yet.".into())
+    Err("Agents cannot reach Tabletist on this system.".into())
 }
 
 /// Copies the agent's bytes to the app and the app's to the agent, until
-/// the app ends the session. The agent's end only ends what it sends: the
-/// app still answers what it was asked.
-#[cfg(unix)]
-async fn pump(stream: tokio::net::UnixStream) -> ExitCode {
+/// the app ends the session. On a socket the agent's end only ends what
+/// it sends: the app still answers what it was asked. A pipe cannot be
+/// closed one way: there the agent's end ends the session, which a client
+/// does once it has its answers.
+#[cfg(any(unix, windows))]
+async fn pump(stream: Stream) -> ExitCode {
     use tokio::io::AsyncWriteExt;
-    let (mut from_app, mut to_app) = stream.into_split();
+    let (mut from_app, mut to_app) = tokio::io::split(stream);
     let up = async {
         let mut stdin = tokio::io::stdin();
         let _ = tokio::io::copy(&mut stdin, &mut to_app).await;
         let _ = to_app.shutdown().await;
-        std::future::pending::<()>().await;
+        if cfg!(unix) {
+            std::future::pending::<()>().await;
+        }
     };
     let down = async {
         let mut stdout = tokio::io::stdout();
@@ -124,7 +187,7 @@ async fn pump(stream: tokio::net::UnixStream) -> ExitCode {
     };
     let done = tokio::select! {
         done = down => done,
-        () = up => unreachable!(),
+        () = up => true,
     };
     match done {
         true => ExitCode::SUCCESS,
@@ -132,7 +195,7 @@ async fn pump(stream: tokio::net::UnixStream) -> ExitCode {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 async fn pump(stream: std::convert::Infallible) -> ExitCode {
     match stream {}
 }
@@ -193,6 +256,64 @@ fn refusal(id: serde_json::Value, said: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Something at the endpoint in `dir` that is not the app: it does not
+    /// hold the key in `dir`. Returns what it reads after the relay's
+    /// hello, once the relay has stopped.
+    #[cfg(any(unix, windows))]
+    async fn impostor(dir: &Path) -> tokio::task::JoinHandle<Vec<u8>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(endpoint::KEY), endpoint::new_key()).unwrap();
+        #[cfg(unix)]
+        let listener = tokio::net::UnixListener::bind(dir.join(endpoint::SOCKET)).unwrap();
+        // A pipe of the name a stopped app left in its file, which another
+        // account can make once the app's is gone.
+        #[cfg(windows)]
+        let pipe = {
+            let name = endpoint::new_pipe();
+            std::fs::write(dir.join(endpoint::PIPE), &name).unwrap();
+            tokio::net::windows::named_pipe::ServerOptions::new()
+                .create(&name)
+                .unwrap()
+        };
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            let (mut stream, _) = listener.accept().await.unwrap();
+            #[cfg(windows)]
+            let mut stream = {
+                pipe.connect().await.unwrap();
+                pipe
+            };
+            let hello = endpoint::read_line(&mut stream, endpoint::MAX_LINE)
+                .await
+                .unwrap()
+                .unwrap();
+            let hello: endpoint::Hello = serde_json::from_slice(&hello).unwrap();
+            let guess = endpoint::Answer::Prove {
+                proof: endpoint::prove(&endpoint::new_key(), Side::App, &hello.challenge),
+                challenge: endpoint::new_nonce(),
+            };
+            stream.write_all(&endpoint::line_of(&guess)).await.unwrap();
+            let mut rest = Vec::new();
+            let _ = stream.read_to_end(&mut rest).await;
+            rest
+        })
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn what_cannot_prove_it_holds_the_key_is_told_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = dir.path().join("run");
+        let told = impostor(&at).await;
+        assert_eq!(
+            reach(&at).await.err().as_deref(),
+            Some(endpoint::NOT_PROVEN)
+        );
+        // No proof of the relay's, no working directory, no request.
+        assert_eq!(told.await.unwrap(), Vec::<u8>::new());
+    }
 
     #[test]
     fn only_a_request_is_answered_and_with_its_own_id() {

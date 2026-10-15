@@ -41,7 +41,9 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # Windows builds the app a second time, in release, for the relay's
+    # step: about 30 minutes with a warm cache.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +58,13 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --workspace --all-targets
+      # The relay is the app's own program, which a release build on
+      # Windows makes a GUI program: an agent must reach the app through
+      # that one too.
+      - name: The relay from the GUI build (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 30
+        run: cargo test --locked --release --test cli -- "mcp::" a_release_build_on_windows_is_a_gui_program
       - name: Native keyring round trip
         if: runner.os == 'Windows' || runner.os == 'macOS'
         timeout-minutes: 2

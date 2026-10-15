@@ -2,10 +2,16 @@
 //! private to the user (`AppDirs::agents_dir`), and a key beside it that
 //! the relay sends first.
 //!
-//! The relay sends one line, a [`Hello`], and the app answers one line, an
-//! [`Answer`]. After that the bytes are the agent's and the server's, and
-//! the relay understands none of them: the protocol lives in the app, so an
-//! old relay keeps working with a newer one.
+//! The relay sends one line, a [`Hello`] with a challenge. The app answers
+//! with its proof that it holds the key, and a challenge of its own
+//! ([`Answer::Prove`]); the relay checks it before it says anything else,
+//! and sends its own proof ([`Reply`]); the app answers [`Answer::Ok`].
+//! Neither sends the key, so what does not hold it learns nothing: not the
+//! key from a relay that reached something else at the endpoint, which on
+//! Windows another account can make once the app's pipe is gone, nor an
+//! agent's requests. After that the bytes are the agent's and the
+//! server's, and the relay understands none of them: the protocol lives in
+//! the app.
 
 use std::time::Duration;
 
@@ -19,6 +25,11 @@ pub const AVAILABLE: bool = cfg!(unix);
 /// What the agent is told when the app is not there to reach, or stops as
 /// the relay says its line.
 pub const NOT_RUNNING: &str = "Tabletist is not running, or agents are off in it. Open Tabletist, turn agents on, then reconnect.";
+
+/// What the agent is told when what answered at the endpoint could not
+/// prove it holds the key: not this Tabletist, or a key file that changed
+/// since. It was told nothing.
+pub const NOT_PROVEN: &str = "What answered at Tabletist's endpoint did not prove it holds Tabletist's key, and was told nothing. Open Tabletist, then start the agent's MCP server again.";
 
 /// Why a server does not start where another Tabletist serves agents
 /// already: the person is told it after the app's own words.
@@ -36,6 +47,15 @@ pub const LOCK: &str = "mcp.lock";
 /// The key's name in the directory: new each time the server starts.
 pub const KEY: &str = "mcp.key";
 
+/// On Windows, the name of the file in the directory that holds the pipe's
+/// name, which is new each time the server starts: no other account can
+/// know it before the server makes the pipe, and so none can make one of
+/// that name first and be sent the key.
+pub const PIPE: &str = "mcp.pipe";
+
+/// How every pipe's name starts. The rest is [`new_pipe`]'s hex.
+pub const PIPE_PREFIX: &str = r"\\.\pipe\tabletist-mcp-";
+
 /// The longest path of a socket macOS takes (its `sun_path` holds 104
 /// bytes, the last of them the end of the string).
 pub const MAX_SOCKET_PATH: usize = 103;
@@ -50,24 +70,67 @@ pub const LINE_TIME: Duration = Duration::from_secs(5);
 /// What the relay says first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
-    /// What the app wrote to [`KEY`] when its server started.
-    pub key: String,
     /// The relay's version, for the app's log.
     pub version: String,
-    /// The directory the agent started the relay in: its last part names
-    /// the session's project for the person.
-    pub cwd: Option<String>,
+    /// What the app proves it holds the key with ([`new_nonce`]).
+    pub challenge: String,
 }
 
 /// What the app answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Answer {
+    /// The app holds the key: `proof` is [`prove`]'s for the relay's
+    /// challenge, from the app's [`Side`]. The relay proves it holds the
+    /// key too, for `challenge`.
+    Prove { proof: String, challenge: String },
     /// The session begins with the next byte.
     Ok,
     /// It does not, and why, for the person: the relay passes it on to the
     /// agent.
     Refused(String),
+}
+
+/// The relay's proof that it holds the key, for the app's challenge, and
+/// what it tells only an app that has proved it holds the key too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    pub proof: String,
+    /// The directory the agent started the relay in: its last part names
+    /// the session's project for the person.
+    pub cwd: Option<String>,
+}
+
+/// Who proves: each side's proof is its own, so neither can hand back the
+/// other's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    App,
+    Relay,
+}
+
+/// A new challenge: 122 random bits, as hex.
+pub fn new_nonce() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// The proof that `side` holds `key`, for `challenge`: an HMAC-SHA-256 of
+/// the side's name and the challenge under the key, as hex.
+pub fn prove(key: &str, side: Side, challenge: &str) -> String {
+    use hmac::{KeyInit, Mac};
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes())
+        .expect("HMAC takes a key of any length");
+    let name: &[u8] = match side {
+        Side::App => b"tabletist app\n",
+        Side::Relay => b"tabletist relay\n",
+    };
+    mac.update(name);
+    mac.update(challenge.as_bytes());
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// A key: 244 random bits, as two version 4 UUIDs' worth of hex.
@@ -77,6 +140,18 @@ pub fn new_key() -> String {
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     )
+}
+
+/// A new name for the server's pipe.
+pub fn new_pipe() -> String {
+    format!("{PIPE_PREFIX}{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Whether `name`, as read from [`PIPE`], is a name [`new_pipe`] makes: a
+/// pipe on this computer, never a path to another one's.
+pub fn is_pipe(name: &str) -> bool {
+    name.strip_prefix(PIPE_PREFIX)
+        .is_some_and(|rest| rest.len() == 32 && rest.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Whether `given` is `key`, in a time that does not tell how much of it
@@ -326,9 +401,8 @@ mod tests {
     #[test]
     fn the_lines_are_json_and_an_answer_names_its_kind() {
         let hello = Hello {
-            key: "k".into(),
             version: "1.0.0".into(),
-            cwd: Some("/home/ada".into()),
+            challenge: new_nonce(),
         };
         let line = line_of(&hello);
         assert!(line.ends_with(b"\n"));
@@ -341,11 +415,49 @@ mod tests {
             line_of(&Answer::Refused("no".into())),
             b"{\"refused\":\"no\"}\n"
         );
+        assert_eq!(
+            line_of(&Answer::Prove {
+                proof: "p".into(),
+                challenge: "c".into()
+            }),
+            b"{\"prove\":{\"proof\":\"p\",\"challenge\":\"c\"}}\n"
+        );
         // A newer relay may say more: what this one does not know is
         // passed over.
-        let newer: Hello =
-            serde_json::from_str(r#"{"key":"k","version":"9","cwd":null,"shell":"zsh"}"#).unwrap();
+        let newer: Reply =
+            serde_json::from_str(r#"{"proof":"p","cwd":null,"shell":"zsh"}"#).unwrap();
         assert_eq!(newer.cwd, None);
+    }
+
+    #[test]
+    fn a_proof_is_the_keys_and_the_sides_and_the_challenges() {
+        let key = new_key();
+        let challenge = new_nonce();
+        let proof = prove(&key, Side::App, &challenge);
+        // HMAC-SHA-256, as hex.
+        assert_eq!(proof.len(), 64);
+        assert!(proof.bytes().all(|b| b.is_ascii_hexdigit()), "{proof}");
+        assert_eq!(prove(&key, Side::App, &challenge), proof);
+        // Another key, another side or another challenge: another proof.
+        // The app's cannot be handed back as the relay's.
+        assert_ne!(prove(&new_key(), Side::App, &challenge), proof);
+        assert_ne!(prove(&key, Side::Relay, &challenge), proof);
+        assert_ne!(prove(&key, Side::App, &new_nonce()), proof);
+        // RFC 4231's second case, under the app's side's name: the HMAC is
+        // the standard one.
+        use hmac::{KeyInit, Mac};
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(b"Jefe").unwrap();
+        mac.update(b"what do ya want for nothing?");
+        let standard: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            standard,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
     }
 
     #[test]
@@ -362,6 +474,7 @@ mod tests {
             relay_for(Some(bundle), None),
             "/Applications/Tabletist.app/Contents/MacOS/tabletist mcp"
         );
+        // Quoted where it must be, as this system's shell reads it.
         let spaced = Path::new("/Users/ada/My Apps/Tabletist's/tabletist");
         assert_eq!(
             relay_for(Some(spaced), None),
@@ -373,6 +486,25 @@ mod tests {
             command_for("tabletist mcp"),
             "claude mcp add tabletist -- tabletist mcp"
         );
+    }
+
+    #[test]
+    fn a_pipes_name_is_new_each_time_and_one_read_back_is_checked() {
+        let name = new_pipe();
+        assert!(name.starts_with(r"\\.\pipe\tabletist-mcp-"), "{name}");
+        assert!(is_pipe(&name));
+        assert_ne!(name, new_pipe());
+        // Nothing else is taken for one: another computer's pipe least of
+        // all, which the key would be sent to.
+        for other in [
+            r"\\server\pipe\tabletist-mcp-0123456789abcdef0123456789abcdef",
+            r"\\.\pipe\tabletist-mcp-",
+            r"\\.\pipe\tabletist-mcp-0123456789abcdef0123456789abcdeg",
+            r"\\.\pipe\tabletist-mcp-0123456789abcdef0123456789abcdef0",
+            "",
+        ] {
+            assert!(!is_pipe(other), "{other}");
+        }
     }
 
     #[test]

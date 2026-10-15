@@ -35,9 +35,28 @@ fn demo_flags_require_demo() {
     );
 }
 
+/// A release build on Windows is a GUI program (`src/main.rs`), and the
+/// relay is that same program: CI runs the relay's tests below on it too,
+/// and this says that they ran on what a person installs.
+#[cfg(all(windows, not(debug_assertions)))]
+#[test]
+fn a_release_build_on_windows_is_a_gui_program() {
+    let exe = std::fs::read(env!("CARGO_BIN_EXE_tabletist")).unwrap();
+    let field = |at: usize, len: usize| &exe[at..at + len];
+    // Where the PE header starts, from the DOS header.
+    let pe = u32::from_le_bytes(field(0x3c, 4).try_into().unwrap()) as usize;
+    assert_eq!(field(pe, 4), b"PE\0\0");
+    // The optional header follows the signature and the 20 bytes of the
+    // file header; its subsystem is 68 bytes in, for 32 and 64 bits alike.
+    let subsystem = u16::from_le_bytes(field(pe + 24 + 68, 2).try_into().unwrap());
+    // IMAGE_SUBSYSTEM_WINDOWS_GUI.
+    assert_eq!(subsystem, 2);
+}
+
 /// `tabletist mcp`, the relay an agent starts, against the app's backend
-/// serving agents in a folder of the test's own.
-#[cfg(unix)]
+/// serving agents in a folder of the test's own: through a socket on Linux
+/// and macOS, a named pipe on Windows.
+#[cfg(any(unix, windows))]
 mod mcp {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::path::{Path, PathBuf};
@@ -414,7 +433,10 @@ mod mcp {
         // Stopped, nothing answers: as if the app were not running.
         backend.send(Command::Agents(AgentsCommand::Stop));
         assert_eq!(agents_said(&mut backend), AgentsEvent::Stopped);
-        assert!(!endpoint.join("mcp.sock").exists());
+        // The key is the test's own now, and stays.
+        for file in ["mcp.sock", "mcp.pipe"] {
+            assert!(!endpoint.join(file).exists(), "{file}");
+        }
         let (message, _) = refused(&endpoint, &project);
         assert_eq!(message, tabletist::endpoint::NOT_RUNNING);
     }
