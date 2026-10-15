@@ -971,6 +971,9 @@ fn a_call_selected_with_j_is_kept_in_sight() {
             page: Ok(page),
         },
     );
+    // Only the lines in sight are laid out.
+    assert!(harness.painted_rect("SELECT 0").is_some());
+    assert!(harness.painted_rect("SELECT 150").is_none());
     for _ in 0..61 {
         super::tests::type_key(&mut harness, egui::Key::J, "j");
     }

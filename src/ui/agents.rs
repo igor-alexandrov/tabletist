@@ -1134,21 +1134,41 @@ fn log_view(
     widgets::announce(ui, head, &names.join(" · "));
     let calls = Rect::from_min_max(pos2(list.left(), head.bottom()), list.max);
     let mut area = ui.new_child(egui::UiBuilder::new().max_rect(calls));
+    // Rows touch: the scroll area counts each `row` high.
+    area.spacing_mut().item_spacing.y = 0.0;
+    let lines = log.calls.len() + usize::from(log.more);
+    // A selection that moved since the last frame is brought into sight:
+    // `j` and `k` move it past the window's edge.
+    let seen_id = area.id().with("selected-seen");
+    let seen: Option<i64> = area.data(|data| data.get_temp(seen_id)).flatten();
+    let chosen_at = log
+        .selected
+        .and_then(|id| log.calls.iter().position(|logged| logged.id == id));
+    // Only the lines in sight are laid out: a log paged back holds
+    // thousands.
     egui::ScrollArea::vertical()
         .id_salt("agents-log")
         .auto_shrink([false, false])
-        .show(&mut area, |ui| {
-            let height = row * (log.calls.len() + usize::from(log.more)) as f32;
-            let (rect, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), height), egui::Sense::hover());
-            let mut y = rect.top();
-            // A selection that moved since the last frame is brought into
-            // sight: `j` and `k` move it past the window's edge.
-            let seen_id = ui.id().with("selected-seen");
-            let seen: Option<i64> = ui.data(|data| data.get_temp(seen_id)).flatten();
-            for logged in &log.calls {
+        .show_rows(&mut area, row, lines, |ui, range| {
+            let top = ui.cursor().top();
+            let (rect, _) = ui.allocate_exact_size(
+                vec2(ui.available_width(), row * range.len() as f32),
+                egui::Sense::hover(),
+            );
+            // Where line `index` is, in sight or not.
+            let line_at = |index: usize| {
+                let y = top + (index as f32 - range.start as f32) * row;
+                Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), row))
+            };
+            if seen != log.selected
+                && let Some(index) = chosen_at
+            {
+                ui.scroll_to_rect(line_at(index), None);
+            }
+            let shown = range.start.min(log.calls.len())..range.end.min(log.calls.len());
+            for (index, logged) in log.calls[shown.clone()].iter().enumerate() {
                 let entry = &logged.entry;
-                let line = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), row));
+                let line = line_at(shown.start + index);
                 let clicked = ui
                     .interact(
                         line,
@@ -1160,9 +1180,6 @@ fn log_view(
                     ask = Some(LogAsk::Select(logged.id));
                 }
                 if log.selected == Some(logged.id) {
-                    if seen != log.selected {
-                        ui.scroll_to_rect(line, None);
-                    }
                     ui.painter().rect_filled(line, 0.0, palette.selection);
                     if look.terminal {
                         let edge = Rect::from_min_size(line.min, vec2(2.0, line.height()));
@@ -1202,20 +1219,24 @@ fn log_view(
                 if !look.terminal {
                     widgets::hline(ui, line.x_range(), line.bottom() - 0.5, palette.border);
                 }
-                y += row;
             }
-            ui.data_mut(|data| data.insert_temp(seen_id, log.selected));
-            if log.more {
+            // Show more, the line after the last call, where it is in
+            // sight.
+            if log.more && range.contains(&log.calls.len()) {
                 let label = gettext(locale, "Show more");
                 let more = widgets::ButtonSpec::new(&label).link().padding(6.0);
                 let width = more.width(ui, look);
-                let at =
-                    Rect::from_min_size(pos2(rect.left() + 10.0, y + 2.0), vec2(width, row - 4.0));
+                let line = line_at(log.calls.len());
+                let at = Rect::from_min_size(
+                    pos2(line.left() + 10.0, line.top() + 2.0),
+                    vec2(width, row - 4.0),
+                );
                 if more.show_at(ui, at, look, palette).clicked() {
                     ask = Some(LogAsk::More);
                 }
             }
         });
+    area.data_mut(|data| data.insert_temp(seen_id, log.selected));
     ask
 }
 
