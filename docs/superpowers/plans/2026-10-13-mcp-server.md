@@ -936,8 +936,8 @@ where it went otherwise:
   `VIEW_ROUTINE_USAGE` lists, or every view where the server has no such
   table, and a call the rewritten query writes `` `db`.`f`() `` is checked
   as a function. On PostgreSQL a function the users wrote for an operator,
-  a cast, an operator class or a type's input and output runs wherever a
-  value meets it, so while one is there every statement is refused on a
+  a cast, an operator class, a type's input and output, a range type or a
+  domain's constraint runs wherever a value meets it, so while one is there every statement is refused on a
   connection that hides anything. A function the users wrote of one row,
   which PostgreSQL calls as a column (`b.f` is `f(b)`), is refused where
   a name after a dot is its name.

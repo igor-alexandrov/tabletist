@@ -97,7 +97,8 @@ ORDER BY 1"
 
 /// The functions the users wrote that a statement can call without naming
 /// them: an operator's (and its estimates'), a cast's, an operator class's,
-/// a type's input and output.
+/// a type's input, output and modifiers, a range type's, and one a domain's
+/// constraint calls, which a cast to the domain runs.
 fn unnamed_calls_sql() -> String {
     format!(
         "\
@@ -109,7 +110,13 @@ WHERE EXISTS (SELECT 1 FROM pg_operator o WHERE u.oid IN (o.oprcode, o.oprrest, 
     OR EXISTS (SELECT 1 FROM pg_amproc a WHERE a.amproc = u.oid)
     OR EXISTS (
         SELECT 1 FROM pg_type t
-        WHERE u.oid IN (t.typinput, t.typoutput, t.typreceive, t.typsend)
+        WHERE u.oid IN (t.typinput, t.typoutput, t.typreceive, t.typsend, t.typmodin, t.typmodout)
+    )
+    OR EXISTS (SELECT 1 FROM pg_range r WHERE u.oid IN (r.rngcanonical, r.rngsubdiff))
+    OR EXISTS (
+        SELECT 1 FROM pg_constraint k
+        JOIN pg_depend d ON d.classid = 'pg_constraint'::regclass AND d.objid = k.oid
+        WHERE k.contypid <> 0 AND d.refclassid = 'pg_proc'::regclass AND d.refobjid = u.oid
     )
 ORDER BY 1"
     )
