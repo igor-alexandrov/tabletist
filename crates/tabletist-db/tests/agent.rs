@@ -414,6 +414,14 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             let reach = "SELECT max(b.book_reach) FROM books b";
             let found = count(hiding(connection, &Tables::All, reach).await);
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
+            // A listed partitioned table reads from its partitions, which
+            // the list need not name.
+            let moves = Tables::Only(vec![named("stock_moves")]);
+            let sql = "SELECT count(*) FROM stock_moves";
+            let found = count(hiding(connection, &moves, sql).await);
+            assert_eq!(found, Ok(vec![vec![Value::Int(2)]]), "{on}");
+            let error = hiding(connection, &only_books, sql).await.unwrap_err();
+            assert_eq!(error, hidden_refusal("stock_moves", None), "{on}");
         }
         Dialect::MySql => {
             // An index hint's FOR, and an alias after it.

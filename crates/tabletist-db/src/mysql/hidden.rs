@@ -224,7 +224,7 @@ async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
                 schema,
                 name,
                 depends_on,
-                shadow: false,
+                part: false,
             }
         })
         .collect();
@@ -254,7 +254,7 @@ mod tests {
             name: name.into(),
             depends_on: Vec::new(),
             opaque: false,
-            shadow: false,
+            part: false,
         };
         let catalog = Catalog {
             relations: vec![relation("books"), relation("customers")],

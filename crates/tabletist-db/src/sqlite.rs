@@ -1217,7 +1217,7 @@ fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(map_error)?;
     let mut relations: Vec<Relation> = Vec::new();
-    for (schema, name, shadow, owner) in rows {
+    for (schema, name, part, owner) in rows {
         let same = relations
             .last()
             .is_some_and(|last| last.schema == schema && last.name == name);
@@ -1227,7 +1227,7 @@ fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
                 name,
                 depends_on: Vec::new(),
                 opaque: false,
-                shadow,
+                part,
             });
         }
         if let (Some(owner), Some(last)) = (owner, relations.last_mut()) {

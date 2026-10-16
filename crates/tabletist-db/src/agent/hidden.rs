@@ -97,10 +97,11 @@ pub struct Relation {
     /// not say what its views read, and a view or a table with a policy
     /// that calls a function the users wrote. Hidden while anything is.
     pub opaque: bool,
-    /// Whether it is a table a virtual table keeps its data in (SQLite's
-    /// shadow tables), which depends on that one: hidden with it, and not
-    /// for want of its own name in an "Only" list.
-    pub shadow: bool,
+    /// Whether it is part of the relation it depends on: a partition of a
+    /// partitioned table, or a table a virtual table keeps its data in
+    /// (SQLite's shadow tables). Hidden with that one, and read with it,
+    /// not hidden for want of its own name in an "Only" list.
+    pub part: bool,
 }
 
 /// What a driver reads of its database's catalog for the checks: its
@@ -390,7 +391,7 @@ fn hidden_why(
     let relation = &catalog.relations[at];
     // Hidden until worked out, for a cycle.
     why[at] = Some(Some(Why::Named));
-    let by_name = match (relation.shadow, tables) {
+    let by_name = match (relation.part, tables) {
         (true, Tables::Only(_)) => false,
         _ => tables.hides(Some(&relation.schema), &relation.name),
     };
@@ -831,7 +832,7 @@ mod tests {
                 .map(|(schema, name)| ((*schema).to_owned(), (*name).to_owned()))
                 .collect(),
             opaque: false,
-            shadow: false,
+            part: false,
         }
     }
 
@@ -1181,12 +1182,45 @@ mod tests {
     }
 
     #[test]
+    fn a_partition_goes_with_its_table() {
+        let catalog = Catalog {
+            relations: vec![
+                relation("public", "events", &[]),
+                Relation {
+                    part: true,
+                    ..relation("public", "events_2026", &[("public", "events")])
+                },
+            ],
+            ..Catalog::default()
+        };
+        let only = Hidden::new(
+            Dialect::Postgres,
+            &catalog,
+            &Tables::Only(vec![table(None, "events")]),
+        );
+        assert_eq!(
+            only.check_engine_read(Some("public"), "events_2026"),
+            Ok(())
+        );
+        // A partition the person hides by its name stays hidden.
+        let except = Hidden::new(
+            Dialect::Postgres,
+            &catalog,
+            &Tables::AllExcept(vec![table(None, "events_2026")]),
+        );
+        assert_eq!(
+            except.check_engine_read(Some("public"), "events_2026"),
+            table_hidden("events_2026", None)
+        );
+    }
+
+    #[test]
     fn a_shadow_table_goes_with_its_virtual_table() {
         let catalog = Catalog {
             relations: vec![
                 relation("main", "notes", &[]),
                 Relation {
-                    shadow: true,
+                    part: true,
                     ..relation("main", "notes_data", &[("main", "notes")])
                 },
             ],

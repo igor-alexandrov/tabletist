@@ -4,6 +4,7 @@
 -- Loaded into a database of its own, `bookshop`, which the tests make.
 
 DROP VIEW IF EXISTS customer_tally;
+DROP TABLE IF EXISTS stock_moves;
 DROP FUNCTION IF EXISTS customer_count();
 DROP FUNCTION IF EXISTS book_reach(books);
 DROP VIEW IF EXISTS recent_orders, customer_names;
@@ -172,3 +173,13 @@ CREATE VIEW customer_tally AS SELECT customer_count() AS customers;
 -- And one of a book's row, which `b.book_reach` calls as a column.
 CREATE FUNCTION book_reach(books) RETURNS bigint LANGUAGE sql STABLE
     AS 'SELECT count(*) FROM customers';
+
+-- A partitioned table, whose rows a plan reads from its partition. Here
+-- alone too: what it is for, the plan's partitions, is PostgreSQL's.
+CREATE TABLE stock_moves (book_id integer NOT NULL, moved_on date NOT NULL, quantity integer NOT NULL)
+    PARTITION BY RANGE (moved_on);
+CREATE TABLE stock_moves_2026 PARTITION OF stock_moves
+    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+INSERT INTO stock_moves (book_id, moved_on, quantity) VALUES
+    (1, '2026-02-03', 4),
+    (2, '2026-03-14', -1);

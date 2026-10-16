@@ -32,9 +32,9 @@ user_routines AS (
 /// Every relation of the database but the system's, each with what it
 /// depends on: the relations a view's or a materialized view's rules
 /// read, and a partition's or a child table's parent. One row for each
-/// relation and each thing it depends on, and in the last column whether
-/// its rules or a policy on it call a function the users wrote, which
-/// makes what it reads unknown.
+/// relation and each thing it depends on; then whether its rules or a
+/// policy on it call a function the users wrote, which makes what it reads
+/// unknown, and whether it is a partition.
 fn relations_sql() -> String {
     format!(
         "\
@@ -60,7 +60,8 @@ calls AS (
     WHERE d.refclassid = 'pg_proc'::regclass
         AND d.refobjid IN (SELECT oid FROM user_routines)
 )
-SELECT n.nspname, c.relname, dn.nspname, dc.relname, c.oid IN (SELECT relation FROM calls)
+SELECT n.nspname, c.relname, dn.nspname, dc.relname, c.oid IN (SELECT relation FROM calls),
+    c.relispartition
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN depends ON depends.relation = c.oid
@@ -197,7 +198,7 @@ async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
                 // `t` or `f`, as the simple protocol writes a boolean; what
                 // is neither is taken for a call.
                 opaque: row.get(4) != Some("f"),
-                shadow: false,
+                part: row.get(5) == Some("t"),
             });
         }
         if let (Some(on_schema), Some(on_name), Some(last)) =
@@ -278,7 +279,7 @@ mod tests {
                 .map(|on| ("public".into(), (*on).into()))
                 .collect(),
             opaque: false,
-            shadow: false,
+            part: false,
         };
         let catalog = Catalog {
             relations: vec![

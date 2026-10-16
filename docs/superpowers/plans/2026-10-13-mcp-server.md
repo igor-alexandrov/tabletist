@@ -921,6 +921,9 @@ where it went otherwise:
   not by OID. The plan names each relation it scans with its schema: a
   partition (not its parent), a child table under its parent's scan, a
   materialized view as itself, whose own dependencies the catalog lists.
+  A partition is read with its table: an "Only" list that names the table
+  need not name its partitions, the ones made later included, and one the
+  person hides by its name stays hidden.
   A function in a `FROM` is a `Function Scan` of the plan, and one in an
   expression is found by the reading of the text. The users' functions
   (`pg_proc` outside the system's schemas, and not an extension's) are
@@ -958,7 +961,8 @@ where it went otherwise:
   a value. Every name the text gives in a table's place is refused before
   the plan is asked for, so this takes a name the reading misses.
 - **The function of the Bookshop is on PostgreSQL alone**
-  (`customer_count()`, and the view `customer_tally` that calls it, F).
+  (`customer_count()`, the view `customer_tally` that calls it, and
+  `book_reach(books)`, F), with a partitioned table, `stock_moves`.
   MySQL lets only a user with `SUPER` make one
   while it logs its changes, so its fixture has none, and MySQL's function
   rule is tested off the server only.
