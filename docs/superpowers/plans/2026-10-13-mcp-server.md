@@ -897,6 +897,25 @@ board's hint:
 The same sentence, with the list above, goes in the documentation page for
 agents.
 
+**As built** (`2026-10-16-mcp-server-1c-3a-tables-control.md`), agreed on 2026-10-16: the board's "Hidden tables
+don't exist for the agent, not even in the schema." is not said, as agents
+are told the names (question 8), and the hint is one sentence of the two,
+under an "All except" list:
+
+> Agents are told these names, never what is in them: the rows, the
+> columns, and the views over them. A function from an extension can still
+> read them. For strict isolation, use a database user without access.
+
+Under an "Only" list, whose names are the readable ones (found by the
+run's review): "Agents may read these tables and no others, the ones made
+later included. A function from an extension can still read the others.
+For strict isolation, use a database user without access." Under "All",
+none.
+
+What the checks of 1c-1 and 1c-2 left to an app-side check is shorter than
+the list above: a view and a function the users wrote are refused, and an
+extension's function is what is left.
+
 **As built in 1c's first run** (`2026-10-15-mcp-server-1c-1-checks.md`): the checks, in
 `crates/tabletist-db/src/agent/hidden.rs` and a `hidden.rs` for each
 server, behind a `tables` argument of `Connection::run_agent_read`. The app
@@ -1801,6 +1820,38 @@ opened keeps what the file says, a change made outside staying held.
 **Allow agents…** and **Tables, columns and limits…** open the form at
 this section.
 
+**As built for 1c** (`2026-10-16-mcp-server-1c-3a-tables-control.md`). Agreed on 2026-10-16, where it went
+otherwise:
+
+- **Tables**, after the access and its line, in both looks: **All**,
+  **All except** or **Only** (the choice the access uses), the names of the
+  chosen one as chips with a ×, and **Add table…**, which opens a field
+  for a name typed as the file writes it (`customers`, `sales.customers`).
+  Enter adds it and keeps the field, with the keyboard, for the next; a
+  name the field holds when it loses the keyboard, or when the form is
+  saved, is added too. Escape closes the field, not the dialog. A name
+  that does not read is said under the names, and the field keeps it; at
+  a save it refuses the save. Each of the two lists is kept while the
+  other is tried, and what is saved is the one chosen.
+- The form opens with the tables in force; tables the person changed are
+  theirs and shown, wider or narrower, and ones left as they opened keep
+  what the file says, a change made outside staying held, as the access
+  does. Where the tables in force changed while the form was open, a
+  change of the person's is not saved over them: the save is refused,
+  and the form shows them as they are now (found by the run's review: an
+  edit of the list would have undone what the file hid meanwhile).
+- **Add table…** takes a typed name only. The list from an open session's
+  catalog, and a name that matches nothing marked "not in this database",
+  are 1c-3b's.
+- **Omarchy**: the row shows the three words, as the access row does, and
+  the names on the line under them; the board draws the chosen word alone
+  with the names after it. The keyboard works the row as every row of the
+  editor today: Tab moves through the words, each name's ×, and add
+  table…, and Enter or Space picks or presses. No `h`/`l`: the board's
+  footer draws them, and the editor has them on no row, so they would be
+  a change of every row's, for another time.
+- The hint (B.3) is under the control, in both looks.
+
 ### D.4 The Agents tab
 
 Boards: `macOS – Agents tab, activity and approval`, `macOS – Agents tab, no
@@ -2398,7 +2449,7 @@ is off until the person turns it on.
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
 | 1b. The server over stdio, with its interface | 9, below | Built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`) |
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
-| 1c. Hidden tables | 4, below | The checks, the server's side and the setting built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`). The editor's Tables control is next |
+| 1c. Hidden tables | 5, below | The checks, the server's side, the setting and the editor's control built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`). Add table…'s list and the website's guide are next |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2521,6 +2572,10 @@ build; no console target.
   server's side with nothing to set it (`2026-10-15-mcp-server-1c-2a-server.md`); 1c-2b, the keys in
   `connections.toml`, the app passing them, changes made outside the app
   held, and the reference page for the keys (`2026-10-16-mcp-server-1c-2b-setting.md`).
+- The third cut in two too, on 2026-10-16: 1c-3a, the editor's Tables
+  control in both looks with a typed name, its save and its hint
+  (`2026-10-16-mcp-server-1c-3a-tables-control.md`); 1c-3b, Add table…'s list from an open session's catalog, the
+  "not in this database" mark, and the website's guide.
 - Files: `crates/tabletist-db/src/catalog.rs`, `pg.rs`, `mysql.rs`,
   `sqlite.rs` (what views read, routines, partitions), `agent/` (names,
   dependencies, the plan check, the system catalogs), `tabletist-sqlite-ffi`
