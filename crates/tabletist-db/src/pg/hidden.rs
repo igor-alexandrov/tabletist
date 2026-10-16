@@ -80,21 +80,6 @@ fn routines_sql() -> String {
     format!("WITH {USER_ROUTINES} SELECT DISTINCT nspname, proname FROM user_routines")
 }
 
-/// The functions the users wrote of one argument of a table's row type,
-/// which `row.function` calls without a parenthesis.
-fn row_functions_sql() -> String {
-    format!(
-        "\
-WITH {USER_ROUTINES}
-SELECT DISTINCT u.proname
-FROM user_routines u
-JOIN pg_proc p ON p.oid = u.oid
-JOIN pg_type t ON t.oid = p.proargtypes[0]
-WHERE p.pronargs = 1 AND t.typrelid <> 0
-ORDER BY 1"
-    )
-}
-
 /// The functions the users wrote that a statement can call without naming
 /// them: an operator's (and its estimates'), a cast's, an operator class's,
 /// a type's input, output and modifiers, a range type's, and one a domain's
@@ -225,16 +210,10 @@ async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
         .iter()
         .filter_map(|row| Some(row.get(0)?.to_owned()))
         .collect();
-    let row_functions = rows(client, &row_functions_sql())
-        .await?
-        .iter()
-        .filter_map(|row| Some(row.get(0)?.to_owned()))
-        .collect();
     Ok(Catalog {
         relations,
         routines,
         unnamed_calls,
-        row_functions,
     })
 }
 
@@ -297,7 +276,6 @@ mod tests {
             ],
             routines: vec![("public".into(), "names".into())],
             unnamed_calls: Vec::new(),
-            row_functions: Vec::new(),
         };
         Hidden::new(Dialect::Postgres, &catalog, &tables)
     }

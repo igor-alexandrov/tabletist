@@ -31,8 +31,8 @@ use crate::{Dialect, sql};
 mod hidden;
 mod run;
 
-pub(crate) use hidden::planned;
 pub use hidden::{Catalog, Hidden, Relation, TableName, Tables};
+pub(crate) use hidden::{named_relations, planned};
 pub use run::{Answer, Limits};
 pub(crate) use run::{Sent, answer, count_mismatch};
 

@@ -15,7 +15,7 @@
 use mysql_async::prelude::Queryable;
 
 use super::query_error;
-use crate::agent::{Catalog, Hidden, Read, Refusal, Relation, Tables, planned};
+use crate::agent::{Catalog, Hidden, Read, Refusal, Relation, Tables, named_relations, planned};
 use crate::sql::{self, TokenKind};
 use crate::{Dialect, Error, Result};
 
@@ -67,8 +67,9 @@ pub(super) async fn check(
         .map(|(_, _, note)| note)
         .collect();
     // Without the note, nothing says what an alias in the JSON stands
-    // for: a name there that the catalog does not list is refused.
-    let strict = rewritten.is_empty();
+    // for: a name there must be one the text gives in a table's place.
+    let named = named_relations(read);
+    let strict = rewritten.is_empty().then_some(named.as_slice());
     if let Err(refusal) = json_reads(&plan, &hidden, strict) {
         return Ok(Some(Error::Agent(refusal)));
     }
@@ -82,13 +83,15 @@ pub(super) async fn check(
 
 /// Checks every table a JSON plan names. A name may be the statement's
 /// alias, which the catalog does not list: such a name is passed over,
-/// and the note and the text say what it stands for, unless `strict`,
-/// where there is no note: then it is refused, as what it stands for is
-/// not known. A derived table's name (`<derived2>`) is the server's own.
+/// and the note and the text say what it stands for. `strict` is there
+/// where there is no note: the names the text gives in a table's place,
+/// and a name in the plan that is none of them is refused, as what it
+/// stands for is not known. A derived table's name (`<derived2>`) is the
+/// server's own.
 fn json_reads(
     plan: &serde_json::Value,
     hidden: &Hidden,
-    strict: bool,
+    strict: Option<&[String]>,
 ) -> std::result::Result<(), Refusal> {
     match plan {
         serde_json::Value::Object(node) => {
@@ -96,7 +99,10 @@ fn json_reads(
                 && !name.starts_with('<')
             {
                 hidden.check_name(None, name)?;
-                if strict && hidden.hides_anything() && !hidden.lists(None, name) {
+                if let Some(named) = strict
+                    && hidden.hides_anything()
+                    && !named.iter().any(|named| named.eq_ignore_ascii_case(name))
+                {
                     return Err(Refusal::NotParsed);
                 }
             }
@@ -239,7 +245,6 @@ async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
         relations,
         routines,
         unnamed_calls: Vec::new(),
-        row_functions: Vec::new(),
     })
 }
 
@@ -260,7 +265,6 @@ mod tests {
             relations: vec![relation("books"), relation("customers")],
             routines: vec![("bookshop".into(), "customer_count".into())],
             unnamed_calls: Vec::new(),
-            row_functions: Vec::new(),
         };
         Hidden::new(Dialect::MySql, &catalog, &tables)
     }
@@ -312,19 +316,30 @@ mod tests {
         let plan: serde_json::Value = serde_json::json!({
             "query_block": { "table": { "table_name": "b" } }
         });
-        assert_eq!(json_reads(&plan, &hidden, false), Ok(()));
-        // Without the rewritten query, an alias is not known: refused.
-        assert_eq!(json_reads(&plan, &hidden, true), Err(Refusal::NotParsed));
+        assert_eq!(json_reads(&plan, &hidden, None), Ok(()));
+        // Without the rewritten query, an alias is not known: refused,
+        // also where it is a table's name that the text does not give
+        // (`FROM last books`, `last` hidden).
+        let named = ["books".to_owned()];
+        assert_eq!(
+            json_reads(&plan, &hidden, Some(&named)),
+            Err(Refusal::NotParsed)
+        );
         let books = serde_json::json!({
             "query_block": { "table": { "table_name": "books" } }
         });
-        assert_eq!(json_reads(&books, &hidden, true), Ok(()));
+        assert_eq!(json_reads(&books, &hidden, Some(&named)), Ok(()));
+        let last = ["last".to_owned()];
+        assert_eq!(
+            json_reads(&books, &hidden, Some(&last)),
+            Err(Refusal::NotParsed)
+        );
         let plan: serde_json::Value = serde_json::json!({
             "query_block": { "nested_loop": [
                 { "table": { "table_name": "<derived2>" } },
                 { "table": { "table_name": "customers" } }
             ] }
         });
-        assert!(json_reads(&plan, &hidden, false).is_err());
+        assert!(json_reads(&plan, &hidden, None).is_err());
     }
 }
