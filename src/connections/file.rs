@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use tabletist_db::agent::{TableName, Tables};
 use tabletist_db::{ConnectSpec, Driver, SshAuth, SshSpec, TlsMode};
 
 use super::{
@@ -21,10 +22,15 @@ use crate::env::Environment;
 use crate::util::toml_string;
 
 /// The file's format. 3 is the first that is TOML: 1 and 2 were
-/// `connections.json`. 4 has a connection's settings for agents, and a file
-/// that has none is written as 3: a Tabletist that does not know them
-/// refuses only a file it would lose them from.
-pub(super) const VERSION: u32 = 4;
+/// `connections.json`. 4 has a connection's settings for agents, and 5 the
+/// tables they may not read. A file is written as the oldest that holds
+/// what it has: a Tabletist that does not know a key refuses only a file it
+/// would lose it from, and one that would read agents' tables as all of
+/// them never reads the file.
+pub(super) const VERSION: u32 = 5;
+
+/// The version that has agents' settings and not their tables.
+const AGENTS_VERSION: u32 = 4;
 
 /// The first version of this file.
 const FIRST_VERSION: u32 = 3;
@@ -114,6 +120,10 @@ struct AgentsTable {
     access: AgentAccess,
     rows: Option<u32>,
     timeout_secs: Option<u32>,
+    /// The tables agents may not read, every other being readable.
+    hidden: Option<Vec<String>>,
+    /// The tables agents may read, and no others.
+    only: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -246,10 +256,36 @@ impl Entry {
 impl AgentsTable {
     fn agents(self, connection: &str) -> Result<Agents, String> {
         let starts = Agents::default();
+        // An entry by its place in the list: a value that does not read
+        // is not repeated, as no other in this file is.
+        let entries = |key: &str, written: Vec<String>| {
+            written
+                .iter()
+                .enumerate()
+                .map(|(at, entry)| {
+                    entry.parse::<TableName>().map_err(|why| {
+                        let place = at + 1;
+                        format!("connection {connection:?}: agents' `{key}` entry {place} {why}")
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        };
+        let tables = match (self.hidden, self.only) {
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "connection {connection:?}: agents have `hidden` or `only`, not both"
+                ));
+            }
+            (Some(hidden), None) if hidden.is_empty() => Tables::All,
+            (Some(hidden), None) => Tables::AllExcept(entries("hidden", hidden)?),
+            (None, Some(only)) => Tables::Only(entries("only", only)?),
+            (None, None) => Tables::All,
+        };
         let agents = Agents {
             access: self.access,
             rows: self.rows.unwrap_or(starts.rows),
             timeout_secs: self.timeout_secs.unwrap_or(starts.timeout_secs),
+            tables,
         };
         if !(1..=MAX_AGENT_ROWS).contains(&agents.rows) {
             return Err(format!(
@@ -354,9 +390,14 @@ fn tls(mode: TlsMode) -> &'static str {
 /// except a server's own (host, port, user, database, TLS), which a person
 /// looks for.
 pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> {
-    let version = match connections.iter().any(|saved| !saved.agents.is_default()) {
-        true => VERSION,
-        false => FIRST_VERSION,
+    let hides = connections
+        .iter()
+        .any(|saved| saved.agents.tables.hides_anything());
+    let agents = connections.iter().any(|saved| !saved.agents.is_default());
+    let version = match (hides, agents) {
+        (true, _) => VERSION,
+        (false, true) => AGENTS_VERSION,
+        (false, false) => FIRST_VERSION,
     };
     let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
@@ -410,11 +451,26 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
             lines.text("access", connection.agents.access.key());
             lines.bare("rows", connection.agents.rows);
             lines.bare("timeout_secs", connection.agents.timeout_secs);
+            match &connection.agents.tables {
+                Tables::All => {}
+                Tables::AllExcept(names) if names.is_empty() => {}
+                Tables::AllExcept(names) => lines.bare("hidden", entries(names)),
+                Tables::Only(names) => lines.bare("only", entries(names)),
+            }
             out.push_str("\n[connections.agents]\n");
             lines.write(&mut out);
         }
     }
     Ok(out)
+}
+
+/// Tables as a list of TOML strings, each written as the person writes it.
+fn entries(names: &[TableName]) -> String {
+    let written: Vec<String> = names
+        .iter()
+        .map(|name| toml_string(&name.to_string()))
+        .collect();
+    format!("[{}]", written.join(", "))
 }
 
 /// A connection's SSH tunnel, as a table of its own.
@@ -847,8 +903,8 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 5\n"),
-            "it is version 5 of the file, written by a newer Tabletist; this one reads version 4"
+            said("version = 6\n"),
+            "it is version 6 of the file, written by a newer Tabletist; this one reads version 5"
         );
         assert_eq!(
             said("version = 2\n"),
@@ -862,6 +918,7 @@ auth = "key-file"
             access,
             rows,
             timeout_secs,
+            ..Agents::default()
         };
         connections
     }
@@ -915,7 +972,7 @@ timeout_secs = 30
             "{}\n[connections.agents]\naccess = \"read\"\n",
             write(&bookshop()).unwrap()
         );
-        let agents = read(&text).unwrap().connections[2].agents;
+        let agents = read(&text).unwrap().connections[2].agents.clone();
         assert_eq!(
             agents,
             Agents {
@@ -953,6 +1010,49 @@ timeout_secs = 30
         assert!(!access.contains("read_and_write"), "{access}");
         let key = said("rowz = 9");
         assert!(key.contains("unknown field `rowz`"), "{key}");
+        // The tables: one list or the other, and each entry a table.
+        assert_eq!(
+            said("hidden = [\"customers\"]\nonly = [\"books\"]"),
+            "connection \"Bookshop on disk\": agents have `hidden` or `only`, not both"
+        );
+        let entry = said("hidden = [\"customers\", \"a.b.c\"]");
+        assert_eq!(
+            entry,
+            "connection \"Bookshop on disk\": agents' `hidden` entry 2 is a table, or a schema \
+             and a table, with one dot between"
+        );
+        let secret = said("hidden = [\"hunter2\\\"x\"]");
+        assert!(!secret.contains("hunter2"), "{secret}");
+    }
+
+    #[test]
+    fn the_tables_agents_may_not_read_make_the_file_version_five() {
+        let mut connections = with_agents(AgentAccess::Read, 500, 10);
+        connections[2].agents.tables = Tables::AllExcept(vec![
+            "customers".parse().unwrap(),
+            "\"odd.schema\".orders".parse().unwrap(),
+        ]);
+        let text = write(&connections).unwrap();
+        assert!(text.contains("\nversion = 5\n"), "{text}");
+        assert!(
+            text.ends_with(
+                r#"timeout_secs = 10
+hidden       = ["customers", "\"odd.schema\".orders"]
+"#
+            ),
+            "{text}"
+        );
+        assert_eq!(read(&text).unwrap().connections, connections);
+        // Only a list: the rest is hidden, and an empty one hides it all.
+        connections[2].agents.tables = Tables::Only(Vec::new());
+        let text = write(&connections).unwrap();
+        assert!(text.contains("only         = []"), "{text}");
+        assert_eq!(read(&text).unwrap().connections, connections);
+        // An empty "hidden" hides nothing: the file is version 4.
+        let four = text.replace("only         = []", "hidden = []");
+        connections[2].agents.tables = Tables::All;
+        assert_eq!(read(&four).unwrap().connections, connections);
+        assert!(write(&connections).unwrap().contains("\nversion = 4\n"));
     }
 
     #[test]

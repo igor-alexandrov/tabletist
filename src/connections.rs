@@ -60,14 +60,16 @@ impl AgentAccess {
 
 /// A connection's settings for agents. A connection that was never given
 /// any is Off, with the limits every connection starts with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agents {
     pub access: AgentAccess,
     /// The most rows of an answer.
     pub rows: u32,
     /// How long a statement of an agent's may run.
     pub timeout_secs: u32,
+    /// The tables agents may not read: all may be read, all but a list,
+    /// or only a list. An "All except" list that is empty is "All".
+    pub tables: tabletist_db::agent::Tables,
 }
 
 /// The most rows an agent's answer may be given: half of what the SQL
@@ -83,6 +85,7 @@ impl Default for Agents {
             access: AgentAccess::Off,
             rows: 500,
             timeout_secs: 10,
+            tables: tabletist_db::agent::Tables::All,
         }
     }
 }
@@ -111,7 +114,7 @@ pub struct SavedConnection {
     pub spec: ConnectSpec,
     /// What agents may do on it. The JSON of older versions has none, and
     /// reads as Off.
-    #[serde(default, skip_serializing_if = "Agents::is_default")]
+    #[serde(skip)]
     pub agents: Agents,
 }
 
@@ -1064,10 +1067,11 @@ mod tests {
             access: AgentAccess::Read,
             rows: 1_000,
             timeout_secs: 30,
+            ..Agents::default()
         };
         store.upsert(original.clone());
         let copy = store.duplicate(&original.id).unwrap();
-        let copied = store.get(&copy).unwrap().agents;
+        let copied = store.get(&copy).unwrap().agents.clone();
         assert_eq!(copied.access, AgentAccess::Off);
         assert_eq!((copied.rows, copied.timeout_secs), (1_000, 30));
         assert_eq!(store.get(&original.id).unwrap().agents, original.agents);
