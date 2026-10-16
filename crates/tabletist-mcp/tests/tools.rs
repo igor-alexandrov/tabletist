@@ -703,6 +703,34 @@ async fn a_hidden_table_is_left_out_of_the_schema_and_its_rows_are_refused() {
 }
 
 #[tokio::test]
+async fn a_key_of_a_hidden_table_is_left_out_of_what_it_points_at() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.hide(
+        DEV,
+        Tables::AllExcept(vec![TableName {
+            schema: None,
+            name: "order_items".into(),
+        }]),
+    );
+    // Books are pointed at by their covers and by order items: the hidden
+    // one's key would name its columns, and is left out.
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["books"] }),
+        )
+        .await;
+    let books = &called.answer()["tables"][0];
+    assert_eq!(
+        books["referenced_by"],
+        json!([{ "table": "book_covers", "columns": ["book_id"], "on_delete": "NO ACTION" }])
+    );
+    agent.close().await;
+}
+
+#[tokio::test]
 async fn a_hidden_table_that_is_gone_closes_the_connection_to_agents() {
     let shop = Shop::new();
     let (server, _log) = server(&shop);
