@@ -506,7 +506,7 @@ struct Names {
     relations: Vec<Name>,
     /// Common table expressions, and windows, which are written alike.
     defined: Vec<String>,
-    /// Called: a name with a parenthesis after it.
+    /// Called: a word with a parenthesis after it, a keyword's too.
     functions: Vec<Name>,
     /// Every name with a dot before it: a column, or on PostgreSQL a
     /// function called as a column of a row.
@@ -632,15 +632,17 @@ fn names(dialect: Dialect, text: &str) -> Names {
             _ => {}
         }
         table_goes = places_table || (table_goes && matches!(piece, Piece::Open));
+        // A function may be called by a word that is a keyword too
+        // (PostgreSQL's `last`, `first`, `view`): any word is read.
         if at > 0
             && pieces[at - 1] == Piece::Dot
-            && let Some(name) = piece.name()
+            && let Some(name) = piece.word()
             && !found.after_dot.iter().any(|known| known == name)
         {
             found.after_dot.push(name.to_owned());
         }
-        // A name with a parenthesis after it is a call, wherever it is.
-        if let Some((name, after)) = dotted(&pieces, at)
+        // A word with a parenthesis after it is a call, wherever it is.
+        if let Some((name, after)) = dotted(&pieces, at, Piece::word)
             && pieces.get(after) == Some(&Piece::Open)
             && !found.functions.contains(&name)
         {
@@ -664,7 +666,7 @@ fn table_place(pieces: &[Piece], mut at: usize, found: &mut Names) {
     {
         at += 1;
     }
-    let Some((name, after)) = dotted_by(pieces, at, Piece::word) else {
+    let Some((name, after)) = dotted(pieces, at, Piece::word) else {
         return;
     };
     // A table function: [`names`] takes it for a call.
@@ -734,17 +736,9 @@ fn closing(pieces: &[Piece], open: usize) -> usize {
 
 /// A name at `at`, with the parts after it joined by dots: its last part
 /// is the name and the one before it the schema (a third, a database's or
-/// a catalog's, is passed over). Gives where it ends.
-fn dotted(pieces: &[Piece], at: usize) -> Option<(Name, usize)> {
-    dotted_by(pieces, at, Piece::name)
-}
-
-/// [`dotted`], with `part` saying which pieces may be a part of the name.
-fn dotted_by(
-    pieces: &[Piece],
-    at: usize,
-    part: fn(&Piece) -> Option<&str>,
-) -> Option<(Name, usize)> {
+/// a catalog's, is passed over). Gives where it ends;
+/// `part` says which pieces may be a part of the name.
+fn dotted(pieces: &[Piece], at: usize, part: fn(&Piece) -> Option<&str>) -> Option<(Name, usize)> {
     let mut parts = vec![part(pieces.get(at)?)?.to_owned()];
     let mut next = at + 1;
     while pieces.get(next) == Some(&Piece::Dot)
@@ -1123,6 +1117,23 @@ mod tests {
             );
         }
         assert_eq!(statement(&hiding, "SELECT lower(title) FROM books"), Ok(()));
+        // Called by a word that is a keyword, as a call and as a column.
+        let last = Catalog {
+            routines: vec![("public".into(), "last".into())],
+            ..bookshop()
+        };
+        let hiding_last = Hidden::new(
+            Dialect::Postgres,
+            &last,
+            &Tables::AllExcept(vec![table(None, "customers")]),
+        );
+        for sql in ["SELECT last()", "SELECT b.last FROM books b"] {
+            assert_eq!(
+                statement(&hiding_last, sql),
+                Err(Refusal::FunctionNotAllowed("last".into())),
+                "{sql}"
+            );
+        }
         // SQLite's own tables, in any schema; MySQL's system schemas.
         let sqlite = Hidden::new(
             Dialect::Sqlite,

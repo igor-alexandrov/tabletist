@@ -900,8 +900,9 @@ where it went otherwise:
 - **The statement's names are read off its tokens, not its tree** (B.2
   keeps the tree from being walked). A name after `FROM`, a `JOIN`, a comma
   of a `FROM`'s list, `LATERAL` or `ONLY`, or in parentheses where a table
-  goes, at any depth, is read, and so is what a `WITH` defines; a name with
-  a parenthesis after it is a call. The reading errs toward finding, and
+  goes, at any depth, is read, and so is what a `WITH` defines; any word
+  with a parenthesis after it is a call, a keyword too (PostgreSQL lets a
+  function be called `last`). The reading errs toward finding, and
   it is not the fence: what it misses, point 3 sees. It is what names the
   view the agent asked for, and what sees a hidden view whose tables are
   not.
