@@ -4,7 +4,7 @@
 -- Loaded into a database of its own, `bookshop` (compose/mysql-init.sql).
 -- One statement for each `;` at the end of a line.
 
-DROP VIEW IF EXISTS recent_orders, customer_names;
+DROP VIEW IF EXISTS recent_orders, customer_names, shop_greeting;
 DROP TABLE IF EXISTS order_items, orders, customers, book_covers, books, authors, publishers;
 
 CREATE TABLE publishers (
@@ -164,3 +164,8 @@ INSERT INTO order_items (id, order_id, book_id, quantity, price) VALUES
 CREATE VIEW recent_orders AS
     SELECT id, email, placed_at, total FROM orders WHERE placed_at >= '2026-01-01';
 CREATE VIEW customer_names AS SELECT id, name FROM customers;
+
+-- And one that reads no table, of which the server lists nothing it reads,
+-- as it lists nothing to a user without SHOW VIEW: here alone, as that is
+-- MySQL's.
+CREATE VIEW shop_greeting AS SELECT 'Welcome' AS greeting;

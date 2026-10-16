@@ -146,6 +146,12 @@ pub enum Refusal {
     /// The system catalogs, on a connection that hides a table: they
     /// describe every one.
     SystemCatalog,
+    /// The connection's "All except" list names tables its user cannot
+    /// see, as it writes them: a hidden table renamed, or dropped, which
+    /// look the same, or on MySQL one the user has no right to. Agents may not use the connection until the person looks
+    /// (the MCP plan's C.3). Its code is the server's for a connection it
+    /// cannot open.
+    SettingsNeedALook(Vec<String>),
 }
 
 /// What was too large.
@@ -196,6 +202,7 @@ impl Refusal {
             Self::InvalidParams(_) => "invalid_params",
             Self::TableHidden { .. } => "table_hidden",
             Self::SystemCatalog => "system_catalog",
+            Self::SettingsNeedALook(_) => "connection_unavailable",
         }
     }
 }
@@ -272,6 +279,12 @@ impl fmt::Display for Refusal {
             } => write!(
                 f,
                 "{through} reads {name}, which is hidden for agents on this connection."
+            ),
+            Self::SettingsNeedALook(missing) => write!(
+                f,
+                "Agents may not use this connection until its agent settings are looked at in \
+                 Tabletist: they hide {}, and its user can see no table of that name.",
+                missing.join(", ")
             ),
             Self::SystemCatalog => f.write_str(
                 "The system catalogs are not available on this connection. Use describe_schema.",

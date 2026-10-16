@@ -73,6 +73,12 @@ that hides something, each as this plan recommended. G cuts 1c into three
 runs. Its first (`2026-10-15-mcp-server-1c-1-checks.md`) built the checks, with nothing visible: B.2 and
 B.3 are corrected where its draft showed otherwise.
 
+**Settled on 2026-10-15: 1c's second run in two, the server first, and a
+renamed table stopped on all three.** The server's side (`2026-10-15-mcp-server-1c-2a-server.md`) comes
+before the setting, so that when the setting appears everything of it is
+enforced. A hidden table that was renamed or dropped stops agents on that
+connection on PostgreSQL too: C.3 is corrected.
+
 ## Contents
 
 1. [What the code says, in short](#1-what-the-code-says-in-short)
@@ -1252,7 +1258,7 @@ The codes are stable. The sentences may be reworded.
 | Code | Sentence (an example) | When |
 |---|---|---|
 | `unknown_connection` | No connection named Bookshop · production. | The name matches nothing an agent may see. A connection that is Off answers exactly this |
-| `connection_unavailable` | Tabletist could not open Bookshop · staging. Open it in Tabletist to see why. | The password is asked for each time, the SSH host is not trusted, the keyring is locked, the connect failed. The reason is never sent: it can name a host or a user |
+| `connection_unavailable` | Tabletist could not open Bookshop · staging. Open it in Tabletist to see why. | The password is asked for each time, the SSH host is not trusted, the keyring is locked, the connect failed. The reason is never sent: it can name a host or a user. Also an "All except" list that names a table the database does not have (C.3): "Agents may not use this connection until its agent settings are looked at in Tabletist: they hide customers, and its user can see no table of that name." |
 | `too_many_statements` | Send one statement per call. | B.2 |
 | `not_parsed` | Tabletist could not read this statement, so it was not run. | B.2 |
 | `not_read_only` | run_query only runs reads. Use propose_write for DELETE FROM book_covers WHERE id = 9. | A write, `INTO`, `FOR UPDATE`. Until Phase 2 has `propose_write` the sentence ends at what the statement is ("run_query only runs reads, and this is a DELETE."): the pointer is the server's to add, not the check's |
@@ -1596,6 +1602,43 @@ How soon a change is seen:
   catalog is read again when it moved.
 - MySQL: within 30 seconds, the age at which the catalog is read again.
   This is the gap named in B.3.
+
+**As built** (`2026-10-15-mcp-server-1c-1-checks.md` and `2026-10-15-mcp-server-1c-2a-server.md`). Agreed on
+2026-10-15, where it went otherwise:
+
+- **A hidden table renamed or dropped stops agents on all three.** Nothing
+  keeps an OID: the checks compare names (B.3), and an OID changes with
+  every dump and restore. An "All except" entry that names no relation of
+  the database closes the connection to agents
+  (`Hidden::check_settings`, `connection_unavailable`), on every call and
+  on `describe_schema`, until the person removes the entry or points it at
+  a table. The sentence names the entry. A drop stops them too: it looks
+  like a rename. On MySQL so does a table the connection's user has no
+  right to, which its `information_schema` does not list: whether it is
+  there cannot be told. An "Only" entry that names nothing hides more,
+  not less, and stops nothing. An entry that names a system catalog is
+  never stale.
+- **Every change is seen at once, on all three.** The catalog is read for
+  each call (B.3), so MySQL has no 30 seconds.
+- **The server leaves hidden tables out of the schema.** `describe_schema`
+  asks the session what is hidden (`Session::hidden`, through
+  `Connection::agent_hidden`, which reads the catalog only where something
+  is hidden). Its list leaves out every hidden relation, a view over a
+  hidden table with it; a hidden table asked for by name is named under
+  `hidden`; and a foreign key to a hidden table, or from one, is left out
+  of a table's entry, as it would name the hidden table's columns.
+- **What a view reads, asked of the engine for the listing too.** On
+  SQLite the catalog prepares a read of each view and keeps the tables the
+  authorizer reports, through the views it reads; a view that cannot be
+  prepared is hidden while anything is. On MySQL a view of which
+  `VIEW_TABLE_USAGE` lists no table is hidden while anything is: the
+  server tells a user without `SHOW VIEW` nothing of any view. Found by
+  the review of this run, with views that read a hidden table and were
+  described.
+- `list_connections` gives what is hidden as the person named it: `hidden`
+  for an "All except" list, `only` for an "Only" one, each entry written
+  `customers` or `sales.customers`, a part that holds a dot or a quote in
+  double quotes.
 
 ## D. UI work
 
@@ -2326,7 +2369,7 @@ is off until the person turns it on.
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
 | 1b. The server over stdio, with its interface | 9, below | Built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`) |
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
-| 1c. Hidden tables | 3, below | The checks built (`2026-10-15-mcp-server-1c-1-checks.md`). The setting and the server are next |
+| 1c. Hidden tables | 4, below | The checks and the server's side built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`). The setting is next |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2445,6 +2488,10 @@ build; no console target.
   them out, a rename that stops agents, and changes made outside the app
   held (C.3). Then the editor's Tables control in both looks, its hint,
   and the website.
+- The second cut in two, the same day, the server first: 1c-2a, the
+  server's side with nothing to set it (`2026-10-15-mcp-server-1c-2a-server.md`); 1c-2b, the keys in
+  `connections.toml`, the app passing them, changes made outside the app
+  held, and the reference page for the keys.
 - Files: `crates/tabletist-db/src/catalog.rs`, `pg.rs`, `mysql.rs`,
   `sqlite.rs` (what views read, routines, partitions), `agent/` (names,
   dependencies, the plan check, the system catalogs), `tabletist-sqlite-ffi`

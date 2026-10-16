@@ -432,6 +432,20 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(error, hidden_refusal("stock_moves", None), "{on}");
         }
         Dialect::MySql => {
+            // A view of which the server lists no table it reads, as for a
+            // user without SHOW VIEW: what it reads cannot be told, so it
+            // is hidden while anything is, and reads where nothing is.
+            let greeting = "SELECT * FROM shop_greeting";
+            let error = hiding(connection, &customers, greeting).await.unwrap_err();
+            assert_eq!(error, hidden_refusal("shop_greeting", None), "{on}");
+            let hidden = connection.agent_hidden(&customers).await.unwrap();
+            assert!(hidden.hides("bookshop", "shop_greeting"), "{on}");
+            let found = hiding(connection, &Tables::All, greeting).await;
+            assert_eq!(
+                found.map(|answer| answer.rows),
+                Ok(vec![vec![Value::Text("Welcome".into())]]),
+                "{on}"
+            );
             // An index hint's FOR, and an alias after it.
             let hinted = "SELECT * FROM books FORCE INDEX FOR JOIN (PRIMARY), customers c";
             let error = hiding(connection, &customers, hinted).await.unwrap_err();
@@ -439,6 +453,27 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
         }
         Dialect::Sqlite => {}
     }
+    // What is hidden, asked outside a statement, as the server asks it to
+    // leave hidden tables out of what it says of the schema.
+    let home = match connection.dialect() {
+        Dialect::Sqlite => "main",
+        Dialect::Postgres => "public",
+        Dialect::MySql => "bookshop",
+    };
+    let hidden = connection.agent_hidden(&customers).await.unwrap();
+    assert!(hidden.hides(home, "customers"), "{on}");
+    assert!(hidden.hides(home, "customer_names"), "{on}");
+    assert!(!hidden.hides(home, "books"), "{on}");
+    // A hidden table that is gone, renamed or dropped, closes the
+    // connection to agents until the person looks.
+    let gone = Tables::AllExcept(vec![named("customers"), named("clients")]);
+    let error = hiding(connection, &gone, "SELECT count(*) FROM books")
+        .await
+        .unwrap_err();
+    let look = Refusal::SettingsNeedALook(vec!["clients".into()]);
+    assert_eq!(error, Error::Agent(look.clone()), "{on}");
+    let hidden = connection.agent_hidden(&gone).await.unwrap();
+    assert_eq!(hidden.check_settings(), Err(look), "{on}");
     // Nothing hidden: the table reads.
     let found = count(hiding(connection, &Tables::All, "SELECT count(*) FROM customers").await);
     assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
@@ -493,6 +528,28 @@ mod sqlite {
     async fn an_agent_reads_the_bookshop_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         an_agent_reads_the_bookshop(&connection, "sqlite").await;
+    }
+
+    /// What a view reads, as SQLite says when a read of it is prepared:
+    /// however its text is written, a view over a hidden table is hidden
+    /// in what the server says of the schema.
+    #[tokio::test]
+    async fn a_view_is_hidden_by_what_sqlite_says_it_reads() {
+        let (connection, _dir) = bookshop_with(
+            "CREATE VIEW v_cte AS SELECT * FROM customers
+                 WHERE EXISTS (WITH customers AS (SELECT 1) SELECT 1 FROM customers);
+             CREATE VIEW v_string AS SELECT * FROM 'customers';
+             CREATE VIEW v_in AS SELECT title FROM books WHERE id IN customers;
+             CREATE VIEW v_over AS SELECT * FROM v_string;
+             CREATE VIEW v_books AS SELECT title FROM books;",
+        )
+        .await;
+        let customers = Tables::AllExcept(vec![named("customers")]);
+        let hidden = connection.agent_hidden(&customers).await.unwrap();
+        for view in ["v_cte", "v_string", "v_in", "v_over"] {
+            assert!(hidden.hides("main", view), "{view}");
+        }
+        assert!(!hidden.hides("main", "v_books"));
     }
 
     #[tokio::test]

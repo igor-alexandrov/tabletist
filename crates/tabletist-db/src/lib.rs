@@ -272,6 +272,21 @@ impl Connection {
         agent::answer(outcome, stop)
     }
 
+    /// What `tables` hides on this connection's database as it is now: for
+    /// what the server tells an agent of the schema, which leaves it out.
+    /// The catalog is read only where something is hidden.
+    pub async fn agent_hidden(&self, tables: &agent::Tables) -> Result<agent::Hidden> {
+        let catalog = match tables.hides_anything() {
+            true => match &self.inner {
+                Inner::Sqlite(conn) => conn.agents_catalog().await?,
+                Inner::Postgres(conn) => conn.agents_catalog().await?,
+                Inner::MySql(conn) => conn.agents_catalog().await?,
+            },
+            false => agent::Catalog::default(),
+        };
+        Ok(agent::Hidden::new(self.dialect(), &catalog, tables))
+    }
+
     /// The server's name and version for the footer: `PostgreSQL 17.2`,
     /// `MySQL 8.4.3`, `MariaDB 10.11.6`, `SQLite 3.46.0`.
     pub async fn server_version(&self) -> Result<String> {

@@ -22,7 +22,7 @@ use rmcp::model::{
 use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::Value as Json;
-use tabletist_db::agent::{Answer, Limits, Read};
+use tabletist_db::agent::{Answer, Hidden, Limits, Read, Tables};
 use tabletist_db::{
     Access, ConnectSpec, Connection, Dialect, Error, HostKeys, ObjectInfo, ObjectRef, Secrets,
     StopFlag, Structure,
@@ -93,10 +93,22 @@ impl Shop {
                 name: name.to_owned(),
                 dialect: Dialect::Sqlite,
                 limits,
+                tables: Tables::All,
             },
             path: path.to_owned(),
             turn: Arc::default(),
         });
+    }
+
+    /// Sets what agents may not read of a listed connection.
+    pub fn hide(&self, name: &str, tables: Tables) {
+        let mut connections = self.inner.connections.lock().unwrap();
+        for kept in connections
+            .iter_mut()
+            .filter(|kept| kept.listed.name == name)
+        {
+            kept.listed.tables = tables.clone();
+        }
     }
 
     /// Turns a connection's access Off.
@@ -198,7 +210,11 @@ impl Session for ShopSession {
         Ok(self.connection.describe(object).await?)
     }
 
-    async fn read(&self, read: &Read, limits: Limits) -> Result<Answer, Failure> {
+    async fn hidden(&self, tables: &Tables) -> Result<Hidden, Failure> {
+        Ok(self.connection.agent_hidden(tables).await?)
+    }
+
+    async fn read(&self, read: &Read, limits: Limits, tables: &Tables) -> Result<Answer, Failure> {
         if self.stop.is_cancelled() {
             return Err(Error::Cancelled.into());
         }
@@ -210,9 +226,7 @@ impl Session for ShopSession {
             },
         };
         let flag = StopFlag::new();
-        let run =
-            self.connection
-                .run_agent_read(read, limits, &tabletist_db::agent::Tables::All, &flag);
+        let run = self.connection.run_agent_read(read, limits, tables, &flag);
         tokio::pin!(run);
         let answer = tokio::select! {
             answer = &mut run => answer,

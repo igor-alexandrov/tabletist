@@ -47,6 +47,22 @@ pub struct TableName {
     pub name: String,
 }
 
+/// As the person writes it: `customers`, or `sales.customers`. A part that
+/// holds a dot or a double quote is written in double quotes, a quote in it
+/// doubled.
+impl std::fmt::Display for TableName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let part = |part: &str| match part.contains(['.', '"']) {
+            true => format!("\"{}\"", part.replace('"', "\"\"")),
+            false => part.to_owned(),
+        };
+        match &self.schema {
+            Some(schema) => write!(f, "{}.{}", part(schema), part(&self.name)),
+            None => f.write_str(&part(&self.name)),
+        }
+    }
+}
+
 impl TableName {
     /// Whether this names the relation `name` of `schema`.
     fn names(&self, schema: Option<&str>, name: &str) -> bool {
@@ -155,6 +171,9 @@ pub struct Hidden {
     unnamed_calls: Vec<String>,
     /// [`Catalog::table_functions`], folded.
     table_functions: HashSet<String>,
+    /// The entries of an "All except" list that name no relation of the
+    /// catalog, as the person writes them.
+    missing: Vec<String>,
 }
 
 impl Hidden {
@@ -216,12 +235,29 @@ impl Hidden {
                 .iter()
                 .map(|name| fold(name))
                 .collect(),
+            missing: missing(dialect, catalog, tables),
         }
     }
 
     /// Whether anything is hidden.
     pub fn hides_anything(&self) -> bool {
         self.tables.hides_anything()
+    }
+
+    /// Whether agents may use the connection at all: not while its "All
+    /// except" list names a table it does not have. A hidden table that was
+    /// renamed is that, and its new name is hidden by nothing.
+    pub fn check_settings(&self) -> Result<(), Refusal> {
+        match self.missing.is_empty() {
+            true => Ok(()),
+            false => Err(Refusal::SettingsNeedALook(self.missing.clone())),
+        }
+    }
+
+    /// Whether the relation `name` of `schema` is hidden from agents: by
+    /// the person's names, by what it reads, or as a system catalog.
+    pub fn hides(&self, schema: &str, name: &str) -> bool {
+        self.check_engine_read(Some(schema), name).is_err()
     }
 
     /// Whether `schema` is a schema of the database: one the catalog lists
@@ -294,6 +330,7 @@ impl Hidden {
         if !self.hides_anything() {
             return Ok(());
         }
+        self.check_settings()?;
         // Called by any statement that compares, sorts or casts the wrong
         // value, whatever it names.
         if let Some(function) = self.unnamed_calls.first() {
@@ -354,6 +391,26 @@ impl Hidden {
                 .unwrap_or(first),
         )
     }
+}
+
+/// The entries of `tables`' "All except" list that name no relation of
+/// `catalog`, written as the person writes them. A system catalog's name
+/// is none of them: those are hidden with anything.
+fn missing(dialect: Dialect, catalog: &Catalog, tables: &Tables) -> Vec<String> {
+    let Tables::AllExcept(names) = tables else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .filter(|named| {
+            !system_catalog(dialect, named.schema.as_deref(), &named.name)
+                && !catalog
+                    .relations
+                    .iter()
+                    .any(|relation| named.names(Some(&relation.schema), &relation.name))
+        })
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// Refuses `found` where it is hidden, by the names the catalog writes.
@@ -1151,7 +1208,10 @@ mod tests {
         // SQLite's own tables, in any schema; MySQL's system schemas.
         let sqlite = Hidden::new(
             Dialect::Sqlite,
-            &Catalog::default(),
+            &Catalog {
+                relations: vec![relation("main", "customers", &[])],
+                ..Catalog::default()
+            },
             &Tables::AllExcept(vec![table(None, "customers")]),
         );
         let read = checked(Dialect::Sqlite, "SELECT * FROM temp.sqlite_master");
@@ -1324,6 +1384,53 @@ mod tests {
         assert_eq!(
             other.check_engine_read(Some("main"), "notes_data"),
             table_hidden("notes", Some("notes_data"))
+        );
+    }
+
+    #[test]
+    fn an_entry_that_names_no_table_closes_the_connection_until_it_is_looked_at() {
+        // Renamed, or dropped: the "All except" list names what is gone.
+        let renamed = hidden(Tables::AllExcept(vec![
+            table(None, "customers"),
+            table(None, "clients"),
+            table(Some("sales"), "orders"),
+        ]));
+        assert_eq!(
+            renamed.check_settings(),
+            Err(Refusal::SettingsNeedALook(vec![
+                "clients".into(),
+                "sales.orders".into()
+            ]))
+        );
+        assert_eq!(
+            statement(&renamed, "SELECT * FROM books"),
+            Err(Refusal::SettingsNeedALook(vec![
+                "clients".into(),
+                "sales.orders".into()
+            ]))
+        );
+        // A name in another case is the table's; a system catalog's is
+        // hidden with anything.
+        let fine = hidden(Tables::AllExcept(vec![
+            table(None, "CUSTOMERS"),
+            table(Some("pg_catalog"), "pg_class"),
+        ]));
+        assert_eq!(fine.check_settings(), Ok(()));
+        // An "Only" list that names what is gone hides more, not less.
+        let only = hidden(Tables::Only(vec![table(None, "clients")]));
+        assert_eq!(only.check_settings(), Ok(()));
+    }
+
+    #[test]
+    fn an_entry_is_written_as_the_person_writes_it() {
+        assert_eq!(table(None, "customers").to_string(), "customers");
+        assert_eq!(
+            table(Some("sales"), "customers").to_string(),
+            "sales.customers"
+        );
+        assert_eq!(
+            table(Some("odd.schema"), "say \"hi\"").to_string(),
+            "\"odd.schema\".\"say \"\"hi\"\"\""
         );
     }
 

@@ -1,6 +1,6 @@
 //! What the adapter of every database provides.
 
-use crate::agent::{Limits, Read, Tables};
+use crate::agent::{Catalog, Limits, Read, Tables};
 use crate::{
     CancelHandle, ChangeSet, Lookup, LookupPage, ObjectInfo, ObjectRef, Result, RowPage, RowQuery,
     ScriptMode, ScriptOutcome, StopFlag, Structure, WriteOutcome,
@@ -52,6 +52,10 @@ pub(crate) trait Adapter {
         tables: &Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome>;
+
+    /// What the database's catalog says for what an agent's connection
+    /// hides: its relations, what each reads, and the users' functions.
+    async fn agents_catalog(&self) -> Result<Catalog>;
 
     /// `changes` have passed their own check, and the session may write.
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome>;

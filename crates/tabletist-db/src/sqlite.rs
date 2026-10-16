@@ -913,6 +913,12 @@ impl Adapter for Conn {
         CancelHandle(CancelInner::Sqlite(Arc::clone(&self.interrupt)))
     }
 
+    async fn agents_catalog(&self) -> Result<Catalog> {
+        let fences = self.fences.clone();
+        self.run(move |connection| agents_catalog(connection, &fences))
+            .await
+    }
+
     /// See [`crate::Connection::write`]. One blocking job. An interrupt
     /// reaches only the statement that is running and is not kept for the
     /// next, so `stop` is what ends the save between two of them.
@@ -1159,7 +1165,7 @@ impl Adapter for Conn {
                 // made a moment ago is in it.
                 let hidden = match tables.hides_anything() {
                     true => {
-                        let catalog = agents_catalog(connection)?;
+                        let catalog = agents_catalog(connection, &fences)?;
                         let hidden = Hidden::new(Dialect::Sqlite, &catalog, &tables);
                         hidden.check_statement(&read).map_err(Error::Agent)?;
                         Some(Arc::new(hidden))
@@ -1190,12 +1196,16 @@ impl Adapter for Conn {
 /// The relations of every schema of the file, its own `sqlite_` tables
 /// left out, for what an agent's connection hides. SQLite's authorizer
 /// reports a view's tables as it reads them, so what a view depends on is
-/// not read here. A shadow table depends on its virtual table, whose name
-/// and an underscore begin its own (FTS5's `notes_config` is `notes`'s).
-fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
+/// not read for the fence; for what the server tells an agent of the
+/// schema, a view depends on what SQLite reports it reads as a read of it
+/// is prepared. A shadow table depends
+/// on its virtual table, whose name and an underscore begin its own
+/// (FTS5's `notes_config` is `notes`'s).
+fn agents_catalog(connection: &rusqlite::Connection, fences: &Fences) -> Result<Catalog> {
     let mut statement = connection
         .prepare(
-            "SELECT t.schema, t.name, t.type = 'shadow', v.name FROM pragma_table_list t \
+            "SELECT t.schema, t.name, t.type = 'shadow', v.name, t.type = 'view' \
+             FROM pragma_table_list t \
              LEFT JOIN pragma_table_list v ON t.type = 'shadow' AND v.schema = t.schema \
                  AND v.type = 'virtual' \
                  AND lower(substr(t.name, 1, length(v.name) + 1)) = lower(v.name || '_') \
@@ -1211,13 +1221,18 @@ fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
                 row.get::<_, String>(1)?,
                 row.get::<_, bool>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, bool>(4)?,
             ))
         })
         .map_err(map_error)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(map_error)?;
     let mut relations: Vec<Relation> = Vec::new();
-    for (schema, name, part, owner) in rows {
+    let mut views: Vec<(String, String)> = Vec::new();
+    for (schema, name, part, owner, view) in rows {
+        if view {
+            views.push((schema.clone(), name.clone()));
+        }
         let same = relations
             .last()
             .is_some_and(|last| last.schema == schema && last.name == name);
@@ -1232,6 +1247,28 @@ fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
         }
         if let (Some(owner), Some(last)) = (owner, relations.last_mut()) {
             last.depends_on.push((schema, owner));
+        }
+    }
+    // What each view reads, as SQLite says when it prepares a read of the
+    // view. One it cannot prepare (a table it reads is gone) reads what
+    // nobody can say, and is hidden while anything is.
+    for relation in relations
+        .iter_mut()
+        .filter(|relation| views.contains(&(relation.schema.clone(), relation.name.clone())))
+    {
+        let quoted = |part: &str| format!("\"{}\"", part.replace('"', "\"\""));
+        let sql = format!(
+            "SELECT * FROM {}.{}",
+            quoted(&relation.schema),
+            quoted(&relation.name)
+        );
+        match fences.reads_of(|| connection.prepare(&sql).is_ok()) {
+            Some(reads) => relation.depends_on.extend(
+                reads
+                    .into_iter()
+                    .filter(|(schema, name)| *schema != relation.schema || *name != relation.name),
+            ),
+            None => relation.opaque = true,
         }
     }
     // The table functions, SQLite's own modules read without a table
