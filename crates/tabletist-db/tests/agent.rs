@@ -432,6 +432,20 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(error, hidden_refusal("stock_moves", None), "{on}");
         }
         Dialect::MySql => {
+            // A view of which the server lists no table it reads, as for a
+            // user without SHOW VIEW: what it reads cannot be told, so it
+            // is hidden while anything is, and reads where nothing is.
+            let greeting = "SELECT * FROM shop_greeting";
+            let error = hiding(connection, &customers, greeting).await.unwrap_err();
+            assert_eq!(error, hidden_refusal("shop_greeting", None), "{on}");
+            let hidden = connection.agent_hidden(&customers).await.unwrap();
+            assert!(hidden.hides("bookshop", "shop_greeting"), "{on}");
+            let found = hiding(connection, &Tables::All, greeting).await;
+            assert_eq!(
+                found.map(|answer| answer.rows),
+                Ok(vec![vec![Value::Text("Welcome".into())]]),
+                "{on}"
+            );
             // An index hint's FOR, and an alias after it.
             let hinted = "SELECT * FROM books FORCE INDEX FOR JOIN (PRIMARY), customers c";
             let error = hiding(connection, &customers, hinted).await.unwrap_err();
