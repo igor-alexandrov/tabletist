@@ -1234,8 +1234,20 @@ fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
             last.depends_on.push((schema, owner));
         }
     }
+    // The table functions, SQLite's own modules read without a table
+    // made of them: the pragmas are refused before this, and `dbstat` and
+    // the `sqlite_` ones are system catalogs.
+    let table_functions = connection
+        .prepare("SELECT name FROM pragma_module_list")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(map_error)?;
     Ok(Catalog {
         relations,
+        table_functions,
         ..Catalog::default()
     })
 }
@@ -2232,6 +2244,12 @@ mod tests {
                 "SELECT count(*) FROM notes WHERE notes MATCH 'shelf'",
             ),
             ("areas", "SELECT count(*) FROM areas WHERE min_x >= 5"),
+            // SQLite's own table functions are no tables to list.
+            ("notes", "SELECT count(*) FROM json_each('[1, 2]')"),
+            (
+                "notes",
+                "SELECT count(*) FROM notes, json_each('[1]') WHERE notes MATCH 'shelf'",
+            ),
         ] {
             let (conn, _dir) = virtual_tables().await;
             let read = crate::agent::check_read(Dialect::Sqlite, sql, &[]).unwrap();

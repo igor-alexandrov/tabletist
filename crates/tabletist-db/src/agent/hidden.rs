@@ -115,6 +115,10 @@ pub struct Catalog {
     /// naming them: an operator's, a cast's, a type's. While anything is
     /// hidden, every statement is refused while one is there.
     pub unnamed_calls: Vec<String>,
+    /// Functions read as tables that keep no data of their own, which the
+    /// engine reports reads of as a table's (SQLite's `json_each`): one the
+    /// catalog does not list as a relation is never hidden.
+    pub table_functions: Vec<String>,
 }
 
 /// A relation of the catalog, as [`Hidden`] keeps it.
@@ -149,6 +153,8 @@ pub struct Hidden {
     routines: HashSet<String>,
     /// [`Catalog::unnamed_calls`], while anything is hidden.
     unnamed_calls: Vec<String>,
+    /// [`Catalog::table_functions`], folded.
+    table_functions: HashSet<String>,
 }
 
 impl Hidden {
@@ -205,6 +211,11 @@ impl Hidden {
             relations,
             routines,
             unnamed_calls,
+            table_functions: catalog
+                .table_functions
+                .iter()
+                .map(|name| fold(name))
+                .collect(),
         }
     }
 
@@ -237,6 +248,7 @@ impl Hidden {
         }
         match self.listed(schema, name) {
             Some(found) => refused(found),
+            None if self.table_functions.contains(&fold(name)) => Ok(()),
             None if self.tables.hides(schema, name) => Err(Refusal::TableHidden {
                 name: name.to_owned(),
                 through: None,
@@ -413,8 +425,9 @@ fn system_catalog(dialect: Dialect, schema: Option<&str>, name: &str) -> bool {
                 || (schema.is_none() && fold(name).starts_with("pg_"))
         }
         Dialect::MySql => in_schema(&["information_schema", "mysql", "performance_schema", "sys"]),
-        // SQLite's own tables are `sqlite_` ones, in any schema.
-        Dialect::Sqlite => fold(name).starts_with("sqlite_"),
+        // SQLite's own tables are `sqlite_` ones, in any schema, and
+        // `dbstat` describes every table's pages.
+        Dialect::Sqlite => fold(name).starts_with("sqlite_") || same(name, "dbstat"),
     }
 }
 
@@ -874,6 +887,7 @@ mod tests {
             ],
             routines: vec![("public".into(), "names".into())],
             unnamed_calls: Vec::new(),
+            table_functions: Vec::new(),
         }
     }
 

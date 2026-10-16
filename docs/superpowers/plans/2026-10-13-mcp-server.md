@@ -917,7 +917,9 @@ where it went otherwise:
   the refusal names it. The catalog is `pragma_table_list`, for the names
   a refusal gives. A shadow table (FTS5's, R*Tree's) goes with its
   virtual table: hidden with it, and read with it where an "Only" list
-  names it alone.
+  names it alone. SQLite's own table functions (`json_each`, `json_tree`,
+  from `pragma_module_list`) keep no data and are never hidden; `dbstat`,
+  which describes every table's pages, is a system catalog.
 - **PostgreSQL compares by schema and name**, as the plan writes them,
   not by OID. The plan names each relation it scans with its schema: a
   partition (not its parent), a child table under its parent's scan, a

@@ -245,6 +245,7 @@ async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
         relations,
         routines,
         unnamed_calls: Vec::new(),
+        table_functions: Vec::new(),
     })
 }
 
@@ -265,6 +266,7 @@ mod tests {
             relations: vec![relation("books"), relation("customers")],
             routines: vec![("bookshop".into(), "customer_count".into())],
             unnamed_calls: Vec::new(),
+            table_functions: Vec::new(),
         };
         Hidden::new(Dialect::MySql, &catalog, &tables)
     }

@@ -228,6 +228,7 @@ async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
         relations,
         routines,
         unnamed_calls,
+        table_functions: Vec::new(),
     })
 }
 
@@ -290,6 +291,7 @@ mod tests {
             ],
             routines: vec![("public".into(), "names".into())],
             unnamed_calls: Vec::new(),
+            table_functions: Vec::new(),
         };
         Hidden::new(Dialect::Postgres, &catalog, &tables)
     }
