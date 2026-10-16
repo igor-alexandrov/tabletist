@@ -935,14 +935,18 @@ where it went otherwise:
   as a function. On PostgreSQL a function the users wrote for an operator,
   a cast, an operator class or a type's input and output runs wherever a
   value meets it, so while one is there every statement is refused on a
-  connection that hides anything.
+  connection that hides anything. A function the users wrote of one row,
+  which PostgreSQL calls as a column (`b.f` is `f(b)`), is refused where
+  a name after a dot is its name.
 - **MySQL's plan is read twice.** Its JSON names a table by the
   statement's alias where it has one, so a name there is checked only
   where the catalog lists it. The note `SHOW WARNINGS` gives after it
   (code 1003) is the query as the server rewrote it, every table written
   `` `db`.`table` `` and views expanded: each of those after a `from` or a
   `join`, or in a schema of the database, is checked (a derived table's
-  column is written with two parts too). A plan
+  column is written with two parts too). Where the server gives no note
+  (MariaDB may not), a name in the JSON that the catalog does not list,
+  an alias, refuses the query: nothing says what it stands for. A plan
   that cannot be read refuses the query (`not_parsed`). The catalog's own
   queries carry a `LIMIT`, since the run sets `sql_select_limit` for the
   agent's rows.

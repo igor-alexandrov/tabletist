@@ -402,8 +402,26 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
             let found = count(hiding(connection, &Tables::All, tally).await);
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
+            // A function of a row, called as its column.
+            for sql in [
+                "SELECT b.book_reach FROM books b",
+                "SELECT (b).book_reach FROM books b",
+            ] {
+                let error = hiding(connection, &customers, sql).await.unwrap_err();
+                let refused = Error::Agent(Refusal::FunctionNotAllowed("book_reach".into()));
+                assert_eq!(error, refused, "{on}: {sql}");
+            }
+            let reach = "SELECT max(b.book_reach) FROM books b";
+            let found = count(hiding(connection, &Tables::All, reach).await);
+            assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
         }
-        Dialect::MySql | Dialect::Sqlite => {}
+        Dialect::MySql => {
+            // An index hint's FOR, and an alias after it.
+            let hinted = "SELECT * FROM books FORCE INDEX FOR JOIN (PRIMARY), customers c";
+            let error = hiding(connection, &customers, hinted).await.unwrap_err();
+            assert_eq!(error, hidden_refusal("customers", None), "{on}");
+        }
+        Dialect::Sqlite => {}
     }
     // Nothing hidden: the table reads.
     let found = count(hiding(connection, &Tables::All, "SELECT count(*) FROM customers").await);

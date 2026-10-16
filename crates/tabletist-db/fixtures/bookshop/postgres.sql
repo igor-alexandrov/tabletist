@@ -5,6 +5,7 @@
 
 DROP VIEW IF EXISTS customer_tally;
 DROP FUNCTION IF EXISTS customer_count();
+DROP FUNCTION IF EXISTS book_reach(books);
 DROP VIEW IF EXISTS recent_orders, customer_names;
 DROP TABLE IF EXISTS order_items, orders, customers, book_covers, books, authors, publishers;
 
@@ -168,3 +169,6 @@ CREATE FUNCTION customer_count() RETURNS bigint LANGUAGE sql STABLE
 -- A view that calls it: it reads `customers`, and its catalog says only
 -- that it calls the function.
 CREATE VIEW customer_tally AS SELECT customer_count() AS customers;
+-- And one of a book's row, which `b.book_reach` calls as a column.
+CREATE FUNCTION book_reach(books) RETURNS bigint LANGUAGE sql STABLE
+    AS 'SELECT count(*) FROM customers';

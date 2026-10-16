@@ -114,6 +114,9 @@ pub struct Catalog {
     /// naming them: an operator's, a cast's, a type's. While anything is
     /// hidden, every statement is refused while one is there.
     pub unnamed_calls: Vec<String>,
+    /// The users' functions of one argument of a table's row type, which
+    /// PostgreSQL calls as a column: `b.f` is `f(b)`. By name.
+    pub row_functions: Vec<String>,
 }
 
 /// A relation of the catalog, as [`Hidden`] keeps it.
@@ -148,6 +151,8 @@ pub struct Hidden {
     routines: HashSet<String>,
     /// [`Catalog::unnamed_calls`], while anything is hidden.
     unnamed_calls: Vec<String>,
+    /// [`Catalog::row_functions`], folded, while anything is hidden.
+    row_functions: HashSet<String>,
 }
 
 impl Hidden {
@@ -198,12 +203,21 @@ impl Hidden {
             true => catalog.unnamed_calls.clone(),
             false => Vec::new(),
         };
+        let row_functions = match tables.hides_anything() {
+            true => catalog
+                .row_functions
+                .iter()
+                .map(|name| fold(name))
+                .collect(),
+            false => HashSet::new(),
+        };
         Self {
             dialect,
             tables: tables.clone(),
             relations,
             routines,
             unnamed_calls,
+            row_functions,
         }
     }
 
@@ -261,6 +275,12 @@ impl Hidden {
         }
     }
 
+    /// Whether the catalog lists a relation `name`, of `schema` where that
+    /// is given.
+    pub fn lists(&self, schema: Option<&str>, name: &str) -> bool {
+        self.listed(schema, name).is_some()
+    }
+
     /// Checks a function the statement calls, by the name it is called by:
     /// one the database's users wrote is refused while anything is hidden,
     /// since what it reads cannot be seen (B.2).
@@ -311,6 +331,12 @@ impl Hidden {
         }
         for function in &names.functions {
             self.check_function(&function.name)?;
+        }
+        // A function of a row, called as its column.
+        for name in &names.after_dot {
+            if self.row_functions.contains(&fold(name)) {
+                return Err(Refusal::FunctionNotAllowed(name.clone()));
+            }
         }
         Ok(())
     }
@@ -475,6 +501,9 @@ struct Names {
     defined: Vec<String>,
     /// Called: a name with a parenthesis after it.
     functions: Vec<Name>,
+    /// Every name with a dot before it: a column, or on PostgreSQL a
+    /// function of a row called as one.
+    after_dot: Vec<String>,
 }
 
 /// A token as [`names`] reads it.
@@ -525,7 +554,6 @@ const ENDS_FROM: &[&str] = &[
     "EXCEPT",
     "WINDOW",
     "QUALIFY",
-    "FOR",
     "SELECT",
     "VALUES",
 ];
@@ -589,6 +617,13 @@ fn names(dialect: Dialect, text: &str) -> Names {
             _ => {}
         }
         table_goes = places_table || (table_goes && matches!(piece, Piece::Open));
+        if at > 0
+            && pieces[at - 1] == Piece::Dot
+            && let Some(name) = piece.name()
+            && !found.after_dot.iter().any(|known| known == name)
+        {
+            found.after_dot.push(name.to_owned());
+        }
         // A name with a parenthesis after it is a call, wherever it is.
         if let Some((name, after)) = dotted(&pieces, at)
             && pieces.get(after) == Some(&Piece::Open)
@@ -752,6 +787,9 @@ fn read_as_keyword(word: &str) -> bool {
             "AS",
             "RECURSIVE",
             "MATERIALIZED",
+            // Not an end of a `FROM`: an index hint's `FOR JOIN` is in one,
+            // and `FOR UPDATE` is refused before this is asked.
+            "FOR",
         ])
         .any(|known| known.eq_ignore_ascii_case(word))
 }
@@ -816,6 +854,7 @@ mod tests {
             ],
             routines: vec![("public".into(), "names".into())],
             unnamed_calls: Vec::new(),
+            row_functions: Vec::new(),
         }
     }
 
@@ -904,6 +943,15 @@ mod tests {
             read("SELECT * FROM unnest(ARRAY[1]) WITH ORDINALITY")
                 .defined
                 .is_empty()
+        );
+        // An index hint's FOR is in the FROM: the list goes on after it.
+        let hinted = names(
+            Dialect::MySql,
+            "SELECT * FROM books FORCE INDEX FOR JOIN (PRIMARY), customers c",
+        );
+        assert!(
+            hinted.relations.iter().any(|name| name.name == "customers"),
+            "{hinted:?}"
         );
         // MySQL's backquotes, a doubled one inside.
         let mysql = names(Dialect::MySql, "SELECT * FROM `shop`.`odd``name`");
@@ -1103,6 +1151,33 @@ mod tests {
         );
         let open = Hidden::new(Dialect::Postgres, &catalog, &Tables::All);
         assert_eq!(statement(&open, "SELECT * FROM books"), Ok(()));
+    }
+
+    #[test]
+    fn a_function_of_a_row_is_refused_where_it_is_called_as_a_column() {
+        let catalog = Catalog {
+            row_functions: vec!["reach".into()],
+            ..bookshop()
+        };
+        let hiding = Tables::AllExcept(vec![table(None, "customers")]);
+        let hidden = Hidden::new(Dialect::Postgres, &catalog, &hiding);
+        for sql in [
+            "SELECT b.reach FROM books b",
+            "SELECT (b).\"reach\" FROM books b",
+        ] {
+            assert_eq!(
+                statement(&hidden, sql),
+                Err(Refusal::FunctionNotAllowed("reach".into())),
+                "{sql}"
+            );
+        }
+        // A column of another name, and the function's name not after a dot.
+        assert_eq!(
+            statement(&hidden, "SELECT b.title, 1 AS reach FROM books b"),
+            Ok(())
+        );
+        let open = Hidden::new(Dialect::Postgres, &catalog, &Tables::All);
+        assert_eq!(statement(&open, "SELECT b.reach FROM books b"), Ok(()));
     }
 
     #[test]
