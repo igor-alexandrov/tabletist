@@ -20,7 +20,7 @@ use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOp
 use mysql_common::named_params::ParsedNamedParams;
 
 use crate::adapter::Adapter;
-use crate::agent::{Limits, Read};
+use crate::agent::{Limits, Read, Tables};
 use crate::script::retry_cancelled;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
@@ -50,6 +50,7 @@ const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+mod hidden;
 mod script;
 mod write;
 
@@ -516,9 +517,10 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
+        tables: &Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
-        self.agent_read(read, limits, stop).await
+        self.agent_read(read, limits, tables, stop).await
     }
 
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {

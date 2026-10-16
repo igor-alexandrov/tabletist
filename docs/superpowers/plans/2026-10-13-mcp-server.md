@@ -66,6 +66,13 @@ Nothing of 1d is planned or built: no network listener, no tokens, no
 kept as the design for if it is taken up again. Where another section
 says something comes "with HTTP (1d)", it is not planned now.
 
+**Settled on 2026-10-15: questions 8 and 13, and Phase 1c in three runs.**
+An agent is told the names of the tables hidden from it, and the system
+catalogs are open on a connection that hides nothing and closed on one
+that hides something, each as this plan recommended. G cuts 1c into three
+runs. Its first (`2026-10-15-mcp-server-1c-1-checks.md`) built the checks, with nothing visible: B.2 and
+B.3 are corrected where its draft showed otherwise.
+
 ## Contents
 
 1. [What the code says, in short](#1-what-the-code-says-in-short)
@@ -709,6 +716,9 @@ what overflows. What follows from it:
   tree has (B.3, point 1). It must bound the depth before it walks: a cap on
   the number of tokens is the obvious bound, since a level costs at least
   one. That design is 1c's.
+  As built (`2026-10-15-mcp-server-1c-1-checks.md`), the tree is not walked: 1c reads the names off the
+  tokens too, which can miss one, and what the engine says the statement
+  reads is the fence (B.3).
 
 Why not the alternatives:
 
@@ -880,6 +890,103 @@ board's hint:
 
 The same sentence, with the list above, goes in the documentation page for
 agents.
+
+**As built in 1c's first run** (`2026-10-15-mcp-server-1c-1-checks.md`): the checks, in
+`crates/tabletist-db/src/agent/hidden.rs` and a `hidden.rs` for each
+server, behind a `tables` argument of `Connection::run_agent_read`. The app
+passes "All" until the next run reads the setting. Agreed on 2026-10-15,
+where it went otherwise:
+
+- **The statement's names are read off its tokens, not its tree** (B.2
+  keeps the tree from being walked). A name after `FROM`, a `JOIN`, a comma
+  of a `FROM`'s list, `LATERAL` or `ONLY`, or in parentheses where a table
+  goes, at any depth, is read, and so is what a `WITH` defines; any word
+  with a parenthesis after it is a call, a keyword too (PostgreSQL lets a
+  function be called `last`). The reading errs toward finding, and
+  it is not the fence: what it misses, point 3 sees. It is what names the
+  view the agent asked for, and what sees a hidden view whose tables are
+  not.
+- **The catalog is read for each call, in the call's own read-only
+  transaction**, not when the session opens: the check sees the database
+  as the statement will. It costs two or three queries more on PostgreSQL
+  and MySQL, and nothing on a connection that hides nothing. So MySQL has
+  no gap of 30 seconds for a view made later.
+- **SQLite lists no dependencies.** The authorizer reports each table a
+  view reads, with the view (and a table only `count(*)` or `EXISTS`
+  reads, and `sqlite_schema`), so a view is refused by what it reads, and
+  the refusal names it. The catalog is `pragma_table_list`, for the names
+  a refusal gives. A shadow table (FTS5's, R*Tree's) goes with its
+  virtual table: hidden with it, and read with it where an "Only" list
+  names it alone. SQLite's own table functions (`json_each`, `json_tree`,
+  from `pragma_module_list`) keep no data and are never hidden; `dbstat`,
+  which describes every table's pages, is a system catalog.
+- **PostgreSQL compares by schema and name**, as the plan writes them,
+  not by OID. The plan names each relation it scans with its schema: a
+  partition (not its parent), a child table under its parent's scan, a
+  materialized view as itself, whose own dependencies the catalog lists.
+  A partition is read with its table: an "Only" list that names the table
+  need not name its partitions, the ones made later included, and one the
+  person hides by its name stays hidden.
+  A function in a `FROM` is a `Function Scan` of the plan, and one in an
+  expression is found by the reading of the text. The users' functions
+  (`pg_proc` outside the system's schemas, and not an extension's) are
+  refused while anything is hidden. An `EXPLAIN` of the agent's own is
+  checked as the query it explains.
+- **A function the statement does not name is refused too** (found by the
+  pull request's review). A view whose rules call a function the users
+  wrote, and a table whose row policy does, is hidden while anything is:
+  no plan shows what the function reads. On MySQL so is a view
+  `VIEW_ROUTINE_USAGE` lists, or every view where the server has no such
+  table, and a call the rewritten query writes `` `db`.`f`() `` is checked
+  as a function. On PostgreSQL a function the users wrote for an operator,
+  a cast, an operator class, a type's input and output, a range type or a
+  domain's constraint runs wherever a value meets it, so while one is there every statement is refused on a
+  connection that hides anything. PostgreSQL also calls a function as a
+  column of a row (`b.f` is `f(b)`, by every lookup that would find
+  `f(b)`), so a name after a dot that is a function the users wrote is
+  refused.
+  A view or a policy that calls a function the agent may not call (B.2),
+  one of the system's or an extension's that runs SQL held in a string
+  (`query_to_xml`, `crosstab`, `dblink`), is hidden while anything is too:
+  its definition, as the server writes it back, is read for such a call,
+  as PostgreSQL keeps no dependency on its own functions. Such a function
+  in the plan's `Function Scan` is refused wherever it came from.
+- **MySQL's plan is read twice.** Its JSON names a table by the
+  statement's alias where it has one, so a name there is checked only
+  where the catalog lists it. The note `SHOW WARNINGS` gives after it
+  (code 1003) is the query as the server rewrote it, every table written
+  `` `db`.`table` `` and views expanded: each of those after a `from` or a
+  `join`, or in a schema of the database, is checked (a derived table's
+  column is written with two parts too). Where the server gives no note
+  (MariaDB may not), a name in the JSON that the text does not give in a
+  table's place, an alias, refuses the query: nothing says what it stands
+  for. The reading takes any word in a table's place for a name, as MySQL
+  lets a table be called `last` or `view` without quotes. A plan
+  that cannot be read refuses the query (`not_parsed`). The catalog's own
+  queries carry a `LIMIT`, since the run sets `sql_select_limit` for the
+  agent's rows.
+- **On MySQL the plan is not free of the statement.** `EXPLAIN` runs some
+  subqueries while it plans (a constant one, an `EXISTS` it answers at
+  once), and its note leaves out what it answered. A hidden table that the
+  reading of the text and the catalog both miss, and that such a subquery
+  reads, is read once while planning; an error it raises there can carry
+  a value. Every name the text gives in a table's place is refused before
+  the plan is asked for, so this takes a name the reading misses.
+- **The function of the Bookshop is on PostgreSQL alone**
+  (`customer_count()`, the view `customer_tally` that calls it, and
+  `book_reach(books)`, F), with a partitioned table, `stock_moves`.
+  MySQL lets only a user with `SUPER` make one
+  while it logs its changes, so its fixture has none, and MySQL's function
+  rule is tested off the server only.
+- **Not refused**: the system's functions that say something of a table
+  without reading a row of it, given its name: PostgreSQL's
+  `pg_relation_size`, `pg_table_size`, `has_table_privilege`,
+  `to_regclass` and their like. They say that it exists and how large it
+  is, which the refusal says too (question 8).
+- Names are compared without regard to case everywhere, which on
+  PostgreSQL refuses a quoted name that differs from a hidden one only by
+  case. A statement's name without a schema is taken for a hidden one of
+  any schema.
 
 ### B.4 Masked columns
 
@@ -2033,7 +2140,9 @@ and no snapshot material is committed. UI tests go through `src/testing.rs`
 `email` and `phone`), `order_items` (with a cascading foreign key), a view
 `recent_orders` that reads `orders.email`, a view `customer_names` over
 `customers`, and on PostgreSQL and MySQL a function that reads `customers`.
-The function comes with Phase 1c, which is the first to test one. On each
+The function comes with Phase 1c, which is the first to test one. As built,
+on PostgreSQL alone: MySQL lets only a user with `SUPER` make one while it
+logs its changes (B.3). On each
 server the Bookshop has a database of its own, `bookshop`: its `orders` is
 not the driver fixture's.
 SQLite runs everywhere. PostgreSQL and MySQL run where the suite has a
@@ -2217,7 +2326,7 @@ is off until the person turns it on.
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
 | 1b. The server over stdio, with its interface | 9, below | Built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`) |
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
-| 1c. Hidden tables | to be cut in its plan | Waits for questions 8 and 13 |
+| 1c. Hidden tables | 3, below | The checks built (`2026-10-15-mcp-server-1c-1-checks.md`). The setting and the server are next |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2329,6 +2438,13 @@ build; no console target.
 
 **1c. Hidden tables.**
 
+- Runs: three, each its own plan and pull request, agreed on 2026-10-15.
+  The checks in `tabletist-db`, nothing visible (`2026-10-15-mcp-server-1c-1-checks.md`). Then the
+  setting in `connections.toml` and the server: its refusals,
+  `list_connections` naming the hidden tables, `describe_schema` leaving
+  them out, a rename that stops agents, and changes made outside the app
+  held (C.3). Then the editor's Tables control in both looks, its hint,
+  and the website.
 - Files: `crates/tabletist-db/src/catalog.rs`, `pg.rs`, `mysql.rs`,
   `sqlite.rs` (what views read, routines, partitions), `agent/` (names,
   dependencies, the plan check, the system catalogs), `tabletist-sqlite-ffi`
@@ -2425,9 +2541,10 @@ The ones Phase 1 waits for are marked.
 7. The count on the approval card: a read-only `SELECT`, with a dry run
    only when the person asks. Accepted, against the board's "Counted by a
    dry run"? (Phase 2.)
-8. Is it right that an agent learns the names of hidden tables, as the
-   boards show? The alternative is to answer as the database would for a
-   table that does not exist. (Phase 1c.)
+8. Settled on 2026-10-15: yes, as the boards show. The refusal names the
+   hidden table, and `list_connections` lists the names (1c). Answering as
+   for a table that does not exist would leave the agent guessing, and the
+   names are not what is hidden: the rows are.
 9. Settled on 2026-10-13: HTTP comes after stdio, as its own pull request
    (1d). Both agents the boards name connect over stdio, and HTTP brings
    the app's first network listener, the tokens and at least nine new
@@ -2442,9 +2559,9 @@ The ones Phase 1 waits for are marked.
     tab the bottom line ends `ga agents` where the board has `a approve  d
     deny  esc later`. Accepted? The connections screen needs no `:` prompt
     any more. (Phase 2.)
-13. System catalogs: open on a connection that hides nothing, closed on one
-    that hides or masks something. Or closed everywhere, for one rule?
-    (Phase 1c.)
+13. Settled on 2026-10-15: open on a connection that hides nothing, closed
+    on one that hides or masks something (`system_catalog`, B.3). Built for
+    hidden tables in 1c's first run (`2026-10-15-mcp-server-1c-1-checks.md`); masks are Phase 3a's.
 14. Settled on 2026-10-13: the Windows way in (the named pipe, the relay
     from a GUI binary) follows the other two by one release, as a run of
     its own. The interface is built and tested on Windows with the others,

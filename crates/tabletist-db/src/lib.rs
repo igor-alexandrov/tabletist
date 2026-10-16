@@ -244,11 +244,19 @@ impl Connection {
     /// [`Error::Cancelled`]. A `read` that was checked for another
     /// dialect than this session's is refused, with nothing sent.
     ///
+    /// Where `tables` hides anything, the read is refused
+    /// ([`Error::Agent`]) when its text names what is hidden, or when the
+    /// database says it would read it: SQLite's authorizer as it prepares
+    /// the statement, and the statement's plan on PostgreSQL and MySQL,
+    /// asked for in the run's own transaction. Nothing hidden is read
+    /// (the MCP plan's B.3).
+    ///
     /// The future must be awaited to its end, as [`Self::run_script`]'s.
     pub async fn run_agent_read(
         &self,
         read: &agent::Read,
         limits: agent::Limits,
+        tables: &agent::Tables,
         stop: &StopFlag,
     ) -> Result<agent::Answer> {
         if read.dialect() != self.dialect() {
@@ -257,9 +265,9 @@ impl Connection {
             ));
         }
         let outcome = match &self.inner {
-            Inner::Sqlite(conn) => conn.run_read(read, limits, stop).await,
-            Inner::Postgres(conn) => conn.run_read(read, limits, stop).await,
-            Inner::MySql(conn) => conn.run_read(read, limits, stop).await,
+            Inner::Sqlite(conn) => conn.run_read(read, limits, tables, stop).await,
+            Inner::Postgres(conn) => conn.run_read(read, limits, tables, stop).await,
+            Inner::MySql(conn) => conn.run_read(read, limits, tables, stop).await,
         }?;
         agent::answer(outcome, stop)
     }

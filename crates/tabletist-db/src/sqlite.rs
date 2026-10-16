@@ -13,7 +13,7 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 
 use crate::adapter::Adapter;
-use crate::agent::{Limits, Param, Read, Sent, count_mismatch};
+use crate::agent::{Catalog, Hidden, Limits, Param, Read, Relation, Sent, Tables, count_mismatch};
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
@@ -1144,6 +1144,7 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
+        tables: &Tables,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let stop = stop.clone();
@@ -1151,8 +1152,21 @@ impl Adapter for Conn {
         let fences = self.fences.clone();
         let texts = vec![read.text().to_owned()];
         let params = read.params().to_vec();
+        let (read, tables) = (read.clone(), tables.clone());
         let outcome = self
             .run(move |connection| {
+                // What is hidden, from the catalog as it is now: a table
+                // made a moment ago is in it.
+                let hidden = match tables.hides_anything() {
+                    true => {
+                        let catalog = agents_catalog(connection)?;
+                        let hidden = Hidden::new(Dialect::Sqlite, &catalog, &tables);
+                        hidden.check_statement(&read).map_err(Error::Agent)?;
+                        Some(Arc::new(hidden))
+                    }
+                    false => None,
+                };
+                let _hiding = fences.hide(hidden);
                 let sent = Sent {
                     params: &params,
                     timeout: limits.timeout,
@@ -1171,6 +1185,71 @@ impl Adapter for Conn {
         guard.disarm();
         outcome
     }
+}
+
+/// The relations of every schema of the file, its own `sqlite_` tables
+/// left out, for what an agent's connection hides. SQLite's authorizer
+/// reports a view's tables as it reads them, so what a view depends on is
+/// not read here. A shadow table depends on its virtual table, whose name
+/// and an underscore begin its own (FTS5's `notes_config` is `notes`'s).
+fn agents_catalog(connection: &rusqlite::Connection) -> Result<Catalog> {
+    let mut statement = connection
+        .prepare(
+            "SELECT t.schema, t.name, t.type = 'shadow', v.name FROM pragma_table_list t \
+             LEFT JOIN pragma_table_list v ON t.type = 'shadow' AND v.schema = t.schema \
+                 AND v.type = 'virtual' \
+                 AND lower(substr(t.name, 1, length(v.name) + 1)) = lower(v.name || '_') \
+             WHERE t.type IN ('table', 'view', 'virtual', 'shadow') \
+                 AND t.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
+             ORDER BY t.schema, t.name",
+        )
+        .map_err(map_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(map_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_error)?;
+    let mut relations: Vec<Relation> = Vec::new();
+    for (schema, name, part, owner) in rows {
+        let same = relations
+            .last()
+            .is_some_and(|last| last.schema == schema && last.name == name);
+        if !same {
+            relations.push(Relation {
+                schema: schema.clone(),
+                name,
+                depends_on: Vec::new(),
+                opaque: false,
+                part,
+            });
+        }
+        if let (Some(owner), Some(last)) = (owner, relations.last_mut()) {
+            last.depends_on.push((schema, owner));
+        }
+    }
+    // The table functions, SQLite's own modules read without a table
+    // made of them: the pragmas are refused before this, and `dbstat` and
+    // the `sqlite_` ones are system catalogs.
+    let table_functions = connection
+        .prepare("SELECT name FROM pragma_module_list")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(map_error)?;
+    Ok(Catalog {
+        relations,
+        table_functions,
+        ..Catalog::default()
+    })
 }
 
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
@@ -2143,6 +2222,66 @@ mod tests {
         }
     }
 
+    /// A virtual table an agent may read is read whole: what FTS5 and
+    /// R*Tree read of their shadow tables goes with it, also where an
+    /// "Only" list names the virtual table alone.
+    #[tokio::test]
+    async fn a_virtual_table_that_is_not_hidden_reads_behind_an_agents_fence() {
+        use crate::agent::{TableName, Tables};
+        let only = |name: &str| {
+            Tables::Only(vec![TableName {
+                schema: None,
+                name: name.into(),
+            }])
+        };
+        let limits = Limits {
+            rows: 10,
+            timeout: Duration::from_secs(5),
+        };
+        for (table, sql) in [
+            (
+                "notes",
+                "SELECT count(*) FROM notes WHERE notes MATCH 'shelf'",
+            ),
+            ("areas", "SELECT count(*) FROM areas WHERE min_x >= 5"),
+            // SQLite's own table functions are no tables to list.
+            ("notes", "SELECT count(*) FROM json_each('[1, 2]')"),
+            (
+                "notes",
+                "SELECT count(*) FROM notes, json_each('[1]') WHERE notes MATCH 'shelf'",
+            ),
+        ] {
+            let (conn, _dir) = virtual_tables().await;
+            let read = crate::agent::check_read(Dialect::Sqlite, sql, &[]).unwrap();
+            let outcome = conn
+                .run_read(&read, limits, &only(table), &StopFlag::new())
+                .await;
+            let answer =
+                outcome.and_then(|outcome| crate::agent::answer(outcome, &StopFlag::new()));
+            assert_eq!(
+                answer.map(|answer| answer.rows),
+                Ok(vec![vec![Value::Int(2)]]),
+                "{sql}"
+            );
+        }
+        // A hidden one's shadow tables are hidden with it.
+        let (conn, _dir) = virtual_tables().await;
+        let notes = Tables::AllExcept(vec![TableName {
+            schema: None,
+            name: "notes".into(),
+        }]);
+        let read =
+            crate::agent::check_read(Dialect::Sqlite, "SELECT * FROM notes_content", &[]).unwrap();
+        let outcome = conn.run_read(&read, limits, &notes, &StopFlag::new()).await;
+        assert_eq!(
+            outcome.map(|_| ()),
+            Err(Error::Agent(crate::agent::Refusal::TableHidden {
+                name: "notes".into(),
+                through: Some("notes_content".into())
+            }))
+        );
+    }
+
     #[tokio::test]
     async fn a_script_that_ended_its_transaction_runs_nothing_after_it() {
         let (conn, dir) = fixture_as(Access::Writable).await;
@@ -2954,7 +3093,7 @@ mod tests {
             rows: 10,
             timeout: Duration::from_millis(250),
         };
-        conn.run_read(&read, limits, &StopFlag::new())
+        conn.run_read(&read, limits, &crate::agent::Tables::All, &StopFlag::new())
             .await
             .unwrap();
         assert_eq!(wait(&conn).await, Ok(5_000));

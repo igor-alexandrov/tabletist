@@ -3,6 +3,10 @@
 -- engine. The three files hold the same rows. Keep them deterministic.
 -- Loaded into a database of its own, `bookshop`, which the tests make.
 
+DROP VIEW IF EXISTS customer_tally, customer_sheet;
+DROP TABLE IF EXISTS stock_moves;
+DROP FUNCTION IF EXISTS customer_count();
+DROP FUNCTION IF EXISTS book_reach(books);
 DROP VIEW IF EXISTS recent_orders, customer_names;
 DROP TABLE IF EXISTS order_items, orders, customers, book_covers, books, authors, publishers;
 
@@ -157,3 +161,29 @@ INSERT INTO order_items (id, order_id, book_id, quantity, price) VALUES
 CREATE VIEW recent_orders AS
     SELECT id, email, placed_at, total FROM orders WHERE placed_at >= '2026-01-01';
 CREATE VIEW customer_names AS SELECT id, name FROM customers;
+
+-- And a third, a function of the database's own: what it reads, no check
+-- can see. Here alone: SQLite has none to write, and MySQL, which logs its
+-- changes, lets only a user with SUPER write one.
+CREATE FUNCTION customer_count() RETURNS bigint LANGUAGE sql STABLE
+    AS 'SELECT count(*) FROM customers';
+-- A view that calls it: it reads `customers`, and its catalog says only
+-- that it calls the function.
+CREATE VIEW customer_tally AS SELECT customer_count() AS customers;
+-- A view that reads `customers` through SQL held in a string, which the
+-- server runs: its catalog says nothing of what it reads.
+CREATE VIEW customer_sheet AS
+    SELECT query_to_xml('SELECT name FROM customers', true, false, '') AS sheet;
+-- And one of a book's row, which `b.book_reach` calls as a column.
+CREATE FUNCTION book_reach(books) RETURNS bigint LANGUAGE sql STABLE
+    AS 'SELECT count(*) FROM customers';
+
+-- A partitioned table, whose rows a plan reads from its partition. Here
+-- alone too: what it is for, the plan's partitions, is PostgreSQL's.
+CREATE TABLE stock_moves (book_id integer NOT NULL, moved_on date NOT NULL, quantity integer NOT NULL)
+    PARTITION BY RANGE (moved_on);
+CREATE TABLE stock_moves_2026 PARTITION OF stock_moves
+    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+INSERT INTO stock_moves (book_id, moved_on, quantity) VALUES
+    (1, '2026-02-03', 4),
+    (2, '2026-03-14', -1);

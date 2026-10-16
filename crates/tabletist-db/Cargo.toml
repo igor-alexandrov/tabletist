@@ -63,7 +63,11 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 # run. Moves with mysql_async; mysql.rs fails to compile if the two drift apart.
 mysql_common = { version = "0.37", default-features = false }
 
+# The plans PostgreSQL and MySQL give in JSON, read for the tables an
+# agent's statement would scan (`agent`'s hidden tables). Already in the
+# tree through the app and mysql_async.
+serde_json = "1"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 tempfile = "3"
-serde_json = "1"

@@ -14,13 +14,13 @@
 //! name that SQLite knows.
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rusqlite::ffi;
 use tabletist_sqlite_ffi::{Action, Authorization};
 
 use crate::Dialect;
-use crate::agent::{Refusal, function_allowed};
+use crate::agent::{Hidden, Refusal, function_allowed};
 
 /// Whose text SQLite is preparing, which decides what it may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +156,8 @@ pub(super) struct Fences(Arc<Shared>);
 struct Shared {
     up: AtomicU8,
     refused: Mutex<Option<Refusal>>,
+    /// What the agent's connection hides, while its statement runs.
+    hidden: Mutex<Option<Arc<Hidden>>>,
 }
 
 impl Fences {
@@ -187,16 +189,52 @@ impl Fences {
     /// The authorizer's answer for the fence that is up. SQLite says only
     /// "not authorized" of a statement it refuses, so what an agent's
     /// fence denies is kept, the first of it, for the run to say.
+    ///
+    /// Behind an agent's fence a read of a table is also asked of what the
+    /// connection hides. SQLite reports every relation a statement reads,
+    /// after its own parse: a view's own name and then its tables', each
+    /// with the view it is read for, a table that only `count(*)` or
+    /// `EXISTS` reads (with an empty column), and its own `sqlite_schema`.
+    /// So nothing hidden is read, however the text was written.
     pub(super) fn ask(&self, action: &Action<'_>) -> Authorization {
         let fence = self.current();
-        let answer = authorize(fence, action);
+        let mut answer = authorize(fence, action);
+        let mut hidden_read = None;
+        if fence == Fence::Agent
+            && answer == Authorization::Allow
+            && action.code == ffi::SQLITE_READ
+            && let Some(table) = action.first
+            && let Some(hidden) = self.hidden()
+            && let Err(refusal) = hidden.check_engine_read(action.database, table)
+        {
+            answer = Authorization::Deny;
+            hidden_read = Some(through_view(refusal, action.source));
+        }
         if fence == Fence::Agent
             && answer == Authorization::Deny
             && let Ok(mut refused) = self.0.refused.lock()
         {
-            refused.get_or_insert_with(|| refusal(action));
+            refused.get_or_insert_with(|| hidden_read.unwrap_or_else(|| refusal(action)));
         }
         answer
+    }
+
+    /// Hides from an agent's statements what `hidden` hides, until the
+    /// returned value drops.
+    pub(super) fn hide(&self, hidden: Option<Arc<Hidden>>) -> Hiding<'_> {
+        *self.held() = hidden;
+        Hiding(self)
+    }
+
+    /// What is hidden now.
+    fn hidden(&self) -> Option<Arc<Hidden>> {
+        self.held().clone()
+    }
+
+    /// What is hidden, held. A lock that a panic left behind still holds
+    /// it: what is hidden is never let go of by an error.
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Arc<Hidden>>> {
+        self.0.hidden.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What an agent's fence denied since the last fence went up.
@@ -206,6 +244,34 @@ impl Fences {
             .lock()
             .ok()
             .and_then(|refused| refused.clone())
+    }
+}
+
+/// A hidden table read for a view the statement named: the view is named
+/// with it, as the agent asked for the view. A common table expression is
+/// such a source too, and is named the same way.
+fn through_view(refusal: Refusal, source: Option<&str>) -> Refusal {
+    match (refusal, source) {
+        (
+            Refusal::TableHidden {
+                name,
+                through: None,
+            },
+            Some(view),
+        ) if !view.eq_ignore_ascii_case(&name) => Refusal::TableHidden {
+            name,
+            through: Some(view.to_owned()),
+        },
+        (refusal, _) => refusal,
+    }
+}
+
+/// Lets go of what is hidden when dropped, on every path.
+pub(super) struct Hiding<'a>(&'a Fences);
+
+impl Drop for Hiding<'_> {
+    fn drop(&mut self) {
+        *self.0.held() = None;
     }
 }
 
