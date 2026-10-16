@@ -179,8 +179,31 @@ What agents may do on a connection is its `[connections.agents]` table:
 `access` (`off` or `read`), `rows`, the most rows of an answer (1 to 5000),
 and `timeout_secs`, how long a statement may run (1 to 60). Without the
 table, or a key of it, a connection is `off`, with 500 rows and 10 seconds.
-A file in which a connection has the table says `version = 4`, and one in
-which none has it stays `version = 3`. Agents use the table only while
+
+The table can also say which tables agents may not read, with one of two
+lists:
+
+```toml
+[connections.agents]
+access = "read"
+hidden = ["customers", "sales.orders"]
+```
+
+`hidden` names the tables agents may not read, and every other one they
+may. `only` names the tables they may read, and no others, the ones made
+later included: `only = []` hides every table. A name without a schema is
+that table in every schema, and a name with a dot or a double quote in it
+is written in double quotes, with the quote doubled: `sales."q1.orders"`.
+A view over a hidden table is hidden with it, and so are a partition and a
+child table of one. While anything is hidden, agents may not read the
+system catalogs either (`information_schema`, `pg_catalog`, `mysql`,
+`sqlite_schema` and the rest). If a table that `hidden` names is renamed
+or dropped, agents may not use the connection at all until you take the
+name out of the list or put the right one in.
+
+A file in which a connection hides a table says `version = 5`, one in
+which a connection has the table and hides nothing says `version = 4`,
+and one in which none has it stays `version = 3`. Agents use the table only while
 `[mcp] enabled` is `true` in `settings.toml`. **Stop agents here**, in a
 connection's Agents tab, stops the agents working on it and sets its
 `access` to `off`, so that an agent that connects again does not see it.
@@ -188,13 +211,16 @@ connection's Agents tab, stops the agents working on it and sets its
 ### Agent access changed outside Tabletist
 
 A change to either file that lets agents do more than Tabletist last
-showed you is not applied at once: turning `[mcp] enabled` on, or a
-connection's `access` up from `off`. Tabletist says what changed in a bar
-under the top of the window, and until you answer, agents may do what they
-could before. **Keep** applies the change. **Put back** undoes it in the
-files: it turns `[mcp] enabled` off, or sets the connection's `access`
-back to `off`, and leaves your other settings and connections as they
-are. A change that lets agents do less applies at once.
+showed you is not applied at once: turning `[mcp] enabled` on, a
+connection's `access` up from `off`, or a connection hiding less: a name
+taken out of `hidden` or put into `only`, or a `hidden` list made an
+`only` one. Tabletist says what
+changed in a bar under the top of the window, and until you answer,
+agents may do what they could before. **Keep** applies the change. **Put
+back** undoes it in the files: it turns `[mcp] enabled` off, sets the
+connection's `access` back to `off`, or puts its tables back as they were,
+and leaves your other settings and connections as they are. A change that
+lets agents do less applies at once.
 
 Turning agents on in Tabletist itself, with **Turn on** in a connection's
 Agents tab or the switch in **Settings › Agents**, is never held. Tabletist keeps what it showed you in

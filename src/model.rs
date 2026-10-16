@@ -1288,7 +1288,7 @@ impl ConnectionForm {
             name: saved.name.clone(),
             environment: Some(saved.environment),
             read_only: saved.read_only,
-            agents: saved.agents,
+            agents: saved.agents.clone(),
             agents_opened: saved.agents.access,
             agents_rows: saved.agents.rows.to_string(),
             agents_timeout: saved.agents.timeout_secs.to_string(),
@@ -1570,10 +1570,12 @@ impl ConnectionForm {
                     "Statement timeout is a number of seconds from 1 to {MAX_AGENT_TIMEOUT_SECS}."
                 )
             })?;
+        // The tables have no field here yet: the ones the form opened with.
         Ok(crate::connections::Agents {
             access: self.agents.access,
             rows,
             timeout_secs,
+            tables: self.agents.tables.clone(),
         })
     }
 }
@@ -5256,6 +5258,7 @@ mod tests {
             access: crate::connections::AgentAccess::Read,
             rows: 1_000,
             timeout_secs: 30,
+            ..crate::connections::Agents::default()
         };
         let mut edited = ConnectionForm::from_saved(&saved);
         edited.name = "Production".into();

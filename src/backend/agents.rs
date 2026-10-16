@@ -45,6 +45,8 @@ pub struct Agentable {
     pub password: PasswordMode,
     pub ssh_secret: PasswordMode,
     pub limits: Limits,
+    /// What agents may not read of it.
+    pub tables: Tables,
 }
 
 /// The connections of `saved` that agents may use, in its order. One that
@@ -75,6 +77,7 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
                 rows: saved.agents.rows,
                 timeout: Duration::from_secs(u64::from(saved.agents.timeout_secs)),
             },
+            tables: saved.agents.tables.clone(),
         })
         .collect()
 }
@@ -654,9 +657,7 @@ impl Gateway for AppGateway {
                 name: agentable.name.clone(),
                 dialect: agentable.spec.driver.dialect(),
                 limits: agentable.limits,
-                // What the connection hides comes with its setting in
-                // connections.toml (1c-2b): until then, nothing.
-                tables: Tables::All,
+                tables: agentable.tables.clone(),
             })
             .collect()
     }
@@ -1107,6 +1108,41 @@ mod tests {
         drop(first);
         let again = gateway.open("shop", &stop).await.unwrap();
         assert_eq!(std::ptr::from_ref(again.connection().unwrap()), opened);
+    }
+
+    #[tokio::test]
+    async fn the_gateway_lists_what_a_connection_hides_and_its_reads_keep_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ConnectSpec::sqlite(bookshop(dir.path(), "bookshop.db"));
+        let mut shop = saved("shop", "Bookshop", Environment::Dev, spec);
+        let customers = Tables::AllExcept(vec!["customers".parse().unwrap()]);
+        shop.agents.tables = customers.clone();
+        let gateway = gateway(shop);
+        assert_eq!(gateway.connections()[0].tables, customers);
+        let stop = CancellationToken::new();
+        let session = gateway.open("shop", &stop).await.unwrap();
+        let read = check_read(Dialect::Sqlite, "SELECT * FROM customers", &[]).unwrap();
+        let refused = session
+            .read(
+                &read,
+                Limits {
+                    rows: 500,
+                    timeout: Duration::from_secs(10),
+                },
+                &customers,
+            )
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(Failure::Database(tabletist_db::Error::Agent(
+                    tabletist_db::agent::Refusal::TableHidden { .. }
+                )))
+            ),
+            "{refused:?}"
+        );
+        let hidden = session.hidden(&customers).await.unwrap();
+        assert!(hidden.hides("main", "customers") && !hidden.hides("main", "books"));
     }
 
     #[tokio::test]

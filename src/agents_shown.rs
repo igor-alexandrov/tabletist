@@ -1,5 +1,5 @@
 //! What the app last showed the person of what agents may do: whether the
-//! server is on, and each connection's access. A change made outside the
+//! server is on, and each connection's access and the tables it hides. A change made outside the
 //! app (a hand, a program, a synced dotfile, a backup) that lets agents do
 //! more than that is held until the person keeps it or puts it back; one
 //! that lets them do less is taken at once.
@@ -13,6 +13,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use tabletist_db::agent::{TableName, Tables};
+
 use crate::connections::{AgentAccess, ConnectionId, SavedConnection};
 
 /// What agents may do, as the person last saw it.
@@ -23,6 +25,17 @@ pub struct Shown {
     pub enabled: bool,
     /// Each connection's access, by its id. A connection not here was Off.
     pub access: BTreeMap<String, AgentAccess>,
+    /// The tables each connection hides, by its id. A connection not here
+    /// hid none.
+    pub tables: BTreeMap<String, ShownTables>,
+}
+
+/// The tables a connection hid, each entry as the person writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShownTables {
+    Hidden(Vec<String>),
+    Only(Vec<String>),
 }
 
 /// A change that lets agents do more than the person was shown.
@@ -32,6 +45,8 @@ pub enum Raised {
     Server,
     /// A connection's access went up to `to`.
     Access { id: ConnectionId, to: AgentAccess },
+    /// A connection hides less: `to`.
+    Tables { id: ConnectionId, to: Tables },
 }
 
 impl Shown {
@@ -46,6 +61,30 @@ impl Shown {
     /// The access `id` was shown at.
     pub fn access_of(&self, id: &ConnectionId) -> AgentAccess {
         self.access.get(&id.0).copied().unwrap_or_default()
+    }
+
+    /// The tables `id` was shown to hide. An entry the file holds that
+    /// does not read, which only a hand could write, cannot say what it
+    /// hid: an "All except" list with one is taken for hiding every table,
+    /// and an "Only" list leaves it out. Either way a change against it is
+    /// held, and what is in force meanwhile hides no less than was shown.
+    pub fn tables_of(&self, id: &ConnectionId) -> Tables {
+        let read = |written: &[String]| -> Option<Vec<TableName>> {
+            written.iter().map(|entry| entry.parse().ok()).collect()
+        };
+        match self.tables.get(&id.0) {
+            None => Tables::All,
+            Some(ShownTables::Hidden(written)) => match read(written) {
+                Some(names) => normal(Tables::AllExcept(names)),
+                None => Tables::Only(Vec::new()),
+            },
+            Some(ShownTables::Only(written)) => Tables::Only(
+                written
+                    .iter()
+                    .filter_map(|entry| entry.parse().ok())
+                    .collect(),
+            ),
+        }
     }
 
     /// What the files say now, `enabled` and `connections`, against what
@@ -78,8 +117,28 @@ impl Shown {
                 self.set(&saved.id, now);
                 lowered = true;
             }
+            let (was, now) = (
+                self.tables_of(&saved.id),
+                normal(saved.agents.tables.clone()),
+            );
+            if now == was {
+                continue;
+            }
+            match hides_no_less(&now, &was) {
+                true => {
+                    self.set_tables(&saved.id, &now);
+                    lowered = true;
+                }
+                false => raised.push(Raised::Tables {
+                    id: saved.id.clone(),
+                    to: now,
+                }),
+            }
         }
-        // A connection deleted since lets agents do nothing.
+        // A connection deleted since lets agents do nothing. What it hid is
+        // kept: a start that read no connection at all (a file kept aside,
+        // or one of a newer version) deleted nothing, and when it comes
+        // back, a list that hides less is held.
         let before = self.access.len();
         self.access
             .retain(|id, _| connections.iter().any(|saved| saved.id.0 == *id));
@@ -93,6 +152,24 @@ impl Shown {
             match raise {
                 Raised::Server => self.enabled = true,
                 Raised::Access { id, to } => self.set(id, *to),
+                Raised::Tables { id, to } => self.set_tables(id, to),
+            }
+        }
+    }
+
+    fn set_tables(&mut self, id: &ConnectionId, tables: &Tables) {
+        let written = |names: &[TableName]| names.iter().map(ToString::to_string).collect();
+        match normal(tables.clone()) {
+            Tables::All => {
+                self.tables.remove(&id.0);
+            }
+            Tables::AllExcept(names) => {
+                self.tables
+                    .insert(id.0.clone(), ShownTables::Hidden(written(&names)));
+            }
+            Tables::Only(names) => {
+                self.tables
+                    .insert(id.0.clone(), ShownTables::Only(written(&names)));
             }
         }
     }
@@ -106,6 +183,48 @@ impl Shown {
                 self.access.insert(id.0.clone(), access);
             }
         }
+    }
+}
+
+/// `tables`, an empty "All except" list as "All".
+fn normal(tables: Tables) -> Tables {
+    match tables {
+        Tables::AllExcept(names) if names.is_empty() => Tables::All,
+        tables => tables,
+    }
+}
+
+/// Whether agents may read under `now` nothing they could not under `was`:
+/// every table `was` hid is hidden still. An entry without a schema is that
+/// name in every schema, so it covers one with a schema, and not the other
+/// way round. Names are compared without regard to case.
+fn hides_no_less(now: &Tables, was: &Tables) -> bool {
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    // Every table `narrow` names, `wide` names too.
+    let covers = |wide: &TableName, narrow: &TableName| {
+        same(&wide.name, &narrow.name)
+            && match (&wide.schema, &narrow.schema) {
+                (None, _) => true,
+                (Some(wide), Some(narrow)) => same(wide, narrow),
+                (Some(_), None) => false,
+            }
+    };
+    match (was, now) {
+        (Tables::All, _) => true,
+        (_, Tables::All) => false,
+        (Tables::AllExcept(was), Tables::AllExcept(now)) => was
+            .iter()
+            .all(|hidden| now.iter().any(|still| covers(still, hidden))),
+        (Tables::Only(was), Tables::Only(now)) => now
+            .iter()
+            .all(|readable| was.iter().any(|could| covers(could, readable))),
+        // What a list names is not all an "Only" list reads: a partition
+        // or a shadow table goes with the table it is part of, which a
+        // name cannot tell, and a renamed hidden table is readable by its
+        // new name. Only a list that names nothing hides no less.
+        (Tables::AllExcept(_), Tables::Only(now)) => now.is_empty(),
+        // Every table that is not named was hidden, and is readable now.
+        (Tables::Only(_), Tables::AllExcept(_)) => false,
     }
 }
 
@@ -163,6 +282,129 @@ mod tests {
         assert_eq!(shown, Shown::default());
     }
 
+    fn hiding(id: &str, tables: Tables) -> SavedConnection {
+        let mut saved = saved(id, AgentAccess::Read);
+        saved.agents.tables = tables;
+        saved
+    }
+
+    fn names(written: &[&str]) -> Vec<TableName> {
+        written.iter().map(|entry| entry.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn a_change_that_hides_less_is_held_and_one_that_hides_more_is_taken() {
+        let id = || ConnectionId("shop".into());
+        let mut shown = Shown::default();
+        shown.keep(&[Raised::Access {
+            id: id(),
+            to: AgentAccess::Read,
+        }]);
+        // Hiding a table where none was: taken.
+        let customers = Tables::AllExcept(names(&["customers"]));
+        let (raised, lowered) = shown.compare(false, &[hiding("shop", customers.clone())]);
+        assert_eq!((raised, lowered), (Vec::new(), true));
+        assert_eq!(shown.tables_of(&id()), customers);
+        // Each way to read more is held, with what it would read.
+        for more in [
+            Tables::All,
+            Tables::AllExcept(Vec::new()),
+            Tables::AllExcept(names(&["orders"])),
+            Tables::AllExcept(names(&["sales.customers"])),
+            Tables::Only(names(&["customers"])),
+            Tables::Only(names(&["books", "public.customers"])),
+            // A partition of a hidden table goes with its parent, and a
+            // hidden table renamed reads by its new name: a name cannot
+            // tell either from a table that was readable.
+            Tables::Only(names(&["books"])),
+        ] {
+            let mut copy = shown.clone();
+            let (raised, lowered) = copy.compare(false, &[hiding("shop", more.clone())]);
+            assert!(!lowered, "{more:?}");
+            assert_eq!(raised.len(), 1, "{more:?}");
+            assert!(
+                matches!(&raised[0], Raised::Tables { id: held, .. } if *held == id()),
+                "{more:?}"
+            );
+            assert_eq!(copy.tables_of(&id()), customers, "what was shown holds");
+        }
+        // Each way to read less, or the same in other words, is taken.
+        for less in [
+            Tables::AllExcept(names(&["customers", "orders"])),
+            Tables::AllExcept(names(&["CUSTOMERS"])),
+            Tables::Only(Vec::new()),
+        ] {
+            let mut copy = shown.clone();
+            let (raised, _) = copy.compare(false, &[hiding("shop", less.clone())]);
+            assert_eq!(raised, [], "{less:?}");
+            assert_eq!(copy.tables_of(&id()), less, "{less:?}");
+        }
+        // From an "Only" list, adding a table is held; taking one is not.
+        let mut only = Shown::default();
+        only.keep(&[
+            Raised::Access {
+                id: id(),
+                to: AgentAccess::Read,
+            },
+            Raised::Tables {
+                id: id(),
+                to: Tables::Only(names(&["books", "orders"])),
+            },
+        ]);
+        let wider = Tables::Only(names(&["books", "orders", "customers"]));
+        let (raised, _) = only.clone().compare(false, &[hiding("shop", wider)]);
+        assert_eq!(raised.len(), 1);
+        let narrower = Tables::Only(names(&["books"]));
+        let (raised, _) = only.clone().compare(false, &[hiding("shop", narrower)]);
+        assert_eq!(raised, []);
+        let except = Tables::AllExcept(names(&["customers"]));
+        let (raised, _) = only.compare(false, &[hiding("shop", except)]);
+        assert_eq!(raised.len(), 1, "every table not named was hidden");
+    }
+
+    #[test]
+    fn what_a_connection_hid_is_kept_while_it_is_not_there() {
+        let id = || ConnectionId("shop".into());
+        let mut shown = Shown::default();
+        shown.keep(&[
+            Raised::Access {
+                id: id(),
+                to: AgentAccess::Read,
+            },
+            Raised::Tables {
+                id: id(),
+                to: Tables::AllExcept(names(&["customers"])),
+            },
+        ]);
+        // A start that read no connection, then the file again without
+        // the list: held.
+        shown.compare(false, &[]);
+        let (raised, _) = shown.compare(false, &[hiding("shop", Tables::All)]);
+        assert!(
+            raised
+                .iter()
+                .any(|raise| matches!(raise, Raised::Tables { .. })),
+            "{raised:?}"
+        );
+    }
+
+    #[test]
+    fn a_shown_list_that_does_not_read_hides_every_table() {
+        let mut shown = Shown::default();
+        shown.tables.insert(
+            "shop".into(),
+            ShownTables::Hidden(vec!["\"cust.omers".into()]),
+        );
+        let id = ConnectionId("shop".into());
+        assert_eq!(shown.tables_of(&id), Tables::Only(Vec::new()));
+        shown.keep(&[Raised::Access {
+            id: id.clone(),
+            to: AgentAccess::Read,
+        }]);
+        let (raised, _) = shown.compare(false, &[hiding("shop", Tables::All)]);
+        assert_eq!(raised.len(), 1, "{raised:?}");
+    }
+
     #[test]
     fn a_connection_deleted_since_is_forgotten() {
         let mut shown = Shown::default();
@@ -194,8 +436,15 @@ mod tests {
         ]);
         shown.save(&path).unwrap();
         assert_eq!(Shown::load(&path), shown);
+        shown.keep(&[Raised::Tables {
+            id: ConnectionId("shop".into()),
+            to: Tables::AllExcept(names(&["customers", "\"odd.name\""])),
+        }]);
+        shown.save(&path).unwrap();
+        assert_eq!(Shown::load(&path), shown);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"shop\": \"read\""), "{text}");
+        assert!(text.contains("\"hidden\""), "{text}");
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(Shown::load(&path), Shown::default());
     }

@@ -63,6 +63,69 @@ impl std::fmt::Display for TableName {
     }
 }
 
+/// An entry as the person writes it, as [`TableName`]'s `Display` writes it
+/// back: a name, or a schema and a name with a dot between, a part in
+/// double quotes where it holds a dot or a quote. The error says what is
+/// wrong without the entry's words, for whoever gives it a place.
+impl std::str::FromStr for TableName {
+    type Err = String;
+
+    fn from_str(written: &str) -> Result<Self, String> {
+        let mut parts: Vec<String> = Vec::new();
+        let mut chars = written.chars().peekable();
+        loop {
+            let mut part = String::new();
+            if chars.peek() == Some(&'"') {
+                chars.next();
+                loop {
+                    match chars.next() {
+                        Some('"') if chars.peek() == Some(&'"') => {
+                            chars.next();
+                            part.push('"');
+                        }
+                        Some('"') => break,
+                        Some(c) => part.push(c),
+                        None => return Err("has a quote that is not closed".into()),
+                    }
+                }
+            } else {
+                while let Some(&c) = chars.peek()
+                    && c != '.'
+                {
+                    if c == '"' {
+                        return Err(
+                            "has a quote inside a name: put the whole name in quotes".into()
+                        );
+                    }
+                    part.push(c);
+                    chars.next();
+                }
+            }
+            if part.is_empty() {
+                return Err("has a name that is empty".into());
+            }
+            parts.push(part);
+            match chars.next() {
+                None => break,
+                Some('.') => {}
+                Some(_) => {
+                    return Err("goes on after a quoted name: a dot comes next".into());
+                }
+            }
+        }
+        match <[String; 2]>::try_from(parts) {
+            Ok([schema, name]) => Ok(Self {
+                schema: Some(schema),
+                name,
+            }),
+            Err(parts) => match <[String; 1]>::try_from(parts) {
+                Ok([name]) => Ok(Self { schema: None, name }),
+                Err(_) => Err("is a table, or a schema and a table, with one dot between".into()),
+            },
+        }
+    }
+}
+
 impl TableName {
     /// Whether this names the relation `name` of `schema`.
     fn names(&self, schema: Option<&str>, name: &str) -> bool {
@@ -1419,6 +1482,26 @@ mod tests {
         // An "Only" list that names what is gone hides more, not less.
         let only = hidden(Tables::Only(vec![table(None, "clients")]));
         assert_eq!(only.check_settings(), Ok(()));
+    }
+
+    #[test]
+    fn an_entry_is_read_as_it_is_written() {
+        for written in [
+            "customers",
+            "sales.customers",
+            "\"odd.schema\".\"say \"\"hi\"\"\"",
+            "\"a.b\"",
+        ] {
+            let read: TableName = written.parse().unwrap();
+            assert_eq!(read.to_string(), written);
+        }
+        assert_eq!(
+            "\"sales\".customers".parse::<TableName>(),
+            Ok(table(Some("sales"), "customers"))
+        );
+        for wrong in ["", "a.", ".b", "a.b.c", "\"a", "a\"b", "\"a\"b"] {
+            assert!(wrong.parse::<TableName>().is_err(), "{wrong:?}");
+        }
     }
 
     #[test]

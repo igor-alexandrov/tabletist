@@ -1333,6 +1333,18 @@ an agent's settings are. Where they are kept changes:
   The table is written whenever anything in it is not the default, not only
   when access is on (`Agents::is_off` below would drop it): a stop loses
   neither the level nor, from 1c on, the hidden tables.
+- **As built** (`2026-10-16-mcp-server-1c-2b-setting.md`): the tables are `hidden = [...]` or `only = [...]`
+  in the same table, not both, and not the `tables` key the JSON below
+  has: a list says which it is. An entry is `customers` or
+  `sales.customers`, a part with a dot or a double quote in double quotes,
+  the quote doubled. `hidden = []` hides nothing; `only = []` hides every
+  table. A file in which a connection hides something is version 5, so
+  that a Tabletist that would read every table as readable never reads
+  it; one that has agents' settings and hides nothing stays 4. An entry
+  that does not read is refused by its place in the list, not its words,
+  as every value of the file is. The editor has no control for the tables
+  yet (1c-3): its save keeps what the file says then, as it does for an
+  access it did not change.
 
 **Per connection: `connections.json`.** `SavedConnection`
 (`src/connections.rs:35-50`) gains one field:
@@ -1551,6 +1563,22 @@ its second part (1b-3b), right after **Turn on** (`2026-10-14-mcp-server-1b-3a-a
 - What the app last showed is `agents_shown.json` in the state directory:
   whether the server is on, and each connection's access. `listen` and the
   lists come with what they are for (1d, 1c, 3a).
+  **As built for 1c** (`2026-10-16-mcp-server-1c-2b-setting.md`): each connection's tables are there too, a
+  connection without an entry hiding none. A change that hides less is
+  held (`Raised::Tables`, "agents may read more of Bookshop · dev"), and
+  what was shown is in force until the person answers; one that hides
+  more, or the same in other words, is taken. An entry without a schema
+  is that table in every schema: it covers one with a schema, not the
+  other way round, so a change from `sales.customers` to `customers` in an
+  "Only" list is held. From "Only" to "All except" is always held: every
+  table the list did not name was hidden. So is "All except" to "Only" a
+  list, found by this run's review: an "Only" list reads the partitions
+  and shadow tables of what it names, and a hidden table renamed by its
+  new name, and no name says which. **Put back** writes the shown tables
+  back to the file. What a connection hid is kept while it is not in the
+  file, as after a start that read no connection; a shown entry that does
+  not read hides every table; a copy of a connection whose change is held
+  takes what is in force.
 - **A file that is not there, or cannot be read, shows nothing.** So the
   first start of the version that checks holds whatever was turned on by
   hand, once, and a person who set agents up through the files keeps it
@@ -1578,7 +1606,8 @@ its second part (1b-3b), right after **Turn on** (`2026-10-14-mcp-server-1b-3a-a
 - Only the server and each connection's access are compared. A Read
   connection pointed at another server by hand is not held: an agent
   with the person's shell gains little by it, and the settings and
-  connection files are the person's to edit.
+  connection files are the person's to edit. From 1c-2b (`2026-10-16-mcp-server-1c-2b-setting.md`) each
+  connection's tables are compared too.
 
 ### C.3 Hidden tables and masked columns when the schema changes
 
@@ -2369,7 +2398,7 @@ is off until the person turns it on.
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
 | 1b. The server over stdio, with its interface | 9, below | Built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`) |
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
-| 1c. Hidden tables | 4, below | The checks and the server's side built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`). The setting is next |
+| 1c. Hidden tables | 4, below | The checks, the server's side and the setting built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`). The editor's Tables control is next |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2491,7 +2520,7 @@ build; no console target.
 - The second cut in two, the same day, the server first: 1c-2a, the
   server's side with nothing to set it (`2026-10-15-mcp-server-1c-2a-server.md`); 1c-2b, the keys in
   `connections.toml`, the app passing them, changes made outside the app
-  held, and the reference page for the keys.
+  held, and the reference page for the keys (`2026-10-16-mcp-server-1c-2b-setting.md`).
 - Files: `crates/tabletist-db/src/catalog.rs`, `pg.rs`, `mysql.rs`,
   `sqlite.rs` (what views read, routines, partitions), `agent/` (names,
   dependencies, the plan check, the system catalogs), `tabletist-sqlite-ffi`

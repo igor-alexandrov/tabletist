@@ -188,6 +188,13 @@ pub fn agents_held_said(app: &App) -> Option<String> {
     let locale = app.locale;
     let saved = &app.connections.connections;
     let names = crate::backend::agent_names(saved);
+    let called = |id: &crate::connections::ConnectionId| {
+        saved
+            .iter()
+            .zip(&names)
+            .find(|(saved, _)| saved.id == *id)
+            .map_or(id.0.clone(), |(_, name)| name.clone())
+    };
     let parts: Vec<String> = app
         .agents_held
         .iter()
@@ -196,12 +203,13 @@ pub fn agents_held_said(app: &App) -> Option<String> {
                 crate::i18n::gettext(locale, "the agent server was turned on").into_owned()
             }
             Raised::Access { id, .. } => {
-                let name = saved
-                    .iter()
-                    .zip(&names)
-                    .find(|(saved, _)| saved.id == *id)
-                    .map_or(id.0.as_str(), |(_, name)| name.as_str());
-                crate::i18n::gettext(locale, "agents may read {name}").replace("{name}", name)
+                let name = called(id);
+                crate::i18n::gettext(locale, "agents may read {name}").replace("{name}", &name)
+            }
+            Raised::Tables { id, .. } => {
+                let name = called(id);
+                crate::i18n::gettext(locale, "agents may read more of {name}")
+                    .replace("{name}", &name)
             }
         })
         .collect();

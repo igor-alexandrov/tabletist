@@ -2003,7 +2003,19 @@ impl App {
                 }
             }
             Action::DuplicateConnection(id) => {
-                if self.connections.duplicate(&id).is_some() {
+                // The copy hides what is in force: where a change made
+                // outside that hides less is held, what was shown.
+                let in_force = self
+                    .connections
+                    .get(&id)
+                    .map(|saved| self.agents_tables(saved));
+                if let Some(copy) = self.connections.duplicate(&id) {
+                    if let (Some(tables), Some(mut saved)) =
+                        (in_force, self.connections.get(&copy).cloned())
+                    {
+                        saved.agents.tables = tables;
+                        self.connections.upsert(saved);
+                    }
                     self.save_connections();
                 }
             }
@@ -3291,6 +3303,20 @@ impl App {
         }
     }
 
+    /// The tables agents may not read on `saved` now: its own, or what was
+    /// shown where a change made outside the app that hides less is held.
+    pub fn agents_tables(&self, saved: &SavedConnection) -> tabletist_db::agent::Tables {
+        use crate::agents_shown::Raised;
+        let held = self
+            .agents_held
+            .iter()
+            .any(|raise| matches!(raise, Raised::Tables { id, .. } if *id == saved.id));
+        match held {
+            true => self.agents_shown.tables_of(&saved.id),
+            false => saved.agents.tables.clone(),
+        }
+    }
+
     /// Compares what the files let agents do with what was last shown:
     /// what lets them do more is held, what lets them do less is taken and
     /// remembered. Where agents cannot reach the app nothing is held.
@@ -3357,11 +3383,16 @@ impl App {
         }
         let mut changed = false;
         for raise in back {
-            let Raised::Access { id, .. } = raise else {
-                continue;
+            let (id, access) = match raise {
+                Raised::Server => continue,
+                Raised::Access { id, .. } => (id, true),
+                Raised::Tables { id, .. } => (id, false),
             };
             if let Some(mut saved) = self.connections.get(&id).cloned() {
-                saved.agents.access = self.agents_shown.access_of(&id);
+                match access {
+                    true => saved.agents.access = self.agents_shown.access_of(&id),
+                    false => saved.agents.tables = self.agents_shown.tables_of(&id),
+                }
                 self.connections.upsert(saved);
                 changed = true;
             }
@@ -3421,6 +3452,7 @@ impl App {
             .map(|saved| {
                 let mut now = saved.clone();
                 now.agents.access = self.agents_access(saved);
+                now.agents.tables = self.agents_tables(saved);
                 now
             })
             .collect();
@@ -3624,6 +3656,11 @@ impl App {
         // their own, and one they raised is shown, never held. The access
         // the dialog opened with keeps what the file says now: a change
         // made outside the app stays held, and one put back stays back.
+        // The tables have no control in the dialog yet: they are what the
+        // file says now, held or not.
+        if let Some(was) = self.connections.get(&saved.id) {
+            saved.agents.tables = was.agents.tables.clone();
+        }
         match self.connections.get(&saved.id) {
             Some(was) if saved.agents.access == opened => {
                 saved.agents.access = was.agents.access;
@@ -6861,7 +6898,7 @@ mod tests {
         );
         form(&mut app).agents_timeout = "30".into();
         app.apply(Action::SaveConnection { connect: false });
-        let agents = app.connections.get(&conn).unwrap().agents;
+        let agents = app.connections.get(&conn).unwrap().agents.clone();
         assert_eq!((agents.rows, agents.timeout_secs), (250, 30));
         // A new connection given Read in the dialog is shown, not held.
         app.apply(Action::NewConnection);
@@ -6877,6 +6914,75 @@ mod tests {
                 .filter(|saved| saved.agents.access == AgentAccess::Read)
                 .count(),
             2
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_change_outside_that_hides_less_is_held_and_the_editor_keeps_the_files_tables() {
+        use crate::agents_shown::Raised;
+        use crate::connections::AgentAccess;
+        use tabletist_db::agent::Tables;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        // What is in force, which the policy sends.
+        let sent = |app: &App| app.agents_tables(app.connections.get(&conn).unwrap());
+        let file_says = |app: &mut App, tables: Tables| {
+            let mut saved = app.connections.get(&conn).unwrap().clone();
+            saved.agents.tables = tables;
+            app.connections.upsert(saved);
+            app.check_agents();
+            app.send_agents_policy();
+        };
+        let customers = Tables::AllExcept(vec!["customers".parse().unwrap()]);
+        // Hiding more, from the file: taken at once.
+        file_says(&mut app, customers.clone());
+        assert!(app.agents_held.is_empty());
+        assert_eq!(sent(&app), customers);
+        // Hiding less: held, and what was shown is in force.
+        file_says(&mut app, Tables::All);
+        assert!(matches!(
+            app.agents_held.as_slice(),
+            [Raised::Tables { .. }]
+        ));
+        assert_eq!(sent(&app), customers);
+        let said = crate::ui::agents_held_said(&app).unwrap();
+        assert!(
+            said.contains("agents may read more of Local · dev"),
+            "{said}"
+        );
+        // A copy made meanwhile hides what is in force, not what is held.
+        app.apply(Action::DuplicateConnection(conn.clone()));
+        let copy = &app.connections.connections[1];
+        assert_ne!(copy.id, conn);
+        assert_eq!(copy.agents.tables, customers);
+        let copy = copy.id.clone();
+        app.apply(Action::DeleteConnection(copy));
+        // Put back: the file hides it again.
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert_eq!(app.connections.get(&conn).unwrap().agents.tables, customers);
+        // Kept: in force.
+        file_says(&mut app, Tables::All);
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert_eq!(sent(&app), Tables::All);
+        // The editor has no control for the tables: its save keeps what
+        // the file says when it saves.
+        app.apply(Action::EditConnection(conn.clone()));
+        let only = Tables::Only(vec!["books".parse().unwrap()]);
+        file_says(&mut app, only.clone());
+        form(&mut app).name = "Local shop".into();
+        app.apply(Action::SaveConnection { connect: false });
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(
+            (saved.name.as_str(), &saved.agents.tables),
+            ("Local shop", &only)
         );
     }
 
