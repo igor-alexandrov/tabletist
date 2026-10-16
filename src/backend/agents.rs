@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tabletist_db::agent::{Answer, Limits, Read};
+use tabletist_db::agent::{Answer, Hidden, Limits, Read, Tables};
 use tabletist_db::{
     Access, CancelHandle, ConnectSpec, Connection, Error, HostKeys, ObjectInfo, ObjectRef, Secrets,
     StopFlag, Structure,
@@ -654,6 +654,9 @@ impl Gateway for AppGateway {
                 name: agentable.name.clone(),
                 dialect: agentable.spec.driver.dialect(),
                 limits: agentable.limits,
+                // What the connection hides comes with its setting in
+                // connections.toml (1c-2b): until then, nothing.
+                tables: Tables::All,
             })
             .collect()
     }
@@ -900,15 +903,17 @@ impl Session for AppSession {
         self.ended(None, connection.describe(object)).await
     }
 
-    async fn read(&self, read: &Read, limits: Limits) -> Result<Answer, Failure> {
+    async fn hidden(&self, tables: &Tables) -> Result<Hidden, Failure> {
+        let connection = self.connection()?;
+        self.ended(None, connection.agent_hidden(tables)).await
+    }
+
+    async fn read(&self, read: &Read, limits: Limits, tables: &Tables) -> Result<Answer, Failure> {
         let connection = self.connection()?;
         let flag = StopFlag::new();
-        // What the connection hides is the next run's (1c-2): until it
-        // is set there, every table is read as before.
-        let tables = tabletist_db::agent::Tables::All;
         self.ended(
             Some(&flag),
-            connection.run_agent_read(read, limits, &tables, &flag),
+            connection.run_agent_read(read, limits, tables, &flag),
         )
         .await
     }
@@ -969,6 +974,7 @@ mod tests {
                     rows: 500,
                     timeout: Duration::from_secs(10),
                 },
+                &Tables::All,
             )
             .await
     }

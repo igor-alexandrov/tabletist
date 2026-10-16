@@ -12,7 +12,7 @@ use rmcp::model::ErrorCode;
 use rmcp::service::ServiceError;
 use serde_json::{Value as Json, json};
 use support::{Agent, LIMITS, Shop, request, server};
-use tabletist_db::agent::Limits;
+use tabletist_db::agent::{Limits, TableName, Tables};
 use tabletist_mcp::{MAX_ANSWER_BYTES, MAX_CELL_CHARS};
 
 const DEV: &str = "Bookshop · dev";
@@ -616,5 +616,133 @@ async fn describe_schema_takes_a_list_of_names_and_knows_no_connection_that_is_o
         )
         .await;
     assert_eq!(called.refused(), "unknown_connection");
+    agent.close().await;
+}
+
+/// The Bookshop's `customers`, in every schema.
+fn customers() -> Tables {
+    Tables::AllExcept(vec![TableName {
+        schema: None,
+        name: "customers".into(),
+    }])
+}
+
+#[tokio::test]
+async fn list_connections_names_what_is_hidden() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.hide(DEV, customers());
+    let called = agent.call("list_connections", json!({})).await;
+    assert_eq!(
+        called.answer()["connections"][0]["hidden"],
+        json!(["customers"])
+    );
+    assert!(called.answer()["connections"][0].get("only").is_none());
+    shop.hide(
+        DEV,
+        Tables::Only(vec![TableName {
+            schema: Some("main".into()),
+            name: "books".into(),
+        }]),
+    );
+    let called = agent.call("list_connections", json!({})).await;
+    assert_eq!(
+        called.answer()["connections"][0]["only"],
+        json!(["main.books"])
+    );
+    assert!(called.answer()["connections"][0].get("hidden").is_none());
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn a_hidden_table_is_left_out_of_the_schema_and_its_rows_are_refused() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.hide(DEV, customers());
+    // The list leaves out the table and the view over it.
+    let called = agent
+        .call("describe_schema", json!({ "connection": DEV }))
+        .await;
+    let names: Vec<&str> = called.answer()["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|table| table["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"orders"), "{names:?}");
+    assert!(!names.contains(&"customers"), "{names:?}");
+    assert!(!names.contains(&"customer_names"), "{names:?}");
+    // Asked for by name, it is named as hidden, and the key to it from
+    // orders is left out, as it would name its columns.
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["customers", "orders", "customer_names"] }),
+        )
+        .await;
+    let answer = called.answer();
+    assert_eq!(answer["hidden"], json!(["customers", "customer_names"]));
+    let orders = &answer["tables"].as_array().unwrap()[0];
+    assert_eq!(orders["name"], json!("orders"));
+    assert!(orders.get("foreign_keys").is_none(), "{orders}");
+    // Its rows are refused, and nothing is read.
+    let called = agent
+        .call(
+            "run_query",
+            json!({ "connection": DEV, "sql": "SELECT * FROM customers" }),
+        )
+        .await;
+    assert_eq!(called.refused(), "table_hidden");
+    assert_eq!(
+        called.text,
+        "customers is hidden for agents on this connection."
+    );
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn a_hidden_table_that_is_gone_closes_the_connection_to_agents() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.hide(DEV, customers());
+    // Renamed: the entry names what is no longer there, and the new name
+    // is hidden by nothing.
+    shop.change("ALTER TABLE customers RENAME TO clients");
+    let look = "Agents may not use this connection until its agent settings are looked at in \
+                Tabletist: they hide customers, and its user can see no table of that name.";
+    for (tool, arguments) in [
+        (
+            "run_query",
+            json!({ "connection": DEV, "sql": "SELECT * FROM clients" }),
+        ),
+        ("describe_schema", json!({ "connection": DEV })),
+        (
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["clients"] }),
+        ),
+    ] {
+        let called = agent.call(tool, arguments).await;
+        assert_eq!(called.refused(), "connection_unavailable", "{tool}");
+        assert_eq!(called.text, look, "{tool}");
+    }
+    // The person looks: with the entry put right, the connection is open
+    // again.
+    shop.hide(
+        DEV,
+        Tables::AllExcept(vec![TableName {
+            schema: None,
+            name: "clients".into(),
+        }]),
+    );
+    let called = agent
+        .call(
+            "run_query",
+            json!({ "connection": DEV, "sql": "SELECT count(*) FROM books" }),
+        )
+        .await;
+    assert_eq!(called.answer()["rows"], json!([[12]]));
     agent.close().await;
 }

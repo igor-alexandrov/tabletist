@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value as Json, json};
+use tabletist_db::agent::Hidden;
 use tabletist_db::{Error, ObjectInfo, ObjectKind, ObjectRef, Structure};
 
 use super::{Arguments, Done, Invalid, Note, Tool, find, kept, schema, settle, within};
@@ -29,7 +30,9 @@ pub fn tool() -> Tool {
                       with a rough count of each one's rows, and the names of its other \
                       schemas. With `tables` (at most 20 names): each one's columns with their \
                       types, its primary key, its foreign keys and the keys that point at it, \
-                      and its indexes. Write a table of another schema as schema.table.",
+                      and its indexes. Write a table of another schema as schema.table. A \
+                      table the person hides from you is left out of the list, and named under \
+                      `hidden` when you ask for it.",
         input: schema(
             json!({
                 "connection": {
@@ -98,9 +101,13 @@ async fn run<G: Gateway>(
     }
     let session = settle(gateway.open(&listed.id, stop.token()).await, stop, &listed)?;
     let work = async {
+        let hidden = session.hidden(&listed.tables).await?;
+        hidden
+            .check_settings()
+            .map_err(|refusal| Failure::Database(Error::Agent(refusal)))?;
         match tables {
-            None => list(&session).await,
-            Some(tables) => describe(&session, stop, tables).await,
+            None => list(&session, &hidden).await,
+            Some(tables) => describe(&session, stop, tables, &hidden).await,
         }
     };
     let described = settle(within(stop, listed.limits, work).await, stop, &listed)?;
@@ -117,11 +124,16 @@ struct Described {
 }
 
 /// The tables and views of the connection's own schema, by name, and the
-/// names of its other schemas.
-async fn list<S: Session>(session: &S) -> Result<Described, Failure> {
+/// names of its other schemas. What is hidden is left out.
+async fn list<S: Session>(session: &S, hidden: &Hidden) -> Result<Described, Failure> {
     let Schemas { names, home } = session.schemas().await?;
     let objects = match &home {
-        Some(home) => session.objects(home).await?,
+        Some(home) => session
+            .objects(home)
+            .await?
+            .into_iter()
+            .filter(|object| !hidden.hides(home, &object.name))
+            .collect(),
         None => Vec::new(),
     };
     let mut room = Room::new();
@@ -178,12 +190,14 @@ async fn list<S: Session>(session: &S) -> Result<Described, Failure> {
 }
 
 /// What each of `asked` is made of. A name that is no table of the
-/// connection is listed as not found, and the others are described all the
-/// same. Tables that do not fit the answer are named as left out.
+/// connection is listed as not found, one that is hidden as hidden, and the
+/// others are described all the same. Tables that do not fit the answer
+/// are named as left out.
 async fn describe<S: Session>(
     session: &S,
     stop: &Stop,
     asked: &[String],
+    hidden: &Hidden,
 ) -> Result<Described, Failure> {
     let Schemas { names, home } = session.schemas().await?;
     let mut room = Room::new();
@@ -194,7 +208,7 @@ async fn describe<S: Session>(
     // Each schema's tables, read once.
     let mut listings: HashMap<String, Vec<ObjectInfo>> = HashMap::new();
     let mut tables = Vec::new();
-    let (mut not_found, mut left_out) = (Vec::new(), Vec::new());
+    let (mut not_found, mut left_out, mut hidden_ones) = (Vec::new(), Vec::new(), Vec::new());
     let (mut columns, mut full) = (0, false);
     for name in asked {
         if full {
@@ -220,9 +234,13 @@ async fn describe<S: Session>(
             not_found.push(name);
             continue;
         };
+        if hidden.hides(&object.schema, &object.name) {
+            hidden_ones.push(name);
+            continue;
+        }
         let structure = session.describe(&object).await?;
         let foreign = home.as_deref() != Some(object.schema.as_str());
-        let entry = table(&object, object_kind, foreign, &structure);
+        let entry = table(&object, object_kind, foreign, &structure, hidden);
         if room.take(&entry) {
             tables.push(entry);
             columns += structure.columns.len() as u64;
@@ -236,6 +254,9 @@ async fn describe<S: Session>(
     json.insert("tables".into(), Json::Array(tables));
     if !not_found.is_empty() {
         json.insert("not_found".into(), json!(not_found));
+    }
+    if !hidden_ones.is_empty() {
+        json.insert("hidden".into(), json!(hidden_ones));
     }
     if !left_out.is_empty() {
         json.insert("truncated".into(), json!(true));
@@ -300,11 +321,14 @@ fn kind(kind: ObjectKind) -> &'static str {
     }
 }
 
+/// A table's entry. A key to or from a hidden table is left out: it would
+/// name that table's columns.
 fn table(
     object: &ObjectRef,
     object_kind: ObjectKind,
     foreign: bool,
     structure: &Structure,
+    hidden: &Hidden,
 ) -> Json {
     let mut entry = Map::new();
     entry.insert("name".into(), json!(object.name));
@@ -344,9 +368,13 @@ fn table(
         true => table.to_owned(),
         false => format!("{schema}.{table}"),
     };
-    if !structure.foreign_keys.is_empty() {
-        let keys: Vec<Json> = structure
-            .foreign_keys
+    let foreign_keys: Vec<_> = structure
+        .foreign_keys
+        .iter()
+        .filter(|key| !hidden.hides(&key.ref_schema, &key.ref_table))
+        .collect();
+    if !foreign_keys.is_empty() {
+        let keys: Vec<Json> = foreign_keys
             .iter()
             .map(|key| {
                 json!({
@@ -359,9 +387,13 @@ fn table(
             .collect();
         entry.insert("foreign_keys".into(), Json::Array(keys));
     }
-    if !structure.referenced_by.is_empty() {
-        let keys: Vec<Json> = structure
-            .referenced_by
+    let referenced_by: Vec<_> = structure
+        .referenced_by
+        .iter()
+        .filter(|key| !hidden.hides(&key.schema, &key.table))
+        .collect();
+    if !referenced_by.is_empty() {
+        let keys: Vec<Json> = referenced_by
             .iter()
             .map(|key| {
                 json!({

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value as Json, json};
 use tabletist_db::Dialect;
+use tabletist_db::agent::{TableName, Tables};
 
 use super::{Done, Invalid, Note, Tool, schema};
 use crate::gateway::{Gateway, Listed};
@@ -16,7 +17,10 @@ pub fn tool() -> Tool {
         title: "List connections",
         description: "The database connections you may use, with what each is and its limits. \
                       Call a connection by its name, exactly as it is written here. A \
-                      connection the person has not opened to agents is not listed.",
+                      connection the person has not opened to agents is not listed. `hidden` \
+                      names the tables you may not read, and `only` the tables you may read \
+                      where no others are: a view over a hidden table is hidden with it, and \
+                      while anything is hidden so are the system catalogs.",
         input: schema(json!({}), &[]),
     }
 }
@@ -47,14 +51,28 @@ fn entry(listed: &Listed) -> Json {
         Dialect::MySql => ("MySQL", "?"),
         Dialect::Sqlite => ("SQLite", "?"),
     };
-    json!({
-        "name": listed.name,
-        "engine": engine,
-        "parameters": parameters,
-        "access": "read",
-        "rows": listed.limits.rows,
-        "timeout_s": seconds(listed.limits.timeout),
-    })
+    let mut entry = Map::new();
+    entry.insert("name".into(), json!(listed.name));
+    entry.insert("engine".into(), json!(engine));
+    entry.insert("parameters".into(), json!(parameters));
+    entry.insert("access".into(), json!("read"));
+    entry.insert("rows".into(), json!(listed.limits.rows));
+    entry.insert("timeout_s".into(), seconds(listed.limits.timeout));
+    // What is hidden, by the names the person gave.
+    let written = |names: &[TableName]| -> Json {
+        Json::Array(names.iter().map(|name| json!(name.to_string())).collect())
+    };
+    match &listed.tables {
+        Tables::All => {}
+        Tables::AllExcept(names) if names.is_empty() => {}
+        Tables::AllExcept(names) => {
+            entry.insert("hidden".into(), written(names));
+        }
+        Tables::Only(names) => {
+            entry.insert("only".into(), written(names));
+        }
+    }
+    Json::Object(entry)
 }
 
 /// Whole seconds as a whole number.
