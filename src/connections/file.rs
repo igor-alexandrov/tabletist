@@ -1018,8 +1018,8 @@ timeout_secs = 30
         let entry = said("hidden = [\"customers\", \"a.b.c\"]");
         assert_eq!(
             entry,
-            "connection \"Bookshop on disk\": agents' `hidden` entry 2 is a table, or a schema \
-             and a table, with one dot between"
+            "connection \"Bookshop on disk\": agents' `hidden` entry 2 has more than one dot: it \
+             is a table, or a schema and a table"
         );
         let secret = said("hidden = [\"hunter2\\\"x\"]");
         assert!(!secret.contains("hunter2"), "{secret}");

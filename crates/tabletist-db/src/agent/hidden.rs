@@ -71,6 +71,9 @@ impl std::str::FromStr for TableName {
     type Err = String;
 
     fn from_str(written: &str) -> Result<Self, String> {
+        if written.is_empty() {
+            return Err("is empty".into());
+        }
         let mut parts: Vec<String> = Vec::new();
         let mut chars = written.chars().peekable();
         loop {
@@ -102,7 +105,7 @@ impl std::str::FromStr for TableName {
                 }
             }
             if part.is_empty() {
-                return Err("has a name that is empty".into());
+                return Err("has nothing before or after a dot".into());
             }
             parts.push(part);
             match chars.next() {
@@ -120,7 +123,9 @@ impl std::str::FromStr for TableName {
             }),
             Err(parts) => match <[String; 1]>::try_from(parts) {
                 Ok([name]) => Ok(Self { schema: None, name }),
-                Err(_) => Err("is a table, or a schema and a table, with one dot between".into()),
+                Err(_) => {
+                    Err("has more than one dot: it is a table, or a schema and a table".into())
+                }
             },
         }
     }
