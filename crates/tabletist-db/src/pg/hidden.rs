@@ -12,7 +12,10 @@
 use tokio_postgres::SimpleQueryMessage;
 
 use super::query_error;
-use crate::agent::{Catalog, Hidden, Read, Refusal, Relation, Tables, planned};
+use crate::agent::{
+    Catalog, Hidden, Read, Refusal, Relation, Tables, calls_a_refused_function, function_allowed,
+    planned,
+};
 use crate::{Dialect, Error, Result};
 
 /// The functions the database's users wrote: not the system's, and not an
@@ -34,7 +37,9 @@ user_routines AS (
 /// read, and a partition's or a child table's parent. One row for each
 /// relation and each thing it depends on; then whether its rules or a
 /// policy on it call a function the users wrote, which makes what it reads
-/// unknown, and whether it is a partition.
+/// unknown, whether it is a partition, and its view's definition and its
+/// policies' expressions as the server writes them back, read for the
+/// system's and the extensions' functions that run SQL held in a string.
 fn relations_sql() -> String {
     format!(
         "\
@@ -61,7 +66,12 @@ calls AS (
         AND d.refobjid IN (SELECT oid FROM user_routines)
 )
 SELECT n.nspname, c.relname, dn.nspname, dc.relname, c.oid IN (SELECT relation FROM calls),
-    c.relispartition
+    c.relispartition,
+    CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid) ELSE '' END
+        || coalesce((
+            SELECT string_agg(pg_get_expr(pol.polqual, pol.polrelid), ' ')
+            FROM pg_policy pol WHERE pol.polrelid = c.oid
+        ), '')
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN depends ON depends.relation = c.oid
@@ -157,10 +167,13 @@ fn planned_reads(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
             }
             // A function in a FROM. One in an expression is in no node of
             // its own: the reading of the text finds it.
-            if let Some(name) = text("Function Name")
-                && !matches!(text("Schema"), Some("pg_catalog" | "information_schema"))
-            {
-                hidden.check_function(name)?;
+            if let Some(name) = text("Function Name") {
+                // One that runs SQL held in a string, wherever the
+                // statement reached it from: a view's body too.
+                function_allowed(Dialect::Postgres, name)?;
+                if !matches!(text("Schema"), Some("pg_catalog" | "information_schema")) {
+                    hidden.check_function(name)?;
+                }
             }
             node.values()
                 .try_for_each(|value| planned_reads(value, hidden))
@@ -189,7 +202,8 @@ async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
                 depends_on: Vec::new(),
                 // `t` or `f`, as the simple protocol writes a boolean; what
                 // is neither is taken for a call.
-                opaque: row.get(4) != Some("f"),
+                opaque: row.get(4) != Some("f")
+                    || calls_a_refused_function(Dialect::Postgres, row.get(6).unwrap_or("")),
                 part: row.get(5) == Some("t"),
             });
         }
@@ -313,6 +327,15 @@ mod tests {
         assert_eq!(
             planned_reads(&function, &hidden(except("vip"))),
             Err(Refusal::FunctionNotAllowed("names".into()))
+        );
+        // One that runs SQL held in a string, an extension's, as a view
+        // over it is planned.
+        let crosstab = serde_json::json!({
+            "Node Type": "Function Scan", "Function Name": "crosstab", "Schema": "public"
+        });
+        assert_eq!(
+            planned_reads(&crosstab, &hidden(except("vip"))),
+            Err(Refusal::FunctionNotAllowed("crosstab".into()))
         );
         let catalog = serde_json::json!({
             "Node Type": "Seq Scan", "Relation Name": "pg_class", "Schema": "pg_catalog"

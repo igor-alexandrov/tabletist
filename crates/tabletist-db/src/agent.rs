@@ -32,7 +32,7 @@ mod hidden;
 mod run;
 
 pub use hidden::{Catalog, Hidden, Relation, TableName, Tables};
-pub(crate) use hidden::{named_relations, planned};
+pub(crate) use hidden::{calls_a_refused_function, named_relations, planned};
 pub use run::{Answer, Limits};
 pub(crate) use run::{Sent, answer, count_mismatch};
 

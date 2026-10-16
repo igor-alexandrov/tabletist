@@ -402,6 +402,14 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
             let found = count(hiding(connection, &Tables::All, tally).await);
             assert_eq!(found, Ok(vec![vec![Value::Int(8)]]), "{on}");
+            // A view that runs SQL held in a string.
+            let sheet = "SELECT * FROM customer_sheet";
+            let error = hiding(connection, &customers, sheet).await.unwrap_err();
+            assert_eq!(error, hidden_refusal("customer_sheet", None), "{on}");
+            assert!(
+                hiding(connection, &Tables::All, sheet).await.is_ok(),
+                "{on}"
+            );
             // A function of a row, called as its column.
             for sql in [
                 "SELECT b.book_reach FROM books b",

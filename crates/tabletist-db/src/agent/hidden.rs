@@ -460,6 +460,17 @@ pub(crate) fn planned(read: &Read) -> &str {
     text
 }
 
+/// Whether `definition`, a view's or a policy's as the database writes it
+/// back, calls a function an agent may not call (B.2): one that runs SQL
+/// held in a string, which no check reads, and so may read a hidden table.
+/// PostgreSQL keeps no dependency on its own functions, so the text is read.
+pub(crate) fn calls_a_refused_function(dialect: Dialect, definition: &str) -> bool {
+    names(dialect, definition)
+        .functions
+        .iter()
+        .any(|function| super::function_allowed(dialect, &function.name).is_err())
+}
+
 /// The names the statement's text gives in a table's place, as written,
 /// without their schemas.
 pub(crate) fn named_relations(read: &Read) -> Vec<String> {
@@ -1174,6 +1185,25 @@ mod tests {
         );
         let open = Hidden::new(Dialect::Postgres, &catalog, &Tables::All);
         assert_eq!(statement(&open, "SELECT * FROM books"), Ok(()));
+    }
+
+    #[test]
+    fn a_definition_that_runs_sql_in_a_string_is_found() {
+        for definition in [
+            " SELECT t.id, t.a FROM crosstab('SELECT id, name, email FROM customers'::text) \
+             t(id integer, a text, b text);",
+            " SELECT query_to_xml('SELECT * FROM customers'::text, true, false, ''::text) AS x;",
+            " SELECT public.dblink('', 'SELECT 1'::text) AS d;",
+        ] {
+            assert!(
+                calls_a_refused_function(Dialect::Postgres, definition),
+                "{definition}"
+            );
+        }
+        assert!(!calls_a_refused_function(
+            Dialect::Postgres,
+            " SELECT lower(name) AS name FROM customers;"
+        ));
     }
 
     #[test]

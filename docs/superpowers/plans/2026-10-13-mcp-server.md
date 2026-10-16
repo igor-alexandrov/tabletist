@@ -942,6 +942,12 @@ where it went otherwise:
   column of a row (`b.f` is `f(b)`, by every lookup that would find
   `f(b)`), so a name after a dot that is a function the users wrote is
   refused.
+  A view or a policy that calls a function the agent may not call (B.2),
+  one of the system's or an extension's that runs SQL held in a string
+  (`query_to_xml`, `crosstab`, `dblink`), is hidden while anything is too:
+  its definition, as the server writes it back, is read for such a call,
+  as PostgreSQL keeps no dependency on its own functions. Such a function
+  in the plan's `Function Scan` is refused wherever it came from.
 - **MySQL's plan is read twice.** Its JSON names a table by the
   statement's alias where it has one, so a name there is checked only
   where the catalog lists it. The note `SHOW WARNINGS` gives after it

@@ -3,7 +3,7 @@
 -- engine. The three files hold the same rows. Keep them deterministic.
 -- Loaded into a database of its own, `bookshop`, which the tests make.
 
-DROP VIEW IF EXISTS customer_tally;
+DROP VIEW IF EXISTS customer_tally, customer_sheet;
 DROP TABLE IF EXISTS stock_moves;
 DROP FUNCTION IF EXISTS customer_count();
 DROP FUNCTION IF EXISTS book_reach(books);
@@ -170,6 +170,10 @@ CREATE FUNCTION customer_count() RETURNS bigint LANGUAGE sql STABLE
 -- A view that calls it: it reads `customers`, and its catalog says only
 -- that it calls the function.
 CREATE VIEW customer_tally AS SELECT customer_count() AS customers;
+-- A view that reads `customers` through SQL held in a string, which the
+-- server runs: its catalog says nothing of what it reads.
+CREATE VIEW customer_sheet AS
+    SELECT query_to_xml('SELECT name FROM customers', true, false, '') AS sheet;
 -- And one of a book's row, which `b.book_reach` calls as a column.
 CREATE FUNCTION book_reach(books) RETURNS bigint LANGUAGE sql STABLE
     AS 'SELECT count(*) FROM customers';
