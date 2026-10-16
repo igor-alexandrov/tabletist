@@ -170,7 +170,7 @@ fn rewritten_reads(note: &str, hidden: &Hidden) -> std::result::Result<(), Refus
 /// schema but the system's, what each view reads where the server says so
 /// (`VIEW_TABLE_USAGE`, MySQL 8.0.13 and later), and the users' routines.
 /// Where it does not say, every view is taken to read what is hidden.
-async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
+pub(super) async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
     let listed: Vec<(String, String, String)> = conn
         .query(format!(
             "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
@@ -225,8 +225,11 @@ async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
             let calls = calling
                 .as_ref()
                 .is_none_or(|calling| calling.contains(&(schema.clone(), name.clone())));
+            // A view the server lists no table of reads what it does not
+            // say: a user without SHOW VIEW is told nothing of any view.
+            let unsaid = depends_on.is_empty();
             Relation {
-                opaque: view && (usage.is_none() || calls),
+                opaque: view && (usage.is_none() || calls || unsaid),
                 schema,
                 name,
                 depends_on,

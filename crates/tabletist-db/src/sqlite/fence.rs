@@ -158,6 +158,8 @@ struct Shared {
     refused: Mutex<Option<Refusal>>,
     /// What the agent's connection hides, while its statement runs.
     hidden: Mutex<Option<Arc<Hidden>>>,
+    /// The tables read, by schema and name, while they are recorded.
+    reads: Mutex<Option<Vec<(String, String)>>>,
 }
 
 impl Fences {
@@ -198,6 +200,13 @@ impl Fences {
     /// So nothing hidden is read, however the text was written.
     pub(super) fn ask(&self, action: &Action<'_>) -> Authorization {
         let fence = self.current();
+        if action.code == ffi::SQLITE_READ
+            && let Some(table) = action.first
+            && let Some(reads) = self.reads().as_mut()
+        {
+            let schema = action.database.unwrap_or("main").to_owned();
+            reads.push((schema, table.to_owned()));
+        }
         let mut answer = authorize(fence, action);
         let mut hidden_read = None;
         if fence == Fence::Agent
@@ -235,6 +244,20 @@ impl Fences {
     /// it: what is hidden is never let go of by an error.
     fn held(&self) -> std::sync::MutexGuard<'_, Option<Arc<Hidden>>> {
         self.0.hidden.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The tables SQLite reads as it prepares what `prepare` prepares, by
+    /// schema and name: for a view, every table it reads, through the
+    /// views it reads too. `None` where SQLite could not prepare it.
+    pub(super) fn reads_of(&self, prepare: impl FnOnce() -> bool) -> Option<Vec<(String, String)>> {
+        *self.reads() = Some(Vec::new());
+        let prepared = prepare();
+        let reads = self.reads().take();
+        prepared.then_some(reads).flatten()
+    }
+
+    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Vec<(String, String)>>> {
+        self.0.reads.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What an agent's fence denied since the last fence went up.

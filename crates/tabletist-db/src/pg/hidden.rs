@@ -186,7 +186,7 @@ fn planned_reads(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
 }
 
 /// The catalog as the open transaction sees it.
-async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
+pub(super) async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
     let mut relations: Vec<Relation> = Vec::new();
     for row in rows(client, &relations_sql()).await? {
         let (Some(schema), Some(name)) = (row.get(0), row.get(1)) else {
