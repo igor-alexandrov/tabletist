@@ -301,7 +301,10 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
     let names = read_names(&pieces);
     // The first table the statement reads that has a masked column, the
     // names that stand for those tables (their own and their aliases), and
-    // the pieces of every table's place, which name tables, not columns.
+    // the pieces of every table's place, whose words are not taken for a
+    // whole row. The reading finds places where there are none (after the
+    // `FROM` of `substring(email FROM 1)`), so a masked column's name is
+    // refused in one all the same.
     let mut over: Option<&ColumnName> = None;
     let mut standing: HashMap<String, &ColumnName> = HashMap::new();
     let mut in_place: HashSet<usize> = HashSet::new();
@@ -432,7 +435,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
         .collect();
     // Rules 3 and 4, everywhere else.
     for (at, piece) in pieces.iter().enumerate() {
-        if allowed.contains(&at) || in_place.contains(&at) {
+        if allowed.contains(&at) {
             continue;
         }
         match piece {
@@ -442,6 +445,9 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                 }
                 if let Some((alias, entry)) = aliases.iter().find(|(alias, _)| same(alias, text)) {
                     return Err(used(entry, MaskedUse::Alias((*alias).to_owned())));
+                }
+                if in_place.contains(&at) {
+                    continue;
                 }
                 if piece.is("NATURAL")
                     && let Some(entry) = over
@@ -672,6 +678,21 @@ mod tests {
             Err(MaskedUse::Clause("a window function"))
         );
         assert_eq!(pg("SELECT id FROM orders WHERE email IS NULL"), named());
+        // A FROM inside a function's arguments is no table's place.
+        for sql in [
+            "SELECT id FROM orders WHERE substring(email FROM 1 FOR 1) = 'a'",
+            "SELECT id FROM orders WHERE trim(LEADING 'a' FROM email) = 'b'",
+            "SELECT id FROM orders WHERE overlay(email PLACING 'x' FROM 1) = 'a'",
+        ] {
+            assert_eq!(pg(sql), named(), "{sql}");
+        }
+        assert_eq!(
+            on(
+                Dialect::MySql,
+                "SELECT id FROM orders WHERE substring(email FROM 1 FOR 1) = 'a'"
+            ),
+            named()
+        );
         assert_eq!(
             pg("SELECT CASE WHEN email LIKE 'a%' THEN 1 END FROM orders"),
             named()
