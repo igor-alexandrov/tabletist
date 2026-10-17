@@ -1400,7 +1400,7 @@ fn add_table_offers_the_windows_tables_and_marks_a_name_in_none() {
         workspace.tree.schemas.value = Some(vec!["main".into()]);
         let node = workspace.tree.nodes.entry("main".into()).or_default();
         node.objects.value = Some(
-            ["books", "customers", "orders"]
+            ["authors", "books", "customers", "orders"]
                 .iter()
                 .map(|name| ObjectInfo {
                     name: (*name).into(),
@@ -1461,6 +1461,35 @@ fn add_table_offers_the_windows_tables_and_marks_a_name_in_none() {
         harness.press(egui::Key::Tab, egui::Modifiers::NONE);
         harness.settle();
         assert!(harness.has(&look.label("Remove books")), "{}", look.name);
+        // A field left open with a name that does not read lists nothing.
+        let note = look.label("Tables loaded in the sidebar");
+        type_table(&mut harness, &look, "\"aut");
+        assert!(harness.has(&note), "{}", look.name);
+        harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(form(&harness).agents_table_error.is_some(), "{}", look.name);
+        assert!(!harness.has(&note), "{}", look.name);
+        let opened = form_mut(&mut harness);
+        opened.agents_table_typed = None;
+        opened.agents_table_error = None;
+        // A click on a table adds it, and the field is empty for the next.
+        type_table(&mut harness, &look, "auth");
+        // The list's, painted over the sidebar's.
+        let row = harness
+            .text_rects
+            .iter()
+            .rev()
+            .find(|(text, _)| text == "authors")
+            .map(|(_, rect)| *rect)
+            .expect("the list's table");
+        press_at(&mut harness, row.center());
+        assert!(harness.has(&look.label("Remove authors")), "{}", look.name);
+        assert_eq!(
+            form(&harness).agents_table_typed.as_deref(),
+            Some(""),
+            "{}",
+            look.name
+        );
         // A name typed that is in no list is added as typed.
         add_table(&mut harness, &look, "payroll");
         assert!(harness.has(&mark("payroll")), "{}", look.name);

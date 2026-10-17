@@ -200,7 +200,12 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                         .memory(|memory| memory.area_rect(list))
                         .zip(ui.input(|input| input.pointer.latest_pos()))
                         .is_some_and(|(rect, at)| rect.contains(at));
-                let clicked = match offered.is_empty() {
+                // Only while the field has the keyboard, or lets it go this
+                // frame (to a press on the list): a field left open with a
+                // name that does not read lists nothing over the fields
+                // below it.
+                let listing = field.has_focus() || field.lost_focus();
+                let clicked = match offered.is_empty() || !listing {
                     true => None,
                     false => {
                         offered_list(ui, list, field.rect, &offered, form.agents_table_pick, skin)
