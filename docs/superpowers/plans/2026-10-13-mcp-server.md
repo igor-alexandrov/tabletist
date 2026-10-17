@@ -84,6 +84,25 @@ side, the setting in `connections.toml`, the editor's Tables control, and
 its list of the tables an open window loaded with the website's guide
 (`2026-10-16-mcp-server-1c-3b-table-list.md`). With 1d dropped, Phase 1 is built.
 
+**Changed on 2026-10-17: approved writes come last.** Phase 2
+(`propose_write`, the approval, notifications, Read + approved writes) is
+built after Phase 3: 3a, masked columns, is next, then 3b, the Log view in
+full, then 2. The numbers stay the brief's. Neither part of 3 needs a
+write: 3b's result filter takes the outcomes there are, and a write's join
+it with Phase 2. Until then agents read and nothing more, as Phase 1 left
+them, and where another section says something comes "with writes (Phase
+2)", it comes last.
+
+**Settled on 2026-10-17: how 3a finds a masked column, what backs it, a
+renamed one, and 3a in four runs.** The checker reads a masked column's
+uses off the tokens, as 1c reads a table's, by its name: whatever table a
+column of that name is on, it is allowed only bare in the outermost
+`SELECT`'s list. A over B is not taken: what backs the checker is each
+engine's own fence, with the SQL that runs the SQL that was sent. A masked
+column renamed or dropped stops agents on all three, as a hidden table
+does. B.4, C.3 and G say each where it stands. B.4's rule 7, a masked
+column in `propose_write`, goes with writes to Phase 2.
+
 ## Contents
 
 1. [What the code says, in short](#1-what-the-code-says-in-short)
@@ -1048,6 +1067,53 @@ If the test matrix of F.2 finds a leak in A that cannot be closed, B is
 added under it, so that a use the checker misses reads `NULL`. That is a
 decision for Phase 3a, with the matrix in hand.
 
+**Settled on 2026-10-17: A, read off the tokens, over the engines'
+fences.** The tree is not walked (B.2), so rule 5's resolver is not built:
+the checker reads the statement's tokens, as 1c's reading of the names
+does, and goes by a masked column's name alone. Each word that is a masked
+column's name, whatever table or alias it is written with, is refused but
+where rule 1 allows it, and rules 2 to 4 are read off the tokens the same
+way. That errs toward refusing: with `orders.email` masked, `WHERE
+customers.email = …` is refused too, and the sentence says so. B is not
+added. What a miss by the reading meets is each engine's own:
+
+- SQLite: the authorizer's "ignore", so that a masked column reads `NULL`
+  wherever it stands, through every view.
+- PostgreSQL: the plan that 1c already asks for, `EXPLAIN (VERBOSE)`,
+  where a masked column may stand only in the top node's output.
+- MySQL: every view over a table with a masked column refused (rule 6),
+  and the result columns' origins.
+
+On all three a result column is replaced by its origin too, as below.
+Rule 7 goes with writes to Phase 2.
+
+**As built in 3a's run 1a** (`2026-10-17-mcp-server-3a-1a-masked-rule.md`):
+the rule, in `crates/tabletist-db/src/agent/hidden/masked.rs`, with the
+hidden tables' checks, behind a `masked` argument of
+`Connection::run_agent_read`; the app passes none until run 2, and the
+values are run 1b's. Where it went otherwise than above:
+
+- **An alias stands for its column.** SQLite reads a result column's
+  alias in a `WHERE`, and SQLite and MySQL in an `ORDER BY`'s expressions
+  (`ORDER BY lower(e)`), so the alias a masked column is selected under is
+  refused wherever else it is written (found by the run's own probing).
+- **SQLite reads `ORDER BY (2)` and `ORDER BY +2` as the place**, so a
+  number reached past parentheses and signs is a place too.
+- **A view an entry names** has its column masked as a table's is, and is
+  not refused for it; a view that reads a masked column is.
+- **PostgreSQL keeps no column for a whole row a view reads**
+  (`pg_depend` records the table alone), and writes it back as `x.*`:
+  such a view over a table with a masked column reads it.
+- **`TABLE orders` and `U&"…"` names** are refused for every agent before
+  the masked columns are asked about (`check_read`), so the rule has
+  nothing to say of them.
+- **An aggregate without `GROUP BY`** beside a masked column
+  (`SELECT email, max(id)`) is taken: it answers one row, whose value is
+  replaced as any is.
+- A partition or a child table of a table with a masked column has it
+  masked, and a masked column named in another schema is taken for one in
+  every schema by the reading, which errs toward refusing.
+
 **The rule.** It applies to any statement that reads a table with a masked
 column.
 
@@ -1643,7 +1709,7 @@ changes under them.
 | A hidden table is dropped | The entry stays, marked "not in this database" in the editor. If the table comes back it is hidden |
 | A hidden table is renamed, PostgreSQL | Followed. The entry keeps the table's OID from the day it was picked, and a rename keeps the OID. The editor shows the new name. The plan check compares OIDs, so there is no gap |
 | A hidden table is renamed, MySQL or SQLite | Not visible as a rename: one name is gone and another is new. **Agents are stopped on that connection** (`connection_unavailable`, "Its agent settings need a look in Tabletist") until the person removes the entry or points it at a table. A leak is the cost of guessing |
-| A masked column is renamed or dropped | The same: followed by attribute number on PostgreSQL, a stop elsewhere |
+| A masked column is renamed or dropped | The same: followed by attribute number on PostgreSQL, a stop elsewhere. **Settled on 2026-10-17:** a stop on all three, as for a hidden table since 1c-2a, with the entry marked in the editor |
 | A new table | Visible under All and All except, hidden under Only. The editor's hint says so beside the control |
 | A new column on a table with masked columns | Visible. Masks are per column |
 
@@ -2484,6 +2550,9 @@ is off until the person turns it on.
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
+| 3a. Masked columns | 5, below | Run 1a built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`): the rule and its stops. Run 1b, the engines' fences and the values, is next (order changed on 2026-10-17) |
+| 3b. The Log view, in full | Not cut yet | After 3a |
+| 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
 (pull request 125, `2026-10-13-connections-toml.md`).
@@ -2663,6 +2732,22 @@ What follows is the design, kept for if it is taken up again.
 - Risks: the resolver is the piece most likely to be wrong. The decision
   between A alone and A over B is made here, on the matrix.
 - Tests: the masking rows of F.2, for each driver.
+
+**3a in four runs** (cut on 2026-10-17, as 1c went). Each is a plan and a
+pull request:
+
+1. The checks, in `crates/tabletist-db`, with nothing visible, in two
+   (agreed on 2026-10-17, as 1c's second run was): first the rule read off
+   the tokens, its refusal, a view that reads a masked column refused, a
+   renamed or dropped masked column stopping agents, and the system
+   catalogs and the users' functions closed on a connection that masks
+   (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, built); then each
+   engine's fence and the values replaced by the result columns' origins.
+2. The server's side: the setting read, `list_connections`' masked
+   columns, `describe_schema`'s mark, and `masked: true` in an answer.
+3. The setting in `connections.toml`, as 1c-2b's for tables.
+4. The editor's Masked columns control with **Add column…** and its mark,
+   and the website's guide.
 
 **3b. The Log view, in full.** (This was a log window before 2026-10-13.)
 
