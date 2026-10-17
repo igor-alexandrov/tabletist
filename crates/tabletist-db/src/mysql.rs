@@ -520,7 +520,7 @@ impl Adapter for Conn {
         tables: &Tables,
         masked: &[ColumnName],
         stop: &StopFlag,
-    ) -> Result<ScriptOutcome> {
+    ) -> Result<(ScriptOutcome, Vec<bool>)> {
         self.agent_read(read, limits, tables, masked, stop).await
     }
 

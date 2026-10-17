@@ -158,9 +158,8 @@ struct Shared {
     refused: Mutex<Option<Refusal>>,
     /// What the agent's connection hides, while its statement runs.
     hidden: Mutex<Option<Arc<Hidden>>>,
-    /// The tables read, by schema and name, with the column read (empty
-    /// for none), while they are recorded.
-    reads: Mutex<Option<Vec<(String, String, String)>>>,
+    /// The tables read, while they are recorded.
+    reads: Mutex<Option<Vec<TableRead>>>,
 }
 
 impl Fences {
@@ -205,9 +204,12 @@ impl Fences {
             && let Some(table) = action.first
             && let Some(reads) = self.reads().as_mut()
         {
-            let schema = action.database.unwrap_or("main").to_owned();
-            let column = action.second.unwrap_or_default().to_owned();
-            reads.push((schema, table.to_owned(), column));
+            reads.push(TableRead {
+                schema: action.database.unwrap_or("main").to_owned(),
+                table: table.to_owned(),
+                column: action.second.unwrap_or_default().to_owned(),
+                source: action.source.map(str::to_owned),
+            });
         }
         let mut answer = authorize(fence, action);
         let mut hidden_read = None;
@@ -220,6 +222,20 @@ impl Fences {
         {
             answer = Authorization::Deny;
             hidden_read = Some(through_view(refusal, action.source));
+        }
+        // A masked column the statement reads itself is read as `NULL`,
+        // wherever the statement uses it: what the check of its text
+        // missed reads nothing. A selected one is replaced as it is
+        // answered, by where its result column comes from.
+        if fence == Fence::Agent
+            && answer == Authorization::Allow
+            && action.code == ffi::SQLITE_READ
+            && action.source.is_none()
+            && let (Some(table), Some(column)) = (action.first, action.second)
+            && let Some(hidden) = self.hidden()
+            && hidden.masks(action.database, table, column).is_some()
+        {
+            return Authorization::Ignore;
         }
         // A masked column a view or a common table expression reads: what
         // it does with it, the statement's check cannot see.
@@ -261,21 +277,18 @@ impl Fences {
         self.0.hidden.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The tables SQLite reads as it prepares what `prepare` prepares, by
-    /// schema and name, each with a column it reads of it (empty for none):
-    /// for a view, every table it reads, through the views it reads too.
-    /// `None` where SQLite could not prepare it.
-    pub(super) fn reads_of(
-        &self,
-        prepare: impl FnOnce() -> bool,
-    ) -> Option<Vec<(String, String, String)>> {
+    /// The tables SQLite reads as it prepares what `prepare` prepares, each
+    /// with a column it reads of it: for a view, every table it reads,
+    /// through the views it reads too. `None` where SQLite could not
+    /// prepare it.
+    pub(super) fn reads_of(&self, prepare: impl FnOnce() -> bool) -> Option<Vec<TableRead>> {
         *self.reads() = Some(Vec::new());
         let prepared = prepare();
         let reads = self.reads().take();
         prepared.then_some(reads).flatten()
     }
 
-    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Vec<(String, String, String)>>> {
+    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Vec<TableRead>>> {
         self.0.reads.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -306,6 +319,18 @@ fn through_view(refusal: Refusal, source: Option<&str>) -> Refusal {
         },
         (refusal, _) => refusal,
     }
+}
+
+/// A read SQLite asked its authorizer about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TableRead {
+    pub schema: String,
+    pub table: String,
+    /// Empty for a read of no column (`count(*)`).
+    pub column: String,
+    /// The view, trigger or common table expression it is read for, where
+    /// it is not the statement's own.
+    pub source: Option<String>,
 }
 
 /// Lets go of what is hidden when dropped, on every path.
@@ -580,6 +605,45 @@ mod tests {
         let begin = action(ffi::SQLITE_TRANSACTION, Some("BEGIN"), None);
         assert_eq!(asked.ask(&begin), Authorization::Deny);
         assert_eq!(fences.refused(), None);
+    }
+
+    #[test]
+    fn a_masked_column_the_statement_reads_is_read_as_null_and_one_a_view_reads_is_refused() {
+        use crate::agent::{Catalog, ColumnName, Relation, Tables};
+        let catalog = Catalog {
+            relations: vec![Relation {
+                schema: "main".into(),
+                name: "orders".into(),
+                depends_on: Vec::new(),
+                opaque: false,
+                part: false,
+                view: false,
+            }],
+            columns: vec![("main".into(), "orders".into(), "email".into())],
+            ..Catalog::default()
+        };
+        let masked: Vec<ColumnName> = vec!["orders.email".parse().unwrap()];
+        let hidden = Hidden::masking(Dialect::Sqlite, &catalog, &Tables::All, &masked);
+        let fences = Fences::default();
+        let _hiding = fences.hide(Some(Arc::new(hidden)));
+        let email = action(ffi::SQLITE_READ, Some("orders"), Some("EMAIL"));
+        let id = action(ffi::SQLITE_READ, Some("orders"), Some("id"));
+        let for_view = Action {
+            source: Some("recent_orders"),
+            ..email
+        };
+        let _fenced = fences.fence(Fence::Agent);
+        assert_eq!(fences.ask(&email), Authorization::Ignore);
+        assert_eq!(fences.ask(&id), Authorization::Allow);
+        assert_eq!(fences.refused(), None);
+        assert_eq!(fences.ask(&for_view), Authorization::Deny);
+        assert_eq!(
+            fences.refused(),
+            Some(Refusal::MaskedColumnUsed {
+                column: "orders.email".into(),
+                how: crate::agent::MaskedUse::Through("recent_orders".into()),
+            })
+        );
     }
 
     #[test]

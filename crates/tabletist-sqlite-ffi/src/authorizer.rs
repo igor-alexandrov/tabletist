@@ -38,14 +38,16 @@ pub struct Action<'a> {
     pub source: Option<&'a str>,
 }
 
-/// An authorizer's answer. SQLite's third one, to ignore the action, is left
-/// out: nothing here gives it.
+/// An authorizer's answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Authorization {
     /// SQLite goes on.
     Allow,
     /// SQLite refuses the statement, with its error 23.
     Deny,
+    /// SQLite goes on without the action. For a read of a column, it reads
+    /// `NULL` in its place, wherever the statement or a view uses it.
+    Ignore,
 }
 
 /// The name SQLite keeps the installed callback under.
@@ -109,6 +111,7 @@ where
     }));
     match answer {
         Ok(Authorization::Allow) => ffi::SQLITE_OK,
+        Ok(Authorization::Ignore) => ffi::SQLITE_IGNORE,
         Ok(Authorization::Deny) | Err(_) => ffi::SQLITE_DENY,
     }
 }
@@ -357,6 +360,34 @@ mod tests {
         assert_eq!(
             count(&connection, "SELECT count(*) FROM t WHERE id = 1").unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn a_column_read_that_is_ignored_reads_null_wherever_it_is_used() {
+        let connection = database(
+            b"CREATE TABLE t (id INTEGER PRIMARY KEY, mail TEXT);
+              INSERT INTO t VALUES (1, 'ada@example.com'), (2, 'bo@example.com');
+              CREATE VIEW v AS SELECT id, mail FROM t;",
+        );
+        set_authorizer(&connection, |action| {
+            match action.code == ffi::SQLITE_READ && action.second == Some("mail") {
+                true => Authorization::Ignore,
+                false => Authorization::Allow,
+            }
+        })
+        .unwrap();
+        for sql in [
+            "SELECT count(*) FROM t WHERE mail LIKE 'a%'",
+            "SELECT count(*) FROM v WHERE mail IS NOT NULL",
+            "SELECT count(*) FROM t WHERE length(mail) > 0",
+        ] {
+            assert_eq!(count(&connection, sql).unwrap(), 0, "{sql}");
+        }
+        // The other column is read.
+        assert_eq!(
+            count(&connection, "SELECT count(*) FROM t WHERE id > 0").unwrap(),
+            2
         );
     }
 

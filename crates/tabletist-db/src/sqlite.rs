@@ -1157,7 +1157,7 @@ impl Adapter for Conn {
         tables: &Tables,
         masked: &[ColumnName],
         stop: &StopFlag,
-    ) -> Result<ScriptOutcome> {
+    ) -> Result<(ScriptOutcome, Vec<bool>)> {
         let stop = stop.clone();
         let guard = StopOnDrop(Some(stop.clone()));
         let fences = self.fences.clone();
@@ -1177,12 +1177,21 @@ impl Adapter for Conn {
                     }
                     false => None,
                 };
+                // Which result columns are a masked column's, by the table
+                // column each reads: told before the fence goes up, which
+                // reads a masked column as `NULL` and so leaves it none.
+                let (columns, masked_columns) = match hidden.as_deref() {
+                    Some(hidden) if hidden.masks_anything() => {
+                        masked_result_columns(connection, &fences, hidden, read.text())?
+                    }
+                    _ => (Vec::new(), Vec::new()),
+                };
                 let _hiding = fences.hide(hidden);
                 let sent = Sent {
                     params: &params,
                     timeout: limits.timeout,
                 };
-                script(
+                let mut outcome = script(
                     connection,
                     &fences,
                     &texts,
@@ -1190,12 +1199,88 @@ impl Adapter for Conn {
                     ScriptMode::ReadOnly,
                     &stop,
                     Some(sent),
-                )
+                )?;
+                // A masked column is read as `NULL`, which SQLite names
+                // and types as its own: it keeps the name and the type it
+                // had before the fence.
+                if let Some(StatementOutcome::Rows { columns: read, .. }) = outcome
+                    .results
+                    .first_mut()
+                    .map(|result| &mut result.outcome)
+                    && read.len() == columns.len()
+                {
+                    for ((meta, before), masked) in
+                        read.iter_mut().zip(&columns).zip(&masked_columns)
+                    {
+                        if *masked {
+                            meta.name.clone_from(&before.name);
+                            meta.type_name.clone_from(&before.decl_type);
+                        }
+                    }
+                }
+                Ok((outcome, masked_columns))
             })
             .await;
         guard.disarm();
         outcome
     }
+}
+
+/// The result columns of `text`, read before the fence goes up, and which
+/// of them are a masked column's. SQLite tells where a result column comes
+/// from through a view, as the view's table's column: one is a masked
+/// column's where that is one, or where it is what a masked column of a
+/// view the statement reads comes from, which the view may give under its
+/// own name. A masked column of a view that comes from none (`lower(mail)
+/// AS m`) leaves nothing to tell it by: every result column that comes
+/// from none is masked then.
+fn masked_result_columns(
+    connection: &rusqlite::Connection,
+    fences: &Fences,
+    hidden: &Hidden,
+    text: &str,
+) -> Result<(Vec<tabletist_sqlite_ffi::ResultColumn>, Vec<bool>)> {
+    let mut columns = Ok(Vec::new());
+    let reads = fences
+        .reads_of(|| {
+            columns = tabletist_sqlite_ffi::result_columns(connection, text);
+            columns.is_ok()
+        })
+        .unwrap_or_default();
+    let columns = columns.map_err(map_error)?;
+    let masks = |schema: &str, table: &str, column: &str| {
+        hidden.masks(Some(schema), table, column).is_some()
+    };
+    // Where each masked column of a view the statement reads itself comes
+    // from: a table's column, as SQLite tells it of the view's column
+    // selected alone.
+    let quoted = |part: &str| format!("\"{}\"", part.replace('"', "\"\""));
+    let mut behind: Vec<tabletist_sqlite_ffi::Origin> = Vec::new();
+    let mut computed = false;
+    for read in reads
+        .iter()
+        .filter(|read| read.source.is_none() && masks(&read.schema, &read.table, &read.column))
+    {
+        let sql = format!(
+            "SELECT {} FROM {}.{}",
+            quoted(&read.column),
+            quoted(&read.schema),
+            quoted(&read.table)
+        );
+        let told = tabletist_sqlite_ffi::result_columns(connection, &sql).map_err(map_error)?;
+        computed |= told.iter().any(|column| column.origin.is_none());
+        behind.extend(told.into_iter().filter_map(|column| column.origin));
+    }
+    let masked = columns
+        .iter()
+        .map(|column| match &column.origin {
+            Some(origin) => {
+                masks(&origin.database, &origin.table, &origin.column) || behind.contains(origin)
+            }
+            None => computed,
+        })
+        .collect();
+    Ok((columns, masked))
 }
 
 /// The relations of every schema of the file, its own `sqlite_` tables
@@ -1281,7 +1366,13 @@ fn agents_catalog(
         );
         match fences.reads_of(|| connection.prepare(&sql).is_ok()) {
             Some(reads) => {
-                for (schema, name, column) in reads {
+                for fence::TableRead {
+                    schema,
+                    table: name,
+                    column,
+                    ..
+                } in reads
+                {
                     if schema == relation.schema && name == relation.name {
                         continue;
                     }
@@ -2351,7 +2442,7 @@ mod tests {
                 .run_read(&read, limits, &only(table), &[], &StopFlag::new())
                 .await;
             let answer =
-                outcome.and_then(|outcome| crate::agent::answer(outcome, &StopFlag::new()));
+                outcome.and_then(|(outcome, _)| crate::agent::answer(outcome, &StopFlag::new()));
             assert_eq!(
                 answer.map(|answer| answer.rows),
                 Ok(vec![vec![Value::Int(2)]]),

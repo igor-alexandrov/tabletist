@@ -39,13 +39,15 @@ impl Conn {
         if mode == ScriptMode::Write {
             return write::run(&client, texts, limit as usize, stop).await;
         }
-        read_only(&client, texts, limit as usize, stop, None, None).await
+        let (outcome, _) = read_only(&client, texts, limit as usize, stop, None, None).await?;
+        Ok(outcome)
     }
 
     /// See [`crate::Connection::run_agent_read`]: the run of a script of
     /// one statement that only reads, with the statement's values bound
-    /// and the server's own timeout set for the transaction. Awaited to
-    /// its end, as [`Self::script`] is.
+    /// and the server's own timeout set for the transaction, with which of
+    /// its result columns are a masked column's. Awaited to its end, as
+    /// [`Self::script`] is.
     pub(super) async fn agent_read(
         &self,
         read: &Read,
@@ -53,7 +55,7 @@ impl Conn {
         tables: &crate::agent::Tables,
         masked: &[crate::agent::ColumnName],
         stop: &StopFlag,
-    ) -> Result<ScriptOutcome> {
+    ) -> Result<(ScriptOutcome, Vec<bool>)> {
         let client = self.client.lock().await;
         let texts = [read.text().to_owned()];
         let sent = Sent {
@@ -90,7 +92,8 @@ struct Hiding<'a> {
 /// close. `sent` is there when the run is of an agent's one statement, and
 /// `hiding` when its connection hides tables or masks columns: the
 /// statement is checked against them in the transaction, and runs only if
-/// it reads nothing it may not.
+/// it reads nothing it may not. With the outcome, which of the statement's
+/// result columns are a masked column's (none where nothing is masked).
 async fn read_only(
     client: &tokio_postgres::Client,
     texts: &[String],
@@ -98,12 +101,13 @@ async fn read_only(
     stop: &StopFlag,
     sent: Option<Sent<'_>>,
     hiding: Option<Hiding<'_>>,
-) -> Result<ScriptOutcome> {
+) -> Result<(ScriptOutcome, Vec<bool>)> {
     let mut outcome = ScriptOutcome::default();
+    let mut masked = Vec::new();
     let tx = match open(client, sent).await {
         // A lost session ends the run here: nothing to close.
         Ok(Tx::Open) => match refused_for_hiding(client, hiding).await {
-            Ok(Some((error, tx))) => {
+            Ok(Err((error, tx))) => {
                 outcome.stopped = error == Error::Cancelled;
                 outcome.results.push(StatementResult {
                     elapsed: Duration::ZERO,
@@ -111,7 +115,8 @@ async fn read_only(
                 });
                 tx
             }
-            Ok(None) => {
+            Ok(Ok(columns)) => {
+                masked = columns;
                 let params = sent.map(|sent| sent.params);
                 let mode = ScriptMode::ReadOnly;
                 statements(client, texts, limit, mode, stop, params, &mut outcome).await?
@@ -138,28 +143,29 @@ async fn read_only(
     // backend to stop repeating its cancel.
     stop.finish();
     close(client, tx).await?;
-    Ok(outcome)
+    Ok((outcome, masked))
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
 /// or masks columns (`super::hidden`), and where that leaves the
 /// transaction: open after a refusal, failed after the server's own error.
-/// `None` where it may run, or where nothing is hidden or masked. `Err` is
-/// a lost session.
+/// `Ok` where it may run, with which of its result columns are a masked
+/// column's (none where nothing is hidden or masked). `Err` is a lost
+/// session.
 async fn refused_for_hiding(
     client: &tokio_postgres::Client,
     hiding: Option<Hiding<'_>>,
-) -> Result<Option<(Error, Tx)>> {
+) -> Result<std::result::Result<Vec<bool>, (Error, Tx)>> {
     let Some(hiding) = hiding else {
-        return Ok(None);
+        return Ok(Ok(Vec::new()));
     };
     match super::hidden::check(client, hiding.read, hiding.tables, hiding.masked).await {
-        Ok(None) => Ok(None),
-        Ok(Some(refusal @ Error::Agent(_))) => Ok(Some((refusal, Tx::Open))),
-        Ok(Some(error)) => Ok(Some((error, Tx::Aborted))),
-        Err(Error::Cancelled) => Ok(Some((Error::Cancelled, Tx::Aborted))),
+        Ok(Ok(masked)) => Ok(Ok(masked)),
+        Ok(Err(refusal @ Error::Agent(_))) => Ok(Err((refusal, Tx::Open))),
+        Ok(Err(error)) => Ok(Err((error, Tx::Aborted))),
+        Err(Error::Cancelled) => Ok(Err((Error::Cancelled, Tx::Aborted))),
         Err(error) if error.is_connection_lost() => Err(error),
-        Err(error) => Ok(Some((error, Tx::Aborted))),
+        Err(error) => Ok(Err((error, Tx::Aborted))),
     }
 }
 

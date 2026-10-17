@@ -254,7 +254,11 @@ impl Connection {
     /// Where `masked` names a column, the read is refused when its text
     /// uses one otherwise than selecting it as it is, or reads one through
     /// a view; and a renamed or dropped one refuses every read (B.4, C.3).
-    /// The values are not replaced here yet.
+    /// Each engine stops what the reading of the text misses: SQLite reads
+    /// such a column as `NULL`, and PostgreSQL's plan is refused where it
+    /// uses one. A column of the answer that is a masked column's, as the
+    /// database says where it comes from, answers [`agent::MASKED`] in
+    /// every row, and is marked so ([`agent::Answer::masked`]).
     ///
     /// The future must be awaited to its end, as [`Self::run_script`]'s.
     pub async fn run_agent_read(
@@ -270,12 +274,12 @@ impl Connection {
                 "the statement was checked for another kind of database",
             ));
         }
-        let outcome = match &self.inner {
+        let (outcome, masked) = match &self.inner {
             Inner::Sqlite(conn) => conn.run_read(read, limits, tables, masked, stop).await,
             Inner::Postgres(conn) => conn.run_read(read, limits, tables, masked, stop).await,
             Inner::MySql(conn) => conn.run_read(read, limits, tables, masked, stop).await,
         }?;
-        agent::answer(outcome, stop)
+        agent::answer(outcome, stop).map(|answer| agent::masked(answer, masked))
     }
 
     /// What `tables` hides and `masked` masks on this connection's
