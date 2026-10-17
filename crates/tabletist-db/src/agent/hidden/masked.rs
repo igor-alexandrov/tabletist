@@ -483,6 +483,18 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                     return Err(used(entry, MaskedUse::Row(text.clone())));
                 }
             }
+            // SQLite reads a string as a name where only a name can stand:
+            // after a dot, and in a `USING` list, which joins on it without
+            // the authorizer asked.
+            Piece::Text(text)
+                if strings_are_names(read.dialect())
+                    && (pieces.get(at.wrapping_sub(1)) == Some(&Piece::Dot)
+                        || in_using(&pieces, at)) =>
+            {
+                if let Some(entry) = masks.column(text) {
+                    return Err(used(entry, MaskedUse::Named(entry.column.clone())));
+                }
+            }
             Piece::Star if selects(&pieces, at) => {
                 let qualifier = (at >= 2 && pieces[at - 1] == Piece::Dot)
                     .then(|| pieces[at - 2].word())
@@ -505,6 +517,31 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
         }
     }
     Ok(())
+}
+
+/// Whether the dialect reads a string as a name where only a name can
+/// stand: SQLite's does.
+fn strings_are_names(dialect: crate::Dialect) -> bool {
+    match dialect {
+        crate::Dialect::Sqlite => true,
+        crate::Dialect::Postgres | crate::Dialect::MySql => false,
+    }
+}
+
+/// Whether the piece at `at` is in the parentheses of a `USING`.
+fn in_using(pieces: &[Piece], at: usize) -> bool {
+    let mut depth = 0_usize;
+    for back in (0..at).rev() {
+        match pieces[back] {
+            Piece::Close => depth += 1,
+            Piece::Open if depth == 0 => {
+                return back > 0 && pieces[back - 1].is("USING");
+            }
+            Piece::Open => depth -= 1,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether the star at `at` selects columns, as in a list (`SELECT *`,
@@ -849,6 +886,20 @@ mod tests {
             Ok(())
         );
         assert_eq!(pg("SELECT oid FROM orders WHERE oid > 3"), Ok(()));
+        // SQLite reads a string as a name where only a name can stand.
+        for sql in [
+            "SELECT o.id FROM orders o JOIN customers c USING ('email')",
+            "SELECT o.id FROM orders o WHERE o.'email' LIKE 'a%'",
+        ] {
+            assert_eq!(on(Dialect::Sqlite, sql), named(), "{sql}");
+        }
+        assert_eq!(
+            on(
+                Dialect::Sqlite,
+                "SELECT id FROM orders WHERE total > 1 OR 'email' = 'x'"
+            ),
+            Ok(())
+        );
         // SQLite reads an alias in a WHERE, and SQLite and MySQL in an
         // ORDER BY's expressions.
         let alias = || Err(MaskedUse::Alias("e".into()));

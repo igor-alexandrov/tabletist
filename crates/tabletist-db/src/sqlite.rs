@@ -1180,29 +1180,33 @@ impl Adapter for Conn {
                 // Which result columns are a masked column's, by the table
                 // column each reads: told before the fence goes up, which
                 // reads a masked column as `NULL` and so leaves it none.
-                let masked_columns = match hidden.as_deref() {
+                let columns = match hidden.as_deref() {
                     Some(hidden) if hidden.masks_anything() => {
                         tabletist_sqlite_ffi::result_columns(connection, read.text())
                             .map_err(map_error)?
-                            .iter()
-                            .map(|column| {
-                                column.origin.as_ref().is_some_and(|origin| {
-                                    let schema = Some(origin.database.as_str());
-                                    hidden
-                                        .masks(schema, &origin.table, &origin.column)
-                                        .is_some()
-                                })
-                            })
-                            .collect()
                     }
                     _ => Vec::new(),
                 };
+                let masked_columns: Vec<bool> = columns
+                    .iter()
+                    .map(|column| {
+                        column.origin.as_ref().is_some_and(|origin| {
+                            let schema = Some(origin.database.as_str());
+                            let hidden = hidden.as_deref();
+                            hidden.is_some_and(|hidden| {
+                                hidden
+                                    .masks(schema, &origin.table, &origin.column)
+                                    .is_some()
+                            })
+                        })
+                    })
+                    .collect();
                 let _hiding = fences.hide(hidden);
                 let sent = Sent {
                     params: &params,
                     timeout: limits.timeout,
                 };
-                let outcome = script(
+                let mut outcome = script(
                     connection,
                     &fences,
                     &texts,
@@ -1211,6 +1215,24 @@ impl Adapter for Conn {
                     &stop,
                     Some(sent),
                 )?;
+                // A masked column is read as `NULL`, which SQLite names
+                // and types as its own: it keeps the name and the type it
+                // had before the fence.
+                if let Some(StatementOutcome::Rows { columns: read, .. }) = outcome
+                    .results
+                    .first_mut()
+                    .map(|result| &mut result.outcome)
+                    && read.len() == columns.len()
+                {
+                    for ((meta, before), masked) in
+                        read.iter_mut().zip(&columns).zip(&masked_columns)
+                    {
+                        if *masked {
+                            meta.name.clone_from(&before.name);
+                            meta.type_name.clone_from(&before.decl_type);
+                        }
+                    }
+                }
                 Ok((outcome, masked_columns))
             })
             .await;

@@ -125,17 +125,20 @@ pub(crate) fn answer(outcome: ScriptOutcome, stop: &StopFlag) -> Result<Answer> 
 
 /// `answer` with the columns `masked` says are a masked column's replaced:
 /// each of their values is [`MASKED`]. `masked` is one for each column, as
-/// the database said where each comes from; where its count is not the
-/// answer's, which can only be the schema changing between the two, every
-/// column is taken for one.
+/// the database said where each comes from, or none where nothing is
+/// masked; where its count is not the answer's, which can only be the
+/// schema changing between the two, every column is taken for one.
 pub(crate) fn masked(mut answer: Answer, masked: Vec<bool>) -> Answer {
-    if !masked.contains(&true) {
+    if masked.is_empty() {
         return answer;
     }
     let masked = match masked.len() == answer.columns.len() {
         true => masked,
         false => vec![true; answer.columns.len()],
     };
+    if !masked.contains(&true) {
+        return answer;
+    }
     for row in &mut answer.rows {
         for (value, masked) in row.iter_mut().zip(&masked) {
             if *masked {
@@ -234,10 +237,12 @@ mod tests {
         // Nothing masked: as it was.
         assert_eq!(masked(answer.clone(), vec![false, false]), answer);
         assert_eq!(masked(answer.clone(), Vec::new()), answer);
-        // Told for another count of columns: every one.
-        let all = masked(answer, vec![true]);
+        // Told for another count of columns: every one, though none was
+        // said to be.
+        let all = masked(answer.clone(), vec![true]);
         assert_eq!(all.masked, [true, true]);
         assert_eq!(all.rows[0], [dots(), dots()]);
+        assert_eq!(masked(answer, vec![false]).masked, [true, true]);
     }
 
     #[test]

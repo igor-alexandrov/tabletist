@@ -658,6 +658,19 @@ async fn a_masked_columns_values_are_never_answered(connection: &Connection, on:
         Ok((Vec::new(), vec![vec![text("ada.brandt@example.com")]])),
         "{on}"
     );
+    // A masked column keeps its name and its type.
+    let joined = "SELECT o.id, o.email FROM orders o JOIN customers c ON c.id = o.customer_id \
+                  WHERE o.id = 1";
+    let shown = |answer: Answer| {
+        answer
+            .columns
+            .into_iter()
+            .map(|column| (column.name, column.type_name))
+            .collect::<Vec<_>>()
+    };
+    let plain = masking(connection, &[], joined).await.map(shown);
+    let hiding = masking(connection, &masked, joined).await.map(shown);
+    assert_eq!(hiding, plain, "{on}");
     // Masking nothing, nothing is marked.
     let found = masking(connection, &[], "SELECT email FROM orders WHERE id = 1")
         .await
@@ -753,6 +766,18 @@ mod sqlite {
     async fn a_masked_columns_values_are_never_answered_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         a_masked_columns_values_are_never_answered(&connection, "sqlite").await;
+        // SQLite joins on a string where a name stands, without asking its
+        // authorizer: refused as the name.
+        let found = masking(
+            &connection,
+            &["orders.email"],
+            "SELECT o.id FROM orders o JOIN customers c USING ('email')",
+        )
+        .await;
+        assert_eq!(
+            found.map(|answer| answer.rows),
+            Err(masked_refusal(MaskedUse::Named("email".into())))
+        );
         // A table's integer key read by its other name is the key: masked
         // where the key is.
         let found = masking(
@@ -1062,6 +1087,29 @@ mod postgres {
             return;
         };
         a_masked_columns_values_are_never_answered(&connection, "postgres").await;
+        // A partition's masked column, read through its table.
+        let found = masking(
+            &connection,
+            &["stock_moves_2026.quantity"],
+            "SELECT quantity FROM stock_moves LIMIT 1",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
+        // A join with a subquery or a common table expression that reads
+        // no masked column runs.
+        for sql in [
+            "WITH c AS MATERIALIZED (SELECT id FROM customers) \
+             SELECT o.id, o.email FROM orders o JOIN c ON c.id = o.customer_id",
+            "SELECT o.id, o.email FROM orders o JOIN (SELECT customer_id, count(*) AS n \
+             FROM orders GROUP BY customer_id) s ON s.customer_id = o.customer_id WHERE s.n > 1",
+        ] {
+            let found = masking(&connection, &["orders.email"], sql).await;
+            assert!(found.is_ok(), "{sql}: {found:?}");
+        }
     }
 
     #[tokio::test]

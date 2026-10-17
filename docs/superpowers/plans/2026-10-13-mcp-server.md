@@ -1132,12 +1132,25 @@ otherwise than above:
 - **PostgreSQL's plan** may pass a masked column on, as a name by itself
   in a node's output, and use it no other way: not in a filter, a
   condition, a key or an expression, and never its table's whole row. A
-  subquery's scan that passes one on is taken to pass it in every column.
+  subquery's or a common table expression's scan whose own plan answers
+  one is taken to pass it in every column. The plan writes a column
+  without its alias where it reads one relation, and with a partitioned
+  table's alias above its parts' scans: both are read so (found by the
+  review).
 - **A table's integer key by another name** (SQLite's `rowid`, `_rowid_`
   and `oid`, MySQL's `_rowid`) may be a masked column: over a table with
   one, those words are read as one (found by the run). SQLite's fence
   reads such a key as `NULL` anyway; MySQL had nothing else to stop
   `WHERE _rowid > 3`.
+- **SQLite reads a string as a name** where only a name stands, and joins
+  on `USING ('email')` without asking its authorizer: a string after a
+  dot or in a `USING` list is read as a name (found by the review).
+- **An entry that names a partition or a child table** masks the column
+  of its parent, and so of the parent's other parts: a read of the parent
+  reads the part's rows (found by the review).
+- **Left, and said:** on SQLite a column of a view that an entry names is
+  read as `NULL` by the fence, but SQLite tells the view's table as where
+  it comes from, so it answers `NULL`, not `•••`, and is not marked.
 
 **The rule.** It applies to any statement that reads a table with a masked
 column.

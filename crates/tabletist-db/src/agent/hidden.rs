@@ -682,7 +682,9 @@ fn refused(found: &Listed) -> Result<(), Refusal> {
 /// The tables that have a masked column, by schema and name, with an
 /// entry's place in `masked`, once for each entry: each relation an entry
 /// names, a view too, and the partitions and the child tables of those
-/// tables, at any depth.
+/// tables, at any depth. An entry that names a partition or a child table
+/// masks the column of its parent too, and so of the parent's other parts:
+/// a read of the parent reads the part's rows.
 fn masked_tables(
     catalog: &Catalog,
     depends: &[Vec<usize>],
@@ -695,15 +697,25 @@ fn masked_tables(
             .iter()
             .map(|relation| entry.names_table(Some(&relation.schema), &relation.name))
             .collect();
-        // A child's parent is what it depends on: taken from it until
-        // nothing more is, which a cycle cannot keep from ending.
+        // A table's parent is what it depends on: taken from it, and given
+        // it, until nothing more is, which a cycle cannot keep from ending.
         loop {
             let mut more = false;
             for at in 0..catalog.relations.len() {
-                if !has[at] && !catalog.relations[at].view && depends[at].iter().any(|&on| has[on])
-                {
+                if catalog.relations[at].view {
+                    continue;
+                }
+                if !has[at] && depends[at].iter().any(|&on| has[on]) {
                     has[at] = true;
                     more = true;
+                }
+                if has[at] {
+                    for &on in &depends[at] {
+                        if !has[on] && !catalog.relations[on].view {
+                            has[on] = true;
+                            more = true;
+                        }
+                    }
                 }
             }
             if !more {
@@ -795,35 +807,47 @@ fn masked_views(
     found
 }
 
-/// The columns an expression names with a qualifier, as PostgreSQL's plan
-/// writes them (`o.email`, `"Orders".email`), each by its qualifier and its
-/// column, `*` for a whole row (`o.*`); and whether the expression is one
-/// such name and nothing else.
-pub(crate) fn column_references(dialect: Dialect, text: &str) -> (Vec<(String, String)>, bool) {
+/// The columns an expression of PostgreSQL's plan names (`o.email`,
+/// `"Orders".email`, and `email` alone where the plan reads one relation),
+/// each by its qualifier, where it has one, and its column, `*` for a
+/// whole row (`o.*`); and whether the expression is one such name and
+/// nothing else. A word before a parenthesis is a function's.
+pub(crate) fn column_references(
+    dialect: Dialect,
+    text: &str,
+) -> (Vec<(Option<String>, String)>, bool) {
     let pieces = pieces(dialect, text);
     let mut found = Vec::new();
-    for (at, window) in pieces.windows(3).enumerate() {
-        let [qualifier, Piece::Dot, column] = window else {
-            continue;
-        };
-        // `schema.table.column`: the qualifier is the table.
-        if pieces.get(at + 3) == Some(&Piece::Dot) {
-            continue;
-        }
-        let column = match column {
-            Piece::Star => "*",
-            other => match other.word() {
-                Some(word) => word,
-                None => continue,
-            },
-        };
-        if let Some(qualifier) = qualifier.word() {
-            found.push((qualifier.to_owned(), column.to_owned()));
+    for (at, piece) in pieces.iter().enumerate() {
+        let before = at.checked_sub(1).map(|before| &pieces[before]);
+        let after = pieces.get(at + 1);
+        match piece {
+            // `schema.table.column`: the qualifier is the table.
+            Piece::Word { .. } | Piece::Star if before == Some(&Piece::Dot) => {
+                let qualifier = at.checked_sub(2).and_then(|back| pieces[back].word());
+                let column = match piece {
+                    Piece::Star => "*",
+                    other => other.word().unwrap_or_default(),
+                };
+                if after != Some(&Piece::Dot)
+                    && after != Some(&Piece::Open)
+                    && let Some(qualifier) = qualifier
+                {
+                    found.push((Some(qualifier.to_owned()), column.to_owned()));
+                }
+            }
+            Piece::Word { .. } if after != Some(&Piece::Dot) && after != Some(&Piece::Open) => {
+                if let Some(word) = piece.word() {
+                    found.push((None, word.to_owned()));
+                }
+            }
+            _ => {}
         }
     }
     let bare = matches!(
         pieces.as_slice(),
-        [Piece::Word { .. }, Piece::Dot, Piece::Word { .. }]
+        [Piece::Word { .. }]
+            | [Piece::Word { .. }, Piece::Dot, Piece::Word { .. }]
             | [
                 Piece::Word { .. },
                 Piece::Dot,
@@ -1025,6 +1049,9 @@ enum Piece {
     Star,
     /// A number, as written: an `ORDER BY` of one sorts by a place.
     Number(String),
+    /// A string in single quotes, without them, which SQLite reads as a
+    /// name where only a name can stand (`USING ('email')`, `o.'email'`).
+    Text(String),
     Other,
 }
 
@@ -1305,6 +1332,7 @@ fn pieces(dialect: Dialect, text: &str) -> Vec<Piece> {
                 },
                 TokenKind::Operator if written == "*" => Piece::Star,
                 TokenKind::Number => Piece::Number(written.to_owned()),
+                TokenKind::String if written.starts_with('\'') => Piece::Text(unquoted(written)),
                 TokenKind::String
                 | TokenKind::ExecutableComment
                 | TokenKind::Operator
@@ -1341,6 +1369,7 @@ fn unquoted(written: &str) -> String {
     let (open, close) = match written.chars().next() {
         Some('`') => ('`', '`'),
         Some('[') => ('[', ']'),
+        Some('\'') => ('\'', '\''),
         _ => ('"', '"'),
     };
     let inner = written
@@ -1949,7 +1978,10 @@ mod tests {
             columns: ["id", "email", "phone"]
                 .iter()
                 .map(|column| ("public".into(), "orders".into(), (*column).into()))
-                .chain([("public".into(), "order_ids".into(), "id".into())])
+                .chain([
+                    ("public".into(), "order_ids".into(), "id".into()),
+                    ("public".into(), "orders_2026".into(), "email".into()),
+                ])
                 .collect(),
             column_reads,
             // A whole row of the partition, which `pg_depend` keeps no
@@ -2035,6 +2067,17 @@ mod tests {
         assert_eq!(
             hidden.masks(Some("public"), "ORDERS", "Email"),
             Some("orders.email".into())
+        );
+        // An entry that names the partition masks its table too, which
+        // reads the partition's rows.
+        let part = masking(&["orders_2026.email"], reads());
+        assert_eq!(
+            part.masks(Some("public"), "orders", "email"),
+            Some("orders_2026.email".into())
+        );
+        assert_eq!(
+            statement(&part, "SELECT * FROM orders ORDER BY 1"),
+            masked_used("orders_2026.email", MaskedUse::Sorted("1".into()))
         );
         // So a star over the partition is a star over the table.
         assert_eq!(

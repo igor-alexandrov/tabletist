@@ -261,38 +261,61 @@ async fn masked_columns(
 
 /// Checks where the plan uses a masked column: only passed on, as a name
 /// by itself in a node's output, and never its table's whole row. The plan
-/// writes every column with its scan's alias (`VERBOSE`). A subquery's or
-/// a common table expression's scan that passes one on is taken to pass
-/// it in every column it has: its own columns' names say nothing of where
-/// they come from.
+/// writes a column with its scan's alias, or without one where the plan
+/// reads a single relation; above a partitioned table's parts, with the
+/// parent's alias, which no scan has (the parts' are it with `_1`, `_2`).
+/// A subquery's or a common table expression's scan whose own plan passes
+/// a masked column on is taken to pass it in every column it has: its
+/// columns' names say nothing of where they come from.
 fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Result<(), Refusal> {
     if !hidden.masks_anything() {
         return Ok(());
     }
     let mut scans: std::collections::HashMap<String, Vec<(String, String)>> = Default::default();
-    let mut carriers: std::collections::HashSet<String> = Default::default();
-    scans_of(plan, &mut scans, &mut carriers);
-    // The masked column a name of the plan is, by its scan's alias.
-    let masked = |qualifier: &str, column: &str| {
-        scans
-            .get(&qualifier.to_lowercase())
+    relation_scans(plan, &mut scans);
+    let single = match scans.values().flatten().collect::<Vec<_>>().as_slice() {
+        [only] => Some((*only).clone()),
+        _ => None,
+    };
+    // The masked column a name of the plan is: by its scan's alias, or
+    // the single relation's where it has none.
+    let masked = |qualifier: Option<&str>, column: &str| {
+        let relations: Vec<&(String, String)> = match qualifier {
+            Some(qualifier) => scans
+                .get(&qualifier.to_lowercase())
+                .into_iter()
+                .flatten()
+                .collect(),
+            None => single.iter().collect(),
+        };
+        relations
             .into_iter()
-            .flatten()
             .find_map(|(schema, table)| match column {
                 "*" => hidden.masks_table(Some(schema), table),
                 column => hidden.masks(Some(schema), table, column),
             })
     };
-    // The first masked column a node passes on, if one does.
-    let mut passed = None;
-    expressions(plan, &mut |key, text| {
-        let (names, bare) = crate::agent::column_references(Dialect::Postgres, text);
-        if key == "Output" && bare && passed.is_none() {
-            passed = names
-                .iter()
-                .find_map(|(qualifier, column)| masked(qualifier, column));
-        }
-    });
+    // The first masked column a node passes on in its own output, which
+    // is what a subquery's plan answers, if it passes one. A scan below
+    // it may output every column of its table.
+    let passes = |node: &serde_json::Value| {
+        node.get("Output")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .find_map(|text| {
+                let (names, bare) = crate::agent::column_references(Dialect::Postgres, text);
+                bare.then(|| {
+                    names
+                        .iter()
+                        .find_map(|(qualifier, column)| masked(qualifier.as_deref(), column))
+                })
+                .flatten()
+            })
+    };
+    let mut carriers: std::collections::HashMap<String, String> = Default::default();
+    carrier_scans(plan, plan, &passes, &mut carriers);
     let mut found = None;
     expressions(plan, &mut |key, text| {
         if found.is_some() {
@@ -301,10 +324,12 @@ fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
         let (names, bare) = crate::agent::column_references(Dialect::Postgres, text);
         let passing = key == "Output" && bare;
         for (qualifier, column) in &names {
-            let entry = match masked(qualifier, column) {
+            let entry = match masked(qualifier.as_deref(), column) {
                 Some(entry) if !passing || column == "*" => Some(entry),
                 Some(_) => None,
-                None if !passing && carriers.contains(&qualifier.to_lowercase()) => passed.clone(),
+                None if !passing => qualifier
+                    .as_ref()
+                    .and_then(|qualifier| carriers.get(&qualifier.to_lowercase()).cloned()),
                 None => None,
             };
             if entry.is_some() {
@@ -322,41 +347,89 @@ fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
     }
 }
 
-/// The scans a plan makes, by their aliases folded to lower case: of a
-/// relation, with its schema and name; and of a subquery or a common table
-/// expression, whose aliases are `carriers`.
-fn scans_of(
+/// The relations a plan scans, by their scans' aliases folded to lower
+/// case, with their schemas and names; a part's under its parent's alias
+/// too, which is its own without its `_n`.
+fn relation_scans(
     plan: &serde_json::Value,
     scans: &mut std::collections::HashMap<String, Vec<(String, String)>>,
-    carriers: &mut std::collections::HashSet<String>,
 ) {
     match plan {
         serde_json::Value::Object(node) => {
             let text = |key: &str| node.get(key).and_then(serde_json::Value::as_str);
-            if let Some(alias) = text("Alias") {
-                match (text("Relation Name"), text("Schema")) {
-                    (Some(relation), Some(schema)) => scans
-                        .entry(alias.to_lowercase())
+            if let (Some(alias), Some(relation), Some(schema)) =
+                (text("Alias"), text("Relation Name"), text("Schema"))
+            {
+                let scanned = (schema.to_owned(), relation.to_owned());
+                let alias = alias.to_lowercase();
+                if let Some((parent, n)) = alias.rsplit_once('_')
+                    && !n.is_empty()
+                    && n.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    scans
+                        .entry(parent.to_owned())
                         .or_default()
-                        .push((schema.to_owned(), relation.to_owned())),
-                    _ => {
-                        let carries = matches!(
-                            text("Node Type"),
-                            Some("Subquery Scan" | "CTE Scan" | "WorkTable Scan")
-                        );
-                        if carries {
-                            carriers.insert(alias.to_lowercase());
-                        }
-                    }
+                        .push(scanned.clone());
                 }
+                scans.entry(alias).or_default().push(scanned);
+            }
+            node.values().for_each(|value| relation_scans(value, scans));
+        }
+        serde_json::Value::Array(values) => {
+            values.iter().for_each(|value| relation_scans(value, scans));
+        }
+        _ => {}
+    }
+}
+
+/// The aliases of the scans of a subquery or a common table expression
+/// (of `plan`) whose own plan passes a masked column on, each with the one
+/// it passes, as `passes` tells it of the plan's top node. A common table
+/// expression's plan is found in `root` by its name.
+fn carrier_scans(
+    plan: &serde_json::Value,
+    root: &serde_json::Value,
+    passes: &impl Fn(&serde_json::Value) -> Option<String>,
+    carriers: &mut std::collections::HashMap<String, String>,
+) {
+    match plan {
+        serde_json::Value::Object(node) => {
+            let text = |key: &str| node.get(key).and_then(serde_json::Value::as_str);
+            let own = match text("Node Type") {
+                Some("Subquery Scan") => node
+                    .get("Plans")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|plans| plans.first())
+                    .and_then(passes),
+                Some("CTE Scan" | "WorkTable Scan") => text("CTE Name")
+                    .and_then(|name| subplan(root, &format!("CTE {name}")))
+                    .and_then(passes),
+                _ => None,
+            };
+            if let (Some(alias), Some(passed)) = (text("Alias"), own) {
+                carriers.insert(alias.to_lowercase(), passed);
             }
             node.values()
-                .for_each(|value| scans_of(value, scans, carriers));
+                .for_each(|value| carrier_scans(value, root, passes, carriers));
         }
         serde_json::Value::Array(values) => values
             .iter()
-            .for_each(|value| scans_of(value, scans, carriers)),
+            .for_each(|value| carrier_scans(value, root, passes, carriers)),
         _ => {}
+    }
+}
+
+/// The node of `plan` whose subplan name is `name`.
+fn subplan<'a>(plan: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+    match plan {
+        serde_json::Value::Object(node) => {
+            if node.get("Subplan Name").and_then(serde_json::Value::as_str) == Some(name) {
+                return Some(plan);
+            }
+            node.values().find_map(|value| subplan(value, name))
+        }
+        serde_json::Value::Array(values) => values.iter().find_map(|value| subplan(value, name)),
+        _ => None,
     }
 }
 
@@ -717,6 +790,51 @@ mod tests {
             "Plans": [scan("orders", "o", output(&["o.email"]))]
         });
         assert_eq!(planned(carried), refused());
+        let counted = serde_json::json!({
+            "Node Type": "Hash Join", "Output": ["o.id", "o.email"],
+            "Hash Cond": "(s.customer_id = o.customer_id)",
+            "Plans": [
+                scan("orders", "o", output(&["o.id", "o.email", "o.customer_id"])),
+                { "Node Type": "Subquery Scan", "Alias": "s", "Output": ["s.customer_id"],
+                  "Filter": "(s.n > 1)",
+                  "Plans": [{ "Node Type": "HashAggregate",
+                    "Output": ["orders_1.customer_id", "count(*)"],
+                    "Plans": [scan("orders", "orders_1",
+                        output(&["orders_1.id", "orders_1.customer_id", "orders_1.email"]))] }] }
+            ]
+        });
+        assert_eq!(planned(counted), Ok(()));
+        // A subquery or a common table expression that passes none on is
+        // read as any scan, though a scan in it outputs one.
+        let plain = serde_json::json!({
+            "Node Type": "Hash Join", "Output": ["o.id", "o.email"],
+            "Hash Cond": "(o.customer_id = c.id)",
+            "Plans": [
+                scan("orders", "o", output(&["o.id", "o.email", "o.customer_id"])),
+                { "Node Type": "CTE Scan", "CTE Name": "c", "Alias": "c", "Output": ["c.id"] },
+                { "Node Type": "Seq Scan", "Subplan Name": "CTE c", "Relation Name": "customers",
+                  "Schema": "public", "Alias": "customers", "Output": ["customers.id"] }
+            ]
+        });
+        assert_eq!(planned(plain), Ok(()));
+        // A plan of one relation writes its columns without the alias.
+        assert_eq!(
+            planned(scan("orders", "orders", output(&["id", "email"]))),
+            Ok(())
+        );
+        assert_eq!(
+            planned(scan("orders", "orders", output(&["lower(email)"]))),
+            refused()
+        );
+        // Above a partitioned table's parts, by the parent's alias.
+        let parts = serde_json::json!({
+            "Node Type": "Sort", "Output": ["o.id"], "Sort Key": ["o.email"],
+            "Plans": [{ "Node Type": "Append", "Plans": [
+                scan("orders_2026", "o_1", output(&["o_1.id", "o_1.email"])),
+                scan("orders_2026", "o_2", output(&["o_2.id", "o_2.email"]))
+            ] }]
+        });
+        assert_eq!(planned(parts), refused());
         // Another table's column of the same name is its own.
         let customers = scan(
             "customers",
