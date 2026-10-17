@@ -464,30 +464,30 @@ const NAMED: &[&str] = &[
 ];
 
 /// Each expression the plan writes, with the key of the node's field it is
-/// in: a field's text, or each of a list's (`Output`, `Sort Key`).
+/// in: a field's text, or each of a list's (`Output`, `Sort Key`), at any
+/// depth (a grouping set's `Group Keys` are lists in a list).
 fn expressions(plan: &serde_json::Value, each: &mut impl FnMut(&str, &str)) {
-    match plan {
+    within(plan, None, each);
+}
+
+/// [`expressions`], of `value`, which is in the field `key` where it is in
+/// one.
+fn within(value: &serde_json::Value, key: Option<&str>, each: &mut impl FnMut(&str, &str)) {
+    match value {
         serde_json::Value::Object(node) => {
             for (key, value) in node {
-                if NAMED.contains(&key.as_str()) {
-                    continue;
-                }
-                match value {
-                    serde_json::Value::String(text) => each(key, text),
-                    serde_json::Value::Array(values) => {
-                        for value in values {
-                            match value {
-                                serde_json::Value::String(text) => each(key, text),
-                                other => expressions(other, each),
-                            }
-                        }
-                    }
-                    other => expressions(other, each),
+                if !NAMED.contains(&key.as_str()) {
+                    within(value, Some(key), each);
                 }
             }
         }
         serde_json::Value::Array(values) => {
-            values.iter().for_each(|value| expressions(value, each))
+            values.iter().for_each(|value| within(value, key, each));
+        }
+        serde_json::Value::String(text) => {
+            if let Some(key) = key {
+                each(key, text);
+            }
         }
         _ => {}
     }
@@ -850,6 +850,13 @@ mod tests {
             ]
         });
         assert_eq!(planned(plain), Ok(()));
+        // A grouping set's keys, which are lists in a list.
+        let rolled = serde_json::json!({
+            "Node Type": "Aggregate", "Output": ["o.id"],
+            "Grouping Sets": [{ "Group Keys": [["o.email"], []] }],
+            "Plans": [scan("orders", "o", output(&["o.id", "o.email"]))]
+        });
+        assert_eq!(planned(rolled), refused());
         // A cast's type ends where the expression goes on.
         let case = scan(
             "orders",
