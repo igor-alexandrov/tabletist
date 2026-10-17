@@ -1231,6 +1231,27 @@ fn the_editors_tables_control_lists_what_agents_may_not_read() {
         assert!(!harness.has(&look.label(too_many)), "{}", look.name);
         harness.click(&look.label("Remove sales.orders"));
         harness.settle();
+        // A name typed and not added goes to its list when another mode is
+        // chosen; one that does not read keeps the mode until put right.
+        type_table(&mut harness, &look, "a.b.c");
+        harness.click(&look.label("Only"));
+        harness.settle();
+        assert_eq!(
+            form(&harness).agents_tables.mode,
+            crate::model::TablesMode::AllExcept,
+            "{}",
+            look.name
+        );
+        form_mut(&mut harness).agents_table_typed = Some(String::new());
+        harness.settle();
+        type_table(&mut harness, &look, "orders");
+        harness.click(&look.label("Only"));
+        harness.settle();
+        harness.click(&look.label("All except"));
+        harness.settle();
+        assert!(harness.has(&look.label("Remove orders")), "{}", look.name);
+        harness.click(&look.label("Remove orders"));
+        harness.settle();
         // "Only" keeps a list of its own, and "All except" finds its again.
         harness.click(&look.label("Only"));
         harness.settle();

@@ -171,8 +171,8 @@ server is on.
   listed and no others, a table made later included. **Add table…** opens
   a field for a name, `customers` or `sales.customers`: Enter adds it and
   leaves the field open for the next, Escape closes the field, and **×**
-  takes a name out. A name still in the field when you save is added with
-  the rest. Each of the two lists is kept while you try the other, and
+  takes a name out. A name still in the field when you save, or choose
+  another of the three, is added with the rest. Each of the two lists is kept while you try the other, and
   what you save is the one chosen. Agents are told the names in the list,
   never what is in the hidden tables: not their rows, their columns, or
   the views over them. A function from an extension can still read them;

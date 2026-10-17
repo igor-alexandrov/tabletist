@@ -91,6 +91,13 @@ fn tables_mode(ui: &mut Ui, form: &mut ConnectionForm, heading: &str, group: Gro
         group,
         skin,
     ) {
+        // A name typed for the list shown goes to it first, as when the
+        // field loses the keyboard; one that does not read keeps the field,
+        // and the mode, until it is put right.
+        if form.take_typed_table().is_err() {
+            form.agents_table_focus = Some(TableFocus::Field);
+            return;
+        }
         form.agents_tables.mode = mode;
         form.agents_table_typed = None;
         form.agents_table_error = None;
