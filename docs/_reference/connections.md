@@ -152,6 +152,13 @@ connection is saved as needing no password (`password = "none"`), with
 its keyring entry deleted. **Test** then tries the server with no
 password. Type a password instead to replace the saved one.
 
+When the keyring has no password for a connection, Tabletist asks for
+one. If you leave it blank and the server accepts that (trust or peer
+authentication), the connection is saved as needing no password
+(`password = "none"`), and Tabletist and agents connect without asking
+from then on. Should the server start asking for a password, Tabletist
+asks you for it again, and saves it in the keyring once it is accepted.
+
 ## Agents
 
 What AI agents may do on a connection, through `tabletist mcp`. Every
