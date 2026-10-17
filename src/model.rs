@@ -1140,13 +1140,12 @@ impl LoadedTables {
             .is_some_and(|driver| is_system_schema(driver, &schema.to_lowercase()))
     }
 
-    /// Whether `name` is one of the system's own tables (SQLite's
-    /// `sqlite_` ones), which hiding never stops agents for.
+    /// Whether `name` is one of the system's own tables, as the checks
+    /// that stop agents take them (SQLite's `sqlite_` ones and `dbstat`,
+    /// a `pg_` name without a schema), which hiding never stops agents for.
     fn system_table(&self, name: &tabletist_db::agent::TableName) -> bool {
-        match self.driver {
-            Some(Driver::Sqlite) => name.name.to_lowercase().starts_with("sqlite_"),
-            Some(Driver::Postgres | Driver::MySql) | None => false,
-        }
+        self.driver
+            .is_some_and(|driver| name.is_system(driver.dialect()))
     }
 
     /// The loaded tables whose names match `typed`, best first, at most
@@ -5652,6 +5651,9 @@ mod tests {
             ..loaded.clone()
         };
         assert_eq!(whole.has(&name("old_orders")), Some(false));
+        // A `pg_` name without a schema is PostgreSQL's catalog's, as the
+        // checks that stop agents take it.
+        assert_eq!(whole.has(&name("pg_class")), None);
         // A list of schemas the catalog cut, though the system's taken out
         // of it leave it shorter: a schema not in it, or a name without
         // one, is not known.
@@ -5671,6 +5673,7 @@ mod tests {
             loaded: vec![("main".into(), vec!["books".into()])],
         };
         assert_eq!(sqlite.has(&name("sqlite_stat1")), None);
+        assert_eq!(sqlite.has(&name("dbstat")), None);
         assert_eq!(sqlite.has(&name("old_orders")), Some(false));
         // A list the catalog cut at its most is not the whole schema: what
         // is not in it is not known, with or without a schema.
