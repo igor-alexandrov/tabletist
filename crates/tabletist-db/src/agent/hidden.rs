@@ -811,14 +811,31 @@ fn masked_views(
 /// `"Orders".email`, and `email` alone where the plan reads one relation),
 /// each by its qualifier, where it has one, and its column, `*` for a
 /// whole row (`o.*`); and whether the expression is one such name and
-/// nothing else. A word before a parenthesis is a function's.
+/// nothing else. A word before a parenthesis is a function's, and the
+/// words after a cast's `::` are a type's (`timestamp without time zone`).
 pub(crate) fn column_references(
     dialect: Dialect,
     text: &str,
 ) -> (Vec<(Option<String>, String)>, bool) {
     let pieces = pieces(dialect, text);
+    // Which pieces are a cast's type: the tokens are the pieces, but for
+    // white space and comments.
+    let tokens: Vec<&str> = sql::tokenize(dialect, text)
+        .into_iter()
+        .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))
+        .map(|token| &text[token.range])
+        .collect();
+    let mut typed = vec![false; pieces.len()];
+    for at in 0..pieces.len() {
+        let cast = at >= 2 && tokens.get(at - 1) == Some(&":") && tokens.get(at - 2) == Some(&":");
+        let more = at > 0 && typed[at - 1];
+        typed[at] = matches!(pieces[at], Piece::Word { .. }) && (cast || more);
+    }
     let mut found = Vec::new();
     for (at, piece) in pieces.iter().enumerate() {
+        if typed[at] {
+            continue;
+        }
         let before = at.checked_sub(1).map(|before| &pieces[before]);
         let after = pieces.get(at + 1);
         match piece {

@@ -1231,7 +1231,9 @@ impl Adapter for Conn {
 /// from through a view, as the view's table's column: one is a masked
 /// column's where that is one, or where it is what a masked column of a
 /// view the statement reads comes from, which the view may give under its
-/// own name.
+/// own name. A masked column of a view that comes from none (`lower(mail)
+/// AS m`) leaves nothing to tell it by: every result column that comes
+/// from none is masked then.
 fn masked_result_columns(
     connection: &rusqlite::Connection,
     fences: &Fences,
@@ -1254,6 +1256,7 @@ fn masked_result_columns(
     // selected alone.
     let quoted = |part: &str| format!("\"{}\"", part.replace('"', "\"\""));
     let mut behind: Vec<tabletist_sqlite_ffi::Origin> = Vec::new();
+    let mut computed = false;
     for read in reads
         .iter()
         .filter(|read| read.source.is_none() && masks(&read.schema, &read.table, &read.column))
@@ -1265,14 +1268,16 @@ fn masked_result_columns(
             quoted(&read.table)
         );
         let told = tabletist_sqlite_ffi::result_columns(connection, &sql).map_err(map_error)?;
+        computed |= told.iter().any(|column| column.origin.is_none());
         behind.extend(told.into_iter().filter_map(|column| column.origin));
     }
     let masked = columns
         .iter()
-        .map(|column| {
-            column.origin.as_ref().is_some_and(|origin| {
+        .map(|column| match &column.origin {
+            Some(origin) => {
                 masks(&origin.database, &origin.table, &origin.column) || behind.contains(origin)
-            })
+            }
+            None => computed,
         })
         .collect();
     Ok((columns, masked))

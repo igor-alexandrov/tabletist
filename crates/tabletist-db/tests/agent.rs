@@ -764,7 +764,19 @@ mod sqlite {
 
     #[tokio::test]
     async fn a_masked_columns_values_are_never_answered_on_sqlite() {
-        let (connection, _dir) = bookshop().await;
+        let (connection, _dir) =
+            bookshop_with("CREATE VIEW mail_keys AS SELECT id, lower(email) AS mail FROM orders;")
+                .await;
+        // A view's masked column that comes from no table column: every
+        // column that comes from none is masked.
+        let found = masking(
+            &connection,
+            &["mail_keys.mail"],
+            "SELECT id, mail FROM mail_keys LIMIT 1",
+        )
+        .await
+        .map(|answer| answer.masked);
+        assert_eq!(found, Ok(vec![false, true]));
         a_masked_columns_values_are_never_answered(&connection, "sqlite").await;
         // A view's column an entry names is masked, under the view's name
         // or another, by what the view reads for it.

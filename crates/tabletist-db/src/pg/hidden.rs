@@ -864,6 +864,36 @@ mod tests {
             ] }]
         });
         assert_eq!(planned(parts), refused());
+        // A cast's type is no column, though a masked one has its name.
+        let events = || {
+            let catalog = Catalog {
+                relations: vec![Relation {
+                    schema: "public".into(),
+                    name: "events".into(),
+                    depends_on: Vec::new(),
+                    opaque: false,
+                    part: false,
+                    view: false,
+                }],
+                columns: vec![("public".into(), "events".into(), "date".into())],
+                ..Catalog::default()
+            };
+            let masked = ["events.date".parse().unwrap()];
+            Hidden::masking(Dialect::Postgres, &catalog, &Tables::All, &masked)
+        };
+        for filter in [
+            "(created_at > '2026-01-01'::date)",
+            "(created_at > '2026-01-01 00:00:00'::timestamp without time zone)",
+        ] {
+            let cast = scan("events", "events", serde_json::json!({ "Filter": filter }));
+            assert_eq!(planned_masks(&cast, &events()), Ok(()), "{filter}");
+        }
+        let used = scan(
+            "events",
+            "events",
+            serde_json::json!({ "Filter": "(date > now())" }),
+        );
+        assert!(planned_masks(&used, &events()).is_err());
         // A table with its column's name is no use of the column.
         let city = || {
             let catalog = Catalog {
