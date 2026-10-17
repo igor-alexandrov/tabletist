@@ -234,6 +234,7 @@ pub(super) async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
                 name,
                 depends_on,
                 part: false,
+                view,
             }
         })
         .collect();
@@ -247,8 +248,7 @@ pub(super) async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
     Ok(Catalog {
         relations,
         routines,
-        unnamed_calls: Vec::new(),
-        table_functions: Vec::new(),
+        ..Catalog::default()
     })
 }
 
@@ -264,12 +264,12 @@ mod tests {
             depends_on: Vec::new(),
             opaque: false,
             part: false,
+            view: false,
         };
         let catalog = Catalog {
             relations: vec![relation("books"), relation("customers")],
             routines: vec![("bookshop".into(), "customer_count".into())],
-            unnamed_calls: Vec::new(),
-            table_functions: Vec::new(),
+            ..Catalog::default()
         };
         Hidden::new(Dialect::MySql, &catalog, &tables)
     }

@@ -31,7 +31,7 @@ use crate::{Dialect, sql};
 mod hidden;
 mod run;
 
-pub use hidden::{Catalog, Hidden, Relation, TableName, Tables};
+pub use hidden::{Catalog, ColumnName, ColumnRead, Hidden, Relation, TableName, Tables};
 pub(crate) use hidden::{calls_a_refused_function, named_relations, planned};
 pub use run::{Answer, Limits};
 pub(crate) use run::{Sent, answer, count_mismatch};
@@ -143,15 +143,54 @@ pub enum Refusal {
         name: String,
         through: Option<String>,
     },
-    /// The system catalogs, on a connection that hides a table: they
-    /// describe every one.
+    /// The system catalogs, on a connection that hides a table or masks a
+    /// column: they describe every one.
     SystemCatalog,
+    /// A masked column read otherwise than selected as it is, by its entry
+    /// as the person writes it, and how the statement reads it.
+    MaskedColumnUsed {
+        column: String,
+        how: MaskedUse,
+    },
     /// The connection's "All except" list names tables its user cannot
-    /// see, as it writes them: a hidden table renamed, or dropped, which
-    /// look the same, or on MySQL one the user has no right to. Agents may not use the connection until the person looks
-    /// (the MCP plan's C.3). Its code is the server's for a connection it
-    /// cannot open.
-    SettingsNeedALook(Vec<String>),
+    /// see, or its masked columns name columns it cannot, as the person
+    /// writes them: one renamed, or dropped, which look the same, or on
+    /// MySQL one the user has no right to. Agents may not use the
+    /// connection until the person looks (the MCP plan's C.3). Its code is
+    /// the server's for a connection it cannot open.
+    SettingsNeedALook {
+        tables: Vec<String>,
+        columns: Vec<String>,
+    },
+}
+
+/// How a statement reads a masked column otherwise than selecting it as it
+/// is in its outermost `SELECT` (the MCP plan's B.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaskedUse {
+    /// A word that is its name, anywhere else: as the column's name, since
+    /// a column of that name is refused whatever its table.
+    Named(String),
+    /// `*` over its table in a subquery or a common table expression,
+    /// where the outer query could filter on it under another name.
+    Star,
+    /// Its table's whole row, by the table's name or its alias as a value,
+    /// as written.
+    Row(String),
+    /// A `NATURAL JOIN`, which may join on it.
+    Natural,
+    /// A list of column names after its table's alias, as written, which
+    /// gives its columns other names.
+    Renamed(String),
+    /// A clause of the outermost query beside it, as named.
+    Clause(&'static str),
+    /// An `ORDER BY` of a place in the list, as written, which may be its.
+    Sorted(String),
+    /// The alias it is selected under, written elsewhere in the statement,
+    /// where SQLite and MySQL read it as the column.
+    Alias(String),
+    /// A view or a common table expression that reads it, by its name.
+    Through(String),
 }
 
 /// What was too large.
@@ -202,7 +241,8 @@ impl Refusal {
             Self::InvalidParams(_) => "invalid_params",
             Self::TableHidden { .. } => "table_hidden",
             Self::SystemCatalog => "system_catalog",
-            Self::SettingsNeedALook(_) => "connection_unavailable",
+            Self::MaskedColumnUsed { .. } => "masked_column_used",
+            Self::SettingsNeedALook { .. } => "connection_unavailable",
         }
     }
 }
@@ -280,16 +320,83 @@ impl fmt::Display for Refusal {
                 f,
                 "{through} reads {name}, which is hidden for agents on this connection."
             ),
-            Self::SettingsNeedALook(missing) => write!(
-                f,
-                "Agents may not use this connection until its agent settings are looked at in \
-                 Tabletist: they hide {}, and its user can see no table of that name.",
-                missing.join(", ")
-            ),
+            Self::SettingsNeedALook { tables, columns } => {
+                let mut said = Vec::new();
+                if !tables.is_empty() {
+                    said.push(format!(
+                        "they hide {}, and its user can see no table of that name",
+                        tables.join(", ")
+                    ));
+                }
+                if !columns.is_empty() {
+                    said.push(format!(
+                        "they mask {}, and its user can see no column of that name",
+                        columns.join(", ")
+                    ));
+                }
+                write!(
+                    f,
+                    "Agents may not use this connection until its agent settings are looked at in \
+                     Tabletist: {}.",
+                    said.join("; ")
+                )
+            }
+            Self::MaskedColumnUsed { column, how } => masked_sentence(f, column, how),
             Self::SystemCatalog => f.write_str(
                 "The system catalogs are not available on this connection. Use describe_schema.",
             ),
         }
+    }
+}
+
+/// The sentence for a masked column `column` read as `how` reads it.
+fn masked_sentence(f: &mut fmt::Formatter<'_>, column: &str, how: &MaskedUse) -> fmt::Result {
+    let selected = "It can be selected as it is in the outermost SELECT";
+    match how {
+        MaskedUse::Named(name) => write!(
+            f,
+            "{column} is masked on this connection. {selected}, and not filtered, joined, \
+             sorted, grouped or computed on, and that goes for any column named {name}."
+        ),
+        MaskedUse::Star => write!(
+            f,
+            "{column} is masked on this connection, so * over its table is taken only in the \
+             outermost SELECT. Name the columns a subquery needs."
+        ),
+        MaskedUse::Row(written) => write!(
+            f,
+            "{column} is masked on this connection, and {written} reads its table's whole row. \
+             Select the columns instead."
+        ),
+        MaskedUse::Natural => write!(
+            f,
+            "{column} is masked on this connection, and a NATURAL JOIN may join on it. Join \
+             with ON instead."
+        ),
+        MaskedUse::Renamed(written) => write!(
+            f,
+            "{column} is masked on this connection, and the column names after {written} give \
+             its table's columns other names. Name each column with AS instead."
+        ),
+        MaskedUse::Clause(clause) => write!(
+            f,
+            "{column} is masked on this connection, and a query that selects it may not use \
+             {clause}. {selected}, in a plain query."
+        ),
+        MaskedUse::Sorted(written) => write!(
+            f,
+            "{column} is masked on this connection, and ORDER BY {written} may sort by it. \
+             Sort by the other columns, by name."
+        ),
+        MaskedUse::Alias(alias) => write!(
+            f,
+            "{column} is masked on this connection, and it is selected as {alias}, which then \
+             stands for it: {alias} may be written nowhere else in the statement."
+        ),
+        MaskedUse::Through(view) => write!(
+            f,
+            "{view} reads {column}, which is masked on this connection."
+        ),
     }
 }
 

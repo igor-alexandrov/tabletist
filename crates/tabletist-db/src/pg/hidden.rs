@@ -71,7 +71,8 @@ SELECT n.nspname, c.relname, dn.nspname, dc.relname, c.oid IN (SELECT relation F
         || coalesce((
             SELECT string_agg(pg_get_expr(pol.polqual, pol.polrelid), ' ')
             FROM pg_policy pol WHERE pol.polrelid = c.oid
-        ), '')
+        ), ''),
+    c.relkind IN ('v', 'm')
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN depends ON depends.relation = c.oid
@@ -205,6 +206,7 @@ pub(super) async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> 
                 opaque: row.get(4) != Some("f")
                     || calls_a_refused_function(Dialect::Postgres, row.get(6).unwrap_or("")),
                 part: row.get(5) == Some("t"),
+                view: row.get(7) == Some("t"),
             });
         }
         if let (Some(on_schema), Some(on_name), Some(last)) =
@@ -228,7 +230,7 @@ pub(super) async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> 
         relations,
         routines,
         unnamed_calls,
-        table_functions: Vec::new(),
+        ..Catalog::default()
     })
 }
 
@@ -281,6 +283,7 @@ mod tests {
                 .collect(),
             opaque: false,
             part: false,
+            view: false,
         };
         let catalog = Catalog {
             relations: vec![
@@ -290,8 +293,7 @@ mod tests {
                 relation("events_2026", &["events"]),
             ],
             routines: vec![("public".into(), "names".into())],
-            unnamed_calls: Vec::new(),
-            table_functions: Vec::new(),
+            ..Catalog::default()
         };
         Hidden::new(Dialect::Postgres, &catalog, &tables)
     }

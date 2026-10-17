@@ -20,10 +20,20 @@
 //! Names are compared without regard to case, which is the strict reading
 //! where a database tells case apart: a quoted `"Customers"` on PostgreSQL
 //! is taken for `customers` too, and refused where that is hidden.
+//!
+//! The masked columns are checked with the hidden tables ([`masked`]): a
+//! connection that masks a column closes the system catalogs and the
+//! users' functions as one that hides a table does, and a view that reads
+//! a masked column is refused.
+
+mod masked;
 
 use std::collections::{HashMap, HashSet};
 
-use super::{Read, Refusal};
+pub use masked::ColumnName;
+use masked::Masks;
+
+use super::{MaskedUse, Read, Refusal};
 use crate::Dialect;
 use crate::sql::{self, TokenKind};
 
@@ -71,55 +81,7 @@ impl std::str::FromStr for TableName {
     type Err = String;
 
     fn from_str(written: &str) -> Result<Self, String> {
-        if written.is_empty() {
-            return Err("is empty".into());
-        }
-        let mut parts: Vec<String> = Vec::new();
-        let mut chars = written.chars().peekable();
-        loop {
-            let mut part = String::new();
-            let quoted = chars.peek() == Some(&'"');
-            if quoted {
-                chars.next();
-                loop {
-                    match chars.next() {
-                        Some('"') if chars.peek() == Some(&'"') => {
-                            chars.next();
-                            part.push('"');
-                        }
-                        Some('"') => break,
-                        Some(c) => part.push(c),
-                        None => return Err("has a quote that is not closed".into()),
-                    }
-                }
-            } else {
-                while let Some(&c) = chars.peek()
-                    && c != '.'
-                {
-                    if c == '"' {
-                        return Err(
-                            "has a quote inside a name: put the whole name in quotes".into()
-                        );
-                    }
-                    part.push(c);
-                    chars.next();
-                }
-            }
-            match (part.is_empty(), quoted) {
-                (true, true) => return Err("has a quoted name that is empty".into()),
-                (true, false) => return Err("has nothing before or after a dot".into()),
-                (false, _) => {}
-            }
-            parts.push(part);
-            match chars.next() {
-                None => break,
-                Some('.') => {}
-                Some(_) => {
-                    return Err("goes on after a quoted name: a dot comes next".into());
-                }
-            }
-        }
-        match <[String; 2]>::try_from(parts) {
+        match <[String; 2]>::try_from(parts(written)?) {
             Ok([schema, name]) => Ok(Self {
                 schema: Some(schema),
                 name,
@@ -132,6 +94,59 @@ impl std::str::FromStr for TableName {
             },
         }
     }
+}
+
+/// The parts of an entry as the person writes it, joined by dots, a part
+/// in double quotes where it holds a dot or a quote. The error says what
+/// is wrong without the entry's words.
+fn parts(written: &str) -> Result<Vec<String>, String> {
+    if written.is_empty() {
+        return Err("is empty".into());
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut chars = written.chars().peekable();
+    loop {
+        let mut part = String::new();
+        let quoted = chars.peek() == Some(&'"');
+        if quoted {
+            chars.next();
+            loop {
+                match chars.next() {
+                    Some('"') if chars.peek() == Some(&'"') => {
+                        chars.next();
+                        part.push('"');
+                    }
+                    Some('"') => break,
+                    Some(c) => part.push(c),
+                    None => return Err("has a quote that is not closed".into()),
+                }
+            }
+        } else {
+            while let Some(&c) = chars.peek()
+                && c != '.'
+            {
+                if c == '"' {
+                    return Err("has a quote inside a name: put the whole name in quotes".into());
+                }
+                part.push(c);
+                chars.next();
+            }
+        }
+        match (part.is_empty(), quoted) {
+            (true, true) => return Err("has a quoted name that is empty".into()),
+            (true, false) => return Err("has nothing before or after a dot".into()),
+            (false, _) => {}
+        }
+        parts.push(part);
+        match chars.next() {
+            None => break,
+            Some('.') => {}
+            Some(_) => {
+                return Err("goes on after a quoted name: a dot comes next".into());
+            }
+        }
+    }
+    Ok(parts)
 }
 
 impl TableName {
@@ -196,6 +211,23 @@ pub struct Relation {
     /// (SQLite's shadow tables). Hidden with that one, and read with it,
     /// not hidden for want of its own name in an "Only" list.
     pub part: bool,
+    /// Whether it is a view or a materialized view, whose own data is
+    /// what it reads: one that reads a masked column is refused, where a
+    /// partition or a child table of a table with one has it masked too.
+    pub view: bool,
+}
+
+/// A column a view reads, as a catalog that says so column by column
+/// gives it: the view by its schema and name, the column by its table's
+/// schema and name and its own. A column of `*` is a whole row, which
+/// PostgreSQL keeps no column of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnRead {
+    pub schema: String,
+    pub view: String,
+    pub table_schema: String,
+    pub table: String,
+    pub column: String,
 }
 
 /// What a driver reads of its database's catalog for the checks: its
@@ -213,6 +245,14 @@ pub struct Catalog {
     /// engine reports reads of as a table's (SQLite's `json_each`): one the
     /// catalog does not list as a relation is never hidden.
     pub table_functions: Vec<String>,
+    /// The columns of the tables the masked columns' entries name, by
+    /// schema, table and column: what says an entry still names a column.
+    /// Read only where something is masked.
+    pub columns: Vec<(String, String, String)>,
+    /// The masked columns each view reads, where the catalog says what a
+    /// view reads column by column. `None` where it does not: a view over a
+    /// table with a masked column is then taken to read it.
+    pub column_reads: Option<Vec<ColumnRead>>,
 }
 
 /// A relation of the catalog, as [`Hidden`] keeps it.
@@ -221,6 +261,9 @@ struct Listed {
     schema: String,
     name: String,
     why: Option<Why>,
+    /// For a view that reads a masked column, the column, as the person
+    /// writes it.
+    masks: Option<String>,
 }
 
 /// Why a relation is hidden.
@@ -252,12 +295,32 @@ pub struct Hidden {
     /// The entries of an "All except" list that name no relation of the
     /// catalog, as the person writes them.
     missing: Vec<String>,
+    /// The columns the person masks.
+    masked: Vec<ColumnName>,
+    /// The tables that have a masked column, by schema and name, with the
+    /// entry's place in `masked`: the entries' own, and the partitions and
+    /// child tables of those.
+    masked_tables: Vec<(String, String, usize)>,
+    /// The masked columns' entries that name no column of the catalog, as
+    /// the person writes them.
+    masked_missing: Vec<String>,
 }
 
 impl Hidden {
     /// What `tables` hides of `catalog`, on a database that speaks
     /// `dialect`.
     pub fn new(dialect: Dialect, catalog: &Catalog, tables: &Tables) -> Self {
+        Self::masking(dialect, catalog, tables, &[])
+    }
+
+    /// What `tables` hides of `catalog`, and what `masked` masks.
+    pub fn masking(
+        dialect: Dialect,
+        catalog: &Catalog,
+        tables: &Tables,
+        masked: &[ColumnName],
+    ) -> Self {
+        let guards = tables.hides_anything() || !masked.is_empty();
         let index: HashMap<(String, String), usize> = catalog
             .relations
             .iter()
@@ -279,8 +342,10 @@ impl Hidden {
         for at in 0..catalog.relations.len() {
             hidden_why(at, catalog, &depends, tables, &mut why);
         }
+        let masked_tables = masked_tables(catalog, &depends, masked);
+        let masks = masked_views(catalog, &depends, masked, &masked_tables);
         let mut relations: HashMap<String, Vec<Listed>> = HashMap::new();
-        for (relation, why) in catalog.relations.iter().zip(why) {
+        for ((relation, why), masks) in catalog.relations.iter().zip(why).zip(masks) {
             relations
                 .entry(fold(&relation.name))
                 .or_default()
@@ -288,9 +353,10 @@ impl Hidden {
                     schema: relation.schema.clone(),
                     name: relation.name.clone(),
                     why: why.flatten(),
+                    masks: masks.map(|at| masked[at].to_string()),
                 });
         }
-        let routines = match tables.hides_anything() {
+        let routines = match guards {
             true => catalog
                 .routines
                 .iter()
@@ -298,10 +364,21 @@ impl Hidden {
                 .collect(),
             false => HashSet::new(),
         };
-        let unnamed_calls = match tables.hides_anything() {
+        let unnamed_calls = match guards {
             true => catalog.unnamed_calls.clone(),
             false => Vec::new(),
         };
+        let masked_missing = masked
+            .iter()
+            .filter(|entry| {
+                !system_catalog(dialect, entry.schema.as_deref(), &entry.table)
+                    && !catalog
+                        .columns
+                        .iter()
+                        .any(|(schema, table, column)| entry.names(Some(schema), table, column))
+            })
+            .map(ToString::to_string)
+            .collect();
         Self {
             dialect,
             tables: tables.clone(),
@@ -314,6 +391,9 @@ impl Hidden {
                 .map(|name| fold(name))
                 .collect(),
             missing: missing(dialect, catalog, tables),
+            masked: masked.to_vec(),
+            masked_tables,
+            masked_missing,
         }
     }
 
@@ -322,20 +402,84 @@ impl Hidden {
         self.tables.hides_anything()
     }
 
+    /// Whether anything is hidden or masked: then the system catalogs and
+    /// the functions the users wrote are closed, and the statements are
+    /// checked.
+    pub fn guards_anything(&self) -> bool {
+        self.hides_anything() || !self.masked.is_empty()
+    }
+
     /// Whether agents may use the connection at all: not while its "All
-    /// except" list names a table it does not have. A hidden table that was
-    /// renamed is that, and its new name is hidden by nothing.
+    /// except" list names a table it does not have, or a masked column's
+    /// entry names no column. A hidden table or a masked column that was
+    /// renamed is that, and its new name is hidden or masked by nothing.
     pub fn check_settings(&self) -> Result<(), Refusal> {
-        match self.missing.is_empty() {
+        match self.missing.is_empty() && self.masked_missing.is_empty() {
             true => Ok(()),
-            false => Err(Refusal::SettingsNeedALook(self.missing.clone())),
+            false => Err(Refusal::SettingsNeedALook {
+                tables: self.missing.clone(),
+                columns: self.masked_missing.clone(),
+            }),
         }
     }
 
     /// Whether the relation `name` of `schema` is hidden from agents: by
-    /// the person's names, by what it reads, or as a system catalog.
+    /// the person's names, by what it reads, or as a system catalog. A view
+    /// that reads a masked column is refused, and not hidden by this.
     pub fn hides(&self, schema: &str, name: &str) -> bool {
-        self.check_engine_read(Some(schema), name).is_err()
+        matches!(
+            self.check_engine_read(Some(schema), name),
+            Err(refusal) if !matches!(refusal, Refusal::MaskedColumnUsed { .. })
+        )
+    }
+
+    /// The masked column `column` of the relation `table` of `schema`, as
+    /// the person writes its entry, where it is one: a column the entries
+    /// name, or one of a partition or a child table of their tables.
+    pub fn masks(&self, schema: Option<&str>, table: &str, column: &str) -> Option<String> {
+        let by_entry = self
+            .masked
+            .iter()
+            .find(|entry| entry.names(schema, table, column));
+        let by_table = || {
+            self.masked_tables
+                .iter()
+                .filter(|(own, name, _)| {
+                    same(name, table) && schema.is_none_or(|schema| same(own, schema))
+                })
+                .map(|(_, _, at)| &self.masked[*at])
+                .find(|entry| same(&entry.column, column))
+        };
+        by_entry.or_else(by_table).map(ToString::to_string)
+    }
+
+    /// Checks a column the engine says a statement reads, with the view or
+    /// the common table expression it reads it for (SQLite's authorizer):
+    /// a masked one read for one is refused, naming it. One the statement
+    /// reads itself is its check's.
+    pub fn check_column_read(
+        &self,
+        schema: Option<&str>,
+        table: &str,
+        column: &str,
+        source: Option<&str>,
+    ) -> Result<(), Refusal> {
+        match (source, self.masks(schema, table, column)) {
+            (Some(view), Some(column)) => Err(Refusal::MaskedColumnUsed {
+                column,
+                how: MaskedUse::Through(view.to_owned()),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// What the reading of a statement knows of the masked columns.
+    fn masks_known(&self) -> Masks<'_> {
+        let more = self
+            .masked_tables
+            .iter()
+            .map(|(_, name, at)| (name.clone(), &self.masked[*at]));
+        Masks::new(&self.masked, more)
     }
 
     /// Whether `schema` is a schema of the database: one the catalog lists
@@ -354,7 +498,7 @@ impl Hidden {
     /// table made since it was read) is hidden as the person's own names
     /// hide it.
     pub fn check_engine_read(&self, schema: Option<&str>, name: &str) -> Result<(), Refusal> {
-        if !self.hides_anything() {
+        if !self.guards_anything() {
             return Ok(());
         }
         if system_catalog(self.dialect, schema, name) {
@@ -376,7 +520,7 @@ impl Hidden {
     /// system catalog, or a listed relation that is hidden; a name the
     /// catalog does not list is passed over.
     pub fn check_name(&self, schema: Option<&str>, name: &str) -> Result<(), Refusal> {
-        if !self.hides_anything() {
+        if !self.guards_anything() {
             return Ok(());
         }
         if system_catalog(self.dialect, schema, name) {
@@ -405,7 +549,7 @@ impl Hidden {
     /// answer, as a common table expression's is: the engine's own check
     /// sees what it reads.
     pub fn check_statement(&self, read: &Read) -> Result<(), Refusal> {
-        if !self.hides_anything() {
+        if !self.guards_anything() {
             return Ok(());
         }
         self.check_settings()?;
@@ -451,7 +595,7 @@ impl Hidden {
             }
             Dialect::MySql | Dialect::Sqlite => {}
         }
-        Ok(())
+        masked::check(read, &self.masks_known())
     }
 
     /// The listed relation `name` of `schema` that is hidden, or else any
@@ -465,7 +609,9 @@ impl Hidden {
         let first = matching.clone().next()?;
         Some(
             matching
+                .clone()
                 .find(|listed| listed.why.is_some())
+                .or_else(|| matching.find(|listed| listed.masks.is_some()))
                 .unwrap_or(first),
         )
     }
@@ -491,10 +637,17 @@ fn missing(dialect: Dialect, catalog: &Catalog, tables: &Tables) -> Vec<String> 
         .collect()
 }
 
-/// Refuses `found` where it is hidden, by the names the catalog writes.
+/// Refuses `found` where it is hidden, by the names the catalog writes,
+/// or where it is a view that reads a masked column.
 fn refused(found: &Listed) -> Result<(), Refusal> {
     match &found.why {
-        None => Ok(()),
+        None => match &found.masks {
+            Some(column) => Err(Refusal::MaskedColumnUsed {
+                column: column.clone(),
+                how: MaskedUse::Through(found.name.clone()),
+            }),
+            None => Ok(()),
+        },
         Some(Why::Named) => Err(Refusal::TableHidden {
             name: found.name.clone(),
             through: None,
@@ -504,6 +657,106 @@ fn refused(found: &Listed) -> Result<(), Refusal> {
             through: Some(found.name.clone()),
         }),
     }
+}
+
+/// The tables that have a masked column, by schema and name, with an
+/// entry's place in `masked`, once for each entry: each relation an entry
+/// names, a view too, and the partitions and the child tables of those
+/// tables, at any depth.
+fn masked_tables(
+    catalog: &Catalog,
+    depends: &[Vec<usize>],
+    masked: &[ColumnName],
+) -> Vec<(String, String, usize)> {
+    let mut found = Vec::new();
+    for (entry_at, entry) in masked.iter().enumerate() {
+        let mut has: Vec<bool> = catalog
+            .relations
+            .iter()
+            .map(|relation| entry.names_table(Some(&relation.schema), &relation.name))
+            .collect();
+        // A child's parent is what it depends on: taken from it until
+        // nothing more is, which a cycle cannot keep from ending.
+        loop {
+            let mut more = false;
+            for at in 0..catalog.relations.len() {
+                if !has[at] && !catalog.relations[at].view && depends[at].iter().any(|&on| has[on])
+                {
+                    has[at] = true;
+                    more = true;
+                }
+            }
+            if !more {
+                break;
+            }
+        }
+        for (relation, _) in catalog.relations.iter().zip(has).filter(|(_, has)| *has) {
+            found.push((relation.schema.clone(), relation.name.clone(), entry_at));
+        }
+    }
+    found
+}
+
+/// For each relation, the place in `masked` of the masked column it reads,
+/// where it is a view that reads one: by what the catalog says it reads
+/// column by column, or, where it does not say, by a table with a masked
+/// column that it reads. A view over such a view reads it too.
+fn masked_views(
+    catalog: &Catalog,
+    depends: &[Vec<usize>],
+    masked: &[ColumnName],
+    tables: &[(String, String, usize)],
+) -> Vec<Option<usize>> {
+    // An entry of the table `name` of `schema`, of the column `column`
+    // where one is given.
+    let entry_of = |schema: &str, name: &str, column: Option<&str>| {
+        tables
+            .iter()
+            .filter(|(own, table, _)| same(own, schema) && same(table, name))
+            .map(|(_, _, at)| *at)
+            .find(|&at| column.is_none_or(|column| same(&masked[at].column, column)))
+    };
+    let mut found: Vec<Option<usize>> = catalog
+        .relations
+        .iter()
+        .enumerate()
+        .map(|(at, relation)| {
+            if !relation.view {
+                return None;
+            }
+            match &catalog.column_reads {
+                Some(reads) => reads
+                    .iter()
+                    .filter(|read| {
+                        same(&read.schema, &relation.schema) && same(&read.view, &relation.name)
+                    })
+                    .find_map(|read| {
+                        let column = (read.column != "*").then_some(read.column.as_str());
+                        entry_of(&read.table_schema, &read.table, column)
+                    }),
+                None => depends[at].iter().find_map(|&on| {
+                    let on = &catalog.relations[on];
+                    entry_of(&on.schema, &on.name, None)
+                }),
+            }
+        })
+        .collect();
+    loop {
+        let mut more = false;
+        for at in 0..catalog.relations.len() {
+            if found[at].is_some() || !catalog.relations[at].view {
+                continue;
+            }
+            if let Some(entry) = depends[at].iter().find_map(|&on| found[on]) {
+                found[at] = Some(entry);
+                more = true;
+            }
+        }
+        if !more {
+            break;
+        }
+    }
+    found
 }
 
 /// Whether the relation at `at` is hidden, and why, worked out once: by
@@ -659,6 +912,25 @@ struct Names {
     /// Every name with a dot before it: a column, or on PostgreSQL a
     /// function called as a column of a row.
     after_dot: Vec<String>,
+    /// Each table's place, every time one is read, by where its pieces
+    /// are: for the masked columns, whose reading needs to know which
+    /// words name a table.
+    places: Vec<Place>,
+}
+
+/// A relation's name in a table's place, by where it stands among the
+/// pieces it was read from.
+#[derive(Debug, PartialEq, Eq)]
+struct Place {
+    name: Name,
+    /// The pieces of the name, its schema's with it.
+    from: usize,
+    to: usize,
+    /// The piece of its alias, where it is given one.
+    alias: Option<usize>,
+    /// Whether a list of column names follows the alias, which gives the
+    /// relation's columns other names: `orders AS o(a, b, c)`.
+    renames: bool,
 }
 
 /// A token as [`names`] reads it.
@@ -673,6 +945,10 @@ enum Piece {
     Open,
     Close,
     Comma,
+    /// `*`, which selects or multiplies.
+    Star,
+    /// A number, as written: an `ORDER BY` of one sorts by a place.
+    Number(String),
     Other,
 }
 
@@ -728,7 +1004,11 @@ const JOINS: &[&str] = &["JOIN", "STRAIGHT_JOIN"];
 /// tree is not walked). It errs toward finding: a name that is a column's
 /// in a table's place is checked as a table's too.
 fn names(dialect: Dialect, text: &str) -> Names {
-    let pieces = pieces(dialect, text);
+    read_names(&pieces(dialect, text))
+}
+
+/// [`names`], of the pieces already read.
+fn read_names(pieces: &[Piece]) -> Names {
     let mut found = Names::default();
     // Depth of parentheses, and the depths at which a `FROM`'s list is
     // being read.
@@ -755,7 +1035,7 @@ fn names(dialect: Dialect, text: &str) -> Names {
                 });
                 if table_goes && !query {
                     from_at.push(depth);
-                    table_place(&pieces, at + 1, &mut found);
+                    table_place(pieces, at + 1, &mut found);
                 }
             }
             Piece::Close => {
@@ -763,20 +1043,20 @@ fn names(dialect: Dialect, text: &str) -> Names {
                 depth = depth.saturating_sub(1);
             }
             Piece::Comma if from_at.last() == Some(&depth) => {
-                table_place(&pieces, at + 1, &mut found);
+                table_place(pieces, at + 1, &mut found);
             }
             Piece::Word { .. } if piece.is("FROM") => {
                 from_at.retain(|&level| level < depth);
                 from_at.push(depth);
-                table_place(&pieces, at + 1, &mut found);
+                table_place(pieces, at + 1, &mut found);
             }
             Piece::Word { .. } if JOINS.iter().any(|join| piece.is(join)) => {
-                table_place(&pieces, at + 1, &mut found);
+                table_place(pieces, at + 1, &mut found);
             }
             Piece::Word { .. } if ENDS_FROM.iter().any(|end| piece.is(end)) => {
                 from_at.retain(|&level| level < depth);
             }
-            Piece::Word { .. } if piece.is("WITH") => defined(&pieces, at + 1, &mut found),
+            Piece::Word { .. } if piece.is("WITH") => defined(pieces, at + 1, &mut found),
             _ => {}
         }
         table_goes = places_table || (table_goes && matches!(piece, Piece::Open));
@@ -790,7 +1070,7 @@ fn names(dialect: Dialect, text: &str) -> Names {
             found.after_dot.push(name.to_owned());
         }
         // A word with a parenthesis after it is a call, wherever it is.
-        if let Some((name, after)) = dotted(&pieces, at, Piece::word)
+        if let Some((name, after)) = dotted(pieces, at, Piece::word)
             && pieces.get(after) == Some(&Piece::Open)
             && !found.functions.contains(&name)
         {
@@ -821,6 +1101,22 @@ fn table_place(pieces: &[Piece], mut at: usize, found: &mut Names) {
     if pieces.get(after) == Some(&Piece::Open) {
         return;
     }
+    // Its alias: after `AS` any word, without it a name only.
+    let (alias, next) = match pieces.get(after) {
+        Some(piece) if piece.is("AS") => match pieces.get(after + 1).and_then(Piece::word) {
+            Some(_) => (Some(after + 1), after + 2),
+            None => (None, after + 1),
+        },
+        Some(piece) if piece.name().is_some() => (Some(after), after + 1),
+        _ => (None, after),
+    };
+    found.places.push(Place {
+        name: name.clone(),
+        from: at,
+        to: after,
+        alias,
+        renames: alias.is_some() && pieces.get(next) == Some(&Piece::Open),
+    });
     if !found.relations.contains(&name) {
         found.relations.push(name);
     }
@@ -931,8 +1227,9 @@ fn pieces(dialect: Dialect, text: &str) -> Vec<Piece> {
                     "," => Piece::Comma,
                     _ => Piece::Other,
                 },
+                TokenKind::Operator if written == "*" => Piece::Star,
+                TokenKind::Number => Piece::Number(written.to_owned()),
                 TokenKind::String
-                | TokenKind::Number
                 | TokenKind::ExecutableComment
                 | TokenKind::Operator
                 | TokenKind::Semicolon => Piece::Other,
@@ -1000,6 +1297,7 @@ mod tests {
                 .collect(),
             opaque: false,
             part: false,
+            view: false,
         }
     }
 
@@ -1021,8 +1319,7 @@ mod tests {
                 relation("public", "events_2026", &[("public", "events")]),
             ],
             routines: vec![("public".into(), "names".into())],
-            unnamed_calls: Vec::new(),
-            table_functions: Vec::new(),
+            ..Catalog::default()
         }
     }
 
@@ -1475,17 +1772,17 @@ mod tests {
         ]));
         assert_eq!(
             renamed.check_settings(),
-            Err(Refusal::SettingsNeedALook(vec![
-                "clients".into(),
-                "sales.orders".into()
-            ]))
+            Err(Refusal::SettingsNeedALook {
+                tables: vec!["clients".into(), "sales.orders".into()],
+                columns: Vec::new(),
+            })
         );
         assert_eq!(
             statement(&renamed, "SELECT * FROM books"),
-            Err(Refusal::SettingsNeedALook(vec![
-                "clients".into(),
-                "sales.orders".into()
-            ]))
+            Err(Refusal::SettingsNeedALook {
+                tables: vec!["clients".into(), "sales.orders".into()],
+                columns: Vec::new(),
+            })
         );
         // A name in another case is the table's; a system catalog's is
         // hidden with anything.
@@ -1549,5 +1846,191 @@ mod tests {
         }
         // An empty "Only" hides every table.
         assert!(Tables::Only(Vec::new()).hides_anything());
+    }
+
+    /// The Bookshop with masked columns: `orders` and its partition, a
+    /// view that reads `orders.email`, one that reads only its `id`, one
+    /// over the first, and the columns of `orders`.
+    fn masking(masked: &[&str], column_reads: Option<Vec<ColumnRead>>) -> Hidden {
+        let view = |name: &str, on: &[(&str, &str)]| Relation {
+            view: true,
+            ..relation("public", name, on)
+        };
+        let catalog = Catalog {
+            relations: vec![
+                relation("public", "books", &[]),
+                relation("public", "orders", &[]),
+                Relation {
+                    part: true,
+                    ..relation("public", "orders_2026", &[("public", "orders")])
+                },
+                view("recent_orders", &[("public", "orders")]),
+                view("order_ids", &[("public", "orders")]),
+                view("recent_mail", &[("public", "recent_orders")]),
+            ],
+            routines: vec![("public".into(), "names".into())],
+            columns: ["id", "email", "phone"]
+                .iter()
+                .map(|column| ("public".into(), "orders".into(), (*column).into()))
+                .chain([("public".into(), "order_ids".into(), "id".into())])
+                .collect(),
+            column_reads,
+            ..Catalog::default()
+        };
+        let masked: Vec<ColumnName> = masked.iter().map(|entry| entry.parse().unwrap()).collect();
+        Hidden::masking(Dialect::Postgres, &catalog, &Tables::All, &masked)
+    }
+
+    /// What PostgreSQL says the views read, column by column.
+    fn reads() -> Option<Vec<ColumnRead>> {
+        let read = |view: &str, table: &str, column: &str| ColumnRead {
+            schema: "public".into(),
+            view: view.into(),
+            table_schema: "public".into(),
+            table: table.into(),
+            column: column.into(),
+        };
+        Some(vec![
+            read("recent_orders", "orders", "email"),
+            read("recent_orders", "orders", "id"),
+            read("order_ids", "orders", "id"),
+        ])
+    }
+
+    fn masked_used(column: &str, how: MaskedUse) -> Result<(), Refusal> {
+        Err(Refusal::MaskedColumnUsed {
+            column: column.into(),
+            how,
+        })
+    }
+
+    #[test]
+    fn a_view_that_reads_a_masked_column_is_refused() {
+        let hidden = masking(&["orders.email"], reads());
+        let through = |view: &str| masked_used("orders.email", MaskedUse::Through(view.into()));
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM recent_orders"),
+            through("recent_orders")
+        );
+        // A view over it reads it too; one that reads another column does
+        // not.
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM recent_mail"),
+            through("recent_mail")
+        );
+        assert_eq!(statement(&hidden, "SELECT * FROM order_ids"), Ok(()));
+        // As the engine names it, and not hidden by it.
+        assert_eq!(
+            hidden.check_engine_read(Some("public"), "recent_orders"),
+            through("recent_orders")
+        );
+        assert!(!hidden.hides("public", "recent_orders"));
+        // Where the catalog does not say what a view reads column by
+        // column, a view over the table reads it.
+        let unsaid = masking(&["orders.email"], None);
+        assert_eq!(
+            statement(&unsaid, "SELECT * FROM order_ids"),
+            through("order_ids")
+        );
+        // A whole row a view reads is every column of it.
+        let mut rows = reads().unwrap();
+        rows.push(ColumnRead {
+            column: "*".into(),
+            ..rows[2].clone()
+        });
+        let whole = masking(&["orders.email"], Some(rows));
+        assert_eq!(
+            statement(&whole, "SELECT * FROM order_ids"),
+            through("order_ids")
+        );
+    }
+
+    #[test]
+    fn a_masked_column_is_masked_in_the_partitions_of_its_table() {
+        let hidden = masking(&["orders.email"], reads());
+        assert_eq!(
+            hidden.masks(Some("public"), "orders_2026", "email"),
+            Some("orders.email".into())
+        );
+        assert_eq!(hidden.masks(Some("public"), "orders_2026", "id"), None);
+        assert_eq!(
+            hidden.masks(Some("public"), "ORDERS", "Email"),
+            Some("orders.email".into())
+        );
+        // So a star over the partition is a star over the table.
+        assert_eq!(
+            statement(&hidden, "SELECT x.id FROM (SELECT * FROM orders_2026) x"),
+            masked_used("orders.email", MaskedUse::Star)
+        );
+        // The engine's read of it for a view, or for a common table
+        // expression, is refused; one the statement makes is its check's.
+        assert_eq!(
+            hidden.check_column_read(Some("main"), "orders", "email", Some("w")),
+            masked_used("orders.email", MaskedUse::Through("w".into()))
+        );
+        assert_eq!(
+            hidden.check_column_read(Some("main"), "orders", "email", None),
+            Ok(())
+        );
+        assert_eq!(
+            hidden.check_column_read(Some("main"), "orders", "id", Some("w")),
+            Ok(())
+        );
+        // A view's own column, masked: the view reads, as a table with a
+        // masked column does.
+        let view = masking(&["order_ids.id"], reads());
+        assert_eq!(view.check_settings(), Ok(()));
+        assert_eq!(
+            view.masks(Some("public"), "order_ids", "id"),
+            Some("order_ids.id".into())
+        );
+        assert_eq!(statement(&view, "SELECT * FROM order_ids"), Ok(()));
+        assert_eq!(
+            statement(&view, "SELECT x.n FROM (SELECT * FROM order_ids) x"),
+            masked_used("order_ids.id", MaskedUse::Star)
+        );
+    }
+
+    #[test]
+    fn a_masked_column_renamed_or_dropped_stops_agents_on_the_connection() {
+        let gone = masking(
+            &["orders.email", "orders.mail", "sales.orders.email"],
+            reads(),
+        );
+        let look = Refusal::SettingsNeedALook {
+            tables: Vec::new(),
+            columns: vec!["orders.mail".into(), "sales.orders.email".into()],
+        };
+        assert_eq!(gone.check_settings(), Err(look.clone()));
+        assert_eq!(statement(&gone, "SELECT * FROM books"), Err(look.clone()));
+        assert_eq!(masking(&["ORDERS.EMAIL"], reads()).check_settings(), Ok(()));
+        // The sentence names them.
+        let said = look.to_string();
+        assert!(
+            said.contains("they mask orders.mail, sales.orders.email"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_connection_that_masks_a_column_closes_the_catalogs_and_the_users_functions() {
+        let hidden = masking(&["orders.email"], reads());
+        assert!(hidden.guards_anything());
+        assert!(!hidden.hides_anything());
+        assert_eq!(
+            statement(&hidden, "SELECT relname FROM pg_catalog.pg_class"),
+            Err(Refusal::SystemCatalog)
+        );
+        assert_eq!(
+            statement(&hidden, "SELECT names()"),
+            Err(Refusal::FunctionNotAllowed("names".into()))
+        );
+        // Masking nothing, they are open.
+        let open = masking(&[], reads());
+        assert!(!open.guards_anything());
+        assert_eq!(
+            statement(&open, "SELECT relname FROM pg_catalog.pg_class"),
+            Ok(())
+        );
     }
 }

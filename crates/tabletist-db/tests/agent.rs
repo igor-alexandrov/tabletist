@@ -470,7 +470,10 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
     let error = hiding(connection, &gone, "SELECT count(*) FROM books")
         .await
         .unwrap_err();
-    let look = Refusal::SettingsNeedALook(vec!["clients".into()]);
+    let look = Refusal::SettingsNeedALook {
+        tables: vec!["clients".into()],
+        columns: Vec::new(),
+    };
     assert_eq!(error, Error::Agent(look.clone()), "{on}");
     let hidden = connection.agent_hidden(&gone).await.unwrap();
     assert_eq!(hidden.check_settings(), Err(look), "{on}");

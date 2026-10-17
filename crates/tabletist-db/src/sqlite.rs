@@ -1243,6 +1243,7 @@ fn agents_catalog(connection: &rusqlite::Connection, fences: &Fences) -> Result<
                 depends_on: Vec::new(),
                 opaque: false,
                 part,
+                view,
             });
         }
         if let (Some(owner), Some(last)) = (owner, relations.last_mut()) {
