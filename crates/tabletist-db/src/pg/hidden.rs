@@ -300,9 +300,11 @@ fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
             })
     };
     // The first masked column a node passes on in its own output, which
-    // is what a subquery's plan answers, if it passes one. A scan below
-    // it may output every column of its table.
-    let passes = |node: &serde_json::Value| {
+    // is what a subquery's plan answers, if it passes one: a column of a
+    // relation, or of a subquery that passes one itself. A scan below it
+    // may output every column of its table.
+    let passes = |node: &serde_json::Value,
+                  carriers: &std::collections::HashMap<String, String>| {
         node.get("Output")
             .and_then(serde_json::Value::as_array)
             .into_iter()
@@ -311,15 +313,28 @@ fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
             .find_map(|text| {
                 let (names, bare) = crate::agent::column_references(Dialect::Postgres, text);
                 bare.then(|| {
-                    names
-                        .iter()
-                        .find_map(|(qualifier, column)| masked(qualifier.as_deref(), column))
+                    names.iter().find_map(|(qualifier, column)| {
+                        masked(qualifier.as_deref(), column).or_else(|| {
+                            qualifier
+                                .as_ref()
+                                .and_then(|qualifier| carriers.get(&qualifier.to_lowercase()))
+                                .cloned()
+                        })
+                    })
                 })
                 .flatten()
             })
     };
+    // Found until no more are: a subquery over one that passes a masked
+    // column on passes it too, at any depth.
     let mut carriers: std::collections::HashMap<String, String> = Default::default();
-    carrier_scans(plan, plan, &passes, &mut carriers);
+    loop {
+        let known = carriers.clone();
+        carrier_scans(plan, plan, &|node| passes(node, &known), &mut carriers);
+        if carriers.len() == known.len() {
+            break;
+        }
+    }
     let mut found = None;
     expressions(plan, &mut |key, text| {
         if found.is_some() {
@@ -823,6 +838,14 @@ mod tests {
             "Plans": [scan("orders", "o", output(&["o.email"]))]
         });
         assert_eq!(planned(carried), refused());
+        // Through a subquery over one that passes it, at any depth.
+        let nested = serde_json::json!({
+            "Node Type": "Subquery Scan", "Alias": "b", "Output": ["b.x"],
+            "Filter": "(b.x ~~ 'a%'::text)",
+            "Plans": [{ "Node Type": "Subquery Scan", "Alias": "a", "Output": ["a.x"],
+                "Plans": [scan("orders", "o", output(&["o.email", "o.id"]))] }]
+        });
+        assert_eq!(planned(nested), refused());
         let counted = serde_json::json!({
             "Node Type": "Hash Join", "Output": ["o.id", "o.email"],
             "Hash Cond": "(s.customer_id = o.customer_id)",
