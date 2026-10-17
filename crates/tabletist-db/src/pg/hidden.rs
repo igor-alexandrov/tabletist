@@ -273,7 +273,11 @@ fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
     }
     let mut scans: std::collections::HashMap<String, Vec<(String, String)>> = Default::default();
     relation_scans(plan, &mut scans);
-    let single = match scans.values().flatten().collect::<Vec<_>>().as_slice() {
+    // A scan is kept under its alias and, where that ends in `_n`, under
+    // what is before it: one relation, for all that.
+    let relations: std::collections::BTreeSet<&(String, String)> =
+        scans.values().flatten().collect();
+    let single = match relations.into_iter().collect::<Vec<_>>().as_slice() {
         [only] => Some((*only).clone()),
         _ => None,
     };
@@ -846,7 +850,14 @@ mod tests {
             ]
         });
         assert_eq!(planned(plain), Ok(()));
-        // A plan of one relation writes its columns without the alias.
+        // A plan of one relation writes its columns without the alias, its
+        // name ending in `_n` or not.
+        let lone = scan(
+            "orders_2026",
+            "orders_2026",
+            serde_json::json!({ "Filter": "(email ~~ 'a%'::text)" }),
+        );
+        assert_eq!(planned(lone), refused());
         assert_eq!(
             planned(scan("orders", "orders", output(&["id", "email"]))),
             Ok(())
