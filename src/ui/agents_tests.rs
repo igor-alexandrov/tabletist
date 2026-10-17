@@ -1377,6 +1377,23 @@ fn two_windows_of_a_connection_are_known_together_and_another_database_is_not() 
     loaded(&mut harness, second, &["books"]);
     let known = harness.app.loaded_tables(&conn).unwrap();
     assert_eq!(known.has(&"orders".parse().unwrap()), Some(true));
+    assert!(!known.schemas_cut);
+    // One window's list of schemas cut by the catalog: a schema not in it
+    // is not known.
+    harness
+        .app
+        .workspace_mut(second)
+        .unwrap()
+        .tree
+        .schemas
+        .value = Some(
+        (0..tabletist_db::MAX_LISTED)
+            .map(|at| format!("s{at:05}"))
+            .collect(),
+    );
+    let known = harness.app.loaded_tables(&conn).unwrap();
+    assert!(known.schemas_cut);
+    assert_eq!(known.has(&"zz_sales.orders".parse().unwrap()), None);
     // A window switched to another database is not this connection's.
     harness.app.workspace_mut(first).unwrap().spec.database = "other".into();
     harness.app.workspace_mut(second).unwrap().spec.database = "other".into();

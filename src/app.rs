@@ -333,6 +333,9 @@ impl App {
             let tables = found.get_or_insert_with(Default::default);
             tables.driver = Some(driver);
             let schemas = workspace.tree.schemas.value.clone().unwrap_or_default();
+            // Cut by the catalog, the system's counted: what it left out
+            // is not known.
+            tables.schemas_cut |= schemas.len() >= tabletist_db::MAX_LISTED as usize;
             if tables.home.is_none() {
                 tables.home = crate::model::first_schema(&schemas, &workspace.spec.database);
             }

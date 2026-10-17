@@ -1114,6 +1114,10 @@ pub struct LoadedTables {
     /// Every schema of the database the windows list, the system's left
     /// out.
     pub schemas: Vec<String>,
+    /// Whether a window's list of schemas was cut at
+    /// [`tabletist_db::MAX_LISTED`], counted before the system's are left
+    /// out: then a schema not in `schemas` may be the database's still.
+    pub schemas_cut: bool,
     /// Each loaded schema with its tables' and views' names.
     pub loaded: Vec<(String, Vec<String>)>,
 }
@@ -1237,7 +1241,7 @@ impl LoadedTables {
                 Some((_, names)) => found(names),
                 None => {
                     let listed = !self.schemas.is_empty()
-                        && whole(self.schemas.len())
+                        && !self.schemas_cut
                         && !self.schemas.iter().any(|known| same(known, schema));
                     listed.then_some(false)
                 }
@@ -1247,7 +1251,7 @@ impl LoadedTables {
                     return Some(true);
                 }
                 let all = !self.schemas.is_empty()
-                    && whole(self.schemas.len())
+                    && !self.schemas_cut
                     && self.schemas.iter().all(|schema| {
                         self.loaded
                             .iter()
@@ -5591,6 +5595,7 @@ mod tests {
             driver: Some(Driver::Postgres),
             home: Some("public".into()),
             schemas: vec!["public".into(), "sales".into(), "audit".into()],
+            schemas_cut: false,
             loaded: vec![
                 (
                     "public".into(),
@@ -5644,14 +5649,25 @@ mod tests {
         assert_eq!(loaded.has(&name("old_orders")), None);
         let whole = LoadedTables {
             schemas: vec!["public".into(), "sales".into()],
-            ..loaded
+            ..loaded.clone()
         };
         assert_eq!(whole.has(&name("old_orders")), Some(false));
+        // A list of schemas the catalog cut, though the system's taken out
+        // of it leave it shorter: a schema not in it, or a name without
+        // one, is not known.
+        let schemas_cut = LoadedTables {
+            schemas_cut: true,
+            ..whole
+        };
+        assert_eq!(schemas_cut.has(&name("zz_sales.orders")), None);
+        assert_eq!(schemas_cut.has(&name("old_orders")), None);
+        assert_eq!(schemas_cut.has(&name("sales.old_orders")), Some(false));
         // SQLite's own tables are the system's.
         let sqlite = LoadedTables {
             driver: Some(Driver::Sqlite),
             home: Some("main".into()),
             schemas: vec!["main".into()],
+            schemas_cut: false,
             loaded: vec![("main".into(), vec!["books".into()])],
         };
         assert_eq!(sqlite.has(&name("sqlite_stat1")), None);
