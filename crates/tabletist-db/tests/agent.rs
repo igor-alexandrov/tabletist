@@ -766,6 +766,28 @@ mod sqlite {
     async fn a_masked_columns_values_are_never_answered_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         a_masked_columns_values_are_never_answered(&connection, "sqlite").await;
+        // A view's column an entry names is masked, under the view's name
+        // or another, by what the view reads for it.
+        for sql in [
+            "SELECT id, email FROM recent_orders LIMIT 1",
+            "SELECT email AS e, id FROM recent_orders LIMIT 1",
+        ] {
+            let found = masking(&connection, &["recent_orders.email"], sql)
+                .await
+                .map(|answer| {
+                    answer.masked.contains(&true)
+                        && answer.rows[0].contains(&Value::Text(agent::MASKED.into()))
+                });
+            assert_eq!(found, Ok(true), "{sql}");
+        }
+        let found = masking(
+            &connection,
+            &["recent_orders.email"],
+            "SELECT id, email FROM recent_orders LIMIT 1",
+        )
+        .await
+        .map(|answer| answer.masked);
+        assert_eq!(found, Ok(vec![false, true]));
         // SQLite joins on a string where a name stands, without asking its
         // authorizer: refused as the name.
         let found = masking(

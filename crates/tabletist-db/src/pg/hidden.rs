@@ -433,12 +433,41 @@ fn subplan<'a>(plan: &'a serde_json::Value, name: &str) -> Option<&'a serde_json
     }
 }
 
+/// The fields of a plan's node that hold names or words, and no
+/// expression: a table named `city` with a masked column `city` is no use
+/// of it by its scan's `Relation Name`. Any other field's text is read as
+/// an expression, so a field a later server adds is read too.
+const NAMED: &[&str] = &[
+    "Node Type",
+    "Relation Name",
+    "Schema",
+    "Alias",
+    "Index Name",
+    "Function Name",
+    "CTE Name",
+    "Subplan Name",
+    "Parent Relationship",
+    "Join Type",
+    "Strategy",
+    "Partial Mode",
+    "Scan Direction",
+    "Sort Method",
+    "Sort Space Type",
+    "Command",
+    "Operation",
+    "Conflict Resolution",
+    "Conflict Arbiter Indexes",
+];
+
 /// Each expression the plan writes, with the key of the node's field it is
 /// in: a field's text, or each of a list's (`Output`, `Sort Key`).
 fn expressions(plan: &serde_json::Value, each: &mut impl FnMut(&str, &str)) {
     match plan {
         serde_json::Value::Object(node) => {
             for (key, value) in node {
+                if NAMED.contains(&key.as_str()) {
+                    continue;
+                }
                 match value {
                     serde_json::Value::String(text) => each(key, text),
                     serde_json::Value::Array(values) => {
@@ -835,6 +864,37 @@ mod tests {
             ] }]
         });
         assert_eq!(planned(parts), refused());
+        // A table with its column's name is no use of the column.
+        let city = || {
+            let catalog = Catalog {
+                relations: vec![Relation {
+                    schema: "public".into(),
+                    name: "city".into(),
+                    depends_on: Vec::new(),
+                    opaque: false,
+                    part: false,
+                    view: false,
+                }],
+                columns: vec![("public".into(), "city".into(), "city".into())],
+                ..Catalog::default()
+            };
+            let masked = ["city.city".parse().unwrap()];
+            Hidden::masking(Dialect::Postgres, &catalog, &Tables::All, &masked)
+        };
+        let ids = scan("city", "city", output(&["city_id"]));
+        assert_eq!(planned_masks(&ids, &city()), Ok(()));
+        let filtered = scan(
+            "city",
+            "city",
+            serde_json::json!({ "Filter": "(city ~~ 'a%'::text)" }),
+        );
+        assert_eq!(
+            planned_masks(&filtered, &city()),
+            Err(Refusal::MaskedColumnUsed {
+                column: "city.city".into(),
+                how: crate::agent::MaskedUse::Planned,
+            })
+        );
         // Another table's column of the same name is its own.
         let customers = scan(
             "customers",

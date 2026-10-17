@@ -1148,9 +1148,14 @@ otherwise than above:
 - **An entry that names a partition or a child table** masks the column
   of its parent, and so of the parent's other parts: a read of the parent
   reads the part's rows (found by the review).
-- **Left, and said:** on SQLite a column of a view that an entry names is
-  read as `NULL` by the fence, but SQLite tells the view's table as where
-  it comes from, so it answers `NULL`, not `•••`, and is not marked.
+- **A view's column an entry names, on SQLite.** SQLite tells where a
+  result column comes from through the view, as its table's column, so the
+  view's masked column is found by asking SQLite where it comes from
+  selected alone, and a result column from there is masked (found by the
+  review).
+- **PostgreSQL's plan** is read in its expressions' fields alone, not in
+  those that name a relation, an alias or an index: a table named like
+  its masked column (`city.city`) is no use of the column.
 
 **The rule.** It applies to any statement that reads a table with a masked
 column.

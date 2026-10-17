@@ -158,9 +158,8 @@ struct Shared {
     refused: Mutex<Option<Refusal>>,
     /// What the agent's connection hides, while its statement runs.
     hidden: Mutex<Option<Arc<Hidden>>>,
-    /// The tables read, by schema and name, with the column read (empty
-    /// for none), while they are recorded.
-    reads: Mutex<Option<Vec<(String, String, String)>>>,
+    /// The tables read, while they are recorded.
+    reads: Mutex<Option<Vec<TableRead>>>,
 }
 
 impl Fences {
@@ -205,9 +204,12 @@ impl Fences {
             && let Some(table) = action.first
             && let Some(reads) = self.reads().as_mut()
         {
-            let schema = action.database.unwrap_or("main").to_owned();
-            let column = action.second.unwrap_or_default().to_owned();
-            reads.push((schema, table.to_owned(), column));
+            reads.push(TableRead {
+                schema: action.database.unwrap_or("main").to_owned(),
+                table: table.to_owned(),
+                column: action.second.unwrap_or_default().to_owned(),
+                source: action.source.map(str::to_owned),
+            });
         }
         let mut answer = authorize(fence, action);
         let mut hidden_read = None;
@@ -275,21 +277,18 @@ impl Fences {
         self.0.hidden.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The tables SQLite reads as it prepares what `prepare` prepares, by
-    /// schema and name, each with a column it reads of it (empty for none):
-    /// for a view, every table it reads, through the views it reads too.
-    /// `None` where SQLite could not prepare it.
-    pub(super) fn reads_of(
-        &self,
-        prepare: impl FnOnce() -> bool,
-    ) -> Option<Vec<(String, String, String)>> {
+    /// The tables SQLite reads as it prepares what `prepare` prepares, each
+    /// with a column it reads of it: for a view, every table it reads,
+    /// through the views it reads too. `None` where SQLite could not
+    /// prepare it.
+    pub(super) fn reads_of(&self, prepare: impl FnOnce() -> bool) -> Option<Vec<TableRead>> {
         *self.reads() = Some(Vec::new());
         let prepared = prepare();
         let reads = self.reads().take();
         prepared.then_some(reads).flatten()
     }
 
-    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Vec<(String, String, String)>>> {
+    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Vec<TableRead>>> {
         self.0.reads.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -320,6 +319,18 @@ fn through_view(refusal: Refusal, source: Option<&str>) -> Refusal {
         },
         (refusal, _) => refusal,
     }
+}
+
+/// A read SQLite asked its authorizer about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TableRead {
+    pub schema: String,
+    pub table: String,
+    /// Empty for a read of no column (`count(*)`).
+    pub column: String,
+    /// The view, trigger or common table expression it is read for, where
+    /// it is not the statement's own.
+    pub source: Option<String>,
 }
 
 /// Lets go of what is hidden when dropped, on every path.

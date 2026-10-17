@@ -1180,27 +1180,12 @@ impl Adapter for Conn {
                 // Which result columns are a masked column's, by the table
                 // column each reads: told before the fence goes up, which
                 // reads a masked column as `NULL` and so leaves it none.
-                let columns = match hidden.as_deref() {
+                let (columns, masked_columns) = match hidden.as_deref() {
                     Some(hidden) if hidden.masks_anything() => {
-                        tabletist_sqlite_ffi::result_columns(connection, read.text())
-                            .map_err(map_error)?
+                        masked_result_columns(connection, &fences, hidden, read.text())?
                     }
-                    _ => Vec::new(),
+                    _ => (Vec::new(), Vec::new()),
                 };
-                let masked_columns: Vec<bool> = columns
-                    .iter()
-                    .map(|column| {
-                        column.origin.as_ref().is_some_and(|origin| {
-                            let schema = Some(origin.database.as_str());
-                            let hidden = hidden.as_deref();
-                            hidden.is_some_and(|hidden| {
-                                hidden
-                                    .masks(schema, &origin.table, &origin.column)
-                                    .is_some()
-                            })
-                        })
-                    })
-                    .collect();
                 let _hiding = fences.hide(hidden);
                 let sent = Sent {
                     params: &params,
@@ -1239,6 +1224,58 @@ impl Adapter for Conn {
         guard.disarm();
         outcome
     }
+}
+
+/// The result columns of `text`, read before the fence goes up, and which
+/// of them are a masked column's. SQLite tells where a result column comes
+/// from through a view, as the view's table's column: one is a masked
+/// column's where that is one, or where it is what a masked column of a
+/// view the statement reads comes from, which the view may give under its
+/// own name.
+fn masked_result_columns(
+    connection: &rusqlite::Connection,
+    fences: &Fences,
+    hidden: &Hidden,
+    text: &str,
+) -> Result<(Vec<tabletist_sqlite_ffi::ResultColumn>, Vec<bool>)> {
+    let mut columns = Ok(Vec::new());
+    let reads = fences
+        .reads_of(|| {
+            columns = tabletist_sqlite_ffi::result_columns(connection, text);
+            columns.is_ok()
+        })
+        .unwrap_or_default();
+    let columns = columns.map_err(map_error)?;
+    let masks = |schema: &str, table: &str, column: &str| {
+        hidden.masks(Some(schema), table, column).is_some()
+    };
+    // Where each masked column of a view the statement reads itself comes
+    // from: a table's column, as SQLite tells it of the view's column
+    // selected alone.
+    let quoted = |part: &str| format!("\"{}\"", part.replace('"', "\"\""));
+    let mut behind: Vec<tabletist_sqlite_ffi::Origin> = Vec::new();
+    for read in reads
+        .iter()
+        .filter(|read| read.source.is_none() && masks(&read.schema, &read.table, &read.column))
+    {
+        let sql = format!(
+            "SELECT {} FROM {}.{}",
+            quoted(&read.column),
+            quoted(&read.schema),
+            quoted(&read.table)
+        );
+        let told = tabletist_sqlite_ffi::result_columns(connection, &sql).map_err(map_error)?;
+        behind.extend(told.into_iter().filter_map(|column| column.origin));
+    }
+    let masked = columns
+        .iter()
+        .map(|column| {
+            column.origin.as_ref().is_some_and(|origin| {
+                masks(&origin.database, &origin.table, &origin.column) || behind.contains(origin)
+            })
+        })
+        .collect();
+    Ok((columns, masked))
 }
 
 /// The relations of every schema of the file, its own `sqlite_` tables
@@ -1324,7 +1361,13 @@ fn agents_catalog(
         );
         match fences.reads_of(|| connection.prepare(&sql).is_ok()) {
             Some(reads) => {
-                for (schema, name, column) in reads {
+                for fence::TableRead {
+                    schema,
+                    table: name,
+                    column,
+                    ..
+                } in reads
+                {
                     if schema == relation.schema && name == relation.name {
                         continue;
                     }
