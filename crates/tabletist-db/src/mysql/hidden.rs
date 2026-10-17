@@ -15,7 +15,9 @@
 use mysql_async::prelude::Queryable;
 
 use super::query_error;
-use crate::agent::{Catalog, Hidden, Read, Refusal, Relation, Tables, named_relations, planned};
+use crate::agent::{
+    Catalog, ColumnName, Hidden, Read, Refusal, Relation, Tables, named_relations, planned,
+};
 use crate::sql::{self, TokenKind};
 use crate::{Dialect, Error, Result};
 
@@ -34,9 +36,10 @@ pub(super) async fn check(
     conn: &mut mysql_async::Conn,
     read: &Read,
     tables: &Tables,
+    masked: &[ColumnName],
 ) -> Result<Option<Error>> {
-    let catalog = catalog(conn).await?;
-    let hidden = Hidden::new(Dialect::MySql, &catalog, tables);
+    let catalog = catalog(conn, masked).await?;
+    let hidden = Hidden::masking(Dialect::MySql, &catalog, tables, masked);
     if let Err(refusal) = hidden.check_statement(read) {
         return Ok(Some(Error::Agent(refusal)));
     }
@@ -169,8 +172,14 @@ fn rewritten_reads(note: &str, hidden: &Hidden) -> std::result::Result<(), Refus
 /// The catalog as the open transaction sees it: the relations of every
 /// schema but the system's, what each view reads where the server says so
 /// (`VIEW_TABLE_USAGE`, MySQL 8.0.13 and later), and the users' routines.
-/// Where it does not say, every view is taken to read what is hidden.
-pub(super) async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
+/// Where it does not say, every view is taken to read what is hidden. With
+/// the columns of the tables `masked` names; MySQL says what a view reads
+/// table by table, not column by column, so a view over a table with a
+/// masked column is taken to read it.
+pub(super) async fn catalog(
+    conn: &mut mysql_async::Conn,
+    masked: &[ColumnName],
+) -> Result<Catalog> {
     let listed: Vec<(String, String, String)> = conn
         .query(format!(
             "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
@@ -234,6 +243,7 @@ pub(super) async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
                 name,
                 depends_on,
                 part: false,
+                view,
             }
         })
         .collect();
@@ -244,11 +254,30 @@ pub(super) async fn catalog(conn: &mut mysql_async::Conn) -> Result<Catalog> {
         ))
         .await
         .map_err(query_error)?;
+    let columns: Vec<(String, String, String)> = match masked.is_empty() {
+        true => Vec::new(),
+        false => {
+            let tables: Vec<String> = masked
+                .iter()
+                .map(|entry| entry.table.to_lowercase())
+                .collect();
+            let marks = vec!["?"; tables.len()].join(", ");
+            conn.exec(
+                format!(
+                    "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS \
+                     WHERE TABLE_SCHEMA NOT IN {SYSTEM} AND LOWER(TABLE_NAME) IN ({marks}) {WHOLE}"
+                ),
+                tables,
+            )
+            .await
+            .map_err(query_error)?
+        }
+    };
     Ok(Catalog {
         relations,
         routines,
-        unnamed_calls: Vec::new(),
-        table_functions: Vec::new(),
+        columns,
+        ..Catalog::default()
     })
 }
 
@@ -264,12 +293,12 @@ mod tests {
             depends_on: Vec::new(),
             opaque: false,
             part: false,
+            view: false,
         };
         let catalog = Catalog {
             relations: vec![relation("books"), relation("customers")],
             routines: vec![("bookshop".into(), "customer_count".into())],
-            unnamed_calls: Vec::new(),
-            table_functions: Vec::new(),
+            ..Catalog::default()
         };
         Hidden::new(Dialect::MySql, &catalog, &tables)
     }
