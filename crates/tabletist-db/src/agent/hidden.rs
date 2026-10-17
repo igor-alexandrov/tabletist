@@ -219,8 +219,7 @@ pub struct Relation {
 
 /// A column a view reads, as a catalog that says so column by column
 /// gives it: the view by its schema and name, the column by its table's
-/// schema and name and its own. A column of `*` is a whole row, which
-/// PostgreSQL keeps no column of.
+/// schema and name and its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnRead {
     pub schema: String,
@@ -253,6 +252,11 @@ pub struct Catalog {
     /// view reads column by column. `None` where it does not: a view over a
     /// table with a masked column is then taken to read it.
     pub column_reads: Option<Vec<ColumnRead>>,
+    /// Each view's definition as the server writes it back, by the view's
+    /// schema and name, where the catalog keeps no column of a whole row a
+    /// view reads (PostgreSQL's): it is read for one. Only where something
+    /// is masked.
+    pub definitions: Vec<(String, String, String)>,
 }
 
 /// A relation of the catalog, as [`Hidden`] keeps it.
@@ -343,7 +347,7 @@ impl Hidden {
             hidden_why(at, catalog, &depends, tables, &mut why);
         }
         let masked_tables = masked_tables(catalog, &depends, masked);
-        let masks = masked_views(catalog, &depends, masked, &masked_tables);
+        let masks = masked_views(dialect, catalog, &depends, masked, &masked_tables);
         let mut relations: HashMap<String, Vec<Listed>> = HashMap::new();
         for ((relation, why), masks) in catalog.relations.iter().zip(why).zip(masks) {
             relations
@@ -700,8 +704,11 @@ fn masked_tables(
 /// For each relation, the place in `masked` of the masked column it reads,
 /// where it is a view that reads one: by what the catalog says it reads
 /// column by column, or, where it does not say, by a table with a masked
-/// column that it reads. A view over such a view reads it too.
+/// column that it reads; and by a whole row of such a table that its
+/// definition reads, a partition's or a child table's too. A view over
+/// such a view reads it too.
 fn masked_views(
+    dialect: Dialect,
     catalog: &Catalog,
     depends: &[Vec<usize>],
     masked: &[ColumnName],
@@ -715,6 +722,21 @@ fn masked_views(
             .filter(|(own, table, _)| same(own, schema) && same(table, name))
             .map(|(_, _, at)| *at)
             .find(|&at| column.is_none_or(|column| same(&masked[at].column, column)))
+    };
+    let more = tables
+        .iter()
+        .map(|(_, name, at)| (name.clone(), &masked[*at]));
+    let masks = Masks::new(masked, more);
+    // The entry of a table whose whole row the view's definition reads.
+    let whole_row = |relation: &Relation| {
+        catalog
+            .definitions
+            .iter()
+            .filter(|(schema, view, _)| {
+                same(schema, &relation.schema) && same(view, &relation.name)
+            })
+            .find_map(|(_, _, definition)| masked::reads_whole_row(dialect, definition, &masks))
+            .and_then(|entry| masked.iter().position(|own| std::ptr::eq(own, entry)))
     };
     let mut found: Vec<Option<usize>> = catalog
         .relations
@@ -730,10 +752,8 @@ fn masked_views(
                     .filter(|read| {
                         same(&read.schema, &relation.schema) && same(&read.view, &relation.name)
                     })
-                    .find_map(|read| {
-                        let column = (read.column != "*").then_some(read.column.as_str());
-                        entry_of(&read.table_schema, &read.table, column)
-                    }),
+                    .find_map(|read| entry_of(&read.table_schema, &read.table, Some(&read.column)))
+                    .or_else(|| whole_row(relation)),
                 None => depends[at].iter().find_map(|&on| {
                     let on = &catalog.relations[on];
                     entry_of(&on.schema, &on.name, None)
@@ -757,12 +777,6 @@ fn masked_views(
         }
     }
     found
-}
-
-/// Whether a view's definition, as PostgreSQL writes it back, reads a whole
-/// row of a table with a masked column (for the catalog's [`ColumnRead`]).
-pub(crate) fn reads_whole_row(dialect: Dialect, definition: &str, masked: &[ColumnName]) -> bool {
-    masked::reads_whole_row(dialect, definition, &Masks::new(masked, []))
 }
 
 /// Whether the relation at `at` is hidden, and why, worked out once: by
@@ -1873,6 +1887,7 @@ mod tests {
                 view("recent_orders", &[("public", "orders")]),
                 view("order_ids", &[("public", "orders")]),
                 view("recent_mail", &[("public", "recent_orders")]),
+                view("partition_rows", &[("public", "orders_2026")]),
             ],
             routines: vec![("public".into(), "names".into())],
             columns: ["id", "email", "phone"]
@@ -1881,6 +1896,13 @@ mod tests {
                 .chain([("public".into(), "order_ids".into(), "id".into())])
                 .collect(),
             column_reads,
+            // A whole row of the partition, which `pg_depend` keeps no
+            // column of.
+            definitions: vec![(
+                "public".into(),
+                "partition_rows".into(),
+                " SELECT to_jsonb(p.*) AS j\n   FROM orders_2026 p;".into(),
+            )],
             ..Catalog::default()
         };
         let masked: Vec<ColumnName> = masked.iter().map(|entry| entry.parse().unwrap()).collect();
@@ -1938,16 +1960,11 @@ mod tests {
             statement(&unsaid, "SELECT * FROM order_ids"),
             through("order_ids")
         );
-        // A whole row a view reads is every column of it.
-        let mut rows = reads().unwrap();
-        rows.push(ColumnRead {
-            column: "*".into(),
-            ..rows[2].clone()
-        });
-        let whole = masking(&["orders.email"], Some(rows));
+        // A whole row a view's definition reads is every column of it,
+        // a partition's too.
         assert_eq!(
-            statement(&whole, "SELECT * FROM order_ids"),
-            through("order_ids")
+            statement(&hidden, "SELECT j FROM partition_rows"),
+            through("partition_rows")
         );
     }
 

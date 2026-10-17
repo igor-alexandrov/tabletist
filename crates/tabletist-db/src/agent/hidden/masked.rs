@@ -118,10 +118,8 @@ impl<'a> Masks<'a> {
         self.tables.get(&fold(word)).copied()
     }
 
-    /// The entry a refusal names when the statement names no table of
-    /// one.
-    fn any(&self) -> Option<&'a ColumnName> {
-        self.columns.values().next().copied()
+    fn is_empty(&self) -> bool {
+        self.columns.is_empty()
     }
 }
 
@@ -293,9 +291,9 @@ fn depths(pieces: &[Piece]) -> Vec<usize> {
 /// `SELECT`'s list, and where a statement over a table that has one reads
 /// it some other way (B.4's rules 1 to 4).
 pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
-    let Some(any) = masks.any() else {
+    if masks.is_empty() {
         return Ok(());
-    };
+    }
     // A name written with escapes (`U&"…"`), which the reading by names
     // would not see, is refused before this is asked (`check_read`).
     let pieces = pieces(read.dialect(), read.text());
@@ -328,7 +326,9 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
     // The outermost `SELECT` and its list: what stands bare there is
     // allowed, and is what a plain query must keep to.
     let mut allowed: HashSet<usize> = HashSet::new();
-    let mut masked_items: Vec<Option<&str>> = Vec::new();
+    // Each masked column the list selects, by its alias where it has one,
+    // with the entry a refusal names.
+    let mut masked_items: Vec<(Option<&str>, &ColumnName)> = Vec::new();
     let mut distinct = false;
     let top = (0..pieces.len()).find(|&at| depth[at] == 0 && pieces[at].is("SELECT"));
     let mut list_end = pieces.len();
@@ -366,20 +366,21 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                         return Err(used(entry, MaskedUse::Row(column.to_owned())));
                     }
                     allowed.extend(from..to);
-                    let masked = masks.column(column).is_some()
-                        || alias.is_some_and(|alias| masks.column(alias).is_some());
-                    if masked {
-                        masked_items.push(alias);
+                    let entry = masks
+                        .column(column)
+                        .or_else(|| alias.and_then(|alias| masks.column(alias)));
+                    if let Some(entry) = entry {
+                        masked_items.push((alias, entry));
                     }
                 }
                 Item::Star { qualifier } => {
                     allowed.extend(from..to);
-                    let masked = match qualifier {
-                        Some(qualifier) => standing.contains_key(&fold(qualifier)),
-                        None => over.is_some(),
+                    let entry = match qualifier {
+                        Some(qualifier) => standing.get(&fold(qualifier)).copied(),
+                        None => over,
                     };
-                    if masked {
-                        masked_items.push(None);
+                    if let Some(entry) = entry {
+                        masked_items.push((None, entry));
                     }
                 }
                 Item::Other => {}
@@ -388,8 +389,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
     }
     // `TABLE orders` is refused before this is asked (`check_read`).
     // Rule 2: beside a masked column, the outermost query is a plain one.
-    if !masked_items.is_empty() {
-        let entry = over.unwrap_or(any);
+    if let Some(&(_, entry)) = masked_items.first() {
         if distinct {
             return Err(used(entry, MaskedUse::Clause("DISTINCT")));
         }
@@ -426,7 +426,10 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
     }
     // A masked column's alias stands for it: SQLite reads one in a
     // `WHERE`, and SQLite and MySQL in an `ORDER BY`'s expressions.
-    let aliases: Vec<&str> = masked_items.iter().flatten().copied().collect();
+    let aliases: Vec<(&str, &ColumnName)> = masked_items
+        .iter()
+        .filter_map(|(alias, entry)| alias.map(|alias| (alias, *entry)))
+        .collect();
     // Rules 3 and 4, everywhere else.
     for (at, piece) in pieces.iter().enumerate() {
         if allowed.contains(&at) || in_place.contains(&at) {
@@ -437,8 +440,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                 if let Some(entry) = masks.column(text) {
                     return Err(used(entry, MaskedUse::Named(entry.column.clone())));
                 }
-                if let Some(alias) = aliases.iter().find(|alias| same(alias, text)) {
-                    let entry = over.unwrap_or(any);
+                if let Some((alias, entry)) = aliases.iter().find(|(alias, _)| same(alias, text)) {
                     return Err(used(entry, MaskedUse::Alias((*alias).to_owned())));
                 }
                 if piece.is("NATURAL")
@@ -510,31 +512,31 @@ fn selects(pieces: &[Piece], at: usize) -> bool {
     }
 }
 
-/// Whether a view's definition, as PostgreSQL writes it back, reads a
-/// whole row of a table `masks` knows. PostgreSQL keeps no column of its
+/// The entry of a table `masks` knows whose whole row a view's definition,
+/// as PostgreSQL writes it back, reads. PostgreSQL keeps no column of its
 /// own for a whole row a view reads, and writes it back as `x.*`; a star
 /// the view selects is written back as its columns.
-pub(super) fn reads_whole_row(
+pub(super) fn reads_whole_row<'a>(
     dialect: crate::Dialect,
     definition: &str,
-    masks: &Masks<'_>,
-) -> bool {
+    masks: &Masks<'a>,
+) -> Option<&'a ColumnName> {
     let pieces = pieces(dialect, definition);
     let names = read_names(&pieces);
-    let standing: HashSet<String> = names
-        .places
-        .iter()
-        .filter(|place| masks.table(&place.name.name).is_some())
-        .flat_map(|place| {
-            let alias = place.alias.and_then(|at| pieces[at].word()).map(fold);
-            std::iter::once(fold(&place.name.name)).chain(alias)
-        })
-        .collect();
-    pieces.windows(3).any(|window| match window {
+    let mut standing: HashMap<String, &ColumnName> = HashMap::new();
+    for place in &names.places {
+        if let Some(entry) = masks.table(&place.name.name) {
+            standing.insert(fold(&place.name.name), entry);
+            if let Some(alias) = place.alias.and_then(|at| pieces[at].word()) {
+                standing.insert(fold(alias), entry);
+            }
+        }
+    }
+    pieces.windows(3).find_map(|window| match window {
         [qualifier, Piece::Dot, Piece::Star] => qualifier
             .word()
-            .is_some_and(|word| standing.contains(&fold(word))),
-        _ => false,
+            .and_then(|word| standing.get(&fold(word)).copied()),
+        _ => None,
     })
 }
 
@@ -691,6 +693,31 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_names_the_masked_column_the_statement_selects() {
+        let masked = [column("orders.email"), column("orders.phone")];
+        let masks = Masks::new(&masked, []);
+        let refused = |sql: &str| {
+            let read = check_read(Dialect::Postgres, sql, &[]).unwrap();
+            match check(&read, &masks) {
+                Err(Refusal::MaskedColumnUsed { column, how }) => (column, how),
+                other => panic!("{sql}: {other:?}"),
+            }
+        };
+        assert_eq!(
+            refused("SELECT phone FROM orders GROUP BY id"),
+            ("orders.phone".into(), MaskedUse::Clause("GROUP BY"))
+        );
+        assert_eq!(
+            refused("SELECT phone FROM shipments GROUP BY id"),
+            ("orders.phone".into(), MaskedUse::Clause("GROUP BY"))
+        );
+        assert_eq!(
+            refused("SELECT id, phone AS p FROM orders ORDER BY lower(p)"),
+            ("orders.phone".into(), MaskedUse::Alias("p".into()))
+        );
+    }
+
+    #[test]
     fn what_selects_a_masked_column_as_it_is_is_taken() {
         for sql in [
             "SELECT id, email FROM orders",
@@ -778,7 +805,8 @@ mod tests {
     fn a_view_reads_a_whole_row_where_its_definition_writes_one() {
         let masked = [column("orders.email")];
         let masks = Masks::new(&masked, []);
-        let row = |definition: &str| reads_whole_row(Dialect::Postgres, definition, &masks);
+        let row =
+            |definition: &str| reads_whole_row(Dialect::Postgres, definition, &masks).is_some();
         assert!(row(" SELECT x.*::public.orders AS x\n   FROM orders x;"));
         assert!(row(" SELECT to_jsonb(orders.*) AS j\n   FROM orders;"));
         assert!(!row(" SELECT x.id,\n    x.email\n   FROM orders x;"));

@@ -14,7 +14,7 @@ use tokio_postgres::SimpleQueryMessage;
 use super::query_error;
 use crate::agent::{
     Catalog, ColumnName, ColumnRead, Hidden, Read, Refusal, Relation, Tables,
-    calls_a_refused_function, function_allowed, planned, reads_whole_row,
+    calls_a_refused_function, function_allowed, planned,
 };
 use crate::{Dialect, Error, Result};
 
@@ -220,9 +220,9 @@ pub(super) async fn catalog(
     masked: &[ColumnName],
 ) -> Result<Catalog> {
     let mut relations: Vec<Relation> = Vec::new();
-    // The views whose definitions read a whole row of a table with a
-    // masked column.
-    let mut whole_rows: Vec<usize> = Vec::new();
+    // The views' definitions, read for a whole row they read, which
+    // `pg_depend` keeps no column of.
+    let mut definitions: Vec<(String, String, String)> = Vec::new();
     for row in rows(client, &relations_sql()).await? {
         let (Some(schema), Some(name)) = (row.get(0), row.get(1)) else {
             continue;
@@ -242,11 +242,9 @@ pub(super) async fn catalog(
                 part: row.get(5) == Some("t"),
                 view: row.get(7) == Some("t"),
             });
-            if !masked.is_empty()
-                && row.get(7) == Some("t")
-                && reads_whole_row(Dialect::Postgres, row.get(6).unwrap_or(""), masked)
-            {
-                whole_rows.push(relations.len() - 1);
+            if !masked.is_empty() && row.get(7) == Some("t") {
+                let definition = row.get(6).unwrap_or("").to_owned();
+                definitions.push((schema.to_owned(), name.to_owned(), definition));
             }
         }
         if let (Some(on_schema), Some(on_name), Some(last)) =
@@ -284,7 +282,7 @@ pub(super) async fn catalog(
                 .iter()
                 .map(|row| (row.get(0), row.get(1), row.get(2)))
                 .collect();
-            let mut reads: Vec<ColumnRead> = client
+            let reads: Vec<ColumnRead> = client
                 .query(COLUMN_READS_SQL, &[&names])
                 .await
                 .map_err(query_error)?
@@ -297,16 +295,6 @@ pub(super) async fn catalog(
                     column: row.get(4),
                 })
                 .collect();
-            for &at in &whole_rows {
-                let view = &relations[at];
-                reads.extend(view.depends_on.iter().map(|(schema, table)| ColumnRead {
-                    schema: view.schema.clone(),
-                    view: view.name.clone(),
-                    table_schema: schema.clone(),
-                    table: table.clone(),
-                    column: "*".into(),
-                }));
-            }
             (columns, Some(reads))
         }
     };
@@ -316,6 +304,7 @@ pub(super) async fn catalog(
         unnamed_calls,
         columns,
         column_reads,
+        definitions,
         ..Catalog::default()
     })
 }

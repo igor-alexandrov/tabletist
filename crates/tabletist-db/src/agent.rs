@@ -31,7 +31,6 @@ use crate::{Dialect, sql};
 mod hidden;
 mod run;
 
-pub(crate) use hidden::reads_whole_row;
 pub use hidden::{Catalog, ColumnName, ColumnRead, Hidden, Relation, TableName, Tables};
 pub(crate) use hidden::{calls_a_refused_function, named_relations, planned};
 pub use run::{Answer, Limits};
