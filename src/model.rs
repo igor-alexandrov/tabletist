@@ -1197,19 +1197,28 @@ impl LoadedTables {
     /// windows loaded can say: `Some(false)` marks it. A name in a schema
     /// the database does not list is missing; one in a schema not loaded is
     /// not known; one without a schema is any schema's, so it is missing
-    /// only when every schema is loaded. The system's are never marked.
+    /// only when every schema is loaded. The system's are never marked. A
+    /// list the catalog cut at [`tabletist_db::MAX_LISTED`] is not the
+    /// whole: what is not in it is not known.
     pub fn has(&self, name: &tabletist_db::agent::TableName) -> Option<bool> {
         let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        let whole = |count: usize| count < tabletist_db::MAX_LISTED as usize;
         let in_schema = |names: &Vec<String>| names.iter().any(|known| same(known, &name.name));
+        // In it: `Some(true)`; not in a whole list: `Some(false)`.
+        let found = |names: &Vec<String>| match in_schema(names) {
+            true => Some(true),
+            false => whole(names.len()).then_some(false),
+        };
         if self.system_table(name) {
             return None;
         }
         match &name.schema {
             Some(schema) if self.system_schema(schema) => None,
             Some(schema) => match self.loaded.iter().find(|(loaded, _)| same(loaded, schema)) {
-                Some((_, names)) => Some(in_schema(names)),
+                Some((_, names)) => found(names),
                 None => {
                     let listed = !self.schemas.is_empty()
+                        && whole(self.schemas.len())
                         && !self.schemas.iter().any(|known| same(known, schema));
                     listed.then_some(false)
                 }
@@ -1219,10 +1228,12 @@ impl LoadedTables {
                     return Some(true);
                 }
                 let all = !self.schemas.is_empty()
-                    && self
-                        .schemas
-                        .iter()
-                        .all(|schema| self.loaded.iter().any(|(loaded, _)| same(loaded, schema)));
+                    && whole(self.schemas.len())
+                    && self.schemas.iter().all(|schema| {
+                        self.loaded
+                            .iter()
+                            .any(|(loaded, names)| same(loaded, schema) && whole(names.len()))
+                    });
                 all.then_some(false)
             }
         }
@@ -5626,6 +5637,18 @@ mod tests {
         };
         assert_eq!(sqlite.has(&name("sqlite_stat1")), None);
         assert_eq!(sqlite.has(&name("old_orders")), Some(false));
+        // A list the catalog cut at its most is not the whole schema: what
+        // is not in it is not known, with or without a schema.
+        let cut: Vec<String> = (0..tabletist_db::MAX_LISTED)
+            .map(|at| format!("t{at:05}"))
+            .collect();
+        let full = LoadedTables {
+            loaded: vec![("main".into(), cut)],
+            ..sqlite
+        };
+        assert_eq!(full.has(&name("main.zz_orders")), None);
+        assert_eq!(full.has(&name("zz_orders")), None);
+        assert_eq!(full.has(&name("t00001")), Some(true));
     }
 
     #[test]

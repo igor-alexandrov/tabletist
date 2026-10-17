@@ -71,6 +71,7 @@ list instead.
 | Ctrl+S | Save |
 | Ctrl+Enter | Save and connect |
 | Backspace, Delete | In the empty password field: forget the saved password |
+| Up, Down | In add table…'s list of tables: move. Enter adds the one chosen, and Esc closes the field |
 | Esc | Cancel |
 
 {% include shot.html file="omarchy-connection-edit" alt="The connection form in the Omarchy look, for a production database behind an SSH tunnel" width="2200" height="2032" %}
