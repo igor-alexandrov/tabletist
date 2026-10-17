@@ -180,8 +180,9 @@ server is on.
 - If `connections.toml` hides more tables while the form is open, saving
   a change of yours to them is refused, and the form shows them as they
   are now, for you to make your change again. A change in the file that
-  hides less is held until you answer it, and is not in force: your save
-  goes through over it.
+  hides less is held until you answer it, and is not in force: a save that
+  changes the tables goes through over it, and one that leaves them as
+  shown keeps it, still held.
 - An Agents tab that says agents can't use a connection has **Allow
   agents…**, which opens that section with **Read** chosen. Nothing
   changes until you save.
