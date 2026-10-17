@@ -850,6 +850,13 @@ mod tests {
             ]
         });
         assert_eq!(planned(plain), Ok(()));
+        // A cast's type ends where the expression goes on.
+        let case = scan(
+            "orders",
+            "orders",
+            output(&["CASE WHEN (id > 1) THEN 'x'::text ELSE email END"]),
+        );
+        assert_eq!(planned(case), refused());
         // A plan of one relation writes its columns without the alias, its
         // name ending in `_n` or not.
         let lone = scan(

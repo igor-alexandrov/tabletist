@@ -825,10 +825,14 @@ pub(crate) fn column_references(
         .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))
         .map(|token| &text[token.range])
         .collect();
+    // A type of more than one word goes on only with these (`character
+    // varying`, `double precision`, `timestamp without time zone`): any
+    // other word after it is the expression's again (`ELSE email`).
+    const MORE: &[&str] = &["varying", "precision", "with", "without", "time", "zone"];
     let mut typed = vec![false; pieces.len()];
     for at in 0..pieces.len() {
         let cast = at >= 2 && tokens.get(at - 1) == Some(&":") && tokens.get(at - 2) == Some(&":");
-        let more = at > 0 && typed[at - 1];
+        let more = at > 0 && typed[at - 1] && MORE.iter().any(|word| pieces[at].is(word));
         typed[at] = matches!(pieces[at], Piece::Word { .. }) && (cast || more);
     }
     let mut found = Vec::new();
