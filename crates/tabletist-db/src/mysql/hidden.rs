@@ -28,20 +28,22 @@ const SYSTEM: &str = "('information_schema', 'mysql', 'performance_schema', 'sys
 /// query's own takes its place, so the catalog is read whole.
 const WHOLE: &str = "LIMIT 18446744073709551615";
 
-/// Checks `read` against what `tables` hides, in the open transaction.
-/// `Ok(None)`: it may run. `Ok(Some(error))`: it may not, and `error` is
-/// why, a refusal or the server's own error on the plan (the statement
-/// would have failed with it). `Err` is a lost session or a cancel.
+/// Checks `read` against what `tables` hides and `masked` masks, in the
+/// open transaction. `Ok(Ok(masked))`: it may run, and `masked` says which
+/// of its result columns are a masked column's (none where nothing is
+/// masked). `Ok(Err(error))`: it may not, and `error` is why, a refusal or
+/// the server's own error on the plan (the statement would have failed
+/// with it). `Err` is a lost session or a cancel.
 pub(super) async fn check(
     conn: &mut mysql_async::Conn,
     read: &Read,
     tables: &Tables,
     masked: &[ColumnName],
-) -> Result<Option<Error>> {
+) -> Result<std::result::Result<Vec<bool>, Error>> {
     let catalog = catalog(conn, masked).await?;
     let hidden = Hidden::masking(Dialect::MySql, &catalog, tables, masked);
     if let Err(refusal) = hidden.check_statement(read) {
-        return Ok(Some(Error::Agent(refusal)));
+        return Ok(Err(Error::Agent(refusal)));
     }
     let explain = format!("EXPLAIN FORMAT=JSON {}", planned(read));
     let plan: Option<String> = match conn
@@ -54,11 +56,11 @@ pub(super) async fn check(
             if error.is_connection_lost() || error == Error::Cancelled {
                 return Err(error);
             }
-            return Ok(Some(error));
+            return Ok(Err(error));
         }
     };
     let Some(Ok(plan)) = plan.map(|plan| serde_json::from_str::<serde_json::Value>(&plan)) else {
-        return Ok(Some(Error::Agent(Refusal::NotParsed)));
+        return Ok(Err(Error::Agent(Refusal::NotParsed)));
     };
     // The note on the plan: the query as the server rewrote it. MariaDB
     // may give none.
@@ -74,14 +76,41 @@ pub(super) async fn check(
     let named = named_relations(read);
     let strict = rewritten.is_empty().then_some(named.as_slice());
     if let Err(refusal) = json_reads(&plan, &hidden, strict) {
-        return Ok(Some(Error::Agent(refusal)));
+        return Ok(Err(Error::Agent(refusal)));
     }
     for note in rewritten {
         if let Err(refusal) = rewritten_reads(note, &hidden) {
-            return Ok(Some(Error::Agent(refusal)));
+            return Ok(Err(Error::Agent(refusal)));
         }
     }
-    Ok(None)
+    if !hidden.masks_anything() {
+        return Ok(Ok(Vec::new()));
+    }
+    // Which result columns are a masked column's: by the table and the
+    // column each comes from, as the prepared statement's column
+    // definitions say (`org_table`, `org_name`), through an alias too. A
+    // column the statement computes comes from none.
+    let prepared = match conn.prep(read.text()).await {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let error = query_error(error);
+            if error.is_connection_lost() || error == Error::Cancelled {
+                return Err(error);
+            }
+            return Ok(Err(error));
+        }
+    };
+    Ok(Ok(prepared
+        .columns()
+        .iter()
+        .map(|column| {
+            let (schema, table) = (column.schema_str(), column.org_table_str());
+            !table.is_empty()
+                && hidden
+                    .masks(Some(&schema), &table, &column.org_name_str())
+                    .is_some()
+        })
+        .collect()))
 }
 
 /// Checks every table a JSON plan names. A name may be the statement's

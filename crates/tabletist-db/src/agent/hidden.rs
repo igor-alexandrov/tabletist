@@ -437,6 +437,22 @@ impl Hidden {
         )
     }
 
+    /// Whether a column is masked.
+    pub fn masks_anything(&self) -> bool {
+        !self.masked.is_empty()
+    }
+
+    /// A masked column of the relation `table` of `schema`, as the person
+    /// writes its entry, where it has one: for a whole row of it.
+    pub fn masks_table(&self, schema: Option<&str>, table: &str) -> Option<String> {
+        self.masked_tables
+            .iter()
+            .find(|(own, name, _)| {
+                same(name, table) && schema.is_none_or(|schema| same(own, schema))
+            })
+            .map(|(_, _, at)| self.masked[*at].to_string())
+    }
+
     /// The masked column `column` of the relation `table` of `schema`, as
     /// the person writes its entry, where it is one: a column the entries
     /// name, or one of a partition or a child table of their tables.
@@ -777,6 +793,46 @@ fn masked_views(
         }
     }
     found
+}
+
+/// The columns an expression names with a qualifier, as PostgreSQL's plan
+/// writes them (`o.email`, `"Orders".email`), each by its qualifier and its
+/// column, `*` for a whole row (`o.*`); and whether the expression is one
+/// such name and nothing else.
+pub(crate) fn column_references(dialect: Dialect, text: &str) -> (Vec<(String, String)>, bool) {
+    let pieces = pieces(dialect, text);
+    let mut found = Vec::new();
+    for (at, window) in pieces.windows(3).enumerate() {
+        let [qualifier, Piece::Dot, column] = window else {
+            continue;
+        };
+        // `schema.table.column`: the qualifier is the table.
+        if pieces.get(at + 3) == Some(&Piece::Dot) {
+            continue;
+        }
+        let column = match column {
+            Piece::Star => "*",
+            other => match other.word() {
+                Some(word) => word,
+                None => continue,
+            },
+        };
+        if let Some(qualifier) = qualifier.word() {
+            found.push((qualifier.to_owned(), column.to_owned()));
+        }
+    }
+    let bare = matches!(
+        pieces.as_slice(),
+        [Piece::Word { .. }, Piece::Dot, Piece::Word { .. }]
+            | [
+                Piece::Word { .. },
+                Piece::Dot,
+                Piece::Word { .. },
+                Piece::Dot,
+                Piece::Word { .. },
+            ]
+    );
+    (found, bare)
 }
 
 /// Whether the relation at `at` is hidden, and why, worked out once: by

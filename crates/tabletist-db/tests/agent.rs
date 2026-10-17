@@ -594,6 +594,77 @@ async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str
     the_bookshop_is_stocked(connection, on).await;
 }
 
+/// What a masked column answers: its name and its type, and `•••` for
+/// every value, a `NULL` too, however it is selected; marked so. A column
+/// of another table with its name is that table's.
+async fn a_masked_columns_values_are_never_answered(connection: &Connection, on: &str) {
+    let masked = ["orders.email", "orders.phone"];
+    let dots = || Value::Text(agent::MASKED.into());
+    let answered = |answer: Answer| (answer.masked, answer.rows);
+    // The first order has no phone: its NULL is masked too.
+    let found = masking(
+        connection,
+        &masked,
+        "SELECT id, email, phone FROM orders WHERE id = 1",
+    )
+    .await
+    .map(answered);
+    assert_eq!(
+        found,
+        Ok((
+            vec![false, true, true],
+            vec![vec![Value::Int(1), dots(), dots()]]
+        )),
+        "{on}"
+    );
+    // Under an alias, through the table's own alias, and by a star.
+    let found = masking(
+        connection,
+        &masked,
+        "SELECT o.email AS mail, o.id FROM orders o WHERE o.id = 1",
+    )
+    .await
+    .map(answered);
+    assert_eq!(
+        found,
+        Ok((vec![true, false], vec![vec![dots(), Value::Int(1)]])),
+        "{on}"
+    );
+    let star = masking(connection, &masked, "SELECT * FROM orders WHERE id = 1")
+        .await
+        .unwrap_or_else(|error| panic!("{on}: {error}"));
+    for (column, masked) in star.columns.iter().zip(&star.masked) {
+        let is = matches!(column.name.as_str(), "email" | "phone");
+        assert_eq!(*masked, is, "{on}: {}", column.name);
+    }
+    assert!(
+        star.rows[0]
+            .iter()
+            .zip(&star.masked)
+            .all(|(value, masked)| !masked || *value == dots()),
+        "{on}"
+    );
+    // The customers' own email is theirs to answer, and an answer with no
+    // masked column marks none.
+    let found = masking(
+        connection,
+        &masked,
+        "SELECT email FROM customers WHERE id = 1",
+    )
+    .await
+    .map(answered);
+    assert_eq!(
+        found,
+        Ok((Vec::new(), vec![vec![text("ada.brandt@example.com")]])),
+        "{on}"
+    );
+    // Masking nothing, nothing is marked.
+    let found = masking(connection, &[], "SELECT email FROM orders WHERE id = 1")
+        .await
+        .map(|answer| answer.masked);
+    assert_eq!(found, Ok(Vec::new()), "{on}");
+}
+
 /// What every engine is asked.
 async fn an_agent_reads_the_bookshop(connection: &Connection, on: &str) {
     a_read_answers_its_rows(connection, on).await;
@@ -676,6 +747,25 @@ mod sqlite {
     async fn a_masked_column_is_used_only_as_it_is_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         a_masked_column_is_used_only_as_it_is(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_masked_columns_values_are_never_answered_on_sqlite() {
+        let (connection, _dir) = bookshop().await;
+        a_masked_columns_values_are_never_answered(&connection, "sqlite").await;
+        // A table's integer key read by its other name is the key: masked
+        // where the key is.
+        let found = masking(
+            &connection,
+            &["orders.id"],
+            "SELECT rowid FROM orders LIMIT 1",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
     }
 
     #[tokio::test]
@@ -967,6 +1057,14 @@ mod postgres {
     }
 
     #[tokio::test]
+    async fn a_masked_columns_values_are_never_answered_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_masked_columns_values_are_never_answered(&connection, "postgres").await;
+    }
+
+    #[tokio::test]
     async fn postgres_reads_a_value_as_the_type_of_its_placeholder() {
         let Some(connection) = bookshop().await else {
             return;
@@ -1238,6 +1336,14 @@ mod mysql {
             return;
         };
         a_masked_column_is_used_only_as_it_is(&connection, "mysql").await;
+    }
+
+    #[tokio::test]
+    async fn a_masked_columns_values_are_never_answered_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_masked_columns_values_are_never_answered(&connection, "mysql").await;
     }
 
     #[tokio::test]

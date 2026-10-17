@@ -145,19 +145,21 @@ ORDER BY 1"
 }
 
 /// Checks `read` against what `tables` hides, in the open transaction.
-/// `Ok(None)`: it may run. `Ok(Some(error))`: it may not, and `error` is
-/// why, a refusal or the server's own error on the plan (the statement
-/// would have failed with it). `Err` is a lost session or a cancel.
+/// `Ok(Ok(masked))`: it may run, and `masked` says which of its result
+/// columns are a masked column's (none where nothing is masked).
+/// `Ok(Err(error))`: it may not, and `error` is why, a refusal or the
+/// server's own error on the plan (the statement would have failed with
+/// it). `Err` is a lost session or a cancel.
 pub(super) async fn check(
     client: &tokio_postgres::Client,
     read: &Read,
     tables: &Tables,
     masked: &[ColumnName],
-) -> Result<Option<Error>> {
+) -> Result<std::result::Result<Vec<bool>, Error>> {
     let catalog = catalog(client, masked).await?;
     let hidden = Hidden::masking(Dialect::Postgres, &catalog, tables, masked);
     if let Err(refusal) = hidden.check_statement(read) {
-        return Ok(Some(Error::Agent(refusal)));
+        return Ok(Err(Error::Agent(refusal)));
     }
     let explain = format!("EXPLAIN (VERBOSE, FORMAT JSON) {}", planned(read));
     let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = read
@@ -167,22 +169,222 @@ pub(super) async fn check(
         .collect();
     let rows = match client.query(explain.as_str(), &params).await {
         Ok(rows) => rows,
-        Err(error) => {
-            let error = query_error(error);
-            if error.is_connection_lost() || error == Error::Cancelled {
-                return Err(error);
-            }
-            return Ok(Some(error));
-        }
+        Err(error) => return failed(error),
     };
     let plan: Option<super::script::Plan> = rows.first().and_then(|row| row.try_get(0).ok());
     let Some(plan) = plan else {
-        return Ok(Some(Error::Agent(Refusal::NotParsed)));
+        return Ok(Err(Error::Agent(Refusal::NotParsed)));
     };
     let Ok(plan) = serde_json::from_str::<serde_json::Value>(&plan.0) else {
-        return Ok(Some(Error::Agent(Refusal::NotParsed)));
+        return Ok(Err(Error::Agent(Refusal::NotParsed)));
     };
-    Ok(planned_reads(&plan, &hidden).err().map(Error::Agent))
+    if let Err(refusal) = planned_reads(&plan, &hidden) {
+        return Ok(Err(Error::Agent(refusal)));
+    }
+    if let Err(refusal) = planned_masks(&plan, &hidden) {
+        return Ok(Err(Error::Agent(refusal)));
+    }
+    match hidden.masks_anything() {
+        true => masked_columns(client, read, &hidden).await,
+        false => Ok(Ok(Vec::new())),
+    }
+}
+
+/// The server's error on what the check asked of it: the statement's own,
+/// which it would have failed with, or a lost session or a cancel.
+fn failed<T>(error: tokio_postgres::Error) -> Result<std::result::Result<T, Error>> {
+    let error = query_error(error);
+    match error.is_connection_lost() || error == Error::Cancelled {
+        true => Err(error),
+        false => Ok(Err(error)),
+    }
+}
+
+/// The table, the column and the schema of each column of the relations
+/// whose oids are in `$1`.
+const ORIGINS_SQL: &str = "\
+SELECT c.oid, a.attnum, n.nspname, c.relname, a.attname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = c.oid
+WHERE c.oid = ANY($1) AND a.attnum > 0";
+
+/// Which result columns of `read` are a masked column's, by the table and
+/// the column each comes from, as the server says of it prepared
+/// (`Column::table_oid` and `column_id`): a column of a partition, of a
+/// child table, and of a view an entry names too. A column the statement
+/// computes comes from none.
+async fn masked_columns(
+    client: &tokio_postgres::Client,
+    read: &Read,
+    hidden: &Hidden,
+) -> Result<std::result::Result<Vec<bool>, Error>> {
+    let prepared = match client.prepare(read.text()).await {
+        Ok(prepared) => prepared,
+        Err(error) => return failed(error),
+    };
+    let origins: Vec<Option<(u32, i16)>> = prepared
+        .columns()
+        .iter()
+        .map(|column| column.table_oid().zip(column.column_id()))
+        .collect();
+    let mut oids: Vec<u32> = origins.iter().flatten().map(|(oid, _)| *oid).collect();
+    oids.sort_unstable();
+    oids.dedup();
+    if oids.is_empty() {
+        return Ok(Ok(vec![false; origins.len()]));
+    }
+    let rows = match client.query(ORIGINS_SQL, &[&oids]).await {
+        Ok(rows) => rows,
+        Err(error) => return failed(error),
+    };
+    let named: std::collections::HashMap<(u32, i16), (String, String, String)> = rows
+        .iter()
+        .map(|row| {
+            (
+                (row.get(0), row.get(1)),
+                (row.get(2), row.get(3), row.get(4)),
+            )
+        })
+        .collect();
+    Ok(Ok(origins
+        .iter()
+        .map(|origin| {
+            origin
+                .and_then(|origin| named.get(&origin))
+                .is_some_and(|(schema, table, column)| {
+                    hidden.masks(Some(schema), table, column).is_some()
+                })
+        })
+        .collect()))
+}
+
+/// Checks where the plan uses a masked column: only passed on, as a name
+/// by itself in a node's output, and never its table's whole row. The plan
+/// writes every column with its scan's alias (`VERBOSE`). A subquery's or
+/// a common table expression's scan that passes one on is taken to pass
+/// it in every column it has: its own columns' names say nothing of where
+/// they come from.
+fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Result<(), Refusal> {
+    if !hidden.masks_anything() {
+        return Ok(());
+    }
+    let mut scans: std::collections::HashMap<String, Vec<(String, String)>> = Default::default();
+    let mut carriers: std::collections::HashSet<String> = Default::default();
+    scans_of(plan, &mut scans, &mut carriers);
+    // The masked column a name of the plan is, by its scan's alias.
+    let masked = |qualifier: &str, column: &str| {
+        scans
+            .get(&qualifier.to_lowercase())
+            .into_iter()
+            .flatten()
+            .find_map(|(schema, table)| match column {
+                "*" => hidden.masks_table(Some(schema), table),
+                column => hidden.masks(Some(schema), table, column),
+            })
+    };
+    // The first masked column a node passes on, if one does.
+    let mut passed = None;
+    expressions(plan, &mut |key, text| {
+        let (names, bare) = crate::agent::column_references(Dialect::Postgres, text);
+        if key == "Output" && bare && passed.is_none() {
+            passed = names
+                .iter()
+                .find_map(|(qualifier, column)| masked(qualifier, column));
+        }
+    });
+    let mut found = None;
+    expressions(plan, &mut |key, text| {
+        if found.is_some() {
+            return;
+        }
+        let (names, bare) = crate::agent::column_references(Dialect::Postgres, text);
+        let passing = key == "Output" && bare;
+        for (qualifier, column) in &names {
+            let entry = match masked(qualifier, column) {
+                Some(entry) if !passing || column == "*" => Some(entry),
+                Some(_) => None,
+                None if !passing && carriers.contains(&qualifier.to_lowercase()) => passed.clone(),
+                None => None,
+            };
+            if entry.is_some() {
+                found = entry;
+                return;
+            }
+        }
+    });
+    match found {
+        Some(column) => Err(Refusal::MaskedColumnUsed {
+            column,
+            how: crate::agent::MaskedUse::Planned,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// The scans a plan makes, by their aliases folded to lower case: of a
+/// relation, with its schema and name; and of a subquery or a common table
+/// expression, whose aliases are `carriers`.
+fn scans_of(
+    plan: &serde_json::Value,
+    scans: &mut std::collections::HashMap<String, Vec<(String, String)>>,
+    carriers: &mut std::collections::HashSet<String>,
+) {
+    match plan {
+        serde_json::Value::Object(node) => {
+            let text = |key: &str| node.get(key).and_then(serde_json::Value::as_str);
+            if let Some(alias) = text("Alias") {
+                match (text("Relation Name"), text("Schema")) {
+                    (Some(relation), Some(schema)) => scans
+                        .entry(alias.to_lowercase())
+                        .or_default()
+                        .push((schema.to_owned(), relation.to_owned())),
+                    _ => {
+                        let carries = matches!(
+                            text("Node Type"),
+                            Some("Subquery Scan" | "CTE Scan" | "WorkTable Scan")
+                        );
+                        if carries {
+                            carriers.insert(alias.to_lowercase());
+                        }
+                    }
+                }
+            }
+            node.values()
+                .for_each(|value| scans_of(value, scans, carriers));
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .for_each(|value| scans_of(value, scans, carriers)),
+        _ => {}
+    }
+}
+
+/// Each expression the plan writes, with the key of the node's field it is
+/// in: a field's text, or each of a list's (`Output`, `Sort Key`).
+fn expressions(plan: &serde_json::Value, each: &mut impl FnMut(&str, &str)) {
+    match plan {
+        serde_json::Value::Object(node) => {
+            for (key, value) in node {
+                match value {
+                    serde_json::Value::String(text) => each(key, text),
+                    serde_json::Value::Array(values) => {
+                        for value in values {
+                            match value {
+                                serde_json::Value::String(text) => each(key, text),
+                                other => expressions(other, each),
+                            }
+                        }
+                    }
+                    other => expressions(other, each),
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            values.iter().for_each(|value| expressions(value, each))
+        }
+        _ => {}
+    }
 }
 
 /// Checks every relation and every function a plan names.
@@ -423,5 +625,104 @@ mod tests {
             planned_reads(&catalog, &hidden(except("vip"))),
             Err(Refusal::SystemCatalog)
         );
+    }
+
+    /// The Bookshop's orders, with a partition, and the customers, with
+    /// `orders.email` masked.
+    fn masking() -> Hidden {
+        let relation = |name: &str, on: &[&str]| Relation {
+            schema: "public".into(),
+            name: name.into(),
+            depends_on: on
+                .iter()
+                .map(|on| ("public".into(), (*on).into()))
+                .collect(),
+            opaque: false,
+            part: !on.is_empty(),
+            view: false,
+        };
+        let catalog = Catalog {
+            relations: vec![
+                relation("orders", &[]),
+                relation("orders_2026", &["orders"]),
+                relation("customers", &[]),
+            ],
+            columns: vec![("public".into(), "orders".into(), "email".into())],
+            ..Catalog::default()
+        };
+        let masked = ["orders.email".parse().unwrap()];
+        Hidden::masking(Dialect::Postgres, &catalog, &Tables::All, &masked)
+    }
+
+    /// A scan of `relation` as `alias`, with these fields more.
+    fn scan(relation: &str, alias: &str, more: serde_json::Value) -> serde_json::Value {
+        let mut node = serde_json::json!({
+            "Node Type": "Seq Scan", "Relation Name": relation, "Schema": "public", "Alias": alias
+        });
+        if let (Some(node), serde_json::Value::Object(more)) = (node.as_object_mut(), more) {
+            node.extend(more);
+        }
+        node
+    }
+
+    #[test]
+    fn a_plan_may_pass_a_masked_column_on_and_use_it_no_other_way() {
+        let hidden = masking();
+        let planned = |plan: serde_json::Value| planned_masks(&plan, &hidden);
+        let refused = || {
+            Err(Refusal::MaskedColumnUsed {
+                column: "orders.email".into(),
+                how: crate::agent::MaskedUse::Planned,
+            })
+        };
+        let output = |items: &[&str]| serde_json::json!({ "Output": items });
+        // Passed on, as a name by itself.
+        assert_eq!(
+            planned(scan("orders", "o", output(&["o.id", "o.email"]))),
+            Ok(())
+        );
+        let sorted = serde_json::json!({
+            "Node Type": "Sort", "Output": ["o.email", "o.id"], "Sort Key": ["o.id"],
+            "Plans": [scan("orders", "o", output(&["o.email", "o.id"]))]
+        });
+        assert_eq!(planned(sorted), Ok(()));
+        // Filtered, computed, sorted on, or its table's whole row.
+        let filtered = scan(
+            "orders",
+            "o",
+            serde_json::json!({ "Output": ["o.id"], "Filter": "(o.email ~~ 'a%'::text)" }),
+        );
+        assert_eq!(planned(filtered), refused());
+        assert_eq!(
+            planned(scan("orders", "o", output(&["lower(o.email)"]))),
+            refused()
+        );
+        assert_eq!(planned(scan("orders", "o", output(&["o.*"]))), refused());
+        let sort_key = serde_json::json!({
+            "Node Type": "Sort", "Output": ["o.id"], "Sort Key": ["o.email"],
+            "Plans": [scan("orders", "o", output(&["o.id", "o.email"]))]
+        });
+        assert_eq!(planned(sort_key), refused());
+        // In a partition's scan, by its own alias.
+        let partition = scan(
+            "orders_2026",
+            "orders_1",
+            serde_json::json!({ "Output": ["orders_1.id"], "Index Cond": "(orders_1.email = 'x'::text)" }),
+        );
+        assert_eq!(planned(partition), refused());
+        // Through a subquery's scan, which passes it under another name.
+        let carried = serde_json::json!({
+            "Node Type": "Subquery Scan", "Alias": "s", "Output": ["s.x"],
+            "Filter": "(s.x ~~ 'a%'::text)",
+            "Plans": [scan("orders", "o", output(&["o.email"]))]
+        });
+        assert_eq!(planned(carried), refused());
+        // Another table's column of the same name is its own.
+        let customers = scan(
+            "customers",
+            "c",
+            serde_json::json!({ "Output": ["c.id"], "Filter": "(c.email = 'x'::text)" }),
+        );
+        assert_eq!(planned(customers), Ok(()));
     }
 }

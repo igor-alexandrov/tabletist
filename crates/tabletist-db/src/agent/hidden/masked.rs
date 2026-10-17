@@ -152,6 +152,17 @@ const ENDS_LIST: &[&str] = &[
     "LOCK",
 ];
 
+/// Whether `word` is another name of a table's integer key, which may be a
+/// masked column: SQLite's `rowid`, `_rowid_` and `oid`, MySQL's `_rowid`.
+fn row_id(dialect: crate::Dialect, word: &str) -> bool {
+    let names: &[&str] = match dialect {
+        crate::Dialect::Sqlite => &["rowid", "_rowid_", "oid"],
+        crate::Dialect::MySql => &["_rowid"],
+        crate::Dialect::Postgres => &[],
+    };
+    names.iter().any(|name| name.eq_ignore_ascii_case(word))
+}
+
 /// The words between `SELECT` and its list that change nothing of what it
 /// selects: `ALL`, and MySQL's hints.
 const MODIFIERS: &[&str] = &[
@@ -371,7 +382,8 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                     allowed.extend(from..to);
                     let entry = masks
                         .column(column)
-                        .or_else(|| alias.and_then(|alias| masks.column(alias)));
+                        .or_else(|| alias.and_then(|alias| masks.column(alias)))
+                        .or_else(|| over.filter(|_| row_id(read.dialect(), column)));
                     if let Some(entry) = entry {
                         masked_items.push((alias, entry));
                     }
@@ -442,6 +454,13 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
             Piece::Word { text, .. } => {
                 if let Some(entry) = masks.column(text) {
                     return Err(used(entry, MaskedUse::Named(entry.column.clone())));
+                }
+                // Over a table with a masked column, its integer key's
+                // other name may be the masked column.
+                if let Some(entry) = over
+                    && row_id(read.dialect(), text)
+                {
+                    return Err(used(entry, MaskedUse::RowId(text.clone())));
                 }
                 if let Some((alias, entry)) = aliases.iter().find(|(alias, _)| same(alias, text)) {
                     return Err(used(entry, MaskedUse::Alias((*alias).to_owned())));
@@ -796,6 +815,40 @@ mod tests {
             named()
         );
         assert_eq!(on(Dialect::Sqlite, "SELECT id, email FROM orders"), Ok(()));
+        // A table's integer key by another name may be the masked column.
+        for (dialect, sql, word) in [
+            (
+                Dialect::Sqlite,
+                "SELECT id FROM orders WHERE rowid > 3",
+                "rowid",
+            ),
+            (
+                Dialect::Sqlite,
+                "SELECT id FROM orders ORDER BY _rowid_",
+                "_rowid_",
+            ),
+            (
+                Dialect::MySql,
+                "SELECT id FROM orders WHERE _rowid > 3",
+                "_rowid",
+            ),
+        ] {
+            assert_eq!(
+                on(dialect, sql),
+                Err(MaskedUse::RowId(word.into())),
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            on(Dialect::Sqlite, "SELECT rowid FROM orders GROUP BY id"),
+            Err(MaskedUse::Clause("GROUP BY"))
+        );
+        // Over no such table, and on PostgreSQL, the words are names.
+        assert_eq!(
+            on(Dialect::Sqlite, "SELECT rowid FROM books WHERE rowid > 3"),
+            Ok(())
+        );
+        assert_eq!(pg("SELECT oid FROM orders WHERE oid > 3"), Ok(()));
         // SQLite reads an alias in a WHERE, and SQLite and MySQL in an
         // ORDER BY's expressions.
         let alias = || Err(MaskedUse::Alias("e".into()));

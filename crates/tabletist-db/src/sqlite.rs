@@ -1157,7 +1157,7 @@ impl Adapter for Conn {
         tables: &Tables,
         masked: &[ColumnName],
         stop: &StopFlag,
-    ) -> Result<ScriptOutcome> {
+    ) -> Result<(ScriptOutcome, Vec<bool>)> {
         let stop = stop.clone();
         let guard = StopOnDrop(Some(stop.clone()));
         let fences = self.fences.clone();
@@ -1177,12 +1177,32 @@ impl Adapter for Conn {
                     }
                     false => None,
                 };
+                // Which result columns are a masked column's, by the table
+                // column each reads: told before the fence goes up, which
+                // reads a masked column as `NULL` and so leaves it none.
+                let masked_columns = match hidden.as_deref() {
+                    Some(hidden) if hidden.masks_anything() => {
+                        tabletist_sqlite_ffi::result_columns(connection, read.text())
+                            .map_err(map_error)?
+                            .iter()
+                            .map(|column| {
+                                column.origin.as_ref().is_some_and(|origin| {
+                                    let schema = Some(origin.database.as_str());
+                                    hidden
+                                        .masks(schema, &origin.table, &origin.column)
+                                        .is_some()
+                                })
+                            })
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                };
                 let _hiding = fences.hide(hidden);
                 let sent = Sent {
                     params: &params,
                     timeout: limits.timeout,
                 };
-                script(
+                let outcome = script(
                     connection,
                     &fences,
                     &texts,
@@ -1190,7 +1210,8 @@ impl Adapter for Conn {
                     ScriptMode::ReadOnly,
                     &stop,
                     Some(sent),
-                )
+                )?;
+                Ok((outcome, masked_columns))
             })
             .await;
         guard.disarm();
@@ -2351,7 +2372,7 @@ mod tests {
                 .run_read(&read, limits, &only(table), &[], &StopFlag::new())
                 .await;
             let answer =
-                outcome.and_then(|outcome| crate::agent::answer(outcome, &StopFlag::new()));
+                outcome.and_then(|(outcome, _)| crate::agent::answer(outcome, &StopFlag::new()));
             assert_eq!(
                 answer.map(|answer| answer.rows),
                 Ok(vec![vec![Value::Int(2)]]),

@@ -221,6 +221,20 @@ impl Fences {
             answer = Authorization::Deny;
             hidden_read = Some(through_view(refusal, action.source));
         }
+        // A masked column the statement reads itself is read as `NULL`,
+        // wherever the statement uses it: what the check of its text
+        // missed reads nothing. A selected one is replaced as it is
+        // answered, by where its result column comes from.
+        if fence == Fence::Agent
+            && answer == Authorization::Allow
+            && action.code == ffi::SQLITE_READ
+            && action.source.is_none()
+            && let (Some(table), Some(column)) = (action.first, action.second)
+            && let Some(hidden) = self.hidden()
+            && hidden.masks(action.database, table, column).is_some()
+        {
+            return Authorization::Ignore;
+        }
         // A masked column a view or a common table expression reads: what
         // it does with it, the statement's check cannot see.
         if fence == Fence::Agent
@@ -580,6 +594,45 @@ mod tests {
         let begin = action(ffi::SQLITE_TRANSACTION, Some("BEGIN"), None);
         assert_eq!(asked.ask(&begin), Authorization::Deny);
         assert_eq!(fences.refused(), None);
+    }
+
+    #[test]
+    fn a_masked_column_the_statement_reads_is_read_as_null_and_one_a_view_reads_is_refused() {
+        use crate::agent::{Catalog, ColumnName, Relation, Tables};
+        let catalog = Catalog {
+            relations: vec![Relation {
+                schema: "main".into(),
+                name: "orders".into(),
+                depends_on: Vec::new(),
+                opaque: false,
+                part: false,
+                view: false,
+            }],
+            columns: vec![("main".into(), "orders".into(), "email".into())],
+            ..Catalog::default()
+        };
+        let masked: Vec<ColumnName> = vec!["orders.email".parse().unwrap()];
+        let hidden = Hidden::masking(Dialect::Sqlite, &catalog, &Tables::All, &masked);
+        let fences = Fences::default();
+        let _hiding = fences.hide(Some(Arc::new(hidden)));
+        let email = action(ffi::SQLITE_READ, Some("orders"), Some("EMAIL"));
+        let id = action(ffi::SQLITE_READ, Some("orders"), Some("id"));
+        let for_view = Action {
+            source: Some("recent_orders"),
+            ..email
+        };
+        let _fenced = fences.fence(Fence::Agent);
+        assert_eq!(fences.ask(&email), Authorization::Ignore);
+        assert_eq!(fences.ask(&id), Authorization::Allow);
+        assert_eq!(fences.refused(), None);
+        assert_eq!(fences.ask(&for_view), Authorization::Deny);
+        assert_eq!(
+            fences.refused(),
+            Some(Refusal::MaskedColumnUsed {
+                column: "orders.email".into(),
+                how: crate::agent::MaskedUse::Through("recent_orders".into()),
+            })
+        );
     }
 
     #[test]

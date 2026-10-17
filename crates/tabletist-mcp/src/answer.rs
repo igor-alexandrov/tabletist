@@ -159,6 +159,7 @@ mod tests {
     fn answer(rows: Vec<Vec<Value>>, truncated: bool) -> Answer {
         Answer {
             columns: vec![column("id", "INTEGER"), column("note", "")],
+            masked: Vec::new(),
             rows,
             truncated,
             elapsed: Duration::from_millis(4),
