@@ -103,6 +103,14 @@ column renamed or dropped stops agents on all three, as a hidden table
 does. B.4, C.3 and G say each where it stands. B.4's rule 7, a masked
 column in `propose_write`, goes with writes to Phase 2.
 
+**Changed on 2026-10-17: a managed policy over the person's settings**
+(`docs/superpowers/specs/2026-10-15-managed-policy-design.md`). A file
+that only an administrator can write holds rules that lower what agents
+may do on the connections they match, and hide tables and mask columns
+that nothing in the person's files can bring back. It is its own part,
+after 3a (G). B.8, C.2, C.3, E and G say each where it changes them. Until it
+is built, nothing here changes.
+
 ## Contents
 
 1. [What the code says, in short](#1-what-the-code-says-in-short)
@@ -1485,6 +1493,15 @@ Protocol and HTTP answers, for calls that never reach a tool:
 A protocol error's sentence never repeats what the agent sent: the SDK
 writes each one to the app's log (C.1).
 
+**With the managed policy** (the note at the top). A refusal that a rule of
+the administrator's causes says so, so that the agent does not ask the
+person for a change they cannot make: "customers is hidden for agents by
+your administrator's policy.", "orders.email is masked by your
+administrator's policy. It can be selected, not filtered, joined, sorted
+or computed on." A stale entry of a rule's (C.3) closes the connection
+with "Agents may not use this connection until your administrator's
+policy is fixed." The codes stay the same.
+
 ## C. Data and settings
 
 ### C.1 Storage
@@ -1793,6 +1810,27 @@ its second part (1b-3b), right after **Turn on** (`2026-10-14-mcp-server-1b-3a-a
   connection files are the person's to edit. From 1c-2b (`2026-10-16-mcp-server-1c-2b-setting.md`) each
   connection's tables are compared too.
 
+**With the managed policy** (the note at the top). Two things above stop
+holding once a policy file is there:
+
+- **A connection pointed at another server gains a lot.** Rules match a
+  connection by what it reaches, so a new host can take it out of every
+  rule. Holding that change would not help: the same program can edit
+  `agents_shown.json`. The policy's answer is its own: with any rule in
+  the file, a connection no rule matches is Off for agents
+  (`unmatched = "off"`, the default then).
+- **A change to the policy file is not the person's either.** One that
+  lets agents do less is taken at once, as here. One that lets them do
+  more (a rule removed, a ceiling raised, a table no longer hidden) is
+  taken at once only from a file that an administrator alone can change,
+  which the spec calls locked. From a file that is not locked it is held
+  like a change to the person's files, with its own `Raised` and the same
+  bar, and **Put back** keeps the policy as it was shown, since the app
+  cannot write the file.
+
+The floor applies after this check: a raise the person keeps is still
+capped by the rules.
+
 ### C.3 Hidden tables and masked columns when the schema changes
 
 Entries are names: `customers`, `sales.customers`, `orders.email`. A schema
@@ -1852,6 +1890,28 @@ How soon a change is seen:
   for an "All except" list, `only` for an "Only" one, each entry written
   `customers` or `sales.customers`, a part that holds a dot or a quote in
   double quotes.
+
+**With the managed policy** (the note at the top). A rule's entries are
+names written as the person's are, with no pattern in them, and are read
+by the same checks:
+
+- **Several sources.** A table is hidden from agents unless the person's
+  Tables setting and every matching rule let it be seen. A rule has a
+  `hidden` list ("All except") or a `visible_only` list ("Only"), not both.
+  A column is masked if the person or any rule masks it. The checks take
+  one `Tables` setting today (`Connection::run_agent_read`'s `tables`,
+  read by `Hidden`), so the policy's own run lets them take several. The
+  masked columns are already a list (its `masked`), and the sources' lists
+  are joined.
+- **A stale entry stops agents as the person's does.** A rule's `hidden`
+  entry, or `masked` entry, that names nothing in a database it matches
+  closes that connection to agents, with the sentence in B.8. A rule may
+  match many databases (`database = "bookshop_*"`), and they must all have
+  what it names: an administrator whose databases differ writes a rule for
+  each shape, or a `visible_only` list, whose stale entry hides more and
+  stops nothing.
+- **`list_connections`** gives a rule's entries beside the person's, and
+  says which are the administrator's.
 
 ## D. UI work
 
@@ -2576,6 +2636,15 @@ MCP, and nothing here stops it. Tabletist's promise is about its own tools:
 what goes through them is checked, capped, logged, and never writes without
 a person.
 
+**With the managed policy** (the note at the top) there is one thing the
+account cannot undo: a rule in a file that an administrator alone can
+change. An agent that edits every file of the person's still meets it. It
+does not hold against an agent that can `sudo`, against the person, who
+is usually an administrator of their own computer, or against a copy of
+Tabletist built without it. A shell still reaches the database with
+whatever credentials it finds: what the rules govern is what goes through
+Tabletist.
+
 | Threat | What stops it | What remains |
 |---|---|---|
 | **A prompt-injected agent.** A row, a web page or a file tells the agent to delete data or to send it somewhere | It can only do what the four tools do. Reads are read-only at the database, capped in rows, size and time. A write shows the person the SQL, the count and the agent's reason, and waits. There is no "always allow". Connections that are Off, hidden tables and masked values never enter its context. Every call is in the log | Whatever it may read, it can send elsewhere with its other tools: MCP governs the query, not the agent. A person who approves without reading. The agent's "reason" is text an injection can write, and the card labels it as the agent's words |
@@ -2593,7 +2662,10 @@ Also considered:
   through rmcp's client.
 - **The log as a store of secrets.** It holds SQL and parameters, which may
   hold personal data. It is private to the account, kept for a set number
-  of days, and never holds a row.
+  of days, and never holds a row. The managed policy's later phase, a
+  service for a company, may send it to that service for audit. That
+  changes "private to the account", and has a design of its own before it
+  is built.
 - **A lost laptop.** Nothing new: the server runs only while the app is
   open, and the tokens are digests.
 
@@ -2799,6 +2871,7 @@ is off until the person turns it on.
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 | 3a. Masked columns | 5, below | Built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`, `2026-10-18-mcp-server-3a-4-columns-control.md`): the rule, its stops, the engines' fences, the values, the server's side, the setting, and the editor's control with the website's guide. 3b is next (order changed on 2026-10-17) |
 | 3b. The Log view, in full | 3, below | Built (`2026-10-18-mcp-server-3b-1-log-filters.md`, `2026-10-18-mcp-server-3b-2-call-pane.md`, `2026-10-18-mcp-server-3b-3-export.md`): the filters and the search, the detail pane and Open in SQL editor, Export… and the guide. Phase 2 is next |
+| The managed policy's floor | Not cut yet | After 3a, which it needs, so that hidden tables and masked columns both work in it from the first day. Its place against 2 is not settled (added on 2026-10-17, `docs/superpowers/specs/2026-10-15-managed-policy-design.md`) |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
