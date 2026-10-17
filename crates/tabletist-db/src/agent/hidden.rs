@@ -78,7 +78,8 @@ impl std::str::FromStr for TableName {
         let mut chars = written.chars().peekable();
         loop {
             let mut part = String::new();
-            if chars.peek() == Some(&'"') {
+            let quoted = chars.peek() == Some(&'"');
+            if quoted {
                 chars.next();
                 loop {
                     match chars.next() {
@@ -104,8 +105,10 @@ impl std::str::FromStr for TableName {
                     chars.next();
                 }
             }
-            if part.is_empty() {
-                return Err("has nothing before or after a dot".into());
+            match (part.is_empty(), quoted) {
+                (true, true) => return Err("has a quoted name that is empty".into()),
+                (true, false) => return Err("has nothing before or after a dot".into()),
+                (false, _) => {}
             }
             parts.push(part);
             match chars.next() {
@@ -1504,7 +1507,14 @@ mod tests {
             "\"sales\".customers".parse::<TableName>(),
             Ok(table(Some("sales"), "customers"))
         );
-        for wrong in ["", "a.", ".b", "a.b.c", "\"a", "a\"b", "\"a\"b"] {
+        // What is wrong is said as it is: an empty quoted name has no dot.
+        let why = |written: &str| written.parse::<TableName>().unwrap_err();
+        assert_eq!(why("\"\""), "has a quoted name that is empty");
+        assert_eq!(why("sales.\"\""), "has a quoted name that is empty");
+        assert_eq!(why("sales."), "has nothing before or after a dot");
+        assert_eq!(why(".orders"), "has nothing before or after a dot");
+        assert_eq!(why(""), "is empty");
+        for wrong in ["", "a.", ".b", "a.b.c", "\"a", "a\"b", "\"a\"b", "\"\""] {
             assert!(wrong.parse::<TableName>().is_err(), "{wrong:?}");
         }
     }
