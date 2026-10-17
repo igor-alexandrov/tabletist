@@ -43,6 +43,7 @@ In the connection dialog:
 | Mod+T | Test |
 | Mod+Enter | Save and connect |
 | Backspace, Delete | In the empty Password field: forget the saved password |
+| Up, Down | In Add table…'s list of tables: move. Enter adds the one chosen, and Esc closes the field |
 | Esc | Cancel |
 
 ## The window

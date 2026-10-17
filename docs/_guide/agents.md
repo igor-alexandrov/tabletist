@@ -27,7 +27,8 @@ connection's limits:
 rows per answer and a statement timeout. Tabletist checks each statement
 before it runs. A statement that would write, lock or change the schema is
 refused, and so are several statements at once and `COPY`. An agent sees
-what the connection's database user can see, and never more.
+what the connection's database user can see, and never more. You can
+also [hide tables](#hide-tables) from them.
 
 Agents cannot write in this version.
 
@@ -100,6 +101,59 @@ Every connection starts with agents **Off**: they do not see it at all.
 
 [Connections]({% link _reference/connections.md %}#agents) describes the
 section.
+
+## Hide tables
+
+A connection can keep some of its tables from agents. In its form's
+**Agents** section, set **Tables**:
+
+- **All**: agents may read every table. This is where every connection
+  starts.
+- **All except**: every table but the ones you list.
+- **Only**: the ones you list and no others. A table made later is hidden
+  too, until you list it.
+
+**Add table…** takes a table's name, `customers`, or with its schema,
+`sales.customers`; a name without a schema is that table in every
+schema. While a window of the connection is open, it lists the tables
+that window's sidebar has loaded as you type. A listed name that the
+loaded schemas show is not a table is marked **not in this database**:
+one whose schema is loaded and has no such table, one whose schema the
+database does not have, or, for a name without a schema, one that no
+schema has once every schema is loaded. What the sidebar has not loaded
+is not known, and not marked.
+
+What a hidden table hides with it:
+
+- Its rows, and its columns: `describe_schema` leaves it out, and the keys
+  that point to it or from it.
+- A view over it, a materialized view, and a partition or a child table of
+  it. On MySQL, a view whose tables the server does not list.
+- The system catalogs (`information_schema`, `pg_catalog`, `mysql`,
+  `sqlite_schema` and the rest), while anything is hidden: they describe
+  every table.
+- A function your database's users wrote, while anything is hidden: what
+  it reads cannot be seen, and a view that calls one is hidden. On
+  PostgreSQL, so is a table whose row policy calls one; and while the
+  database has an operator, a cast or a type whose function its users
+  wrote, every query is refused, as such a function runs without the query
+  naming it.
+
+Agents are told the names in the list, so that they know why a table is
+missing; they never see what is in it. If a table you hid is renamed or
+dropped, agents may not use the connection at all until you take the name
+out, or put in its new one: its new name would be hidden by nothing.
+
+Tabletist checks every query before it runs, and asks the database what
+the query would read. A function that comes with an extension can still
+read a hidden table, and so can a foreign table that points at it. For
+strict isolation, give the connection a database user without access to
+those tables.
+
+A change in `connections.toml` that hides less, made outside Tabletist,
+waits for your answer: see [below](#changes-made-outside-tabletist).
+[Settings and Files]({% link _reference/settings-and-files.md %}#the-connections-file)
+has the keys.
 
 ## See what agents do
 
