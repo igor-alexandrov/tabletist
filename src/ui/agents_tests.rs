@@ -1327,6 +1327,154 @@ fn the_editors_tables_control_lists_what_agents_may_not_read() {
     }
 }
 
+/// A press and a release of the pointer at `at`.
+#[cfg(any(unix, windows))]
+fn press_at(harness: &mut Harness, at: egui::Pos2) {
+    let press = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![press(true)]);
+    harness.frame(vec![press(false)]);
+    harness.settle();
+}
+
+/// The tables loaded in the tree of `tab`'s window: `main`'s, these.
+#[cfg(any(unix, windows))]
+fn loaded(harness: &mut Harness, tab: ConnTabId, names: &[&str]) {
+    use tabletist_db::{ObjectInfo, ObjectKind};
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.schemas.value = Some(vec!["main".into()]);
+    let node = workspace.tree.nodes.entry("main".into()).or_default();
+    node.objects.value = Some(
+        names
+            .iter()
+            .map(|name| ObjectInfo {
+                name: (*name).into(),
+                kind: ObjectKind::Table,
+                estimated_rows: None,
+            })
+            .collect(),
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn two_windows_of_a_connection_are_known_together_and_another_database_is_not() {
+    let (mut harness, first) = connected(Look::macos());
+    // A second window, of the same connection.
+    harness.app.apply(Action::ShowConnections);
+    let second = harness.connect_fake();
+    assert_ne!(first, second);
+    // The fixture is saved anew at each connect: the second window is
+    // made the first's connection's.
+    let conn = harness.app.workspace(first).unwrap().conn_id.clone();
+    harness.app.workspace_mut(second).unwrap().conn_id = conn.clone();
+    loaded(&mut harness, first, &["books", "orders"]);
+    loaded(&mut harness, second, &["books"]);
+    let known = harness.app.loaded_tables(&conn).unwrap();
+    assert_eq!(known.has(&"orders".parse().unwrap()), Some(true));
+    // A window switched to another database is not this connection's.
+    harness.app.workspace_mut(first).unwrap().spec.database = "other".into();
+    harness.app.workspace_mut(second).unwrap().spec.database = "other".into();
+    assert_eq!(harness.app.loaded_tables(&conn), None);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn add_table_offers_the_windows_tables_and_marks_a_name_in_none() {
+    use tabletist_db::{ObjectInfo, ObjectKind};
+    let gone = |look: &Look| {
+        look.label(
+            "Agents may not use this connection while a hidden table is not in its database. \
+             Take the name out, or add the table's new name.",
+        )
+    };
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        // The window's sidebar has loaded its one schema.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.tree.schemas.value = Some(vec!["main".into()]);
+        let node = workspace.tree.nodes.entry("main".into()).or_default();
+        node.objects.value = Some(
+            ["books", "customers", "orders"]
+                .iter()
+                .map(|name| ObjectInfo {
+                    name: (*name).into(),
+                    kind: ObjectKind::Table,
+                    estimated_rows: None,
+                })
+                .collect(),
+        );
+        let conn = workspace.conn_id.clone();
+        allow(&mut harness, tab, AgentAccess::Read);
+        let mut saved = harness.app.connections.get(&conn).unwrap().clone();
+        saved.agents.tables = tabletist_db::agent::Tables::AllExcept(vec![
+            "customers".parse().unwrap(),
+            "old_orders".parse().unwrap(),
+        ]);
+        harness.app.connections.upsert(saved);
+        harness.app.check_agents();
+        at_agents(&mut harness, &conn);
+        // A name in no table of the database is marked, and what that does
+        // to agents is said.
+        let mark = |name: &str| look.label(&format!("{name}, not in this database"));
+        assert!(harness.has(&mark("old_orders")), "{}", look.name);
+        assert!(!harness.has(&mark("customers")), "{}", look.name);
+        assert!(harness.has(&gone(&look)), "{}", look.name);
+        // Typed, the window's tables that match are offered; down picks
+        // the first, and Enter adds it.
+        type_table(&mut harness, &look, "ord");
+        assert!(harness.has("orders"), "{}", look.name);
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(harness.has(&look.label("Remove orders")), "{}", look.name);
+        // Up and Down move in the list, and not the field's caret.
+        type_table(&mut harness, &look, "boo");
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
+        harness.frame(vec![egui::Event::Text("k".into())]);
+        harness.settle();
+        assert_eq!(
+            form(&harness).agents_table_typed.as_deref(),
+            Some("book"),
+            "{}",
+            look.name
+        );
+        // A press on the list's note is no leaving the field.
+        let note = harness
+            .painted_rect(&look.label("Tables loaded in the sidebar"))
+            .expect("the list's note");
+        press_at(&mut harness, note.center());
+        assert_eq!(
+            form(&harness).agents_table_typed.as_deref(),
+            Some("book"),
+            "{}",
+            look.name
+        );
+        // Tab with a table chosen adds that table.
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(harness.has(&look.label("Remove books")), "{}", look.name);
+        // A name typed that is in no list is added as typed.
+        add_table(&mut harness, &look, "payroll");
+        assert!(harness.has(&mark("payroll")), "{}", look.name);
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        harness.settle();
+        // Taken out, nothing is marked and nothing said.
+        harness.click(&look.label("Remove old_orders"));
+        harness.click(&look.label("Remove payroll"));
+        harness.click(&look.label("Remove books"));
+        harness.settle();
+        assert!(!harness.has(&gone(&look)), "{}", look.name);
+    }
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn allow_agents_opens_the_editor_with_read_chosen() {

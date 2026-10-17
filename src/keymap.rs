@@ -487,6 +487,7 @@ commands! {
     FormSaveAndConnect,
     FormForgetPassword,
     FormCancel,
+    FormTableMove,
     SettingsMove,
     SettingsChange,
     SettingsToggle,
@@ -781,6 +782,7 @@ impl Command {
             C::FormSaveAndConnect => info("Save and connect", "", Prompts),
             C::FormForgetPassword => info("Forget the saved password", "", Prompts),
             C::FormCancel => info("Cancel", "", Prompts),
+            C::FormTableMove => info("Move in Add table…'s list", "", Prompts),
             C::SettingsMove => info("Move in the settings", "", Prompts),
             C::SettingsChange => info("Change the option", "", Prompts),
             C::SettingsToggle => info("Toggle the option", "", Prompts),
@@ -1721,6 +1723,15 @@ pub const BINDINGS: &[Binding] = {
         .when(When::ConnectionForm),
         bind(C::FormCancel, PROMPT, keys(&[k("esc")]), keys(&[k("esc")]))
             .when(When::ConnectionForm),
+        // In Add table…'s field, while its list of the window's tables
+        // shows: up moves up it, and down down.
+        bind(
+            C::FormTableMove,
+            PROMPT,
+            keys(&[k("up"), k("down")]),
+            keys(&[k("up"), k("down")]),
+        )
+        .when(When::ConnectionForm),
         bind(
             C::SettingsMove,
             PROMPT,
