@@ -144,11 +144,22 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                     field.request_focus();
                 }
                 let pressed = |key| ui.input(|input| input.key_pressed(key));
-                if field.lost_focus() && pressed(egui::Key::Escape) {
-                    // The field's own: the dialog is not closed by it.
+                // The form's Cancel, as the keymap has it, while the field
+                // has the keyboard or has just let it go: the field's own,
+                // taken out of the frame so that the dialog is not closed
+                // by it.
+                let cancelled = (field.has_focus() || field.lost_focus()) && {
+                    let keymap = crate::ui::keys::published(ui.ctx());
+                    let layout = crate::keymap::Layout::of(skin.look);
                     ui.input_mut(|input| {
-                        input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-                    });
+                        let cancel = crate::keymap::Command::FormCancel;
+                        let scope = crate::keymap::Scope::Prompt;
+                        crate::ui::keys::asked(input, &keymap, layout, cancel, scope, true).count
+                            > 0
+                    })
+                };
+                if cancelled {
+                    field.surrender_focus();
                     form.agents_table_typed = None;
                     form.agents_table_error = None;
                     form.agents_table_focus = Some(TableFocus::Add);
