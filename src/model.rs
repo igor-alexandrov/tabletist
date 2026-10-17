@@ -1098,6 +1098,137 @@ impl TablesChoice {
     }
 }
 
+/// The tables and views the open windows of a connection have loaded in
+/// their sidebars: what Add table… offers, and what a listed name is
+/// checked against to be marked as in no table of the database. Only what
+/// is loaded is known: a schema not loaded neither offers nor marks, and
+/// the system's schemas and tables, which the sidebar does not load, are
+/// left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadedTables {
+    /// The connection's driver, for which schemas and tables are the
+    /// system's.
+    pub driver: Option<Driver>,
+    /// The schema a name without one is first looked up in.
+    pub home: Option<String>,
+    /// Every schema of the database the windows list, the system's left
+    /// out.
+    pub schemas: Vec<String>,
+    /// Each loaded schema with its tables' and views' names.
+    pub loaded: Vec<(String, Vec<String>)>,
+}
+
+/// How many tables Add table…'s list shows at once.
+pub const OFFERED: usize = 8;
+
+impl LoadedTables {
+    /// Whether `schema` is the system's, which no entry is checked in.
+    fn system_schema(&self, schema: &str) -> bool {
+        self.driver
+            .is_some_and(|driver| is_system_schema(driver, &schema.to_lowercase()))
+    }
+
+    /// Whether `name` is one of the system's own tables (SQLite's
+    /// `sqlite_` ones), which hiding never stops agents for.
+    fn system_table(&self, name: &tabletist_db::agent::TableName) -> bool {
+        match self.driver {
+            Some(Driver::Sqlite) => name.name.to_lowercase().starts_with("sqlite_"),
+            Some(Driver::Postgres | Driver::MySql) | None => false,
+        }
+    }
+
+    /// The loaded tables whose names match `typed`, best first, at most
+    /// [`OFFERED`], and none an entry of `listed` already covers. Each is
+    /// written as an entry: with its schema, except a home schema's table
+    /// whose name no other loaded schema has, where the person typed no
+    /// schema and `qualify` (an "Only" list, where a name without a schema
+    /// would read every schema's) is not asked. Nothing for nothing typed.
+    pub fn offered(
+        &self,
+        typed: &str,
+        listed: &[tabletist_db::agent::TableName],
+        qualify: bool,
+    ) -> Vec<tabletist_db::agent::TableName> {
+        use tabletist_db::agent::TableName;
+        let typed = typed.trim().replace('"', "");
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        let shared = |name: &str| {
+            self.loaded
+                .iter()
+                .filter(|(_, names)| names.iter().any(|known| same(known, name)))
+                .count()
+                > 1
+        };
+        // An entry covers a table of `schema` where its name is the
+        // table's and its schema, if it has one, is `schema`.
+        let covered = |schema: &str, name: &str| {
+            listed.iter().any(|entry| {
+                same(&entry.name, name)
+                    && entry.schema.as_deref().is_none_or(|own| same(own, schema))
+            })
+        };
+        let mut scored: Vec<(i64, String, TableName)> = self
+            .loaded
+            .iter()
+            .flat_map(|(schema, names)| names.iter().map(move |name| (schema, name)))
+            .filter(|(schema, name)| !covered(schema, name))
+            .filter_map(|(schema, name)| {
+                let qualified = format!("{schema}.{name}");
+                let score = crate::util::fuzzy_score(&typed, name)
+                    .max(crate::util::fuzzy_score(&typed, &qualified))?;
+                let home = self.home.as_deref().is_some_and(|home| same(home, schema));
+                let bare = home && !qualify && !typed.contains('.') && !shared(name);
+                let entry = TableName {
+                    schema: (!bare).then(|| schema.clone()),
+                    name: name.clone(),
+                };
+                Some((score, qualified.to_lowercase(), entry))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored.truncate(OFFERED);
+        scored.into_iter().map(|(_, _, entry)| entry).collect()
+    }
+
+    /// Whether `name` is a table or view of the database, where what the
+    /// windows loaded can say: `Some(false)` marks it. A name in a schema
+    /// the database does not list is missing; one in a schema not loaded is
+    /// not known; one without a schema is any schema's, so it is missing
+    /// only when every schema is loaded. The system's are never marked.
+    pub fn has(&self, name: &tabletist_db::agent::TableName) -> Option<bool> {
+        let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        let in_schema = |names: &Vec<String>| names.iter().any(|known| same(known, &name.name));
+        if self.system_table(name) {
+            return None;
+        }
+        match &name.schema {
+            Some(schema) if self.system_schema(schema) => None,
+            Some(schema) => match self.loaded.iter().find(|(loaded, _)| same(loaded, schema)) {
+                Some((_, names)) => Some(in_schema(names)),
+                None => {
+                    let listed = !self.schemas.is_empty()
+                        && !self.schemas.iter().any(|known| same(known, schema));
+                    listed.then_some(false)
+                }
+            },
+            None => {
+                if self.loaded.iter().any(|(_, names)| in_schema(names)) {
+                    return Some(true);
+                }
+                let all = !self.schemas.is_empty()
+                    && self
+                        .schemas
+                        .iter()
+                        .all(|schema| self.loaded.iter().any(|(loaded, _)| same(loaded, schema)));
+                all.then_some(false)
+            }
+        }
+    }
+}
+
 /// Where the Tables control puts the keyboard on the next frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableFocus {
@@ -1136,6 +1267,11 @@ pub struct ConnectionForm {
     pub agents_table_error: Option<String>,
     /// Where the Tables control puts the keyboard on the next frame.
     pub agents_table_focus: Option<TableFocus>,
+    /// What an open window of the connection has loaded, for Add table…'s
+    /// list and the mark of a name in no table; `None` with none open.
+    pub agents_loaded: Option<LoadedTables>,
+    /// The table of Add table…'s list the keyboard is on, by its place.
+    pub agents_table_pick: Option<usize>,
     /// Rows per answer, as typed.
     pub agents_rows: String,
     /// The statement's timeout in seconds, as typed.
@@ -1261,6 +1397,8 @@ impl Default for ConnectionForm {
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
+            agents_loaded: None,
+            agents_table_pick: None,
             agents_rows: crate::connections::Agents::default().rows.to_string(),
             agents_timeout: crate::connections::Agents::default()
                 .timeout_secs
@@ -1411,6 +1549,8 @@ impl ConnectionForm {
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
+            agents_loaded: None,
+            agents_table_pick: None,
             agents_rows: saved.agents.rows.to_string(),
             agents_timeout: saved.agents.timeout_secs.to_string(),
             show_agents: false,
@@ -1677,9 +1817,22 @@ impl ConnectionForm {
     /// Save does: added, or `Err` with why it does not read, which is then
     /// also said under the names.
     pub fn take_typed_table(&mut self) -> Result<(), String> {
-        let Some(typed) = self.agents_table_typed.clone() else {
+        let Some(mut typed) = self.agents_table_typed.clone() else {
             return Ok(());
         };
+        // The table chosen in Add table…'s list, where one is: Enter, Tab,
+        // a click away and a save all add what the person chose.
+        if let Some(at) = self.agents_table_pick.take() {
+            let listed = self.agents_tables.names().cloned().unwrap_or_default();
+            let only = self.agents_tables.mode == TablesMode::Only;
+            if let Some(picked) = self
+                .agents_loaded
+                .as_ref()
+                .and_then(|loaded| loaded.offered(&typed, &listed, only).into_iter().nth(at))
+            {
+                typed = picked.to_string();
+            }
+        }
         if typed.trim().is_empty() {
             self.agents_table_typed = None;
             return Ok(());
@@ -5393,6 +5546,86 @@ mod tests {
         assert!(back.ssh_secret_is_saved());
         back.ssh_port = "2222".into();
         assert!(back.ssh_secret_is_stale(), "another port, another server");
+    }
+
+    #[test]
+    fn what_a_window_loaded_is_offered_and_marks_a_name_in_no_table() {
+        let names = |written: &[&str]| -> Vec<tabletist_db::agent::TableName> {
+            written.iter().map(|entry| entry.parse().unwrap()).collect()
+        };
+        let name = |written: &str| names(&[written]).remove(0);
+        let written = |offered: Vec<tabletist_db::agent::TableName>| -> Vec<String> {
+            offered.iter().map(ToString::to_string).collect()
+        };
+        let loaded = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into(), "sales".into(), "audit".into()],
+            loaded: vec![
+                (
+                    "public".into(),
+                    vec!["books".into(), "customers".into(), "authors".into()],
+                ),
+                ("sales".into(), vec!["orders".into(), "customers".into()]),
+            ],
+        };
+        // A home table whose name no other schema has goes without its
+        // schema; one another schema shares, or under "Only", with it; and
+        // with it where the person typed a schema.
+        assert_eq!(written(loaded.offered("auth", &[], false)), ["authors"]);
+        assert_eq!(
+            written(loaded.offered("auth", &[], true)),
+            ["public.authors"]
+        );
+        assert_eq!(
+            written(loaded.offered("cust", &[], false)),
+            ["public.customers", "sales.customers"]
+        );
+        assert_eq!(
+            written(loaded.offered("public.auth", &[], false)),
+            ["public.authors"]
+        );
+        // What an entry covers already is not offered: one without a
+        // schema covers every schema's.
+        assert_eq!(
+            written(loaded.offered("cust", &names(&["Customers"]), false)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            written(loaded.offered("cust", &names(&["public.customers"]), false)),
+            ["sales.customers"]
+        );
+        assert_eq!(
+            written(loaded.offered("\"ord", &[], false)),
+            ["sales.orders"]
+        );
+        assert!(loaded.offered("  ", &[], false).is_empty());
+        // In a loaded schema: known either way; in one not loaded: unknown;
+        // in one the database does not have: missing.
+        assert_eq!(loaded.has(&name("sales.orders")), Some(true));
+        assert_eq!(loaded.has(&name("sales.old_orders")), Some(false));
+        assert_eq!(loaded.has(&name("audit.log")), None);
+        assert_eq!(loaded.has(&name("salse.orders")), Some(false));
+        assert_eq!(loaded.has(&name("BOOKS")), Some(true));
+        // The system's are never marked.
+        assert_eq!(loaded.has(&name("pg_catalog.pg_class")), None);
+        // Without a schema: any schema's, so missing only when every one of
+        // the database's own is loaded.
+        assert_eq!(loaded.has(&name("old_orders")), None);
+        let whole = LoadedTables {
+            schemas: vec!["public".into(), "sales".into()],
+            ..loaded
+        };
+        assert_eq!(whole.has(&name("old_orders")), Some(false));
+        // SQLite's own tables are the system's.
+        let sqlite = LoadedTables {
+            driver: Some(Driver::Sqlite),
+            home: Some("main".into()),
+            schemas: vec!["main".into()],
+            loaded: vec![("main".into(), vec!["books".into()])],
+        };
+        assert_eq!(sqlite.has(&name("sqlite_stat1")), None);
+        assert_eq!(sqlite.has(&name("old_orders")), Some(false));
     }
 
     #[test]

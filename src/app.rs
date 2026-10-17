@@ -305,6 +305,65 @@ impl App {
             .map(|(tab, _)| tab)
     }
 
+    /// What the open windows of the saved connection `conn` have loaded in
+    /// their sidebars: each schema's tables and views, every window's
+    /// together, the system's schemas left out. A window switched to
+    /// another database than the saved one's is another database, and is
+    /// not counted. `None` with none open.
+    pub fn loaded_tables(
+        &self,
+        conn: &crate::connections::ConnectionId,
+    ) -> Option<crate::model::LoadedTables> {
+        let saved = self.connections.get(conn)?;
+        let mut found: Option<crate::model::LoadedTables> = None;
+        for (_, workspace) in self.open_connections().filter(|(_, workspace)| {
+            workspace.conn_id == *conn && workspace.spec.database == saved.spec.database
+        }) {
+            let driver = workspace.driver;
+            let user = |schema: &String| !crate::model::is_system_schema(driver, schema);
+            let tables = found.get_or_insert_with(Default::default);
+            tables.driver = Some(driver);
+            let schemas = workspace.tree.schemas.value.clone().unwrap_or_default();
+            if tables.home.is_none() {
+                tables.home = crate::model::first_schema(&schemas, &workspace.spec.database);
+            }
+            for schema in schemas.into_iter().filter(user) {
+                if !tables.schemas.contains(&schema) {
+                    tables.schemas.push(schema);
+                }
+            }
+            for (schema, node) in workspace
+                .tree
+                .nodes
+                .iter()
+                .filter(|(schema, _)| user(schema))
+            {
+                let Some(objects) = &node.objects.value else {
+                    continue;
+                };
+                let names = objects.iter().map(|object| object.name.clone());
+                match tables
+                    .loaded
+                    .iter_mut()
+                    .find(|(loaded, _)| loaded == schema)
+                {
+                    Some((_, known)) => {
+                        for name in names {
+                            if !known.contains(&name) {
+                                known.push(name);
+                            }
+                        }
+                    }
+                    None => tables.loaded.push((schema.clone(), names.collect())),
+                }
+            }
+        }
+        if let Some(tables) = found.as_mut() {
+            tables.loaded.sort();
+        }
+        found
+    }
+
     pub fn tab_for_session(&self, session: SessionId) -> Option<ConnTabId> {
         self.tabs.iter().find_map(|tab| match &tab.content {
             ConnTabContent::Workspace(workspace) if workspace.session == session => Some(tab.id),
