@@ -1959,6 +1959,9 @@ impl App {
                     // app is held: what the person was shown.
                     form.agents.access = self.agents_access(saved);
                     form.agents_opened = form.agents.access;
+                    let tables = self.agents_tables(saved);
+                    form.agents_tables = crate::model::TablesChoice::of(&tables);
+                    form.agents_tables_opened = tables;
                     self.dialog = Some(Dialog::Connection(Box::new(form)));
                     self.list_ssh_hosts();
                 }
@@ -3617,12 +3620,49 @@ impl App {
     }
 
     fn save_dialog(&mut self, connect: bool) {
+        // The tables in force now, of the connection being edited.
+        let tables_now = match &self.dialog {
+            Some(Dialog::Connection(form)) => form
+                .editing
+                .as_ref()
+                .and_then(|id| self.connections.get(id))
+                .map(|saved| self.agents_tables(saved)),
+            _ => None,
+        };
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;
         };
         let opened = form.agents_opened;
         if !use_typed_url(form) {
             return;
+        }
+        // A name typed and not yet added is the person's, as a URL typed
+        // is: added, or the save is refused and says why.
+        if let Err(why) = form.take_typed_table() {
+            form.message = Some(format!("The table's name {why}."));
+            form.show_agents = true;
+            return;
+        }
+        // Tables the file changed while the dialog was open are not saved
+        // over: what the person changes is what they saw. They are shown
+        // as they are now, to be changed again.
+        let tables_opened = form.agents_tables_opened.clone();
+        if let Some(now) = &tables_now {
+            use crate::model::TablesChoice;
+            let changed =
+                TablesChoice::of(&form.agents_tables.tables()) != TablesChoice::of(&tables_opened);
+            let moved = TablesChoice::of(now) != TablesChoice::of(&tables_opened);
+            if changed && moved {
+                form.agents_tables = TablesChoice::of(now);
+                form.agents_tables_opened = now.clone();
+                form.message = Some(
+                    "The tables were changed outside Tabletist while this was open. They show \
+                     as they are now: make your change again."
+                        .into(),
+                );
+                form.show_agents = true;
+                return;
+            }
         }
         // The connection being edited was deleted while the dialog was open:
         // saving must not bring it back.
@@ -3656,10 +3696,21 @@ impl App {
         // their own, and one they raised is shown, never held. The access
         // the dialog opened with keeps what the file says now: a change
         // made outside the app stays held, and one put back stays back.
-        // The tables have no control in the dialog yet: they are what the
-        // file says now, held or not.
+        // The tables likewise: those the person changed are their own and
+        // shown, wider or narrower; the same ones keep what the file says.
         if let Some(was) = self.connections.get(&saved.id) {
-            saved.agents.tables = was.agents.tables.clone();
+            let same = crate::model::TablesChoice::of(&saved.agents.tables)
+                == crate::model::TablesChoice::of(&tables_opened);
+            if same {
+                saved.agents.tables = was.agents.tables.clone();
+            } else {
+                self.agents_shown
+                    .keep(&[crate::agents_shown::Raised::Tables {
+                        id: saved.id.clone(),
+                        to: saved.agents.tables.clone(),
+                    }]);
+                self.save_agents_shown();
+            }
         }
         match self.connections.get(&saved.id) {
             Some(was) if saved.agents.access == opened => {
@@ -6914,6 +6965,80 @@ mod tests {
                 .filter(|saved| saved.agents.access == AgentAccess::Read)
                 .count(),
             2
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn tables_the_person_changes_in_the_editor_are_theirs_and_shown() {
+        use crate::connections::AgentAccess;
+        use tabletist_db::agent::Tables;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let customers = Tables::AllExcept(vec!["customers".parse().unwrap()]);
+        let file_says = |app: &mut App, tables: Tables| {
+            let mut saved = app.connections.get(&conn).unwrap().clone();
+            saved.agents.tables = tables;
+            app.connections.upsert(saved);
+            app.check_agents();
+        };
+        file_says(&mut app, customers.clone());
+        // The file hides less: held. The editor opens with what is in force.
+        file_says(&mut app, Tables::All);
+        assert_eq!(app.agents_held.len(), 1);
+        app.apply(Action::EditConnection(conn.clone()));
+        assert_eq!(form(&mut app).agents_tables.tables(), customers);
+        // Saved as it opened: the file's, and still held.
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().agents.tables,
+            Tables::All
+        );
+        assert_eq!(app.agents_held.len(), 1);
+        // Changed in the editor, wider: the person's own, shown, not held.
+        app.apply(Action::EditConnection(conn.clone()));
+        form(&mut app).agents_tables.mode = crate::model::TablesMode::All;
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().agents.tables,
+            Tables::All
+        );
+        assert!(app.agents_held.is_empty());
+        app.check_agents();
+        assert!(app.agents_held.is_empty(), "shown, so nothing to hold");
+        // Narrower: the same.
+        app.apply(Action::EditConnection(conn.clone()));
+        form(&mut app).agents_tables = crate::model::TablesChoice::of(&customers);
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(app.connections.get(&conn).unwrap().agents.tables, customers);
+        file_says(&mut app, Tables::All);
+        assert_eq!(
+            app.agents_held.len(),
+            1,
+            "what the person hid is what was shown"
+        );
+        // The file hides more while the editor is open: a change in the
+        // editor is not saved over it, and the editor shows it as it is.
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        app.apply(Action::EditConnection(conn.clone()));
+        let more = Tables::AllExcept(vec![
+            "customers".parse().unwrap(),
+            "payroll".parse().unwrap(),
+        ]);
+        file_says(&mut app, more.clone());
+        form(&mut app).agents_tables.add("orders").unwrap();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(app.connections.get(&conn).unwrap().agents.tables, more);
+        assert_eq!(form(&mut app).agents_tables.tables(), more);
+        let said = form(&mut app).message.clone().unwrap_or_default();
+        assert!(
+            said.starts_with("The tables were changed outside"),
+            "{said}"
         );
     }
 

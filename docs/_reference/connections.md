@@ -163,9 +163,26 @@ server is on.
   its "…" menu changes it. Its **Tables, columns and limits…** opens the
   connection's **Agents** section, and **Show Agents tab** shows its
   Agents tab.
-- In the connection's form, the **Agents** section has the access, **Rows
-  per answer** (1 to 5000, 500 at first) and the **Statement timeout** in
-  seconds (1 to 60, 10 at first).
+- In the connection's form, the **Agents** section has the access,
+  **Tables**, **Rows per answer** (1 to 5000, 500 at first) and the
+  **Statement timeout** in seconds (1 to 60, 10 at first).
+- **Tables** is **All**, **All except** or **Only**. With **All except**,
+  agents may read every table but the ones listed; with **Only**, the ones
+  listed and no others, a table made later included. **Add table…** opens
+  a field for a name, `customers` or `sales.customers`: Enter adds it and
+  leaves the field open for the next, Escape closes the field, and **×**
+  takes a name out. A name still in the field when you save, or choose
+  another of the three, is added with the rest. Each of the two lists is kept while you try the other, and
+  what you save is the one chosen. Agents are told the names in the list,
+  never what is in the hidden tables: not their rows, their columns, or
+  the views over them. A function from an extension can still read them;
+  for strict isolation, use a database user without access.
+- If `connections.toml` hides more tables while the form is open, saving
+  a change of yours to them is refused, and the form shows them as they
+  are now, for you to make your change again. A change in the file that
+  hides less is held until you answer it, and is not in force: a save that
+  changes the tables goes through over it, and one that leaves them as
+  shown keeps it, still held.
 - An Agents tab that says agents can't use a connection has **Allow
   agents…**, which opens that section with **Read** chosen. Nothing
   changes until you save.

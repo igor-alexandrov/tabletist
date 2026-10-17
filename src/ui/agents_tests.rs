@@ -1147,6 +1147,186 @@ fn the_editors_agents_part_sets_access_rows_and_timeout() {
     }
 }
 
+/// The connection dialog's form.
+#[cfg(any(unix, windows))]
+fn form(harness: &Harness) -> &crate::model::ConnectionForm {
+    match &harness.app.dialog {
+        Some(crate::model::Dialog::Connection(form)) => form,
+        _ => panic!("no connection dialog"),
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn form_mut(harness: &mut Harness) -> &mut crate::model::ConnectionForm {
+    match &mut harness.app.dialog {
+        Some(crate::model::Dialog::Connection(form)) => form,
+        _ => panic!("no connection dialog"),
+    }
+}
+
+/// Opens the editor at its Agents part, and waits for its scroll.
+#[cfg(any(unix, windows))]
+fn at_agents(harness: &mut Harness, conn: &crate::connections::ConnectionId) {
+    harness.app.apply(Action::EditAgents {
+        conn: conn.clone(),
+        allow: false,
+    });
+    for _ in 0..20 {
+        harness.settle();
+    }
+}
+
+/// `name` typed for Add table… (its field opened where it is not open
+/// already), then Enter.
+#[cfg(any(unix, windows))]
+fn add_table(harness: &mut Harness, look: &Look, name: &str) {
+    type_table(harness, look, name);
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    harness.settle();
+}
+
+/// `name` typed in Add table…'s field, opened where it is not open.
+#[cfg(any(unix, windows))]
+fn type_table(harness: &mut Harness, look: &Look, name: &str) {
+    if form(harness).agents_table_typed.is_none() {
+        harness.click(&look.label("Add table…"));
+    }
+    harness.settle();
+    harness.frame(vec![egui::Event::Text(name.into())]);
+    harness.settle();
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn the_editors_tables_control_lists_what_agents_may_not_read() {
+    use tabletist_db::agent::Tables;
+    let names = |written: &[&str]| -> Vec<tabletist_db::agent::TableName> {
+        written.iter().map(|entry| entry.parse().unwrap()).collect()
+    };
+    let too_many =
+        "The table's name has more than one dot: it is a table, or a schema and a table.";
+    for look in looks() {
+        let (mut harness, conn) = on_the_list(look);
+        at_agents(&mut harness, &conn);
+        harness.click(&look.label("Read"));
+        harness.click(&look.label("All except"));
+        harness.settle();
+        // Enter adds a name and keeps the field, with the keyboard, for
+        // the next.
+        add_table(&mut harness, &look, "customers");
+        add_table(&mut harness, &look, "sales.orders");
+        assert_eq!(form(&harness).agents_table_typed.as_deref(), Some(""));
+        // The same name again, in another case, is there once.
+        add_table(&mut harness, &look, "Customers");
+        // One that does not read is said under the names, and the field
+        // keeps it to be put right.
+        add_table(&mut harness, &look, "a.b.c");
+        assert!(harness.has(&look.label(too_many)), "{}", look.name);
+        assert_eq!(form(&harness).agents_table_typed.as_deref(), Some("a.b.c"));
+        // Escape closes the field and nothing else.
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(harness.app.dialog.is_some(), "{}", look.name);
+        assert_eq!(form(&harness).agents_table_typed, None, "{}", look.name);
+        assert!(!harness.has(&look.label(too_many)), "{}", look.name);
+        harness.click(&look.label("Remove sales.orders"));
+        harness.settle();
+        // A name typed and not added goes to its list when another mode is
+        // chosen; one that does not read keeps the mode until put right.
+        type_table(&mut harness, &look, "a.b.c");
+        harness.click(&look.label("Only"));
+        harness.settle();
+        assert_eq!(
+            form(&harness).agents_tables.mode,
+            crate::model::TablesMode::AllExcept,
+            "{}",
+            look.name
+        );
+        form_mut(&mut harness).agents_table_typed = Some(String::new());
+        harness.settle();
+        type_table(&mut harness, &look, "orders");
+        harness.click(&look.label("Only"));
+        harness.settle();
+        harness.click(&look.label("All except"));
+        harness.settle();
+        assert!(harness.has(&look.label("Remove orders")), "{}", look.name);
+        harness.click(&look.label("Remove orders"));
+        harness.settle();
+        // "Only" keeps a list of its own, and "All except" finds its again.
+        harness.click(&look.label("Only"));
+        harness.settle();
+        assert!(
+            !harness.has(&look.label("Remove customers")),
+            "{}",
+            look.name
+        );
+        let only = "Agents may read these tables and no others, the ones made later included. A \
+                    function from an extension can still read the others. For strict isolation, \
+                    use a database user without access.";
+        assert!(harness.has(&look.label(only)), "{}", look.name);
+        add_table(&mut harness, &look, "books");
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        harness.click(&look.label("All except"));
+        harness.settle();
+        assert!(
+            harness.has(&look.label("Remove customers")),
+            "{}",
+            look.name
+        );
+        // A name typed and not yet added is added by the save.
+        type_table(&mut harness, &look, "payroll");
+        harness.app.apply(Action::SaveConnection { connect: false });
+        let saved = harness.app.connections.get(&conn).unwrap();
+        assert_eq!(
+            saved.agents.tables,
+            Tables::AllExcept(names(&["customers", "payroll"])),
+            "{}",
+            look.name
+        );
+        // The person's own: shown, so that comparing again holds nothing.
+        harness.app.check_agents();
+        assert!(harness.app.agents_held.is_empty(), "{}", look.name);
+        // Opened again it shows them. A name that does not read, typed and
+        // not added, refuses the save and says why.
+        at_agents(&mut harness, &conn);
+        assert!(
+            harness.has(&look.label("Remove customers")),
+            "{}",
+            look.name
+        );
+        type_table(&mut harness, &look, "a.b.c");
+        harness.app.apply(Action::SaveConnection { connect: false });
+        assert!(harness.app.dialog.is_some(), "{}", look.name);
+        assert_eq!(
+            form(&harness).message.as_deref(),
+            Some(too_many),
+            "{}",
+            look.name
+        );
+        form_mut(&mut harness).agents_table_typed = None;
+        form_mut(&mut harness).agents_table_error = None;
+        harness.settle();
+        // A name left in the field when Tab moves on is added.
+        type_table(&mut harness, &look, "orders");
+        harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(harness.has(&look.label("Remove orders")), "{}", look.name);
+        assert_eq!(form(&harness).agents_table_typed, None, "{}", look.name);
+        // Widened by the person: theirs, and never held.
+        harness.click(&look.label("All"));
+        harness.settle();
+        harness.app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            harness.app.connections.get(&conn).unwrap().agents.tables,
+            Tables::All,
+            "{}",
+            look.name
+        );
+        harness.app.check_agents();
+        assert!(harness.app.agents_held.is_empty(), "{}", look.name);
+    }
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn allow_agents_opens_the_editor_with_read_chosen() {

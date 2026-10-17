@@ -1007,6 +1007,106 @@ pub fn first_schema(schemas: &[String], database: &str) -> Option<String> {
         .cloned()
 }
 
+/// Which tables agents may read, as the editor's Tables control has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TablesMode {
+    #[default]
+    All,
+    AllExcept,
+    Only,
+}
+
+/// The Tables control's state: the mode chosen, and a list for each of
+/// the two that have one, so that a switch from one to the other and back
+/// finds its names again.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TablesChoice {
+    pub mode: TablesMode,
+    pub hidden: Vec<tabletist_db::agent::TableName>,
+    pub only: Vec<tabletist_db::agent::TableName>,
+}
+
+impl TablesChoice {
+    pub fn of(tables: &tabletist_db::agent::Tables) -> Self {
+        use tabletist_db::agent::Tables;
+        match tables {
+            Tables::All => Self::default(),
+            Tables::AllExcept(names) if names.is_empty() => Self::default(),
+            Tables::AllExcept(names) => Self {
+                mode: TablesMode::AllExcept,
+                hidden: names.clone(),
+                only: Vec::new(),
+            },
+            Tables::Only(names) => Self {
+                mode: TablesMode::Only,
+                hidden: Vec::new(),
+                only: names.clone(),
+            },
+        }
+    }
+
+    /// What the control says: "All except" a list that is empty is "All".
+    pub fn tables(&self) -> tabletist_db::agent::Tables {
+        use tabletist_db::agent::Tables;
+        match self.mode {
+            TablesMode::All => Tables::All,
+            TablesMode::AllExcept if self.hidden.is_empty() => Tables::All,
+            TablesMode::AllExcept => Tables::AllExcept(self.hidden.clone()),
+            TablesMode::Only => Tables::Only(self.only.clone()),
+        }
+    }
+
+    /// The names the chosen mode lists, where it lists any.
+    pub fn names(&self) -> Option<&Vec<tabletist_db::agent::TableName>> {
+        match self.mode {
+            TablesMode::All => None,
+            TablesMode::AllExcept => Some(&self.hidden),
+            TablesMode::Only => Some(&self.only),
+        }
+    }
+
+    fn names_mut(&mut self) -> Option<&mut Vec<tabletist_db::agent::TableName>> {
+        match self.mode {
+            TablesMode::All => None,
+            TablesMode::AllExcept => Some(&mut self.hidden),
+            TablesMode::Only => Some(&mut self.only),
+        }
+    }
+
+    /// Adds `written` to the chosen mode's list, once: a name already
+    /// there in another case is the same name. The error says what is
+    /// wrong with it.
+    pub fn add(&mut self, written: &str) -> Result<(), String> {
+        let name: tabletist_db::agent::TableName = written.trim().parse()?;
+        let key = |name: &tabletist_db::agent::TableName| name.to_string().to_lowercase();
+        let Some(names) = self.names_mut() else {
+            return Ok(());
+        };
+        if !names.iter().any(|known| key(known) == key(&name)) {
+            names.push(name);
+        }
+        Ok(())
+    }
+
+    /// Takes the name at `at` out of the chosen mode's list.
+    pub fn remove(&mut self, at: usize) {
+        if let Some(names) = self.names_mut()
+            && at < names.len()
+        {
+            names.remove(at);
+        }
+    }
+}
+
+/// Where the Tables control puts the keyboard on the next frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableFocus {
+    /// The field for a name: opened, or still open after a name.
+    Field,
+    /// Add table…, once the field is closed with Escape.
+    Add,
+}
+
 /// The connection dialog's fields while it is open.
 pub struct ConnectionForm {
     /// `Some` when editing a saved connection, `None` for a new one.
@@ -1025,6 +1125,17 @@ pub struct ConnectionForm {
     /// The access in force when the dialog opened: a choice other than it
     /// is the person's own, and the same one keeps what the file says.
     pub agents_opened: crate::connections::AgentAccess,
+    /// The Tables control: what agents may not read.
+    pub agents_tables: TablesChoice,
+    /// The tables in force when the dialog opened: others are the
+    /// person's own, and the same keep what the file says.
+    pub agents_tables_opened: tabletist_db::agent::Tables,
+    /// The name being typed after Add table…, while its field is open.
+    pub agents_table_typed: Option<String>,
+    /// Why the name typed does not read, said under the names.
+    pub agents_table_error: Option<String>,
+    /// Where the Tables control puts the keyboard on the next frame.
+    pub agents_table_focus: Option<TableFocus>,
     /// Rows per answer, as typed.
     pub agents_rows: String,
     /// The statement's timeout in seconds, as typed.
@@ -1145,6 +1256,11 @@ impl Default for ConnectionForm {
             read_only: None,
             agents: crate::connections::Agents::default(),
             agents_opened: crate::connections::AgentAccess::Off,
+            agents_tables: TablesChoice::default(),
+            agents_tables_opened: tabletist_db::agent::Tables::All,
+            agents_table_typed: None,
+            agents_table_error: None,
+            agents_table_focus: None,
             agents_rows: crate::connections::Agents::default().rows.to_string(),
             agents_timeout: crate::connections::Agents::default()
                 .timeout_secs
@@ -1290,6 +1406,11 @@ impl ConnectionForm {
             read_only: saved.read_only,
             agents: saved.agents.clone(),
             agents_opened: saved.agents.access,
+            agents_tables: TablesChoice::of(&saved.agents.tables),
+            agents_tables_opened: saved.agents.tables.clone(),
+            agents_table_typed: None,
+            agents_table_error: None,
+            agents_table_focus: None,
             agents_rows: saved.agents.rows.to_string(),
             agents_timeout: saved.agents.timeout_secs.to_string(),
             show_agents: false,
@@ -1552,6 +1673,30 @@ impl ConnectionForm {
         })
     }
 
+    /// Takes into the Tables control a name typed and not yet added, as a
+    /// Save does: added, or `Err` with why it does not read, which is then
+    /// also said under the names.
+    pub fn take_typed_table(&mut self) -> Result<(), String> {
+        let Some(typed) = self.agents_table_typed.clone() else {
+            return Ok(());
+        };
+        if typed.trim().is_empty() {
+            self.agents_table_typed = None;
+            return Ok(());
+        }
+        match self.agents_tables.add(&typed) {
+            Ok(()) => {
+                self.agents_table_typed = None;
+                self.agents_table_error = None;
+                Ok(())
+            }
+            Err(why) => {
+                self.agents_table_error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
     /// What agents may do, as the fields say it: the rows and the timeout
     /// in the ranges a connection may be given.
     pub fn agents_to_saved(&self) -> Result<crate::connections::Agents, String> {
@@ -1570,12 +1715,11 @@ impl ConnectionForm {
                     "Statement timeout is a number of seconds from 1 to {MAX_AGENT_TIMEOUT_SECS}."
                 )
             })?;
-        // The tables have no field here yet: the ones the form opened with.
         Ok(crate::connections::Agents {
             access: self.agents.access,
             rows,
             timeout_secs,
-            tables: self.agents.tables.clone(),
+            tables: self.agents_tables.tables(),
         })
     }
 }
@@ -5249,6 +5393,52 @@ mod tests {
         assert!(back.ssh_secret_is_saved());
         back.ssh_port = "2222".into();
         assert!(back.ssh_secret_is_stale(), "another port, another server");
+    }
+
+    #[test]
+    fn the_tables_control_keeps_a_list_for_each_mode_and_says_what_is_chosen() {
+        use tabletist_db::agent::Tables;
+        let names = |written: &[&str]| -> Vec<tabletist_db::agent::TableName> {
+            written.iter().map(|entry| entry.parse().unwrap()).collect()
+        };
+        // Each setting reads back as it was; an empty "All except" is All.
+        for tables in [
+            Tables::All,
+            Tables::AllExcept(names(&["customers", "sales.orders"])),
+            Tables::Only(names(&["books"])),
+            Tables::Only(Vec::new()),
+        ] {
+            assert_eq!(TablesChoice::of(&tables).tables(), tables);
+        }
+        assert_eq!(
+            TablesChoice::of(&Tables::AllExcept(Vec::new())).tables(),
+            Tables::All
+        );
+        let mut choice = TablesChoice::of(&Tables::AllExcept(names(&["customers"])));
+        // A name once, in any case; one that does not read is refused.
+        assert_eq!(choice.add("Customers"), Ok(()));
+        assert_eq!(choice.add(" sales.orders "), Ok(()));
+        assert!(choice.add("a.b.c").is_err());
+        assert_eq!(
+            choice.tables(),
+            Tables::AllExcept(names(&["customers", "sales.orders"]))
+        );
+        // "Only" has a list of its own, and "All except" finds its again.
+        choice.mode = TablesMode::Only;
+        assert_eq!(choice.tables(), Tables::Only(Vec::new()));
+        choice.add("books").unwrap();
+        choice.mode = TablesMode::AllExcept;
+        choice.remove(0);
+        choice.remove(9);
+        assert_eq!(choice.tables(), Tables::AllExcept(names(&["sales.orders"])));
+        choice.remove(0);
+        assert_eq!(choice.tables(), Tables::All, "emptied, it hides nothing");
+        choice.mode = TablesMode::Only;
+        assert_eq!(choice.tables(), Tables::Only(names(&["books"])));
+        // "All" has no list to add to.
+        choice.mode = TablesMode::All;
+        assert_eq!(choice.add("orders"), Ok(()));
+        assert_eq!(choice.names(), None);
     }
 
     #[test]
