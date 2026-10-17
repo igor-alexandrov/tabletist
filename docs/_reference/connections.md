@@ -177,9 +177,11 @@ server is on.
   never what is in the hidden tables: not their rows, their columns, or
   the views over them. A function from an extension can still read them;
   for strict isolation, use a database user without access.
-- If the tables change in `connections.toml` while the form is open,
-  saving a change of yours to them is refused, and the form shows them as
-  they are now, for you to make your change again.
+- If `connections.toml` hides more tables while the form is open, saving
+  a change of yours to them is refused, and the form shows them as they
+  are now, for you to make your change again. A change in the file that
+  hides less is held until you answer it, and is not in force: your save
+  goes through over it.
 - An Agents tab that says agents can't use a connection has **Allow
   agents…**, which opens that section with **Read** chosen. Nothing
   changes until you save.
