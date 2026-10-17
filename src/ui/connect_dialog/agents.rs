@@ -178,7 +178,11 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 if field.changed() {
                     form.agents_table_pick = None;
                 }
-                let offered = offered_for(form, &typed);
+                // Matched again only where the field changed what it holds.
+                let offered = match typed == before {
+                    true => offered,
+                    false => offered_for(form, &typed),
+                };
                 if form.agents_table_pick.is_some_and(|at| at >= offered.len()) {
                     form.agents_table_pick = None;
                 }

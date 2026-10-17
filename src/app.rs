@@ -316,6 +316,15 @@ impl App {
     ) -> Option<crate::model::LoadedTables> {
         let saved = self.connections.get(conn)?;
         let mut found: Option<crate::model::LoadedTables> = None;
+        // What is in already, so that a second window's lists are merged
+        // in one pass each, not looked up name by name.
+        let mut schemas_in = std::collections::HashSet::new();
+        // Each schema loaded: its place in `loaded`, and its names, put in
+        // a set once a second window has the schema too.
+        let mut names_in = std::collections::HashMap::<
+            String,
+            (usize, Option<std::collections::HashSet<String>>),
+        >::new();
         for (_, workspace) in self.open_connections().filter(|(_, workspace)| {
             workspace.conn_id == *conn && workspace.spec.database == saved.spec.database
         }) {
@@ -328,7 +337,7 @@ impl App {
                 tables.home = crate::model::first_schema(&schemas, &workspace.spec.database);
             }
             for schema in schemas.into_iter().filter(user) {
-                if !tables.schemas.contains(&schema) {
+                if schemas_in.insert(schema.clone()) {
                     tables.schemas.push(schema);
                 }
             }
@@ -342,19 +351,20 @@ impl App {
                     continue;
                 };
                 let names = objects.iter().map(|object| object.name.clone());
-                match tables
-                    .loaded
-                    .iter_mut()
-                    .find(|(loaded, _)| loaded == schema)
-                {
-                    Some((_, known)) => {
+                match names_in.get_mut(schema) {
+                    Some((at, known)) => {
+                        let names_at = &mut tables.loaded[*at].1;
+                        let known = known.get_or_insert_with(|| names_at.iter().cloned().collect());
                         for name in names {
-                            if !known.contains(&name) {
-                                known.push(name);
+                            if known.insert(name.clone()) {
+                                names_at.push(name);
                             }
                         }
                     }
-                    None => tables.loaded.push((schema.clone(), names.collect())),
+                    None => {
+                        names_in.insert(schema.clone(), (tables.loaded.len(), None));
+                        tables.loaded.push((schema.clone(), names.collect()));
+                    }
                 }
             }
         }

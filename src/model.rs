@@ -1121,6 +1121,14 @@ pub struct LoadedTables {
 /// How many tables Add table…'s list shows at once.
 pub const OFFERED: usize = 8;
 
+/// Whether two names are the same but for case, as lowercase letters:
+/// each is folded as it is read, so that a long list costs no allocation.
+fn same_name(one: &str, other: &str) -> bool {
+    one.chars()
+        .flat_map(char::to_lowercase)
+        .eq(other.chars().flat_map(char::to_lowercase))
+}
+
 impl LoadedTables {
     /// Whether `schema` is the system's, which no entry is checked in.
     fn system_schema(&self, schema: &str) -> bool {
@@ -1154,33 +1162,44 @@ impl LoadedTables {
         if typed.is_empty() {
             return Vec::new();
         }
-        let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
-        let shared = |name: &str| {
-            self.loaded
+        let home = |schema: &str| {
+            self.home
+                .as_deref()
+                .is_some_and(|home| same_name(home, schema))
+        };
+        // Where a home table may go without its schema, the names that
+        // another loaded schema has too, folded once: those keep theirs.
+        let may_be_bare = !qualify && !typed.contains('.');
+        let shared: HashSet<String> = match may_be_bare {
+            true => self
+                .loaded
                 .iter()
-                .filter(|(_, names)| names.iter().any(|known| same(known, name)))
-                .count()
-                > 1
+                .filter(|(schema, _)| !home(schema))
+                .flat_map(|(_, names)| names.iter().map(|name| name.to_lowercase()))
+                .collect(),
+            false => HashSet::new(),
         };
         // An entry covers a table of `schema` where its name is the
         // table's and its schema, if it has one, is `schema`.
         let covered = |schema: &str, name: &str| {
             listed.iter().any(|entry| {
-                same(&entry.name, name)
-                    && entry.schema.as_deref().is_none_or(|own| same(own, schema))
+                same_name(&entry.name, name)
+                    && entry
+                        .schema
+                        .as_deref()
+                        .is_none_or(|own| same_name(own, schema))
             })
         };
         let mut scored: Vec<(i64, String, TableName)> = self
             .loaded
             .iter()
             .flat_map(|(schema, names)| names.iter().map(move |name| (schema, name)))
-            .filter(|(schema, name)| !covered(schema, name))
+            .filter(|(schema, name)| listed.is_empty() || !covered(schema, name))
             .filter_map(|(schema, name)| {
                 let qualified = format!("{schema}.{name}");
                 let score = crate::util::fuzzy_score(&typed, name)
                     .max(crate::util::fuzzy_score(&typed, &qualified))?;
-                let home = self.home.as_deref().is_some_and(|home| same(home, schema));
-                let bare = home && !qualify && !typed.contains('.') && !shared(name);
+                let bare = may_be_bare && home(schema) && !shared.contains(&name.to_lowercase());
                 let entry = TableName {
                     schema: (!bare).then(|| schema.clone()),
                     name: name.clone(),
@@ -1201,7 +1220,7 @@ impl LoadedTables {
     /// list the catalog cut at [`tabletist_db::MAX_LISTED`] is not the
     /// whole: what is not in it is not known.
     pub fn has(&self, name: &tabletist_db::agent::TableName) -> Option<bool> {
-        let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        let same = same_name;
         let whole = |count: usize| count < tabletist_db::MAX_LISTED as usize;
         let in_schema = |names: &Vec<String>| names.iter().any(|known| same(known, &name.name));
         // In it: `Some(true)`; not in a whole list: `Some(false)`.
@@ -5649,6 +5668,11 @@ mod tests {
         assert_eq!(full.has(&name("main.zz_orders")), None);
         assert_eq!(full.has(&name("zz_orders")), None);
         assert_eq!(full.has(&name("t00001")), Some(true));
+        // And one letter typed over it still offers its best few, a home
+        // table without its schema.
+        let offered = full.offered("t", &[], false);
+        assert_eq!(offered.len(), OFFERED);
+        assert!(offered.iter().all(|entry| entry.schema.is_none()));
     }
 
     #[test]
