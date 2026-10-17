@@ -65,6 +65,7 @@ impl Conn {
         read: &Read,
         limits: Limits,
         tables: &crate::agent::Tables,
+        masked: &[crate::agent::ColumnName],
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let mut conn = self.conn.lock().await;
@@ -79,7 +80,12 @@ impl Conn {
             timeout: limits.timeout,
         };
         let access = self.access;
-        let hiding = tables.hides_anything().then_some((read, tables));
+        let guards = tables.hides_anything() || !masked.is_empty();
+        let hiding = guards.then_some(Hiding {
+            read,
+            tables,
+            masked,
+        });
         read_only(
             &mut conn,
             &texts,
@@ -93,10 +99,19 @@ impl Conn {
     }
 }
 
+/// An agent's statement, with what its connection hides and masks.
+#[derive(Clone, Copy)]
+struct Hiding<'a> {
+    read: &'a Read,
+    tables: &'a crate::agent::Tables,
+    masked: &'a [crate::agent::ColumnName],
+}
+
 /// The run that only reads: its transaction, its statements, and the
 /// close. `sent` is there when the run is of an agent's one statement, and
-/// `hiding` when its connection hides tables: the statement is checked
-/// against them in the transaction, and runs only if it reads none.
+/// `hiding` when its connection hides tables or masks columns: the
+/// statement is checked against them in the transaction, and runs only if
+/// it reads nothing it may not.
 async fn read_only(
     conn: &mut mysql_async::Conn,
     texts: &[String],
@@ -104,7 +119,7 @@ async fn read_only(
     access: Access,
     stop: &StopFlag,
     sent: Option<Sent<'_>>,
-    hiding: Option<(&Read, &crate::agent::Tables)>,
+    hiding: Option<Hiding<'_>>,
 ) -> Result<ScriptOutcome> {
     let mut outcome = ScriptOutcome::default();
     let ended = match open(conn, limit, access, sent).await {
@@ -142,17 +157,17 @@ async fn read_only(
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
-/// (`super::hidden`): a refusal, the server's own error, or a cancel.
-/// `None` where it may run, or where nothing is hidden. `Err` is a lost
-/// session.
+/// or masks columns (`super::hidden`): a refusal, the server's own error,
+/// or a cancel. `None` where it may run, or where nothing is hidden or
+/// masked. `Err` is a lost session.
 async fn refused_for_hiding(
     conn: &mut mysql_async::Conn,
-    hiding: Option<(&Read, &crate::agent::Tables)>,
+    hiding: Option<Hiding<'_>>,
 ) -> Result<Option<Error>> {
-    let Some((read, tables)) = hiding else {
+    let Some(hiding) = hiding else {
         return Ok(None);
     };
-    match super::hidden::check(conn, read, tables).await {
+    match super::hidden::check(conn, hiding.read, hiding.tables, hiding.masked).await {
         Ok(refused) => Ok(refused),
         Err(error) if error.is_connection_lost() => Err(error),
         Err(error) => Ok(Some(error)),
@@ -684,7 +699,7 @@ mod tests {
             send(&conn.server_version());
         };
         let _agent = |conn: &Conn, read: &Read, limits: Limits, stop: &StopFlag| {
-            send(&conn.run_read(read, limits, &crate::agent::Tables::All, stop));
+            send(&conn.run_read(read, limits, &crate::agent::Tables::All, &[], stop));
         };
     }
 

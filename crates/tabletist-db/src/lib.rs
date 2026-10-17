@@ -251,12 +251,18 @@ impl Connection {
     /// asked for in the run's own transaction. Nothing hidden is read
     /// (the MCP plan's B.3).
     ///
+    /// Where `masked` names a column, the read is refused when its text
+    /// uses one otherwise than selecting it as it is, or reads one through
+    /// a view; and a renamed or dropped one refuses every read (B.4, C.3).
+    /// The values are not replaced here yet.
+    ///
     /// The future must be awaited to its end, as [`Self::run_script`]'s.
     pub async fn run_agent_read(
         &self,
         read: &agent::Read,
         limits: agent::Limits,
         tables: &agent::Tables,
+        masked: &[agent::ColumnName],
         stop: &StopFlag,
     ) -> Result<agent::Answer> {
         if read.dialect() != self.dialect() {
@@ -265,26 +271,36 @@ impl Connection {
             ));
         }
         let outcome = match &self.inner {
-            Inner::Sqlite(conn) => conn.run_read(read, limits, tables, stop).await,
-            Inner::Postgres(conn) => conn.run_read(read, limits, tables, stop).await,
-            Inner::MySql(conn) => conn.run_read(read, limits, tables, stop).await,
+            Inner::Sqlite(conn) => conn.run_read(read, limits, tables, masked, stop).await,
+            Inner::Postgres(conn) => conn.run_read(read, limits, tables, masked, stop).await,
+            Inner::MySql(conn) => conn.run_read(read, limits, tables, masked, stop).await,
         }?;
         agent::answer(outcome, stop)
     }
 
-    /// What `tables` hides on this connection's database as it is now: for
-    /// what the server tells an agent of the schema, which leaves it out.
-    /// The catalog is read only where something is hidden.
-    pub async fn agent_hidden(&self, tables: &agent::Tables) -> Result<agent::Hidden> {
-        let catalog = match tables.hides_anything() {
+    /// What `tables` hides and `masked` masks on this connection's
+    /// database as it is now: for what the server tells an agent of the
+    /// schema, which leaves the hidden out. The catalog is read only where
+    /// something is hidden or masked.
+    pub async fn agent_hidden(
+        &self,
+        tables: &agent::Tables,
+        masked: &[agent::ColumnName],
+    ) -> Result<agent::Hidden> {
+        let catalog = match tables.hides_anything() || !masked.is_empty() {
             true => match &self.inner {
-                Inner::Sqlite(conn) => conn.agents_catalog().await?,
-                Inner::Postgres(conn) => conn.agents_catalog().await?,
-                Inner::MySql(conn) => conn.agents_catalog().await?,
+                Inner::Sqlite(conn) => conn.agents_catalog(masked).await?,
+                Inner::Postgres(conn) => conn.agents_catalog(masked).await?,
+                Inner::MySql(conn) => conn.agents_catalog(masked).await?,
             },
             false => agent::Catalog::default(),
         };
-        Ok(agent::Hidden::new(self.dialect(), &catalog, tables))
+        Ok(agent::Hidden::masking(
+            self.dialect(),
+            &catalog,
+            tables,
+            masked,
+        ))
     }
 
     /// The server's name and version for the footer: `PostgreSQL 17.2`,

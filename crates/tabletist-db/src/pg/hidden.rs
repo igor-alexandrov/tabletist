@@ -13,8 +13,8 @@ use tokio_postgres::SimpleQueryMessage;
 
 use super::query_error;
 use crate::agent::{
-    Catalog, Hidden, Read, Refusal, Relation, Tables, calls_a_refused_function, function_allowed,
-    planned,
+    Catalog, ColumnName, ColumnRead, Hidden, Read, Refusal, Relation, Tables,
+    calls_a_refused_function, function_allowed, planned, reads_whole_row,
 };
 use crate::{Dialect, Error, Result};
 
@@ -86,6 +86,32 @@ ORDER BY n.nspname, c.relname"
     )
 }
 
+/// The columns of the relations of the names in `$1`, folded to lower
+/// case: the masked columns' tables.
+const COLUMNS_SQL: &str = "\
+SELECT n.nspname, c.relname, a.attname
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE a.attnum > 0 AND NOT a.attisdropped
+    AND c.relkind IN ('r', 'v', 'm', 'p', 'f')
+    AND lower(c.relname) = ANY($1)";
+
+/// The columns of the names in `$1`, folded to lower case, that a view's or
+/// a materialized view's rules read, as `pg_depend` keeps them: the view,
+/// and the table and column it reads.
+const COLUMN_READS_SQL: &str = "\
+SELECT DISTINCT vn.nspname, v.relname, tn.nspname, t.relname, a.attname
+FROM pg_rewrite r
+JOIN pg_class v ON v.oid = r.ev_class
+JOIN pg_namespace vn ON vn.oid = v.relnamespace
+JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+    AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> r.ev_class AND d.refobjsubid > 0
+JOIN pg_class t ON t.oid = d.refobjid
+JOIN pg_namespace tn ON tn.oid = t.relnamespace
+JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+WHERE lower(a.attname) = ANY($1)";
+
 /// The functions the users wrote, by schema and name.
 fn routines_sql() -> String {
     format!("WITH {USER_ROUTINES} SELECT DISTINCT nspname, proname FROM user_routines")
@@ -126,9 +152,10 @@ pub(super) async fn check(
     client: &tokio_postgres::Client,
     read: &Read,
     tables: &Tables,
+    masked: &[ColumnName],
 ) -> Result<Option<Error>> {
-    let catalog = catalog(client).await?;
-    let hidden = Hidden::new(Dialect::Postgres, &catalog, tables);
+    let catalog = catalog(client, masked).await?;
+    let hidden = Hidden::masking(Dialect::Postgres, &catalog, tables, masked);
     if let Err(refusal) = hidden.check_statement(read) {
         return Ok(Some(Error::Agent(refusal)));
     }
@@ -186,9 +213,16 @@ fn planned_reads(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
     }
 }
 
-/// The catalog as the open transaction sees it.
-pub(super) async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> {
+/// The catalog as the open transaction sees it, with what it says of the
+/// columns `masked` names.
+pub(super) async fn catalog(
+    client: &tokio_postgres::Client,
+    masked: &[ColumnName],
+) -> Result<Catalog> {
     let mut relations: Vec<Relation> = Vec::new();
+    // The views whose definitions read a whole row of a table with a
+    // masked column.
+    let mut whole_rows: Vec<usize> = Vec::new();
     for row in rows(client, &relations_sql()).await? {
         let (Some(schema), Some(name)) = (row.get(0), row.get(1)) else {
             continue;
@@ -208,6 +242,12 @@ pub(super) async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> 
                 part: row.get(5) == Some("t"),
                 view: row.get(7) == Some("t"),
             });
+            if !masked.is_empty()
+                && row.get(7) == Some("t")
+                && reads_whole_row(Dialect::Postgres, row.get(6).unwrap_or(""), masked)
+            {
+                whole_rows.push(relations.len() - 1);
+            }
         }
         if let (Some(on_schema), Some(on_name), Some(last)) =
             (row.get(2), row.get(3), relations.last_mut())
@@ -226,10 +266,56 @@ pub(super) async fn catalog(client: &tokio_postgres::Client) -> Result<Catalog> 
         .iter()
         .filter_map(|row| Some(row.get(0)?.to_owned()))
         .collect();
+    let (columns, column_reads) = match masked.is_empty() {
+        true => (Vec::new(), None),
+        false => {
+            let tables: Vec<String> = masked
+                .iter()
+                .map(|entry| entry.table.to_lowercase())
+                .collect();
+            let names: Vec<String> = masked
+                .iter()
+                .map(|entry| entry.column.to_lowercase())
+                .collect();
+            let columns = client
+                .query(COLUMNS_SQL, &[&tables])
+                .await
+                .map_err(query_error)?
+                .iter()
+                .map(|row| (row.get(0), row.get(1), row.get(2)))
+                .collect();
+            let mut reads: Vec<ColumnRead> = client
+                .query(COLUMN_READS_SQL, &[&names])
+                .await
+                .map_err(query_error)?
+                .iter()
+                .map(|row| ColumnRead {
+                    schema: row.get(0),
+                    view: row.get(1),
+                    table_schema: row.get(2),
+                    table: row.get(3),
+                    column: row.get(4),
+                })
+                .collect();
+            for &at in &whole_rows {
+                let view = &relations[at];
+                reads.extend(view.depends_on.iter().map(|(schema, table)| ColumnRead {
+                    schema: view.schema.clone(),
+                    view: view.name.clone(),
+                    table_schema: schema.clone(),
+                    table: table.clone(),
+                    column: "*".into(),
+                }));
+            }
+            (columns, Some(reads))
+        }
+    };
     Ok(Catalog {
         relations,
         routines,
         unnamed_calls,
+        columns,
+        column_reads,
         ..Catalog::default()
     })
 }

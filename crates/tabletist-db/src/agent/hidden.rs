@@ -759,6 +759,12 @@ fn masked_views(
     found
 }
 
+/// Whether a view's definition, as PostgreSQL writes it back, reads a whole
+/// row of a table with a masked column (for the catalog's [`ColumnRead`]).
+pub(crate) fn reads_whole_row(dialect: Dialect, definition: &str, masked: &[ColumnName]) -> bool {
+    masked::reads_whole_row(dialect, definition, &Masks::new(masked, []))
+}
+
 /// Whether the relation at `at` is hidden, and why, worked out once: by
 /// its own name, else by the first hidden relation it depends on. A
 /// relation met again while its own answer is being worked out (a cycle

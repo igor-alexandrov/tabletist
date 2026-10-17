@@ -906,7 +906,7 @@ impl Session for AppSession {
 
     async fn hidden(&self, tables: &Tables) -> Result<Hidden, Failure> {
         let connection = self.connection()?;
-        self.ended(None, connection.agent_hidden(tables)).await
+        self.ended(None, connection.agent_hidden(tables, &[])).await
     }
 
     async fn read(&self, read: &Read, limits: Limits, tables: &Tables) -> Result<Answer, Failure> {
@@ -914,7 +914,7 @@ impl Session for AppSession {
         let flag = StopFlag::new();
         self.ended(
             Some(&flag),
-            connection.run_agent_read(read, limits, tables, &flag),
+            connection.run_agent_read(read, limits, tables, &[], &flag),
         )
         .await
     }

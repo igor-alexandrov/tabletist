@@ -510,6 +510,34 @@ fn selects(pieces: &[Piece], at: usize) -> bool {
     }
 }
 
+/// Whether a view's definition, as PostgreSQL writes it back, reads a
+/// whole row of a table `masks` knows. PostgreSQL keeps no column of its
+/// own for a whole row a view reads, and writes it back as `x.*`; a star
+/// the view selects is written back as its columns.
+pub(super) fn reads_whole_row(
+    dialect: crate::Dialect,
+    definition: &str,
+    masks: &Masks<'_>,
+) -> bool {
+    let pieces = pieces(dialect, definition);
+    let names = read_names(&pieces);
+    let standing: HashSet<String> = names
+        .places
+        .iter()
+        .filter(|place| masks.table(&place.name.name).is_some())
+        .flat_map(|place| {
+            let alias = place.alias.and_then(|at| pieces[at].word()).map(fold);
+            std::iter::once(fold(&place.name.name)).chain(alias)
+        })
+        .collect();
+    pieces.windows(3).any(|window| match window {
+        [qualifier, Piece::Dot, Piece::Star] => qualifier
+            .word()
+            .is_some_and(|word| standing.contains(&fold(word))),
+        _ => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,5 +772,16 @@ mod tests {
             ),
             alias()
         );
+    }
+
+    #[test]
+    fn a_view_reads_a_whole_row_where_its_definition_writes_one() {
+        let masked = [column("orders.email")];
+        let masks = Masks::new(&masked, []);
+        let row = |definition: &str| reads_whole_row(Dialect::Postgres, definition, &masks);
+        assert!(row(" SELECT x.*::public.orders AS x\n   FROM orders x;"));
+        assert!(row(" SELECT to_jsonb(orders.*) AS j\n   FROM orders;"));
+        assert!(!row(" SELECT x.id,\n    x.email\n   FROM orders x;"));
+        assert!(!row(" SELECT c.* FROM customers c;"));
     }
 }

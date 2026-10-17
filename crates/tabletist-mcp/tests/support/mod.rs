@@ -211,7 +211,7 @@ impl Session for ShopSession {
     }
 
     async fn hidden(&self, tables: &Tables) -> Result<Hidden, Failure> {
-        Ok(self.connection.agent_hidden(tables).await?)
+        Ok(self.connection.agent_hidden(tables, &[]).await?)
     }
 
     async fn read(&self, read: &Read, limits: Limits, tables: &Tables) -> Result<Answer, Failure> {
@@ -226,7 +226,9 @@ impl Session for ShopSession {
             },
         };
         let flag = StopFlag::new();
-        let run = self.connection.run_agent_read(read, limits, tables, &flag);
+        let run = self
+            .connection
+            .run_agent_read(read, limits, tables, &[], &flag);
         tokio::pin!(run);
         let answer = tokio::select! {
             answer = &mut run => answer,

@@ -13,7 +13,10 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 
 use crate::adapter::Adapter;
-use crate::agent::{Catalog, Hidden, Limits, Param, Read, Relation, Sent, Tables, count_mismatch};
+use crate::agent::{
+    Catalog, ColumnName, ColumnRead, Hidden, Limits, Param, Read, Relation, Sent, Tables,
+    count_mismatch,
+};
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
@@ -913,9 +916,10 @@ impl Adapter for Conn {
         CancelHandle(CancelInner::Sqlite(Arc::clone(&self.interrupt)))
     }
 
-    async fn agents_catalog(&self) -> Result<Catalog> {
+    async fn agents_catalog(&self, masked: &[ColumnName]) -> Result<Catalog> {
         let fences = self.fences.clone();
-        self.run(move |connection| agents_catalog(connection, &fences))
+        let masked = masked.to_vec();
+        self.run(move |connection| agents_catalog(connection, &fences, &masked))
             .await
     }
 
@@ -1151,6 +1155,7 @@ impl Adapter for Conn {
         read: &Read,
         limits: Limits,
         tables: &Tables,
+        masked: &[ColumnName],
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let stop = stop.clone();
@@ -1158,15 +1163,15 @@ impl Adapter for Conn {
         let fences = self.fences.clone();
         let texts = vec![read.text().to_owned()];
         let params = read.params().to_vec();
-        let (read, tables) = (read.clone(), tables.clone());
+        let (read, tables, masked) = (read.clone(), tables.clone(), masked.to_vec());
         let outcome = self
             .run(move |connection| {
-                // What is hidden, from the catalog as it is now: a table
-                // made a moment ago is in it.
-                let hidden = match tables.hides_anything() {
+                // What is hidden and masked, from the catalog as it is
+                // now: a table made a moment ago is in it.
+                let hidden = match tables.hides_anything() || !masked.is_empty() {
                     true => {
-                        let catalog = agents_catalog(connection, &fences)?;
-                        let hidden = Hidden::new(Dialect::Sqlite, &catalog, &tables);
+                        let catalog = agents_catalog(connection, &fences, &masked)?;
+                        let hidden = Hidden::masking(Dialect::Sqlite, &catalog, &tables, &masked);
                         hidden.check_statement(&read).map_err(Error::Agent)?;
                         Some(Arc::new(hidden))
                     }
@@ -1200,8 +1205,14 @@ impl Adapter for Conn {
 /// schema, a view depends on what SQLite reports it reads as a read of it
 /// is prepared. A shadow table depends
 /// on its virtual table, whose name and an underscore begin its own
-/// (FTS5's `notes_config` is `notes`'s).
-fn agents_catalog(connection: &rusqlite::Connection, fences: &Fences) -> Result<Catalog> {
+/// (FTS5's `notes_config` is `notes`'s). With the columns of the tables
+/// `masked` names, and the masked columns each view reads, as SQLite
+/// reports them column by column.
+fn agents_catalog(
+    connection: &rusqlite::Connection,
+    fences: &Fences,
+    masked: &[ColumnName],
+) -> Result<Catalog> {
     let mut statement = connection
         .prepare(
             "SELECT t.schema, t.name, t.type = 'shadow', v.name, t.type = 'view' \
@@ -1253,6 +1264,11 @@ fn agents_catalog(connection: &rusqlite::Connection, fences: &Fences) -> Result<
     // What each view reads, as SQLite says when it prepares a read of the
     // view. One it cannot prepare (a table it reads is gone) reads what
     // nobody can say, and is hidden while anything is.
+    let masked_names: Vec<String> = masked
+        .iter()
+        .map(|entry| entry.column.to_lowercase())
+        .collect();
+    let mut column_reads: Vec<ColumnRead> = Vec::new();
     for relation in relations
         .iter_mut()
         .filter(|relation| views.contains(&(relation.schema.clone(), relation.name.clone())))
@@ -1264,13 +1280,51 @@ fn agents_catalog(connection: &rusqlite::Connection, fences: &Fences) -> Result<
             quoted(&relation.name)
         );
         match fences.reads_of(|| connection.prepare(&sql).is_ok()) {
-            Some(reads) => relation.depends_on.extend(
-                reads
-                    .into_iter()
-                    .filter(|(schema, name)| *schema != relation.schema || *name != relation.name),
-            ),
+            Some(reads) => {
+                for (schema, name, column) in reads {
+                    if schema == relation.schema && name == relation.name {
+                        continue;
+                    }
+                    if masked_names.contains(&column.to_lowercase()) {
+                        column_reads.push(ColumnRead {
+                            schema: relation.schema.clone(),
+                            view: relation.name.clone(),
+                            table_schema: schema.clone(),
+                            table: name.clone(),
+                            column,
+                        });
+                    }
+                    let on = (schema, name);
+                    if !relation.depends_on.contains(&on) {
+                        relation.depends_on.push(on);
+                    }
+                }
+            }
             None => relation.opaque = true,
         }
+    }
+    // The columns of the masked columns' tables.
+    let mut columns = Vec::new();
+    for relation in relations.iter().filter(|relation| {
+        masked
+            .iter()
+            .any(|entry| entry.names_table(Some(&relation.schema), &relation.name))
+    }) {
+        let mut statement = connection
+            .prepare("SELECT name FROM pragma_table_xinfo(?1, ?2)")
+            .map_err(map_error)?;
+        let names = statement
+            .query_map([&relation.name, &relation.schema], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(map_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_error)?;
+        columns.extend(
+            names
+                .into_iter()
+                .map(|column| (relation.schema.clone(), relation.name.clone(), column)),
+        );
     }
     // The table functions, SQLite's own modules read without a table
     // made of them: the pragmas are refused before this, and `dbstat` and
@@ -1286,6 +1340,8 @@ fn agents_catalog(connection: &rusqlite::Connection, fences: &Fences) -> Result<
     Ok(Catalog {
         relations,
         table_functions,
+        columns,
+        column_reads: Some(column_reads),
         ..Catalog::default()
     })
 }
@@ -2292,7 +2348,7 @@ mod tests {
             let (conn, _dir) = virtual_tables().await;
             let read = crate::agent::check_read(Dialect::Sqlite, sql, &[]).unwrap();
             let outcome = conn
-                .run_read(&read, limits, &only(table), &StopFlag::new())
+                .run_read(&read, limits, &only(table), &[], &StopFlag::new())
                 .await;
             let answer =
                 outcome.and_then(|outcome| crate::agent::answer(outcome, &StopFlag::new()));
@@ -2310,7 +2366,9 @@ mod tests {
         }]);
         let read =
             crate::agent::check_read(Dialect::Sqlite, "SELECT * FROM notes_content", &[]).unwrap();
-        let outcome = conn.run_read(&read, limits, &notes, &StopFlag::new()).await;
+        let outcome = conn
+            .run_read(&read, limits, &notes, &[], &StopFlag::new())
+            .await;
         assert_eq!(
             outcome.map(|_| ()),
             Err(Error::Agent(crate::agent::Refusal::TableHidden {
@@ -3131,9 +3189,15 @@ mod tests {
             rows: 10,
             timeout: Duration::from_millis(250),
         };
-        conn.run_read(&read, limits, &crate::agent::Tables::All, &StopFlag::new())
-            .await
-            .unwrap();
+        conn.run_read(
+            &read,
+            limits,
+            &crate::agent::Tables::All,
+            &[],
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(wait(&conn).await, Ok(5_000));
     }
 

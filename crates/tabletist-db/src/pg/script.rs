@@ -51,6 +51,7 @@ impl Conn {
         read: &Read,
         limits: Limits,
         tables: &crate::agent::Tables,
+        masked: &[crate::agent::ColumnName],
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let client = self.client.lock().await;
@@ -59,7 +60,12 @@ impl Conn {
             params: read.params(),
             timeout: limits.timeout,
         };
-        let hiding = tables.hides_anything().then_some((read, tables));
+        let guards = tables.hides_anything() || !masked.is_empty();
+        let hiding = guards.then_some(Hiding {
+            read,
+            tables,
+            masked,
+        });
         read_only(
             &client,
             &texts,
@@ -72,17 +78,26 @@ impl Conn {
     }
 }
 
+/// An agent's statement, with what its connection hides and masks.
+#[derive(Clone, Copy)]
+struct Hiding<'a> {
+    read: &'a Read,
+    tables: &'a crate::agent::Tables,
+    masked: &'a [crate::agent::ColumnName],
+}
+
 /// The run that only reads: its transaction, its statements, and the
 /// close. `sent` is there when the run is of an agent's one statement, and
-/// `hiding` when its connection hides tables: the statement is checked
-/// against them in the transaction, and runs only if it reads none.
+/// `hiding` when its connection hides tables or masks columns: the
+/// statement is checked against them in the transaction, and runs only if
+/// it reads nothing it may not.
 async fn read_only(
     client: &tokio_postgres::Client,
     texts: &[String],
     limit: usize,
     stop: &StopFlag,
     sent: Option<Sent<'_>>,
-    hiding: Option<(&Read, &crate::agent::Tables)>,
+    hiding: Option<Hiding<'_>>,
 ) -> Result<ScriptOutcome> {
     let mut outcome = ScriptOutcome::default();
     let tx = match open(client, sent).await {
@@ -127,17 +142,18 @@ async fn read_only(
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
-/// (`super::hidden`), and where that leaves the transaction: open after a
-/// refusal, failed after the server's own error. `None` where it may run,
-/// or where nothing is hidden. `Err` is a lost session.
+/// or masks columns (`super::hidden`), and where that leaves the
+/// transaction: open after a refusal, failed after the server's own error.
+/// `None` where it may run, or where nothing is hidden or masked. `Err` is
+/// a lost session.
 async fn refused_for_hiding(
     client: &tokio_postgres::Client,
-    hiding: Option<(&Read, &crate::agent::Tables)>,
+    hiding: Option<Hiding<'_>>,
 ) -> Result<Option<(Error, Tx)>> {
-    let Some((read, tables)) = hiding else {
+    let Some(hiding) = hiding else {
         return Ok(None);
     };
-    match super::hidden::check(client, read, tables).await {
+    match super::hidden::check(client, hiding.read, hiding.tables, hiding.masked).await {
         Ok(None) => Ok(None),
         Ok(Some(refusal @ Error::Agent(_))) => Ok(Some((refusal, Tx::Open))),
         Ok(Some(error)) => Ok(Some((error, Tx::Aborted))),
@@ -708,7 +724,7 @@ mod tests {
             send(&conn.server_version());
         };
         let _agent = |conn: &Conn, read: &Read, limits: Limits, stop: &StopFlag| {
-            send(&conn.run_read(read, limits, &crate::agent::Tables::All, stop));
+            send(&conn.run_read(read, limits, &crate::agent::Tables::All, &[], stop));
         };
     }
 
