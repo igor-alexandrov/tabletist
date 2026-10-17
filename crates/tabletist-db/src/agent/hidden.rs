@@ -146,6 +146,13 @@ impl TableName {
                 (Some(_), None) => true,
             }
     }
+
+    /// Whether this names one of `dialect`'s system catalogs, which no
+    /// setting hides and whose absence stops no agent: what the editor
+    /// leaves unmarked is what [`Hidden::check_settings`] passes.
+    pub fn is_system(&self, dialect: Dialect) -> bool {
+        system_catalog(dialect, self.schema.as_deref(), &self.name)
+    }
 }
 
 impl Tables {

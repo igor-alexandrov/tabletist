@@ -79,6 +79,11 @@ before the setting, so that when the setting appears everything of it is
 enforced. A hidden table that was renamed or dropped stops agents on that
 connection on PostgreSQL too: C.3 is corrected.
 
+**Built on 2026-10-16: Phase 1c, in six runs.** The checks, the server's
+side, the setting in `connections.toml`, the editor's Tables control, and
+its list of the tables an open window loaded with the website's guide
+(`2026-10-16-mcp-server-1c-3b-table-list.md`). With 1d dropped, Phase 1 is built.
+
 ## Contents
 
 1. [What the code says, in short](#1-what-the-code-says-in-short)
@@ -1843,6 +1848,34 @@ otherwise:
 - **Add table…** takes a typed name only. The list from an open session's
   catalog, and a name that matches nothing marked "not in this database",
   are 1c-3b's.
+  **As built in 1c-3b** (`2026-10-16-mcp-server-1c-3b-table-list.md`), agreed on 2026-10-16: the list is of
+  what the sidebar of an open window of the connection loaded, as quick
+  open searches it, not a new reading of the catalog: every open window
+  of the connection together, one switched to another database left
+  out, and the system's schemas and tables never. While the field holds a
+  name, the loaded tables and views that match it float under it, or over
+  it where there is no room (the Components boards' picker: a shadow on
+  macOS, the accent border on Omarchy), at most eight, with a line that
+  says where they come from. Each is written with its schema, but a home
+  schema's table that no other loaded schema has, where the person typed
+  no schema and the list is not an "Only" one (where a name without a
+  schema reads every schema's); none an entry covers already is offered.
+  Up and Down move in it (`FormTableMove`, the keymap's, taken before the
+  field reads them), and screen readers hear the table chosen; Enter, Tab,
+  a click away or a save adds the one chosen, or what is typed where none
+  is, and a click on a table adds it. A listed name that the loaded
+  schemas show is no table is marked "not in this database" in its chip,
+  in the warning colour: one whose schema is loaded and has none, one
+  whose schema the database does not have, and one without a schema only
+  when every schema is loaded. Under "All except" a line says that agents
+  may not use the connection until it is taken out or put right (C.3).
+  With no window open, nothing is offered and nothing marked. The run's
+  review found the system's schemas keeping every mark away, a schema
+  the database lacks not marked, a press on the list closing the field,
+  Tab dropping the choice, a home table offered without its schema under
+  "Only", the list over the field in a small window, Up and Down moving
+  the caret, two windows' lists not taken together, and SQLite's own
+  tables marked: each is fixed with a test, the list's place by eye.
 - **Omarchy**: the row shows the three words, as the access row does, and
   the names on the line under them; the board draws the chosen word alone
   with the names after it. The keyboard works the row as every row of the
@@ -2449,7 +2482,7 @@ is off until the person turns it on.
 | 1a. The enforcement core | 3 | Done: pull requests 122, 123 and 124 |
 | 1b. The server over stdio, with its interface | 9, below | Built (`2026-10-13-mcp-server-1b-1-server.md`, `2026-10-14-mcp-server-1b-2a-gateway.md`, `2026-10-14-mcp-server-1b-2b-stdio.md`, `2026-10-14-mcp-server-1b-3a-agents-tab.md`, `2026-10-14-mcp-server-1b-3b-changes-outside.md`, `2026-10-14-mcp-server-1b-4a-activity.md`, `2026-10-14-mcp-server-1b-4b-log.md`, `2026-10-15-mcp-server-1b-5a-access.md` and `2026-10-15-mcp-server-1b-5b-settings.md`) |
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
-| 1c. Hidden tables | 5, below | The checks, the server's side, the setting and the editor's control built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`). Add table…'s list and the website's guide are next |
+| 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2575,7 +2608,7 @@ build; no console target.
 - The third cut in two too, on 2026-10-16: 1c-3a, the editor's Tables
   control in both looks with a typed name, its save and its hint
   (`2026-10-16-mcp-server-1c-3a-tables-control.md`); 1c-3b, Add table…'s list from an open session's catalog, the
-  "not in this database" mark, and the website's guide.
+  "not in this database" mark, and the website's guide (`2026-10-16-mcp-server-1c-3b-table-list.md`).
 - Files: `crates/tabletist-db/src/catalog.rs`, `pg.rs`, `mysql.rs`,
   `sqlite.rs` (what views read, routines, partitions), `agent/` (names,
   dependencies, the plan check, the system catalogs), `tabletist-sqlite-ffi`

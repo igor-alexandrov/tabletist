@@ -239,10 +239,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let on = |input: &mut egui::InputState, command: Command| {
         crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, true)
     };
+    // What an open window of the connection has loaded, for the Tables
+    // control: read again on each frame, as a sidebar loads.
+    // Only for a mode with a list: what it costs is spent on the list.
+    let loaded = match &app.dialog {
+        Some(Dialog::Connection(form)) if form.agents_tables.names().is_some() => form
+            .editing
+            .as_ref()
+            .and_then(|conn| app.loaded_tables(conn)),
+        _ => None,
+    };
     let Some(Dialog::Connection(form)) = &mut app.dialog else {
         ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
         return;
     };
+    form.agents_loaded = loaded;
     let placement: Placement = ctx
         .data(|data| data.get_temp(placement_id()))
         .unwrap_or_default();

@@ -88,6 +88,7 @@ a Mac keyboard labels Delete.
 | Cmd+S | Save |
 | Cmd+Return | Save and connect |
 | Backspace, Forward Delete | In the empty Password field: forget the saved password |
+| Up, Down | In Add table…'s list of tables: move. Return adds the one chosen, and Esc closes the field |
 | Esc | Cancel |
 
 ### The sidebar

@@ -305,6 +305,78 @@ impl App {
             .map(|(tab, _)| tab)
     }
 
+    /// What the open windows of the saved connection `conn` have loaded in
+    /// their sidebars: each schema's tables and views, every window's
+    /// together, the system's schemas left out. A window switched to
+    /// another database than the saved one's is another database, and is
+    /// not counted. `None` with none open.
+    pub fn loaded_tables(
+        &self,
+        conn: &crate::connections::ConnectionId,
+    ) -> Option<crate::model::LoadedTables> {
+        let saved = self.connections.get(conn)?;
+        let mut found: Option<crate::model::LoadedTables> = None;
+        // What is in already, so that a second window's lists are merged
+        // in one pass each, not looked up name by name.
+        let mut schemas_in = std::collections::HashSet::new();
+        // Each schema loaded: its place in `loaded`, and its names, put in
+        // a set once a second window has the schema too.
+        let mut names_in = std::collections::HashMap::<
+            String,
+            (usize, Option<std::collections::HashSet<String>>),
+        >::new();
+        for (_, workspace) in self.open_connections().filter(|(_, workspace)| {
+            workspace.conn_id == *conn && workspace.spec.database == saved.spec.database
+        }) {
+            let driver = workspace.driver;
+            let user = |schema: &String| !crate::model::is_system_schema(driver, schema);
+            let tables = found.get_or_insert_with(Default::default);
+            tables.driver = Some(driver);
+            let schemas = workspace.tree.schemas.value.clone().unwrap_or_default();
+            // Cut by the catalog, the system's counted: what it left out
+            // is not known.
+            tables.schemas_cut |= schemas.len() >= tabletist_db::MAX_LISTED as usize;
+            if tables.home.is_none() {
+                tables.home = crate::model::first_schema(&schemas, &workspace.spec.database);
+            }
+            for schema in schemas.into_iter().filter(user) {
+                if schemas_in.insert(schema.clone()) {
+                    tables.schemas.push(schema);
+                }
+            }
+            for (schema, node) in workspace
+                .tree
+                .nodes
+                .iter()
+                .filter(|(schema, _)| user(schema))
+            {
+                let Some(objects) = &node.objects.value else {
+                    continue;
+                };
+                let names = objects.iter().map(|object| object.name.clone());
+                match names_in.get_mut(schema) {
+                    Some((at, known)) => {
+                        let names_at = &mut tables.loaded[*at].1;
+                        let known = known.get_or_insert_with(|| names_at.iter().cloned().collect());
+                        for name in names {
+                            if known.insert(name.clone()) {
+                                names_at.push(name);
+                            }
+                        }
+                    }
+                    None => {
+                        names_in.insert(schema.clone(), (tables.loaded.len(), None));
+                        tables.loaded.push((schema.clone(), names.collect()));
+                    }
+                }
+            }
+        }
+        if let Some(tables) = found.as_mut() {
+            tables.loaded.sort();
+        }
+        found
+    }
+
     pub fn tab_for_session(&self, session: SessionId) -> Option<ConnTabId> {
         self.tabs.iter().find_map(|tab| match &tab.content {
             ConnTabContent::Workspace(workspace) if workspace.session == session => Some(tab.id),

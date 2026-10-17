@@ -168,10 +168,16 @@ server is on.
   **Statement timeout** in seconds (1 to 60, 10 at first).
 - **Tables** is **All**, **All except** or **Only**. With **All except**,
   agents may read every table but the ones listed; with **Only**, the ones
-  listed and no others, a table made later included. **Add table…** opens
+  listed and no others, so that a table made later is hidden too. **Add table…** opens
   a field for a name, `customers` or `sales.customers`: Enter adds it and
   leaves the field open for the next, Escape closes the field, and **×**
-  takes a name out. A name still in the field when you save, or choose
+  takes a name out. While a window of the connection is open, the field
+  lists the tables its sidebar has loaded that match what you type: Up and
+  Down move in the list, and Enter, Tab or a click adds the one chosen. A
+  listed name that the loaded schemas show is not a table is marked **not
+  in this database**, and under **All except** agents may not use the
+  connection until it is taken out or put right. A name in a schema the
+  sidebar has not loaded is not marked. A name still in the field when you save, or choose
   another of the three, is added with the rest. Each of the two lists is kept while you try the other, and
   what you save is the one chosen. Agents are told the names in the list,
   never what is in the hidden tables: not their rows, their columns, or

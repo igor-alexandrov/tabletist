@@ -117,33 +117,111 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         return;
     };
     let written: Vec<String> = names.iter().map(ToString::to_string).collect();
+    // Which are in no table of the schemas an open window loaded.
+    let missing: Vec<bool> = names
+        .iter()
+        .map(|name| {
+            form.agents_loaded
+                .as_ref()
+                .and_then(|loaded| loaded.has(name))
+                == Some(false)
+        })
+        .collect();
     let height = if skin.look.terminal { 21.0 } else { 24.0 };
     let mut removed = None;
     let focus = form.agents_table_focus.take();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-        for (at, name) in written.iter().enumerate() {
-            if chip(ui, name, at, height, skin) {
+        for (at, (name, missing)) in written.iter().zip(&missing).enumerate() {
+            if chip(ui, name, at, *missing, height, skin) {
                 removed = Some(at);
             }
         }
-        match form.agents_table_typed.as_mut() {
-            Some(typed) => {
+        let only = form.agents_tables.mode == TablesMode::Only;
+        let listed = form.agents_tables.names().cloned().unwrap_or_default();
+        let offered_for = |form: &ConnectionForm, typed: &str| {
+            form.agents_loaded
+                .as_ref()
+                .map(|loaded| loaded.offered(typed, &listed, only))
+                .unwrap_or_default()
+        };
+        match form.agents_table_typed.clone() {
+            Some(before) => {
                 let role = widgets::code(skin.look);
                 let id = ui.id().with("agents-table-typed");
+                let list = id.with("list");
+                // Up and Down move in the list, taken before the field
+                // reads them, so that they do not move its caret too.
+                let offered = offered_for(form, &before);
+                if !offered.is_empty() && ui.memory(|memory| memory.has_focus(id)) {
+                    let step = moved(ui, skin);
+                    if step != 0 {
+                        let last = offered.len() as isize - 1;
+                        form.agents_table_pick = Some(match form.agents_table_pick {
+                            None if step > 0 => 0,
+                            None => last as usize,
+                            Some(at) => (at as isize + step).rem_euclid(last + 1) as usize,
+                        });
+                    }
+                }
                 let placeholder = super::hint(ui, &skin.say("table, or schema.table"), role, skin);
+                let Some(typed) = form.agents_table_typed.as_mut() else {
+                    return;
+                };
                 let field = ui.add_sized(
                     vec2(200.0, height),
                     input(ui, typed, role, height, skin)
                         .id(id)
                         .hint_text(placeholder),
                 );
-                let name = skin.say("Table to add");
-                ui.ctx()
-                    .accesskit_node_builder(field.id, |node| node.set_label(name.as_str()));
+                let typed = typed.clone();
+                if field.changed() {
+                    form.agents_table_pick = None;
+                }
+                // Matched again only where the field changed what it holds.
+                let offered = match typed == before {
+                    true => offered,
+                    false => offered_for(form, &typed),
+                };
+                if form.agents_table_pick.is_some_and(|at| at >= offered.len()) {
+                    form.agents_table_pick = None;
+                }
                 if focus == Some(TableFocus::Field) {
                     field.request_focus();
                 }
+                // A release over the list, where the field gives up the
+                // keyboard, is no leaving it: the list was last seen there.
+                // Only a release this frame: a pointer that rests there says
+                // nothing of a Tab.
+                let released = ui.input(|input| input.pointer.any_released());
+                let on_list = released
+                    && ui
+                        .ctx()
+                        .memory(|memory| memory.area_rect(list))
+                        .zip(ui.input(|input| input.pointer.latest_pos()))
+                        .is_some_and(|(rect, at)| rect.contains(at));
+                // Only while the field has the keyboard, or lets it go this
+                // frame (to a press on the list): a field left open with a
+                // name that does not read lists nothing over the fields
+                // below it.
+                let listing = field.has_focus() || field.lost_focus();
+                let clicked = match offered.is_empty() || !listing {
+                    true => None,
+                    false => {
+                        offered_list(ui, list, field.rect, &offered, form.agents_table_pick, skin)
+                    }
+                };
+                // Screen readers hear the table the keyboard is on.
+                let name = skin.say("Table to add");
+                let chosen = form
+                    .agents_table_pick
+                    .map(|at| list.with(at).accesskit_id());
+                ui.ctx().accesskit_node_builder(field.id, |node| {
+                    node.set_label(name.as_str());
+                    if let Some(chosen) = chosen {
+                        node.set_active_descendant(chosen);
+                    }
+                });
                 let pressed = |key| ui.input(|input| input.key_pressed(key));
                 // The form's Cancel, as the keymap has it, while the field
                 // has the keyboard or has just let it go: the field's own,
@@ -159,14 +237,27 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                             > 0
                     })
                 };
-                if cancelled {
+                if let Some(at) = clicked {
+                    form.agents_table_typed = Some(offered[at].to_string());
+                    form.agents_table_pick = None;
+                    if form.take_typed_table().is_ok() {
+                        form.agents_table_typed = Some(String::new());
+                    }
+                    form.agents_table_focus = Some(TableFocus::Field);
+                } else if cancelled {
                     field.surrender_focus();
+                    form.agents_table_pick = None;
                     form.agents_table_typed = None;
                     form.agents_table_error = None;
                     form.agents_table_focus = Some(TableFocus::Add);
+                } else if field.lost_focus() && on_list && !offered.is_empty() {
+                    // Pressed on the list, not on a table: the keyboard
+                    // goes back to the field.
+                    form.agents_table_focus = Some(TableFocus::Field);
                 } else if field.lost_focus() {
                     let entered = pressed(egui::Key::Enter);
-                    let empty = typed.trim().is_empty();
+                    let empty = typed.trim().is_empty() && form.agents_table_pick.is_none();
+                    // The table chosen in the list, or what is typed.
                     match form.take_typed_table() {
                         // Enter on a name: the field stays, for the next.
                         Ok(()) if entered && !empty => {
@@ -202,6 +293,144 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     }
 }
 
+/// How far Add table…'s list was asked to move this frame: up by one,
+/// down by one, or not, by the keys the keymap gives the form for it, as
+/// quick open's list reads its own.
+fn moved(ui: &mut Ui, skin: &Skin) -> isize {
+    use crate::keymap::{Command, Layout, Scope};
+    let keymap = crate::ui::keys::published(ui.ctx());
+    let layout = Layout::of(skin.look);
+    ui.input_mut(|input| {
+        let mut step = 0;
+        for keys in keymap.chords_now(layout, Command::FormTableMove, Scope::Prompt, true) {
+            let way = if keys == "up" { -1 } else { 1 };
+            if crate::ui::keys::presses(input, layout, keys).count > 0 {
+                step += way;
+            }
+        }
+        step
+    })
+}
+
+/// The window's tables that match what is typed, floating under the field
+/// at `under`, the one the keyboard is on (`pick`) marked, with a line that
+/// says where they come from. The place of the one clicked.
+fn offered_list(
+    ui: &mut Ui,
+    id: egui::Id,
+    under: Rect,
+    offered: &[tabletist_db::agent::TableName],
+    pick: Option<usize>,
+    skin: &Skin,
+) -> Option<usize> {
+    let Skin { look, palette, .. } = *skin;
+    let role = widgets::code(look);
+    let row = if look.terminal { 21.0 } else { 24.0 };
+    let width = under.width().max(240.0);
+    let mut clicked = None;
+    // Under the field where it has the room, else over it: never on it.
+    let tall = offered.len() as f32 * row + 40.0;
+    let room = ui.ctx().content_rect().bottom() - under.bottom();
+    let (pivot, at) = match room >= tall + 8.0 {
+        true => (egui::Align2::LEFT_TOP, under.left_bottom() + vec2(0.0, 4.0)),
+        false => (egui::Align2::LEFT_BOTTOM, under.left_top() - vec2(0.0, 4.0)),
+    };
+    egui::Area::new(id)
+        .order(egui::Order::Tooltip)
+        .pivot(pivot)
+        .fixed_pos(at)
+        .show(ui.ctx(), |ui| {
+            let corner = CornerRadius::same(look.radius);
+            let border = if look.terminal {
+                palette.accent
+            } else {
+                palette.border
+            };
+            // As the board's popovers: a soft shadow on macOS, none in the
+            // terminal look, whose list stands out by its accent border.
+            let shadow = match look.terminal {
+                true => egui::epaint::Shadow::NONE,
+                false => egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 24,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(36),
+                },
+            };
+            egui::Frame::new()
+                .fill(palette.panel)
+                .stroke(Stroke::new(1.0, border))
+                .corner_radius(corner)
+                .shadow(shadow)
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    for (at, name) in offered.iter().enumerate() {
+                        let written = name.to_string();
+                        let (rect, _) = ui.allocate_exact_size(vec2(width, row), Sense::hover());
+                        let response = ui.interact(rect, id.with(at), Sense::click());
+                        let chosen = pick == Some(at);
+                        response.widget_info(|| {
+                            WidgetInfo::selected(
+                                WidgetType::SelectableLabel,
+                                ui.is_enabled(),
+                                chosen,
+                                &written,
+                            )
+                        });
+                        widgets::selection(ui, rect, chosen, response.hovered(), look, palette);
+                        let ink = widgets::selection_text(chosen, look, palette);
+                        let text = Text::one(look, role, &written, ink).layout(ui.ctx());
+                        let y = rect.center().y - text.galley.size().y / 2.0;
+                        ui.painter()
+                            .galley(egui::pos2(rect.left() + 8.0, y), text.galley, ink);
+                        if response.clicked() {
+                            clicked = Some(at);
+                        }
+                    }
+                    let said = skin.say("Tables loaded in the sidebar");
+                    let small = TextRole::pick(look, TextRole::Secondary, TextRole::OSecondary);
+                    ui.add_space(2.0);
+                    widgets::label(ui, small, &said, palette.faint, look);
+                });
+        });
+    clicked
+}
+
+/// Under an "All except" list that names a table not in the database: what
+/// that does to agents (the MCP plan's C.3), and how to put it right.
+fn table_missing(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
+    let Some(loaded) = &form.agents_loaded else {
+        return;
+    };
+    let gone = match form.agents_tables.mode {
+        TablesMode::AllExcept => form
+            .agents_tables
+            .hidden
+            .iter()
+            .any(|name| loaded.has(name) == Some(false)),
+        TablesMode::All | TablesMode::Only => false,
+    };
+    if !gone {
+        return;
+    }
+    let said = skin.say(
+        "Agents may not use this connection while a hidden table is not in its database. Take \
+         the name out, or add the table's new name.",
+    );
+    ui.add_space(4.0);
+    let room = ui.available_width();
+    Text::one(
+        skin.look,
+        TextRole::pick(skin.look, TextRole::Secondary, TextRole::OSecondary),
+        &said,
+        skin.palette.warning,
+    )
+    .wrap(room)
+    .layout(ui.ctx())
+    .label(ui);
+}
+
 /// Why the name typed does not read, under the names: a line of its own,
 /// after the row that holds them.
 fn table_error(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
@@ -223,15 +452,22 @@ fn table_error(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
 
 /// A listed name, `customers ×`, bordered; the × takes it out, and screen
 /// readers hear it as "Remove customers". Whether it was pressed.
-fn chip(ui: &mut Ui, name: &str, at: usize, height: f32, skin: &Skin) -> bool {
+fn chip(ui: &mut Ui, name: &str, at: usize, missing: bool, height: f32, skin: &Skin) -> bool {
     let Skin { look, palette, .. } = *skin;
     let role = widgets::code(look);
     let cross = if look.terminal { "x" } else { "×" };
     let name_width = role.width(ui.ctx(), look.faces, name);
     let cross_width = role.width(ui.ctx(), look.faces, cross);
+    // A name in no table of the database says so after itself.
+    let mark = skin.say("not in this database");
+    let mark_role = TextRole::pick(look, TextRole::Secondary, TextRole::OSecondary);
+    let mark_width = match missing {
+        true => 8.0 + mark_role.width(ui.ctx(), look.faces, &mark),
+        false => 0.0,
+    };
     let (left, gap, right) = (8.0, 6.0, 6.0);
     let size = vec2(
-        (left + name_width + gap + cross_width + right).ceil(),
+        (left + name_width + mark_width + gap + cross_width + right).ceil(),
         height,
     );
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -251,6 +487,21 @@ fn chip(ui: &mut Ui, name: &str, at: usize, height: f32, skin: &Skin) -> bool {
     let text = Text::one(look, role, name, palette.text).layout(ui.ctx());
     let y = rect.center().y - text.galley.size().y / 2.0;
     painter.galley(egui::pos2(rect.left() + left, y), text.galley, palette.text);
+    if missing {
+        let marked = Text::one(look, mark_role, &mark, palette.warning).layout(ui.ctx());
+        let x = rect.left() + left + name_width + 8.0;
+        let y = rect.center().y - marked.galley.size().y / 2.0;
+        painter.galley(egui::pos2(x, y), marked.galley, palette.warning);
+        // Heard as the name and the mark.
+        let place = Rect::from_min_max(rect.left_top(), egui::pos2(x + mark_width, rect.bottom()));
+        let said = format!("{name}, {mark}");
+        ui.interact(
+            place,
+            ui.id().with(("agents-table-missing", at, name)),
+            Sense::hover(),
+        )
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+    }
     let cell = Rect::from_min_max(
         egui::pos2(rect.right() - right - cross_width - gap / 2.0, rect.top()),
         rect.right_bottom(),
@@ -343,6 +594,7 @@ pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             ui.add_space(6.0);
             table_names(ui, form, skin);
             table_error(ui, form, skin);
+            table_missing(ui, form, skin);
         }
         if let Some(hint) = tables_hint(form) {
             ui.add_space(6.0);
@@ -389,6 +641,7 @@ pub(super) fn terminal(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             table_names(ui, form, skin);
         });
         table_error(ui, form, skin);
+        table_missing(ui, form, skin);
     }
     if let Some(hint) = tables_hint(form) {
         sentence(ui, TextRole::OSecondary, &skin.say(hint), skin);
