@@ -1,6 +1,6 @@
 //! What the adapter of every database provides.
 
-use crate::agent::{Catalog, Limits, Read, Tables};
+use crate::agent::{Catalog, ColumnName, Limits, Read, Tables};
 use crate::{
     CancelHandle, ChangeSet, Lookup, LookupPage, ObjectInfo, ObjectRef, Result, RowPage, RowQuery,
     ScriptMode, ScriptOutcome, StopFlag, Structure, WriteOutcome,
@@ -44,18 +44,21 @@ pub(crate) trait Adapter {
 
     /// `read` has passed [`crate::agent::check_read`] for this database's
     /// dialect. The outcome is a read-only script's of one statement, or
-    /// [`crate::Error::Agent`] where it reads what `tables` hides.
+    /// [`crate::Error::Agent`] where it reads what `tables` hides, or a
+    /// column `masked` names otherwise than as it is.
     async fn run_read(
         &self,
         read: &Read,
         limits: Limits,
         tables: &Tables,
+        masked: &[ColumnName],
         stop: &StopFlag,
     ) -> Result<ScriptOutcome>;
 
     /// What the database's catalog says for what an agent's connection
-    /// hides: its relations, what each reads, and the users' functions.
-    async fn agents_catalog(&self) -> Result<Catalog>;
+    /// hides and masks: its relations, what each reads, the users'
+    /// functions, and the columns of the tables `masked` names.
+    async fn agents_catalog(&self, masked: &[ColumnName]) -> Result<Catalog>;
 
     /// `changes` have passed their own check, and the session may write.
     async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome>;

@@ -158,8 +158,9 @@ struct Shared {
     refused: Mutex<Option<Refusal>>,
     /// What the agent's connection hides, while its statement runs.
     hidden: Mutex<Option<Arc<Hidden>>>,
-    /// The tables read, by schema and name, while they are recorded.
-    reads: Mutex<Option<Vec<(String, String)>>>,
+    /// The tables read, by schema and name, with the column read (empty
+    /// for none), while they are recorded.
+    reads: Mutex<Option<Vec<(String, String, String)>>>,
 }
 
 impl Fences {
@@ -205,7 +206,8 @@ impl Fences {
             && let Some(reads) = self.reads().as_mut()
         {
             let schema = action.database.unwrap_or("main").to_owned();
-            reads.push((schema, table.to_owned()));
+            let column = action.second.unwrap_or_default().to_owned();
+            reads.push((schema, table.to_owned(), column));
         }
         let mut answer = authorize(fence, action);
         let mut hidden_read = None;
@@ -218,6 +220,19 @@ impl Fences {
         {
             answer = Authorization::Deny;
             hidden_read = Some(through_view(refusal, action.source));
+        }
+        // A masked column a view or a common table expression reads: what
+        // it does with it, the statement's check cannot see.
+        if fence == Fence::Agent
+            && answer == Authorization::Allow
+            && action.code == ffi::SQLITE_READ
+            && let (Some(table), Some(column)) = (action.first, action.second)
+            && let Some(hidden) = self.hidden()
+            && let Err(refusal) =
+                hidden.check_column_read(action.database, table, column, action.source)
+        {
+            answer = Authorization::Deny;
+            hidden_read = Some(refusal);
         }
         if fence == Fence::Agent
             && answer == Authorization::Deny
@@ -247,16 +262,20 @@ impl Fences {
     }
 
     /// The tables SQLite reads as it prepares what `prepare` prepares, by
-    /// schema and name: for a view, every table it reads, through the
-    /// views it reads too. `None` where SQLite could not prepare it.
-    pub(super) fn reads_of(&self, prepare: impl FnOnce() -> bool) -> Option<Vec<(String, String)>> {
+    /// schema and name, each with a column it reads of it (empty for none):
+    /// for a view, every table it reads, through the views it reads too.
+    /// `None` where SQLite could not prepare it.
+    pub(super) fn reads_of(
+        &self,
+        prepare: impl FnOnce() -> bool,
+    ) -> Option<Vec<(String, String, String)>> {
         *self.reads() = Some(Vec::new());
         let prepared = prepare();
         let reads = self.reads().take();
         prepared.then_some(reads).flatten()
     }
 
-    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Vec<(String, String)>>> {
+    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Vec<(String, String, String)>>> {
         self.0.reads.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
