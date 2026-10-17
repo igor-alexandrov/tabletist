@@ -108,9 +108,10 @@ fn tables_mode(ui: &mut Ui, form: &mut ConnectionForm, heading: &str, group: Gro
 /// Add table… after them, which opens a field for a name to be typed.
 /// Enter adds the name and keeps the field open, with the keyboard, for
 /// the next; a name the field still holds when it loses the keyboard is
-/// added then; Escape closes the field and nothing else. A name that does
-/// not read is said under the names, and the field keeps it, and the
-/// keyboard, to be put right. Nothing for "All".
+/// added then; the form's Cancel closes the field and nothing else. A
+/// name that does not read is said under the names, and the field keeps
+/// it to be put right; after Enter it keeps the keyboard too, and a Tab or
+/// a click elsewhere goes where it was going. Nothing for "All".
 fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let Some(names) = form.agents_tables.names() else {
         return;
