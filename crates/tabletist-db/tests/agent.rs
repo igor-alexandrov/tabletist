@@ -1344,6 +1344,19 @@ mod mysql {
             return;
         };
         a_masked_columns_values_are_never_answered(&connection, "mysql").await;
+        // A table's integer key read by its other name is the key: masked
+        // where the key is, by the column the server says it reads.
+        let found = masking(
+            &connection,
+            &["orders.id"],
+            "SELECT _rowid FROM orders LIMIT 1",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
     }
 
     #[tokio::test]
