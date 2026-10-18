@@ -9,6 +9,7 @@ use crate::model::Action;
 use crate::settings::{FontSize, InterfaceSize, OptionValue};
 use crate::testing::Harness;
 use crate::theme::{DataFace, Look};
+use crate::typography::desktop_font::Read;
 
 /// One pass of the app's logic, as the window runs it between frames.
 fn logic(harness: &mut Harness) {
@@ -32,6 +33,10 @@ fn terminal() -> Harness {
     let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
     harness.set_look(Look::omarchy());
     harness
+}
+
+fn key(harness: &mut Harness, key: Key, text: &str) {
+    super::tests::type_key(harness, key, text);
 }
 
 /// The settings file as the app last wrote it.
@@ -270,4 +275,86 @@ fn reset_to_defaults_puts_the_text_back() {
     assert_eq!(settings.interface_size, InterfaceSize::Default);
     assert_eq!(settings.font, None);
     assert_eq!(settings.font_size, None);
+}
+
+#[test]
+fn the_screen_shows_the_font_and_steps_the_size_with_its_keys() {
+    let mut harness = terminal();
+    on_the_pane(&mut harness);
+    // The board's rows, the font as the bundled one in tests: nothing is
+    // read from fontconfig. The size's keys as the keymap writes them.
+    let keymap = crate::keymap::Keymap::default();
+    let written = |command| keymap.label(crate::keymap::Layout::Omarchy, command);
+    let keys = format!(
+        "{} / {} anywhere",
+        written(crate::keymap::Command::LargerText),
+        written(crate::keymap::Command::SmallerText)
+    );
+    for words in [
+        "text",
+        "system monospace",
+        "now: jetbrains mono, bundled",
+        &keys,
+    ] {
+        assert!(shows(&mut harness, words), "{words}");
+    }
+    let saves = settings_saves(&harness);
+    // The size, under the theme and the font: a step up, then two down.
+    key(&mut harness, Key::J, "j");
+    key(&mut harness, Key::J, "j");
+    assert!(shows(&mut harness, "13"));
+    key(&mut harness, Key::L, "l");
+    assert_eq!(harness.app.settings.font_size, FontSize::of(14.0));
+    assert!(file(&harness).contains("font_size = 14\n"));
+    key(&mut harness, Key::H, "h");
+    key(&mut harness, Key::H, "h");
+    assert_eq!(harness.app.settings.font_size, FontSize::of(12.0));
+    assert_eq!(settings_saves(&harness), saves + 3);
+    // R takes it out of the file, the look's own again.
+    harness.press(Key::R, Modifiers::SHIFT);
+    assert_eq!(harness.app.settings.font_size, None);
+    assert!(!file(&harness).contains("font_size"));
+    // The font has nothing to step to: a name is set in the file.
+    harness.app.change_settings(|settings| {
+        settings.font = Some("Fira Code".into());
+    });
+    let saves = settings_saves(&harness);
+    key(&mut harness, Key::K, "k");
+    key(&mut harness, Key::L, "l");
+    harness.press(Key::Space, Modifiers::NONE);
+    assert_eq!(harness.app.settings.font.as_deref(), Some("Fira Code"));
+    assert_eq!(settings_saves(&harness), saves);
+}
+
+#[test]
+fn the_screen_says_the_font_fontconfig_drew_and_one_it_has_not() {
+    let mut harness = terminal();
+    harness.app.change_settings(|settings| {
+        settings.font = Some("Fira Code".into());
+    });
+    harness.app.desktop_font = Read {
+        asked: Some("Fira Code".into()),
+        faces: None,
+        family: Some("JetBrainsMono Nerd Font".into()),
+        missing: true,
+    };
+    on_the_pane(&mut harness);
+    assert!(shows(&mut harness, "Fira Code"));
+    let said = "“Fira Code” not found · now: jetbrainsmono nerd font";
+    assert!(shows(&mut harness, said));
+    assert_eq!(
+        harness.painted_color(said),
+        Some(harness.app.palette.warning)
+    );
+    // Found: what fontconfig drew, dim.
+    harness.app.desktop_font.missing = false;
+    harness.app.desktop_font.family = Some("Fira Code".into());
+    let said = "now: fira code, from fontconfig";
+    assert!(shows(&mut harness, said));
+    assert_eq!(harness.painted_color(said), Some(harness.app.palette.dim));
+    // R puts the system's monospace back.
+    key(&mut harness, Key::J, "j");
+    harness.press(Key::R, Modifiers::SHIFT);
+    assert_eq!(harness.app.settings.font, None);
+    assert!(!file(&harness).contains("font ="));
 }

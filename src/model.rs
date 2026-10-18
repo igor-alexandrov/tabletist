@@ -2500,6 +2500,8 @@ impl SettingsPane {
             ],
             Self::Appearance => &[
                 SettingsRow::Option(OptionId::Theme),
+                SettingsRow::Option(OptionId::Font),
+                SettingsRow::Option(OptionId::FontSize),
                 SettingsRow::Option(OptionId::RowHeight),
                 SettingsRow::Option(OptionId::Zebra),
                 SettingsRow::Option(OptionId::ColumnTypes),

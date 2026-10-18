@@ -409,6 +409,7 @@ fn appearance_rows(
     let mut index = 0;
     for (heading_text, top, options) in [
         ("Theme", 8.0, &OptionId::THEME[..]),
+        ("Text", 12.0, &OptionId::TERMINAL_TEXT[..]),
         ("Grid", 12.0, &OptionId::GRID[..]),
         ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
     ] {
