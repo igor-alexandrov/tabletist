@@ -18,10 +18,16 @@ use crate::ui::format::{Marks, array_items, display_safe};
 use crate::ui::states::Tone;
 use crate::ui::widgets::virtual_rows;
 
-/// The header's height, per look.
+/// The header's height, per look: 44 (macOS) or 40 (terminal) with the
+/// types' line under the names, 30 or 26 with the names alone, and the
+/// rule under the header.
 pub fn header_height(look: &crate::theme::Look) -> f32 {
-    // 44 (macOS) or 40 (terminal), and the rule under the header.
-    if look.terminal { 41.0 } else { 45.0 }
+    match (look.terminal, look.type_line) {
+        (true, true) => 41.0,
+        (false, true) => 45.0,
+        (true, false) => 27.0,
+        (false, false) => 31.0,
+    }
 }
 /// The terminal look's gutter, where the selected row's cursor sits.
 const GUTTER: f32 = 22.0;
@@ -383,8 +389,8 @@ pub fn column_at(widths: &[f32], x: f32) -> usize {
 }
 
 /// A data row's background: the selected row's colour wins, then the hover
-/// tint, then (in the terminal look) the zebra stripe on odd rows. `None`
-/// leaves the window colour.
+/// tint, then the zebra stripe on odd rows where the look shades them.
+/// `None` leaves the window colour.
 pub fn row_fill(
     selected: bool,
     hovered: bool,
@@ -396,7 +402,7 @@ pub fn row_fill(
         Some(palette.selection)
     } else if hovered {
         Some(palette.panel.lerp_to_gamma(palette.surface, 0.5))
-    } else if odd && look.terminal {
+    } else if odd && look.zebra {
         Some(palette.panel)
     } else {
         None
@@ -510,7 +516,9 @@ pub fn ellipsize<'t>(
 pub fn initial_widths<'a>(
     columns: &[Column<'_>],
     rows: usize,
-    (pad, key_width): (f32, f32),
+    // The cells' padding, a numeric key's fixed width, and whether the
+    // header has the types' line, which its column is as wide as.
+    (pad, key_width, types): (f32, f32, bool),
     width: &impl Fn(&str) -> f32,
     cell: &mut impl FnMut(usize, usize) -> Cell<'a>,
 ) -> Vec<f32> {
@@ -524,9 +532,12 @@ pub fn initial_widths<'a>(
             let header = if column.key && column.numeric && key_width > 0.0 {
                 key_width
             } else {
-                width(&display_safe(column.name)).max(width(&display_safe(&column.type_line)))
-                    + 2.0 * pad
-                    + 16.0
+                let type_line = if types {
+                    width(&display_safe(&column.type_line))
+                } else {
+                    0.0
+                };
+                width(&display_safe(column.name)).max(type_line) + 2.0 * pad + 16.0
             };
             let widest = (0..rows.min(SAMPLE_ROWS))
                 .map(|row| {
@@ -567,7 +578,8 @@ struct Kept {
 }
 
 /// Drops what egui's memory keeps for the grid `id`: its columns' widths,
-/// the selection it last revealed and where it was scrolled to. For a grid
+/// the selection it last revealed, where it was scrolled to and at what
+/// row height. For a grid
 /// that will not be drawn again (a SQL editor's result, once the next run
 /// has its own grid).
 pub fn forget(ctx: &egui::Context, id: Id) {
@@ -578,6 +590,7 @@ pub fn forget(ctx: &egui::Context, id: Id) {
         }
         data.remove::<Option<CellPos>>(id.with("last-selection"));
         data.remove::<ColumnsShown>(id.with("columns-shown"));
+        data.remove::<(f32, f32)>(id.with("row-height"));
         data.remove::<Kept>(id);
     });
 }
@@ -609,6 +622,7 @@ pub fn remembered(ctx: &egui::Context, id: Id) -> bool {
             || data
                 .get_temp::<Option<CellPos>>(id.with("last-selection"))
                 .is_some()
+            || data.get_temp::<(f32, f32)>(id.with("row-height")).is_some()
     })
 }
 
@@ -631,7 +645,7 @@ pub fn show<'a>(
     mut cell: impl FnMut(usize, usize) -> Cell<'a>,
 ) -> GridOutput {
     let mut output = GridOutput::default();
-    let row_height = look.grid_row;
+    let row_height = look.row();
     let header_height = header_height(look);
     let pad = cell_pad(look);
     let gutter = if look.terminal { GUTTER } else { 0.0 };
@@ -650,7 +664,7 @@ pub fn show<'a>(
         let mut widths = initial_widths(
             columns,
             row_count,
-            (pad, key_width(look)),
+            (pad, key_width(look), look.type_line),
             &width,
             &mut cell,
         );
@@ -718,309 +732,319 @@ pub fn show<'a>(
     let lit =
         keys && focus::visible(ui.ctx()) && (editing.is_some() || !focus::on_control(ui.ctx()));
 
-    let scroll = egui::ScrollArea::both()
+    // Rows of another height keep the same row at the top: the offset,
+    // which is in points, is carried from the height the grid had to this.
+    // The height and the offset the last frame drew them at.
+    let height_id = id.with("row-height");
+    let before = ui.data(|data| data.get_temp::<(f32, f32)>(height_id));
+    let mut area = egui::ScrollArea::both()
         .id_salt(id)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            let origin = ui.cursor().min;
-            let full = total.max(ui.available_width());
-            ui.allocate_space(vec2(total, header_height));
+        .auto_shrink([false, false]);
+    if let Some((before, offset)) = before.filter(|(before, _)| *before != row_height) {
+        area = area.vertical_scroll_offset(offset / before * row_height);
+    }
+    let scroll = area.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+        let origin = ui.cursor().min;
+        let full = total.max(ui.available_width());
+        ui.allocate_space(vec2(total, header_height));
 
-            // How far the pinned column stands off its place: as far as
-            // the grid is scrolled sideways.
-            let shift = if pinned {
-                // Under a point it is the clip's own margin, not a scroll.
-                Some(ui.clip_rect().left() - origin.x)
-                    .filter(|shift| *shift >= 1.0)
-                    .unwrap_or(0.0)
+        // How far the pinned column stands off its place: as far as
+        // the grid is scrolled sideways.
+        let shift = if pinned {
+            // Under a point it is the clip's own margin, not a scroll.
+            Some(ui.clip_rect().left() - origin.x)
+                .filter(|shift| *shift >= 1.0)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        if let Some(target) = reveal {
+            let col = target.col.min(widths.len().saturating_sub(1));
+            let x = origin.x + gutter + widths[..col].iter().sum::<f32>();
+            let y = origin.y + header_height + target.row as f32 * row_height;
+            // Include the header's height above the row so the sticky
+            // header never covers it, and the pinned column's width
+            // before a cell that scrolls so that never does either.
+            let cover = if pinned && col > 0 {
+                gutter + widths[0]
             } else {
                 0.0
             };
-            if let Some(target) = reveal {
-                let col = target.col.min(widths.len().saturating_sub(1));
-                let x = origin.x + gutter + widths[..col].iter().sum::<f32>();
-                let y = origin.y + header_height + target.row as f32 * row_height;
-                // Include the header's height above the row so the sticky
-                // header never covers it, and the pinned column's width
-                // before a cell that scrolls so that never does either.
-                let cover = if pinned && col > 0 {
-                    gutter + widths[0]
-                } else {
-                    0.0
-                };
-                let rect = Rect::from_min_size(
-                    pos2(x - cover, y - header_height),
-                    vec2(
-                        widths.get(col).copied().unwrap_or(0.0) + cover,
-                        row_height + header_height,
-                    ),
-                );
-                ui.scroll_to_rect(rect, None);
-            }
+            let rect = Rect::from_min_size(
+                pos2(x - cover, y - header_height),
+                vec2(
+                    widths.get(col).copied().unwrap_or(0.0) + cover,
+                    row_height + header_height,
+                ),
+            );
+            ui.scroll_to_rect(rect, None);
+        }
 
-            virtual_rows(ui, row_count, row_height, |ui, row| {
-                // A row takes a click, not the Tab key: the grid is the stop.
-                let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
-                let Row {
-                    mark,
-                    number,
-                    deleted,
-                    ranged,
-                } = rows(row);
-                let label = match number {
-                    Some(number) if deleted => format!("Row {number}, marked for deletion"),
-                    Some(number) => format!("Row {number}"),
-                    None => "New row, not saved".to_owned(),
-                };
-                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
-                if ranged {
-                    ui.ctx().accesskit_node_builder(response.id, |node| {
-                        node.set_selected(true);
-                    });
+        virtual_rows(ui, row_count, row_height, |ui, row| {
+            // A row takes a click, not the Tab key: the grid is the stop.
+            let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
+            let Row {
+                mark,
+                number,
+                deleted,
+                ranged,
+            } = rows(row);
+            let label = match number {
+                Some(number) if deleted => format!("Row {number}, marked for deletion"),
+                Some(number) => format!("Row {number}"),
+                None => "New row, not saved".to_owned(),
+            };
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+            if ranged {
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_selected(true);
+                });
+            }
+            if response.clicked() || response.double_clicked() {
+                let col = response
+                    .interact_pointer_pos()
+                    .map(|pointer| {
+                        let x = pointer.x - rect.left() - gutter;
+                        // Over the pinned column, whatever is under it.
+                        if pinned && x - shift < widths[0] {
+                            0
+                        } else {
+                            column_at(&widths, x)
+                        }
+                    })
+                    .unwrap_or(0);
+                let cell = Some(CellPos { row, col });
+                if response.clicked() {
+                    output.clicked = cell;
+                    output.shift = ui.input(|input| input.modifiers.shift);
                 }
-                if response.clicked() || response.double_clicked() {
-                    let col = response
-                        .interact_pointer_pos()
-                        .map(|pointer| {
-                            let x = pointer.x - rect.left() - gutter;
-                            // Over the pinned column, whatever is under it.
-                            if pinned && x - shift < widths[0] {
-                                0
-                            } else {
-                                column_at(&widths, x)
-                            }
-                        })
-                        .unwrap_or(0);
-                    let cell = Some(CellPos { row, col });
-                    if response.clicked() {
-                        output.clicked = cell;
-                        output.shift = ui.input(|input| input.modifiers.shift);
-                    }
-                    if response.double_clicked() {
-                        output.double_clicked = cell;
-                    }
+                if response.double_clicked() {
+                    output.double_clicked = cell;
                 }
-                let painter = ui.painter().clone();
-                // A row with pending cells is marked in their tone.
-                let row_tone = match mark {
-                    RowMark::None => None,
-                    RowMark::Changed => Some(Tone::Warning),
-                    RowMark::Trouble | RowMark::Deleted => Some(Tone::Danger),
-                    RowMark::New => Some(Tone::Success),
-                };
-                let new = mark == RowMark::New;
-                // A new row's cell, as a warning knows it: by the row's
-                // having no number among the table's. Its mark is not
-                // steady enough, a cell to fix in it makes it `Trouble`.
-                let held_back = new || number.is_none();
-                // The cursor's row, and with it the rows selected with it.
-                let cursor_row = selection.is_some_and(|cell| cell.row == row);
-                let selected_row = cursor_row || ranged;
-                // With the keyboard in the grid the cell takes the
-                // selection's colour and its row a lighter tint of it.
-                let lit_row = selected_row && lit && !look.terminal;
-                let fresh = crate::env::new_row_colors(crate::env::Platform::of(look), palette);
-                let doomed =
-                    crate::env::deleted_row_colors(crate::env::Platform::of(look), palette);
-                let fill = if new {
-                    // A new row keeps its own fill under the selection
-                    // too: its cell alone takes the selection's colour,
-                    // and says where the keyboard is.
-                    Some(fresh.fill)
-                } else if deleted && !ranged {
-                    // As a new row: the row keeps its fill, and its cell
-                    // alone says where the keyboard is. Not among several
-                    // selected rows: there it takes the selection's fill
-                    // with them, so the range reads as one, and its bar
-                    // and its struck values still say it is marked.
-                    Some(doomed.fill)
-                } else if lit_row {
-                    Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
-                } else {
-                    row_fill(
-                        selected_row,
-                        response.hovered(),
-                        row % 2 == 1,
-                        look,
-                        palette,
-                    )
-                };
-                if let Some(fill) = fill {
-                    painter.rect_filled(rect, CornerRadius::ZERO, fill);
-                }
-                if !look.terminal {
-                    let y = painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
-                    painter.hline(rect.x_range(), y, Stroke::new(hairline, palette.surface));
-                }
-                for &col in &order {
-                    let left = rect.left() + gutter + lefts[col];
-                    let cell_rect =
-                        Rect::from_min_size(pos2(left, rect.top()), vec2(widths[col], row_height));
-                    // The first column, and the row's mark before it, stand
-                    // where the view begins while it is pinned.
-                    let cell_rect = if col == 0 {
-                        let lead = Rect::from_min_max(
-                            pos2(rect.left() + shift, rect.top()),
-                            pos2(cell_rect.right() + shift, rect.bottom()),
-                        );
-                        if shift > 0.0 {
-                            // Over what scrolled under: the row's own fill.
-                            let under = fill.unwrap_or(palette.window);
-                            painter.rect_filled(lead, CornerRadius::ZERO, under);
-                            if !look.terminal {
-                                let y =
-                                    painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
-                                painter.hline(
-                                    lead.x_range(),
-                                    y,
-                                    Stroke::new(hairline, palette.surface),
-                                );
-                            }
-                            painter.vline(
-                                lead.right() - hairline / 2.0,
-                                lead.y_range(),
-                                Stroke::new(hairline, palette.outline),
+            }
+            let painter = ui.painter().clone();
+            // A row with pending cells is marked in their tone.
+            let row_tone = match mark {
+                RowMark::None => None,
+                RowMark::Changed => Some(Tone::Warning),
+                RowMark::Trouble | RowMark::Deleted => Some(Tone::Danger),
+                RowMark::New => Some(Tone::Success),
+            };
+            let new = mark == RowMark::New;
+            // A new row's cell, as a warning knows it: by the row's
+            // having no number among the table's. Its mark is not
+            // steady enough, a cell to fix in it makes it `Trouble`.
+            let held_back = new || number.is_none();
+            // The cursor's row, and with it the rows selected with it.
+            let cursor_row = selection.is_some_and(|cell| cell.row == row);
+            let selected_row = cursor_row || ranged;
+            // With the keyboard in the grid the cell takes the
+            // selection's colour and its row a lighter tint of it.
+            let lit_row = selected_row && lit && !look.terminal;
+            let fresh = crate::env::new_row_colors(crate::env::Platform::of(look), palette);
+            let doomed = crate::env::deleted_row_colors(crate::env::Platform::of(look), palette);
+            let fill = if new {
+                // A new row keeps its own fill under the selection
+                // too: its cell alone takes the selection's colour,
+                // and says where the keyboard is.
+                Some(fresh.fill)
+            } else if deleted && !ranged {
+                // As a new row: the row keeps its fill, and its cell
+                // alone says where the keyboard is. Not among several
+                // selected rows: there it takes the selection's fill
+                // with them, so the range reads as one, and its bar
+                // and its struck values still say it is marked.
+                Some(doomed.fill)
+            } else if lit_row {
+                Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
+            } else {
+                row_fill(
+                    selected_row,
+                    response.hovered(),
+                    row % 2 == 1,
+                    look,
+                    palette,
+                )
+            };
+            if let Some(fill) = fill {
+                painter.rect_filled(rect, CornerRadius::ZERO, fill);
+            }
+            if !look.terminal {
+                let y = painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
+                painter.hline(rect.x_range(), y, Stroke::new(hairline, palette.surface));
+            }
+            for &col in &order {
+                let left = rect.left() + gutter + lefts[col];
+                let cell_rect =
+                    Rect::from_min_size(pos2(left, rect.top()), vec2(widths[col], row_height));
+                // The first column, and the row's mark before it, stand
+                // where the view begins while it is pinned.
+                let cell_rect = if col == 0 {
+                    let lead = Rect::from_min_max(
+                        pos2(rect.left() + shift, rect.top()),
+                        pos2(cell_rect.right() + shift, rect.bottom()),
+                    );
+                    if shift > 0.0 {
+                        // Over what scrolled under: the row's own fill.
+                        let under = fill.unwrap_or(palette.window);
+                        painter.rect_filled(lead, CornerRadius::ZERO, under);
+                        if !look.terminal {
+                            let y = painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
+                            painter.hline(
+                                lead.x_range(),
+                                y,
+                                Stroke::new(hairline, palette.surface),
                             );
                         }
-                        if look.terminal {
-                            if new {
-                                // The terminal's bar: 2 wide, and as far
-                                // in as the pane's focus ring is wide. The
-                                // ring is drawn over the row's start while
-                                // the grid has the keyboard, and the bar
-                                // stands beside it, as the design has them.
-                                let at = lead.min + vec2(focus::WIDTH, 0.0);
-                                let bar = Rect::from_min_size(at, vec2(2.0, row_height));
-                                painter.rect_filled(bar, CornerRadius::ZERO, fresh.bar);
-                            }
-                            let line = rect.center().y;
-                            if cursor_row {
-                                // The cursor: a bold accent block in the
-                                // gutter.
-                                let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent)
-                                    .layout(ui.ctx());
-                                cursor
-                                    .paint_center(&painter, pos2(lead.left() + GUTTER / 2.0, line));
-                            }
-                            if let Some(tone) = row_tone {
-                                // Beside the cursor: `~` on a changed row,
-                                // `!` when one of its cells is in trouble,
-                                // `+` on a new one.
-                                let sign = match mark {
-                                    RowMark::Trouble => "!",
-                                    RowMark::New => "+",
-                                    RowMark::Deleted => "-",
-                                    RowMark::None | RowMark::Changed => "~",
-                                };
-                                Text::one(look, TextRole::OGroup, sign, tone.color(palette))
-                                    .layout(ui.ctx())
-                                    .paint_center(
-                                        &painter,
-                                        pos2(lead.left() + GUTTER * 0.75, line),
-                                    );
-                            }
-                        }
-                        cell_rect.translate(vec2(shift, 0.0))
-                    } else {
-                        cell_rect
-                    };
-                    let edited = editing == Some(CellPos { row, col });
-                    if edited {
-                        output.editing_rect = Some(cell_rect);
-                    }
-                    if edited && let Some(editor) = editor.as_deref_mut() {
-                        // The field in place of the cell's text, in view
-                        // or not: it is drawn as long as it is open.
-                        editor(ui, cell_rect);
-                        continue;
-                    }
-                    if !ui.is_rect_visible(cell_rect) {
-                        continue;
-                    }
-                    let content = cell(row, col);
-                    let here = selection == Some(CellPos { row, col });
-                    if content.hint.is_some() || content.note.is_some() {
-                        // Where the cell shows: not the part of it that
-                        // scrolled under the pinned column.
-                        let mut seen = cell_rect;
-                        if pinned && col > 0 {
-                            let lead = rect.left() + shift + gutter + widths[0];
-                            seen.min.x = seen.min.x.max(lead);
-                        }
-                        if seen.is_positive() {
-                            // Hovered and no more: a click is the row's.
-                            let at = ui.interact(seen, id.with(("hint", row, col)), Sense::hover());
-                            if let Some(note) = &content.note {
-                                // It was asked for: said without waiting
-                                // for the pointer.
-                                at.show_tooltip_text(note.as_str());
-                            } else if let Some(hint) = &content.hint {
-                                let _ = at.on_hover_text(hint.as_str());
-                            }
-                        }
-                    }
-                    // What the cell's pending state tints it with. The
-                    // terminal draws a computed column as any other. A row
-                    // that is gone has no tint: nothing of it is pending.
-                    let tone = match content.mark {
-                        // A new row's cell keeps the row's own look: the
-                        // row says it is pending, and the outline below
-                        // says the warning.
-                        Mark::Doubt if held_back => None,
-                        Mark::Pending | Mark::Doubt | Mark::Saving => Some(Tone::Warning),
-                        Mark::Trouble => Some(Tone::Danger),
-                        Mark::Saved => Some(Tone::Success),
-                        Mark::None
-                        | Mark::Locked
-                        | Mark::Gone
-                        | Mark::Deleted
-                        | Mark::Deleting
-                        | Mark::Added
-                        | Mark::Unset => None,
-                    };
-                    let locked = content.mark == Mark::Locked && !look.terminal;
-                    // A cell with a warning keeps its lines under the cursor.
-                    let reversed_cursor = tone.is_none() && content.mark != Mark::Doubt;
-                    if here && lit && look.terminal && reversed_cursor && !edited {
-                        // Reverse video, as a terminal marks its cursor:
-                        // the accent behind, the text in the window's tone.
-                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.accent);
-                        let reversed = written_in(palette, palette.window);
-                        let plain = Cell {
-                            style: Style::Plain,
-                            ..content
-                        };
-                        draw_cell(
-                            ui,
-                            &painter,
-                            cell_rect,
-                            &columns[col],
-                            &plain,
-                            look,
-                            &reversed,
+                        painter.vline(
+                            lead.right() - hairline / 2.0,
+                            lead.y_range(),
+                            Stroke::new(hairline, palette.outline),
                         );
-                        continue;
                     }
-                    // A tint stays under the cursor, which is then the
-                    // accent line alone: what is pending reads as pending
-                    // wherever the selection is.
-                    if let Some(tone) = tone {
-                        // What a save just wrote flashes in the colour a
-                        // saved new row does, a changed cell's too.
-                        let tint = match content.mark {
-                            Mark::Saved => fresh.saved,
-                            _ => tone.fill(look, palette),
-                        };
-                        painter.rect_filled(cell_rect, CornerRadius::ZERO, tint);
-                    } else if here && lit {
-                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.selection);
-                    } else if locked {
-                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.surface);
+                    if look.terminal {
+                        if new {
+                            // The terminal's bar: 2 wide, and as far
+                            // in as the pane's focus ring is wide. The
+                            // ring is drawn over the row's start while
+                            // the grid has the keyboard, and the bar
+                            // stands beside it, as the design has them.
+                            let at = lead.min + vec2(focus::WIDTH, 0.0);
+                            let bar = Rect::from_min_size(at, vec2(2.0, row_height));
+                            painter.rect_filled(bar, CornerRadius::ZERO, fresh.bar);
+                        }
+                        let line = rect.center().y;
+                        if cursor_row {
+                            // The cursor: a bold accent block in the
+                            // gutter.
+                            let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent)
+                                .layout(ui.ctx());
+                            cursor.paint_center(&painter, pos2(lead.left() + GUTTER / 2.0, line));
+                        }
+                        if let Some(tone) = row_tone {
+                            // Beside the cursor: `~` on a changed row,
+                            // `!` when one of its cells is in trouble,
+                            // `+` on a new one.
+                            let sign = match mark {
+                                RowMark::Trouble => "!",
+                                RowMark::New => "+",
+                                RowMark::Deleted => "-",
+                                RowMark::None | RowMark::Changed => "~",
+                            };
+                            Text::one(look, TextRole::OGroup, sign, tone.color(palette))
+                                .layout(ui.ctx())
+                                .paint_center(&painter, pos2(lead.left() + GUTTER * 0.75, line));
+                        }
                     }
-                    let height = cell_rect.height();
-                    match content.mark {
-                        Mark::Pending | Mark::Saving if !look.terminal => {
+                    cell_rect.translate(vec2(shift, 0.0))
+                } else {
+                    cell_rect
+                };
+                let edited = editing == Some(CellPos { row, col });
+                if edited {
+                    output.editing_rect = Some(cell_rect);
+                }
+                if edited && let Some(editor) = editor.as_deref_mut() {
+                    // The field in place of the cell's text, in view
+                    // or not: it is drawn as long as it is open.
+                    editor(ui, cell_rect);
+                    continue;
+                }
+                if !ui.is_rect_visible(cell_rect) {
+                    continue;
+                }
+                let content = cell(row, col);
+                let here = selection == Some(CellPos { row, col });
+                if content.hint.is_some() || content.note.is_some() {
+                    // Where the cell shows: not the part of it that
+                    // scrolled under the pinned column.
+                    let mut seen = cell_rect;
+                    if pinned && col > 0 {
+                        let lead = rect.left() + shift + gutter + widths[0];
+                        seen.min.x = seen.min.x.max(lead);
+                    }
+                    if seen.is_positive() {
+                        // Hovered and no more: a click is the row's.
+                        let at = ui.interact(seen, id.with(("hint", row, col)), Sense::hover());
+                        if let Some(note) = &content.note {
+                            // It was asked for: said without waiting
+                            // for the pointer.
+                            at.show_tooltip_text(note.as_str());
+                        } else if let Some(hint) = &content.hint {
+                            let _ = at.on_hover_text(hint.as_str());
+                        }
+                    }
+                }
+                // What the cell's pending state tints it with. The
+                // terminal draws a computed column as any other. A row
+                // that is gone has no tint: nothing of it is pending.
+                let tone = match content.mark {
+                    // A new row's cell keeps the row's own look: the
+                    // row says it is pending, and the outline below
+                    // says the warning.
+                    Mark::Doubt if held_back => None,
+                    Mark::Pending | Mark::Doubt | Mark::Saving => Some(Tone::Warning),
+                    Mark::Trouble => Some(Tone::Danger),
+                    Mark::Saved => Some(Tone::Success),
+                    Mark::None
+                    | Mark::Locked
+                    | Mark::Gone
+                    | Mark::Deleted
+                    | Mark::Deleting
+                    | Mark::Added
+                    | Mark::Unset => None,
+                };
+                let locked = content.mark == Mark::Locked && !look.terminal;
+                // A cell with a warning keeps its lines under the cursor.
+                let reversed_cursor = tone.is_none() && content.mark != Mark::Doubt;
+                if here && lit && look.terminal && reversed_cursor && !edited {
+                    // Reverse video, as a terminal marks its cursor:
+                    // the accent behind, the text in the window's tone.
+                    painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.accent);
+                    let reversed = written_in(palette, palette.window);
+                    let plain = Cell {
+                        style: Style::Plain,
+                        ..content
+                    };
+                    draw_cell(
+                        ui,
+                        &painter,
+                        cell_rect,
+                        &columns[col],
+                        &plain,
+                        look,
+                        &reversed,
+                    );
+                    continue;
+                }
+                // A tint stays under the cursor, which is then the
+                // accent line alone: what is pending reads as pending
+                // wherever the selection is.
+                if let Some(tone) = tone {
+                    // What a save just wrote flashes in the colour a
+                    // saved new row does, a changed cell's too.
+                    let tint = match content.mark {
+                        Mark::Saved => fresh.saved,
+                        _ => tone.fill(look, palette),
+                    };
+                    painter.rect_filled(cell_rect, CornerRadius::ZERO, tint);
+                } else if here && lit {
+                    painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.selection);
+                } else if locked {
+                    painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.surface);
+                }
+                let height = cell_rect.height();
+                match content.mark {
+                    Mark::Pending | Mark::Saving if !look.terminal => {
+                        let bar = Rect::from_min_size(cell_rect.min, vec2(2.0, height));
+                        painter.rect_filled(bar, CornerRadius::ZERO, Tone::Warning.color(palette));
+                    }
+                    Mark::Doubt => {
+                        // A pending cell's bar, and an outline in its
+                        // tone, as a cell to fix has one in the
+                        // failure's.
+                        if !look.terminal && !held_back {
                             let bar = Rect::from_min_size(cell_rect.min, vec2(2.0, height));
                             painter.rect_filled(
                                 bar,
@@ -1028,244 +1052,232 @@ pub fn show<'a>(
                                 Tone::Warning.color(palette),
                             );
                         }
-                        Mark::Doubt => {
-                            // A pending cell's bar, and an outline in its
-                            // tone, as a cell to fix has one in the
-                            // failure's.
-                            if !look.terminal && !held_back {
-                                let bar = Rect::from_min_size(cell_rect.min, vec2(2.0, height));
-                                painter.rect_filled(
-                                    bar,
-                                    CornerRadius::ZERO,
-                                    Tone::Warning.color(palette),
-                                );
-                            }
-                            painter.rect_stroke(
-                                cell_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0, Tone::Warning.color(palette)),
-                                StrokeKind::Inside,
-                            );
-                        }
-                        Mark::Trouble => {
-                            painter.rect_stroke(
-                                cell_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0, Tone::Danger.color(palette)),
-                                StrokeKind::Inside,
-                            );
-                        }
-                        _ => {}
-                    }
-                    if col == 0 && !look.terminal {
-                        // The row's bar, over what its first cell is filled
-                        // with: of its pending cells' tone, else the
-                        // accent of a selected row whose cell is not lit.
-                        let color = match row_tone {
-                            Some(_) if new => Some(fresh.bar),
-                            Some(_) if deleted => Some(doomed.bar),
-                            Some(tone) => Some(tone.color(palette)),
-                            None => (selected_row && !lit_row).then_some(palette.accent),
-                        };
-                        if let Some(color) = color {
-                            let bar = Rect::from_min_size(cell_rect.min, vec2(3.0, height));
-                            painter.rect_filled(bar, CornerRadius::ZERO, color);
-                        }
-                    }
-                    // The text's colours: dim in a row that is gone, a
-                    // pending cell's tone in the terminal, a changed row's
-                    // on its key, and a computed column a step quieter.
-                    let written = match (tone, row_tone) {
-                        _ if content.mark == Mark::Gone => written_in(palette, palette.dim),
-                        // A row marked for deletion: every value in the
-                        // one tone its style gives, the key's too.
-                        _ if matches!(content.mark, Mark::Deleted | Mark::Deleting) => {
-                            written_in(palette, doomed.text)
-                        }
-                        // A new row's marker in the row's tone; the
-                        // terminal writes it dimmed, as it does what a
-                        // cell will be filled with.
-                        _ if content.mark == Mark::Added && !look.terminal => {
-                            written_in(palette, fresh.marker)
-                        }
-                        _ if matches!(content.mark, Mark::Unset | Mark::Added) => {
-                            written_in(palette, palette.dim)
-                        }
-                        (Some(tone), _) if look.terminal && tone != Tone::Success => {
-                            written_in(palette, tone.color(palette))
-                        }
-                        (None, Some(tone)) if col == 0 && columns[col].key && !look.terminal => {
-                            written_in(palette, tone.color(palette))
-                        }
-                        _ if locked => Palette {
-                            text: palette.secondary,
-                            ..*palette
-                        },
-                        _ => *palette,
-                    };
-                    // A cell being saved keeps room at its right for the
-                    // spinner.
-                    let text_rect = if content.mark == Mark::Saving {
-                        let side = 12.0;
-                        let at = Rect::from_center_size(
-                            pos2(cell_rect.right() - pad - side / 2.0, cell_rect.center().y),
-                            vec2(side, side),
-                        );
-                        crate::ui::states::spinner(ui, at, Tone::Warning.color(palette), palette);
-                        // The text ends 6 short of it.
-                        let right = at.left() - 6.0 + pad;
-                        Rect::from_min_max(cell_rect.min, pos2(right, cell_rect.bottom()))
-                    } else {
-                        cell_rect
-                    };
-                    draw_cell(
-                        ui,
-                        &painter,
-                        text_rect,
-                        &columns[col],
-                        &content,
-                        look,
-                        &written,
-                    );
-                    // A cell edited in an editor of its own keeps its
-                    // value and the cursor's line, lit or not: the line
-                    // says which cell the editor is for.
-                    if (here && lit) || edited {
-                        // Inside the cell: nothing the grid scrolls under
-                        // cuts it.
                         painter.rect_stroke(
                             cell_rect,
                             CornerRadius::ZERO,
-                            Stroke::new(2.0, palette.accent),
-                            StrokeKind::Inside,
-                        );
-                        if content.mark == Mark::Doubt {
-                            // The cursor's line covers the outline of the
-                            // same rect: the warning's goes inside it.
-                            painter.rect_stroke(
-                                cell_rect.shrink(2.0),
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0, Tone::Warning.color(palette)),
-                                StrokeKind::Inside,
-                            );
-                        }
-                    } else if here && (col > 0 || (new && !look.terminal)) {
-                        // The row is selected; a cell past the first is
-                        // marked too, for the keys that act on one cell.
-                        // A new row's first is as well: the row keeps its
-                        // own fill and bar, and nothing else would say it
-                        // is selected. The line stands clear of that bar.
-                        let clear = if col == 0 { 3.0 } else { 0.0 };
-                        let marked = cell_rect.with_min_x(cell_rect.left() + clear);
-                        painter.rect_stroke(
-                            marked.shrink(1.0),
-                            CornerRadius::same(look.radius.min(3)),
-                            Stroke::new(1.5, palette.accent),
+                            Stroke::new(1.0, Tone::Warning.color(palette)),
                             StrokeKind::Inside,
                         );
                     }
+                    Mark::Trouble => {
+                        painter.rect_stroke(
+                            cell_rect,
+                            CornerRadius::ZERO,
+                            Stroke::new(1.0, Tone::Danger.color(palette)),
+                            StrokeKind::Inside,
+                        );
+                    }
+                    _ => {}
                 }
-            });
-
-            // A row scrolled out of view is not built, and its cell's
-            // editor must be drawn all the same to keep the keyboard: where
-            // the cell is, until the grid has scrolled back to it.
-            if let (Some(at), None) = (editing, output.editing_rect)
-                && at.row < row_count
-                && at.col < widths.len()
-            {
-                let place = pos2(
-                    origin.x + gutter + lefts[at.col],
-                    origin.y + header_height + at.row as f32 * row_height,
+                if col == 0 && !look.terminal {
+                    // The row's bar, over what its first cell is filled
+                    // with: of its pending cells' tone, else the
+                    // accent of a selected row whose cell is not lit.
+                    let color = match row_tone {
+                        Some(_) if new => Some(fresh.bar),
+                        Some(_) if deleted => Some(doomed.bar),
+                        Some(tone) => Some(tone.color(palette)),
+                        None => (selected_row && !lit_row).then_some(palette.accent),
+                    };
+                    if let Some(color) = color {
+                        let bar = Rect::from_min_size(cell_rect.min, vec2(3.0, height));
+                        painter.rect_filled(bar, CornerRadius::ZERO, color);
+                    }
+                }
+                // The text's colours: dim in a row that is gone, a
+                // pending cell's tone in the terminal, a changed row's
+                // on its key, and a computed column a step quieter.
+                let written = match (tone, row_tone) {
+                    _ if content.mark == Mark::Gone => written_in(palette, palette.dim),
+                    // A row marked for deletion: every value in the
+                    // one tone its style gives, the key's too.
+                    _ if matches!(content.mark, Mark::Deleted | Mark::Deleting) => {
+                        written_in(palette, doomed.text)
+                    }
+                    // A new row's marker in the row's tone; the
+                    // terminal writes it dimmed, as it does what a
+                    // cell will be filled with.
+                    _ if content.mark == Mark::Added && !look.terminal => {
+                        written_in(palette, fresh.marker)
+                    }
+                    _ if matches!(content.mark, Mark::Unset | Mark::Added) => {
+                        written_in(palette, palette.dim)
+                    }
+                    (Some(tone), _) if look.terminal && tone != Tone::Success => {
+                        written_in(palette, tone.color(palette))
+                    }
+                    (None, Some(tone)) if col == 0 && columns[col].key && !look.terminal => {
+                        written_in(palette, tone.color(palette))
+                    }
+                    _ if locked => Palette {
+                        text: palette.secondary,
+                        ..*palette
+                    },
+                    _ => *palette,
+                };
+                // A cell being saved keeps room at its right for the
+                // spinner.
+                let text_rect = if content.mark == Mark::Saving {
+                    let side = 12.0;
+                    let at = Rect::from_center_size(
+                        pos2(cell_rect.right() - pad - side / 2.0, cell_rect.center().y),
+                        vec2(side, side),
+                    );
+                    crate::ui::states::spinner(ui, at, Tone::Warning.color(palette), palette);
+                    // The text ends 6 short of it.
+                    let right = at.left() - 6.0 + pad;
+                    Rect::from_min_max(cell_rect.min, pos2(right, cell_rect.bottom()))
+                } else {
+                    cell_rect
+                };
+                draw_cell(
+                    ui,
+                    &painter,
+                    text_rect,
+                    &columns[col],
+                    &content,
+                    look,
+                    &written,
                 );
-                let rect = Rect::from_min_size(place, vec2(widths[at.col], row_height));
-                output.editing_rect = Some(rect);
-                if let Some(editor) = editor {
-                    editor(ui, rect);
-                }
-            }
-
-            // The header, painted over the rows at the top of the visible
-            // area so it stays put while rows scroll under it. Its widgets
-            // come after the rows', so they sit on top.
-            let top = ui.clip_rect().top().max(origin.y);
-            let header = Rect::from_min_size(pos2(origin.x, top), vec2(full, header_height));
-            let painter = ui.painter().clone();
-            let header_fill = if look.terminal {
-                palette.window
-            } else {
-                palette.panel
-            };
-            painter.rect_filled(header, CornerRadius::ZERO, header_fill);
-            let y = painter.round_to_pixel_center(header.bottom() - hairline / 2.0);
-            painter.hline(header.x_range(), y, Stroke::new(hairline, palette.outline));
-            for &col in &order {
-                let column = &columns[col];
-                let left = origin.x + gutter + lefts[col];
-                let rect = Rect::from_min_size(pos2(left, top), vec2(widths[col], header_height));
-                // The pinned column's header stands with its cells, over
-                // the headers that scrolled under it.
-                let rect = if col == 0 && shift > 0.0 {
-                    let lead = Rect::from_min_max(
-                        pos2(origin.x + shift, top),
-                        pos2(rect.right() + shift, header.bottom()),
-                    );
-                    painter.rect_filled(lead, CornerRadius::ZERO, header_fill);
-                    painter.hline(lead.x_range(), y, Stroke::new(hairline, palette.outline));
-                    painter.vline(
-                        lead.right() - hairline / 2.0,
-                        lead.y_range(),
-                        Stroke::new(hairline, palette.outline),
-                    );
-                    rect.translate(vec2(shift, 0.0))
-                } else {
-                    rect
-                };
-                // A header that sorts nothing still takes the pointer's
-                // clicks, and drops them: a hover-only header would let
-                // them through to a row scrolled under it.
-                let (sense, kind) = if column.sortable {
-                    (Sense::click(), WidgetType::Button)
-                } else {
-                    (Sense::CLICK, WidgetType::Label)
-                };
-                let response = ui.interact(rect, id.with(("header", col)), sense);
-                focus::hint(ui, &response, rect, focus::Ring::Inset { radius: 0 });
-                // Column names come from the server: nothing hidden in them.
-                let name = display_safe(column.name);
-                response.widget_info(|| WidgetInfo::labeled(kind, true, &*name));
-                if response.clicked() && column.sortable {
-                    output.sort_clicked = Some(col);
-                }
-                if response.hovered() && column.sortable {
-                    painter.rect_filled(
-                        rect.shrink2(vec2(0.0, hairline)),
+                // A cell edited in an editor of its own keeps its
+                // value and the cursor's line, lit or not: the line
+                // says which cell the editor is for.
+                if (here && lit) || edited {
+                    // Inside the cell: nothing the grid scrolls under
+                    // cuts it.
+                    painter.rect_stroke(
+                        cell_rect,
                         CornerRadius::ZERO,
-                        palette.surface,
+                        Stroke::new(2.0, palette.accent),
+                        StrokeKind::Inside,
                     );
-                }
-                draw_header(ui, &painter, rect, column, pad, look, palette);
-                let handle = Rect::from_min_max(
-                    pos2(rect.right() - HANDLE_WIDTH / 2.0, top),
-                    pos2(rect.right() + HANDLE_WIDTH / 2.0, top + header_height),
-                );
-                // Only the pointer drags it: no stop for the Tab key.
-                let drag = ui.interact(handle, id.with(("resize", col)), Sense::DRAG);
-                if drag.hovered() || drag.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                    painter.vline(
-                        rect.right(),
-                        header.y_range(),
-                        Stroke::new(hairline, palette.outline),
+                    if content.mark == Mark::Doubt {
+                        // The cursor's line covers the outline of the
+                        // same rect: the warning's goes inside it.
+                        painter.rect_stroke(
+                            cell_rect.shrink(2.0),
+                            CornerRadius::ZERO,
+                            Stroke::new(1.0, Tone::Warning.color(palette)),
+                            StrokeKind::Inside,
+                        );
+                    }
+                } else if here && (col > 0 || (new && !look.terminal)) {
+                    // The row is selected; a cell past the first is
+                    // marked too, for the keys that act on one cell.
+                    // A new row's first is as well: the row keeps its
+                    // own fill and bar, and nothing else would say it
+                    // is selected. The line stands clear of that bar.
+                    let clear = if col == 0 { 3.0 } else { 0.0 };
+                    let marked = cell_rect.with_min_x(cell_rect.left() + clear);
+                    painter.rect_stroke(
+                        marked.shrink(1.0),
+                        CornerRadius::same(look.radius.min(3)),
+                        Stroke::new(1.5, palette.accent),
+                        StrokeKind::Inside,
                     );
-                }
-                if drag.dragged() {
-                    widths[col] = (widths[col] + drag.drag_delta().x).max(MIN_WIDTH);
-                    keep = true;
                 }
             }
-            origin
         });
+
+        // A row scrolled out of view is not built, and its cell's
+        // editor must be drawn all the same to keep the keyboard: where
+        // the cell is, until the grid has scrolled back to it.
+        if let (Some(at), None) = (editing, output.editing_rect)
+            && at.row < row_count
+            && at.col < widths.len()
+        {
+            let place = pos2(
+                origin.x + gutter + lefts[at.col],
+                origin.y + header_height + at.row as f32 * row_height,
+            );
+            let rect = Rect::from_min_size(place, vec2(widths[at.col], row_height));
+            output.editing_rect = Some(rect);
+            if let Some(editor) = editor {
+                editor(ui, rect);
+            }
+        }
+
+        // The header, painted over the rows at the top of the visible
+        // area so it stays put while rows scroll under it. Its widgets
+        // come after the rows', so they sit on top.
+        let top = ui.clip_rect().top().max(origin.y);
+        let header = Rect::from_min_size(pos2(origin.x, top), vec2(full, header_height));
+        let painter = ui.painter().clone();
+        let header_fill = if look.terminal {
+            palette.window
+        } else {
+            palette.panel
+        };
+        painter.rect_filled(header, CornerRadius::ZERO, header_fill);
+        let y = painter.round_to_pixel_center(header.bottom() - hairline / 2.0);
+        painter.hline(header.x_range(), y, Stroke::new(hairline, palette.outline));
+        for &col in &order {
+            let column = &columns[col];
+            let left = origin.x + gutter + lefts[col];
+            let rect = Rect::from_min_size(pos2(left, top), vec2(widths[col], header_height));
+            // The pinned column's header stands with its cells, over
+            // the headers that scrolled under it.
+            let rect = if col == 0 && shift > 0.0 {
+                let lead = Rect::from_min_max(
+                    pos2(origin.x + shift, top),
+                    pos2(rect.right() + shift, header.bottom()),
+                );
+                painter.rect_filled(lead, CornerRadius::ZERO, header_fill);
+                painter.hline(lead.x_range(), y, Stroke::new(hairline, palette.outline));
+                painter.vline(
+                    lead.right() - hairline / 2.0,
+                    lead.y_range(),
+                    Stroke::new(hairline, palette.outline),
+                );
+                rect.translate(vec2(shift, 0.0))
+            } else {
+                rect
+            };
+            // A header that sorts nothing still takes the pointer's
+            // clicks, and drops them: a hover-only header would let
+            // them through to a row scrolled under it.
+            let (sense, kind) = if column.sortable {
+                (Sense::click(), WidgetType::Button)
+            } else {
+                (Sense::CLICK, WidgetType::Label)
+            };
+            let response = ui.interact(rect, id.with(("header", col)), sense);
+            focus::hint(ui, &response, rect, focus::Ring::Inset { radius: 0 });
+            // Column names come from the server: nothing hidden in them.
+            let name = display_safe(column.name);
+            response.widget_info(|| WidgetInfo::labeled(kind, true, &*name));
+            if response.clicked() && column.sortable {
+                output.sort_clicked = Some(col);
+            }
+            if response.hovered() && column.sortable {
+                painter.rect_filled(
+                    rect.shrink2(vec2(0.0, hairline)),
+                    CornerRadius::ZERO,
+                    palette.surface,
+                );
+            }
+            draw_header(ui, &painter, rect, column, pad, look, palette);
+            let handle = Rect::from_min_max(
+                pos2(rect.right() - HANDLE_WIDTH / 2.0, top),
+                pos2(rect.right() + HANDLE_WIDTH / 2.0, top + header_height),
+            );
+            // Only the pointer drags it: no stop for the Tab key.
+            let drag = ui.interact(handle, id.with(("resize", col)), Sense::DRAG);
+            if drag.hovered() || drag.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                painter.vline(
+                    rect.right(),
+                    header.y_range(),
+                    Stroke::new(hairline, palette.outline),
+                );
+            }
+            if drag.dragged() {
+                widths[col] = (widths[col] + drag.drag_delta().x).max(MIN_WIDTH);
+                keep = true;
+            }
+        }
+        origin
+    });
 
     // Columns the viewport cuts off entirely. Their pill and the fade under
     // it cover the viewport's end, so a column that shows less than the
@@ -1392,6 +1404,7 @@ pub fn show<'a>(
             },
         );
     });
+    ui.data_mut(|data| data.insert_temp(height_id, (row_height, scroll.state.offset.y)));
     let viewport = scroll.inner_rect;
     output.body = Some(Rect::from_min_max(
         pos2(viewport.left(), viewport.top() + header_height),
@@ -1415,9 +1428,14 @@ fn draw_header(
     // The name over its type line, the pair centred above the rule.
     let name_role = TextRole::pick(look, TextRole::UiBodySemibold, TextRole::OGroup);
     let type_role = TextRole::pick(look, TextRole::ColumnType, TextRole::OColumnType);
+    // Without the types' line the name is centred alone.
     let (name_line, type_line) = (
         name_role.row_height(ui.ctx(), look.faces),
-        type_role.row_height(ui.ctx(), look.faces),
+        if look.type_line {
+            type_role.row_height(ui.ctx(), look.faces)
+        } else {
+            0.0
+        },
     );
     let top = rect.top() + (rect.height() - 1.0 - name_line - type_line) / 2.0;
     let (name_y, type_y) = (top + name_line / 2.0, top + name_line + type_line / 2.0);
@@ -1519,17 +1537,19 @@ fn draw_header(
             Rect::from_center_size(pos2(name_x + name_width + 9.5, name_y), vec2(11.0, 11.0)),
         );
     }
-    paint(
-        &clip,
-        ui,
-        type_role,
-        &type_text,
-        palette.dim,
-        type_x,
-        type_y,
-        false,
-        look,
-    );
+    if look.type_line {
+        paint(
+            &clip,
+            ui,
+            type_role,
+            &type_text,
+            palette.dim,
+            type_x,
+            type_y,
+            false,
+            look,
+        );
+    }
 }
 
 /// Space inside a chip, at each side of its text.
@@ -3224,7 +3244,7 @@ mod tests {
     #[test]
     fn initial_widths_fit_the_measured_text() {
         let columns = columns();
-        let widths = initial_widths(&columns, 3, (6.0, 0.0), &width, &mut |_, col| Cell {
+        let widths = initial_widths(&columns, 3, (6.0, 0.0, true), &width, &mut |_, col| Cell {
             text: if col == 0 {
                 "1628910071209526786".into()
             } else {
@@ -3239,7 +3259,7 @@ mod tests {
     #[test]
     fn initial_widths_fit_content_within_limits() {
         let columns = columns();
-        let widths = initial_widths(&columns, 3, (6.0, 0.0), &width, &mut |_, col| Cell {
+        let widths = initial_widths(&columns, 3, (6.0, 0.0, true), &width, &mut |_, col| Cell {
             text: if col == 0 {
                 "1".into()
             } else {

@@ -870,7 +870,11 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(info) = bar_info(app, tab) else {
         return;
     };
-    let env = crate::env::env_colors(info.env, crate::env::Platform::of(&look), &palette);
+    let platform = crate::env::Platform::of(&look);
+    let env = crate::env::env_colors(info.env, platform, &palette);
+    // The bar's fill and rule as the settings have them, and the lines
+    // over it with them.
+    let env = env.on_bar(info.env, app.settings.env_bar, platform, &palette);
     let (tint, border) = (env.bar_bg(), env.bar_border());
     // macOS: the bar is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();

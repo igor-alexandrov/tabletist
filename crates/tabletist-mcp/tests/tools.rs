@@ -774,3 +774,152 @@ async fn a_hidden_table_that_is_gone_closes_the_connection_to_agents() {
     assert_eq!(called.answer()["rows"], json!([[12]]));
     agent.close().await;
 }
+
+#[tokio::test]
+async fn list_connections_names_what_is_masked() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    let called = agent.call("list_connections", json!({})).await;
+    assert!(called.answer()["connections"][0].get("masked").is_none());
+    shop.mask(DEV, &["orders.email", "main.orders.phone"]);
+    let called = agent.call("list_connections", json!({})).await;
+    assert_eq!(
+        called.answer()["connections"][0]["masked"],
+        json!(["orders.email", "main.orders.phone"])
+    );
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn describe_schema_marks_a_masked_column_and_a_view_that_reads_one() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.mask(DEV, &["orders.email"]);
+    // In the list, the view that reads it is marked, and the one that
+    // does not is not.
+    let called = agent
+        .call("describe_schema", json!({ "connection": DEV }))
+        .await;
+    let tables = called.answer()["tables"].as_array().unwrap().clone();
+    let named = |name: &str| {
+        tables
+            .iter()
+            .find(|table| table["name"] == json!(name))
+            .unwrap_or_else(|| panic!("{name}"))
+            .clone()
+    };
+    assert_eq!(
+        named("recent_orders")["reads_masked"],
+        json!("orders.email")
+    );
+    assert!(named("customer_names").get("reads_masked").is_none());
+    assert!(named("orders").get("reads_masked").is_none());
+    // Described, the column is marked, and so is the view.
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["orders", "recent_orders"] }),
+        )
+        .await;
+    let described = called.answer()["tables"].as_array().unwrap().clone();
+    let columns = described[0]["columns"].as_array().unwrap();
+    let column = |name: &str| {
+        columns
+            .iter()
+            .find(|column| column["name"] == json!(name))
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(column("email")["masked"], json!(true));
+    assert!(column("id").get("masked").is_none());
+    assert_eq!(described[1]["reads_masked"], json!("orders.email"));
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn run_query_answers_a_masked_column_as_dots_and_refuses_a_use_of_it() {
+    let shop = Shop::new();
+    let (server, log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.mask(DEV, &["orders.email", "orders.phone"]);
+    // Its name and its type, `•••` in every row, a NULL too, and marked.
+    let called = query(&agent, "SELECT id, email, phone FROM orders WHERE id = 1").await;
+    let answer = called.answer();
+    assert_eq!(answer["columns"][0].get("masked"), None);
+    assert_eq!(answer["columns"][1]["name"], json!("email"));
+    assert_eq!(answer["columns"][1]["masked"], json!(true));
+    assert_eq!(answer["columns"][2]["masked"], json!(true));
+    assert_eq!(answer["rows"], json!([[1, "•••", "•••"]]));
+    // The log keeps which columns were masked, and no value.
+    let logged = log.latest(1).await.unwrap();
+    assert_eq!(logged[0].masked.as_deref(), Some(r#"["email","phone"]"#));
+    // A use of it is refused, and so is a view that reads it.
+    let called = query(&agent, "SELECT id FROM orders WHERE email LIKE 'a%'").await;
+    assert_eq!(called.refused(), "masked_column_used");
+    assert!(
+        called.text.starts_with("orders.email is masked"),
+        "{}",
+        called.text
+    );
+    let called = query(&agent, "SELECT * FROM recent_orders").await;
+    assert_eq!(called.refused(), "masked_column_used");
+    assert_eq!(
+        called.text,
+        "recent_orders reads orders.email, which is masked on this connection."
+    );
+    // An answer with no masked column logs none.
+    query(&agent, "SELECT id FROM orders WHERE id = 1").await;
+    let logged = log.latest(1).await.unwrap();
+    assert_eq!(logged[0].masked, None);
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn a_masked_columns_default_values_and_what_is_computed_from_it_are_not_told() {
+    let shop = Shop::new();
+    shop.change(
+        "CREATE TABLE gift_notes (
+             id INTEGER PRIMARY KEY,
+             kind TEXT DEFAULT 'gift' CHECK (kind IN ('gift', 'self')),
+             shout TEXT GENERATED ALWAYS AS (upper(kind)) VIRTUAL
+         );
+         INSERT INTO gift_notes (id, kind) VALUES (1, 'self');",
+    );
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.mask(DEV, &["gift_notes.kind"]);
+    let called = agent
+        .call(
+            "describe_schema",
+            json!({ "connection": DEV, "tables": ["gift_notes"] }),
+        )
+        .await;
+    let columns = called.answer()["tables"][0]["columns"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let column = |name: &str| {
+        columns
+            .iter()
+            .find(|column| column["name"] == json!(name))
+            .unwrap()
+            .clone()
+    };
+    // Its default and the values it may hold say what its values are.
+    let kind = column("kind");
+    assert_eq!(kind["masked"], json!(true), "{kind}");
+    assert!(kind.get("default").is_none(), "{kind}");
+    assert!(kind.get("values").is_none(), "{kind}");
+    // A column computed from it is masked with it, and its expression is
+    // not told.
+    let shout = column("shout");
+    assert_eq!(shout["masked"], json!(true), "{shout}");
+    assert!(shout.get("default").is_none(), "{shout}");
+    let called = query(&agent, "SELECT id, shout FROM gift_notes").await;
+    assert_eq!(called.answer()["rows"], json!([[1, "•••"]]));
+    let called = query(&agent, "SELECT id FROM gift_notes WHERE shout = 'SELF'").await;
+    assert_eq!(called.refused(), "masked_column_used");
+    agent.close().await;
+}

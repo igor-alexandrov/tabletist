@@ -2118,6 +2118,8 @@ pub struct SettingsDialog {
 pub enum SettingsPane {
     #[default]
     General,
+    /// How the grid and the connection bar are drawn.
+    Appearance,
     /// How agents reach the app. Listed where they can.
     Agents,
 }
@@ -2126,9 +2128,9 @@ impl SettingsPane {
     /// The panes the window lists, in order.
     pub fn listed() -> &'static [SettingsPane] {
         if crate::endpoint::AVAILABLE {
-            &[Self::General, Self::Agents]
+            &[Self::General, Self::Appearance, Self::Agents]
         } else {
-            &[Self::General]
+            &[Self::General, Self::Appearance]
         }
     }
 
@@ -2136,6 +2138,7 @@ impl SettingsPane {
     pub fn name(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Appearance => "Appearance",
             Self::Agents => "Agents",
         }
     }
@@ -2144,6 +2147,7 @@ impl SettingsPane {
     pub fn options(self) -> &'static [crate::settings::OptionId] {
         match self {
             Self::General => &crate::settings::OptionId::GENERAL,
+            Self::Appearance => &crate::settings::OptionId::APPEARANCE,
             Self::Agents => &crate::settings::OptionId::AGENTS,
         }
     }
@@ -2155,6 +2159,7 @@ impl SettingsPane {
         use crate::settings::OptionId;
         match self {
             Self::General => &OptionId::GENERAL,
+            Self::Appearance => &OptionId::APPEARANCE,
             Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
         }
     }
@@ -2169,6 +2174,13 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::Tz),
                 SettingsRow::Option(OptionId::GroupDigits),
                 SettingsRow::Option(OptionId::ValueTags),
+            ],
+            Self::Appearance => &[
+                SettingsRow::Option(OptionId::RowHeight),
+                SettingsRow::Option(OptionId::Zebra),
+                SettingsRow::Option(OptionId::ColumnTypes),
+                SettingsRow::Option(OptionId::TableList),
+                SettingsRow::Option(OptionId::EnvBar),
             ],
             Self::Agents => &[
                 SettingsRow::Option(OptionId::AgentsOn),

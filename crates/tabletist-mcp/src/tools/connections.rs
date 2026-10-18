@@ -20,7 +20,11 @@ pub fn tool() -> Tool {
                       connection the person has not opened to agents is not listed. `hidden` \
                       names the tables you may not read, and `only` the tables you may read \
                       where no others are: a view over a hidden table is hidden with it, and \
-                      while anything is hidden so are the system catalogs.",
+                      while anything is hidden so are the system catalogs. `masked` names the \
+                      columns you may select but not filter, join, sort or compute on, and \
+                      neither may any column of the same name, in any table: each of their \
+                      values answers •••, and a view that reads one (on MySQL, any view over \
+                      its table) may not be read.",
         input: schema(json!({}), &[]),
     }
 }
@@ -71,6 +75,10 @@ fn entry(listed: &Listed) -> Json {
         Tables::Only(names) => {
             entry.insert("only".into(), written(names));
         }
+    }
+    if !listed.masked.is_empty() {
+        let masked = listed.masked.iter().map(|column| json!(column.to_string()));
+        entry.insert("masked".into(), Json::Array(masked.collect()));
     }
     Json::Object(entry)
 }

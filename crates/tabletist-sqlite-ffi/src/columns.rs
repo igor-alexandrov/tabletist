@@ -24,6 +24,18 @@ pub struct ResultColumn {
     /// The declared type of the table column the result column reads, with
     /// U+FFFD for bytes that are not UTF-8. Empty for an expression.
     pub decl_type: String,
+    /// The table column it reads, through any view, as SQLite tells it.
+    /// `None` for an expression.
+    pub origin: Option<Origin>,
+}
+
+/// The table column a result column reads: its database (`main`), its
+/// table and its own name, each with U+FFFD for bytes that are not UTF-8.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    pub database: String,
+    pub table: String,
+    pub column: String,
 }
 
 /// A prepared statement, finalized when dropped.
@@ -106,11 +118,30 @@ pub fn result_columns(
                     lossy(ffi::sqlite3_column_decltype(statement.0, index)),
                 )
             };
+            // SAFETY: as above. The bundled SQLite is built with its column
+            // metadata, which these three read; each is null for an
+            // expression.
+            let (database, table, column) = unsafe {
+                (
+                    lossy(ffi::sqlite3_column_database_name(statement.0, index)),
+                    lossy(ffi::sqlite3_column_table_name(statement.0, index)),
+                    lossy(ffi::sqlite3_column_origin_name(statement.0, index)),
+                )
+            };
+            let origin = match (database, table, column) {
+                (Some(database), Some(table), Some(column)) => Some(Origin {
+                    database,
+                    table,
+                    column,
+                }),
+                _ => None,
+            };
             Ok(ResultColumn {
                 // SQLite has a name for every column; it returns none only
                 // when it could not allocate one.
                 name: name.ok_or_else(|| failure(ffi::SQLITE_NOMEM, None))?,
                 decl_type: decl_type.unwrap_or_default(),
+                origin,
             })
         })
         .collect()
@@ -125,6 +156,19 @@ mod tests {
         ResultColumn {
             name: name.into(),
             decl_type: decl_type.into(),
+            origin: None,
+        }
+    }
+
+    /// A result column that reads `table`'s `origin` of `main`.
+    fn read(name: &str, decl_type: &str, table: &str, origin: &str) -> ResultColumn {
+        ResultColumn {
+            origin: Some(Origin {
+                database: "main".into(),
+                table: table.into(),
+                column: origin.into(),
+            }),
+            ..column(name, decl_type)
         }
     }
 
@@ -135,9 +179,9 @@ mod tests {
         assert_eq!(
             result_columns(&connection, "SELECT * FROM t").unwrap(),
             [
-                column("id", "INTEGER"),
-                column("caf\u{FFFD}", "TEXT"),
-                column("n", "caf\u{FFFD}"),
+                read("id", "INTEGER", "t", "id"),
+                read("caf\u{FFFD}", "TEXT", "t", "caf\u{FFFD}"),
+                read("n", "caf\u{FFFD}", "t", "n"),
             ]
         );
     }
@@ -148,6 +192,21 @@ mod tests {
         assert_eq!(
             result_columns(&connection, "SELECT id + 1, count(*) AS n FROM t").unwrap(),
             [column("id + 1", ""), column("n", "")]
+        );
+    }
+
+    #[test]
+    fn a_column_is_told_by_the_table_column_it_reads_through_an_alias_and_a_view() {
+        let connection = database(
+            b"CREATE TABLE t (id INTEGER, mail TEXT); CREATE VIEW v AS SELECT mail AS m FROM t",
+        );
+        assert_eq!(
+            result_columns(&connection, "SELECT x.mail AS a, m, id + 1 FROM t x, v").unwrap(),
+            [
+                read("a", "TEXT", "t", "mail"),
+                read("m", "TEXT", "t", "mail"),
+                column("id + 1", ""),
+            ]
         );
     }
 
@@ -185,7 +244,7 @@ mod tests {
         let connection = database(b"CREATE TABLE t (id INTEGER)");
         assert_eq!(
             result_columns(&connection, "INSERT INTO t VALUES (1) RETURNING id").unwrap(),
-            [column("id", "INTEGER")]
+            [read("id", "INTEGER", "t", "id")]
         );
         let rows: i64 = connection
             .query_row("SELECT count(*) FROM t", [], |row| row.get(0))

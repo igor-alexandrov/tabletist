@@ -32,7 +32,12 @@ pub fn tool() -> Tool {
                       types, its primary key, its foreign keys and the keys that point at it, \
                       and its indexes. Write a table of another schema as schema.table. A \
                       table the person hides from you is left out of the list, and named under \
-                      `hidden` when you ask for it.",
+                      `hidden` when you ask for it. A column marked `masked` may be selected, \
+                      and answers •••, but not filtered, joined, sorted or computed on, and \
+                      neither may any column of its name, in any table; its default, its \
+                      comment and the values it may hold are left out. A view marked \
+                      `reads_masked` may not be read: it reads such a column, or on MySQL \
+                      reads its table.",
         input: schema(
             json!({
                 "connection": {
@@ -101,7 +106,7 @@ async fn run<G: Gateway>(
     }
     let session = settle(gateway.open(&listed.id, stop.token()).await, stop, &listed)?;
     let work = async {
-        let hidden = session.hidden(&listed.tables).await?;
+        let hidden = session.hidden(&listed.tables, &listed.masked).await?;
         hidden
             .check_settings()
             .map_err(|refusal| Failure::Database(Error::Agent(refusal)))?;
@@ -166,6 +171,11 @@ async fn list<S: Session>(session: &S, hidden: &Hidden) -> Result<Described, Fai
         entry.insert("kind".into(), json!(kind(object.kind)));
         if let Some(rows) = object.estimated_rows {
             entry.insert("rows_estimate".into(), json!(rows));
+        }
+        if let Some(home) = &home
+            && let Some(column) = hidden.reads_masked(home, &object.name)
+        {
+            entry.insert("reads_masked".into(), json!(column));
         }
         let entry = Json::Object(entry);
         if !room.take(&entry) {
@@ -313,6 +323,20 @@ impl Room {
     }
 }
 
+/// A column's type as it is told: a masked one's without the values
+/// MySQL writes into it (`enum('new','paid')` is `enum`).
+fn type_of(type_name: &str, masked: bool) -> &str {
+    let listed = ["enum(", "set("].iter().any(|kind| {
+        type_name
+            .get(..kind.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(kind))
+    });
+    match (masked, listed) {
+        (true, true) => type_name.split('(').next().unwrap_or(type_name),
+        _ => type_name,
+    }
+}
+
 fn kind(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::Table => "table",
@@ -336,26 +360,41 @@ fn table(
         entry.insert("schema".into(), json!(object.schema));
     }
     entry.insert("kind".into(), json!(kind(object_kind)));
+    if let Some(column) = hidden.reads_masked(&object.schema, &object.name) {
+        entry.insert("reads_masked".into(), json!(column));
+    }
     let columns: Vec<Json> = structure
         .columns
         .iter()
         .map(|column| {
+            let masked = hidden
+                .masks(Some(&object.schema), &object.name, &column.name)
+                .is_some();
             let mut entry = Map::new();
             entry.insert("name".into(), json!(column.name));
-            entry.insert("type".into(), json!(column.type_name));
+            entry.insert("type".into(), json!(type_of(&column.type_name, masked)));
             entry.insert("nullable".into(), json!(column.nullable));
-            // A default and a comment are as long as their author liked.
-            if let Some(default) = &column.default {
-                entry.insert("default".into(), answer::text(default));
-            }
-            if let Some(values) = &column.allowed_values {
-                entry.insert("values".into(), json!(values));
+            if masked {
+                entry.insert("masked".into(), json!(true));
             }
             if column.generated {
                 entry.insert("generated".into(), json!(true));
             }
-            if let Some(comment) = &column.comment {
-                entry.insert("comment".into(), answer::text(comment));
+            // What says what a masked column's values are is left out: its
+            // default, which is one, or what it is computed from; the
+            // values it may hold; and its comment, whose words are its
+            // author's and may give one as an example. A default and a
+            // comment are as long as their author liked.
+            if !masked {
+                if let Some(default) = &column.default {
+                    entry.insert("default".into(), answer::text(default));
+                }
+                if let Some(values) = &column.allowed_values {
+                    entry.insert("values".into(), json!(values));
+                }
+                if let Some(comment) = &column.comment {
+                    entry.insert("comment".into(), answer::text(comment));
+                }
             }
             Json::Object(entry)
         })
@@ -426,6 +465,18 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_masked_columns_type_is_told_without_the_values_mysql_writes_into_it() {
+        assert_eq!(type_of("enum('new','paid','shipped')", true), "enum");
+        assert_eq!(type_of("SET('a','b')", true), "SET");
+        assert_eq!(type_of("enum('new','paid')", false), "enum('new','paid')");
+        assert_eq!(type_of("varchar(255)", true), "varchar(255)");
+        assert_eq!(type_of("text", true), "text");
+        // A name of other letters than ASCII is no MySQL list either.
+        assert_eq!(type_of("ééé", true), "ééé");
+        assert_eq!(type_of("éé", false), "éé");
+    }
 
     #[test]
     fn a_name_is_looked_for_at_home_first_and_then_by_its_schema() {

@@ -251,3 +251,46 @@ fn the_connection_dialog_takes_the_chosen_environments_colours() {
         }
     }
 }
+
+#[test]
+fn the_connection_bar_follows_the_setting() {
+    use crate::settings::EnvBar;
+    for look in [Look::macos(), Look::omarchy()] {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let tab = harness.connect_fake();
+        let env = harness.app.workspace(tab).unwrap().environment;
+        let platform = Platform::of(&look);
+        let colors = env_colors(env, platform, &harness.app.palette);
+        let tint = colors.bar_bg();
+        let wide = |harness: &Harness, color| {
+            let width = harness.size.x - 1.0;
+            harness
+                .fills
+                .iter()
+                .any(|(rect, fill)| *fill == color && rect.width() >= width && rect.top() < 60.0)
+        };
+        // The environment's own colour: the macOS stripe, the terminal's
+        // label.
+        let own = |harness: &Harness| {
+            harness.fills.iter().any(|(rect, fill)| {
+                rect.top() < 60.0 && (*fill == colors.base() || *fill == colors.badge_bg())
+            })
+        };
+        harness.settle();
+        assert!(wide(&harness, tint), "{}", look.name);
+        assert!(own(&harness), "{}", look.name);
+        let mut settings = harness.app.settings.clone();
+        settings.env_bar = EnvBar::Label;
+        harness.app.apply_settings(settings);
+        harness.settle();
+        assert!(!wide(&harness, tint), "{}", look.name);
+        assert!(own(&harness), "{} keeps its stripe or label", look.name);
+        // Nor any line drawn over the tint: they go with the bar's fill.
+        assert!(
+            !harness.strokes.contains(&colors.bar_border()),
+            "{}",
+            look.name
+        );
+    }
+}

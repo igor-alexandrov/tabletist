@@ -18,10 +18,17 @@ pub struct Limits {
     pub timeout: Duration,
 }
 
+/// What each value of a masked column reads as.
+pub const MASKED: &str = "•••";
+
 /// What a read answered.
 #[derive(Clone, PartialEq)]
 pub struct Answer {
     pub columns: Vec<ColumnMeta>,
+    /// Whether each column is a masked column's, whose every value is
+    /// [`MASKED`], a `NULL` too (the MCP plan's B.4): one for each column,
+    /// or none where nothing is masked.
+    pub masked: Vec<bool>,
     /// At most [`Limits::rows`] of them.
     pub rows: Vec<Vec<Value>>,
     /// Whether the statement had more rows than were kept.
@@ -35,6 +42,10 @@ impl fmt::Debug for Answer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Answer")
             .field("columns", &self.columns.len())
+            .field(
+                "masked",
+                &self.masked.iter().filter(|masked| **masked).count(),
+            )
             .field("rows", &self.rows.len())
             .field("truncated", &self.truncated)
             .field("elapsed", &self.elapsed)
@@ -91,6 +102,7 @@ pub(crate) fn answer(outcome: ScriptOutcome, stop: &StopFlag) -> Result<Answer> 
             truncated,
         } => Ok(Answer {
             columns,
+            masked: Vec::new(),
             rows,
             truncated,
             elapsed: result.elapsed,
@@ -109,6 +121,33 @@ pub(crate) fn answer(outcome: ScriptOutcome, stop: &StopFlag) -> Result<Answer> 
         // statement someone ended at the server reads the same.
         StatementOutcome::Cancelled => Err(Error::Timeout),
     }
+}
+
+/// `answer` with the columns `masked` says are a masked column's replaced:
+/// each of their values is [`MASKED`]. `masked` is one for each column, as
+/// the database said where each comes from, or none where nothing is
+/// masked; where its count is not the answer's, which can only be the
+/// schema changing between the two, every column is taken for one.
+pub(crate) fn masked(mut answer: Answer, masked: Vec<bool>) -> Answer {
+    if masked.is_empty() {
+        return answer;
+    }
+    let masked = match masked.len() == answer.columns.len() {
+        true => masked,
+        false => vec![true; answer.columns.len()],
+    };
+    if !masked.contains(&true) {
+        return answer;
+    }
+    for row in &mut answer.rows {
+        for (value, masked) in row.iter_mut().zip(&masked) {
+            if *masked {
+                *value = Value::Text(MASKED.into());
+            }
+        }
+    }
+    answer.masked = masked;
+    answer
 }
 
 /// The numbers MySQL (3024) and MariaDB (1969) give a statement their own
@@ -167,8 +206,43 @@ mod tests {
         let answer = answer(outcome_of(titles()), &StopFlag::new()).unwrap();
         assert_eq!(
             format!("{answer:?}"),
-            "Answer { columns: 1, rows: 1, truncated: true, elapsed: 7ms }"
+            "Answer { columns: 1, masked: 0, rows: 1, truncated: true, elapsed: 7ms }"
         );
+    }
+
+    #[test]
+    fn a_masked_columns_values_are_replaced_a_null_too() {
+        let column = |name: &str| ColumnMeta {
+            name: name.into(),
+            type_name: "text".into(),
+            kind: ValueKind::Text,
+        };
+        let answer = Answer {
+            columns: vec![column("id"), column("email")],
+            masked: Vec::new(),
+            rows: vec![
+                vec![Value::Int(1), Value::Text("ada@example.com".into())],
+                vec![Value::Int(2), Value::Null],
+            ],
+            truncated: false,
+            elapsed: Duration::ZERO,
+        };
+        let dots = || Value::Text(MASKED.into());
+        let found = masked(answer.clone(), vec![false, true]);
+        assert_eq!(found.masked, [false, true]);
+        assert_eq!(
+            found.rows,
+            [vec![Value::Int(1), dots()], vec![Value::Int(2), dots()]]
+        );
+        // Nothing masked: as it was.
+        assert_eq!(masked(answer.clone(), vec![false, false]), answer);
+        assert_eq!(masked(answer.clone(), Vec::new()), answer);
+        // Told for another count of columns: every one, though none was
+        // said to be.
+        let all = masked(answer.clone(), vec![true]);
+        assert_eq!(all.masked, [true, true]);
+        assert_eq!(all.rows[0], [dots(), dots()]);
+        assert_eq!(masked(answer, vec![false]).masked, [true, true]);
     }
 
     #[test]

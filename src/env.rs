@@ -170,6 +170,23 @@ impl EnvColors {
     pub fn bar_border(&self) -> Color32 {
         self.bar_border
     }
+
+    /// The colours with the bar's fill and rule as `bar` has them
+    /// ([`bar_colors`]): the lines drawn over the bar go with its fill.
+    pub fn on_bar(
+        self,
+        env: Environment,
+        bar: crate::settings::EnvBar,
+        platform: Platform,
+        palette: &Palette,
+    ) -> Self {
+        let (bar_bg, bar_border) = bar_colors(env, bar, platform, palette);
+        Self {
+            bar_bg,
+            bar_border,
+            ..self
+        }
+    }
 }
 
 /// An environment's colours on `platform` with `palette`. macOS and Windows
@@ -180,6 +197,25 @@ pub fn env_colors(env: Environment, platform: Platform, palette: &Palette) -> En
     match platform {
         Platform::Native => native(env, palette),
         Platform::Omarchy => omarchy(env, palette),
+    }
+}
+
+/// The connection bar's fill and the rule under it, as `bar` says: the
+/// environment's tint and its line, or the panel and its outline with the
+/// stripe or the label alone to say the environment. Production keeps its
+/// tint whatever the setting says.
+pub fn bar_colors(
+    env: Environment,
+    bar: crate::settings::EnvBar,
+    platform: Platform,
+    palette: &Palette,
+) -> (Color32, Color32) {
+    use crate::settings::EnvBar;
+    match (bar, env) {
+        (EnvBar::Tint, _) | (EnvBar::Label, Environment::Production) => {
+            bar_tint(env, platform, palette)
+        }
+        (EnvBar::Label, _) => (palette.panel, palette.outline),
     }
 }
 
@@ -870,5 +906,31 @@ mod tests {
             }
         }
         assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    #[test]
+    fn stripe_only_leaves_the_bar_untinted_but_production_tinted() {
+        use crate::settings::EnvBar;
+        for look in [Look::macos(), Look::omarchy()] {
+            let platform = Platform::of(&look);
+            let palette = crate::theme::Palette::dark();
+            for env in [
+                Environment::Local,
+                Environment::Dev,
+                Environment::Staging,
+                Environment::Production,
+                Environment::None,
+            ] {
+                let colors = env_colors(env, platform, &palette);
+                let tint = (colors.bar_bg(), colors.bar_border());
+                assert_eq!(bar_colors(env, EnvBar::Tint, platform, &palette), tint);
+                let label = bar_colors(env, EnvBar::Label, platform, &palette);
+                if env == Environment::Production {
+                    assert_eq!(label, tint, "{}", look.name);
+                } else {
+                    assert_eq!(label, (palette.panel, palette.outline), "{env:?}");
+                }
+            }
+        }
     }
 }

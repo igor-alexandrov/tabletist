@@ -24,7 +24,8 @@ pub fn tool() -> Tool {
                       `truncated_by` whether by the row limit or by the answer's size. A text \
                       longer than 2,000 characters comes as {\"cut\": its start, \
                       \"characters\": its length}, and a binary value as {\"binary_bytes\": \
-                      its size}.",
+                      its size}. A column marked `masked` answers ••• in every row: it may be \
+                      selected as it is, and not filtered, joined, sorted or computed on.",
         input: schema(
             json!({
                 "connection": {
@@ -86,7 +87,8 @@ async fn run<G: Gateway>(
     let session = settle(gateway.open(&listed.id, stop.token()).await, stop, &listed)?;
     note.ran_as = Some(RAN_AS);
     let limits = listed.limits;
-    let answer = within(stop, limits, session.read(&read, limits, &listed.tables)).await;
+    let reading = session.read(&read, limits, &listed.tables, &listed.masked);
+    let answer = within(stop, limits, reading).await;
     let answer = settle(answer, stop, &listed)?;
     let written = answer::write(&answer, MAX_ANSWER_BYTES).map_err(|_| {
         Refused::new(
@@ -99,6 +101,14 @@ async fn run<G: Gateway>(
     note.columns = Some(written.columns as u64);
     note.matched = written.cut.is_none().then_some(written.rows as u64);
     note.took = Some(answer.elapsed);
+    let masked: Vec<&str> = answer
+        .columns
+        .iter()
+        .zip(&answer.masked)
+        .filter(|(_, masked)| **masked)
+        .map(|(column, _)| column.name.as_str())
+        .collect();
+    note.masked = (!masked.is_empty()).then(|| json!(masked).to_string());
     Ok(written.json)
 }
 

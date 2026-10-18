@@ -18,7 +18,18 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Numbers** | `1,240.50` or `1240.50`. Grouping is for display only: a copy gives the raw value | `1,240.50` on macOS and Windows, `1240.50` in the Omarchy look |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 
-A second pane, **Agents**, sets what the `[mcp]` keys
+A second pane, **Appearance**, sets how the grids and the connection bar
+are drawn. Each change shows in every open window at once.
+
+| Option | Choices | Default |
+| --- | --- | --- |
+| **Row density** (Omarchy: row height) | Compact, Regular or Roomy. On macOS and Windows a step of 8 points either side of Regular; in the Omarchy look one, one and a half or two lines. The grid keeps the row at its top | Regular |
+| **Alternate row shading** (Omarchy: alternate rows) | On or off, in the table grid and the SQL editor's results | Off on macOS and Windows, on in the Omarchy look |
+| **Show column types** (Omarchy: column types) | On or off: the second line of the grid's header | On |
+| **Table list** | Grouped by prefix (Omarchy: tree) or Flat. The default for a connection whose list you have not switched; the sidebar's switch (Omarchy: `t`) sets the connection's own | Grouped by prefix |
+| **Window header** (Omarchy: connection bar) | Tint + stripe (Omarchy: tint + label), or Stripe only (Omarchy: label only). Production keeps its tint either way | Tint + stripe |
+
+A third pane, **Agents**, sets what the `[mcp]` keys
 hold, and shows how to connect an agent:
 [Agents]({% link _guide/agents.md %}) is the guide.
 
@@ -62,6 +73,14 @@ sql_timeout_secs = 30
 enabled = false
 log_days = 30
 notify = true
+
+[appearance.grid]
+row_height = "regular"
+column_types = true
+table_list = "tree"
+
+[appearance.env]
+bar = "tint"
 ```
 
 | Key | Values | Default |
@@ -75,6 +94,11 @@ notify = true
 | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
 | `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |
 | `appearance.theme` | The name of a palette file in the `themes` folder | Not set |
+| `appearance.grid.row_height` | `"compact"`, `"regular"` or `"roomy"` | `"regular"` |
+| `appearance.grid.zebra` | `true` or `false`. Written once you set it; without it, the look's default | Not set: off on macOS and Windows, on in the Omarchy look |
+| `appearance.grid.column_types` | `true` or `false` | `true` |
+| `appearance.grid.table_list` | `"tree"` or `"flat"`: how a connection lists its tables until you switch its own | `"tree"` |
+| `appearance.env.bar` | `"tint"` or `"label"`. Production is tinted either way | `"tint"` |
 | `mcp.enabled` | `true` lets agents reach the connections you open to them, through `tabletist mcp` | `false` |
 | `mcp.log_days` | 1 to 3650 days. How long the log of agents' calls keeps a call | `30` |
 | `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS, the taskbar button flashing on Windows | `true` |
@@ -118,6 +142,7 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `known_hosts.json` | Settings | The SSH host keys you trusted |
 | `themes/` | Settings | Palette files |
 | `last_used.json` | State | When each saved connection last connected |
+| `table_lists.json` | State | How each saved connection lists its tables, where you switched it in the sidebar |
 | `connections.moved` | State | A note that your connections are kept in `connections.toml` |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
