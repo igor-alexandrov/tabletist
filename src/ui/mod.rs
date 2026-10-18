@@ -1627,7 +1627,7 @@ value_tags   = true
             let tree = harness.settle();
             let switch = crate::testing::bounds(&tree, last, Role::CheckBox).expect("the switch");
             // The rows came with the keyboard: the switch is in the
-            // window, between the rows' heading and the footer.
+            // window, between the tab's lead and the footer.
             let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             assert!(window.contains_rect(switch), "{switch:?}");
             let stored = harness.painted_rect("Stored in").expect("the footer");
