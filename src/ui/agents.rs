@@ -104,7 +104,29 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .key(layout, crate::keymap::Command::FilterAgentsLog);
     let close_key = app
         .keymap
-        .key(layout, crate::keymap::Command::CloseAgentsLogFilters);
+        .key(layout, crate::keymap::Command::CloseAgentsLogPane);
+    let details_key = app
+        .keymap
+        .key(layout, crate::keymap::Command::ShowAgentsLogDetails);
+    let open_key = app
+        .keymap
+        .key(layout, crate::keymap::Command::OpenAgentsLogCall);
+    // The selected call's connection, as it is saved now: whether its
+    // statement opens, and the dialect it is read in.
+    let call = log
+        .selected
+        .and_then(|id| log.calls.iter().find(|logged| logged.id == id))
+        .map(|logged| {
+            let saved = logged.entry.connection_id.as_ref().and_then(|id| {
+                app.connections
+                    .get(&crate::connections::ConnectionId(id.clone()))
+            });
+            LogCall {
+                open: logged.entry.sql.as_ref().map(|_| saved.is_some()),
+                dialect: saved.map(|saved| saved.spec.driver.dialect()),
+            }
+        })
+        .unwrap_or_default();
     let show_key = app.keymap.key(layout, crate::keymap::Command::ShowAgents);
     let copy_key = app
         .keymap
@@ -233,8 +255,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     scope: &scope_key,
                     filter: &filter_key,
                     close: &close_key,
+                    details: &details_key,
+                    open: &open_key,
                 };
-                let shown = log_view(ui, rect, (log, keys, days), (&look, &palette, locale));
+                let shown = log_view(
+                    ui,
+                    rect,
+                    (log, keys, days, call),
+                    (&look, &palette, locale),
+                );
                 match shown {
                     Some(LogAsk::Scope) => actions.push(Action::ToggleAgentsLogScope(tab)),
                     Some(LogAsk::Filter(filter)) => {
@@ -242,6 +271,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                     Some(LogAsk::CloseFilters) => {
                         actions.push(Action::ShowAgentsLogFilters { tab, open: false });
+                    }
+                    Some(LogAsk::CloseDetails) => {
+                        actions.push(Action::ShowAgentsLogDetails { tab, open: false });
+                    }
+                    Some(LogAsk::Open(id)) => {
+                        actions.push(Action::OpenAgentsLogCall { tab, id });
                     }
                     Some(LogAsk::More) => actions.push(Action::MoreAgentsLog(tab)),
                     Some(LogAsk::Select(id)) => {
@@ -1015,6 +1050,10 @@ enum LogAsk {
     Filter(crate::model::AgentsLogFilter),
     /// The terminal look's filters closed, and kept.
     CloseFilters,
+    /// The terminal look's pane of the selected call closed.
+    CloseDetails,
+    /// The call's statement opened in a SQL editor, by its place.
+    Open(i64),
 }
 
 /// The Log view's bar at its top (the terminal's, and macOS's, which holds
@@ -1024,6 +1063,10 @@ const LOG_FILTER_BAR: f32 = 48.0;
 const LOG_DETAIL: f32 = 30.0;
 /// A row of the terminal look's filters.
 const FILTER_ROW: f32 = 28.0;
+/// The selected call's pane, beside the list: the board's on macOS, a
+/// mono column's more in the terminal.
+const LOG_PANE: f32 = 320.0;
+const LOG_PANE_TERMINAL: f32 = 380.0;
 
 /// The Log view: whose calls (this connection's or every one's) and how
 /// many the log keeps, then the calls the newest first, and under them
@@ -1031,7 +1074,7 @@ const FILTER_ROW: f32 = 28.0;
 fn log_view(
     ui: &mut egui::Ui,
     rect: Rect,
-    (log, keys, days): (&crate::model::AgentsLog, LogKeys<'_>, u32),
+    (log, keys, days, call): (&crate::model::AgentsLog, LogKeys<'_>, u32, LogCall),
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
 ) -> Option<LogAsk> {
     let mut ask = None;
@@ -1078,16 +1121,41 @@ fn log_view(
             )
             .add(body, keys.scope.as_str(), palette.accent)
             .add(body, &format!(" {other}"), palette.secondary);
-        widgets::paint_text(ui, bar.left() + 14.0, bar.center().y, line);
-        // At its right, `/` for the filters.
-        let filter = Text::new(look)
+        let used = widgets::paint_text(ui, bar.left() + 14.0, bar.center().y, line);
+        // At its right, `/` for the filters, and with a call selected its
+        // details and its statement in a SQL editor.
+        let mut filter = Text::new(look)
             .add(body, keys.filter.as_str(), palette.accent)
             .add(
                 body,
                 &format!(" {}", look.label(&gettext(locale, "filter"))),
                 palette.secondary,
             );
-        widgets::paint_text_right(ui, bar.right() - 14.0, bar.center().y, filter);
+        if log.selected.is_some() {
+            filter = filter
+                .add(body, " · ", palette.secondary)
+                .add(body, keys.details.as_str(), palette.accent)
+                .add(
+                    body,
+                    &format!(" {}", look.label(&gettext(locale, "details"))),
+                    palette.secondary,
+                );
+            if call.open == Some(true) {
+                filter = filter
+                    .add(body, " · ", palette.secondary)
+                    .add(body, keys.open.as_str(), palette.accent)
+                    .add(
+                        body,
+                        &format!(" {}", look.label(&gettext(locale, "open in sql tab"))),
+                        palette.secondary,
+                    );
+            }
+        }
+        // Only where it has the room: the footer names the keys too.
+        let laid = filter.layout(ui.ctx());
+        if bar.left() + 14.0 + used + 24.0 + laid.width() <= bar.right() - 14.0 {
+            laid.paint_right(ui.painter(), bar.right() - 14.0, bar.center().y);
+        }
         widgets::announce(ui, bar, &look.label(&format!("{scope} · {count}")));
     } else {
         let row = Rect::from_min_max(
@@ -1126,11 +1194,34 @@ fn log_view(
             &mut ask,
         );
     }
-    // The selected call's line, at the bottom.
-    let detail = Rect::from_min_max(pos2(rect.left(), rect.bottom() - LOG_DETAIL), rect.max);
     let chosen = log
         .selected
         .and_then(|id| log.calls.iter().find(|logged| logged.id == id));
+    // The selected call's pane, at the right: on macOS whenever a call is
+    // selected, in the terminal while it is open.
+    let mut right = rect.right();
+    if let Some(logged) = chosen
+        && (!look.terminal || log.details_open)
+    {
+        // At most half the view: the list keeps the rest.
+        let width = if look.terminal {
+            LOG_PANE_TERMINAL
+        } else {
+            LOG_PANE
+        };
+        let width = width.min(rect.width() / 2.0);
+        let pane = Rect::from_min_max(pos2(rect.right() - width, top), rect.max);
+        right = pane.left();
+        if let Some(asked) = log_pane(ui, pane, logged, (log.all, call), (look, palette, locale)) {
+            ask = Some(asked);
+        }
+        if look.terminal && !log.filters_open && closed(ui, look) {
+            ask = Some(LogAsk::CloseDetails);
+        }
+    }
+    // The selected call's line, at the bottom, where no pane shows it.
+    let detail = Rect::from_min_max(pos2(rect.left(), rect.bottom() - LOG_DETAIL), rect.max);
+    let chosen = chosen.filter(|_| right == rect.right());
     if let Some(logged) = chosen {
         ui.painter().rect_filled(detail, 0.0, palette.panel);
         widgets::hline(ui, detail.x_range(), detail.top() + 0.5, palette.border);
@@ -1152,7 +1243,7 @@ fn log_view(
     } else {
         rect.bottom()
     };
-    let list = Rect::from_min_max(pos2(rect.left(), top), pos2(rect.right(), bottom));
+    let list = Rect::from_min_max(pos2(rect.left(), top), pos2(right, bottom));
     let row = feed_row(look);
     let empty = match (&log.failed, log.read, log.all) {
         (Some(failed), _, _) => Some(format!(
@@ -1348,8 +1439,231 @@ pub(crate) struct LogKeys<'a> {
     pub scope: &'a crate::keymap::Written,
     /// The terminal look's filters, opened.
     pub filter: &'a crate::keymap::Written,
-    /// And closed.
+    /// And closed, and the selected call's pane with them.
     pub close: &'a crate::keymap::Written,
+    /// The terminal look's pane of the selected call, shown.
+    pub details: &'a crate::keymap::Written,
+    /// The selected call's statement, in a SQL editor.
+    pub open: &'a crate::keymap::Written,
+}
+
+/// What the Log view is told of the selected call by the app: whether its
+/// statement opens in a SQL editor (`None` for a call with none, `Some(false)`
+/// for one on a connection deleted since), and the dialect it is read in.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LogCall {
+    pub open: Option<bool>,
+    pub dialect: Option<tabletist_db::Dialect>,
+}
+
+/// Whether the keymap's close of the log's panes was pressed this frame.
+fn closed(ui: &egui::Ui, look: &Look) -> bool {
+    let keymap = crate::ui::keys::published(ui.ctx());
+    let layout = crate::keymap::Layout::of(look);
+    ui.input_mut(|input| {
+        crate::ui::keys::asked(
+            input,
+            &keymap,
+            layout,
+            crate::keymap::Command::CloseAgentsLogPane,
+            crate::keymap::Scope::Agents,
+            true,
+        )
+        .count
+            > 0
+    })
+}
+
+/// The selected call's pane, in `rect`: the tool and how it ended, who
+/// called and when, the request (a statement in its dialect's colours, or
+/// the tables asked for), and what it came to, line by line; that rows are
+/// never logged; and Open in SQL editor where it has a statement, off for
+/// a connection deleted since. What was asked of it.
+fn log_pane(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    logged: &tabletist_mcp::Logged,
+    (all, call): (bool, LogCall),
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+) -> Option<LogAsk> {
+    let entry = &logged.entry;
+    let mut ask = None;
+    ui.painter().rect_filled(rect, 0.0, palette.panel);
+    widgets::vline(ui, rect.left() + 0.5, rect.y_range(), palette.border);
+    let body = widgets::body(look);
+    let small = widgets::secondary(look);
+    let strong = TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OGroup);
+    let inner = rect.shrink2(vec2(16.0, 14.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    egui::ScrollArea::vertical()
+        .id_salt("agents-log-pane")
+        .auto_shrink([false, false])
+        .show(&mut child, |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            let width = ui.available_width();
+            // "run_query  ok".
+            let (word, color) = log_result(&entry.result, palette, locale);
+            Text::new(look)
+                .add(strong, &entry.tool, palette.text)
+                .space(body, "  ")
+                .add(body, &look.label(&word), color)
+                .layout(ui.ctx())
+                .label(ui);
+            // Who, and when to the second, and where under All connections.
+            let at = crate::clock::of_millis(entry.at_ms);
+            let mut who = vec![entry.agent.clone(), crate::clock::moment(at)];
+            if all && let Some(on) = &entry.connection {
+                who.push(on.clone());
+            }
+            Text::one(look, body, &look.label(&who.join(" · ")), palette.secondary)
+                .wrap(width)
+                .layout(ui.ctx())
+                .label(ui);
+            // The statement, as it ran.
+            if let Some(sql) = &entry.sql {
+                let frame = egui::Frame::new()
+                    .fill(palette.window)
+                    .stroke(egui::Stroke::new(1.0, palette.border))
+                    .corner_radius(egui::CornerRadius::same(look.radius))
+                    .inner_margin(egui::Margin::symmetric(10, 8));
+                frame.show(ui, |ui| {
+                    // In its dialect's colours; plain where its connection
+                    // was deleted, and its dialect is not known.
+                    let room = width - 20.0;
+                    let laid = match call.dialect {
+                        Some(dialect) => crate::ui::sql_text::highlighted(
+                            ui.ctx(),
+                            look,
+                            palette,
+                            dialect,
+                            sql,
+                            room,
+                        ),
+                        None => {
+                            let mono = TextRole::pick(look, TextRole::Code, TextRole::OCode);
+                            Text::one(look, mono, sql, palette.text)
+                                .wrap(room)
+                                .layout(ui.ctx())
+                        }
+                    };
+                    laid.label(ui);
+                });
+            }
+            for (label, value) in log_facts(entry, locale) {
+                let label = look.label(&label);
+                ui.horizontal_top(|ui| {
+                    let name = Text::one(look, small, &label, palette.secondary).layout(ui.ctx());
+                    let room = (width - 110.0).max(40.0);
+                    ui.allocate_ui(vec2(110.0, name.galley.size().y), |ui| {
+                        ui.set_min_width(110.0);
+                        name.label(ui);
+                    });
+                    Text::one(look, body, &value, palette.text)
+                        .wrap(room)
+                        .layout(ui.ctx())
+                        .label(ui);
+                });
+            }
+            if entry.tool == "run_query" {
+                let note = gettext(locale, "Rows themselves are not logged.");
+                Text::one(look, small, &look.label(&note), palette.dim)
+                    .wrap(width)
+                    .layout(ui.ctx())
+                    .label(ui);
+            }
+            if let Some(open) = call.open {
+                let label = look.label(&gettext(locale, "Open in SQL editor"));
+                let reason = gettext(locale, "Its connection was deleted.");
+                let mut button = states::button(&label, look);
+                if !open {
+                    button = button.disabled(&reason);
+                }
+                let height = states::button_height(look);
+                if button.show(ui, height, look, palette).clicked() && open {
+                    ask = Some(LogAsk::Open(logged.id));
+                }
+            }
+        });
+    ask
+}
+
+/// What a call came to, line by line, as the pane says it: its values, the
+/// tables asked for, what it returned, the columns masked, how it ran and
+/// for how long; or why it ended as it did; and the agent's project.
+fn log_facts(entry: &tabletist_mcp::Entry, locale: crate::i18n::Locale) -> Vec<(String, String)> {
+    let count = |one: &'static str, many: &'static str, n: i64| {
+        ngettext(locale, one, many, u32::try_from(n).unwrap_or(u32::MAX))
+            .replace("{n}", &n.to_string())
+    };
+    let say = |text: &'static str| gettext(locale, text).into_owned();
+    let mut facts = Vec::new();
+    if let Some(params) = &entry.params {
+        use crate::model::LoggedValues;
+        let value = match LoggedValues::of(params) {
+            LoggedValues::Each(values) => values.join(", "),
+            LoggedValues::Cut(Some(bytes)) => count(
+                "cut in the log, of {n} byte",
+                "cut in the log, of {n} bytes",
+                i64::try_from(bytes).unwrap_or(i64::MAX),
+            ),
+            LoggedValues::Cut(None) => say("cut in the log"),
+            LoggedValues::Unread => say("not readable in the log"),
+        };
+        facts.push((say("Params"), value));
+    }
+    if let Some(tables) = &entry.request {
+        facts.push((say("Tables"), tables.clone()));
+    }
+    if entry.result == "ok" {
+        match (entry.tool.as_str(), entry.rows) {
+            ("describe_schema", Some(tables)) => {
+                facts.push((say("Described"), count("{n} table", "{n} tables", tables)));
+            }
+            ("list_connections", Some(listed)) => {
+                facts.push((
+                    say("Listed"),
+                    count("{n} connection", "{n} connections", listed),
+                ));
+            }
+            (_, Some(rows)) => {
+                let mut returned = count("{n} row", "{n} rows", rows);
+                if let Some(columns) = entry.columns {
+                    returned = format!(
+                        "{returned}, {}",
+                        count("{n} column", "{n} columns", columns)
+                    );
+                }
+                facts.push((say("Returned"), returned));
+            }
+            (_, None) => {}
+        }
+        let masked = entry
+            .masked
+            .as_deref()
+            .and_then(|masked| serde_json::from_str::<Vec<String>>(masked).ok())
+            .filter(|masked| !masked.is_empty());
+        if let Some(masked) = masked {
+            facts.push((say("Masked"), masked.join(", ")));
+        }
+    } else {
+        if let Some(message) = &entry.message {
+            let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+            facts.push((say("Why"), message));
+        }
+        if let Some(code) = &entry.code {
+            facts.push((say("Code"), code.clone()));
+        }
+    }
+    if let Some(ran) = &entry.ran_as {
+        facts.push((say("Ran as"), ran.clone()));
+    }
+    if let Some(took) = entry.took_ms {
+        facts.push((say("Took"), format!("{took} ms")));
+    }
+    if let Some(project) = &entry.project {
+        facts.push((say("Project"), project.clone()));
+    }
+    facts
 }
 
 /// The macOS look's filters, in a row of `ui`: whose calls, which agent's,
@@ -1637,7 +1951,7 @@ fn terminal_filters(
             input,
             &keymap,
             layout,
-            crate::keymap::Command::CloseAgentsLogFilters,
+            crate::keymap::Command::CloseAgentsLogPane,
             crate::keymap::Scope::Agents,
             true,
         )

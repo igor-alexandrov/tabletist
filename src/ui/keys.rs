@@ -800,9 +800,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
             }
             // The terminal look's list of sessions has Enter of its own,
-            // unless the person went to the tree.
+            // and so has its log with a call selected, unless the person
+            // went to the tree.
+            let log_call = agents_log(app, tab).is_some_and(|log| log.selected.is_some());
             let list = terminal
-                && agents_lists(app, tab)
+                && (agents_lists(app, tab) || log_call)
                 && app
                     .workspace(tab)
                     .is_some_and(|workspace| workspace.pane != crate::model::Pane::Tree);
@@ -1710,6 +1712,18 @@ fn agents_lists(app: &App, tab: ConnTabId) -> bool {
     listing && !app.agents.listed(&workspace.conn_id).is_empty()
 }
 
+/// The Log view of the Agents tab of `tab`, while it shows.
+fn agents_log(app: &App, tab: ConnTabId) -> Option<&crate::model::AgentsLog> {
+    if agents_view(app, tab) != Some(crate::model::AgentsView::Log) {
+        return None;
+    }
+    let workspace = app.workspace(tab)?;
+    workspace.tabs.iter().find_map(|open| match open {
+        crate::model::Tab::Agents(agents) => Some(&agents.log),
+        crate::model::Tab::Object(_) | crate::model::Tab::Sql(_) => None,
+    })
+}
+
 /// The view of the Agents tab of `tab`, while the tab is in front.
 fn agents_view(app: &App, tab: ConnTabId) -> Option<crate::model::AgentsView> {
     let workspace = app
@@ -2116,6 +2130,9 @@ fn letters(
         // The Structure view shows where the rows would: its own keys
         // come before the rows' there.
         crate::keymap::When::Structure => structure_shows,
+        crate::keymap::When::AgentsLog => {
+            agents_view(app, tab) == Some(crate::model::AgentsView::Log)
+        }
         _ => false,
     };
     let review_only = |when: crate::keymap::When| when == crate::keymap::When::Review;
@@ -2207,6 +2224,30 @@ fn letters(
     {
         actions.push(Action::ShowAgentsOn(conn));
     }
+    // Enter in the Log view shows the selected call's details, and closes
+    // them; never a focused button's.
+    let log = agents_log(app, tab);
+    if let Some(log) = log
+        && log.selected.is_some()
+        && !crate::ui::focus::on_control(ctx)
+        && ctx
+            .input_mut(|input| {
+                asked(
+                    input,
+                    &app.keymap,
+                    layout,
+                    Command::ShowAgentsLogDetails,
+                    Scope::Agents,
+                    true,
+                )
+            })
+            .fresh
+    {
+        actions.push(Action::ShowAgentsLogDetails {
+            tab,
+            open: !log.details_open,
+        });
+    }
     let alone = actions.is_empty() && !pointer && keys <= typed.len() && only_edits;
     // Whether a field or the prompt was asked for: the frame's typing ends
     // there.
@@ -2296,6 +2337,13 @@ fn letters(
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
             {
                 actions.push(Action::ToggleAgentsLogScope(tab));
+            }
+            (Some(Command::OpenAgentsLogCall), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+            {
+                if let Some(id) = log.and_then(|log| log.selected) {
+                    actions.push(Action::OpenAgentsLogCall { tab, id });
+                }
             }
             (Some(Command::FilterAgentsLog), _)
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>

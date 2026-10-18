@@ -864,7 +864,8 @@ fn the_log_lists_the_calls_and_says_what_the_selected_one_came_to() {
             "{}",
             look.name
         );
-        // Selected, it says what it came to, and that rows are not kept.
+        // Selected, it says what it came to, and that rows are not kept:
+        // in the terminal look on its line, on macOS in its pane.
         let request = harness
             .painted_rect("SELECT id FROM books")
             .expect("the request");
@@ -874,7 +875,13 @@ fn the_log_lists_the_calls_and_says_what_the_selected_one_came_to() {
             "Claude Code · {} · 3 rows, 2 columns returned · 4 ms · rows themselves are not logged",
             crate::clock::moment(at),
         ));
-        assert!(harness.has(&detail), "{}", look.name);
+        assert_eq!(harness.has(&detail), look.terminal, "{}", look.name);
+        assert_eq!(
+            harness.painted_rect("3 rows, 2 columns").is_some(),
+            !look.terminal,
+            "{}",
+            look.name
+        );
         // Every connection's calls.
         if look.terminal {
             super::tests::type_key(&mut harness, egui::Key::L, "L");
@@ -1078,6 +1085,159 @@ fn omarchys_slash_opens_the_logs_filters_and_esc_keeps_them() {
     harness.settle();
     assert_eq!(log_filter(&harness).search.as_deref(), Some("all"));
     assert_eq!(view(&harness), Some((AgentsView::Log, true)));
+}
+
+/// The text of the SQL editor in front of `tab`'s window, if one is.
+fn editor_in_front(harness: &Harness, tab: ConnTabId) -> Option<(String, crate::model::RunMode)> {
+    let workspace = harness.app.workspace(tab)?;
+    let sql = workspace.active_tab.and_then(|id| workspace.sql_tab(id))?;
+    Some((sql.text.clone(), sql.mode))
+}
+
+#[test]
+fn the_selected_calls_pane_says_what_it_came_to_and_opens_its_statement() {
+    let (mut harness, tab) = on_the_log(Look::macos());
+    // No call selected: no pane.
+    assert!(
+        harness
+            .painted_rect("Rows themselves are not logged.")
+            .is_none()
+    );
+    let request = harness
+        .painted_rect("SELECT id FROM books")
+        .expect("the request");
+    super::tests::click_at(&mut harness, request.center());
+    harness.settle();
+    for said in [
+        "Returned",
+        "3 rows, 2 columns",
+        "Took",
+        "4 ms",
+        "Rows themselves are not logged.",
+    ] {
+        assert!(harness.painted_rect(said).is_some(), "{said}");
+    }
+    // A narrow window keeps half of it for the list.
+    let wide = harness.size;
+    harness.size = egui::vec2(560.0, 500.0);
+    harness.settle();
+    let pane = harness.painted_rect("Returned").expect("the pane");
+    let request = harness
+        .text_rects
+        .iter()
+        .find(|(text, _)| text.starts_with("SE") && text.ends_with("…"))
+        .map(|(_, rect)| *rect)
+        .expect("the list's request, cut short");
+    assert!(request.right() < pane.left(), "{request:?} {pane:?}");
+    harness.size = wide;
+    harness.settle();
+    // Its statement, as it ran, in a SQL editor in front: read-only.
+    harness.click("Open in SQL editor");
+    harness.settle();
+    assert_eq!(
+        editor_in_front(&harness, tab),
+        Some((
+            "SELECT  id\n  FROM books".to_owned(),
+            crate::model::RunMode::ReadOnly
+        ))
+    );
+    // A call on a connection deleted since opens nothing.
+    harness.app.apply(Action::ShowAgentsView {
+        tab,
+        view: crate::model::AgentsView::Log,
+    });
+    harness.settle();
+    let log = &mut harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .agents_tab_mut()
+        .unwrap()
+        .log;
+    log.calls[0].entry.connection_id = Some("deleted".into());
+    log.selected = Some(log.calls[0].id);
+    harness.settle();
+    let editors = harness.app.workspace(tab).unwrap().sql_tabs().count();
+    harness.click("Open in SQL editor");
+    harness.settle();
+    assert_eq!(
+        harness.app.workspace(tab).unwrap().sql_tabs().count(),
+        editors
+    );
+}
+
+#[test]
+fn omarchys_enter_shows_the_calls_pane_esc_closes_it_and_o_opens_its_statement() {
+    let (mut harness, tab) = on_the_log(Look::omarchy());
+    let open = |harness: &Harness| {
+        harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .tabs
+            .iter()
+            .find_map(|open| match open {
+                crate::model::Tab::Agents(agents) => Some(agents.log.details_open),
+                _ => None,
+            })
+    };
+    super::tests::type_key(&mut harness, egui::Key::J, "j");
+    harness.settle();
+    // The bar names the keys of the call selected, where it has the room;
+    // a narrow window leaves them to the footer.
+    let hint = "/ filter · enter details · o open in sql tab";
+    let narrow = harness.size;
+    harness.size = egui::vec2(1600.0, narrow.y);
+    harness.settle();
+    assert!(harness.painted_rect(hint).is_some());
+    harness.size = egui::vec2(900.0, narrow.y);
+    harness.settle();
+    assert!(harness.painted_rect(hint).is_none());
+    assert!(harness.painted_rect("enter details").is_some());
+    harness.size = narrow;
+    harness.settle();
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    harness.settle();
+    assert_eq!(open(&harness), Some(true));
+    assert!(harness.painted_rect("3 rows, 2 columns").is_some());
+    harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+    harness.settle();
+    assert_eq!(open(&harness), Some(false));
+    assert!(harness.painted_rect("3 rows, 2 columns").is_none());
+    // On a connection deleted since, `o` is offered nowhere.
+    let open_hint = "o open";
+    assert!(harness.painted_rect(open_hint).is_some());
+    let log = &mut harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .agents_tab_mut()
+        .unwrap()
+        .log;
+    let kept = log.calls[0].entry.connection_id.replace("deleted".into());
+    harness.settle();
+    assert!(harness.painted_rect(open_hint).is_none());
+    let log = &mut harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .agents_tab_mut()
+        .unwrap()
+        .log;
+    log.calls[0].entry.connection_id = kept;
+    harness.settle();
+    // Enter again shows it; `o` opens the statement in a SQL editor.
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    harness.settle();
+    super::tests::type_key(&mut harness, egui::Key::O, "o");
+    harness.settle();
+    assert_eq!(
+        editor_in_front(&harness, tab),
+        Some((
+            "SELECT  id\n  FROM books".to_owned(),
+            crate::model::RunMode::ReadOnly
+        ))
+    );
 }
 
 #[test]
