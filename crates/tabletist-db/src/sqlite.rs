@@ -1396,26 +1396,31 @@ fn agents_catalog(
     }
     // The columns of the masked columns' tables.
     let mut columns = Vec::new();
+    let mut generated = Vec::new();
     for relation in relations.iter().filter(|relation| {
         masked
             .iter()
             .any(|entry| entry.names_table(Some(&relation.schema), &relation.name))
     }) {
+        // With whether each is generated: `hidden` is 2 for a virtual
+        // generated column and 3 for a stored one.
         let mut statement = connection
-            .prepare("SELECT name FROM pragma_table_xinfo(?1, ?2)")
+            .prepare("SELECT name, hidden IN (2, 3) FROM pragma_table_xinfo(?1, ?2)")
             .map_err(map_error)?;
         let names = statement
             .query_map([&relation.name, &relation.schema], |row| {
-                row.get::<_, String>(0)
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
             })
             .map_err(map_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(map_error)?;
-        columns.extend(
-            names
-                .into_iter()
-                .map(|column| (relation.schema.clone(), relation.name.clone(), column)),
-        );
+        for (column, is_generated) in names {
+            let named = (relation.schema.clone(), relation.name.clone(), column);
+            if is_generated {
+                generated.push(named.clone());
+            }
+            columns.push(named);
+        }
     }
     // The table functions, SQLite's own modules read without a table
     // made of them: the pragmas are refused before this, and `dbstat` and
@@ -1433,6 +1438,7 @@ fn agents_catalog(
         table_functions,
         columns,
         column_reads: Some(column_reads),
+        generated,
         ..Catalog::default()
     })
 }

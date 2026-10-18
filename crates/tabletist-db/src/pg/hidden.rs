@@ -87,9 +87,9 @@ ORDER BY n.nspname, c.relname"
 }
 
 /// The columns of the relations of the names in `$1`, folded to lower
-/// case: the masked columns' tables.
+/// case: the masked columns' tables; and whether each is generated.
 const COLUMNS_SQL: &str = "\
-SELECT n.nspname, c.relname, a.attname
+SELECT n.nspname, c.relname, a.attname, a.attgenerated <> ''
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -587,8 +587,8 @@ pub(super) async fn catalog(
         .iter()
         .filter_map(|row| Some(row.get(0)?.to_owned()))
         .collect();
-    let (columns, column_reads) = match masked.is_empty() {
-        true => (Vec::new(), None),
+    let (columns, column_reads, generated) = match masked.is_empty() {
+        true => (Vec::new(), None, Vec::new()),
         false => {
             let tables: Vec<String> = masked
                 .iter()
@@ -598,12 +598,16 @@ pub(super) async fn catalog(
                 .iter()
                 .map(|entry| entry.column.to_lowercase())
                 .collect();
-            let columns = client
+            let listed = client
                 .query(COLUMNS_SQL, &[&tables])
                 .await
-                .map_err(query_error)?
+                .map_err(query_error)?;
+            let column = |row: &tokio_postgres::Row| (row.get(0), row.get(1), row.get(2));
+            let columns = listed.iter().map(column).collect();
+            let generated = listed
                 .iter()
-                .map(|row| (row.get(0), row.get(1), row.get(2)))
+                .filter(|row| row.get::<_, bool>(3))
+                .map(column)
                 .collect();
             let reads: Vec<ColumnRead> = client
                 .query(COLUMN_READS_SQL, &[&names])
@@ -618,7 +622,7 @@ pub(super) async fn catalog(
                     column: row.get(4),
                 })
                 .collect();
-            (columns, Some(reads))
+            (columns, Some(reads), generated)
         }
     };
     Ok(Catalog {
@@ -628,6 +632,7 @@ pub(super) async fn catalog(
         columns,
         column_reads,
         definitions,
+        generated,
         ..Catalog::default()
     })
 }

@@ -257,6 +257,10 @@ pub struct Catalog {
     /// view reads (PostgreSQL's): it is read for one. Only where something
     /// is masked.
     pub definitions: Vec<(String, String, String)>,
+    /// The generated columns of the tables the masked columns' entries
+    /// name, by schema, table and column: one may be computed from a
+    /// masked column, and is masked with it.
+    pub generated: Vec<(String, String, String)>,
 }
 
 /// A relation of the catalog, as [`Hidden`] keeps it.
@@ -346,6 +350,29 @@ impl Hidden {
         for at in 0..catalog.relations.len() {
             hidden_why(at, catalog, &depends, tables, &mut why);
         }
+        // A generated column of a table with a masked column may be
+        // computed from it (`lower(email)`): it is masked too, by an entry
+        // of its own.
+        let named = masked_tables(catalog, &depends, masked);
+        let mut every = masked.to_vec();
+        for (schema, table, column) in &catalog.generated {
+            let of_masked = named
+                .iter()
+                .any(|(own, name, _)| same(own, schema) && same(name, table));
+            if of_masked
+                && !every
+                    .iter()
+                    .any(|entry| entry.names(Some(schema), table, column))
+            {
+                every.push(ColumnName {
+                    schema: Some(schema.clone()),
+                    table: table.clone(),
+                    column: column.clone(),
+                });
+            }
+        }
+        let masked_entries = masked;
+        let masked = every.as_slice();
         let masked_tables = masked_tables(catalog, &depends, masked);
         let masks = masked_views(dialect, catalog, &depends, masked, &masked_tables);
         let mut relations: HashMap<String, Vec<Listed>> = HashMap::new();
@@ -372,7 +399,7 @@ impl Hidden {
             true => catalog.unnamed_calls.clone(),
             false => Vec::new(),
         };
-        let masked_missing = masked
+        let masked_missing = masked_entries
             .iter()
             .filter(|entry| {
                 !system_catalog(dialect, entry.schema.as_deref(), &entry.table)
@@ -2132,6 +2159,39 @@ mod tests {
             statement(&view, "SELECT x.n FROM (SELECT * FROM order_ids) x"),
             masked_used("order_ids.id", MaskedUse::Star)
         );
+    }
+
+    #[test]
+    fn a_generated_column_of_a_table_with_a_masked_column_is_masked_with_it() {
+        let catalog = Catalog {
+            relations: vec![
+                relation("public", "orders", &[]),
+                relation("public", "books", &[]),
+            ],
+            columns: vec![
+                ("public".into(), "orders".into(), "email".into()),
+                ("public".into(), "orders".into(), "low".into()),
+                ("public".into(), "books".into(), "slug".into()),
+            ],
+            generated: vec![
+                ("public".into(), "orders".into(), "low".into()),
+                ("public".into(), "books".into(), "slug".into()),
+            ],
+            ..Catalog::default()
+        };
+        let masked: Vec<ColumnName> = vec!["orders.email".parse().unwrap()];
+        let hidden = Hidden::masking(Dialect::Postgres, &catalog, &Tables::All, &masked);
+        assert_eq!(
+            hidden.masks(Some("public"), "orders", "low"),
+            Some("public.orders.low".into())
+        );
+        assert_eq!(hidden.masks(Some("public"), "books", "slug"), None);
+        assert_eq!(
+            statement(&hidden, "SELECT id FROM orders WHERE low LIKE 'a%'"),
+            masked_used("public.orders.low", MaskedUse::Named("low".into()))
+        );
+        assert_eq!(statement(&hidden, "SELECT id, low FROM orders"), Ok(()));
+        assert_eq!(hidden.check_settings(), Ok(()));
     }
 
     #[test]

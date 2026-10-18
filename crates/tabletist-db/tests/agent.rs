@@ -678,6 +678,38 @@ async fn a_masked_columns_values_are_never_answered(connection: &Connection, on:
     assert_eq!(found, Ok(Vec::new()), "{on}");
 }
 
+/// A generated column computed from a masked column, on the table
+/// `gift_notes` the caller made (`kind`, and `shout` from it): masked with
+/// it, its values answered as `•••` and a use of it refused.
+async fn a_column_computed_from_a_masked_one_is_masked(connection: &Connection, on: &str) {
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT id, shout FROM gift_notes WHERE id = 1",
+    )
+    .await
+    .map(|answer| (answer.masked, answer.rows));
+    assert_eq!(
+        found,
+        Ok((
+            vec![false, true],
+            vec![vec![Value::Int(1), Value::Text(agent::MASKED.into())]]
+        )),
+        "{on}"
+    );
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT id FROM gift_notes WHERE shout = 'SELF'",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(found, Error::Agent(Refusal::MaskedColumnUsed { .. })),
+        "{on}: {found:?}"
+    );
+}
+
 /// What every engine is asked.
 async fn an_agent_reads_the_bookshop(connection: &Connection, on: &str) {
     a_read_answers_its_rows(connection, on).await;
@@ -760,6 +792,17 @@ mod sqlite {
     async fn a_masked_column_is_used_only_as_it_is_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         a_masked_column_is_used_only_as_it_is(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_sqlite() {
+        let (connection, _dir) = bookshop_with(
+            "CREATE TABLE gift_notes (id INTEGER PRIMARY KEY, kind TEXT,
+                 shout TEXT GENERATED ALWAYS AS (upper(kind)) VIRTUAL);
+             INSERT INTO gift_notes (id, kind) VALUES (1, 'self');",
+        )
+        .await;
+        a_column_computed_from_a_masked_one_is_masked(&connection, "sqlite").await;
     }
 
     #[tokio::test]
@@ -1116,6 +1159,26 @@ mod postgres {
     }
 
     #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let url = std::env::var("TABLETIST_TEST_PG_URL").unwrap();
+        let owner = admin(&url, Some("bookshop")).await;
+        owner
+            .batch_execute(
+                "DROP TABLE IF EXISTS gift_notes;
+                 CREATE TABLE gift_notes (id int PRIMARY KEY, kind text,
+                     shout text GENERATED ALWAYS AS (upper(kind)) STORED);
+                 INSERT INTO gift_notes (id, kind) VALUES (1, 'self');",
+            )
+            .await
+            .unwrap();
+        a_column_computed_from_a_masked_one_is_masked(&connection, "postgres").await;
+        owner.batch_execute("DROP TABLE gift_notes").await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_masked_columns_values_are_never_answered_on_postgres() {
         let Some(connection) = bookshop().await else {
             return;
@@ -1418,6 +1481,28 @@ mod mysql {
             return;
         };
         a_masked_column_is_used_only_as_it_is(&connection, "mysql").await;
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").unwrap();
+        let mut owner = admin(&url).await;
+        for sql in [
+            "DROP TABLE IF EXISTS bookshop.gift_notes",
+            "CREATE TABLE bookshop.gift_notes (id int PRIMARY KEY, kind varchar(10), \
+             shout varchar(10) GENERATED ALWAYS AS (upper(kind)) VIRTUAL)",
+            "INSERT INTO bookshop.gift_notes (id, kind) VALUES (1, 'self')",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
+        a_column_computed_from_a_masked_one_is_masked(&connection, "mysql").await;
+        owner
+            .query_drop("DROP TABLE bookshop.gift_notes")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

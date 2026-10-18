@@ -283,7 +283,9 @@ pub(super) async fn catalog(
         ))
         .await
         .map_err(query_error)?;
-    let columns: Vec<(String, String, String)> = match masked.is_empty() {
+    // With whether each is generated, which `EXTRA` says on every server
+    // (`VIRTUAL GENERATED`, `STORED GENERATED`, MariaDB's `PERSISTENT`).
+    let listed: Vec<(String, String, String, String)> = match masked.is_empty() {
         true => Vec::new(),
         false => {
             let tables: Vec<String> = masked
@@ -293,7 +295,8 @@ pub(super) async fn catalog(
             let marks = vec!["?"; tables.len()].join(", ");
             conn.exec(
                 format!(
-                    "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS \
+                    "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, UPPER(EXTRA) \
+                     FROM information_schema.COLUMNS \
                      WHERE TABLE_SCHEMA NOT IN {SYSTEM} AND LOWER(TABLE_NAME) IN ({marks}) {WHOLE}"
                 ),
                 tables,
@@ -302,10 +305,20 @@ pub(super) async fn catalog(
             .map_err(query_error)?
         }
     };
+    let generated = listed
+        .iter()
+        .filter(|(_, _, _, extra)| extra.contains("GENERATED") || extra.contains("PERSISTENT"))
+        .map(|(schema, table, column, _)| (schema.clone(), table.clone(), column.clone()))
+        .collect();
+    let columns = listed
+        .into_iter()
+        .map(|(schema, table, column, _)| (schema, table, column))
+        .collect();
     Ok(Catalog {
         relations,
         routines,
         columns,
+        generated,
         ..Catalog::default()
     })
 }
