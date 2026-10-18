@@ -893,7 +893,8 @@ pub struct Workspace {
     /// What the session was opened as, as the session itself said when
     /// it connected. While the tab is connecting it is what the connect
     /// asked for: the saved connection's box as it stood then, over the
-    /// tab's own environment. Fixed until the tab connects again.
+    /// tab's own environment, or what it had for a session opened again
+    /// for a use (see `keep_access`). Fixed until the tab connects again.
     pub access: tabletist_db::Access,
     pub spec: ConnectSpec,
     pub driver: Driver,
@@ -986,6 +987,15 @@ pub struct Workspace {
     /// for a use: what the use sent waits for it in the backend, and what
     /// the tab shows stays as it is.
     pub woken: bool,
+    /// The connect under way opens again a session closed while idle,
+    /// whether it was sent at once or waits for a secret, and goes on
+    /// after a refused password is typed again: it asks for the access
+    /// the session had, so a window in front of the person does not
+    /// become writable on its next use. Only a connect the person asks
+    /// for reads the saved connection's box again: Reconnect, and the
+    /// reconnect that trusting a new host key makes. True only until the
+    /// session is up.
+    pub keep_access: bool,
 }
 
 /// How many objects the sidebar's Recent section keeps.
@@ -2271,8 +2281,43 @@ impl SecretKind {
         }
     }
 
+    /// Whether `secrets` holds this secret.
+    pub fn held(self, secrets: &tabletist_db::Secrets) -> bool {
+        match self {
+            Self::Database => secrets.password.is_some(),
+            Self::SshPassword => secrets.ssh_password.is_some(),
+            Self::SshPassphrase => secrets.ssh_passphrase.is_some(),
+        }
+    }
+
     pub fn is_ssh(self) -> bool {
         self != Self::Database
+    }
+}
+
+/// One secret a connect needs (see `Workspace::secret_steps`).
+#[derive(Debug, Clone)]
+pub struct SecretStep {
+    pub kind: SecretKind,
+    /// How the connection keeps it.
+    pub mode: PasswordMode,
+    /// The tab holds it.
+    pub held: bool,
+    /// Why it must be typed again: the server refused the one sent.
+    pub reason: Option<String>,
+}
+
+impl SecretStep {
+    /// Whether filling it asks the person: it must be typed again, or is
+    /// asked for on every connect and the tab does not hold it. One the
+    /// tab holds, one from the keyring and none at all ask nothing.
+    pub fn asks_person(&self) -> bool {
+        self.reason.is_some()
+            || (!self.held
+                && match self.mode {
+                    PasswordMode::Ask => true,
+                    PasswordMode::None | PasswordMode::Keyring => false,
+                })
     }
 }
 
@@ -4414,6 +4459,7 @@ impl Workspace {
             connected_at: None,
             used: std::time::Instant::now(),
             woken: false,
+            keep_access: false,
         }
     }
 
@@ -4511,6 +4557,47 @@ impl Workspace {
             SessionStatus::Connected | SessionStatus::Idle => true,
             SessionStatus::Connecting { .. } => self.woken,
             SessionStatus::Disconnected(_) | SessionStatus::Cancelled => false,
+        }
+    }
+
+    /// The secrets a connect of this tab needs, in the order
+    /// `App::authenticate` fills them: the database password, then the
+    /// SSH secret.
+    pub fn secret_steps(&self) -> Vec<SecretStep> {
+        let database = SecretStep {
+            kind: SecretKind::Database,
+            mode: self.password_mode,
+            held: SecretKind::Database.held(&self.secrets),
+            reason: self.needs_prompt.clone(),
+        };
+        let ssh = SecretKind::for_ssh(&self.spec).map(|kind| SecretStep {
+            kind,
+            mode: self.ssh_mode,
+            held: kind.held(&self.secrets),
+            reason: self.needs_ssh_prompt.clone(),
+        });
+        std::iter::once(database).chain(ssh).collect()
+    }
+
+    /// Whether connecting the tab asks the person for nothing: each
+    /// secret it needs is held, comes from the keyring, or is none.
+    pub fn connects_unasked(&self) -> bool {
+        !self.secret_steps().iter().any(SecretStep::asks_person)
+    }
+
+    /// Whether a connect is under way that restarts the tab once the
+    /// session is up (see `App::after_connect`): any connect that is not
+    /// woken, so a reconnect, the first connect, or a connect again for a
+    /// use whose secret was not at hand (a prompt, or a keyring read). It
+    /// is the `Connecting` arm of `!takes_commands()`. What the tab shows
+    /// is read then, so a read asked for meanwhile is not sent.
+    pub fn restarts_once_up(&self) -> bool {
+        match self.status {
+            SessionStatus::Connecting { .. } => !self.woken,
+            SessionStatus::Connected
+            | SessionStatus::Idle
+            | SessionStatus::Disconnected(_)
+            | SessionStatus::Cancelled => false,
         }
     }
 
