@@ -240,20 +240,51 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         crate::ui::keys::asked(input, &keymap, layout, command, Scope::Prompt, true)
     };
     // What an open window of the connection has loaded, for the Tables
-    // control: read again on each frame, as a sidebar loads.
-    // Only for a mode with a list: what it costs is spent on the list.
+    // and Masked columns controls: read again on each frame, as a sidebar
+    // loads. Only for a list of names: what it costs is spent on them.
     let loaded = match &app.dialog {
-        Some(Dialog::Connection(form)) if form.agents_tables.names().is_some() => form
-            .editing
-            .as_ref()
-            .and_then(|conn| app.loaded_tables(conn)),
+        Some(Dialog::Connection(form))
+            if form.agents_tables.names().is_some()
+                || !form.agents_masked.is_empty()
+                || form.agents_column_typed.is_some() =>
+        {
+            form.editing
+                .as_ref()
+                .and_then(|conn| app.loaded_tables(conn).map(|loaded| (conn.clone(), loaded)))
+        }
+        _ => None,
+    };
+    // The columns of the tables the masked columns name, for their mark,
+    // and of the one Add column…'s field names, for its list: asked for
+    // once the frame is drawn.
+    let wanted = match (&app.dialog, &loaded) {
+        (Some(Dialog::Connection(form)), Some((conn, loaded))) => {
+            let mut wanted: Vec<tabletist_db::ObjectRef> = form
+                .agents_masked
+                .iter()
+                .flat_map(|entry| loaded.named(entry.schema.as_deref(), &entry.table))
+                .collect();
+            if let Some(typed) = &form.agents_column_typed {
+                wanted.extend(loaded.offered_columns(typed, &[]).tables);
+            }
+            // Only what no window has, nor is fetching, nor failed to get.
+            wanted.retain(|object| {
+                !loaded.columns.iter().any(|(known, _)| known == object)
+                    && !loaded.columns_loading.contains(object)
+                    && !loaded.columns_failed.contains(object)
+            });
+            (!wanted.is_empty()).then(|| Action::LoadAgentColumns {
+                conn: conn.clone(),
+                objects: wanted,
+            })
+        }
         _ => None,
     };
     let Some(Dialog::Connection(form)) = &mut app.dialog else {
         ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
         return;
     };
-    form.agents_loaded = loaded;
+    form.agents_loaded = loaded.map(|(_, loaded)| loaded);
     let placement: Placement = ctx
         .data(|data| data.get_temp(placement_id()))
         .unwrap_or_default();
@@ -263,7 +294,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // it again on each one, and a last time on the first frame shown.
     let focus_name = form.focus_name;
     form.focus_name &= measuring;
-    let mut actions = Vec::new();
+    let mut actions: Vec<Action> = wanted.into_iter().collect();
     // The dialog's own keys are taken before anything draws: a focused
     // button would read the chord that saves and connects as a press of
     // itself. An open list keeps them, as it keeps Escape. A press of its

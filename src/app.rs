@@ -362,9 +362,9 @@ impl App {
 
     /// What the open windows of the saved connection `conn` have loaded in
     /// their sidebars: each schema's tables and views, every window's
-    /// together, the system's schemas left out. A window switched to
-    /// another database than the saved one's is another database, and is
-    /// not counted. `None` with none open.
+    /// together, the system's schemas left out, and the columns they
+    /// fetched. A window switched to another database than the saved one's
+    /// is another database, and is not counted. `None` with none open.
     pub fn loaded_tables(
         &self,
         conn: &crate::connections::ConnectionId,
@@ -425,11 +425,82 @@ impl App {
                     }
                 }
             }
+            for (object, columns) in workspace
+                .columns
+                .iter()
+                .filter(|(object, _)| user(&object.schema))
+            {
+                let known = |objects: &[ObjectRef]| objects.contains(object);
+                match &columns.value {
+                    Some(columns) => {
+                        if !tables.columns.iter().any(|(known, _)| known == object) {
+                            let names = columns.iter().map(|column| column.name.clone());
+                            tables.columns.push((object.clone(), names.collect()));
+                        }
+                    }
+                    // On its way only while the window's session is there
+                    // to answer.
+                    None if columns.is_loading()
+                        && matches!(workspace.status, SessionStatus::Connected)
+                        && !known(&tables.columns_loading) =>
+                    {
+                        tables.columns_loading.push(object.clone());
+                    }
+                    None if columns.error.is_some() && !known(&tables.columns_failed) => {
+                        tables.columns_failed.push(object.clone());
+                    }
+                    None => {}
+                }
+            }
         }
         if let Some(tables) = found.as_mut() {
             tables.loaded.sort();
+            // Fetched by one window, it is on its way, or failed, no more.
+            let fetched: Vec<ObjectRef> = tables
+                .columns
+                .iter()
+                .map(|(known, _)| known.clone())
+                .collect();
+            tables
+                .columns_loading
+                .retain(|object| !fetched.contains(object));
+            tables
+                .columns_failed
+                .retain(|object| !fetched.contains(object));
         }
         found
+    }
+
+    /// Asks an open window of the saved connection `conn` for the columns
+    /// of `objects`, for the Masked columns control: each one no window
+    /// has, nor asked for, nor failed to get.
+    fn load_agent_columns(
+        &mut self,
+        conn: &crate::connections::ConnectionId,
+        objects: &[ObjectRef],
+    ) {
+        let Some(saved) = self.connections.get(conn) else {
+            return;
+        };
+        let windows: Vec<ConnTabId> = self
+            .open_connections()
+            .filter(|(_, workspace)| {
+                workspace.conn_id == *conn
+                    && workspace.spec.database == saved.spec.database
+                    && matches!(workspace.status, SessionStatus::Connected)
+            })
+            .map(|(tab, _)| tab)
+            .collect();
+        for object in objects {
+            let asked = windows.iter().any(|tab| {
+                self.workspace(*tab)
+                    .and_then(|workspace| workspace.columns.get(object))
+                    .is_some_and(|kept| !kept.needs_load())
+            });
+            if let (false, Some(tab)) = (asked, windows.first()) {
+                self.load_columns(*tab, object.clone());
+            }
+        }
     }
 
     pub fn tab_for_session(&self, session: SessionId) -> Option<ConnTabId> {
@@ -2185,10 +2256,12 @@ impl App {
                     form.agents_tables = crate::model::TablesChoice::of(&tables);
                     form.agents_tables_opened = tables;
                     form.agents_masked = self.agents_masked(saved);
+                    form.agents_masked_opened = form.agents_masked.clone();
                     self.dialog = Some(Dialog::Connection(Box::new(form)));
                     self.list_ssh_hosts();
                 }
             }
+            Action::LoadAgentColumns { conn, objects } => self.load_agent_columns(&conn, &objects),
             Action::EditAgents { conn, allow } => {
                 self.apply(Action::EditConnection(conn));
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
@@ -3939,14 +4012,16 @@ impl App {
     }
 
     fn save_dialog(&mut self, connect: bool) {
-        // The tables in force now, of the connection being edited.
-        let tables_now = match &self.dialog {
+        // The tables and the masked columns in force now, of the connection
+        // being edited.
+        let (tables_now, masked_now) = match &self.dialog {
             Some(Dialog::Connection(form)) => form
                 .editing
                 .as_ref()
                 .and_then(|id| self.connections.get(id))
-                .map(|saved| self.agents_tables(saved)),
-            _ => None,
+                .map(|saved| (self.agents_tables(saved), self.agents_masked(saved)))
+                .unzip(),
+            _ => (None, None),
         };
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;
@@ -3959,6 +4034,11 @@ impl App {
         // is: added, or the save is refused and says why.
         if let Err(why) = form.take_typed_table() {
             form.message = Some(format!("The table's name {why}."));
+            form.show_agents = true;
+            return;
+        }
+        if let Err(why) = form.take_typed_column() {
+            form.message = Some(format!("The column's name {why}."));
             form.show_agents = true;
             return;
         }
@@ -3977,6 +4057,24 @@ impl App {
                 form.message = Some(
                     "The tables were changed outside Tabletist while this was open. They show \
                      as they are now: make your change again."
+                        .into(),
+                );
+                form.show_agents = true;
+                return;
+            }
+        }
+        // The masked columns likewise.
+        let masked_opened = form.agents_masked_opened.clone();
+        if let Some(now) = &masked_now {
+            use crate::agents_shown::same_columns;
+            let changed = !same_columns(&form.agents_masked, &masked_opened);
+            let moved = !same_columns(now, &masked_opened);
+            if changed && moved {
+                form.agents_masked = now.clone();
+                form.agents_masked_opened = now.clone();
+                form.message = Some(
+                    "The masked columns were changed outside Tabletist while this was open. They \
+                     show as they are now: make your change again."
                         .into(),
                 );
                 form.show_agents = true;
@@ -4015,16 +4113,28 @@ impl App {
         // their own, and one they raised is shown, never held. The access
         // the dialog opened with keeps what the file says now: a change
         // made outside the app stays held, and one put back stays back.
-        // The tables likewise: those the person changed are their own and
-        // shown, wider or narrower; the same ones keep what the file says.
-        // The masked columns, which the editor does not change yet, keep
-        // what the file says.
-        if let Some(was) = self.connections.get(&saved.id) {
-            saved.agents.masked = was.agents.masked.clone();
+        // The tables and the masked columns likewise: those the person
+        // changed are their own and shown, wider or narrower; the same ones
+        // keep what the file says.
+        if let Some(was) = self
+            .connections
+            .get(&saved.id)
+            .map(|was| was.agents.clone())
+        {
+            if crate::agents_shown::same_columns(&saved.agents.masked, &masked_opened) {
+                saved.agents.masked = was.masked;
+            } else {
+                self.agents_shown
+                    .keep(&[crate::agents_shown::Raised::Masked {
+                        id: saved.id.clone(),
+                        to: saved.agents.masked.clone(),
+                    }]);
+                self.save_agents_shown();
+            }
             let same = crate::model::TablesChoice::of(&saved.agents.tables)
                 == crate::model::TablesChoice::of(&tables_opened);
             if same {
-                saved.agents.tables = was.agents.tables.clone();
+                saved.agents.tables = was.tables;
             } else {
                 self.agents_shown
                     .keep(&[crate::agents_shown::Raised::Tables {
@@ -7572,7 +7682,7 @@ mod tests {
         app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
         assert!(app.agents_held.is_empty());
         assert_eq!(sent(&app), Vec::<ColumnName>::new());
-        // The editor has no control for them: its save keeps what the file
+        // An editor that leaves them as it opened them keeps what the file
         // says when it saves.
         app.apply(Action::EditConnection(conn.clone()));
         file_says(&mut app, email.clone());

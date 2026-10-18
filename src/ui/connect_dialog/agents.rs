@@ -1,7 +1,8 @@
 //! The connection editor's Agents part: what agents may do on the
-//! connection (Off or Read), the tables they may not read, how many rows
-//! an answer holds, and how long a statement may run. The boards' rows but
-//! masked columns, which come with 3a, and the third level, with writes.
+//! connection (Off or Read), the tables they may not read, the columns
+//! whose values they get masked, how many rows an answer holds, and how
+//! long a statement may run. The boards' rows but the third level, which
+//! comes with writes.
 
 use egui::{
     Align, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, vec2,
@@ -37,6 +38,15 @@ const HIDDEN_HINT: &str = "Agents are told these names, never what is in them: t
 const ONLY_HINT: &str = "Agents may read these tables and no others, the ones made later \
                          included. A function from an extension can still read the others. For \
                          strict isolation, use a database user without access.";
+
+/// What the Masked columns control says under it: what agents get of a
+/// masked column, and what they may not do with one (the MCP plan's B.4).
+/// Not the board's "The agent sees the name and type; values come back as
+/// •••." alone: a statement that uses one otherwise is refused, wherever a
+/// column of its name is. Agreed on 2026-10-18.
+const MASKED_HINT: &str = "Agents see the name and type; values come back as •••. A query that \
+                           filters, joins, sorts or computes with one is refused, in any table \
+                           with a column of that name.";
 
 /// The hint for the mode chosen: none for "All", which hides nothing.
 fn tables_hint(form: &ConnectionForm) -> Option<&'static str> {
@@ -133,7 +143,7 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         for (at, (name, missing)) in written.iter().zip(&missing).enumerate() {
-            if chip(ui, name, at, *missing, height, skin) {
+            if chip(ui, "agents-table", name, at, *missing, height, skin) {
                 removed = Some(at);
             }
         }
@@ -153,6 +163,8 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 // Up and Down move in the list, taken before the field
                 // reads them, so that they do not move its caret too.
                 let offered = offered_for(form, &before);
+                let rows: Vec<String> = offered.iter().map(ToString::to_string).collect();
+                follow_pick(ui, list, &rows, &mut form.agents_table_pick);
                 if !offered.is_empty() && ui.memory(|memory| memory.has_focus(id)) {
                     let step = moved(ui, skin);
                     if step != 0 {
@@ -189,17 +201,7 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 if focus == Some(TableFocus::Field) {
                     field.request_focus();
                 }
-                // A release over the list, where the field gives up the
-                // keyboard, is no leaving it: the list was last seen there.
-                // Only a release this frame: a pointer that rests there says
-                // nothing of a Tab.
-                let released = ui.input(|input| input.pointer.any_released());
-                let on_list = released
-                    && ui
-                        .ctx()
-                        .memory(|memory| memory.area_rect(list))
-                        .zip(ui.input(|input| input.pointer.latest_pos()))
-                        .is_some_and(|(rect, at)| rect.contains(at));
+                let on_list = released_on(ui, list);
                 // Only while the field has the keyboard, or lets it go this
                 // frame (to a press on the list): a field left open with a
                 // name that does not read lists nothing over the fields
@@ -208,7 +210,10 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                 let clicked = match offered.is_empty() || !listing {
                     true => None,
                     false => {
-                        offered_list(ui, list, field.rect, &offered, form.agents_table_pick, skin)
+                        let rows: Vec<String> = offered.iter().map(ToString::to_string).collect();
+                        let note = skin.say("Tables loaded in the sidebar");
+                        let pick = form.agents_table_pick;
+                        offered_list(ui, list, field.rect, &rows, pick, &note, skin)
                     }
                 };
                 // Screen readers hear the table the keyboard is on.
@@ -223,20 +228,7 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                     }
                 });
                 let pressed = |key| ui.input(|input| input.key_pressed(key));
-                // The form's Cancel, as the keymap has it, while the field
-                // has the keyboard or has just let it go: the field's own,
-                // taken out of the frame so that the dialog is not closed
-                // by it.
-                let cancelled = (field.has_focus() || field.lost_focus()) && {
-                    let keymap = crate::ui::keys::published(ui.ctx());
-                    let layout = crate::keymap::Layout::of(skin.look);
-                    ui.input_mut(|input| {
-                        let cancel = crate::keymap::Command::FormCancel;
-                        let scope = crate::keymap::Scope::Prompt;
-                        crate::ui::keys::asked(input, &keymap, layout, cancel, scope, true).count
-                            > 0
-                    })
-                };
+                let cancelled = cancel_asked(ui, &field, skin);
                 if let Some(at) = clicked {
                     form.agents_table_typed = Some(offered[at].to_string());
                     form.agents_table_pick = None;
@@ -293,6 +285,304 @@ fn table_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     }
 }
 
+/// The masked columns, each with its × to take it out, and Add column…
+/// after them, which opens a field for a name, as Add table… does. Its
+/// list offers the tables the sidebar loaded; one chosen goes into the
+/// field, `orders.`, and the list offers its columns, fetched from an open
+/// window, to be masked.
+fn column_names(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
+    let written: Vec<String> = form.agents_masked.iter().map(ToString::to_string).collect();
+    // Which name no column of the database, as the windows know it.
+    let missing: Vec<bool> = form
+        .agents_masked
+        .iter()
+        .map(|entry| {
+            form.agents_loaded
+                .as_ref()
+                .and_then(|loaded| loaded.has_column(entry))
+                == Some(false)
+        })
+        .collect();
+    let height = if skin.look.terminal { 21.0 } else { 24.0 };
+    let mut removed = None;
+    let focus = form.agents_column_focus.take();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        for (at, (name, missing)) in written.iter().zip(&missing).enumerate() {
+            if chip(ui, "agents-column", name, at, *missing, height, skin) {
+                removed = Some(at);
+            }
+        }
+        let Some(before) = form.agents_column_typed.clone() else {
+            let add = skin.say("Add column…");
+            let button = ButtonSpec::new(&add).padding(8.0).role(TextRole::pick(
+                skin.look,
+                TextRole::Secondary,
+                TextRole::OBody,
+            ));
+            let response = button.show(ui, height, skin.look, skin.palette);
+            if focus == Some(TableFocus::Add) {
+                response.request_focus();
+            }
+            if response.clicked() {
+                form.agents_column_typed = Some(String::new());
+                form.agents_column_focus = Some(TableFocus::Field);
+            }
+            return;
+        };
+        let role = widgets::code(skin.look);
+        let id = ui.id().with("agents-column-typed");
+        let list = id.with("list");
+        let offered = form.columns_offered(&before);
+        let rows: Vec<String> = offered.rows.iter().map(ToString::to_string).collect();
+        follow_pick(ui, list, &rows, &mut form.agents_column_pick);
+        if !offered.rows.is_empty() && ui.memory(|memory| memory.has_focus(id)) {
+            let step = moved(ui, skin);
+            if step != 0 {
+                let last = offered.rows.len() as isize - 1;
+                form.agents_column_pick = Some(match form.agents_column_pick {
+                    None if step > 0 => 0,
+                    None => last as usize,
+                    Some(at) => (at as isize + step).rem_euclid(last + 1) as usize,
+                });
+            }
+        }
+        let placeholder = super::hint(ui, &skin.say("table.column"), role, skin);
+        let Some(typed) = form.agents_column_typed.as_mut() else {
+            return;
+        };
+        let field = ui.add_sized(
+            vec2(200.0, height),
+            input(ui, typed, role, height, skin)
+                .id(id)
+                .hint_text(placeholder),
+        );
+        let typed = typed.clone();
+        if field.changed() {
+            form.agents_column_pick = None;
+        }
+        let offered = match typed == before {
+            true => offered,
+            false => form.columns_offered(&typed),
+        };
+        if form
+            .agents_column_pick
+            .is_some_and(|at| at >= offered.rows.len())
+        {
+            form.agents_column_pick = None;
+        }
+        if focus == Some(TableFocus::Field) {
+            field.request_focus();
+        }
+        let on_list = released_on(ui, list);
+        // What the list says it offers: the tables the sidebar loaded, or
+        // the columns of the one typed, which may be on their way or may
+        // not have come.
+        let among = |objects: &[tabletist_db::ObjectRef]| {
+            offered.tables.iter().any(|object| objects.contains(object))
+        };
+        let (loading, failed) = form
+            .agents_loaded
+            .as_ref()
+            .map(|loaded| {
+                (
+                    among(&loaded.columns_loading),
+                    among(&loaded.columns_failed),
+                )
+            })
+            .unwrap_or_default();
+        let note = match &offered.of {
+            None => skin.say("Tables loaded in the sidebar"),
+            Some(table) => {
+                let said = match (loading, failed) {
+                    (true, _) => skin.say("Loading the columns of {table}…"),
+                    (false, true) if offered.rows.is_empty() => {
+                        skin.say("The columns of {table} could not be read")
+                    }
+                    _ => skin.say("Columns of {table}"),
+                };
+                said.replace("{table}", &table.to_string())
+            }
+        };
+        let shows = !offered.rows.is_empty() || loading || failed;
+        let listing = field.has_focus() || field.lost_focus();
+        let clicked = match shows && listing {
+            false => None,
+            true => {
+                let rows: Vec<String> = offered.rows.iter().map(ToString::to_string).collect();
+                let pick = form.agents_column_pick;
+                offered_list(ui, list, field.rect, &rows, pick, &note, skin)
+            }
+        };
+        // Screen readers hear the row the keyboard is on.
+        let name = skin.say("Column to mask");
+        let chosen = form
+            .agents_column_pick
+            .map(|at| list.with(at).accesskit_id());
+        ui.ctx().accesskit_node_builder(field.id, |node| {
+            node.set_label(name.as_str());
+            if let Some(chosen) = chosen {
+                node.set_active_descendant(chosen);
+            }
+        });
+        let pressed = |key| ui.input(|input| input.key_pressed(key));
+        let cancelled = cancel_asked(ui, &field, skin);
+        // Enter on a table, or a click on one, puts it in the field for its
+        // columns, the caret after it.
+        let into = |form: &mut ConnectionForm, at: usize| match &offered.rows[at] {
+            crate::model::OfferedColumn::Table(table) => {
+                let typed = format!("{table}.");
+                let mut state =
+                    egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                let end = egui::text::CCursor::new(typed.chars().count());
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                state.store(ui.ctx(), id);
+                form.agents_column_typed = Some(typed);
+                form.agents_column_pick = None;
+                form.agents_column_focus = Some(TableFocus::Field);
+                true
+            }
+            crate::model::OfferedColumn::Column(_) => false,
+        };
+        if let Some(at) = clicked {
+            if !into(form, at) {
+                form.agents_column_typed = Some(offered.rows[at].to_string());
+                form.agents_column_pick = None;
+                if form.take_typed_column().is_ok() {
+                    form.agents_column_typed = Some(String::new());
+                }
+                form.agents_column_focus = Some(TableFocus::Field);
+            }
+        } else if cancelled {
+            field.surrender_focus();
+            form.agents_column_pick = None;
+            form.agents_column_typed = None;
+            form.agents_column_error = None;
+            form.agents_column_focus = Some(TableFocus::Add);
+        } else if field.lost_focus() && on_list && shows {
+            form.agents_column_focus = Some(TableFocus::Field);
+        } else if field.lost_focus() {
+            let entered = pressed(egui::Key::Enter);
+            let pick = form.agents_column_pick;
+            if entered && pick.is_some_and(|at| into(form, at)) {
+                return;
+            }
+            let empty = typed.trim().is_empty() && pick.is_none();
+            match form.take_typed_column() {
+                Ok(()) if entered && !empty => {
+                    form.agents_column_typed = Some(String::new());
+                    form.agents_column_focus = Some(TableFocus::Field);
+                }
+                Ok(()) => form.agents_column_typed = None,
+                Err(_) if entered => form.agents_column_focus = Some(TableFocus::Field),
+                Err(_) => {}
+            }
+        }
+    });
+    if let Some(at) = removed
+        && at < form.agents_masked.len()
+    {
+        form.agents_masked.remove(at);
+    }
+}
+
+/// Under masked columns one of which names no column of the database:
+/// what that does to agents (the MCP plan's C.3), and how to put it right.
+fn column_missing(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
+    let Some(loaded) = &form.agents_loaded else {
+        return;
+    };
+    if !form
+        .agents_masked
+        .iter()
+        .any(|entry| loaded.has_column(entry) == Some(false))
+    {
+        return;
+    }
+    let said = skin.say(
+        "Agents may not use this connection while a masked column is not in its database. Take \
+         the name out, or add the column's new name.",
+    );
+    ui.add_space(4.0);
+    let room = ui.available_width();
+    Text::one(
+        skin.look,
+        TextRole::pick(skin.look, TextRole::Secondary, TextRole::OSecondary),
+        &said,
+        skin.palette.warning,
+    )
+    .wrap(room)
+    .layout(ui.ctx())
+    .label(ui);
+}
+
+/// Why the column's name typed does not read, under the names.
+fn column_error(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
+    if let Some(why) = &form.agents_column_error {
+        let said = skin.say("The column's name {why}.").replace("{why}", why);
+        ui.add_space(4.0);
+        let room = ui.available_width();
+        Text::one(
+            skin.look,
+            TextRole::pick(skin.look, TextRole::Secondary, TextRole::OSecondary),
+            &said,
+            skin.palette.danger,
+        )
+        .wrap(room)
+        .layout(ui.ctx())
+        .label(ui);
+    }
+}
+
+/// Keeps the row the keyboard is on in a list whose rows changed under
+/// it (a table's columns came, a sidebar loaded more): the same row where
+/// it is still offered, none where it is not, so that Enter adds what was
+/// chosen. `rows` are the ones offered now; the last ones are kept with
+/// `list`.
+fn follow_pick(ui: &Ui, list: egui::Id, rows: &[String], pick: &mut Option<usize>) {
+    let kept = list.with("rows");
+    let before: Option<Vec<String>> = ui.data(|data| data.get_temp(kept));
+    if let (Some(before), Some(at)) = (before, *pick)
+        && before != rows
+    {
+        *pick = before
+            .get(at)
+            .and_then(|row| rows.iter().position(|now| now == row));
+    }
+    ui.data_mut(|data| data.insert_temp(kept, rows.to_vec()));
+}
+
+/// Whether the form's Cancel, as the keymap has it, was pressed while
+/// `field` has the keyboard or has just let it go: the field's own, taken
+/// out of the frame so that the dialog is not closed by it.
+fn cancel_asked(ui: &Ui, field: &egui::Response, skin: &Skin) -> bool {
+    (field.has_focus() || field.lost_focus()) && {
+        let keymap = crate::ui::keys::published(ui.ctx());
+        let layout = crate::keymap::Layout::of(skin.look);
+        ui.input_mut(|input| {
+            let cancel = crate::keymap::Command::FormCancel;
+            let scope = crate::keymap::Scope::Prompt;
+            crate::ui::keys::asked(input, &keymap, layout, cancel, scope, true).count > 0
+        })
+    }
+}
+
+/// Whether the pointer was released over the list `list` this frame. A
+/// release there, where the field gives up the keyboard, is no leaving it:
+/// the list was last seen there. Only a release this frame: a pointer that
+/// rests there says nothing of a Tab.
+fn released_on(ui: &Ui, list: egui::Id) -> bool {
+    let released = ui.input(|input| input.pointer.any_released());
+    released
+        && ui
+            .ctx()
+            .memory(|memory| memory.area_rect(list))
+            .zip(ui.input(|input| input.pointer.latest_pos()))
+            .is_some_and(|(rect, at)| rect.contains(at))
+}
+
 /// How far Add table…'s list was asked to move this frame: up by one,
 /// down by one, or not, by the keys the keymap gives the form for it, as
 /// quick open's list reads its own.
@@ -312,15 +602,16 @@ fn moved(ui: &mut Ui, skin: &Skin) -> isize {
     })
 }
 
-/// The window's tables that match what is typed, floating under the field
-/// at `under`, the one the keyboard is on (`pick`) marked, with a line that
-/// says where they come from. The place of the one clicked.
+/// The rows offered for what is typed, floating under the field at
+/// `under`, the one the keyboard is on (`pick`) marked, with a line, `note`,
+/// that says where they come from. The place of the one clicked.
 fn offered_list(
     ui: &mut Ui,
     id: egui::Id,
     under: Rect,
-    offered: &[tabletist_db::agent::TableName],
+    offered: &[String],
     pick: Option<usize>,
+    note: &str,
     skin: &Skin,
 ) -> Option<usize> {
     let Skin { look, palette, .. } = *skin;
@@ -365,8 +656,7 @@ fn offered_list(
                 .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    for (at, name) in offered.iter().enumerate() {
-                        let written = name.to_string();
+                    for (at, written) in offered.iter().enumerate() {
                         let (rect, _) = ui.allocate_exact_size(vec2(width, row), Sense::hover());
                         let response = ui.interact(rect, id.with(at), Sense::click());
                         let chosen = pick == Some(at);
@@ -375,12 +665,12 @@ fn offered_list(
                                 WidgetType::SelectableLabel,
                                 ui.is_enabled(),
                                 chosen,
-                                &written,
+                                written,
                             )
                         });
                         widgets::selection(ui, rect, chosen, response.hovered(), look, palette);
                         let ink = widgets::selection_text(chosen, look, palette);
-                        let text = Text::one(look, role, &written, ink).layout(ui.ctx());
+                        let text = Text::one(look, role, written, ink).layout(ui.ctx());
                         let y = rect.center().y - text.galley.size().y / 2.0;
                         ui.painter()
                             .galley(egui::pos2(rect.left() + 8.0, y), text.galley, ink);
@@ -388,10 +678,9 @@ fn offered_list(
                             clicked = Some(at);
                         }
                     }
-                    let said = skin.say("Tables loaded in the sidebar");
                     let small = TextRole::pick(look, TextRole::Secondary, TextRole::OSecondary);
                     ui.add_space(2.0);
-                    widgets::label(ui, small, &said, palette.faint, look);
+                    widgets::label(ui, small, note, palette.faint, look);
                 });
         });
     clicked
@@ -452,7 +741,15 @@ fn table_error(ui: &mut Ui, form: &ConnectionForm, skin: &Skin) {
 
 /// A listed name, `customers ×`, bordered; the × takes it out, and screen
 /// readers hear it as "Remove customers". Whether it was pressed.
-fn chip(ui: &mut Ui, name: &str, at: usize, missing: bool, height: f32, skin: &Skin) -> bool {
+fn chip(
+    ui: &mut Ui,
+    kind: &str,
+    name: &str,
+    at: usize,
+    missing: bool,
+    height: f32,
+    skin: &Skin,
+) -> bool {
     let Skin { look, palette, .. } = *skin;
     let role = widgets::code(look);
     let cross = if look.terminal { "x" } else { "×" };
@@ -497,7 +794,7 @@ fn chip(ui: &mut Ui, name: &str, at: usize, missing: bool, height: f32, skin: &S
         let said = format!("{name}, {mark}");
         ui.interact(
             place,
-            ui.id().with(("agents-table-missing", at, name)),
+            ui.id().with((kind, "missing", at, name)),
             Sense::hover(),
         )
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
@@ -508,7 +805,7 @@ fn chip(ui: &mut Ui, name: &str, at: usize, missing: bool, height: f32, skin: &S
     );
     let response = ui.interact(
         cell,
-        ui.id().with(("agents-table-remove", at, name)),
+        ui.id().with((kind, "remove", at, name)),
         Sense::click(),
     );
     let label = skin.say("Remove {name}").replace("{name}", name);
@@ -586,23 +883,38 @@ pub(super) fn sheet(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             sentence(ui, small, &said, skin);
         }
         ui.add_space(12.0);
-        let tables = skin.say("Tables");
-        widgets::label(ui, small, &tables, palette.secondary, look);
-        ui.add_space(5.0);
-        tables_mode(ui, form, &tables, Group::Track(28.0), skin);
-        if form.agents_tables.names().is_some() {
-            ui.add_space(6.0);
-            table_names(ui, form, skin);
-            table_error(ui, form, skin);
-            table_missing(ui, form, skin);
-        }
-        if let Some(hint) = tables_hint(form) {
-            ui.add_space(6.0);
-            sentence(ui, small, &skin.say(hint), skin);
-        }
+        // Tables and Masked columns side by side, as the board has them.
+        let columns = [super::Column::Fr(1.0), super::Column::Fr(1.0)];
+        super::row(ui, 12.0, &columns, |ui, column| match column {
+            0 => {
+                let tables = skin.say("Tables");
+                widgets::label(ui, small, &tables, palette.secondary, look);
+                ui.add_space(5.0);
+                tables_mode(ui, form, &tables, Group::Track(28.0), skin);
+                if form.agents_tables.names().is_some() {
+                    ui.add_space(6.0);
+                    table_names(ui, form, skin);
+                    table_error(ui, form, skin);
+                    table_missing(ui, form, skin);
+                }
+                if let Some(hint) = tables_hint(form) {
+                    ui.add_space(6.0);
+                    sentence(ui, small, &skin.say(hint), skin);
+                }
+            }
+            _ => {
+                let masked = skin.say("Masked columns");
+                widgets::label(ui, small, &masked, palette.secondary, look);
+                ui.add_space(5.0);
+                column_names(ui, form, skin);
+                column_error(ui, form, skin);
+                column_missing(ui, form, skin);
+                ui.add_space(6.0);
+                sentence(ui, small, &skin.say(MASKED_HINT), skin);
+            }
+        });
         ui.add_space(12.0);
         let (role, height) = (skin.value_role(), skin.field_height());
-        let columns = [super::Column::Fr(1.0), super::Column::Fr(1.0)];
         super::row(ui, 12.0, &columns, |ui, column| {
             let (label, text) = match column {
                 0 => (skin.say("Rows per answer"), &mut form.agents_rows),
@@ -647,6 +959,14 @@ pub(super) fn terminal(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
         sentence(ui, TextRole::OSecondary, &skin.say(hint), skin);
         ui.add_space(4.0);
     }
+    let masked = skin.say("Masked");
+    super::terminal::terminal_row_of(ui, &masked, line + 4.0, skin, |ui, _| {
+        column_names(ui, form, skin);
+    });
+    column_error(ui, form, skin);
+    column_missing(ui, form, skin);
+    sentence(ui, TextRole::OSecondary, &skin.say(MASKED_HINT), skin);
+    ui.add_space(4.0);
     let (role, height) = (TextRole::OBody, skin.field_height());
     super::terminal::terminal_row(ui, &skin.say("Rows per answer"), skin, |ui, label| {
         ui.add(input(ui, &mut form.agents_rows, role, height, skin))

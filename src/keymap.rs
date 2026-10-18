@@ -782,7 +782,7 @@ impl Command {
             C::FormSaveAndConnect => info("Save and connect", "", Prompts),
             C::FormForgetPassword => info("Forget the saved password", "", Prompts),
             C::FormCancel => info("Cancel", "", Prompts),
-            C::FormTableMove => info("Move in Add table…'s list", "", Prompts),
+            C::FormTableMove => info("Move in Add table…'s or Add column…'s list", "", Prompts),
             C::SettingsMove => info("Move in the settings", "", Prompts),
             C::SettingsChange => info("Change the option", "", Prompts),
             C::SettingsToggle => info("Toggle the option", "", Prompts),

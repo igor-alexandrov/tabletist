@@ -252,7 +252,7 @@ impl Shown {
 }
 
 /// Whether `a` and `b` mask the same columns, in any order and case.
-fn same_columns(a: &[ColumnName], b: &[ColumnName]) -> bool {
+pub(crate) fn same_columns(a: &[ColumnName], b: &[ColumnName]) -> bool {
     let within = |a: &[ColumnName], b: &[ColumnName]| {
         a.iter()
             .all(|entry| b.iter().any(|other| same_column(entry, other)))
