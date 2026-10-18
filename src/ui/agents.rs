@@ -99,6 +99,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let scope_key = app
         .keymap
         .key(layout, crate::keymap::Command::ToggleAgentsLogScope);
+    let filter_key = app
+        .keymap
+        .key(layout, crate::keymap::Command::FilterAgentsLog);
+    let close_key = app
+        .keymap
+        .key(layout, crate::keymap::Command::CloseAgentsLogFilters);
     let show_key = app.keymap.key(layout, crate::keymap::Command::ShowAgents);
     let copy_key = app
         .keymap
@@ -223,14 +229,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // the server off and access Off.
             if view == AgentsView::Log {
                 let days = app.settings.mcp_log_days;
-                let shown = log_view(
-                    ui,
-                    rect,
-                    (log, &scope_key, days),
-                    (&look, &palette, locale),
-                );
+                let keys = LogKeys {
+                    scope: &scope_key,
+                    filter: &filter_key,
+                    close: &close_key,
+                };
+                let shown = log_view(ui, rect, (log, keys, days), (&look, &palette, locale));
                 match shown {
                     Some(LogAsk::Scope) => actions.push(Action::ToggleAgentsLogScope(tab)),
+                    Some(LogAsk::Filter(filter)) => {
+                        actions.push(Action::FilterAgentsLog { tab, filter });
+                    }
+                    Some(LogAsk::CloseFilters) => {
+                        actions.push(Action::ShowAgentsLogFilters { tab, open: false });
+                    }
                     Some(LogAsk::More) => actions.push(Action::MoreAgentsLog(tab)),
                     Some(LogAsk::Select(id)) => {
                         actions.push(Action::SelectAgentsLogCall { tab, id });
@@ -999,12 +1011,19 @@ enum LogAsk {
     More,
     /// A call, by its place in the log.
     Select(i64),
+    /// A filter set, or every call again.
+    Filter(crate::model::AgentsLogFilter),
+    /// The terminal look's filters closed, and kept.
+    CloseFilters,
 }
 
-/// The Log view's bar at its top, its line for the selected call, and a
-/// call's line.
+/// The Log view's bar at its top (the terminal's, and macOS's, which holds
+/// the filters), its line for the selected call, and a call's line.
 const LOG_BAR: f32 = 36.0;
+const LOG_FILTER_BAR: f32 = 48.0;
 const LOG_DETAIL: f32 = 30.0;
+/// A row of the terminal look's filters.
+const FILTER_ROW: f32 = 28.0;
 
 /// The Log view: whose calls (this connection's or every one's) and how
 /// many the log keeps, then the calls the newest first, and under them
@@ -1012,24 +1031,29 @@ const LOG_DETAIL: f32 = 30.0;
 fn log_view(
     ui: &mut egui::Ui,
     rect: Rect,
-    (log, scope_key, days): (&crate::model::AgentsLog, &crate::keymap::Written, u32),
+    (log, keys, days): (&crate::model::AgentsLog, LogKeys<'_>, u32),
     (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
 ) -> Option<LogAsk> {
     let mut ask = None;
     let body = widgets::body(look);
     let small = widgets::secondary(look);
-    let bar = Rect::from_min_size(rect.min, vec2(rect.width(), LOG_BAR));
+    let height = if look.terminal {
+        LOG_BAR
+    } else {
+        LOG_FILTER_BAR
+    };
+    let bar = Rect::from_min_size(rect.min, vec2(rect.width(), height));
     widgets::hline(ui, bar.x_range(), bar.bottom() - 0.5, palette.border);
     let scope = match log.all {
         false => gettext(locale, "This connection"),
         true => gettext(locale, "All connections"),
     };
-    let count = ngettext(
-        locale,
-        "{n} call",
-        "{n} calls",
-        u32::try_from(log.total).unwrap_or(u32::MAX),
-    )
+    let calls = u32::try_from(log.total).unwrap_or(u32::MAX);
+    // Of the calls a filter lets through, they match it.
+    let count = match log.filtered() {
+        false => ngettext(locale, "{n} call", "{n} calls", calls),
+        true => ngettext(locale, "{n} call matches", "{n} calls match", calls),
+    }
     .replace("{n}", &log.total.to_string());
     let kept =
         ngettext(locale, "last {n} day", "last {n} days", days).replace("{n}", &days.to_string());
@@ -1052,30 +1076,34 @@ fn log_view(
                 &look.label(&format!("{scope} · {count} · ")),
                 palette.secondary,
             )
-            .add(body, scope_key.as_str(), palette.accent)
+            .add(body, keys.scope.as_str(), palette.accent)
             .add(body, &format!(" {other}"), palette.secondary);
         widgets::paint_text(ui, bar.left() + 14.0, bar.center().y, line);
+        // At its right, `/` for the filters.
+        let filter = Text::new(look)
+            .add(body, keys.filter.as_str(), palette.accent)
+            .add(
+                body,
+                &format!(" {}", look.label(&gettext(locale, "filter"))),
+                palette.secondary,
+            );
+        widgets::paint_text_right(ui, bar.right() - 14.0, bar.center().y, filter);
         widgets::announce(ui, bar, &look.label(&format!("{scope} · {count}")));
     } else {
-        let names = [
-            gettext(locale, "This connection"),
-            gettext(locale, "All connections"),
-        ];
-        let parts = [
-            widgets::Segment::Text(&names[0]),
-            widgets::Segment::Text(&names[1]),
-        ];
-        let place = Rect::from_min_size(
-            pos2(bar.left() + 16.0, bar.center().y - 12.0),
-            vec2(2.0 * 120.0, 24.0),
+        let row = Rect::from_min_max(
+            pos2(bar.left() + 16.0, bar.center().y - 14.0),
+            pos2(bar.right() - 16.0, bar.center().y + 14.0),
         );
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
-        let segment = vec2(120.0, 24.0);
-        let chosen = usize::from(log.all);
-        if widgets::segmented(&mut child, &parts, chosen, segment, look, palette)
-            .is_some_and(|index| index != chosen)
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(row)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        child.spacing_mut().item_spacing.x = 8.0;
+        if let Some(filter) =
+            log_filters(&mut child, log, &scope, (look, palette, locale), &mut ask)
         {
-            ask = Some(LogAsk::Scope);
+            ask = Some(LogAsk::Filter(filter));
         }
         let laid = Text::one(look, small, &count, palette.secondary).layout(ui.ctx());
         laid.paint_left(
@@ -1084,6 +1112,19 @@ fn log_view(
             bar.center().y,
         );
         widgets::announce(ui, bar, &format!("{scope} · {count}"));
+    }
+    // The terminal look's filters, under its bar: their rows while open,
+    // else a line that says what they are set to where any is.
+    let mut top = bar.bottom();
+    if look.terminal {
+        top = terminal_filters(
+            ui,
+            (rect, top),
+            log,
+            keys,
+            (look, palette, locale),
+            &mut ask,
+        );
     }
     // The selected call's line, at the bottom.
     let detail = Rect::from_min_max(pos2(rect.left(), rect.bottom() - LOG_DETAIL), rect.max);
@@ -1111,7 +1152,7 @@ fn log_view(
     } else {
         rect.bottom()
     };
-    let list = Rect::from_min_max(pos2(rect.left(), bar.bottom()), pos2(rect.right(), bottom));
+    let list = Rect::from_min_max(pos2(rect.left(), top), pos2(rect.right(), bottom));
     let row = feed_row(look);
     let empty = match (&log.failed, log.read, log.all) {
         (Some(failed), _, _) => Some(format!(
@@ -1120,6 +1161,9 @@ fn log_view(
         )),
         (None, false, _) => Some(gettext(locale, "Reading the log…").into_owned()),
         (None, true, _) if !log.calls.is_empty() => None,
+        (None, true, _) if log.filtered() => {
+            Some(gettext(locale, "No calls in the log match these filters.").into_owned())
+        }
         (None, true, false) => {
             Some(gettext(locale, "No calls on this connection in the log.").into_owned())
         }
@@ -1295,6 +1339,379 @@ fn log_view(
         });
     area.data_mut(|data| data.insert_temp(seen_id, log.selected));
     ask
+}
+
+/// The keys the Log view names, and reads, as the keymap has them.
+#[derive(Clone, Copy)]
+pub(crate) struct LogKeys<'a> {
+    /// Every connection's calls, or this one's.
+    pub scope: &'a crate::keymap::Written,
+    /// The terminal look's filters, opened.
+    pub filter: &'a crate::keymap::Written,
+    /// And closed.
+    pub close: &'a crate::keymap::Written,
+}
+
+/// The macOS look's filters, in a row of `ui`: whose calls, which agent's,
+/// how they ended, and a search of their requests, as the board has them.
+/// The filter set, where one was; the scope is asked through `ask`.
+fn log_filters(
+    ui: &mut egui::Ui,
+    log: &crate::model::AgentsLog,
+    scope: &str,
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    ask: &mut Option<LogAsk>,
+) -> Option<crate::model::AgentsLogFilter> {
+    use crate::model::AgentsLogFilter;
+    use crate::ui::menu;
+    let mut set = None;
+    let named = |response: &egui::Response, name: &str, value: &str| {
+        response.widget_info(|| {
+            let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, name);
+            info.current_text_value = Some(value.to_owned());
+            info
+        });
+    };
+    // Whose calls.
+    let this = gettext(locale, "This connection");
+    let all = gettext(locale, "All connections");
+    let scopes = menu::Dropdown::new("agents-log-scope", scope, 170.0)
+        .height(28.0)
+        .show(ui, look, palette, |ui| {
+            for (every, word) in [(false, &this), (true, &all)] {
+                let item = menu::Item::choice(word, log.all == every).show(ui, look, palette);
+                if item.clicked() {
+                    if log.all != every {
+                        *ask = Some(LogAsk::Scope);
+                    }
+                    ui.close();
+                }
+            }
+        });
+    named(&scopes.response, &gettext(locale, "Calls on"), scope);
+    // Which agent's: those that called on what is shown, and the one
+    // chosen, whether it called there or not.
+    let every_agent = gettext(locale, "All agents");
+    let agent = log.agent.clone().unwrap_or_else(|| every_agent.to_string());
+    let mut agents = log.agents.clone();
+    if let Some(chosen) = &log.agent
+        && !agents.contains(chosen)
+    {
+        agents.push(chosen.clone());
+    }
+    let menu = menu::Dropdown::new("agents-log-agent", &agent, 130.0)
+        .height(28.0)
+        .show(ui, look, palette, |ui| {
+            let mut choices = vec![(None, every_agent.to_string())];
+            choices.extend(agents.iter().map(|name| (Some(name.clone()), name.clone())));
+            for (value, word) in choices {
+                let item = menu::Item::choice(&word, log.agent == value).show(ui, look, palette);
+                if item.clicked() {
+                    set = Some(AgentsLogFilter::Agent(value));
+                    ui.close();
+                }
+            }
+        });
+    named(&menu.response, &gettext(locale, "Agent"), &agent);
+    // How they ended.
+    let every_result = gettext(locale, "All results");
+    let result = log.result.as_deref().map_or_else(
+        || every_result.to_string(),
+        |result| result_word(result, locale),
+    );
+    let menu = menu::Dropdown::new("agents-log-result", &result, 120.0)
+        .height(28.0)
+        .show(ui, look, palette, |ui| {
+            let mut choices = vec![(None, every_result.to_string())];
+            choices.extend(
+                crate::model::LOG_RESULTS
+                    .iter()
+                    .map(|result| (Some((*result).to_owned()), result_word(result, locale))),
+            );
+            for (value, word) in choices {
+                let item = menu::Item::choice(&word, log.result == value).show(ui, look, palette);
+                if item.clicked() {
+                    set = Some(AgentsLogFilter::Result(value));
+                    ui.close();
+                }
+            }
+        });
+    named(&menu.response, &gettext(locale, "Result"), &result);
+    // What the requests hold.
+    let mut text = log.search.clone();
+    let placeholder = gettext(locale, "Search requests…");
+    let role = widgets::body(look);
+    let field = ui.add_sized(
+        vec2(220.0, 28.0),
+        widgets::field(ui, &mut text, look, role, 28.0, 8)
+            .id(Id::new("agents-log-search"))
+            .hint_text(placeholder.as_ref()),
+    );
+    ui.ctx().accesskit_node_builder(field.id, |node| {
+        node.set_label(placeholder.trim_end_matches('…'));
+    });
+    if field.changed() {
+        set = Some(AgentsLogFilter::Search(text));
+    }
+    set
+}
+
+/// The terminal look's filters, under its bar at `top` of `rect`: while
+/// open, a field for the search and rows of words for the agent and the
+/// result, which Tab moves among and Enter or Space picks, until the
+/// keymap's close; while shut, the line that says what they are set to,
+/// where any is. Where the list starts under them.
+fn terminal_filters(
+    ui: &mut egui::Ui,
+    (rect, top): (Rect, f32),
+    log: &crate::model::AgentsLog,
+    keys: LogKeys<'_>,
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    ask: &mut Option<LogAsk>,
+) -> f32 {
+    use crate::model::AgentsLogFilter;
+    let body = widgets::body(look);
+    let small = widgets::secondary(look);
+    let every = look.label(&gettext(locale, "all"));
+    // The agents that called on what is shown, and the one chosen,
+    // whether it called there or not.
+    let mut agents: Vec<Option<String>> = std::iter::once(None)
+        .chain(log.agents.iter().cloned().map(Some))
+        .collect();
+    if let Some(chosen) = &log.agent
+        && !log.agents.contains(chosen)
+    {
+        agents.push(Some(chosen.clone()));
+    }
+    let agent_words: Vec<String> = agents
+        .iter()
+        .map(|agent| {
+            agent
+                .as_deref()
+                .map_or_else(|| every.clone(), |name| look.label(name))
+        })
+        .collect();
+    let results: Vec<Option<String>> = std::iter::once(None)
+        .chain(
+            crate::model::LOG_RESULTS
+                .iter()
+                .map(|result| Some((*result).to_owned())),
+        )
+        .collect();
+    let result_words: Vec<String> = results
+        .iter()
+        .map(|result| match result {
+            None => every.clone(),
+            Some(result) => look.label(&result_word(result, locale)),
+        })
+        .collect();
+    // Each `/` gives the search the keyboard: the count of them seen last.
+    let seen_id = Id::new("agents-log-filters-seen");
+    let seen: Option<u64> = ui.data(|data| data.get_temp(seen_id));
+    ui.data_mut(|data| data.insert_temp(seen_id, log.filters_asked));
+    if !log.filters_open {
+        if !log.filtered() {
+            return top;
+        }
+        // "filters  agent cursor · result refused · search “select”".
+        let mut said = Vec::new();
+        if let Some(agent) = &log.agent {
+            said.push(format!("{} {}", gettext(locale, "agent"), agent));
+        }
+        if let Some(result) = &log.result {
+            said.push(format!(
+                "{} {}",
+                gettext(locale, "result"),
+                result_word(result, locale)
+            ));
+        }
+        if !log.search.is_empty() {
+            said.push(format!("{} “{}”", gettext(locale, "search"), log.search));
+        }
+        let line = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), FILTER_ROW));
+        let words = look.label(&said.join(" · "));
+        let filters = look.label(&gettext(locale, "filters"));
+        let text = Text::new(look)
+            .add(body, &filters, palette.secondary)
+            .space(body, "  ")
+            .add(body, &words, palette.text);
+        widgets::paint_text(ui, line.left() + 14.0, line.center().y, text);
+        widgets::announce(ui, line, &format!("{filters} {words}"));
+        widgets::hline(ui, line.x_range(), line.bottom() - 0.5, palette.border);
+        return line.bottom();
+    }
+    let panel = Rect::from_min_size(
+        pos2(rect.left(), top),
+        vec2(rect.width(), 3.0 * FILTER_ROW + 26.0),
+    );
+    ui.painter().rect_filled(panel, 0.0, palette.panel);
+    let label_at = |index: usize| {
+        Rect::from_min_size(
+            pos2(
+                panel.left() + 14.0,
+                panel.top() + 4.0 + index as f32 * FILTER_ROW,
+            ),
+            vec2(panel.width() - 28.0, FILTER_ROW),
+        )
+    };
+    let labels = ["search", "agent", "result"].map(|word| look.label(&gettext(locale, word)));
+    for (index, label) in labels.iter().enumerate() {
+        let at = label_at(index);
+        widgets::paint_text(
+            ui,
+            at.left(),
+            at.center().y,
+            Text::one(look, body, label, palette.dim),
+        );
+    }
+    let cell = |index: usize| {
+        let at = label_at(index);
+        Rect::from_min_max(pos2(at.left() + 100.0, at.top()), at.max)
+    };
+    // The search, which has the keyboard as the filters open.
+    let mut text = log.search.clone();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cell(0)));
+    let field = child.add_sized(
+        vec2(cell(0).width().min(420.0), FILTER_ROW - 4.0),
+        widgets::field(&child, &mut text, look, body, FILTER_ROW - 4.0, 6)
+            .id(Id::new("agents-log-search")),
+    );
+    ui.ctx().accesskit_node_builder(field.id, |node| {
+        node.set_label(labels[0].as_str());
+    });
+    if seen != Some(log.filters_asked) {
+        field.request_focus();
+    }
+    if field.changed() {
+        *ask = Some(LogAsk::Filter(AgentsLogFilter::Search(text)));
+    }
+    let chosen = agents
+        .iter()
+        .position(|agent| *agent == log.agent)
+        .unwrap_or(0);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cell(1)));
+    let picked = words(
+        &mut child,
+        "agents-log-agent",
+        &labels[1],
+        &agent_words,
+        chosen,
+        (look, palette),
+    );
+    if let Some(at) = picked {
+        *ask = Some(LogAsk::Filter(AgentsLogFilter::Agent(agents[at].clone())));
+    }
+    let chosen = results
+        .iter()
+        .position(|result| *result == log.result)
+        .unwrap_or(0);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cell(2)));
+    let picked = words(
+        &mut child,
+        "agents-log-result",
+        &labels[2],
+        &result_words,
+        chosen,
+        (look, palette),
+    );
+    if let Some(at) = picked {
+        *ask = Some(LogAsk::Filter(AgentsLogFilter::Result(results[at].clone())));
+    }
+    // What closes them, as the keymap has it.
+    let hint = label_at(3);
+    let text = Text::new(look)
+        .add(small, keys.close.as_str(), palette.accent)
+        .add(
+            small,
+            &format!(
+                " {}",
+                look.label(&gettext(locale, "closes, and keeps them"))
+            ),
+            palette.secondary,
+        );
+    widgets::paint_text(ui, cell(3).left(), hint.top() + 11.0, text);
+    let keymap = crate::ui::keys::published(ui.ctx());
+    let layout = crate::keymap::Layout::of(look);
+    let closed = ui.input_mut(|input| {
+        crate::ui::keys::asked(
+            input,
+            &keymap,
+            layout,
+            crate::keymap::Command::CloseAgentsLogFilters,
+            crate::keymap::Scope::Agents,
+            true,
+        )
+        .count
+            > 0
+    });
+    if closed {
+        field.surrender_focus();
+        *ask = Some(LogAsk::CloseFilters);
+    }
+    widgets::hline(ui, panel.x_range(), panel.bottom() - 0.5, palette.border);
+    panel.bottom()
+}
+
+/// Words in a line, of which `chosen` is boxed in the accent, as the
+/// connection editor's rows draw them in the terminal look: the one
+/// clicked, or picked with Enter or Space. Screen readers hear them as
+/// radio buttons of a group named `name`.
+fn words(
+    ui: &mut egui::Ui,
+    salt: &str,
+    name: &str,
+    labels: &[String],
+    chosen: usize,
+    (look, palette): (&Look, &Palette),
+) -> Option<usize> {
+    let role = widgets::body(look);
+    let (pad, gap, height) = (8.0, 6.0, 23.0);
+    let mut clicked = None;
+    ui.scope_builder(egui::UiBuilder::new().id_salt(salt), |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::RadioGroup);
+            node.set_label(name);
+        });
+        let mut left = ui.max_rect().left();
+        let middle = ui.max_rect().center().y;
+        for (index, label) in labels.iter().enumerate() {
+            let width = (role.width(ui.ctx(), look.faces, label) + 2.0 * pad).ceil();
+            let cell = Rect::from_min_size(pos2(left, middle - height / 2.0), vec2(width, height));
+            left += width + gap;
+            let active = index == chosen;
+            let response = ui.interact(cell, ui.id().with((salt, index)), egui::Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, active, label)
+            });
+            if response.clicked() {
+                clicked = Some(index);
+            }
+            let corner = egui::CornerRadius::same(3);
+            let color = if active {
+                ui.painter().rect_stroke(
+                    cell,
+                    corner,
+                    egui::Stroke::new(1.0, palette.accent),
+                    egui::StrokeKind::Inside,
+                );
+                palette.accent
+            } else if response.hovered() {
+                palette.text
+            } else {
+                palette.dim
+            };
+            crate::ui::focus::hint(
+                ui,
+                &response,
+                cell,
+                crate::ui::focus::Ring::Outer { radius: corner.nw },
+            );
+            Text::one(look, role, label, color)
+                .layout(ui.ctx())
+                .paint_left(ui.painter(), cell.left() + pad, cell.center().y);
+        }
+    });
+    clicked
 }
 
 /// How a call in the log ended, in a word, and its colour.
