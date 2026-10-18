@@ -2363,6 +2363,13 @@ fn letters(
             {
                 actions.push(Action::ToggleAgentsLogScope(tab));
             }
+            (Some(Command::ExportAgentsLog), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+            {
+                if log.is_some_and(|log| log.total > 0) {
+                    actions.push(Action::ExportAgentsLog(tab));
+                }
+            }
             (Some(Command::OpenAgentsLogCall), _)
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
             {

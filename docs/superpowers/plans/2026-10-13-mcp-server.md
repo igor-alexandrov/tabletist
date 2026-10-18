@@ -2478,6 +2478,41 @@ went otherwise:
   nothing, the list given no room in a narrow window, and the pane left
   open as a filter cleared the selection: each is fixed with a test.
 
+**As built in 3b's run 3** (`2026-10-18-mcp-server-3b-3-export.md`). Agreed on 2026-10-18, where it
+went otherwise:
+
+- **Export…**, at the right of the macOS bar as the board draws it, off
+  with no call to export; on Omarchy, whose board draws no key for it,
+  `E` in the Log view (`When::AgentsLog`), named in its bar and footer.
+- The save dialog (`rfd`) offers no file types, whose pick renames nothing
+  on Linux and is not told: the name's ending decides, as its title says,
+  `.jsonl` (or `.ndjson`) JSON Lines and anything else CSV. The file holds
+  every call that passes the view's filters, not only the pages read, the
+  newest first as the view lists them, read from the log a thousand calls
+  at a time and written as they are read, on the backend's runtime
+  (`Backend::export_log`): no read keeps the server's writes waiting, and
+  no log is held whole. It is private to the user as the log is
+  (`util::write_atomic_with`). A failure is the notice a failed save gives;
+  a success says nothing, as Export settings does.
+- Each call is every column the log keeps, `at` added as RFC 3339 in UTC;
+  `params` and `masked` the log's JSON, as text. CSV is RFC 4180 with a
+  line of the names first; JSON Lines an object a line, its keys in that
+  order, `null` for nothing (and for a moment no clock can say). A value is
+  written as it is: a cell that a spreadsheet would read as a formula is
+  not changed.
+- The macOS bar's filters keep to the left of Export…, the four of them
+  narrower alike where the window is, and the count shows between them
+  where it has the room.
+- The run's review found a long export's one read keeping the server from
+  writing the calls that ended meanwhile, past its two seconds' wait, and
+  holding the whole log in memory; the dialog's file types picking
+  nothing on Linux; the macOS bar's count and Export… over its filters at
+  common widths; JSON Lines' keys in another order than the fields'; and
+  a moment out of a clock's range written as `""`: each is fixed, with a
+  test but for the dialog.
+- The guide: "The log" in `docs/_guide/agents.md`, with its filters, a
+  call's details and the export's fields.
+
 ### D.6 The keymap
 
 Checked against `src/keymap.rs` and the keyboard brief
@@ -2763,7 +2798,7 @@ is off until the person turns it on.
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 | 3a. Masked columns | 5, below | Built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`, `2026-10-18-mcp-server-3a-4-columns-control.md`): the rule, its stops, the engines' fences, the values, the server's side, the setting, and the editor's control with the website's guide. 3b is next (order changed on 2026-10-17) |
-| 3b. The Log view, in full | 3, below | Runs 1 and 2 built (`2026-10-18-mcp-server-3b-1-log-filters.md`, `2026-10-18-mcp-server-3b-2-call-pane.md`): the filters and the search, the detail pane and Open in SQL editor. Run 3, Export… and the guide, is next |
+| 3b. The Log view, in full | 3, below | Built (`2026-10-18-mcp-server-3b-1-log-filters.md`, `2026-10-18-mcp-server-3b-2-call-pane.md`, `2026-10-18-mcp-server-3b-3-export.md`): the filters and the search, the detail pane and Open in SQL editor, Export… and the guide. Phase 2 is next |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2981,7 +3016,8 @@ pull request:
    (`2026-10-18-mcp-server-3b-1-log-filters.md`, built).
 2. The detail pane for the selected call, and **Open in SQL editor**
    (`2026-10-18-mcp-server-3b-2-call-pane.md`, built).
-3. **Export…**, and the website's guide to the log.
+3. **Export…**, and the website's guide to the log
+   (`2026-10-18-mcp-server-3b-3-export.md`, built).
 
 ## Open questions
 

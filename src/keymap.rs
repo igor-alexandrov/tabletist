@@ -352,6 +352,7 @@ commands! {
     CloseAgentsLogPane,
     ShowAgentsLogDetails,
     OpenAgentsLogCall,
+    ExportAgentsLog,
     AllowAgents,
     ShowAgentSettings,
     ChangeAgentAccess,
@@ -644,6 +645,11 @@ impl Command {
             )),
             C::OpenAgentsLogCall => agents(info(
                 "Open the selected call's statement in a SQL editor",
+                "",
+                Window,
+            )),
+            C::ExportAgentsLog => agents(info(
+                "Export the log's calls that pass its filters",
                 "",
                 Window,
             )),
@@ -1078,6 +1084,7 @@ pub const BINDINGS: &[Binding] = {
         bind(C::CloseAgentsLogPane, AGENTS, NONE, keys(&[k("esc")])),
         bind(C::ShowAgentsLogDetails, AGENTS, NONE, keys(&[k("enter")])).when(When::AgentsLog),
         bind(C::OpenAgentsLogCall, AGENTS, NONE, keys(&[k("o")])).when(When::AgentsLog),
+        bind(C::ExportAgentsLog, AGENTS, NONE, keys(&[k("E")])).when(When::AgentsLog),
         bind(C::AllowAgents, AGENTS, NONE, keys(&[k("e")])),
         bind(C::ShowAgentSettings, AGENTS, NONE, keys(&[k("s")])),
         bind(C::ChangeAgentAccess, CONNECTIONS, NONE, keys(&[k("a")])),
