@@ -1521,6 +1521,420 @@ fn add_table_offers_the_windows_tables_and_marks_a_name_in_none() {
     }
 }
 
+/// `name` typed for Add column… (its field opened where it is not open
+/// already), then Enter.
+#[cfg(any(unix, windows))]
+fn add_column(harness: &mut Harness, look: &Look, name: &str) {
+    type_column(harness, look, name);
+    harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+    harness.settle();
+}
+
+/// `name` typed in Add column…'s field, opened where it is not open.
+#[cfg(any(unix, windows))]
+fn type_column(harness: &mut Harness, look: &Look, name: &str) {
+    if form(harness).agents_column_typed.is_none() {
+        harness.click(&look.label("Add column…"));
+    }
+    harness.settle();
+    harness.frame(vec![egui::Event::Text(name.into())]);
+    harness.settle();
+}
+
+/// How many times the backend was asked for the columns of `table`.
+#[cfg(any(unix, windows))]
+fn asked_to_describe(harness: &Harness, table: &str) -> usize {
+    use crate::backend::Command;
+    let sent = harness.app.backend.sent.iter();
+    sent.filter(
+        |command| matches!(command, Command::Describe { object, .. } if object.name == table),
+    )
+    .count()
+}
+
+/// Answers the newest request for the columns of `table`: `columns`.
+#[cfg(any(unix, windows))]
+fn describe(harness: &mut Harness, table: &str, columns: &[&str]) {
+    use crate::backend::Command;
+    let sent = harness.app.backend.sent.iter().rev();
+    let (session, request) = sent
+        .filter_map(|command| match command {
+            Command::Describe {
+                session,
+                request,
+                object,
+            } if object.name == table => Some((*session, *request)),
+            _ => None,
+        })
+        .next()
+        .unwrap_or_else(|| panic!("no Describe of {table} was sent"));
+    let structure = tabletist_db::Structure {
+        columns: columns
+            .iter()
+            .map(|name| tabletist_db::ColumnInfo {
+                name: (*name).into(),
+                type_name: "TEXT".into(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    harness.app.apply(Action::Backend(Event::Structure {
+        session,
+        request,
+        result: Ok(structure),
+    }));
+    harness.settle();
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn the_editors_masked_columns_control_masks_what_agents_get_as_dots() {
+    let columns = |written: &[&str]| -> Vec<tabletist_db::agent::ColumnName> {
+        written.iter().map(|entry| entry.parse().unwrap()).collect()
+    };
+    let hint = "Agents see the name and type; values come back as •••. A query that filters, \
+                joins, sorts or computes with one is refused, in any table with a column of \
+                that name.";
+    let no_table = "The column's name has no table: write the table, a dot, and the column.";
+    let too_many = "The column's name has more than two dots: it is a table and a column, or a \
+                    schema, a table and a column.";
+    for look in looks() {
+        let (mut harness, conn) = on_the_list(look);
+        at_agents(&mut harness, &conn);
+        assert!(harness.has(&look.label(hint)), "{}", look.name);
+        // Enter masks a column and keeps the field, with the keyboard, for
+        // the next.
+        add_column(&mut harness, &look, "orders.email");
+        add_column(&mut harness, &look, "sales.orders.phone");
+        assert_eq!(
+            form(&harness).agents_column_typed.as_deref(),
+            Some(""),
+            "{}",
+            look.name
+        );
+        // The same one again, in another case, is there once.
+        add_column(&mut harness, &look, "ORDERS.EMAIL");
+        // One that does not read is said under the names, and the field
+        // keeps it to be put right.
+        add_column(&mut harness, &look, "email");
+        assert!(harness.has(&look.label(no_table)), "{}", look.name);
+        assert_eq!(
+            form(&harness).agents_column_typed.as_deref(),
+            Some("email"),
+            "{}",
+            look.name
+        );
+        // Escape closes the field and nothing else.
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(harness.app.dialog.is_some(), "{}", look.name);
+        assert_eq!(form(&harness).agents_column_typed, None, "{}", look.name);
+        assert!(!harness.has(&look.label(no_table)), "{}", look.name);
+        harness.click(&look.label("Remove sales.orders.phone"));
+        harness.settle();
+        // A name typed and not yet added is added by the save.
+        type_column(&mut harness, &look, "orders.phone");
+        harness.app.apply(Action::SaveConnection { connect: false });
+        let saved = harness.app.connections.get(&conn).unwrap();
+        assert_eq!(
+            saved.agents.masked,
+            columns(&["orders.email", "orders.phone"]),
+            "{}",
+            look.name
+        );
+        // The person's own: shown, so that comparing again holds nothing.
+        harness.app.check_agents();
+        assert!(harness.app.agents_held.is_empty(), "{}", look.name);
+        // Opened again it shows them. A name that does not read, typed and
+        // not added, refuses the save and says why.
+        at_agents(&mut harness, &conn);
+        assert!(
+            harness.has(&look.label("Remove orders.phone")),
+            "{}",
+            look.name
+        );
+        type_column(&mut harness, &look, "a.b.c.d");
+        harness.app.apply(Action::SaveConnection { connect: false });
+        assert!(harness.app.dialog.is_some(), "{}", look.name);
+        assert_eq!(
+            form(&harness).message.as_deref(),
+            Some(too_many),
+            "{}",
+            look.name
+        );
+        form_mut(&mut harness).agents_column_typed = None;
+        form_mut(&mut harness).agents_column_error = None;
+        harness.settle();
+        // A name left in the field when Tab moves on is added.
+        type_column(&mut harness, &look, "orders.total");
+        harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(
+            harness.has(&look.label("Remove orders.total")),
+            "{}",
+            look.name
+        );
+        assert_eq!(form(&harness).agents_column_typed, None, "{}", look.name);
+        // Masking less, by the person: theirs, and never held.
+        for name in ["orders.email", "orders.phone", "orders.total"] {
+            harness.click(&look.label(&format!("Remove {name}")));
+            harness.settle();
+        }
+        harness.app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            harness.app.connections.get(&conn).unwrap().agents.masked,
+            columns(&[]),
+            "{}",
+            look.name
+        );
+        harness.app.check_agents();
+        assert!(harness.app.agents_held.is_empty(), "{}", look.name);
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn masked_columns_changed_outside_while_the_editor_is_open_are_not_saved_over() {
+    let columns = |written: &[&str]| -> Vec<tabletist_db::agent::ColumnName> {
+        written.iter().map(|entry| entry.parse().unwrap()).collect()
+    };
+    let (mut harness, conn) = on_the_list(Look::macos());
+    at_agents(&mut harness, &conn);
+    add_column(&mut harness, &Look::macos(), "orders.email");
+    // The file masks another column meanwhile.
+    let mut saved = harness.app.connections.get(&conn).unwrap().clone();
+    saved.agents.masked = columns(&["customers.phone"]);
+    harness.app.connections.upsert(saved);
+    harness.app.check_agents();
+    harness.app.apply(Action::SaveConnection { connect: false });
+    assert!(harness.app.dialog.is_some());
+    assert_eq!(form(&harness).agents_masked, columns(&["customers.phone"]));
+    assert!(
+        form(&harness)
+            .message
+            .as_deref()
+            .is_some_and(|said| said.starts_with("The masked columns were changed outside"))
+    );
+    // Saved again, it keeps what the file says.
+    harness.app.apply(Action::SaveConnection { connect: false });
+    assert_eq!(
+        harness.app.connections.get(&conn).unwrap().agents.masked,
+        columns(&["customers.phone"])
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn add_column_offers_the_tables_then_the_columns_it_fetches_and_marks_one_in_none() {
+    let gone = |look: &Look| {
+        look.label(
+            "Agents may not use this connection while a masked column is not in its database. \
+             Take the name out, or add the column's new name.",
+        )
+    };
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        loaded(&mut harness, tab, &["customers", "orders"]);
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        let mut saved = harness.app.connections.get(&conn).unwrap().clone();
+        saved.agents.masked = vec!["orders.mail".parse().unwrap()];
+        harness.app.connections.upsert(saved);
+        harness.app.check_agents();
+        at_agents(&mut harness, &conn);
+        // The columns of a table a masked column names are asked of the
+        // window, once; a column none of them is is marked, and what that
+        // does to agents is said.
+        assert_eq!(asked_to_describe(&harness, "orders"), 1, "{}", look.name);
+        let mark = look.label("orders.mail, not in this database");
+        assert!(!harness.has(&mark), "{}", look.name);
+        describe(&mut harness, "orders", &["id", "email", "phone"]);
+        assert!(harness.has(&mark), "{}", look.name);
+        assert!(harness.has(&gone(&look)), "{}", look.name);
+        assert_eq!(asked_to_describe(&harness, "orders"), 1, "{}", look.name);
+        // Typed, the window's tables that match are offered; Enter on one
+        // puts it in the field, and its columns are offered.
+        type_column(&mut harness, &look, "ord");
+        assert!(harness.has("orders."), "{}", look.name);
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        harness.settle();
+        assert_eq!(
+            form(&harness).agents_column_typed.as_deref(),
+            Some("orders."),
+            "{}",
+            look.name
+        );
+        assert!(
+            harness.has(&look.label("Columns of orders")),
+            "{}",
+            look.name
+        );
+        harness.frame(vec![egui::Event::Text("em".into())]);
+        harness.settle();
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(
+            harness.has(&look.label("Remove orders.email")),
+            "{}",
+            look.name
+        );
+        assert_eq!(
+            form(&harness).agents_column_typed.as_deref(),
+            Some(""),
+            "{}",
+            look.name
+        );
+        // A table whose columns no window has: asked for, and the list
+        // says they are on their way; a click on one masks it.
+        type_column(&mut harness, &look, "customers.");
+        assert_eq!(asked_to_describe(&harness, "customers"), 1, "{}", look.name);
+        assert!(
+            harness.has(&look.label("Loading the columns of customers…")),
+            "{}",
+            look.name
+        );
+        describe(&mut harness, "customers", &["id", "name"]);
+        let row = harness
+            .text_rects
+            .iter()
+            .rev()
+            .find(|(text, _)| text == "customers.name")
+            .map(|(_, rect)| *rect)
+            .expect("the list's column");
+        press_at(&mut harness, row.center());
+        assert!(
+            harness.has(&look.label("Remove customers.name")),
+            "{}",
+            look.name
+        );
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        harness.settle();
+        // Taken out, nothing is marked and nothing said.
+        harness.click(&look.label("Remove orders.mail"));
+        harness.settle();
+        assert!(!harness.has(&gone(&look)), "{}", look.name);
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn add_columns_list_keeps_the_row_chosen_and_says_what_did_not_come() {
+    use crate::model::{Fetch, SessionStatus};
+    use tabletist_db::{ObjectInfo, ObjectKind, ObjectRef};
+    for look in looks() {
+        let (mut harness, tab) = connected(look);
+        // `orders` in two schemas: one's columns are here, the other's on
+        // their way.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.tree.schemas.value = Some(vec!["main".into(), "other".into()]);
+        for schema in ["main", "other"] {
+            let node = workspace.tree.nodes.entry(schema.into()).or_default();
+            node.objects.value = Some(vec![ObjectInfo {
+                name: "orders".into(),
+                kind: ObjectKind::Table,
+                estimated_rows: None,
+            }]);
+        }
+        let fetched = Fetch {
+            value: Some(
+                ["id", "phone"]
+                    .iter()
+                    .map(|name| tabletist_db::ColumnInfo {
+                        name: (*name).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Fetch::default()
+        };
+        workspace
+            .columns
+            .insert(ObjectRef::new("main", "orders"), fetched);
+        let conn = workspace.conn_id.clone();
+        at_agents(&mut harness, &conn);
+        type_column(&mut harness, &look, "orders.");
+        assert_eq!(asked_to_describe(&harness, "orders"), 1, "{}", look.name);
+        // `phone` chosen, then the other schema's columns come and put a
+        // row before it: Enter still masks `phone`.
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        assert_eq!(form(&harness).agents_column_pick, Some(1), "{}", look.name);
+        describe(&mut harness, "orders", &["email"]);
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        harness.settle();
+        assert!(
+            harness.has(&look.label("Remove orders.phone")),
+            "{}",
+            look.name
+        );
+        // A table whose columns could not be read says so.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace
+            .tree
+            .nodes
+            .entry("main".into())
+            .or_default()
+            .objects
+            .value = Some(vec![ObjectInfo {
+            name: "carts".into(),
+            kind: ObjectKind::Table,
+            estimated_rows: None,
+        }]);
+        type_column(&mut harness, &look, "carts.");
+        let (session, request) = harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                crate::backend::Command::Describe {
+                    session,
+                    request,
+                    object,
+                } if object.name == "carts" => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a Describe of carts");
+        harness.app.apply(Action::Backend(Event::Structure {
+            session,
+            request,
+            result: Err(tabletist_db::Error::Io("gone".into())),
+        }));
+        harness.settle();
+        assert!(
+            harness.has(&look.label("The columns of carts could not be read")),
+            "{}",
+            look.name
+        );
+        // Columns on their way from a window whose session is gone are on
+        // their way no more.
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        harness.settle();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace
+            .tree
+            .nodes
+            .entry("main".into())
+            .or_default()
+            .objects
+            .value = Some(vec![ObjectInfo {
+            name: "books".into(),
+            kind: ObjectKind::Table,
+            estimated_rows: None,
+        }]);
+        type_column(&mut harness, &look, "books.");
+        let waiting = look.label("Loading the columns of books…");
+        assert!(harness.has(&waiting), "{}", look.name);
+        harness.app.workspace_mut(tab).unwrap().status =
+            SessionStatus::Disconnected(tabletist_db::Error::ConnectionLost("gone".into()));
+        harness.settle();
+        assert!(!harness.has(&waiting), "{}", look.name);
+    }
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn allow_agents_opens_the_editor_with_read_chosen() {
