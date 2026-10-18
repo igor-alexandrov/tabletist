@@ -212,8 +212,12 @@ impl Harness {
         self.frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)]);
     }
 
-    /// Two frames: egui lays out on the first and settles sizes on the second.
+    /// Three frames: egui lays out on the first and settles sizes on the
+    /// second. The connection dialog measures itself unseen on the second
+    /// and egui keeps unseen widgets out of the AccessKit tree, so it is
+    /// there from the third.
     pub fn settle(&mut self) -> TreeUpdate {
+        self.frame(Vec::new());
         self.frame(Vec::new());
         self.frame(Vec::new())
     }

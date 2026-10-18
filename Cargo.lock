@@ -1413,7 +1413,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/crmne/winit?rev=a7b78b2754555196756d37b12b2c78da1668e31a#a7b78b2754555196756d37b12b2c78da1668e31a"
+source = "git+https://github.com/crmne/winit?rev=0bed9dc0a7db02590a279fb8bac795fa39ee6948#0bed9dc0a7db02590a279fb8bac795fa39ee6948"
 
 [[package]]
 name = "dyn-clone"
@@ -1439,7 +1439,7 @@ dependencies = [
 [[package]]
 name = "ecolor"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "bytemuck",
  "emath",
@@ -1475,7 +1475,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1512,7 +1512,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "accesskit",
  "ahash",
@@ -1533,7 +1533,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1552,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "accesskit_winit",
  "arboard",
@@ -1573,7 +1573,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "ahash",
  "egui",
@@ -1588,7 +1588,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "bytemuck",
  "egui",
@@ -1601,7 +1601,7 @@ dependencies = [
 [[package]]
 name = "egui_kittest"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "eframe",
  "egui",
@@ -1646,7 +1646,7 @@ dependencies = [
 [[package]]
 name = "emath"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "bytemuck",
  "serde",
@@ -1748,7 +1748,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1774,7 +1774,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.36.1"
-source = "git+https://github.com/crmne/egui?rev=0b431145c22ee27b20b0aff7243d74f4b32e9a79#0b431145c22ee27b20b0aff7243d74f4b32e9a79"
+source = "git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938"
 
 [[package]]
 name = "equivalent"
@@ -7065,7 +7065,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/crmne/winit?rev=a7b78b2754555196756d37b12b2c78da1668e31a#a7b78b2754555196756d37b12b2c78da1668e31a"
+source = "git+https://github.com/crmne/winit?rev=0bed9dc0a7db02590a279fb8bac795fa39ee6948#0bed9dc0a7db02590a279fb8bac795fa39ee6948"
 dependencies = [
  "ahash",
  "android-activity",
