@@ -803,6 +803,20 @@ pub fn book_covers_page(rows: usize) -> RowPage {
     }
 }
 
+/// The zone database, read once for every test.
+fn zones_shared() -> std::sync::Arc<crate::zones::Zones> {
+    static ZONES: std::sync::OnceLock<std::sync::Arc<crate::zones::Zones>> =
+        std::sync::OnceLock::new();
+    std::sync::Arc::clone(ZONES.get_or_init(|| std::sync::Arc::new(crate::zones::Zones::load())))
+}
+
+/// The zone database, as the backend reads it.
+pub fn zones() -> &'static crate::zones::Zones {
+    static ZONES: std::sync::OnceLock<std::sync::Arc<crate::zones::Zones>> =
+        std::sync::OnceLock::new();
+    ZONES.get_or_init(zones_shared)
+}
+
 /// UTC, for a test's [`crate::edit::Table`] to hold a zone by reference.
 pub static UTC: jiff::tz::TimeZone = jiff::tz::TimeZone::UTC;
 
@@ -1514,6 +1528,11 @@ impl Harness {
         // later: no test waits.
         app.lookup_delay = std::time::Duration::ZERO;
         app.attach(&ctx, false);
+        // The zone database, as the backend answers the attach's
+        // `LoadZones`.
+        app.apply(Action::Backend(
+            crate::backend::Event::Zones(zones_shared()),
+        ));
         Self {
             app,
             ctx,

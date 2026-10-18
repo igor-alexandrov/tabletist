@@ -58,27 +58,42 @@ impl Zone {
     }
 
     /// The zone the file names, where it is one: `system`, `utc` (in any
-    /// case), or a name the zone database knows.
+    /// case), or a name of the form the zone database's have
+    /// (`America/New_York`, `Etc/GMT+5`). Whether the database knows the
+    /// name is the app's to say, once the backend has read it
+    /// ([`crate::zones::Zones`]): reading the file reads no zone.
     pub fn from_name(name: &str) -> Option<Self> {
+        let formed = !name.is_empty()
+            && !name.starts_with('/')
+            && !name.ends_with('/')
+            && !name.contains("//")
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/_+-".contains(&byte));
         if name.eq_ignore_ascii_case("system") {
             Some(Self::System)
         } else if name.eq_ignore_ascii_case("utc") {
             Some(Self::Utc)
-        } else if !name.is_empty() && jiff::tz::db().get(name).is_ok() {
+        } else if formed {
             Some(Self::Named(name.to_owned()))
         } else {
             None
         }
     }
 
-    /// The zone itself. `system` is the zone the app found at its start.
-    pub fn resolve(&self, system: &jiff::tz::TimeZone) -> jiff::tz::TimeZone {
+    /// The zone itself. `system` is the zone the app found at its start;
+    /// a named one is looked up in `zones`, the database the backend read.
+    /// `None` for a named zone before the database is read, or one it does
+    /// not know.
+    pub fn resolve(
+        &self,
+        system: &jiff::tz::TimeZone,
+        zones: Option<&crate::zones::Zones>,
+    ) -> Option<jiff::tz::TimeZone> {
         match self {
-            Self::System => system.clone(),
-            Self::Utc => jiff::tz::TimeZone::UTC,
-            // Known to the database when it was read: a name that has
-            // gone from it since shows as UTC.
-            Self::Named(name) => jiff::tz::db().get(name).unwrap_or(jiff::tz::TimeZone::UTC),
+            Self::System => Some(system.clone()),
+            Self::Utc => Some(jiff::tz::TimeZone::UTC),
+            Self::Named(name) => zones?.get(name).cloned(),
         }
     }
 }
@@ -1750,29 +1765,54 @@ theme = \"My \\\"Nord\\\".json\"
             Zone::from_name("Europe/Lisbon"),
             Some(Zone::Named("Europe/Lisbon".into()))
         );
-        assert_eq!(Zone::from_name("Mars/Olympus"), None);
-        assert_eq!(Zone::from_name(""), None);
+        // Of the form, whether the database knows it or not: the app asks
+        // the database once it is read.
+        assert_eq!(
+            Zone::from_name("Mars/Olympus"),
+            Some(Zone::Named("Mars/Olympus".into()))
+        );
+        for name in [
+            "",
+            "/etc/passwd",
+            "America//York",
+            "Europe/",
+            "Lisbon zone",
+            "Asia/東京",
+        ] {
+            assert_eq!(Zone::from_name(name), None, "{name}");
+        }
         for zone in [Zone::System, Zone::Utc, Zone::Named("Asia/Tokyo".into())] {
             assert_eq!(Zone::from_name(zone.name()), Some(zone));
         }
         let system = jiff::tz::TimeZone::fixed(jiff::tz::offset(3));
-        assert_eq!(Zone::System.resolve(&system), system);
-        assert_eq!(Zone::Utc.resolve(&system), jiff::tz::TimeZone::UTC);
+        let zones = crate::testing::zones();
+        assert_eq!(Zone::System.resolve(&system, None), Some(system.clone()));
         assert_eq!(
-            Zone::Named("Asia/Tokyo".into())
-                .resolve(&system)
-                .iana_name(),
-            Some("Asia/Tokyo")
+            Zone::Utc.resolve(&system, None),
+            Some(jiff::tz::TimeZone::UTC)
+        );
+        let tokyo = Zone::Named("Asia/Tokyo".into());
+        assert_eq!(
+            tokyo
+                .resolve(&system, Some(zones))
+                .and_then(|zone| zone.iana_name().map(str::to_owned)),
+            Some("Asia/Tokyo".to_owned())
+        );
+        // Before the database is read, and a name it does not know: none.
+        assert_eq!(tokyo.resolve(&system, None), None);
+        assert_eq!(
+            Zone::Named("Mars/Olympus".into()).resolve(&system, Some(zones)),
+            None
         );
     }
 
     #[test]
-    fn a_zone_the_database_does_not_know_is_ignored_and_keeps_the_last_good_one() {
+    fn a_zone_of_no_zones_form_is_ignored_and_keeps_the_last_good_one() {
         let last = Settings {
             tz: Zone::Utc,
             ..Settings::default()
         };
-        let text = "[data]\ntz = \"Mars/Olympus\"\npage_size = 500\n";
+        let text = "[data]\ntz = \"Lisbon zone\"\npage_size = 500\n";
         let loaded = Settings::from_toml_over(text, &last);
         assert_eq!(loaded.invalid, [2]);
         assert_eq!(loaded.settings.tz, Zone::Utc);

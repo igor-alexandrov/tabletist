@@ -122,8 +122,9 @@ pub struct Table<'a> {
     pub added: &'a [NewRow],
     /// The page's rows marked for deletion (`Edits::deleted`).
     pub deleted: &'a BTreeMap<usize, Doomed>,
-    /// The zone a moment with an offset is shown and typed in.
-    pub zone: &'a jiff::tz::TimeZone,
+    /// The zone a moment with an offset is shown and typed in, where the
+    /// engine sends one and the zone is known (`Workspace::zone_shown`).
+    pub zone: Option<&'a jiff::tz::TimeZone>,
 }
 
 impl<'a> Table<'a> {
@@ -143,7 +144,7 @@ impl<'a> Table<'a> {
             gone: &object.edits.gone,
             added: &object.edits.added,
             deleted: &object.edits.deleted,
-            zone: &workspace.zone,
+            zone: workspace.zone_shown(),
         })
     }
 }
@@ -3163,7 +3164,7 @@ mod tests {
             gone: &edits.gone,
             added: &edits.added,
             deleted: &edits.deleted,
-            zone: &crate::testing::UTC,
+            zone: Some(&crate::testing::UTC),
         }
     }
 
@@ -4793,7 +4794,7 @@ mod tests {
             gone: &NONE_GONE,
             added: &[],
             deleted: &NONE_DELETED,
-            zone: &crate::testing::UTC,
+            zone: Some(&crate::testing::UTC),
         }
     }
 

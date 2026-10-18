@@ -18,7 +18,7 @@ use crate::ui::menu;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
-use super::{label, path_shown, sample_timestamp, small_print, zone_text, zones};
+use super::{label, path_shown, sample_timestamp, small_print, zone_text};
 
 /// The sheet at its widest and at its tallest, and what it leaves of the
 /// window at each side.
@@ -72,6 +72,9 @@ pub(super) struct Skin<'a> {
     pub(super) locale: Locale,
     /// The computer's zone's name, which the System zone writes beside it.
     pub(super) system: Option<&'a str>,
+    /// The zone database's names, which the zone menu lists: none until
+    /// the backend has read it.
+    pub(super) zones: &'a [String],
 }
 
 impl Skin<'_> {
@@ -93,6 +96,7 @@ pub(super) fn show(
         palette: &app.palette,
         locale: app.locale,
         system: app.system_zone.iana_name(),
+        zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
@@ -609,7 +613,8 @@ fn zone_menu(ui: &mut Ui, name: &str, settings: &Settings, skin: &Skin, actions:
         egui::ScrollArea::vertical()
             .max_height(ZONE_LIST)
             .show(ui, |ui| {
-                for zone in zones()
+                for zone in skin
+                    .zones
                     .iter()
                     .filter(|zone| typed.is_empty() || zone.to_lowercase().contains(&typed))
                 {

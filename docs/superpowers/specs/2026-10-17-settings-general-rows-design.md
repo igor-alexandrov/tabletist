@@ -165,6 +165,11 @@ for the look (`grouped(layout)`); Reset sets `None`.
   offset, and the fraction the server sent:
   `2026-01-12 04:14:03.482915-05`. Timestamps, To the second, then cuts the
   fraction as today. The grid, the SQL results and the row panel show it.
+- **The zone database** is read whole on the backend when the app starts
+  (`Command::LoadZones`, `zones::Zones`): the UI thread reads no zone
+  file. Reading `settings.toml` checks a name's form only; a name the
+  database does not know is an ignored line once the database is read,
+  and a named zone shows values as sent until then.
 - **System.** The computer's zone is read once, when the app starts
   (`App::system_zone`), never per frame; tests have UTC. The menu writes it
   `System · America/New_York`.

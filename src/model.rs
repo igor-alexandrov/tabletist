@@ -935,7 +935,7 @@ pub struct Workspace {
     /// set when the workspace opens and when the option changes. Read
     /// through [`Workspace::zone_shown`], which says whether its engine's
     /// values are moved to it.
-    pub zone: jiff::tz::TimeZone,
+    pub zone: Option<jiff::tz::TimeZone>,
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
     /// The terminal look's `:` prompt: the text after the colon while it
@@ -3910,7 +3910,11 @@ impl Workspace {
     /// engine sends one (`edit::shows_in_zone`): elsewhere none, and values
     /// are shown as stored.
     pub fn zone_shown(&self) -> Option<&jiff::tz::TimeZone> {
-        crate::edit::shows_in_zone(self.driver.dialect()).then_some(&self.zone)
+        if crate::edit::shows_in_zone(self.driver.dialect()) {
+            self.zone.as_ref()
+        } else {
+            None
+        }
     }
 
     /// Whether a SQL editor of this workspace can run read-write, or why
@@ -4005,7 +4009,7 @@ impl Workspace {
             recent: Vec::new(),
             sidebar_hidden: false,
             full_precision: false,
-            zone: jiff::tz::TimeZone::UTC,
+            zone: None,
             focus_where: false,
             command: None,
             focus_command: false,

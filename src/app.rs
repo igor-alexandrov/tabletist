@@ -82,6 +82,9 @@ pub struct App {
     /// The computer's time zone as the app found it at its start: what the
     /// System zone of the settings is.
     pub system_zone: jiff::tz::TimeZone,
+    /// The time zone database, once the backend has read it
+    /// (`Command::LoadZones`): the zone menu's names, and each zone.
+    pub zones: Option<std::sync::Arc<crate::zones::Zones>>,
     /// The last named zone the settings had this session: the Omarchy
     /// screen's steps reach it after a step off it.
     pub named_zone: Option<String>,
@@ -192,6 +195,7 @@ impl App {
             settings_file,
             system_zone: system_zone(),
             named_zone,
+            zones: None,
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
@@ -445,8 +449,61 @@ impl App {
     }
 
     /// The zone a value with an offset is shown in, as the settings say.
-    pub fn zone(&self) -> jiff::tz::TimeZone {
-        self.settings.tz.resolve(&self.system_zone)
+    /// `None` for a named zone until the backend has read the zone
+    /// database: values are shown as sent until then.
+    pub fn zone(&self) -> Option<jiff::tz::TimeZone> {
+        self.settings
+            .tz
+            .resolve(&self.system_zone, self.zones.as_deref())
+    }
+
+    /// Gives every workspace the zone of the settings, and has the row
+    /// panels' texts made again in it.
+    fn refresh_zone(&mut self) {
+        let zone = self.zone();
+        for tab in &mut self.tabs {
+            if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                workspace.zone = zone.clone();
+                for sql in workspace.sql_tabs_mut() {
+                    sql.fields = None;
+                }
+                for object in workspace.object_tabs_mut() {
+                    object.fields = None;
+                }
+            }
+        }
+    }
+
+    /// A named zone in `settings` that the zone database, once read, does
+    /// not know: it is not applied (the zone stays `last`), and its line
+    /// is one that was ignored, as a value its key cannot have is.
+    fn refuse_unknown_zone(&mut self, settings: &mut Settings, last: crate::settings::Zone) {
+        let Some(zones) = &self.zones else {
+            return;
+        };
+        let crate::settings::Zone::Named(name) = &settings.tz else {
+            return;
+        };
+        if zones.get(name).is_some() {
+            return;
+        }
+        log::warn!(
+            "{}: {name} is no zone of the zone database, and is ignored",
+            self.dirs.settings_file().display()
+        );
+        settings.tz = last;
+        let file = &mut self.settings_file;
+        let line = file
+            .lines
+            .iter()
+            .find(|(key, _)| *key == crate::settings::Key::Tz)
+            .map(|(_, line)| *line);
+        if let Some(line) = line
+            && !file.invalid.contains(&line)
+        {
+            file.invalid.push(line);
+            file.invalid.sort_unstable();
+        }
     }
 
     /// How the look in use binds and writes its keys.
@@ -3095,6 +3152,15 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
+            // A named zone resolves from here on, and one the database does
+            // not know is said to be ignored.
+            Event::Zones(zones) => {
+                self.zones = Some(zones);
+                let mut settings = self.settings.clone();
+                self.refuse_unknown_zone(&mut settings, crate::settings::Zone::System);
+                self.apply_settings(settings);
+                self.refresh_zone();
+            }
             Event::SettingsFile { text, own } => {
                 // What the app holds already: its own write coming back,
                 // or a save that changed nothing.
@@ -3119,7 +3185,7 @@ impl App {
                 let live = self.settings_file.live;
                 let saved = self.settings_file.saved.take();
                 let offered = std::mem::take(&mut self.settings_file.offered);
-                let (settings, file) = loaded.into_parts();
+                let (mut settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
                 // line that was ignored stays where they can see it.
                 self.settings_file = SettingsFile {
@@ -3128,6 +3194,7 @@ impl App {
                     offered,
                     ..file
                 };
+                self.refuse_unknown_zone(&mut settings, self.settings.tz.clone());
                 self.apply_settings(settings);
             }
             // What the person turned on in the file and does not get is
@@ -3669,19 +3736,7 @@ impl App {
             self.named_zone = Some(name.clone());
         }
         if old.tz != self.settings.tz {
-            let zone = self.zone();
-            for tab in &mut self.tabs {
-                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
-                    workspace.zone = zone.clone();
-                    // The row panels' texts are made again, in the zone.
-                    for sql in workspace.sql_tabs_mut() {
-                        sql.fields = None;
-                    }
-                    for object in workspace.object_tabs_mut() {
-                        object.fields = None;
-                    }
-                }
-            }
+            self.refresh_zone();
         }
         if old.show_system_schemas != self.settings.show_system_schemas {
             // A completion list offers the schemas that are shown, and an
@@ -5132,6 +5187,9 @@ impl App {
         self.system_theme = ctx.system_theme();
         self.palette = self.resolve_palette();
         theme::apply(ctx, &self.palette, &self.look);
+        // In tests and the demo too: the zones are a database, not the
+        // person's files.
+        self.backend.send(Command::LoadZones);
     }
 
     fn resolve_palette(&self) -> Palette {

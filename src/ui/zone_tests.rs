@@ -498,3 +498,79 @@ fn a_sqlite_text_with_an_offset_is_shown_and_edited_as_stored() {
         Some("2026-01-12 04:14:03.482915-05")
     );
 }
+
+#[test]
+fn the_zone_database_is_the_backends_to_read() {
+    let harness = Harness::new();
+    assert!(
+        harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|command| matches!(command, Command::LoadZones))
+    );
+}
+
+#[test]
+fn a_named_zone_shows_values_as_sent_until_the_database_is_read() {
+    let mut harness = Harness::new();
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\ntz = \"America/New_York\"\n".into(),
+            own: false,
+        }));
+    harness.stamped_covers();
+    harness.settle();
+    assert!(harness.painted_color("2026-01-12 09:14:03+00").is_some());
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    harness.settle();
+    assert!(harness.painted_color("2026-01-12 04:14:03-05").is_some());
+}
+
+#[test]
+fn a_zone_the_database_does_not_know_is_ignored_once_it_is_read() {
+    let mut harness = Harness::new();
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\npage_size = 500\ntz = \"Mars/Olympus\"\n".into(),
+            own: false,
+        }));
+    // Of a zone's form: taken until the database says otherwise.
+    assert_eq!(harness.app.settings.tz, Zone::Named("Mars/Olympus".into()));
+    assert!(harness.app.settings_file.invalid.is_empty());
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    assert_eq!(harness.app.settings.tz, Zone::System);
+    assert_eq!(harness.app.settings_file.invalid, [3]);
+    assert_eq!(harness.app.settings.page_size, 500);
+    // Nothing is written: the line stays the person's to mend.
+    assert!(
+        !harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|command| matches!(command, Command::Save { .. }))
+    );
+}
+
+#[test]
+fn the_menu_lists_no_zones_before_the_database_is_read() {
+    let mut harness = sheet(crate::theme::Look::macos());
+    harness.app.zones = None;
+    harness.click("Time zone for timestamptz");
+    assert!(harness.has("Time zone for timestamptz UTC"));
+    assert!(!harness.has("Time zone for timestamptz Asia/Tokyo"));
+}

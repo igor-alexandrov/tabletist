@@ -63,21 +63,6 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
     }
 }
 
-/// Every zone of the zone database, by name, in alphabetical order: what
-/// the zone menu lists. Read once.
-pub(super) fn zones() -> &'static [String] {
-    static ZONES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    ZONES.get_or_init(|| {
-        let mut names: Vec<String> = jiff::tz::db()
-            .available()
-            .map(|name| name.to_string())
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        names
-    })
-}
-
 /// A zone as the window writes it: the computer's with its own name
 /// beside it where it has one (`System · America/New_York`), UTC, or the
 /// zone's name. `system` is the computer's zone's name. English: the
