@@ -18,9 +18,7 @@ use crate::ui::focus::{self, Ring};
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::{
-    Said, choices, file_pane, group_starting, label, opened, sample_timestamp, terminal_label,
-};
+use super::{Said, choices, file_pane, opened, sample_timestamp, terminal_label};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -151,6 +149,7 @@ pub(super) fn show(
                 .auto_shrink([false, false])
                 .show(&mut list, |ui| match pane {
                     SettingsPane::General => rows(ui, &settings, row, &skin, actions),
+                    SettingsPane::Appearance => appearance_rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Agents => agent_rows(ui, app, &settings, row, &skin, actions),
                 });
             if let Some(beside) = beside {
@@ -307,7 +306,7 @@ fn heading(ui: &mut Ui, text: &'static str, top: f32, skin: &Skin) {
 }
 
 /// The General pane's options, one to a row, under the headings of their
-/// groups.
+/// groups. Their columns line up across the groups.
 fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &mut Vec<Action>) {
     let room = ui.available_width() - 2.0 * ROW_SIDE;
     let columns = columns(
@@ -316,20 +315,61 @@ fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &
         widths(ui, &OptionId::GENERAL, settings, skin),
         skin,
     );
-    for (index, option) in OptionId::GENERAL.into_iter().enumerate() {
-        if let Some(text) = group_starting(option) {
-            // The pane's first group stands 8 under its top.
-            heading(ui, text, if index == 0 { 8.0 } else { 0.0 }, skin);
+    let mut index = 0;
+    for (heading_text, top, options) in [
+        ("Data", 8.0, &OptionId::DATA[..]),
+        ("Safety", 12.0, &OptionId::SAFETY[..]),
+    ] {
+        heading(ui, heading_text, top, skin);
+        for option in options.iter().copied() {
+            option_row(
+                ui,
+                (index, option),
+                index == cursor,
+                columns,
+                settings,
+                skin,
+                actions,
+            );
+            index += 1;
         }
-        option_row(
-            ui,
-            (index, option),
-            index == cursor,
-            columns,
-            settings,
-            skin,
-            actions,
-        );
+    }
+}
+
+/// The Appearance pane's options, a row each, under the headings of their
+/// groups. Their columns line up across the groups.
+fn appearance_rows(
+    ui: &mut Ui,
+    settings: &Settings,
+    cursor: usize,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let room = ui.available_width() - 2.0 * ROW_SIDE;
+    let columns = columns(
+        ui,
+        room,
+        widths(ui, &OptionId::APPEARANCE, settings, skin),
+        skin,
+    );
+    let mut index = 0;
+    for (heading_text, top, options) in [
+        ("Grid", 8.0, &OptionId::GRID[..]),
+        ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
+    ] {
+        heading(ui, heading_text, top, skin);
+        for option in options.iter().copied() {
+            option_row(
+                ui,
+                (index, option),
+                index == cursor,
+                columns,
+                settings,
+                skin,
+                actions,
+            );
+            index += 1;
+        }
     }
 }
 
@@ -620,7 +660,7 @@ fn widths(ui: &Ui, options: &[OptionId], settings: &Settings, skin: &Skin) -> (f
     let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
     let labels = options
         .iter()
-        .map(|option| width(&format!("▌{}", skin.say(label(*option)))))
+        .map(|option| width(&format!("▌{}", skin.say(terminal_label(*option)))))
         .fold(0.0, f32::max);
     let values = options
         .iter()
@@ -676,7 +716,11 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
             width(&format!("‹ {} ›", stepped_text(option, settings, skin)))
         }
-        OptionId::Timestamps | OptionId::GroupDigits => {
+        OptionId::Timestamps
+        | OptionId::GroupDigits
+        | OptionId::RowHeight
+        | OptionId::TableList
+        | OptionId::EnvBar => {
             let words = choices(option, settings, skin.named);
             let between = width(" ") * words.len().saturating_sub(1) as f32;
             let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
@@ -686,7 +730,9 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
-        | OptionId::AgentsNotify => width("[x]"),
+        | OptionId::AgentsNotify
+        | OptionId::Zebra
+        | OptionId::ColumnTypes => width("[x]"),
     }
 }
 
@@ -841,14 +887,20 @@ fn option_row(
         OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
             stepper(ui, cell, option, settings, skin, actions)
         }
-        OptionId::Timestamps | OptionId::GroupDigits => {
+        OptionId::Timestamps
+        | OptionId::GroupDigits
+        | OptionId::RowHeight
+        | OptionId::TableList
+        | OptionId::EnvBar => {
             segments(ui, cell, option, settings, skin, actions);
         }
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
-        | OptionId::AgentsNotify => {
+        | OptionId::AgentsNotify
+        | OptionId::Zebra
+        | OptionId::ColumnTypes => {
             check(ui, cell, option, settings, skin, actions);
         }
     }
@@ -1006,6 +1058,26 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             )
             .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
         OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
+        OptionId::RowHeight => dim(&skin.say("1 · 1.5 · 2 lines")),
+        OptionId::Zebra => Text::new(look),
+        OptionId::ColumnTypes => dim(&skin.say("second header line")),
+        // The key that flips the sidebar's list, from the keymap.
+        OptionId::TableList => Text::new(look)
+            .add(role, &format!("{} ", skin.say("default;")), palette.dim)
+            .add(role, &key(ui, look, Command::ToggleTree), palette.accent)
+            .add(role, &format!(" {}", skin.say("toggles")), palette.dim),
+        // Production as the bar's label writes it, in its own case.
+        OptionId::EnvBar => Text::new(look)
+            .add(
+                role,
+                crate::env::Environment::Production.label(crate::env::Platform::Omarchy),
+                palette.dim,
+            )
+            .add(
+                role,
+                &format!(" {}", skin.say("always tinted")),
+                palette.dim,
+            ),
     }
 }
 
@@ -1162,7 +1234,7 @@ fn choice(
 ) {
     let name = format!(
         "{}: {}",
-        gettext(skin.locale, label(value.option())),
+        gettext(skin.locale, terminal_label(value.option())),
         word.name(skin.locale)
     );
     let button = ButtonSpec::new(&name);

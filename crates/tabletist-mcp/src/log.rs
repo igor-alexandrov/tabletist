@@ -92,6 +92,9 @@ pub struct Entry {
     pub columns: Option<i64>,
     /// The answer's size as JSON.
     pub bytes: Option<i64>,
+    /// The answer's masked columns, by name, as a JSON list: the call
+    /// answered `•••` for each of their values.
+    pub masked: Option<String>,
     pub took_ms: Option<i64>,
 }
 
@@ -250,9 +253,9 @@ impl Log {
             connection.execute(
                 "INSERT INTO calls (at_ms, session, agent, project, transport, connection_id, \
                  connection, tool, sql, params, request, result, code, message, ran_as, rows, \
-                 matched, columns, bytes, took_ms) \
+                 matched, columns, bytes, masked, took_ms) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                 ?16, ?17, ?18, ?19, ?20)",
+                 ?16, ?17, ?18, ?19, ?20, ?21)",
                 params![
                     entry.at_ms,
                     entry.session,
@@ -273,6 +276,7 @@ impl Log {
                     entry.matched,
                     entry.columns,
                     entry.bytes,
+                    entry.masked,
                     entry.took_ms,
                 ],
             )?;
@@ -398,7 +402,7 @@ impl Log {
 /// The columns of an entry, in [`entry_at`]'s order.
 const COLUMNS: &str = "at_ms, session, agent, project, transport, connection_id, connection, \
     tool, sql, params, request, result, code, message, ran_as, rows, matched, columns, bytes, \
-    took_ms";
+    masked, took_ms";
 
 /// A page of one connection's calls, through its index.
 fn page_of_one() -> String {
@@ -438,7 +442,8 @@ fn entry_at(row: &Row<'_>, at: usize) -> Result<Entry, rusqlite::Error> {
         matched: row.get(at + 16)?,
         columns: row.get(at + 17)?,
         bytes: row.get(at + 18)?,
-        took_ms: row.get(at + 19)?,
+        masked: row.get(at + 19)?,
+        took_ms: row.get(at + 20)?,
     })
 }
 
@@ -644,6 +649,7 @@ mod tests {
             matched: Some(3),
             columns: Some(1),
             bytes: Some(96),
+            masked: Some(r#"["email"]"#.into()),
             took_ms: Some(4),
         };
         log.record(whole.clone()).await.unwrap();

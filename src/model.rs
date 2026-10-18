@@ -932,8 +932,10 @@ pub struct Workspace {
     /// The grid shows timestamps in full rather than to the second.
     pub full_precision: bool,
     /// The zone a value with an offset is shown in: the settings' zone,
-    /// set when the workspace opens and when the option changes.
-    pub zone: jiff::tz::TimeZone,
+    /// set when the workspace opens and when the option changes. Read
+    /// through [`Workspace::zone_shown`], which says whether its engine's
+    /// values are moved to it.
+    pub zone: Option<jiff::tz::TimeZone>,
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
     /// The terminal look's `:` prompt: the text after the colon while it
@@ -1301,6 +1303,9 @@ pub struct ConnectionForm {
     /// The tables in force when the dialog opened: others are the
     /// person's own, and the same keep what the file says.
     pub agents_tables_opened: tabletist_db::agent::Tables,
+    /// The masked columns in force when the dialog opened, carried to the
+    /// save as they are: the editor has no control for them yet.
+    pub agents_masked: Vec<tabletist_db::agent::ColumnName>,
     /// The name being typed after Add table…, while its field is open.
     pub agents_table_typed: Option<String>,
     /// Why the name typed does not read, said under the names.
@@ -1435,6 +1440,7 @@ impl Default for ConnectionForm {
             agents_opened: crate::connections::AgentAccess::Off,
             agents_tables: TablesChoice::default(),
             agents_tables_opened: tabletist_db::agent::Tables::All,
+            agents_masked: Vec::new(),
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
@@ -1601,6 +1607,7 @@ impl ConnectionForm {
             agents_opened: saved.agents.access,
             agents_tables: TablesChoice::of(&saved.agents.tables),
             agents_tables_opened: saved.agents.tables.clone(),
+            agents_masked: saved.agents.masked.clone(),
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
@@ -1928,6 +1935,7 @@ impl ConnectionForm {
             rows,
             timeout_secs,
             tables: self.agents_tables.tables(),
+            masked: self.agents_masked.clone(),
         })
     }
 }
@@ -2135,6 +2143,8 @@ pub struct SettingsDialog {
 pub enum SettingsPane {
     #[default]
     General,
+    /// How the grid and the connection bar are drawn.
+    Appearance,
     /// How agents reach the app. Listed where they can.
     Agents,
 }
@@ -2143,9 +2153,9 @@ impl SettingsPane {
     /// The panes the window lists, in order.
     pub fn listed() -> &'static [SettingsPane] {
         if crate::endpoint::AVAILABLE {
-            &[Self::General, Self::Agents]
+            &[Self::General, Self::Appearance, Self::Agents]
         } else {
-            &[Self::General]
+            &[Self::General, Self::Appearance]
         }
     }
 
@@ -2153,6 +2163,7 @@ impl SettingsPane {
     pub fn name(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Appearance => "Appearance",
             Self::Agents => "Agents",
         }
     }
@@ -2161,6 +2172,7 @@ impl SettingsPane {
     pub fn options(self) -> &'static [crate::settings::OptionId] {
         match self {
             Self::General => &crate::settings::OptionId::GENERAL,
+            Self::Appearance => &crate::settings::OptionId::APPEARANCE,
             Self::Agents => &crate::settings::OptionId::AGENTS,
         }
     }
@@ -2172,6 +2184,7 @@ impl SettingsPane {
         use crate::settings::OptionId;
         match self {
             Self::General => &OptionId::GENERAL,
+            Self::Appearance => &OptionId::APPEARANCE,
             Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
         }
     }
@@ -2188,6 +2201,13 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::ValueTags),
                 SettingsRow::Option(OptionId::ProductionReadOnly),
                 SettingsRow::Option(OptionId::ConfirmCloseEdits),
+            ],
+            Self::Appearance => &[
+                SettingsRow::Option(OptionId::RowHeight),
+                SettingsRow::Option(OptionId::Zebra),
+                SettingsRow::Option(OptionId::ColumnTypes),
+                SettingsRow::Option(OptionId::TableList),
+                SettingsRow::Option(OptionId::EnvBar),
             ],
             Self::Agents => &[
                 SettingsRow::Option(OptionId::AgentsOn),
@@ -3925,6 +3945,17 @@ impl SqlTab {
 }
 
 impl Workspace {
+    /// The zone a moment with an offset is shown and edited in, where the
+    /// engine sends one (`edit::shows_in_zone`): elsewhere none, and values
+    /// are shown as stored.
+    pub fn zone_shown(&self) -> Option<&jiff::tz::TimeZone> {
+        if crate::edit::shows_in_zone(self.driver.dialect()) {
+            self.zone.as_ref()
+        } else {
+            None
+        }
+    }
+
     /// Whether a SQL editor of this workspace can run read-write, or why
     /// none can.
     pub fn sql_writes(&self) -> Result<(), NoWrites> {
@@ -4017,7 +4048,7 @@ impl Workspace {
             recent: Vec::new(),
             sidebar_hidden: false,
             full_precision: false,
-            zone: jiff::tz::TimeZone::UTC,
+            zone: None,
             focus_where: false,
             command: None,
             focus_command: false,

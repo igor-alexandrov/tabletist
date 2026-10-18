@@ -16,7 +16,9 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
-use crate::settings::{OptionId, OptionValue, Settings, Timestamps, Zone};
+use crate::settings::{
+    EnvBar, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
+};
 
 /// The label of an option's row. English: the caller translates, and the
 /// terminal look lower-cases.
@@ -32,42 +34,35 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
+        OptionId::RowHeight => "Row density",
+        OptionId::Zebra => "Alternate row shading",
+        OptionId::ColumnTypes => "Show column types",
+        OptionId::TableList => "Table list",
+        OptionId::EnvBar => "Window header",
     }
 }
 
-/// The label of an option's row on the terminal screen, where its
-/// artboard words it apart from the others' (`timestamptz zone`). English,
-/// lower-cased by the look.
+/// The label of an option's row in the terminal look, which names some
+/// options its own way, as their artboards do (`timestamptz zone`, the
+/// Appearance pane's). English, as [`label`]'s, and lower-cased by the
+/// look.
 pub(super) fn terminal_label(option: OptionId) -> &'static str {
     match option {
         OptionId::Tz => "timestamptz zone",
         OptionId::ProductionReadOnly => "production opens read-only",
         OptionId::ConfirmCloseEdits => "confirm close with edits",
+        OptionId::RowHeight => "Row height",
+        OptionId::Zebra => "Alternate rows",
+        OptionId::ColumnTypes => "Column types",
+        OptionId::EnvBar => "Connection bar",
         OptionId::PageSize
         | OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::ValueTags
         | OptionId::AgentsOn
         | OptionId::LogDays
-        | OptionId::AgentsNotify => label(option),
-    }
-}
-
-/// The heading of the group of the General pane that starts at
-/// `option`'s row, where one starts there. English: the caller translates,
-/// and the terminal look lower-cases.
-pub(super) fn group_starting(option: OptionId) -> Option<&'static str> {
-    match option {
-        OptionId::PageSize => Some("Data"),
-        OptionId::ProductionReadOnly => Some("Safety"),
-        OptionId::Timestamps
-        | OptionId::Tz
-        | OptionId::GroupDigits
-        | OptionId::ValueTags
-        | OptionId::ConfirmCloseEdits
-        | OptionId::AgentsOn
-        | OptionId::LogDays
-        | OptionId::AgentsNotify => None,
+        | OptionId::AgentsNotify
+        | OptionId::TableList => label(option),
     }
 }
 
@@ -79,27 +74,17 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
         OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
         OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
+        OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
+        OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
+        OptionId::EnvBar => Some("Production always uses the full tint"),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
-        | OptionId::AgentsNotify => None,
+        | OptionId::AgentsNotify
+        | OptionId::RowHeight
+        | OptionId::Zebra => None,
     }
-}
-
-/// Every zone of the zone database, by name, in alphabetical order: what
-/// the zone menu lists. Read once.
-pub(super) fn zones() -> &'static [String] {
-    static ZONES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    ZONES.get_or_init(|| {
-        let mut names: Vec<String> = jiff::tz::db()
-            .available()
-            .map(|name| name.to_string())
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        names
-    })
 }
 
 /// A zone as the window writes it: the computer's with its own name
@@ -131,17 +116,20 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
             | OptionValue::ConfirmCloseEdits(true)
             | OptionValue::AgentsOn(true)
             | OptionValue::AgentsNotify(true)
+            | OptionValue::Zebra(Some(true))
+            | OptionValue::ColumnTypes(true)
     )
 }
 
 /// The settings as the window shows them: the server's switch as it is in
 /// force, off where a change made outside the app that turned it on is
-/// held, and the grouping of numbers as the look has it where it is not
-/// set.
+/// held, the grouping of numbers as the look has it where it is not set,
+/// and the stripes as the look draws them while they are not set.
 pub(super) fn shown(app: &App) -> Settings {
     let mut settings = app.settings.clone();
     settings.mcp_enabled = app.agents_on();
     settings.group_digits = Some(app.settings.grouped(app.layout()));
+    settings.zebra = Some(settings.zebra_in(app.look.terminal));
     settings
 }
 
@@ -233,6 +221,27 @@ pub(super) fn choices(
         OptionId::AgentsNotify => vec![
             (Word("off"), OptionValue::AgentsNotify(false)),
             (Word("on"), OptionValue::AgentsNotify(true)),
+        ],
+        OptionId::RowHeight => vec![
+            (Word("compact"), OptionValue::RowHeight(RowHeight::Compact)),
+            (Word("regular"), OptionValue::RowHeight(RowHeight::Regular)),
+            (Word("roomy"), OptionValue::RowHeight(RowHeight::Roomy)),
+        ],
+        OptionId::Zebra => vec![
+            (Word("off"), OptionValue::Zebra(Some(false))),
+            (Word("on"), OptionValue::Zebra(Some(true))),
+        ],
+        OptionId::ColumnTypes => vec![
+            (Word("off"), OptionValue::ColumnTypes(false)),
+            (Word("on"), OptionValue::ColumnTypes(true)),
+        ],
+        OptionId::TableList => vec![
+            (Word("tree"), OptionValue::TableList(TableList::Tree)),
+            (Word("flat"), OptionValue::TableList(TableList::Flat)),
+        ],
+        OptionId::EnvBar => vec![
+            (Word("tint + label"), OptionValue::EnvBar(EnvBar::Tint)),
+            (Word("label only"), OptionValue::EnvBar(EnvBar::Label)),
         ],
     }
 }
@@ -449,6 +458,9 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
                     };
                     if let Some(value) = value {
                         value.set(&mut settings);
+                        // Stripes put back to the look's are drawn as the
+                        // look draws them: the next key flips those.
+                        settings.zebra = Some(settings.zebra_in(app.look.terminal));
                         actions.push(Action::SetOption(value));
                     }
                 }

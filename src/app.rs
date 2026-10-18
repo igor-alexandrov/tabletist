@@ -82,6 +82,9 @@ pub struct App {
     /// The computer's time zone as the app found it at its start: what the
     /// System zone of the settings is.
     pub system_zone: jiff::tz::TimeZone,
+    /// The time zone database, once the backend has read it
+    /// (`Command::LoadZones`): the zone menu's names, and each zone.
+    pub zones: Option<std::sync::Arc<crate::zones::Zones>>,
     /// The last named zone the settings had this session: the Omarchy
     /// screen's steps reach it after a step off it.
     pub named_zone: Option<String>,
@@ -102,6 +105,13 @@ pub struct App {
     /// The label columns chosen for the tables foreign keys point at, from
     /// labels.json. Read through `App::label_of` only.
     pub labels: crate::labels::Labels,
+    /// How each connection lists its tables where its user chose, by id,
+    /// from table_lists.json. One with no choice takes the setting's.
+    pub table_lists: std::collections::BTreeMap<String, crate::settings::TableList>,
+    /// The choices in table_lists.json that this version cannot read, by
+    /// id, as the file had them: a newer version may have written them,
+    /// and they are written back with the others.
+    table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -156,6 +166,35 @@ pub struct App {
     next_id: u64,
 }
 
+/// The choices of `table_lists.json` this version reads.
+type TableLists = std::collections::BTreeMap<String, crate::settings::TableList>;
+/// The file's other choices, as it had them.
+type Unread = std::collections::BTreeMap<String, serde_json::Value>;
+
+/// How each connection lists its tables, from `table_lists.json`, and the
+/// values this version does not know. Such a value costs its connection,
+/// not the file: a newer version may have written it, so it is kept to be
+/// written back, and the other connections keep their choices.
+fn load_table_lists(path: &std::path::Path) -> (TableLists, Unread) {
+    let read: Unread = crate::util::load_json(path);
+    let mut lists = TableLists::new();
+    let mut unread = Unread::new();
+    for (id, value) in read {
+        match value
+            .as_str()
+            .and_then(crate::settings::TableList::from_name)
+        {
+            Some(list) => {
+                lists.insert(id, list);
+            }
+            None => {
+                unread.insert(id, value);
+            }
+        }
+    }
+    (lists, unread)
+}
+
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
         let source = loaded.source;
@@ -186,12 +225,14 @@ impl App {
             crate::settings::Zone::Named(name) => Some(name.clone()),
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
+        let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let mut app = Self {
             dirs,
             settings,
             settings_file,
             system_zone: system_zone(),
             named_zone,
+            zones: None,
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
@@ -203,6 +244,8 @@ impl App {
             backend,
             connections,
             labels,
+            table_lists,
+            table_lists_unread,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -445,8 +488,71 @@ impl App {
     }
 
     /// The zone a value with an offset is shown in, as the settings say.
-    pub fn zone(&self) -> jiff::tz::TimeZone {
-        self.settings.tz.resolve(&self.system_zone)
+    /// `None` for a named zone until the backend has read the zone
+    /// database: values are shown as sent until then.
+    pub fn zone(&self) -> Option<jiff::tz::TimeZone> {
+        self.settings
+            .tz
+            .resolve(&self.system_zone, self.zones.as_deref())
+    }
+
+    /// Gives every workspace the zone of the settings, and has the row
+    /// panels' texts made again in it.
+    fn refresh_zone(&mut self) {
+        let zone = self.zone();
+        for tab in &mut self.tabs {
+            if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                workspace.zone = zone.clone();
+                for sql in workspace.sql_tabs_mut() {
+                    sql.fields = None;
+                }
+                for object in workspace.object_tabs_mut() {
+                    object.fields = None;
+                }
+            }
+        }
+    }
+
+    /// A named zone in `settings` that the zone database, once read, does
+    /// not know: it is not applied (the zone stays `last`), it is no
+    /// longer the session's named zone for the Omarchy screen's steps, and
+    /// its line is one that was ignored, as a value its key cannot have
+    /// is.
+    fn refuse_unknown_zone(&mut self, settings: &mut Settings, last: crate::settings::Zone) {
+        let Some(zones) = &self.zones else {
+            return;
+        };
+        let crate::settings::Zone::Named(name) = &settings.tz else {
+            return;
+        };
+        if zones.get(name).is_some() {
+            return;
+        }
+        log::warn!(
+            "{}: {name} is no zone of the zone database, and is ignored",
+            self.dirs.settings_file().display()
+        );
+        // The start or a reload before the database was read may have
+        // taken it for the session's: a step must not reach it.
+        if self.named_zone.as_deref() == Some(name.as_str()) {
+            self.named_zone = match &last {
+                crate::settings::Zone::Named(kept) => Some(kept.clone()),
+                crate::settings::Zone::System | crate::settings::Zone::Utc => None,
+            };
+        }
+        settings.tz = last;
+        let file = &mut self.settings_file;
+        let line = file
+            .lines
+            .iter()
+            .find(|(key, _)| *key == crate::settings::Key::Tz)
+            .map(|(_, line)| *line);
+        if let Some(line) = line
+            && !file.invalid.contains(&line)
+        {
+            file.invalid.push(line);
+            file.invalid.sort_unstable();
+        }
     }
 
     /// How the look in use binds and writes its keys.
@@ -490,7 +596,7 @@ impl App {
                 continue;
             };
             let shown = workspace.row_panel_tab();
-            let zone = workspace.zone.clone();
+            let zone = workspace.zone_shown().cloned();
             for sql in workspace.sql_tabs_mut() {
                 let row = sql.selected_row().filter(|_| shown == Some(sql.id));
                 let Some(row) = row else {
@@ -508,9 +614,9 @@ impl App {
                 };
                 let kinds: Vec<_> = columns.iter().map(|column| column.kind).collect();
                 let nothing = std::collections::BTreeMap::new();
-                let fields = rows
-                    .get(row)
-                    .map(|values| row_fields(request, row, values, &kinds, &zone, &nothing));
+                let fields = rows.get(row).map(|values| {
+                    row_fields(request, row, values, &kinds, zone.as_ref(), &nothing)
+                });
                 sql.fields = fields;
             }
             for object in workspace.object_tabs_mut() {
@@ -538,12 +644,11 @@ impl App {
                     Some(new) => {
                         let held = object.edits.added.iter().any(|added| added.id == new);
                         let blank = vec![tabletist_db::Value::Null; page.columns.len()];
-                        held.then(|| row_fields(request, row, &blank, &kinds, &zone, cells))
+                        held.then(|| row_fields(request, row, &blank, &kinds, zone.as_ref(), cells))
                     }
-                    None => page
-                        .rows
-                        .get(row)
-                        .map(|values| row_fields(request, row, values, &kinds, &zone, cells)),
+                    None => page.rows.get(row).map(|values| {
+                        row_fields(request, row, values, &kinds, zone.as_ref(), cells)
+                    }),
                 };
             }
         }
@@ -686,8 +791,24 @@ impl App {
                 }
             }
             Action::ToggleFlatTree(tab) => {
-                if let Some(workspace) = self.workspace_mut(tab) {
-                    workspace.tree.flat = !workspace.tree.flat;
+                let flipped = self
+                    .workspace(tab)
+                    .map(|workspace| (workspace.conn_id.clone(), !workspace.tree.flat));
+                // The choice is the connection's from now on: the setting no
+                // longer moves it, and its other windows list it so too.
+                if let Some((id, flat)) = flipped {
+                    for entry in &mut self.tabs {
+                        if let ConnTabContent::Workspace(workspace) = &mut entry.content
+                            && workspace.conn_id == id
+                        {
+                            workspace.tree.flat = flat;
+                        }
+                    }
+                    // A value this version could not read gives way to it.
+                    self.table_lists_unread.remove(&id.0);
+                    self.table_lists
+                        .insert(id.0, crate::settings::TableList::of(flat));
+                    self.save_table_lists();
                 }
             }
             Action::ToggleSidebar(tab) => {
@@ -2014,7 +2135,10 @@ impl App {
             Action::SwitchDatabase { tab, database } => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.spec.database = database;
+                    // The other database's objects, listed as these were.
+                    let flat = workspace.tree.flat;
                     workspace.tree = Tree::default();
+                    workspace.tree.flat = flat;
                     workspace.catalog_changed();
                     // The other database has other objects, but a SQL
                     // editor's text is the user's work: it stays, and so
@@ -2050,6 +2174,7 @@ impl App {
                     let tables = self.agents_tables(saved);
                     form.agents_tables = crate::model::TablesChoice::of(&tables);
                     form.agents_tables_opened = tables;
+                    form.agents_masked = self.agents_masked(saved);
                     self.dialog = Some(Dialog::Connection(Box::new(form)));
                     self.list_ssh_hosts();
                 }
@@ -2094,17 +2219,19 @@ impl App {
                 }
             }
             Action::DuplicateConnection(id) => {
-                // The copy hides what is in force: where a change made
-                // outside that hides less is held, what was shown.
+                // The copy hides and masks what is in force: where a change
+                // made outside that hides or masks less is held, what was
+                // shown.
                 let in_force = self
                     .connections
                     .get(&id)
-                    .map(|saved| self.agents_tables(saved));
+                    .map(|saved| (self.agents_tables(saved), self.agents_masked(saved)));
                 if let Some(copy) = self.connections.duplicate(&id) {
-                    if let (Some(tables), Some(mut saved)) =
+                    if let (Some((tables, masked)), Some(mut saved)) =
                         (in_force, self.connections.get(&copy).cloned())
                     {
                         saved.agents.tables = tables;
+                        saved.agents.masked = masked;
                         self.connections.upsert(saved);
                     }
                     self.save_connections();
@@ -2118,6 +2245,11 @@ impl App {
                     // open on it falls back to Automatic.
                     if self.labels.forget(&id) {
                         self.save_labels();
+                    }
+                    // And its table list.
+                    let unread = self.table_lists_unread.remove(&id.0).is_some();
+                    if self.table_lists.remove(&id.0).is_some() || unread {
+                        self.save_table_lists();
                     }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
@@ -2343,12 +2475,14 @@ impl App {
         // Where the option puts it; the grid's link switches it from there.
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let zone = self.zone();
+        let flat = self.lists_flat(&saved.id);
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
         let mut workspace = Workspace::new(session, request, saved, typed);
         workspace.full_precision = full_precision;
         workspace.zone = zone;
+        workspace.tree.flat = flat;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
     }
 
@@ -3086,6 +3220,15 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
+            // A named zone resolves from here on, and one the database does
+            // not know is said to be ignored.
+            Event::Zones(zones) => {
+                self.zones = Some(zones);
+                let mut settings = self.settings.clone();
+                self.refuse_unknown_zone(&mut settings, crate::settings::Zone::System);
+                self.apply_settings(settings);
+                self.refresh_zone();
+            }
             Event::SettingsFile { text, own } => {
                 // What the app holds already: its own write coming back,
                 // or a save that changed nothing.
@@ -3110,7 +3253,7 @@ impl App {
                 let live = self.settings_file.live;
                 let saved = self.settings_file.saved.take();
                 let offered = std::mem::take(&mut self.settings_file.offered);
-                let (settings, file) = loaded.into_parts();
+                let (mut settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
                 // line that was ignored stays where they can see it.
                 self.settings_file = SettingsFile {
@@ -3119,6 +3262,7 @@ impl App {
                     offered,
                     ..file
                 };
+                self.refuse_unknown_zone(&mut settings, self.settings.tz.clone());
                 self.apply_settings(settings);
             }
             // What the person turned on in the file and does not get is
@@ -3342,6 +3486,39 @@ impl App {
         });
     }
 
+    /// Whether the connection `id` lists its tables flat: as its user
+    /// chose for it, else as the setting has it.
+    pub fn lists_flat(&self, id: &crate::connections::ConnectionId) -> bool {
+        self.table_lists
+            .get(&id.0)
+            .copied()
+            .unwrap_or(self.settings.table_list)
+            .flat()
+    }
+
+    /// Saves how each saved connection lists its tables, on the backend,
+    /// with the values this version could not read as they were. The
+    /// choice for one that is not saved is held while the app runs.
+    fn save_table_lists(&mut self) {
+        let saved = |id: &String| {
+            self.connections
+                .connections
+                .iter()
+                .any(|saved| saved.id.0 == *id)
+        };
+        let mut lists = self.table_lists_unread.clone();
+        lists.extend(
+            self.table_lists
+                .iter()
+                .filter(|(id, _)| saved(id))
+                .map(|(id, list)| (id.clone(), serde_json::json!(list.name()))),
+        );
+        self.backend.send(Command::Save {
+            path: self.dirs.table_lists_file(),
+            file: StateFile::TableLists(lists),
+        });
+    }
+
     /// Saves when each connection last connected, on the backend. A file
     /// of its own: a connect does not write the file of connections.
     fn save_last_used(&mut self) {
@@ -3383,9 +3560,19 @@ impl App {
     }
 
     /// What agents may do on `saved` now: its access, or what was shown
-    /// where a change made outside the app is held.
+    /// where a change made outside the app is held. A change of its masked
+    /// columns held against a shown entry that does not read leaves it Off
+    /// meanwhile: what that entry masked cannot be said, so it cannot be
+    /// kept masked.
     pub fn agents_access(&self, saved: &SavedConnection) -> crate::connections::AgentAccess {
         use crate::agents_shown::Raised;
+        let masked = self
+            .agents_held
+            .iter()
+            .any(|raise| matches!(raise, Raised::Masked { id, .. } if *id == saved.id));
+        if masked && self.agents_shown.masked_of(&saved.id).unread {
+            return crate::connections::AgentAccess::Off;
+        }
         let held = self
             .agents_held
             .iter()
@@ -3408,6 +3595,27 @@ impl App {
             true => self.agents_shown.tables_of(&saved.id),
             false => saved.agents.tables.clone(),
         }
+    }
+
+    /// The columns agents get masked on `saved` now: its own, and where a
+    /// change made outside the app that masks less is held, what was shown
+    /// with them, so that a column that change also masks is masked at
+    /// once.
+    pub fn agents_masked(&self, saved: &SavedConnection) -> Vec<tabletist_db::agent::ColumnName> {
+        use crate::agents_shown::Raised;
+        let held = self
+            .agents_held
+            .iter()
+            .any(|raise| matches!(raise, Raised::Masked { id, .. } if *id == saved.id));
+        let mut masked = saved.agents.masked.clone();
+        if held {
+            for shown in self.agents_shown.masked_of(&saved.id).columns {
+                if !masked.contains(&shown) {
+                    masked.push(shown);
+                }
+            }
+        }
+        masked
     }
 
     /// Compares what the files let agents do with what was last shown:
@@ -3476,15 +3684,28 @@ impl App {
         }
         let mut changed = false;
         for raise in back {
-            let (id, access) = match raise {
+            let id = match &raise {
                 Raised::Server => continue,
-                Raised::Access { id, .. } => (id, true),
-                Raised::Tables { id, .. } => (id, false),
+                Raised::Access { id, .. }
+                | Raised::Tables { id, .. }
+                | Raised::Masked { id, .. } => id.clone(),
             };
             if let Some(mut saved) = self.connections.get(&id).cloned() {
-                match access {
-                    true => saved.agents.access = self.agents_shown.access_of(&id),
-                    false => saved.agents.tables = self.agents_shown.tables_of(&id),
+                match raise {
+                    Raised::Server => {}
+                    Raised::Access { .. } => saved.agents.access = self.agents_shown.access_of(&id),
+                    Raised::Tables { .. } => saved.agents.tables = self.agents_shown.tables_of(&id),
+                    // What was shown that does not read cannot be written
+                    // back: the rest is, and is what was shown from now on.
+                    Raised::Masked { .. } => {
+                        let columns = self.agents_shown.masked_of(&id).columns;
+                        saved.agents.masked = columns.clone();
+                        self.agents_shown.keep(&[Raised::Masked {
+                            id: id.clone(),
+                            to: columns,
+                        }]);
+                        self.save_agents_shown();
+                    }
                 }
                 self.connections.upsert(saved);
                 changed = true;
@@ -3546,6 +3767,7 @@ impl App {
                 let mut now = saved.clone();
                 now.agents.access = self.agents_access(saved);
                 now.agents.tables = self.agents_tables(saved);
+                now.agents.masked = self.agents_masked(saved);
                 now
             })
             .collect();
@@ -3627,12 +3849,15 @@ impl App {
         let loaded = Settings::from_toml_over(&text, &changed);
         let live = self.settings_file.live;
         let saved = self.settings_file.saved.take();
-        let (settings, file) = loaded.into_parts();
+        let (mut settings, file) = loaded.into_parts();
         self.settings_file = SettingsFile {
             live,
             saved,
             ..file
         };
+        // The text is read again, a zone the database turned down with it:
+        // it stays turned down, and its line ignored.
+        self.refuse_unknown_zone(&mut settings, changed.tz.clone());
         // The app's own controls show what they turn on: never held.
         if !self.settings.mcp_enabled && settings.mcp_enabled {
             self.agents_shown.enabled = true;
@@ -3660,19 +3885,7 @@ impl App {
             self.named_zone = Some(name.clone());
         }
         if old.tz != self.settings.tz {
-            let zone = self.zone();
-            for tab in &mut self.tabs {
-                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
-                    workspace.zone = zone.clone();
-                    // The row panels' texts are made again, in the zone.
-                    for sql in workspace.sql_tabs_mut() {
-                        sql.fields = None;
-                    }
-                    for object in workspace.object_tabs_mut() {
-                        object.fields = None;
-                    }
-                }
-            }
+            self.refresh_zone();
         }
         if old.show_system_schemas != self.settings.show_system_schemas {
             // A completion list offers the schemas that are shown, and an
@@ -3681,6 +3894,17 @@ impl App {
             for tab in &mut self.tabs {
                 if let ConnTabContent::Workspace(workspace) = &mut tab.content {
                     workspace.catalog_changed();
+                }
+            }
+        }
+        if old.table_list != self.settings.table_list {
+            // Every open connection with no list of its own follows.
+            let flat = self.settings.table_list.flat();
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content
+                    && !self.table_lists.contains_key(&workspace.conn_id.0)
+                {
+                    workspace.tree.flat = flat;
                 }
             }
         }
@@ -3783,7 +4007,10 @@ impl App {
         // made outside the app stays held, and one put back stays back.
         // The tables likewise: those the person changed are their own and
         // shown, wider or narrower; the same ones keep what the file says.
+        // The masked columns, which the editor does not change yet, keep
+        // what the file says.
         if let Some(was) = self.connections.get(&saved.id) {
+            saved.agents.masked = was.agents.masked.clone();
             let same = crate::model::TablesChoice::of(&saved.agents.tables)
                 == crate::model::TablesChoice::of(&tables_opened);
             if same {
@@ -3936,7 +4163,6 @@ impl App {
     }
 }
 
-/// Whether the request failed only because the connection went away.
 /// The computer's time zone, or UTC where it cannot be found. Tests have
 /// UTC whatever the computer they run on says, so what they show does not
 /// depend on it: a test of the System zone sets `App::system_zone`.
@@ -3950,6 +4176,7 @@ fn system_zone() -> jiff::tz::TimeZone {
     })
 }
 
+/// Whether the request failed only because the connection went away.
 fn lost<T>(fetch: &Fetch<T>) -> bool {
     fetch.error.as_ref().is_some_and(Error::is_connection_lost)
 }
@@ -5123,6 +5350,9 @@ impl App {
         self.system_theme = ctx.system_theme();
         self.palette = self.resolve_palette();
         theme::apply(ctx, &self.palette, &self.look);
+        // In tests and the demo too: the zones are a database, not the
+        // person's files.
+        self.backend.send(Command::LoadZones);
     }
 
     fn resolve_palette(&self) -> Palette {
@@ -5386,16 +5616,14 @@ fn moved(object: &ObjectTab, rows: isize, cols: isize) -> Option<CellPos> {
 /// A row's text for the row panel, formatted once. A cell of the page's
 /// row `row` that is pending in `cells` reads as its new value, and keeps
 /// what it loaded as beside it, so the panel never disagrees with the
-/// grid.
-/// The row panel's texts of a row: each value as the panel shows it, the
-/// pending one where there is one, and a moment with an offset (`kinds`
-/// says which columns hold dates and times) in `zone`.
+/// grid. A moment with an offset in a column of dates and times (`kinds`
+/// says which) is in `zone`, where the engine's values are moved to one.
 fn row_fields(
     request: Option<RequestId>,
     row: usize,
     values: &[tabletist_db::Value],
     kinds: &[tabletist_db::ValueKind],
-    zone: &jiff::tz::TimeZone,
+    zone: Option<&jiff::tz::TimeZone>,
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
     use crate::ui::format::{cell_text, field_text};
@@ -5419,8 +5647,8 @@ fn row_fields(
         .map(|(col, (loaded, pending))| {
             let value = pending.as_ref().map_or(loaded, |cell| &cell.new);
             let temporal = kinds.get(col) == Some(&tabletist_db::ValueKind::Temporal);
-            match value {
-                tabletist_db::Value::Text(text) if temporal => {
+            match (value, zone) {
+                (tabletist_db::Value::Text(text), Some(zone)) if temporal => {
                     match crate::ui::format::in_zone(text, zone) {
                         Some(moved) => field_text(&tabletist_db::Value::Text(moved.into())),
                         None => field_text(value),
@@ -5515,6 +5743,37 @@ mod tests {
         );
         assert_eq!(saves(&again), 0);
         assert_eq!(again.labels, app.labels);
+    }
+
+    #[test]
+    fn a_table_list_this_version_cannot_read_is_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        dirs.ensure().unwrap();
+        std::fs::write(
+            dirs.table_lists_file(),
+            br#"{"blue": "grouped", "red": 3, "green": "flat"}"#,
+        )
+        .unwrap();
+        let mut app = App::new(dirs, Settings::default().into(), Backend::recording());
+        let mut green = crate::testing::fixture_connection();
+        green.id = ConnectionId("green".into());
+        app.connections.upsert(green);
+        app.save_table_lists();
+        let written = app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Save {
+                    file: StateFile::TableLists(lists),
+                    ..
+                } => Some(lists.clone()),
+                _ => None,
+            });
+        let expected = serde_json::json!({"blue": "grouped", "red": 3, "green": "flat"});
+        assert_eq!(serde_json::to_value(written.unwrap()).unwrap(), expected);
     }
 
     /// How many times `app` had the backend save `path`.
@@ -7240,6 +7499,150 @@ mod tests {
             (saved.name.as_str(), &saved.agents.tables),
             ("Local shop", &only)
         );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_change_outside_that_masks_less_is_held_and_the_editor_keeps_the_files_masks() {
+        use crate::agents_shown::Raised;
+        use crate::connections::AgentAccess;
+        use tabletist_db::agent::ColumnName;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let columns = |written: &[&str]| -> Vec<ColumnName> {
+            written.iter().map(|entry| entry.parse().unwrap()).collect()
+        };
+        // What is in force, which the policy sends.
+        let sent = |app: &App| app.agents_masked(app.connections.get(&conn).unwrap());
+        let file_says = |app: &mut App, masked: Vec<ColumnName>| {
+            let mut saved = app.connections.get(&conn).unwrap().clone();
+            saved.agents.masked = masked;
+            app.connections.upsert(saved);
+            app.check_agents();
+            app.send_agents_policy();
+        };
+        let email = columns(&["orders.email"]);
+        // Masking more, from the file: taken at once.
+        file_says(&mut app, email.clone());
+        assert!(app.agents_held.is_empty());
+        assert_eq!(sent(&app), email);
+        // Masking less: held, and what was shown is in force with what the
+        // file says now.
+        file_says(&mut app, columns(&["orders.phone"]));
+        assert!(matches!(
+            app.agents_held.as_slice(),
+            [Raised::Masked { .. }]
+        ));
+        assert_eq!(sent(&app), columns(&["orders.phone", "orders.email"]));
+        let said = crate::ui::agents_held_said(&app).unwrap();
+        assert!(
+            said.contains("agents may read more of Local · dev"),
+            "{said}"
+        );
+        // A copy made meanwhile masks what is in force.
+        app.apply(Action::DuplicateConnection(conn.clone()));
+        let copy = &app.connections.connections[1];
+        assert_eq!(
+            copy.agents.masked,
+            columns(&["orders.phone", "orders.email"])
+        );
+        let copy = copy.id.clone();
+        app.apply(Action::DeleteConnection(copy));
+        // Put back: the file masks what was shown again.
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert_eq!(app.connections.get(&conn).unwrap().agents.masked, email);
+        // Kept: in force.
+        file_says(&mut app, Vec::new());
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert_eq!(sent(&app), Vec::<ColumnName>::new());
+        // The editor has no control for them: its save keeps what the file
+        // says when it saves.
+        app.apply(Action::EditConnection(conn.clone()));
+        file_says(&mut app, email.clone());
+        form(&mut app).name = "Local shop".into();
+        app.apply(Action::SaveConnection { connect: false });
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(
+            (saved.name.as_str(), &saved.agents.masked),
+            ("Local shop", &email)
+        );
+        // And the server is sent them.
+        let sent_masked = match agents_sent(&app).last() {
+            Some(AgentsCommand::Policy { connections, .. }) => connections[0].masked.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(sent_masked, email);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_connection_that_hides_and_masks_less_is_said_once() {
+        use crate::connections::AgentAccess;
+        use tabletist_db::agent::Tables;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let file_says = |app: &mut App, tables: Tables, masked: &[&str]| {
+            let mut saved = app.connections.get(&conn).unwrap().clone();
+            saved.agents.tables = tables;
+            saved.agents.masked = masked.iter().map(|entry| entry.parse().unwrap()).collect();
+            app.connections.upsert(saved);
+            app.check_agents();
+        };
+        file_says(
+            &mut app,
+            Tables::AllExcept(vec!["customers".parse().unwrap()]),
+            &["orders.email"],
+        );
+        file_says(&mut app, Tables::All, &[]);
+        assert_eq!(app.agents_held.len(), 2);
+        let said = crate::ui::agents_held_said(&app).unwrap();
+        assert_eq!(said.matches("Local · dev").count(), 1, "{said}");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_held_change_against_a_shown_mask_that_does_not_read_is_off_until_answered() {
+        use crate::agents_shown::Raised;
+        use crate::connections::AgentAccess;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let mut saved = app.connections.get(&conn).unwrap().clone();
+        saved.agents.masked = vec!["orders.email".parse().unwrap()];
+        app.connections.upsert(saved);
+        app.check_agents();
+        // A hand writes an entry that does not read into what was shown.
+        app.agents_shown
+            .masked
+            .insert(conn.0.clone(), vec!["orders.email".into(), "bad".into()]);
+        app.check_agents();
+        assert!(matches!(
+            app.agents_held.as_slice(),
+            [Raised::Masked { .. }]
+        ));
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(app.agents_access(saved), AgentAccess::Off);
+        // Put back ends it: what was shown is what was written.
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty(), "{:?}", app.agents_held);
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(app.agents_access(saved), AgentAccess::Read);
     }
 
     #[test]

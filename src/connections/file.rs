@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use tabletist_db::agent::{TableName, Tables};
+use tabletist_db::agent::{ColumnName, TableName, Tables};
 use tabletist_db::{ConnectSpec, Driver, SshAuth, SshSpec, TlsMode};
 
 use super::{
@@ -22,12 +22,16 @@ use crate::env::Environment;
 use crate::util::toml_string;
 
 /// The file's format. 3 is the first that is TOML: 1 and 2 were
-/// `connections.json`. 4 has a connection's settings for agents, and 5 the
-/// tables they may not read. A file is written as the oldest that holds
-/// what it has: a Tabletist that does not know a key refuses only a file it
-/// would lose it from, and one that would read agents' tables as all of
-/// them never reads the file.
-pub(super) const VERSION: u32 = 5;
+/// `connections.json`. 4 has a connection's settings for agents, 5 the
+/// tables they may not read, and 6 the columns they get masked. A file is
+/// written as the oldest that holds what it has: a Tabletist that does not
+/// know a key refuses only a file it would lose it from, and one that
+/// would read agents' tables as all of them, or a masked column's values
+/// as they are, never reads the file.
+pub(super) const VERSION: u32 = 6;
+
+/// The version that has agents' tables and not their masked columns.
+const TABLES_VERSION: u32 = 5;
 
 /// The version that has agents' settings and not their tables.
 const AGENTS_VERSION: u32 = 4;
@@ -124,6 +128,8 @@ struct AgentsTable {
     hidden: Option<Vec<String>>,
     /// The tables agents may read, and no others.
     only: Option<Vec<String>>,
+    /// The columns whose values agents get masked.
+    masked: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -258,18 +264,22 @@ impl AgentsTable {
         let starts = Agents::default();
         // An entry by its place in the list: a value that does not read
         // is not repeated, as no other in this file is.
-        let entries = |key: &str, written: Vec<String>| {
+        fn entries<T: std::str::FromStr<Err = String>>(
+            connection: &str,
+            key: &str,
+            written: Vec<String>,
+        ) -> Result<Vec<T>, String> {
             written
                 .iter()
                 .enumerate()
                 .map(|(at, entry)| {
-                    entry.parse::<TableName>().map_err(|why| {
+                    entry.parse::<T>().map_err(|why| {
                         let place = at + 1;
                         format!("connection {connection:?}: agents' `{key}` entry {place} {why}")
                     })
                 })
-                .collect::<Result<Vec<_>, String>>()
-        };
+                .collect()
+        }
         let tables = match (self.hidden, self.only) {
             (Some(_), Some(_)) => {
                 return Err(format!(
@@ -277,8 +287,10 @@ impl AgentsTable {
                 ));
             }
             (Some(hidden), None) if hidden.is_empty() => Tables::All,
-            (Some(hidden), None) => Tables::AllExcept(entries("hidden", hidden)?),
-            (None, Some(only)) => Tables::Only(entries("only", only)?),
+            (Some(hidden), None) => {
+                Tables::AllExcept(entries::<TableName>(connection, "hidden", hidden)?)
+            }
+            (None, Some(only)) => Tables::Only(entries::<TableName>(connection, "only", only)?),
             (None, None) => Tables::All,
         };
         let agents = Agents {
@@ -286,6 +298,10 @@ impl AgentsTable {
             rows: self.rows.unwrap_or(starts.rows),
             timeout_secs: self.timeout_secs.unwrap_or(starts.timeout_secs),
             tables,
+            masked: match self.masked {
+                Some(masked) => entries::<ColumnName>(connection, "masked", masked)?,
+                None => Vec::new(),
+            },
         };
         if !(1..=MAX_AGENT_ROWS).contains(&agents.rows) {
             return Err(format!(
@@ -390,14 +406,18 @@ fn tls(mode: TlsMode) -> &'static str {
 /// except a server's own (host, port, user, database, TLS), which a person
 /// looks for.
 pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> {
+    let masks = connections
+        .iter()
+        .any(|saved| !saved.agents.masked.is_empty());
     let hides = connections
         .iter()
         .any(|saved| saved.agents.tables.hides_anything());
     let agents = connections.iter().any(|saved| !saved.agents.is_default());
-    let version = match (hides, agents) {
-        (true, _) => VERSION,
-        (false, true) => AGENTS_VERSION,
-        (false, false) => FIRST_VERSION,
+    let version = match (masks, hides, agents) {
+        (true, _, _) => VERSION,
+        (false, true, _) => TABLES_VERSION,
+        (false, false, true) => AGENTS_VERSION,
+        (false, false, false) => FIRST_VERSION,
     };
     let mut out = format!("{HEADER}version = {version}\n");
     for connection in connections {
@@ -457,6 +477,9 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
                 Tables::AllExcept(names) => lines.bare("hidden", entries(names)),
                 Tables::Only(names) => lines.bare("only", entries(names)),
             }
+            if !connection.agents.masked.is_empty() {
+                lines.bare("masked", entries(&connection.agents.masked));
+            }
             out.push_str("\n[connections.agents]\n");
             lines.write(&mut out);
         }
@@ -464,8 +487,9 @@ pub(super) fn write(connections: &[SavedConnection]) -> std::io::Result<String> 
     Ok(out)
 }
 
-/// Tables as a list of TOML strings, each written as the person writes it.
-fn entries(names: &[TableName]) -> String {
+/// Tables or columns as a list of TOML strings, each written as the person
+/// writes it.
+fn entries<T: std::fmt::Display>(names: &[T]) -> String {
     let written: Vec<String> = names
         .iter()
         .map(|name| toml_string(&name.to_string()))
@@ -903,8 +927,8 @@ auth = "key-file"
         let said = |text: &str| read(text).unwrap_err().to_string();
         assert!(said("").contains("missing field `version`"), "{}", said(""));
         assert_eq!(
-            said("version = 6\n"),
-            "it is version 6 of the file, written by a newer Tabletist; this one reads version 5"
+            said("version = 7\n"),
+            "it is version 7 of the file, written by a newer Tabletist; this one reads version 6"
         );
         assert_eq!(
             said("version = 2\n"),
@@ -1053,6 +1077,54 @@ hidden       = ["customers", "\"odd.schema\".orders"]
         connections[2].agents.tables = Tables::All;
         assert_eq!(read(&four).unwrap().connections, connections);
         assert!(write(&connections).unwrap().contains("\nversion = 4\n"));
+    }
+
+    #[test]
+    fn the_columns_agents_get_masked_make_the_file_version_six() {
+        let mut connections = with_agents(AgentAccess::Read, 500, 10);
+        connections[2].agents.masked = vec![
+            "orders.email".parse().unwrap(),
+            "\"odd.schema\".orders.phone".parse().unwrap(),
+        ];
+        let text = write(&connections).unwrap();
+        assert!(text.contains("\nversion = 6\n"), "{text}");
+        assert!(
+            text.ends_with(
+                r#"timeout_secs = 10
+masked       = ["orders.email", "\"odd.schema\".orders.phone"]
+"#
+            ),
+            "{text}"
+        );
+        assert_eq!(read(&text).unwrap().connections, connections);
+        // With hidden tables, still version 6; without masked columns, 5.
+        connections[2].agents.tables = Tables::AllExcept(vec!["customers".parse().unwrap()]);
+        let text = write(&connections).unwrap();
+        assert!(text.contains("\nversion = 6\n"), "{text}");
+        assert_eq!(read(&text).unwrap().connections, connections);
+        connections[2].agents.masked = Vec::new();
+        let five = write(&connections).unwrap();
+        assert!(five.contains("\nversion = 5\n"), "{five}");
+        // An empty list masks nothing, and an entry that does not read is
+        // refused by its place, never by its words.
+        let with = |line: &str| {
+            five.replace(
+                "hidden       = [\"customers\"]",
+                &format!("hidden       = [\"customers\"]\n{line}"),
+            )
+        };
+        assert_eq!(read(&with("masked = []")).unwrap().connections, connections);
+        assert_eq!(
+            read(&with("masked = [\"orders.email\", \"email\"]"))
+                .unwrap_err()
+                .to_string(),
+            "connection \"Bookshop on disk\": agents' `masked` entry 2 has no table: write the \
+             table, a dot, and the column"
+        );
+        let secret = read(&with("masked = [\"hunter2\\\"x.y\"]"))
+            .unwrap_err()
+            .to_string();
+        assert!(!secret.contains("hunter2"), "{secret}");
     }
 
     #[test]

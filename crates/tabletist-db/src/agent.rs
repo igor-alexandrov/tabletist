@@ -31,10 +31,11 @@ use crate::{Dialect, sql};
 mod hidden;
 mod run;
 
+pub(crate) use hidden::column_references;
 pub use hidden::{Catalog, ColumnName, ColumnRead, Hidden, Relation, TableName, Tables};
 pub(crate) use hidden::{calls_a_refused_function, named_relations, planned};
-pub use run::{Answer, Limits};
-pub(crate) use run::{Sent, answer, count_mismatch};
+pub use run::{Answer, Limits, MASKED};
+pub(crate) use run::{Sent, answer, count_mismatch, masked};
 
 /// The longest statement that is read at all, in bytes.
 pub const MAX_SQL_BYTES: usize = 100_000;
@@ -191,6 +192,13 @@ pub enum MaskedUse {
     Alias(String),
     /// A view or a common table expression that reads it, by its name.
     Through(String),
+    /// Another name of its table's integer key (SQLite's `rowid`, MySQL's
+    /// `_rowid`), as written, which may stand for it.
+    RowId(String),
+    /// What the database plans for the statement uses it otherwise than
+    /// to pass it to the answer: PostgreSQL's plan, which the reading of
+    /// the text did not foresee.
+    Planned,
 }
 
 /// What was too large.
@@ -396,6 +404,16 @@ fn masked_sentence(f: &mut fmt::Formatter<'_>, column: &str, how: &MaskedUse) ->
         MaskedUse::Through(view) => write!(
             f,
             "{view} reads {column}, which is masked on this connection."
+        ),
+        MaskedUse::RowId(word) => write!(
+            f,
+            "{column} is masked on this connection, and {word} may be its table's key by \
+             another name. Name the columns the statement needs instead."
+        ),
+        MaskedUse::Planned => write!(
+            f,
+            "{column} is masked on this connection, and the database's plan for this statement \
+             uses it otherwise than to select it. {selected}, in a plain query."
         ),
     }
 }

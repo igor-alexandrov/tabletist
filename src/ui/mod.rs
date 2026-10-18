@@ -13,6 +13,8 @@ mod agents_tests;
 #[cfg(test)]
 #[cfg(any(unix, windows))]
 mod agent_settings_tests;
+#[cfg(test)]
+mod appearance_settings_tests;
 pub mod cell_editor;
 #[cfg(test)]
 mod complete_tests;
@@ -208,13 +210,21 @@ pub fn agents_held_said(app: &App) -> Option<String> {
                 let name = called(id);
                 crate::i18n::gettext(locale, "agents may read {name}").replace("{name}", &name)
             }
-            Raised::Tables { id, .. } => {
+            Raised::Tables { id, .. } | Raised::Masked { id, .. } => {
                 let name = called(id);
                 crate::i18n::gettext(locale, "agents may read more of {name}")
                     .replace("{name}", &name)
             }
         })
         .collect();
+    // A connection that hides and masks less is said once.
+    let mut said: Vec<String> = Vec::new();
+    for part in parts {
+        if !said.contains(&part) {
+            said.push(part);
+        }
+    }
+    let parts = said;
     let changes = match parts.as_slice() {
         [one] => one.clone(),
         // A catalog may join them otherwise, and in another order.
@@ -4224,7 +4234,7 @@ value_tags   = true
 
     /// Opens a SQL editor in `tab`, runs `SELECT 1` in it and answers with
     /// `rows` rows.
-    fn with_sql_result(
+    pub(super) fn with_sql_result(
         harness: &mut Harness,
         tab: crate::model::ConnTabId,
         rows: usize,

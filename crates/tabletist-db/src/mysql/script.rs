@@ -52,13 +52,15 @@ impl Conn {
         if mode == ScriptMode::Write {
             return write::run(&mut conn, texts, limit as usize, stop).await;
         }
-        read_only(&mut conn, texts, limit, self.access, stop, None, None).await
+        let ended = read_only(&mut conn, texts, limit, self.access, stop, None, None).await;
+        ended.map(|(outcome, _)| outcome)
     }
 
     /// See [`crate::Connection::run_agent_read`]: the run of a script of
     /// one statement that only reads, with the statement's values bound
     /// and the server's own limit on its time set for the session, which
-    /// the reset that ends the run takes away. Awaited to its end, as
+    /// the reset that ends the run takes away, with which of its result
+    /// columns are a masked column's. Awaited to its end, as
     /// [`Self::script`] is.
     pub(super) async fn agent_read(
         &self,
@@ -67,7 +69,7 @@ impl Conn {
         tables: &crate::agent::Tables,
         masked: &[crate::agent::ColumnName],
         stop: &StopFlag,
-    ) -> Result<ScriptOutcome> {
+    ) -> Result<(ScriptOutcome, Vec<bool>)> {
         let mut conn = self.conn.lock().await;
         if !can_reset(self.version.contains("MariaDB"), conn.server_version()) {
             return Err(Error::Unsupported(
@@ -111,7 +113,8 @@ struct Hiding<'a> {
 /// close. `sent` is there when the run is of an agent's one statement, and
 /// `hiding` when its connection hides tables or masks columns: the
 /// statement is checked against them in the transaction, and runs only if
-/// it reads nothing it may not.
+/// it reads nothing it may not. With the outcome, which of the statement's
+/// result columns are a masked column's (none where nothing is masked).
 async fn read_only(
     conn: &mut mysql_async::Conn,
     texts: &[String],
@@ -120,12 +123,13 @@ async fn read_only(
     stop: &StopFlag,
     sent: Option<Sent<'_>>,
     hiding: Option<Hiding<'_>>,
-) -> Result<ScriptOutcome> {
+) -> Result<(ScriptOutcome, Vec<bool>)> {
     let mut outcome = ScriptOutcome::default();
+    let mut masked = Vec::new();
     let ended = match open(conn, limit, access, sent).await {
         // A lost session ends the run here: nothing to close.
         Ok(()) => match refused_for_hiding(conn, hiding).await? {
-            Some(error) => {
+            Err(error) => {
                 outcome.stopped = error == Error::Cancelled;
                 outcome.results.push(StatementResult {
                     elapsed: Duration::ZERO,
@@ -133,7 +137,8 @@ async fn read_only(
                 });
                 Ended::Unconfirmed
             }
-            None => {
+            Ok(columns) => {
+                masked = columns;
                 let params = sent.map(|sent| sent.params);
                 statements(conn, texts, limit as usize, stop, params, &mut outcome).await?
             }
@@ -153,24 +158,25 @@ async fn read_only(
     // backend to stop repeating its cancel.
     stop.finish();
     close(conn, ended, access).await?;
-    Ok(outcome)
+    Ok((outcome, masked))
 }
 
 /// Why an agent's statement may not run on a connection that hides tables
 /// or masks columns (`super::hidden`): a refusal, the server's own error,
-/// or a cancel. `None` where it may run, or where nothing is hidden or
-/// masked. `Err` is a lost session.
+/// or a cancel. `Ok` where it may run, with which of its result columns
+/// are a masked column's (none where nothing is hidden or masked). `Err`
+/// is a lost session.
 async fn refused_for_hiding(
     conn: &mut mysql_async::Conn,
     hiding: Option<Hiding<'_>>,
-) -> Result<Option<Error>> {
+) -> Result<std::result::Result<Vec<bool>, Error>> {
     let Some(hiding) = hiding else {
-        return Ok(None);
+        return Ok(Ok(Vec::new()));
     };
     match super::hidden::check(conn, hiding.read, hiding.tables, hiding.masked).await {
-        Ok(refused) => Ok(refused),
+        Ok(checked) => Ok(checked),
         Err(error) if error.is_connection_lost() => Err(error),
-        Err(error) => Ok(Some(error)),
+        Err(error) => Ok(Err(error)),
     }
 }
 
@@ -1073,7 +1079,7 @@ mod tests {
             timeout: Duration::from_secs(10),
         };
         let stop = StopFlag::new();
-        let outcome = read_only(
+        let (outcome, _) = read_only(
             &mut conn,
             &[left.to_owned()],
             5,

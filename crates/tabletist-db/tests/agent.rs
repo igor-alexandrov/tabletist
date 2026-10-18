@@ -594,6 +594,140 @@ async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str
     the_bookshop_is_stocked(connection, on).await;
 }
 
+/// What a masked column answers: its name and its type, and `•••` for
+/// every value, a `NULL` too, however it is selected; marked so. A column
+/// of another table with its name is that table's.
+async fn a_masked_columns_values_are_never_answered(connection: &Connection, on: &str) {
+    let masked = ["orders.email", "orders.phone"];
+    let dots = || Value::Text(agent::MASKED.into());
+    let answered = |answer: Answer| (answer.masked, answer.rows);
+    // The first order has no phone: its NULL is masked too.
+    let found = masking(
+        connection,
+        &masked,
+        "SELECT id, email, phone FROM orders WHERE id = 1",
+    )
+    .await
+    .map(answered);
+    assert_eq!(
+        found,
+        Ok((
+            vec![false, true, true],
+            vec![vec![Value::Int(1), dots(), dots()]]
+        )),
+        "{on}"
+    );
+    // Under an alias, through the table's own alias, and by a star.
+    let found = masking(
+        connection,
+        &masked,
+        "SELECT o.email AS mail, o.id FROM orders o WHERE o.id = 1",
+    )
+    .await
+    .map(answered);
+    assert_eq!(
+        found,
+        Ok((vec![true, false], vec![vec![dots(), Value::Int(1)]])),
+        "{on}"
+    );
+    let star = masking(connection, &masked, "SELECT * FROM orders WHERE id = 1")
+        .await
+        .unwrap_or_else(|error| panic!("{on}: {error}"));
+    for (column, masked) in star.columns.iter().zip(&star.masked) {
+        let is = matches!(column.name.as_str(), "email" | "phone");
+        assert_eq!(*masked, is, "{on}: {}", column.name);
+    }
+    assert!(
+        star.rows[0]
+            .iter()
+            .zip(&star.masked)
+            .all(|(value, masked)| !masked || *value == dots()),
+        "{on}"
+    );
+    // The customers' own email is theirs to answer, and an answer with no
+    // masked column marks none.
+    let found = masking(
+        connection,
+        &masked,
+        "SELECT email FROM customers WHERE id = 1",
+    )
+    .await
+    .map(answered);
+    assert_eq!(
+        found,
+        Ok((Vec::new(), vec![vec![text("ada.brandt@example.com")]])),
+        "{on}"
+    );
+    // A masked column keeps its name and its type.
+    let joined = "SELECT o.id, o.email FROM orders o JOIN customers c ON c.id = o.customer_id \
+                  WHERE o.id = 1";
+    let shown = |answer: Answer| {
+        answer
+            .columns
+            .into_iter()
+            .map(|column| (column.name, column.type_name))
+            .collect::<Vec<_>>()
+    };
+    let plain = masking(connection, &[], joined).await.map(shown);
+    let hiding = masking(connection, &masked, joined).await.map(shown);
+    assert_eq!(hiding, plain, "{on}");
+    // Masking nothing, nothing is marked.
+    let found = masking(connection, &[], "SELECT email FROM orders WHERE id = 1")
+        .await
+        .map(|answer| answer.masked);
+    assert_eq!(found, Ok(Vec::new()), "{on}");
+}
+
+/// A generated column computed from a masked column, on the table
+/// `gift_notes` the caller made (`kind`, and `shout` from it): masked with
+/// it, its values answered as `•••`, a use of it refused, and so is the
+/// caller's view `gift_shouts`, which reads it.
+async fn a_column_computed_from_a_masked_one_is_masked(connection: &Connection, on: &str) {
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT id, shout FROM gift_notes WHERE id = 1",
+    )
+    .await
+    .map(|answer| (answer.masked, answer.rows));
+    assert_eq!(
+        found,
+        Ok((
+            vec![false, true],
+            vec![vec![Value::Int(1), Value::Text(agent::MASKED.into())]]
+        )),
+        "{on}"
+    );
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT id FROM gift_notes WHERE shout = 'SELF'",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(found, Error::Agent(Refusal::MaskedColumnUsed { .. })),
+        "{on}: {found:?}"
+    );
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT shout FROM gift_shouts",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            &found,
+            Error::Agent(Refusal::MaskedColumnUsed {
+                how: MaskedUse::Through(view),
+                ..
+            }) if view == "gift_shouts"
+        ),
+        "{on}: {found:?}"
+    );
+}
+
 /// What every engine is asked.
 async fn an_agent_reads_the_bookshop(connection: &Connection, on: &str) {
     a_read_answers_its_rows(connection, on).await;
@@ -676,6 +810,83 @@ mod sqlite {
     async fn a_masked_column_is_used_only_as_it_is_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         a_masked_column_is_used_only_as_it_is(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_sqlite() {
+        let (connection, _dir) = bookshop_with(
+            "CREATE TABLE gift_notes (id INTEGER PRIMARY KEY, kind TEXT,
+                 shout TEXT GENERATED ALWAYS AS (upper(kind)) VIRTUAL);
+             INSERT INTO gift_notes (id, kind) VALUES (1, 'self');
+             CREATE VIEW gift_shouts AS SELECT id, shout FROM gift_notes;",
+        )
+        .await;
+        a_column_computed_from_a_masked_one_is_masked(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_masked_columns_values_are_never_answered_on_sqlite() {
+        let (connection, _dir) =
+            bookshop_with("CREATE VIEW mail_keys AS SELECT id, lower(email) AS mail FROM orders;")
+                .await;
+        // A view's masked column that comes from no table column: every
+        // column that comes from none is masked.
+        let found = masking(
+            &connection,
+            &["mail_keys.mail"],
+            "SELECT id, mail FROM mail_keys LIMIT 1",
+        )
+        .await
+        .map(|answer| answer.masked);
+        assert_eq!(found, Ok(vec![false, true]));
+        a_masked_columns_values_are_never_answered(&connection, "sqlite").await;
+        // A view's column an entry names is masked, under the view's name
+        // or another, by what the view reads for it.
+        for sql in [
+            "SELECT id, email FROM recent_orders LIMIT 1",
+            "SELECT email AS e, id FROM recent_orders LIMIT 1",
+        ] {
+            let found = masking(&connection, &["recent_orders.email"], sql)
+                .await
+                .map(|answer| {
+                    answer.masked.contains(&true)
+                        && answer.rows[0].contains(&Value::Text(agent::MASKED.into()))
+                });
+            assert_eq!(found, Ok(true), "{sql}");
+        }
+        let found = masking(
+            &connection,
+            &["recent_orders.email"],
+            "SELECT id, email FROM recent_orders LIMIT 1",
+        )
+        .await
+        .map(|answer| answer.masked);
+        assert_eq!(found, Ok(vec![false, true]));
+        // SQLite joins on a string where a name stands, without asking its
+        // authorizer: refused as the name.
+        let found = masking(
+            &connection,
+            &["orders.email"],
+            "SELECT o.id FROM orders o JOIN customers c USING ('email')",
+        )
+        .await;
+        assert_eq!(
+            found.map(|answer| answer.rows),
+            Err(masked_refusal(MaskedUse::Named("email".into())))
+        );
+        // A table's integer key read by its other name is the key: masked
+        // where the key is.
+        let found = masking(
+            &connection,
+            &["orders.id"],
+            "SELECT rowid FROM orders LIMIT 1",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
     }
 
     #[tokio::test]
@@ -966,6 +1177,103 @@ mod postgres {
         a_masked_column_is_used_only_as_it_is(&connection, "postgres").await;
     }
 
+    /// A database of the test's own, `bookshop_gifts`, made where it is
+    /// not there: what it makes and drops there is in no other test's
+    /// catalog while that one reads it.
+    async fn gifts(url: &str) -> Connection {
+        let server = admin(url, None).await;
+        let made = server
+            .query_opt(
+                "SELECT 1 FROM pg_database WHERE datname = 'bookshop_gifts'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .is_some();
+        if !made {
+            // Two runs may race to make it: the second's error is the
+            // first's database.
+            let _ = server.batch_execute("CREATE DATABASE bookshop_gifts").await;
+        }
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = TlsMode::Disable;
+        spec.database = "bookshop_gifts".into();
+        Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_postgres() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return;
+        };
+        let connection = gifts(&url).await;
+        let owner = admin(&url, Some("bookshop_gifts")).await;
+        owner
+            .batch_execute(
+                "DROP TABLE IF EXISTS gift_notes CASCADE;
+                 CREATE TABLE gift_notes (id int PRIMARY KEY, kind text,
+                     shout text GENERATED ALWAYS AS (upper(kind)) STORED);
+                 INSERT INTO gift_notes (id, kind) VALUES (1, 'self');
+                 CREATE VIEW gift_shouts AS SELECT id, shout FROM gift_notes;
+                 CREATE TABLE gift_cards (loud text GENERATED ALWAYS AS (upper(kind)) STORED)
+                     INHERITS (gift_notes);
+                 INSERT INTO gift_cards (id, kind) VALUES (2, 'gift');",
+            )
+            .await
+            .unwrap();
+        a_column_computed_from_a_masked_one_is_masked(&connection, "postgres").await;
+        // A child table's own generated column is masked with its parent's.
+        let found = masking(
+            &connection,
+            &["gift_notes.kind"],
+            "SELECT loud FROM gift_cards",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
+        owner
+            .batch_execute("DROP TABLE gift_notes CASCADE")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_masked_columns_values_are_never_answered_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_masked_columns_values_are_never_answered(&connection, "postgres").await;
+        // A partition's masked column, read through its table.
+        let found = masking(
+            &connection,
+            &["stock_moves_2026.quantity"],
+            "SELECT quantity FROM stock_moves LIMIT 1",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
+        // A join with a subquery or a common table expression that reads
+        // no masked column runs.
+        for sql in [
+            "WITH c AS MATERIALIZED (SELECT id FROM customers) \
+             SELECT o.id, o.email FROM orders o JOIN c ON c.id = o.customer_id",
+            "SELECT o.id, o.email FROM orders o JOIN (SELECT customer_id, count(*) AS n \
+             FROM orders GROUP BY customer_id) s ON s.customer_id = o.customer_id WHERE s.n > 1",
+        ] {
+            let found = masking(&connection, &["orders.email"], sql).await;
+            assert!(found.is_ok(), "{sql}: {found:?}");
+        }
+    }
+
     #[tokio::test]
     async fn postgres_reads_a_value_as_the_type_of_its_placeholder() {
         let Some(connection) = bookshop().await else {
@@ -1238,6 +1546,53 @@ mod mysql {
             return;
         };
         a_masked_column_is_used_only_as_it_is(&connection, "mysql").await;
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").unwrap();
+        let mut owner = admin(&url).await;
+        for sql in [
+            "DROP TABLE IF EXISTS bookshop.gift_notes",
+            "CREATE TABLE bookshop.gift_notes (id int PRIMARY KEY, kind varchar(10), \
+             shout varchar(10) GENERATED ALWAYS AS (upper(kind)) VIRTUAL)",
+            "INSERT INTO bookshop.gift_notes (id, kind) VALUES (1, 'self')",
+            "CREATE OR REPLACE VIEW bookshop.gift_shouts AS \
+             SELECT id, shout FROM bookshop.gift_notes",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
+        a_column_computed_from_a_masked_one_is_masked(&connection, "mysql").await;
+        for sql in [
+            "DROP VIEW bookshop.gift_shouts",
+            "DROP TABLE bookshop.gift_notes",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_masked_columns_values_are_never_answered_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_masked_columns_values_are_never_answered(&connection, "mysql").await;
+        // A table's integer key read by its other name is the key: masked
+        // where the key is, by the column the server says it reads.
+        let found = masking(
+            &connection,
+            &["orders.id"],
+            "SELECT _rowid FROM orders LIMIT 1",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
     }
 
     #[tokio::test]

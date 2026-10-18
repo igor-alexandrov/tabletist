@@ -143,7 +143,8 @@ fn a_text_column_that_reads_as_a_moment_is_left_alone() {
 #[test]
 fn a_sql_result_shows_the_moment_in_the_zone() {
     let mut harness = Harness::new();
-    let _tab = harness.connect_fake();
+    let tab = harness.connect_fake();
+    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Postgres;
     harness.press(Key::T, Modifiers::COMMAND);
     harness.frame(vec![egui::Event::Paste(
         "SELECT created_at FROM book_covers".into(),
@@ -196,10 +197,12 @@ fn the_row_panel_shows_the_system_zone_too() {
     );
 }
 
-/// The covers' tab on PostgreSQL, the one engine with an offset to send.
-fn covers_on_postgres() -> (Harness, ConnTabId, TabId) {
+/// The covers' tab with its values on SQLite, which keeps a date as the
+/// text it was given.
+fn covers_on_sqlite() -> (Harness, ConnTabId, TabId) {
     let (mut harness, tab, id) = covers();
-    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Postgres;
+    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Sqlite;
+    harness.settle();
     (harness, tab, id)
 }
 
@@ -250,7 +253,7 @@ fn pending(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<String> {
 
 #[test]
 fn the_editor_opens_on_the_moment_as_the_cell_shows_it() {
-    let (mut harness, tab, id) = covers_on_postgres();
+    let (mut harness, tab, id) = covers();
     zone(&mut harness, new_york());
     open_editor(&mut harness, tab, id);
     assert_eq!(
@@ -268,7 +271,7 @@ fn the_editor_opens_on_the_moment_as_the_cell_shows_it() {
 
 #[test]
 fn a_moment_typed_without_an_offset_is_sent_with_the_zones() {
-    let (mut harness, tab, id) = covers_on_postgres();
+    let (mut harness, tab, id) = covers();
     zone(&mut harness, new_york());
     open_editor(&mut harness, tab, id);
     commit(&mut harness, tab, id, "2026-01-12 06:00:00");
@@ -287,8 +290,7 @@ fn a_moment_typed_without_an_offset_is_sent_with_the_zones() {
 
 #[test]
 fn an_engine_that_keeps_no_offset_is_sent_what_was_typed() {
-    // The fake session is SQLite's.
-    let (mut harness, tab, id) = covers();
+    let (mut harness, tab, id) = covers_on_sqlite();
     zone(&mut harness, new_york());
     open_editor(&mut harness, tab, id);
     commit(&mut harness, tab, id, "2026-01-12 06:00:00");
@@ -475,4 +477,154 @@ fn a_zone_the_database_does_not_know_is_reported_in_both_looks() {
         }));
     harness.settle();
     assert!(harness.has("1 line in the file could not be read and was ignored"));
+}
+
+#[test]
+fn a_sqlite_text_with_an_offset_is_shown_and_edited_as_stored() {
+    let (mut harness, tab, id) = covers_on_sqlite();
+    harness.app.workspace_mut(tab).unwrap().row_panel = true;
+    zone(&mut harness, new_york());
+    // The grid, to the second, and the row panel, whole: as stored.
+    assert!(harness.painted_color("2026-01-12 09:14:03+00").is_some());
+    assert!(harness.painted_color(COVERS_MADE).is_some());
+    assert!(harness.painted_color("2026-01-12 04:14:03-05").is_none());
+    // The editor opens on the text, and the same moment written another
+    // way is another text.
+    open_editor(&mut harness, tab, id);
+    assert_eq!(editor_text(&harness, tab, id), COVERS_MADE);
+    commit(&mut harness, tab, id, "2026-01-12 04:14:03.482915-05");
+    assert_eq!(
+        pending(&harness, tab, id).as_deref(),
+        Some("2026-01-12 04:14:03.482915-05")
+    );
+}
+
+#[test]
+fn the_zone_database_is_the_backends_to_read() {
+    let harness = Harness::new();
+    assert!(
+        harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|command| matches!(command, Command::LoadZones))
+    );
+}
+
+#[test]
+fn a_named_zone_shows_values_as_sent_until_the_database_is_read() {
+    let mut harness = Harness::new();
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\ntz = \"America/New_York\"\n".into(),
+            own: false,
+        }));
+    harness.stamped_covers();
+    harness.settle();
+    assert!(harness.painted_color("2026-01-12 09:14:03+00").is_some());
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    harness.settle();
+    assert!(harness.painted_color("2026-01-12 04:14:03-05").is_some());
+}
+
+#[test]
+fn a_zone_the_database_does_not_know_is_ignored_once_it_is_read() {
+    let mut harness = Harness::new();
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\npage_size = 500\ntz = \"Mars/Olympus\"\n".into(),
+            own: false,
+        }));
+    // Of a zone's form: taken until the database says otherwise.
+    assert_eq!(harness.app.settings.tz, Zone::Named("Mars/Olympus".into()));
+    assert!(harness.app.settings_file.invalid.is_empty());
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    assert_eq!(harness.app.settings.tz, Zone::System);
+    assert_eq!(harness.app.settings_file.invalid, [3]);
+    assert_eq!(harness.app.settings.page_size, 500);
+    // Nothing is written: the line stays the person's to mend.
+    assert!(
+        !harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|command| matches!(command, Command::Save { .. }))
+    );
+}
+
+#[test]
+fn the_menu_lists_no_zones_before_the_database_is_read() {
+    let mut harness = sheet(crate::theme::Look::macos());
+    harness.app.zones = None;
+    harness.click("Time zone for timestamptz");
+    assert!(harness.has("Time zone for timestamptz UTC"));
+    assert!(!harness.has("Time zone for timestamptz Asia/Tokyo"));
+}
+
+#[test]
+fn a_zone_the_database_turned_down_is_no_step_of_the_terminal_screen() {
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\ntz = \"Mars/Olympus\"\n".into(),
+            own: false,
+        }));
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    assert_eq!(harness.app.settings.tz, Zone::System);
+    assert_eq!(harness.app.named_zone, None);
+    harness.press(Key::Comma, Modifiers::COMMAND);
+    for _ in 0..2 {
+        harness.press(Key::J, Modifiers::NONE);
+    }
+    harness.press(Key::L, Modifiers::NONE);
+    assert_eq!(harness.app.settings.tz, Zone::Utc);
+    // From UTC there is no step further: the refused name is not one.
+    harness.press(Key::L, Modifiers::NONE);
+    assert_eq!(harness.app.settings.tz, Zone::Utc);
+    assert!(!harness.app.settings_file.text.contains("Mars/Olympus"));
+}
+
+#[test]
+fn a_zone_the_database_turned_down_stays_down_through_a_change_in_the_app() {
+    let mut harness = Harness::new();
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\ntz = \"Mars/Olympus\"\n".into(),
+            own: false,
+        }));
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    harness
+        .app
+        .change_settings(|settings| settings.page_size = 500);
+    assert_eq!(harness.app.settings.tz, Zone::System);
+    assert_eq!(harness.app.named_zone, None);
+    assert_eq!(harness.app.settings_file.invalid, [2]);
+    assert!(harness.app.zone().is_some());
 }

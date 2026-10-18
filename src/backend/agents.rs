@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tabletist_db::agent::{Answer, Hidden, Limits, Read, Tables};
+use tabletist_db::agent::{Answer, ColumnName, Hidden, Limits, Read, Tables};
 use tabletist_db::{
     Access, CancelHandle, ConnectSpec, Connection, Error, HostKeys, ObjectInfo, ObjectRef, Secrets,
     StopFlag, Structure,
@@ -47,6 +47,8 @@ pub struct Agentable {
     pub limits: Limits,
     /// What agents may not read of it.
     pub tables: Tables,
+    /// The columns whose values agents get masked.
+    pub masked: Vec<ColumnName>,
 }
 
 /// The connections of `saved` that agents may use, in its order. One that
@@ -78,6 +80,7 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
                 timeout: Duration::from_secs(u64::from(saved.agents.timeout_secs)),
             },
             tables: saved.agents.tables.clone(),
+            masked: saved.agents.masked.clone(),
         })
         .collect()
 }
@@ -658,6 +661,7 @@ impl Gateway for AppGateway {
                 dialect: agentable.spec.driver.dialect(),
                 limits: agentable.limits,
                 tables: agentable.tables.clone(),
+                masked: agentable.masked.clone(),
             })
             .collect()
     }
@@ -904,17 +908,24 @@ impl Session for AppSession {
         self.ended(None, connection.describe(object)).await
     }
 
-    async fn hidden(&self, tables: &Tables) -> Result<Hidden, Failure> {
+    async fn hidden(&self, tables: &Tables, masked: &[ColumnName]) -> Result<Hidden, Failure> {
         let connection = self.connection()?;
-        self.ended(None, connection.agent_hidden(tables, &[])).await
+        self.ended(None, connection.agent_hidden(tables, masked))
+            .await
     }
 
-    async fn read(&self, read: &Read, limits: Limits, tables: &Tables) -> Result<Answer, Failure> {
+    async fn read(
+        &self,
+        read: &Read,
+        limits: Limits,
+        tables: &Tables,
+        masked: &[ColumnName],
+    ) -> Result<Answer, Failure> {
         let connection = self.connection()?;
         let flag = StopFlag::new();
         self.ended(
             Some(&flag),
-            connection.run_agent_read(read, limits, tables, &[], &flag),
+            connection.run_agent_read(read, limits, tables, masked, &flag),
         )
         .await
     }
@@ -976,6 +987,7 @@ mod tests {
                     timeout: Duration::from_secs(10),
                 },
                 &Tables::All,
+                &[],
             )
             .await
     }
@@ -1117,8 +1129,13 @@ mod tests {
         let mut shop = saved("shop", "Bookshop", Environment::Dev, spec);
         let customers = Tables::AllExcept(vec!["customers".parse().unwrap()]);
         shop.agents.tables = customers.clone();
+        shop.agents.masked = vec!["orders.email".parse().unwrap()];
         let gateway = gateway(shop);
         assert_eq!(gateway.connections()[0].tables, customers);
+        assert_eq!(
+            gateway.connections()[0].masked,
+            vec!["orders.email".parse().unwrap()]
+        );
         let stop = CancellationToken::new();
         let session = gateway.open("shop", &stop).await.unwrap();
         let read = check_read(Dialect::Sqlite, "SELECT * FROM customers", &[]).unwrap();
@@ -1130,6 +1147,7 @@ mod tests {
                     timeout: Duration::from_secs(10),
                 },
                 &customers,
+                &[],
             )
             .await;
         assert!(
@@ -1141,7 +1159,7 @@ mod tests {
             ),
             "{refused:?}"
         );
-        let hidden = session.hidden(&customers).await.unwrap();
+        let hidden = session.hidden(&customers, &[]).await.unwrap();
         assert!(hidden.hides("main", "customers") && !hidden.hides("main", "books"));
     }
 

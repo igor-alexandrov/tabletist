@@ -9,7 +9,9 @@ use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, SettingsDialog, SettingsPane};
-use crate::settings::{OptionId, OptionValue, Settings, Timestamps, Zone};
+use crate::settings::{
+    EnvBar, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
+};
 use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::focus::{self, Ring};
@@ -18,7 +20,7 @@ use crate::ui::menu;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
-use super::{group_starting, label, path_shown, sample_timestamp, small_print, zone_text, zones};
+use super::{label, path_shown, sample_timestamp, small_print, zone_text};
 
 /// The sheet at its widest and at its tallest, and what it leaves of the
 /// window at each side.
@@ -72,6 +74,9 @@ pub(super) struct Skin<'a> {
     pub(super) locale: Locale,
     /// The computer's zone's name, which the System zone writes beside it.
     pub(super) system: Option<&'a str>,
+    /// The zone database's names, which the zone menu lists: none until
+    /// the backend has read it.
+    pub(super) zones: &'a [String],
 }
 
 impl Skin<'_> {
@@ -93,6 +98,7 @@ pub(super) fn show(
         palette: &app.palette,
         locale: app.locale,
         system: app.system_zone.iana_name(),
+        zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
@@ -145,7 +151,29 @@ pub(super) fn show(
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
             let mut pane = ui.new_child(builder.layout(egui::Layout::top_down(egui::Align::Min)));
             match dialog.pane {
-                SettingsPane::General => content(&mut pane, &app.settings, limit, &skin, actions),
+                SettingsPane::General => content(
+                    &mut pane,
+                    ("General", Some(GENERAL)),
+                    &[("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)],
+                    &app.settings,
+                    limit,
+                    &skin,
+                    actions,
+                ),
+                // The board's line under the title names the preview, which
+                // the pane does not have yet: the title stands alone.
+                SettingsPane::Appearance => content(
+                    &mut pane,
+                    ("Appearance", None),
+                    &[
+                        ("Grid", &OptionId::GRID),
+                        ("Environment color", &OptionId::ENVIRONMENT),
+                    ],
+                    &super::shown(app),
+                    limit,
+                    &skin,
+                    actions,
+                ),
                 SettingsPane::Agents => {
                     super::agents::content(&mut pane, app, dialog.agent, limit, &skin, actions);
                 }
@@ -256,28 +284,49 @@ fn nav(
     }
 }
 
-/// The tab: its title, what it is for, and its options under the headings
-/// of their groups. The rows end at `limit` at the latest, and scroll when
-/// they are taller than that leaves them.
-fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &mut Vec<Action>) {
+/// What the General pane says under its title.
+const GENERAL: &str = "How Tabletist shows data and protects your work. Changes apply right away.";
+
+/// The tab: its title, what it is for where it says, and its options under
+/// the heading of each group. The rows end at `limit` at the latest, and
+/// scroll when they are taller than that leaves them.
+#[allow(clippy::too_many_arguments)] // one pane: what it says, what it shows, what it pushes
+fn content(
+    ui: &mut Ui,
+    (title, about): (&'static str, Option<&'static str>),
+    sections: &[(&'static str, &[OptionId])],
+    settings: &Settings,
+    limit: f32,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin { look, palette, .. } = *skin;
     widgets::label(
         ui,
         TextRole::DialogTitle,
-        &skin.say("General"),
+        &skin.say(title),
         palette.text,
         look,
     );
+    if let Some(about) = about {
+        ui.add_space(2.0);
+        widgets::label(ui, TextRole::UiBody, &skin.say(about), palette.dim, look);
+    }
+    ui.add_space(6.0 + 14.0);
+    let Some((first, _)) = sections.first() else {
+        return;
+    };
+    // The first heading stays over the rows as they scroll; the others
+    // scroll with their rows, 14 under the last row before them.
+    widgets::section_label(&skin.say(first), look, palette)
+        .layout(ui.ctx())
+        .label(ui);
     ui.add_space(2.0);
-    widgets::label(
-        ui,
-        TextRole::UiBody,
-        &skin.say("How Tabletist shows data and protects your work. Changes apply right away."),
-        palette.dim,
-        look,
-    );
-    ui.add_space(6.0);
-    let column = label_column(ui, &OptionId::GENERAL, skin);
+    let options: Vec<OptionId> = sections
+        .iter()
+        .flat_map(|(_, options)| options.iter().copied())
+        .collect();
+    let column = label_column(ui, &options, skin);
     let room = (limit - ui.cursor().top()).max(ROWS_MIN);
     egui::ScrollArea::vertical()
         .id_salt("rows")
@@ -286,25 +335,29 @@ fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &
         .show(ui, |ui| {
             // The last row stands on the footer's rule: one of its own
             // right over that would read as a double line.
-            let last = OptionId::GENERAL.len() - 1;
-            for (index, option) in OptionId::GENERAL.into_iter().enumerate() {
-                if let Some(heading) = group_starting(option) {
+            let last = options.len() - 1;
+            let mut index = 0;
+            for (nth, (heading, options)) in sections.iter().enumerate() {
+                if nth > 0 {
                     ui.add_space(14.0);
                     widgets::section_label(&skin.say(heading), look, palette)
                         .layout(ui.ctx())
                         .label(ui);
                     ui.add_space(2.0);
                 }
-                row(
-                    ui,
-                    option,
-                    index < last,
-                    column,
-                    settings,
-                    skin,
-                    actions,
-                    None,
-                );
+                for option in options.iter().copied() {
+                    row(
+                        ui,
+                        option,
+                        index < last,
+                        column,
+                        settings,
+                        skin,
+                        actions,
+                        None,
+                    );
+                    index += 1;
+                }
             }
         });
 }
@@ -432,11 +485,14 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::PageSize | OptionId::Tz => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
+        OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
-        | OptionId::AgentsNotify => SWITCH,
+        | OptionId::AgentsNotify
+        | OptionId::Zebra
+        | OptionId::ColumnTypes => SWITCH,
         OptionId::LogDays => look.control_height,
     }
 }
@@ -503,11 +559,56 @@ fn control(
                 ))));
             }
         }
+        OptionId::RowHeight => {
+            // Each with its rows' height in this look, as the board writes
+            // them: without the rule under a row (28, 36 and 44 on macOS).
+            let words = RowHeight::ALL.map(|height| {
+                let word = match height {
+                    RowHeight::Compact => "Compact",
+                    RowHeight::Regular => "Regular",
+                    RowHeight::Roomy => "Roomy",
+                };
+                let rows = Look {
+                    density: height,
+                    ..*look
+                }
+                .row();
+                format!("{} · {}", skin.say(word), rows - 1.0)
+            });
+            let selected = RowHeight::ALL
+                .iter()
+                .position(|height| *height == settings.row_height)
+                .unwrap_or(1);
+            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+                actions.push(Action::SetOption(OptionValue::RowHeight(
+                    RowHeight::ALL[picked],
+                )));
+            }
+        }
+        OptionId::TableList => {
+            let words = [skin.say("Grouped by prefix"), skin.say("Flat")];
+            let selected = usize::from(settings.table_list.flat());
+            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+                actions.push(Action::SetOption(OptionValue::TableList(TableList::of(
+                    picked == 1,
+                ))));
+            }
+        }
+        OptionId::EnvBar => {
+            let words = [skin.say("Tint + stripe"), skin.say("Stripe only")];
+            let selected = usize::from(settings.env_bar == EnvBar::Label);
+            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+                let bar = [EnvBar::Tint, EnvBar::Label][picked];
+                actions.push(Action::SetOption(OptionValue::EnvBar(bar)));
+            }
+        }
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
-        | OptionId::AgentsNotify => {
+        | OptionId::AgentsNotify
+        | OptionId::Zebra
+        | OptionId::ColumnTypes => {
             let on = super::is_on(&settings.value(option));
             if widgets::toggle(ui, on, &name, palette).clicked()
                 && let Some(flipped) = settings.flipped(option)
@@ -557,7 +658,7 @@ fn log_days(current: u32) -> Vec<u32> {
 fn segments(
     ui: &mut Ui,
     option: &str,
-    words: &[String; 2],
+    words: &[String],
     selected: usize,
     skin: &Skin,
 ) -> Option<usize> {
@@ -572,11 +673,15 @@ fn segments(
     // The row's label is beside the control, not a segment's own: each is
     // named by the option and its own word, as the terminal look's
     // choices are.
-    let names = [0, 1].map(|index| format!("{option}: {}", words[index]));
-    let parts = [0, 1].map(|index| Segment::Named {
-        text: &words[index],
-        name: &names[index],
-    });
+    let names: Vec<String> = words
+        .iter()
+        .map(|word| format!("{option}: {word}"))
+        .collect();
+    let parts: Vec<Segment> = words
+        .iter()
+        .zip(&names)
+        .map(|(text, name)| Segment::Named { text, name })
+        .collect();
     widgets::segmented(ui, &parts, selected, size, look, palette)
 }
 
@@ -623,7 +728,8 @@ fn zone_menu(ui: &mut Ui, name: &str, settings: &Settings, skin: &Skin, actions:
         egui::ScrollArea::vertical()
             .max_height(ZONE_LIST)
             .show(ui, |ui| {
-                for zone in zones()
+                for zone in skin
+                    .zones
                     .iter()
                     .filter(|zone| typed.is_empty() || zone.to_lowercase().contains(&typed))
                 {
@@ -664,11 +770,17 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
+        // What the Appearance pane's rows say is their small print.
         OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::LogDays
-        | OptionId::AgentsNotify => return,
+        | OptionId::AgentsNotify
+        | OptionId::RowHeight
+        | OptionId::Zebra
+        | OptionId::ColumnTypes
+        | OptionId::TableList
+        | OptionId::EnvBar => return,
     };
     let text = text.layout(ui.ctx());
     if at.x + text.width() <= right {
@@ -758,7 +870,7 @@ fn footer_height(ui: &Ui, ignored: Option<&Laid>, skin: &Skin) -> f32 {
 fn reset_question(pane: SettingsPane) -> &'static str {
     match pane {
         SettingsPane::General => "Reset all General settings to their defaults?",
-        SettingsPane::Agents => "Reset every option on this tab?",
+        SettingsPane::Appearance | SettingsPane::Agents => "Reset every option on this tab?",
     }
 }
 

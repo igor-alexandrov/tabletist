@@ -212,8 +212,12 @@ impl Harness {
         self.frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)]);
     }
 
-    /// Two frames: egui lays out on the first and settles sizes on the second.
+    /// Three frames: egui lays out on the first and settles sizes on the
+    /// second. The connection dialog measures itself unseen on the second
+    /// and egui keeps unseen widgets out of the AccessKit tree, so it is
+    /// there from the third.
     pub fn settle(&mut self) -> TreeUpdate {
+        self.frame(Vec::new());
         self.frame(Vec::new());
         self.frame(Vec::new())
     }
@@ -803,6 +807,20 @@ pub fn book_covers_page(rows: usize) -> RowPage {
     }
 }
 
+/// The zone database, read once for every test.
+fn zones_shared() -> std::sync::Arc<crate::zones::Zones> {
+    static ZONES: std::sync::OnceLock<std::sync::Arc<crate::zones::Zones>> =
+        std::sync::OnceLock::new();
+    std::sync::Arc::clone(ZONES.get_or_init(|| std::sync::Arc::new(crate::zones::Zones::load())))
+}
+
+/// The zone database, as the backend reads it.
+pub fn zones() -> &'static crate::zones::Zones {
+    static ZONES: std::sync::OnceLock<std::sync::Arc<crate::zones::Zones>> =
+        std::sync::OnceLock::new();
+    ZONES.get_or_init(zones_shared)
+}
+
 /// UTC, for a test's [`crate::edit::Table`] to hold a zone by reference.
 pub static UTC: jiff::tz::TimeZone = jiff::tz::TimeZone::UTC;
 
@@ -1159,9 +1177,11 @@ impl Harness {
     }
 
     /// `book_covers` with `created_at` as a `timestamptz`, open in a table
-    /// tab: [`Harness::book_covers`] over [`stamped_covers_page`].
+    /// tab: [`Harness::book_covers`] over [`stamped_covers_page`], on a
+    /// session that is PostgreSQL's, whose values these are.
     pub fn stamped_covers(&mut self) -> (ConnTabId, TabId) {
         let tab = self.connect_fake_as(false);
+        self.app.workspace_mut(tab).expect("a workspace").driver = Driver::Postgres;
         self.app.apply(Action::OpenObject {
             tab,
             object: tabletist_db::ObjectRef::new("main", "book_covers"),
@@ -1512,6 +1532,11 @@ impl Harness {
         // later: no test waits.
         app.lookup_delay = std::time::Duration::ZERO;
         app.attach(&ctx, false);
+        // The zone database, as the backend answers the attach's
+        // `LoadZones`.
+        app.apply(Action::Backend(
+            crate::backend::Event::Zones(zones_shared()),
+        ));
         Self {
             app,
             ctx,

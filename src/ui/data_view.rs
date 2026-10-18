@@ -873,6 +873,8 @@ pub struct Fit {
     /// A hash of the zone's name: a value moved to another zone can be
     /// wider.
     pub zone: Option<u64>,
+    /// The header's types' line, which a column is as wide as.
+    pub column_types: bool,
 }
 
 impl Fit {
@@ -881,12 +883,16 @@ impl Fit {
             full_precision: workspace.full_precision,
             grouped: app.settings.grouped(app.layout()),
             value_tags: app.settings.value_tags,
-            zone: workspace.zone.iana_name().map(|name| {
-                use std::hash::{Hash as _, Hasher as _};
-                let mut hasher = std::hash::DefaultHasher::new();
-                name.hash(&mut hasher);
-                hasher.finish()
-            }),
+            column_types: app.settings.column_types,
+            zone: workspace
+                .zone_shown()
+                .and_then(|zone| zone.iana_name())
+                .map(|name| {
+                    use std::hash::{Hash as _, Hasher as _};
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    name.hash(&mut hasher);
+                    hasher.finish()
+                }),
         }
     }
 }
@@ -1352,6 +1358,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    // The grid's rows as dense and as striped, and its header as tall, as
+    // the settings have them.
+    let grid_look = look.with_grid(&app.settings);
     // An editor that is open has the keyboard, unless a dialog has it.
     let hold = app.dialog.is_none();
     let editor_keys = cell_editor::Keys::of(&app.keymap, app.layout());
@@ -1363,7 +1372,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     };
     let fit = Fit::of(workspace, app);
     // Kept apart from the workspace, which the editor's text is taken from.
-    let zone = workspace.zone.clone();
+    let zone = workspace.zone_shown().cloned();
     // The arrows are the grid's once the user worked in it.
     let keys = workspace.pane == crate::model::Pane::Grid;
     let Some(object) = workspace.object_tab(object_tab) else {
@@ -1510,7 +1519,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             .map(|column| Shown {
                 full_precision: fit.full_precision,
                 grouped: fit.grouped && !is_key(&column.name, structure),
-                zone: Some(&zone),
+                zone: zone.as_ref(),
             })
             .collect();
         // What is pending, and what else of editing the cells show: read
@@ -1612,7 +1621,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             object.selection.and_then(placed),
             keys,
             &palette,
-            &look,
+            &grid_look,
             &|place| match order.row(place) {
                 Some(row) => match crate::edit::new_id(row) {
                     Some(id) => grid::Row {
@@ -1796,7 +1805,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         if order.is_empty() && !lasted {
             // The headers stay: the columns are still worth reading.
             let under = Rect::from_min_max(
-                pos2(area.left(), area.top() + grid::header_height(&look)),
+                pos2(area.left(), area.top() + grid::header_height(&grid_look)),
                 area.max,
             );
             empty_rows(
@@ -1814,7 +1823,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             states::progress(ui, area.x_range(), area.top(), &palette);
         }
         let rows = Rect::from_min_max(pos2(area.left(), area.top() + 2.0), area.max);
-        states::skeleton(ui, rows, &look, &palette);
+        states::skeleton(ui, rows, &grid_look, &palette);
     }
     // A fetch that has lasted, over whatever is up: a refresh and the next
     // page keep the page they replace on screen.

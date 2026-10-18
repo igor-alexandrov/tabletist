@@ -3,6 +3,8 @@
 
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
+use crate::settings::RowHeight;
+
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
 /// The palette files, the shared presets, and Omarchy's live palette.
@@ -363,8 +365,17 @@ pub struct Look {
     pub control_height: f32,
     /// Sidebar tree rows.
     pub tree_row: f32,
-    /// Grid rows.
+    /// Grid rows at the regular density: [`Look::row`] is the height a
+    /// grid draws them at.
     pub grid_row: f32,
+    /// How dense the grids are: the Appearance setting, regular until a
+    /// look is given the settings ([`Look::with_grid`]).
+    pub density: RowHeight,
+    /// Odd grid rows shaded: the look's default until it is given the
+    /// settings.
+    pub zebra: bool,
+    /// The grid header's second line, the columns' types.
+    pub type_line: bool,
     /// Omarchy's controls: a faint foreground fill and a 1 px border.
     pub bordered_controls: bool,
     pub selection: Selection,
@@ -399,6 +410,9 @@ impl Look {
             control_height: 26.0,
             tree_row: 24.0,
             grid_row: 26.0,
+            density: RowHeight::Regular,
+            zebra: false,
+            type_line: true,
             bordered_controls: false,
             selection: Selection::Tint,
             tabs: TabStyle::Outlined,
@@ -424,6 +438,9 @@ impl Look {
             control_height: 28.0,
             tree_row: 24.0,
             grid_row: 37.0,
+            density: RowHeight::Regular,
+            zebra: false,
+            type_line: true,
             bordered_controls: false,
             selection: Selection::Pill,
             tabs: TabStyle::Raised,
@@ -449,6 +466,9 @@ impl Look {
             control_height: 24.0,
             tree_row: 24.0,
             grid_row: 30.0,
+            density: RowHeight::Regular,
+            zebra: true,
+            type_line: true,
             bordered_controls: true,
             selection: Selection::Bar,
             tabs: TabStyle::Underline,
@@ -460,6 +480,32 @@ impl Look {
             faces: Faces::Terminal,
             primary: PrimaryStyle::Outline,
             terminal: true,
+        }
+    }
+
+    /// The look with the grids as `settings` have them: how dense their
+    /// rows are, whether odd ones are shaded, and whether the header has
+    /// the types' line.
+    pub fn with_grid(self, settings: &crate::settings::Settings) -> Self {
+        Self {
+            density: settings.row_height,
+            zebra: settings.zebra_in(self.terminal),
+            type_line: settings.column_types,
+            ..self
+        }
+    }
+
+    /// A grid row's height at the look's density. The terminal counts in
+    /// lines, a regular row being one and a half: one or two. The others
+    /// step 8 either side, the regular row's rule kept in each.
+    pub fn row(&self) -> f32 {
+        let regular = self.grid_row;
+        match (self.density, self.terminal) {
+            (RowHeight::Regular, _) => regular,
+            (RowHeight::Compact, true) => regular * 2.0 / 3.0,
+            (RowHeight::Roomy, true) => regular * 4.0 / 3.0,
+            (RowHeight::Compact, false) => regular - 8.0,
+            (RowHeight::Roomy, false) => regular + 8.0,
         }
     }
 

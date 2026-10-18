@@ -45,7 +45,9 @@ pub(crate) trait Adapter {
     /// `read` has passed [`crate::agent::check_read`] for this database's
     /// dialect. The outcome is a read-only script's of one statement, or
     /// [`crate::Error::Agent`] where it reads what `tables` hides, or a
-    /// column `masked` names otherwise than as it is.
+    /// column `masked` names otherwise than as it is; with it, whether each
+    /// of its result columns is a masked column's, as the database says
+    /// where each comes from (none where nothing is masked).
     async fn run_read(
         &self,
         read: &Read,
@@ -53,7 +55,7 @@ pub(crate) trait Adapter {
         tables: &Tables,
         masked: &[ColumnName],
         stop: &StopFlag,
-    ) -> Result<ScriptOutcome>;
+    ) -> Result<(ScriptOutcome, Vec<bool>)>;
 
     /// What the database's catalog says for what an agent's connection
     /// hides and masks: its relations, what each reads, the users'

@@ -163,7 +163,8 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
     // one: the server would read it in its own.
     if let NewValue::Text(text) = &new
         && crate::edit::keeps_offset(table.dialect, &column.type_name)
-        && let Some(sent) = crate::ui::format::with_offset(text, table.zone)
+        && let Some(zone) = table.zone
+        && let Some(sent) = crate::ui::format::with_offset(text, zone)
     {
         new = NewValue::Text(sent);
     }
@@ -177,7 +178,9 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
         (NewValue::Default { .. }, None) => false,
         (new, loaded) => loaded.is_none_or(|loaded| {
             is_change(loaded, new, class)
-                && !(temporal && crate::edit::same_moment_typed(loaded, new))
+                && !(temporal
+                    && crate::edit::shows_in_zone(table.dialect)
+                    && crate::edit::same_moment_typed(loaded, new))
         }),
     };
     let problem = changed
@@ -834,7 +837,8 @@ impl App {
                     },
                     // A new row's cell starts from nothing.
                     // A moment with an offset as the cell shows it: in
-                    // the zone, and edited there.
+                    // the zone, and edited there, where the engine sends
+                    // one.
                     None => table
                         .loaded(cell)
                         .map(|loaded| {
@@ -843,8 +847,9 @@ impl App {
                                 table.page.columns.get(cell.col).map(|column| column.kind)
                                     == Some(tabletist_db::ValueKind::Temporal);
                             temporal
-                                .then(|| crate::ui::format::in_zone(&start, table.zone))
+                                .then_some(table.zone)
                                 .flatten()
+                                .and_then(|zone| crate::ui::format::in_zone(&start, zone))
                                 .unwrap_or(start)
                         })
                         .unwrap_or_default(),

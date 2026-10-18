@@ -14,13 +14,24 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | --- | --- | --- |
 | **Rows per page** | 100, 500, 1,000, 5,000 or 10,000. A table takes a new size when it next loads, not while you page through it | 1,000 |
 | **Timestamps** | To the second, or full precision | To the second |
-| **Time zone for timestamptz** | System, UTC or any zone. A `timestamptz` is shown in this zone, a copy gives the value as the server sent it, and a value you type without an offset is sent with this zone's. In the Omarchy look `h`/`l` choose System, UTC or the last zone the file named; any other zone is set in the file | System |
+| **Time zone for timestamptz** | System, UTC or any zone. A PostgreSQL `timestamptz` is shown in this zone, a copy gives the value as the server sent it, and a value you type without an offset is sent with this zone's. In the Omarchy look `h`/`l` choose System, UTC or the last zone the file named; any other zone is set in the file | System |
 | **Numbers** | `1,240.50` or `1240.50`. Grouping is for display only: a copy gives the raw value | `1,240.50` on macOS and Windows, `1240.50` in the Omarchy look |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 | **New production connections open read-only** | On or off: where the **Open read-only** box of a new production connection starts. A connection you saved keeps its own box | On |
 | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
 
-A second pane, **Agents**, sets what the `[mcp]` keys
+A second pane, **Appearance**, sets how the grids and the connection bar
+are drawn. Each change shows in every open window at once.
+
+| Option | Choices | Default |
+| --- | --- | --- |
+| **Row density** (Omarchy: row height) | Compact, Regular or Roomy. On macOS and Windows a step of 8 points either side of Regular; in the Omarchy look one, one and a half or two lines. The grid keeps the row at its top | Regular |
+| **Alternate row shading** (Omarchy: alternate rows) | On or off, in the table grid and the SQL editor's results | Off on macOS and Windows, on in the Omarchy look |
+| **Show column types** (Omarchy: column types) | On or off: the second line of the grid's header | On |
+| **Table list** | Grouped by prefix (Omarchy: tree) or Flat. The default for a connection whose list you have not switched; the sidebar's switch (Omarchy: `t`) sets the connection's own | Grouped by prefix |
+| **Window header** (Omarchy: connection bar) | Tint + stripe (Omarchy: tint + label), or Stripe only (Omarchy: label only). Production keeps its tint either way | Tint + stripe |
+
+A third pane, **Agents**, sets what the `[mcp]` keys
 hold, and shows how to connect an agent:
 [Agents]({% link _guide/agents.md %}) is the guide.
 
@@ -68,13 +79,21 @@ sql_timeout_secs = 30
 enabled = false
 log_days = 30
 notify = true
+
+[appearance.grid]
+row_height = "regular"
+column_types = true
+table_list = "tree"
+
+[appearance.env]
+bar = "tint"
 ```
 
 | Key | Values | Default |
 | --- | --- | --- |
 | `data.page_size` | 10 to 10000. A table takes a new size when it next loads (opened, refreshed, sorted, filtered or reconnected), not while you page through it | `1000` |
 | `data.timestamps` | `"second"` or `"full"` | `"second"` |
-| `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read. A `timestamptz` value is shown and edited in this zone, a copy gives it as the server sent it, and one you type without an offset is sent with this zone's | `"system"` |
+| `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read. A PostgreSQL `timestamptz` value is shown and edited in this zone, a copy gives it as the server sent it, and one you type without an offset is sent with this zone's | `"system"` |
 | `data.group_digits` | `true` or `false` | Not set: grouped on macOS and Windows, not in the Omarchy look |
 | `data.value_tags` | `true` or `false` | `true` |
 | `safety.production_read_only` | `true` or `false`. Where the **Open read-only** box of a new production connection starts; the connection is saved with its box set, so a change here changes no saved connection | `true` |
@@ -83,6 +102,11 @@ notify = true
 | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
 | `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |
 | `appearance.theme` | The name of a palette file in the `themes` folder | Not set |
+| `appearance.grid.row_height` | `"compact"`, `"regular"` or `"roomy"` | `"regular"` |
+| `appearance.grid.zebra` | `true` or `false`. Written once you set it; without it, the look's default | Not set: off on macOS and Windows, on in the Omarchy look |
+| `appearance.grid.column_types` | `true` or `false` | `true` |
+| `appearance.grid.table_list` | `"tree"` or `"flat"`: how a connection lists its tables until you switch its own | `"tree"` |
+| `appearance.env.bar` | `"tint"` or `"label"`. Production is tinted either way | `"tint"` |
 | `mcp.enabled` | `true` lets agents reach the connections you open to them, through `tabletist mcp` | `false` |
 | `mcp.log_days` | 1 to 3650 days. How long the log of agents' calls keeps a call | `30` |
 | `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS, the taskbar button flashing on Windows | `true` |
@@ -101,6 +125,11 @@ them. The one exception is a table written inline (`data = { … }`) or
 with dotted keys (`data.page_size = 500`): a key added to it or taken out
 of it writes the whole file again, without your comments. **Export…**
 saves a copy of the file as it is.
+
+A file an older version wrote holds every key, at the values it had then,
+the defaults of that time too (`page_size = 300`, `group_digits = false`).
+Those stay until you change them: take a key out of the file, or reset the
+tab, to have today's default.
 
 ## Files
 
@@ -121,11 +150,12 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `known_hosts.json` | Settings | The SSH host keys you trusted |
 | `themes/` | Settings | Palette files |
 | `last_used.json` | State | When each saved connection last connected |
+| `table_lists.json` | State | How each saved connection lists its tables, where you switched it in the sidebar |
 | `connections.moved` | State | A note that your connections are kept in `connections.toml` |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
-| `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access |
+| `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access, hidden tables and masked columns |
 | `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key each proves it holds before either says more, and the lock the app holds while it listens. The socket and the key are there while agents are on |
 | `mcp.pipe` | State | On Windows, in the socket's place: the name of the pipe `tabletist mcp` reaches the app by, new each time agents are turned on |
 
@@ -223,9 +253,31 @@ system catalogs either (`information_schema`, `pg_catalog`, `mysql`,
 or dropped, agents may not use the connection at all until you take the
 name out of the list or put the right one in.
 
-A file in which a connection hides a table says `version = 5`, one in
-which a connection has the table and hides nothing says `version = 4`,
-and one in which none has it stays `version = 3`. Agents use the table only while
+`masked` names the columns whose values agents get as `•••`, every value,
+an empty one too:
+
+```toml
+[connections.agents]
+access = "read"
+masked = ["orders.email", "sales.customers.phone"]
+```
+
+An entry is a table and a column, or a schema, a table and a column, each
+part written as in `hidden`. One without a schema is that column of the
+table of that name in every schema. Agents may select a masked column as
+it is, and may not filter, join, sort, group or compute on it, nor on any
+column of the same name in any table. A view that reads one is refused,
+and so is any view over its table on MySQL. Its partitions and child
+tables have it masked too, and so does a generated column of its table.
+If a column that `masked` names is renamed or dropped, agents may not use
+the connection at all until you take it out of the list or put the right
+one in.
+
+A file in which a connection masks a column says `version = 6`, one in
+which a connection hides a table and masks none says `version = 5`, one
+in which a connection has the table and neither hides nor masks says
+`version = 4`, and one in which none has it stays `version = 3`. Agents
+use the table only while
 `[mcp] enabled` is `true` in `settings.toml`. **Stop agents here**, in a
 connection's Agents tab, stops the agents working on it and sets its
 `access` to `off`, so that an agent that connects again does not see it.
@@ -234,14 +286,18 @@ connection's Agents tab, stops the agents working on it and sets its
 
 A change to either file that lets agents do more than Tabletist last
 showed you is not applied at once: turning `[mcp] enabled` on, a
-connection's `access` up from `off`, or a connection hiding less: a name
+connection's `access` up from `off`, a connection hiding less (a name
 taken out of `hidden` or put into `only`, or a `hidden` list made an
-`only` one. Tabletist says what
+`only` one), or a connection masking less: a name taken out of `masked`,
+or one that named a column in every schema made to name it in one.
+Tabletist says what
 changed in a bar under the top of the window, and until you answer,
 agents may do what they could before. **Keep** applies the change. **Put
 back** undoes it in the files: it turns `[mcp] enabled` off, sets the
-connection's `access` back to `off`, or puts its tables back as they were,
-and leaves your other settings and connections as they are. A change that
+connection's `access` back to `off`, or puts its tables or its masked
+columns back as they were, and leaves your other settings and connections
+as they are. While a name taken out of `masked` is held, a column put into
+it at the same time is masked at once. A change that
 lets agents do less applies at once.
 
 Turning agents on in Tabletist itself, with **Turn on** in a connection's

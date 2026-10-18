@@ -1114,6 +1114,96 @@ values are run 1b's. Where it went otherwise than above:
   masked, and a masked column named in another schema is taken for one in
   every schema by the reading, which errs toward refusing.
 
+**As built in 3a's run 1b** (`2026-10-17-mcp-server-3a-1b-masked-values.md`):
+the values, and each engine's fence. A result column is a masked
+column's by where the database says it comes from: PostgreSQL's prepared
+statement (`table_oid`, `column_id`, named through `pg_attribute`),
+MySQL's column definitions (`org_table`, `org_name`), SQLite's
+`sqlite3_column_origin_name`, which the bundled build already has, read
+through `tabletist-sqlite-ffi` as bytes. Each of its values answers
+`•••`, a `NULL` too, and `Answer::masked` marks it; where the count of
+columns told is not the answer's, every column is masked. Where it went
+otherwise than above:
+
+- **SQLite's "ignore" and the origins.** A column SQLite reads as `NULL`
+  for the fence has no origin left, so the origins are read from a
+  preparation of the statement before the fence goes up. A masked column
+  read for a view or a common table expression is still refused.
+- **PostgreSQL's plan** may pass a masked column on, as a name by itself
+  in a node's output, and use it no other way: not in a filter, a
+  condition, a key or an expression, and never its table's whole row. A
+  subquery's or a common table expression's scan whose own plan answers
+  one is taken to pass it in every column. The plan writes a column
+  without its alias where it reads one relation, and with a partitioned
+  table's alias above its parts' scans: both are read so (found by the
+  review).
+- **A table's integer key by another name** (SQLite's `rowid`, `_rowid_`
+  and `oid`, MySQL's `_rowid`) may be a masked column: over a table with
+  one, those words are read as one (found by the run). SQLite's fence
+  reads such a key as `NULL` anyway; MySQL had nothing else to stop
+  `WHERE _rowid > 3`.
+- **SQLite reads a string as a name** where only a name stands, and joins
+  on `USING ('email')` without asking its authorizer: a string after a
+  dot or in a `USING` list is read as a name (found by the review).
+- **An entry that names a partition or a child table** masks the column
+  of its parent, and so of the parent's other parts: a read of the parent
+  reads the part's rows (found by the review).
+- **A view's column an entry names, on SQLite.** SQLite tells where a
+  result column comes from through the view, as its table's column, so the
+  view's masked column is found by asking SQLite where it comes from
+  selected alone, and a result column from there is masked (found by the
+  review).
+- **PostgreSQL's plan** is read in its expressions' fields alone, not in
+  those that name a relation, an alias or an index: a table named like
+  its masked column (`city.city`) is no use of the column.
+
+**As built in 3a's run 2** (`2026-10-17-mcp-server-3a-2-server.md`): the
+server's side. A connection's masked columns come with it from the
+gateway (`Listed::masked`; the app passes none until run 3 reads the
+setting), and go to the database layer with every check and read.
+`list_connections` names them (`"masked": ["orders.email"]`), as it names
+the hidden tables. `describe_schema` marks a masked column
+`"masked": true` and leaves out what says what its values are: its
+default, the values it may hold, the list MySQL writes into an `enum` or
+a `set` type, and its comment, whose author may give one as an example
+(found by the review). A view that reads one stays listed, marked
+`"reads_masked": "orders.email"`, in the list and in its description
+(agreed on 2026-10-17: the agent knows before it asks, as for a hidden
+table it is told the name). `run_query` marks a masked column of its
+answer `"masked": true`, and the log keeps the answer's masked columns,
+by their names in the answer, in its `masked` field, a JSON list, which
+C.1 gave it from the start.
+
+- **A generated column of a table with a masked column** is masked with
+  it, by an entry of its own (`public.orders.low`): one computed from it
+  (`lower(email)`) answered its value in full, and could be filtered on
+  (found by the review, on PostgreSQL and SQLite). Each driver says which
+  columns of the masked columns' tables are generated: PostgreSQL's
+  `attgenerated`, MySQL's `EXTRA`, SQLite's `pragma_table_xinfo`. Whether
+  the column is computed from the masked one is not asked: it errs toward
+  masking.
+
+**As built in 3a's run 3** (`2026-10-17-mcp-server-3a-3-setting.md`): the
+setting, as 1c-2b's for the tables. A connection's `[connections.agents]`
+table takes `masked = ["orders.email"]`, read through `ColumnName` and
+written back as the person writes it; a file with a masked column is
+version 6, so that a Tabletist that would answer its values as they are
+never reads it. `agents_shown.json` keeps each connection's masked
+columns as last shown. A change made outside the app that masks less (an
+entry taken out, or one with a schema in place of one for every schema)
+is held (`Raised::Masked`), with the sentence a table's has ("agents may
+read more of …"); one that masks more is taken. While one is held, what
+was shown is in force with what the file says now, so that a column the
+change also masks is masked at once; **Put back** writes what was shown
+back. A shown entry that does not read, which only a hand could write,
+holds every change, and while one is held the connection is Off to
+agents, since what that entry masked cannot be kept masked; **Put back**
+writes the entries that read, and they are what was shown from then on
+(found by the review). A connection that hides and masks less is said
+once in the bar. The editor has no control for them until run 4: its
+save keeps what the file says. The app's gateway passes them to the
+server, which has used them since run 2.
+
 **The rule.** It applies to any statement that reads a table with a masked
 column.
 
@@ -2550,7 +2640,7 @@ is off until the person turns it on.
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
-| 3a. Masked columns | 5, below | Run 1a built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`): the rule and its stops. Run 1b, the engines' fences and the values, is next (order changed on 2026-10-17) |
+| 3a. Masked columns | 5, below | Runs 1a to 3 built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`): the rule, its stops, the engines' fences, the values, the server's side and the setting. Run 4, the editor's Masked columns control and the website's guide, is next (order changed on 2026-10-17) |
 | 3b. The Log view, in full | Not cut yet | After 3a |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
@@ -2742,10 +2832,13 @@ pull request:
    renamed or dropped masked column stopping agents, and the system
    catalogs and the users' functions closed on a connection that masks
    (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, built); then each
-   engine's fence and the values replaced by the result columns' origins.
+   engine's fence and the values replaced by the result columns' origins
+   (`2026-10-17-mcp-server-3a-1b-masked-values.md`, built).
 2. The server's side: the setting read, `list_connections`' masked
-   columns, `describe_schema`'s mark, and `masked: true` in an answer.
-3. The setting in `connections.toml`, as 1c-2b's for tables.
+   columns, `describe_schema`'s mark, and `masked: true` in an answer
+   (`2026-10-17-mcp-server-3a-2-server.md`, built).
+3. The setting in `connections.toml`, as 1c-2b's for tables
+   (`2026-10-17-mcp-server-3a-3-setting.md`, built).
 4. The editor's Masked columns control with **Add column…** and its mark,
    and the website's guide.
 

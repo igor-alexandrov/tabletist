@@ -55,11 +55,16 @@ pub fn write(answer: &Answer, max_bytes: usize) -> Result<Written, TooWide> {
     let columns: Vec<Json> = answer
         .columns
         .iter()
-        .map(|column| {
+        .enumerate()
+        .map(|(at, column)| {
             let mut entry = Map::new();
             entry.insert("name".into(), json!(column.name));
             if !column.type_name.is_empty() {
                 entry.insert("type".into(), json!(column.type_name));
+            }
+            // Its every value is `•••`.
+            if answer.masked.get(at) == Some(&true) {
+                entry.insert("masked".into(), json!(true));
             }
             Json::Object(entry)
         })
@@ -159,6 +164,7 @@ mod tests {
     fn answer(rows: Vec<Vec<Value>>, truncated: bool) -> Answer {
         Answer {
             columns: vec![column("id", "INTEGER"), column("note", "")],
+            masked: Vec::new(),
             rows,
             truncated,
             elapsed: Duration::from_millis(4),
