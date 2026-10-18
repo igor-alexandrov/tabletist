@@ -1327,10 +1327,9 @@ fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>>
         error,
         statement: run.statements.get(index),
         why,
-        // On a session that would take it: a run is sent only to a
-        // connected one.
-        again: sql.ran_this_text()
-            && matches!(workspace.status, crate::model::SessionStatus::Connected),
+        // On a session that would take it: a run is sent only to one that
+        // is connected, or that connects again for it.
+        again: sql.ran_this_text() && workspace.takes_commands(),
         workspace,
     })
 }

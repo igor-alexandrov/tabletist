@@ -19,6 +19,7 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 | **New production connections open read-only** | On or off: where the **Open read-only** box of a new production connection starts. A connection you saved keeps its own box | On |
 | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
+| **Disconnect when idle** | Never, or after 5, 15 or 30 minutes, 1 hour or 4 hours unused. The server session is closed; the tabs stay, and the connection connects again when something next needs it: a refresh, a page, a table opened, a run or a save | After 30 min |
 
 A second pane, **Appearance**, sets the theme and how the grids and the
 connection bar are drawn. Each change shows in every open window at once.
@@ -69,6 +70,7 @@ value_tags = true
 [safety]
 production_read_only = true
 confirm_close_edits = true
+idle_disconnect = "30m"
 
 [sidebar]
 show_system_schemas = false
@@ -100,6 +102,7 @@ bar = "tint"
 | `data.value_tags` | `true` or `false` | `true` |
 | `safety.production_read_only` | `true` or `false`. Where the **Open read-only** box of a new production connection starts; the connection is saved with its box set, so a change here changes no saved connection | `true` |
 | `safety.confirm_close_edits` | `true` asks before pending changes are dropped; `false` discards them without asking. While a save runs, what would drop them does nothing until it ends, and closing the window asks either way | `true` |
+| `safety.idle_disconnect` | `"never"`, `"5m"`, `"15m"`, `"30m"`, `"1h"` or `"4h"`. A connection left unused that long has its server session closed; its tabs stay as they were, and it connects again when you next refresh, page, open a table, run or save. Never while changes are pending or something is still loading, running or saving | `"30m"` |
 | `sidebar.show_system_schemas` | `true` shows schemas such as `pg_catalog` and `information_schema` | `false` |
 | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
 | `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |

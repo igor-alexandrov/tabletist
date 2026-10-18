@@ -1626,6 +1626,12 @@ struct Worker {
     /// Sessions closed before they finished connecting.
     closed_early: std::collections::HashSet<SessionId>,
     connecting: std::collections::HashSet<SessionId>,
+    /// The commands sent to a session that is still connecting, in the
+    /// order they came: each goes to the session once it is up, and fails
+    /// as a lost connection if it never is. It lets a session closed while
+    /// idle connect again when it is next used, with what it was used for
+    /// answered by the new session.
+    waiting: HashMap<SessionId, Vec<Command>>,
     /// Watches and reads the settings file. Dropping it ends both.
     settings_watch: Option<SettingsReader>,
     /// The MCP server, its gateway and what agents may use.
@@ -1646,6 +1652,7 @@ impl Worker {
             ready,
             closed_early: Default::default(),
             connecting: Default::default(),
+            waiting: HashMap::new(),
             settings_watch: None,
             #[cfg(test)]
             watched: Watched::default(),
@@ -1669,19 +1676,27 @@ impl Worker {
         }
     }
 
-    /// Registers a connected session, then tells the UI. `Connected` is sent
-    /// only here, after the session is in the map, so a command the UI sends
-    /// right after seeing it always finds the session.
+    /// Takes a finished connect. A session that is up is told to the UI
+    /// (`Connected` is sent only here), then given what waited for it, and
+    /// only then put in the map. The worker handles no command in between,
+    /// so one the UI sends after seeing `Connected` finds the session and
+    /// runs after what waited.
     fn adopt(&mut self, done: Ready) {
         self.connecting.remove(&done.session);
         let closed = self.closed_early.remove(&done.session);
+        let waiting = self.waiting.remove(&done.session).unwrap_or_default();
         match done.outcome {
             // Dropping the handle stops the session task, which closes it.
-            Ok(_) if closed => {}
+            // What waited was answered when it was closed; anything still
+            // here is answered as lost too.
+            Ok(_) if closed => {
+                for command in waiting {
+                    fail(&self.outbox, command, lost());
+                }
+            }
             Ok((driver, encrypted, access, handle)) => {
                 #[cfg(test)]
                 lock(&self.watched).insert(done.session, Arc::clone(&handle.running));
-                self.sessions.insert(done.session, handle);
                 self.outbox.emit(Event::Connected {
                     session: done.session,
                     request: done.request,
@@ -1689,12 +1704,28 @@ impl Worker {
                     encrypted,
                     access,
                 });
+                // After `Connected`, so that the UI knows the session
+                // before its answers; before anything the UI sends once
+                // it does, so that they run in the order they were sent.
+                for command in waiting {
+                    if let Err(error) = handle.queue.send(command) {
+                        fail(&self.outbox, error.0, lost());
+                    }
+                }
+                self.sessions.insert(done.session, handle);
             }
-            Err(error) => self.outbox.emit(Event::ConnectFailed {
-                session: done.session,
-                request: done.request,
-                error,
-            }),
+            Err(error) => {
+                self.outbox.emit(Event::ConnectFailed {
+                    session: done.session,
+                    request: done.request,
+                    error,
+                });
+                // Lost, not failed for good: the tab asks again once it is
+                // connected.
+                for command in waiting {
+                    fail(&self.outbox, command, lost());
+                }
+            }
         }
     }
 
@@ -1806,12 +1837,23 @@ impl Worker {
                     }
                 } else if self.connecting.contains(&session) {
                     self.closed_early.insert(session);
+                    for command in self.waiting.remove(&session).unwrap_or_default() {
+                        fail(&self.outbox, command, lost());
+                    }
                 }
             }
             Command::Cancel { session, request } => {
                 if let Some(handle) = self.sessions.get(&session) {
                     let cancel = handle.cancel.clone();
                     cancel_request(&handle.running, request, move || send_cancel(&cancel));
+                } else if let Some(waiting) = self.waiting.get_mut(&session)
+                    && let Some(at) = waiting
+                        .iter()
+                        .position(|command| request_of(command) == Some(request))
+                {
+                    // Never sent: it is answered as a command the session
+                    // skipped.
+                    skip(&self.outbox, waiting.remove(at));
                 }
             }
             Command::LoadSecret { request, account } => {
@@ -1921,6 +1963,11 @@ impl Worker {
                         if let Err(error) = handle.queue.send(query) {
                             fail(&self.outbox, error.0, lost());
                         }
+                    }
+                    None if self.connecting.contains(&session)
+                        && !self.closed_early.contains(&session) =>
+                    {
+                        self.waiting.entry(session).or_default().push(query);
                     }
                     None => fail(&self.outbox, query, lost()),
                 }
@@ -3271,6 +3318,169 @@ mod tests {
     /// Longer than the wait after the second cancel of a row: a third one
     /// would have been sent by the end of it.
     const THIRD_CANCEL: Duration = Duration::from_millis(1500);
+
+    /// A worker connecting `session` to `spec`, with the commands
+    /// `queued` sent while it connects, and what came of the connect, not
+    /// handed to the worker yet.
+    async fn connecting_with(
+        outbox: Outbox,
+        session: SessionId,
+        spec: ConnectSpec,
+        queued: Vec<Command>,
+    ) -> (Worker, Ready) {
+        let (mut worker, mut ready) = Worker::new(outbox, Keyring::memory());
+        worker.handle(Command::Connect {
+            session,
+            request: RequestId(1),
+            spec,
+            secrets: Secrets::default(),
+            host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
+        });
+        for command in queued {
+            worker.handle(command);
+        }
+        let done = tokio::time::timeout(WAIT, ready.recv())
+            .await
+            .expect("the connect ends")
+            .expect("the connect says how it ended");
+        (worker, done)
+    }
+
+    /// The next event, waited for.
+    fn next_event(received: &mpsc::Receiver<Event>) -> Event {
+        received.recv_timeout(WAIT).expect("an event")
+    }
+
+    #[test]
+    fn what_is_sent_while_a_session_connects_is_answered_once_it_is_up() {
+        let (outbox, received) = quiet_outbox();
+        let (_dir, spec) = fixture();
+        let session = SessionId(1);
+        let queued = vec![
+            Command::ListSchemas {
+                session,
+                request: RequestId(2),
+            },
+            Command::FetchRows {
+                session,
+                request: RequestId(3),
+                query: RowQuery::new(ObjectRef::new("main", "users"), 2),
+            },
+        ];
+        runtime().block_on(async {
+            let (mut worker, done) = connecting_with(outbox, session, spec, queued).await;
+            // Nothing is answered before the session is up.
+            assert!(received.try_recv().is_err());
+            worker.adopt(done);
+            assert!(matches!(next_event(&received), Event::Connected { .. }));
+            // In the order they were sent.
+            assert!(matches!(
+                next_event(&received),
+                Event::Schemas {
+                    request: RequestId(2),
+                    result: Ok(_),
+                    ..
+                }
+            ));
+            match next_event(&received) {
+                Event::Rows {
+                    request: RequestId(3),
+                    result: Ok(page),
+                    ..
+                } => assert_eq!(page.rows.len(), 2),
+                other => panic!("expected rows, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn what_waits_for_a_connect_that_fails_or_is_closed_is_lost() {
+        let is_lost = |event: Event, id: u64| match event {
+            Event::Schemas {
+                request,
+                result: Err(error),
+                ..
+            } if request == RequestId(id) => error.is_connection_lost(),
+            other => panic!("expected schemas {id}, got {other:?}"),
+        };
+        let session = SessionId(1);
+        let queued = || {
+            vec![Command::ListSchemas {
+                session,
+                request: RequestId(2),
+            }]
+        };
+        // A file that cannot be opened.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = ConnectSpec::sqlite(dir.path().join("no").join("such.db"));
+        let (outbox, received) = quiet_outbox();
+        runtime().block_on(async {
+            let (mut worker, done) = connecting_with(outbox, session, missing, queued()).await;
+            worker.adopt(done);
+            assert!(matches!(next_event(&received), Event::ConnectFailed { .. }));
+            assert!(is_lost(next_event(&received), 2));
+        });
+        // Closed before it is up: answered at once.
+        let (_dir, spec) = fixture();
+        let (outbox, received) = quiet_outbox();
+        runtime().block_on(async {
+            let (mut worker, done) = connecting_with(outbox, session, spec, queued()).await;
+            worker.handle(Command::Close { session });
+            assert!(is_lost(next_event(&received), 2));
+            // Sent after the close, before the connect ends: not held.
+            worker.handle(Command::ListSchemas {
+                session,
+                request: RequestId(3),
+            });
+            assert!(is_lost(next_event(&received), 3));
+            worker.adopt(done);
+            assert!(received.try_recv().is_err(), "and nothing more");
+        });
+    }
+
+    #[test]
+    fn a_cancel_of_what_waits_for_the_session_takes_it_away() {
+        let (outbox, received) = quiet_outbox();
+        let (_dir, spec) = fixture();
+        let session = SessionId(1);
+        let queued = vec![
+            Command::ListSchemas {
+                session,
+                request: RequestId(2),
+            },
+            Command::Cancel {
+                session,
+                request: RequestId(2),
+            },
+            Command::ListSchemas {
+                session,
+                request: RequestId(3),
+            },
+        ];
+        runtime().block_on(async {
+            let (mut worker, done) = connecting_with(outbox, session, spec, queued).await;
+            // Skipped, as a session skips what it was told to cancel.
+            assert!(matches!(
+                next_event(&received),
+                Event::Schemas {
+                    request: RequestId(2),
+                    result: Err(Error::Cancelled),
+                    ..
+                }
+            ));
+            worker.adopt(done);
+            assert!(matches!(next_event(&received), Event::Connected { .. }));
+            assert!(matches!(
+                next_event(&received),
+                Event::Schemas {
+                    request: RequestId(3),
+                    result: Ok(_),
+                    ..
+                }
+            ));
+        });
+    }
 
     #[test]
     fn a_session_closed_before_its_script_is_registered_never_runs_it() {

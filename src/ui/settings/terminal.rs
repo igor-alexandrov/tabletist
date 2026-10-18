@@ -11,7 +11,7 @@ use crate::app::{App, PinState};
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, SettingsDialog, SettingsPane, SettingsRow};
-use crate::settings::{OptionId, OptionValue, Settings};
+use crate::settings::{Idle, OptionId, OptionValue, Settings};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
@@ -853,7 +853,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
     let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
     match option {
         // Between its chevrons, as the cursor's row has it.
-        OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
+        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect => {
             width(&format!("‹ {} ›", stepped_text(option, settings, skin)))
         }
         OptionId::Timestamps
@@ -878,12 +878,17 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
 }
 
 /// A stepped option's value as its row writes it: the page size, the log's
-/// days.
+/// days, the zone, the idle time.
 fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
     match option {
         OptionId::LogDays => skin
             .look
             .label(&super::days(skin.locale, settings.mcp_log_days)),
+        // As the file writes it: `30m`; never in words.
+        OptionId::IdleDisconnect => match settings.idle_disconnect {
+            Idle::Never => skin.say("Never"),
+            choice => choice.name().to_owned(),
+        },
         // As the artboard writes it: `system (america/new_york)`.
         OptionId::Tz => skin.look.label(&match (&settings.tz, skin.system) {
             (crate::settings::Zone::System, Some(name)) => {
@@ -1003,7 +1008,7 @@ fn option_row(
     if let Some(button) = button
         && matches!(
             option,
-            OptionId::PageSize | OptionId::LogDays | OptionId::Tz
+            OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect
         )
     {
         let name = gettext(locale, terminal_label(option));
@@ -1025,7 +1030,7 @@ fn option_row(
         on_cursor,
     };
     match option {
-        OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
+        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect => {
             stepper(ui, cell, option, settings, skin, actions)
         }
         OptionId::Timestamps
@@ -1054,9 +1059,9 @@ fn option_row(
     }
 }
 
-/// A stepped option, the page size or the log's days: its value as it is,
-/// and on the cursor's row between the chevrons that step it, each dim
-/// where there is no value on its side.
+/// A stepped option, the page size, the log's days, the zone or the idle
+/// time: its value as it is, and on the cursor's row between the chevrons
+/// that step it, each dim where there is no value on its side.
 fn stepper(
     ui: &mut Ui,
     cell: Cell,
@@ -1188,6 +1193,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
         OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),
         // As drawn: nothing to add.
         OptionId::ConfirmCloseEdits => Text::new(look),
+        OptionId::IdleDisconnect => dim(&skin.say("tabs reconnect on use")),
         OptionId::AgentsOn => dim(&skin.say("while tabletist is open")),
         // The key that shows the log, from this row, where there is a
         // window to show it in.

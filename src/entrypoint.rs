@@ -616,6 +616,44 @@ mod tests {
     }
 
     #[test]
+    fn a_session_closed_while_idle_connects_again_for_the_next_fetch() {
+        use crate::testing::Harness;
+        let backend = crate::backend::Backend::start_with(
+            crate::backend::Waker::default(),
+            keyring_for(true),
+        );
+        let mut harness = Harness::with_backend(egui::vec2(1280.0, 800.0), backend);
+        demo_setup(&mut harness.app);
+        let rows = |app: &crate::app::App| {
+            app.workspace(app.active_tab_id())
+                .and_then(|workspace| workspace.active_object_tab())
+                .and_then(|object| object.page())
+                .map(|page| page.rows.len())
+        };
+        let wait = std::time::Duration::from_secs(20);
+        assert!(harness.run_until(wait, |app| rows(app) == Some(5)));
+        let tab = harness.app.active_tab_id();
+        let old = harness.app.workspace(tab).unwrap().session;
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(31 * 60);
+        harness.app.close_idle(later);
+        assert!(matches!(
+            harness.app.workspace(tab).unwrap().status,
+            crate::model::SessionStatus::Idle
+        ));
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        let answered = harness.run_until(wait, |app| {
+            let workspace = app.workspace(tab).unwrap();
+            matches!(workspace.status, crate::model::SessionStatus::Connected)
+                && workspace.session != old
+                && workspace
+                    .active_object_tab()
+                    .is_some_and(|object| !object.rows.is_loading() && object.rows.error.is_none())
+        });
+        assert!(answered, "the new session answers the fetch");
+        assert_eq!(rows(&harness.app), Some(5));
+    }
+
+    #[test]
     fn the_desktop_entry_matches_the_app_id() {
         let entry = include_str!("../packaging/linux/dev.tabletist.Tabletist.desktop");
         assert!(entry.contains(&format!("StartupWMClass={APP_ID}")));
