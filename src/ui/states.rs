@@ -675,9 +675,9 @@ pub fn skeleton(ui: &Ui, rect: Rect, look: &Look, palette: &Palette) {
     let fixed = [32.0, 76.0, 40.0];
     let shares = [1.0, 0.7, 0.85, 0.6];
     let fill = palette.surface.gamma_multiply(0.7);
-    let rows = ((rect.height() / look.grid_row) as usize).min(6);
+    let rows = ((rect.height() / look.row()) as usize).min(6);
     for row in 0..rows {
-        let center = rect.top() + look.grid_row * (row as f32 + 0.5);
+        let center = rect.top() + look.row() * (row as f32 + 0.5);
         // The fixed bars, then the last one in the room that is left.
         let mut x = rect.left() + 12.0;
         let rest = (rect.right() - 12.0 - x - fixed.iter().sum::<f32>() - 3.0 * GAP).max(0.0);

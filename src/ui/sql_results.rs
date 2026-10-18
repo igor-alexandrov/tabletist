@@ -193,6 +193,9 @@ struct Place<'a> {
     blocked: Option<Blocked<'a>>,
     /// Whether the arrow keys move in the result's grid.
     keys: bool,
+    /// The look the result's grid is drawn in: the rows as dense, as
+    /// striped and the header as tall as the settings have them.
+    grid: Look,
 }
 
 fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) {
@@ -216,6 +219,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         driver: workspace.driver,
         blocked: blocked(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
+        grid: look.with_grid(&app.settings),
     };
     let state = state(sql);
     let pane = ui.max_rect();
@@ -1580,6 +1584,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         sql,
         fit,
         keys,
+        grid: grid_look,
         ..
     } = *place;
     let Some((columns, rows, truncated)) = sql.shown_rows() else {
@@ -1689,7 +1694,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         sql.selection,
         keys,
         palette,
-        look,
+        &grid_look,
         // A result has nothing pending and is never edited: no row is
         // marked, and no cell has an editor.
         &|row| grid::Row {
@@ -1728,7 +1733,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     }
     if rows.is_empty() {
         let under = Rect::from_min_max(
-            pos2(area.left(), area.top() + grid::header_height(look)),
+            pos2(area.left(), area.top() + grid::header_height(&grid_look)),
             area.max,
         );
         let said = env.said(|_| gettext(locale, "No rows").into_owned());

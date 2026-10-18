@@ -13,6 +13,8 @@ mod agents_tests;
 #[cfg(test)]
 #[cfg(any(unix, windows))]
 mod agent_settings_tests;
+#[cfg(test)]
+mod appearance_settings_tests;
 pub mod cell_editor;
 #[cfg(test)]
 mod complete_tests;
@@ -4067,7 +4069,7 @@ mod tests {
 
     /// Opens a SQL editor in `tab`, runs `SELECT 1` in it and answers with
     /// `rows` rows.
-    fn with_sql_result(
+    pub(super) fn with_sql_result(
         harness: &mut Harness,
         tab: crate::model::ConnTabId,
         rows: usize,

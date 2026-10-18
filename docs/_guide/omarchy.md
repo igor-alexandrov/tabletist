@@ -83,7 +83,7 @@ list instead.
 | `j` `k`, arrows, Home, End | Move |
 | Enter | Open the table or view |
 | `/` | Filter the list |
-| `t` | Switch between tree and flat |
+| `t` | Switch between tree and flat. The connection keeps its choice; Settings › Appearance sets the default |
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |
 | Ctrl+B | Hide the sidebar |

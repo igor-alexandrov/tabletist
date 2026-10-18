@@ -101,6 +101,13 @@ impl AppDirs {
         self.state.join("labels.json")
     }
 
+    /// How each connection lists its tables where its user chose: tree or
+    /// flat, by its id. Of this computer, and no setting: the setting is
+    /// the default for a connection with no choice.
+    pub fn table_lists_file(&self) -> PathBuf {
+        self.state.join("table_lists.json")
+    }
+
     /// When each saved connection last connected. Of this computer, and
     /// written at every connect: kept with the state, so that the file of
     /// connections is written only when one of them changes.
