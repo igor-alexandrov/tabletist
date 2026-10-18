@@ -3,7 +3,10 @@ name: Claude review
 # Claude reads a pull request, comments on it, and ends with a review that
 # approves it or requests changes. A blocking finding requests changes; minor
 # ones alone approve. Each review replaces the state the last one left, so a
-# push that fixes what was blocking turns the request into an approval.
+# push that fixes what was blocking turns the request into an approval. A run
+# first dismisses the bot's earlier approval, so one that stops short of its
+# review leaves no approval standing for a head nobody reviewed. AGENTS.md
+# says why the approval must not count toward a required review.
 # Approving needs "Allow GitHub Actions to create and approve pull requests"
 # in the repository's Actions settings; without it the review step fails.
 #
@@ -123,6 +126,22 @@ jobs:
             echo "want=$want"
             echo "go=true"
           } >> "$GITHUB_OUTPUT"
+
+      # An approval stands until a later review replaces it. Dismissed here,
+      # before anything can stop this run, it does not outlive the commit it
+      # was given for when the run ends without a review of its own.
+      - name: Dismiss the earlier approval
+        if: steps.pr.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/reviews" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and .state == "APPROVED") | .id')
+          for id in $ids; do
+            gh api --silent -X PUT "repos/$GH_REPO/pulls/$PR/reviews/$id/dismissals" \
+              -f message="Dismissed while a new Claude review runs." -f event=DISMISS
+          done
 
       - name: Base branch, at the workspace root
         if: steps.pr.outputs.go == 'true'
