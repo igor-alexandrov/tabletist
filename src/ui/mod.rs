@@ -4071,6 +4071,98 @@ value_tags   = true
         object.structure.started = Some(later);
     }
 
+    /// Reconnects the tab, then sorts its table, which waits for the
+    /// session: the connect sent, as (session, request).
+    fn sort_while_reconnecting(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+    ) -> (crate::backend::SessionId, crate::backend::RequestId) {
+        harness.app.apply(crate::model::Action::Reconnect(tab));
+        let Command::Connect {
+            session, request, ..
+        } = *crate::testing::last_sent(&harness.app)
+        else {
+            panic!("expected Connect");
+        };
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SortBy {
+            tab,
+            object_tab,
+            column: "email".into(),
+        });
+        (session, request)
+    }
+
+    /// How many bars of the loading skeleton the last frame painted: 10 pt
+    /// tall and a key's width or wider. Their color is faded under a
+    /// strip, as the rest of the tab is.
+    fn skeleton_bars(harness: &Harness) -> usize {
+        harness
+            .fills
+            .iter()
+            .filter(|(rect, _)| rect.height() == 10.0 && rect.width() >= 32.0)
+            .count()
+    }
+
+    #[test]
+    fn rows_that_wait_for_a_reconnect_show_the_loading_skeleton() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            sort_while_reconnecting(&mut harness, tab);
+            // A connect only just sent shows nothing of a wait yet, as a
+            // fetch does not.
+            let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+            harness.app.workspace_mut(tab).unwrap().connect_started = Some(later);
+            harness.settle();
+            assert_eq!(skeleton_bars(&harness), 0, "{}", look.name);
+            let earlier = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+            harness.app.workspace_mut(tab).unwrap().connect_started = earlier;
+            harness.settle();
+            // The terminal look draws no skeleton for any wait: its strip
+            // says the connection is on its way.
+            if look.terminal {
+                assert_eq!(skeleton_bars(&harness), 0, "{}", look.name);
+            } else {
+                assert!(skeleton_bars(&harness) > 0, "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn rows_that_waited_for_a_reconnect_that_failed_show_the_lost_card() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            let (session, request) = sort_while_reconnecting(&mut harness, tab);
+            harness.app.apply(crate::model::Action::Backend(
+                crate::backend::Event::ConnectFailed {
+                    session,
+                    request,
+                    error: tabletist_db::Error::ConnectionLost("refused".into()),
+                },
+            ));
+            // The backend answers what the tab asked of the lost session.
+            let Command::FetchRows { request, .. } = *crate::testing::last_sent(&harness.app)
+            else {
+                panic!("expected FetchRows");
+            };
+            harness
+                .app
+                .apply(crate::model::Action::Backend(crate::backend::Event::Rows {
+                    session,
+                    request,
+                    result: Err(tabletist_db::Error::ConnectionLost(
+                        "this connection is closed".into(),
+                    )),
+                }));
+            assert!(harness.has("Retry"), "{}", look.name);
+            assert_eq!(skeleton_bars(&harness), 0, "{}", look.name);
+        }
+    }
+
     #[test]
     fn a_query_that_lasts_says_so_and_can_be_cancelled() {
         for look in crate::theme::Look::ALL {
