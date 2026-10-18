@@ -152,6 +152,10 @@ pub struct App {
     pub desktop_theme: crate::desktop_theme::Read,
     /// A read came back since the last `logic`.
     desktop_read: bool,
+    /// The number of the last read asked for, and of the newest one taken:
+    /// an older one that ends later is dropped.
+    theme_asked: u64,
+    theme_taken: u64,
     /// The pin the status line last said could not be read: it is said
     /// once.
     pin_told: Option<String>,
@@ -283,6 +287,8 @@ impl App {
             window_theme: egui::SystemTheme::SystemDefault,
             desktop_theme: crate::desktop_theme::Read::default(),
             desktop_read: false,
+            theme_asked: 0,
+            theme_taken: 0,
             pin_told: None,
             window_title: "Tabletist".into(),
             window_asks: Vec::new(),
@@ -3323,9 +3329,15 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
-            Event::Theme(read) => {
-                // Reads end in any order: one that read another pin
-                // than the one asked for now leaves the last one's.
+            Event::Theme { asked, read } => {
+                // Reads end in any order: one older than the newest taken
+                // saw a theme of Omarchy's that is gone, and one that read
+                // another pin than the one asked for now leaves the last
+                // one's.
+                if asked < self.theme_taken {
+                    return;
+                }
+                self.theme_taken = asked;
                 let asked = read.pin.as_ref().map(|(pin, _)| pin.as_str()) == self.pin_to_read();
                 self.desktop_theme.current = read.current;
                 if asked {
@@ -5535,9 +5547,11 @@ impl App {
             return;
         }
         let pin = self.pin_to_read().map(str::to_owned);
+        self.theme_asked += 1;
         self.backend.send(Command::ReadTheme {
             places: crate::desktop_theme::Places::of(home),
             pin,
+            asked: self.theme_asked,
         });
     }
 
@@ -6334,7 +6348,9 @@ mod tests {
                 }),
             )),
         };
-        harness.app.apply(Action::Backend(Event::Theme(read)));
+        harness
+            .app
+            .apply(Action::Backend(Event::Theme { asked: 0, read }));
         harness.app.logic(&harness.ctx.clone());
     }
 
@@ -6425,6 +6441,30 @@ mod tests {
     }
 
     #[test]
+    fn a_read_that_ends_after_a_newer_one_is_dropped() {
+        let (mut harness, _, _) = following_omarchy();
+        // Omarchy switched to Catppuccin, then Nord: the read that saw
+        // Catppuccin ends last.
+        let answer = |harness: &mut Harness, asked, current: &str| {
+            let read = crate::desktop_theme::Read {
+                current: Some(current.into()),
+                pin: None,
+            };
+            harness
+                .app
+                .apply(Action::Backend(Event::Theme { asked, read }));
+        };
+        answer(&mut harness, 2, "Nord");
+        answer(&mut harness, 1, "Catppuccin");
+        assert_eq!(harness.app.desktop_theme.current.as_deref(), Some("Nord"));
+        answer(&mut harness, 3, "Rose Pine");
+        assert_eq!(
+            harness.app.desktop_theme.current.as_deref(),
+            Some("Rose Pine")
+        );
+    }
+
+    #[test]
     fn a_missing_pin_read_again_while_the_folder_is_read_is_not_said_again() {
         let (mut harness, _, _) = following_omarchy();
         harness.connect_fake();
@@ -6465,7 +6505,7 @@ mod tests {
             std::mem::take(&mut harness.app.backend.sent)
                 .into_iter()
                 .filter_map(|command| match command {
-                    Command::ReadTheme { places, pin } => {
+                    Command::ReadTheme { places, pin, .. } => {
                         assert_eq!(places.home, home.path());
                         Some(pin)
                     }

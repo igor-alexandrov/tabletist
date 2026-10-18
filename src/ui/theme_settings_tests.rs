@@ -92,7 +92,9 @@ fn read(harness: &mut Harness, name: &str, palette: Option<Palette>) {
             }),
         )),
     };
-    harness.app.apply(Action::Backend(Event::Theme(read)));
+    harness
+        .app
+        .apply(Action::Backend(Event::Theme { asked: 0, read }));
     logic(harness);
 }
 
@@ -251,7 +253,10 @@ fn a_pin_found_nowhere_is_said_beside_it() {
             }),
         )),
     };
-    harness.app.apply(Action::Backend(Event::Theme(file)));
+    harness.app.apply(Action::Backend(Event::Theme {
+        asked: 0,
+        read: file,
+    }));
     logic(&mut harness);
     assert!(shows(&mut harness, "now: ~/mine/Sunset.json · pinned"));
     assert!(shows(&mut harness, "read from ~/mine/Sunset.json"));
