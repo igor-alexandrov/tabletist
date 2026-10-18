@@ -196,6 +196,13 @@ pub enum Command {
         pin: Option<String>,
         asked: u64,
     },
+    /// Reads the terminal look's font through fontconfig: the one `font`
+    /// names, or the system's monospace. Answered with [`Event::Font`],
+    /// which carries `asked`: reads end in any order.
+    ReadFont {
+        font: Option<String>,
+        asked: u64,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -357,6 +364,11 @@ pub enum Event {
     Theme {
         asked: u64,
         read: crate::desktop_theme::Read,
+    },
+    /// What the [`Command::ReadFont`] numbered `asked` read.
+    Font {
+        asked: u64,
+        read: Box<crate::typography::desktop_font::Read>,
     },
     /// The time zone database, read whole ([`Command::LoadZones`]).
     Zones(Arc<crate::zones::Zones>),
@@ -1906,6 +1918,16 @@ impl Worker {
                     outbox.emit(Event::Theme { asked, read });
                 });
             }
+            Command::ReadFont { font, asked } => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    let read = crate::typography::desktop_font::read(font.as_deref());
+                    outbox.emit(Event::Font {
+                        asked,
+                        read: Box::new(read),
+                    });
+                });
+            }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
                 tokio::spawn(async move {
@@ -1957,6 +1979,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
+        | Command::ReadFont { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => SessionId(0),
     }
@@ -1987,6 +2010,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
+        | Command::ReadFont { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => None,
     }
@@ -2075,6 +2099,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
+        | Command::ReadFont { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => return,
     };
@@ -2359,6 +2384,7 @@ async fn run_session(
             | Command::EditSettingsFile { .. }
             | Command::RevealSettingsFile { .. }
             | Command::ReadTheme { .. }
+            | Command::ReadFont { .. }
             | Command::Flush { .. }
             | Command::Agents(_) => None,
         };

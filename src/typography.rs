@@ -19,7 +19,7 @@
 pub mod desktop_font;
 mod fonts;
 
-pub use fonts::configure;
+pub use fonts::{TerminalFaces, configure};
 
 use std::sync::Arc;
 

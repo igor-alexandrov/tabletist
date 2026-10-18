@@ -128,9 +128,13 @@ fn alias(fonts: &mut FontDefinitions, name: &str, from: &FontFamily) {
     fonts.families.insert(FontFamily::Name(name.into()), list);
 }
 
-/// Replaces the faces fastframe set up with the look's. `desktop` allows
-/// reading the desktop's own monospace font (never in tests or screenshots).
-pub fn configure(fonts: &mut FontDefinitions, look: &Look, desktop: bool) {
+/// The terminal look's monospace at 400, 500 and 700.
+pub type TerminalFaces = [Arc<FontData>; 3];
+
+/// Replaces the faces fastframe set up with the look's. `desktop` is the
+/// desktop's own monospace that fontconfig gave the terminal look (never in
+/// tests or screenshots), which has the bundled one drawn without it.
+pub fn configure(fonts: &mut FontDefinitions, look: &Look, desktop: Option<&TerminalFaces>) {
     match look.faces.typeface {
         Typeface::Inter => inter(fonts),
         Typeface::Plex => plex(fonts),
@@ -216,19 +220,8 @@ fn plex(fonts: &mut FontDefinitions) {
     inter(fonts);
 }
 
-/// The desktop's monospace at 400, 500 and 700, when fontconfig has it.
-fn desktop_faces() -> Option<[Arc<FontData>; 3]> {
-    let regular = super::desktop_font::monospace("monospace")?;
-    let medium = super::desktop_font::monospace("monospace:medium");
-    let bold = super::desktop_font::monospace("monospace:bold");
-    let regular = Arc::new(regular);
-    let medium = medium.map_or_else(|| regular.clone(), Arc::new);
-    let bold = bold.map_or_else(|| medium.clone(), Arc::new);
-    Some([regular, medium, bold])
-}
-
 #[cfg(any(target_os = "linux", test))]
-fn bundled_terminal_faces() -> Option<[Arc<FontData>; 3]> {
+fn bundled_terminal_faces() -> Option<TerminalFaces> {
     Some([
         weighted(JETBRAINS_MONO, 400.0),
         weighted(JETBRAINS_MONO, 500.0),
@@ -237,16 +230,13 @@ fn bundled_terminal_faces() -> Option<[Arc<FontData>; 3]> {
 }
 
 #[cfg(not(any(target_os = "linux", test)))]
-fn bundled_terminal_faces() -> Option<[Arc<FontData>; 3]> {
+fn bundled_terminal_faces() -> Option<TerminalFaces> {
     None
 }
 
 /// Omarchy: one monospace face for the interface and the data alike.
-fn terminal(fonts: &mut FontDefinitions, desktop: bool) {
-    let faces = desktop
-        .then(desktop_faces)
-        .flatten()
-        .or_else(bundled_terminal_faces);
+fn terminal(fonts: &mut FontDefinitions, desktop: Option<&TerminalFaces>) {
+    let faces = desktop.cloned().or_else(bundled_terminal_faces);
     let Some(faces) = faces else {
         // No monospace of its own: the families still exist, on Inter.
         for weight in [400, 500, 700] {
@@ -456,7 +446,7 @@ mod tests {
         let mut fonts = fastframe_fonts::FontSetup::default()
             .system_fallbacks(false)
             .definitions();
-        configure(&mut fonts, look, false);
+        configure(&mut fonts, look, None);
         fonts
     }
 

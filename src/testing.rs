@@ -1588,7 +1588,7 @@ impl Harness {
     pub fn set_look(&mut self, look: crate::theme::Look) {
         let look = look.with_text(&self.app.settings);
         self.app.look = look;
-        crate::theme::install(&self.ctx, false, &look);
+        self.app.fonts = crate::theme::install_with(&self.ctx, false, &look, None);
         crate::theme::apply(&self.ctx, &self.app.palette, &look);
     }
 }

@@ -4,6 +4,7 @@
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
 use crate::settings::{FontSize, FontSizes, InterfaceSize, Mode, RowHeight, Settings, Theme};
+use crate::typography::{Kind, TerminalFaces};
 
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
@@ -750,15 +751,47 @@ fn text_rendering() -> fastframe_text::TextRendering {
 /// Installs fonts, image loaders and icons once per egui context.
 /// `system_fallbacks` is off in tests and screenshots for reproducible output.
 pub fn install(ctx: &egui::Context, system_fallbacks: bool, look: &Look) {
+    let _ = install_with(ctx, system_fallbacks, look, None);
+}
+
+/// [`install`], with `desktop`, the terminal look's font as fontconfig gave
+/// it (never in tests or screenshots): the bundled one is drawn without.
+/// Returns the fonts it set, for [`set_terminal_faces`].
+pub fn install_with(
+    ctx: &egui::Context,
+    system_fallbacks: bool,
+    look: &Look,
+    desktop: Option<&TerminalFaces>,
+) -> egui::FontDefinitions {
     let mut fonts = fastframe_fonts::FontSetup::default()
         .system_fallbacks(system_fallbacks)
         .definitions();
-    // Tests and screenshots (no system fallbacks) stay reproducible.
-    crate::typography::configure(&mut fonts, look, system_fallbacks);
+    crate::typography::configure(&mut fonts, look, desktop);
     text_rendering().apply_to(&mut fonts);
-    ctx.set_fonts(fonts);
+    ctx.set_fonts(fonts.clone());
     egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
+    fonts
+}
+
+/// Draws the terminal look in `desktop`, the font fontconfig gave for the
+/// settings' name, or in the bundled one for none: `fonts`, the ones set,
+/// with the terminal's faces put in. Nothing is read from the disk here.
+pub fn set_terminal_faces(
+    ctx: &egui::Context,
+    fonts: &mut egui::FontDefinitions,
+    look: &Look,
+    desktop: Option<&TerminalFaces>,
+) {
+    crate::typography::configure(fonts, look, desktop);
+    // The others have the rendering's hinting already.
+    for weight in [400, 500, 700] {
+        let name = crate::typography::family_name(Typeface::Terminal, Kind::Mono, weight);
+        if let Some(data) = fonts.font_data.get_mut(&name) {
+            text_rendering().tweak(&mut std::sync::Arc::make_mut(data).tweak);
+        }
+    }
+    ctx.set_fonts(fonts.clone());
 }
 
 /// Applies the palette and look to egui's own widgets and text styles.

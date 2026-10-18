@@ -2877,7 +2877,7 @@ mod tests {
             .system_fallbacks(false)
             .definitions();
         for look in Look::ALL {
-            crate::typography::configure(&mut fonts, &look, false);
+            crate::typography::configure(&mut fonts, &look, None);
         }
         ctx.set_fonts(fonts);
         let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});

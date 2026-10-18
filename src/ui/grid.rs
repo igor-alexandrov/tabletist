@@ -286,7 +286,7 @@ pub fn data_role(look: &Look) -> TextRole {
 /// design's when the fonts at hand have them (see [`Marks::pick`]). Found
 /// once for each set of faces, not for every cell.
 pub fn marks(ctx: &egui::Context, look: &Look) -> Marks {
-    let id = Id::new(("cell-marks", look.faces));
+    let id = marks_id(look);
     if let Some(marks) = ctx.data(|data| data.get_temp::<Marks>(id)) {
         return marks;
     }
@@ -294,6 +294,17 @@ pub fn marks(ctx: &egui::Context, look: &Look) -> Marks {
     let marks = ctx.fonts_mut(|fonts| Marks::pick(|character| fonts.has_glyph(&font, character)));
     ctx.data_mut(|data| data.insert_temp(id, marks));
     marks
+}
+
+/// Where the marks found for `look`'s faces are kept.
+pub(crate) fn marks_id(look: &Look) -> Id {
+    Id::new(("cell-marks", look.faces))
+}
+
+/// Forgets the marks found for `look`'s faces: the terminal look's face
+/// changed under them (a new font read through fontconfig).
+pub fn forget_marks(ctx: &egui::Context, look: &Look) {
+    ctx.data_mut(|data| data.remove::<Marks>(marks_id(look)));
 }
 
 /// Paints `text` in `role` at `x` (its left edge, or its right with
