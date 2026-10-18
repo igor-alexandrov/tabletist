@@ -177,7 +177,9 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
         (NewValue::Default { .. }, None) => false,
         (new, loaded) => loaded.is_none_or(|loaded| {
             is_change(loaded, new, class)
-                && !(temporal && crate::edit::same_moment_typed(loaded, new))
+                && !(temporal
+                    && crate::edit::shows_in_zone(table.dialect)
+                    && crate::edit::same_moment_typed(loaded, new))
         }),
     };
     let problem = changed
@@ -806,14 +808,16 @@ impl App {
                     },
                     // A new row's cell starts from nothing.
                     // A moment with an offset as the cell shows it: in
-                    // the zone, and edited there.
+                    // the zone, and edited there, where the engine sends
+                    // one.
                     None => table
                         .loaded(cell)
                         .map(|loaded| {
                             let start = start_text(loaded, class);
                             let temporal =
                                 table.page.columns.get(cell.col).map(|column| column.kind)
-                                    == Some(tabletist_db::ValueKind::Temporal);
+                                    == Some(tabletist_db::ValueKind::Temporal)
+                                    && crate::edit::shows_in_zone(table.dialect);
                             temporal
                                 .then(|| crate::ui::format::in_zone(&start, table.zone))
                                 .flatten()

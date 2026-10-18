@@ -985,6 +985,17 @@ pub fn same_moment_typed(loaded: &Value, new: &NewValue) -> bool {
     }
 }
 
+/// Whether the engine sends a moment with its offset (PostgreSQL's
+/// `timestamptz`), which is shown and edited in the settings' zone. A
+/// SQLite or MySQL value with an offset in its text is text the person
+/// stored, and is shown and edited as it is.
+pub fn shows_in_zone(dialect: Dialect) -> bool {
+    match dialect {
+        Dialect::Postgres => true,
+        Dialect::MySql | Dialect::Sqlite => false,
+    }
+}
+
 /// Whether a column of `type_name` keeps a moment with its offset, so that
 /// a value typed into it without one is read in the server session's zone
 /// (PostgreSQL's `timestamptz`). MySQL's `TIMESTAMP` and SQLite's dates

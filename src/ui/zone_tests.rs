@@ -143,7 +143,8 @@ fn a_text_column_that_reads_as_a_moment_is_left_alone() {
 #[test]
 fn a_sql_result_shows_the_moment_in_the_zone() {
     let mut harness = Harness::new();
-    let _tab = harness.connect_fake();
+    let tab = harness.connect_fake();
+    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Postgres;
     harness.press(Key::T, Modifiers::COMMAND);
     harness.frame(vec![egui::Event::Paste(
         "SELECT created_at FROM book_covers".into(),
@@ -196,10 +197,12 @@ fn the_row_panel_shows_the_system_zone_too() {
     );
 }
 
-/// The covers' tab on PostgreSQL, the one engine with an offset to send.
-fn covers_on_postgres() -> (Harness, ConnTabId, TabId) {
+/// The covers' tab with its values on SQLite, which keeps a date as the
+/// text it was given.
+fn covers_on_sqlite() -> (Harness, ConnTabId, TabId) {
     let (mut harness, tab, id) = covers();
-    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Postgres;
+    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Sqlite;
+    harness.settle();
     (harness, tab, id)
 }
 
@@ -250,7 +253,7 @@ fn pending(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<String> {
 
 #[test]
 fn the_editor_opens_on_the_moment_as_the_cell_shows_it() {
-    let (mut harness, tab, id) = covers_on_postgres();
+    let (mut harness, tab, id) = covers();
     zone(&mut harness, new_york());
     open_editor(&mut harness, tab, id);
     assert_eq!(
@@ -268,7 +271,7 @@ fn the_editor_opens_on_the_moment_as_the_cell_shows_it() {
 
 #[test]
 fn a_moment_typed_without_an_offset_is_sent_with_the_zones() {
-    let (mut harness, tab, id) = covers_on_postgres();
+    let (mut harness, tab, id) = covers();
     zone(&mut harness, new_york());
     open_editor(&mut harness, tab, id);
     commit(&mut harness, tab, id, "2026-01-12 06:00:00");
@@ -287,8 +290,7 @@ fn a_moment_typed_without_an_offset_is_sent_with_the_zones() {
 
 #[test]
 fn an_engine_that_keeps_no_offset_is_sent_what_was_typed() {
-    // The fake session is SQLite's.
-    let (mut harness, tab, id) = covers();
+    let (mut harness, tab, id) = covers_on_sqlite();
     zone(&mut harness, new_york());
     open_editor(&mut harness, tab, id);
     commit(&mut harness, tab, id, "2026-01-12 06:00:00");
@@ -475,4 +477,24 @@ fn a_zone_the_database_does_not_know_is_reported_in_both_looks() {
         }));
     harness.settle();
     assert!(harness.has("1 line in the file could not be read and was ignored"));
+}
+
+#[test]
+fn a_sqlite_text_with_an_offset_is_shown_and_edited_as_stored() {
+    let (mut harness, tab, id) = covers_on_sqlite();
+    harness.app.workspace_mut(tab).unwrap().row_panel = true;
+    zone(&mut harness, new_york());
+    // The grid, to the second, and the row panel, whole: as stored.
+    assert!(harness.painted_color("2026-01-12 09:14:03+00").is_some());
+    assert!(harness.painted_color(COVERS_MADE).is_some());
+    assert!(harness.painted_color("2026-01-12 04:14:03-05").is_none());
+    // The editor opens on the text, and the same moment written another
+    // way is another text.
+    open_editor(&mut harness, tab, id);
+    assert_eq!(editor_text(&harness, tab, id), COVERS_MADE);
+    commit(&mut harness, tab, id, "2026-01-12 04:14:03.482915-05");
+    assert_eq!(
+        pending(&harness, tab, id).as_deref(),
+        Some("2026-01-12 04:14:03.482915-05")
+    );
 }

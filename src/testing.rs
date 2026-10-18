@@ -1159,9 +1159,11 @@ impl Harness {
     }
 
     /// `book_covers` with `created_at` as a `timestamptz`, open in a table
-    /// tab: [`Harness::book_covers`] over [`stamped_covers_page`].
+    /// tab: [`Harness::book_covers`] over [`stamped_covers_page`], on a
+    /// session that is PostgreSQL's, whose values these are.
     pub fn stamped_covers(&mut self) -> (ConnTabId, TabId) {
         let tab = self.connect_fake_as(false);
+        self.app.workspace_mut(tab).expect("a workspace").driver = Driver::Postgres;
         self.app.apply(Action::OpenObject {
             tab,
             object: tabletist_db::ObjectRef::new("main", "book_covers"),

@@ -490,7 +490,7 @@ impl App {
                 continue;
             };
             let shown = workspace.row_panel_tab();
-            let zone = workspace.zone.clone();
+            let zone = workspace.zone_shown().cloned();
             for sql in workspace.sql_tabs_mut() {
                 let row = sql.selected_row().filter(|_| shown == Some(sql.id));
                 let Some(row) = row else {
@@ -508,9 +508,9 @@ impl App {
                 };
                 let kinds: Vec<_> = columns.iter().map(|column| column.kind).collect();
                 let nothing = std::collections::BTreeMap::new();
-                let fields = rows
-                    .get(row)
-                    .map(|values| row_fields(request, row, values, &kinds, &zone, &nothing));
+                let fields = rows.get(row).map(|values| {
+                    row_fields(request, row, values, &kinds, zone.as_ref(), &nothing)
+                });
                 sql.fields = fields;
             }
             for object in workspace.object_tabs_mut() {
@@ -538,12 +538,11 @@ impl App {
                     Some(new) => {
                         let held = object.edits.added.iter().any(|added| added.id == new);
                         let blank = vec![tabletist_db::Value::Null; page.columns.len()];
-                        held.then(|| row_fields(request, row, &blank, &kinds, &zone, cells))
+                        held.then(|| row_fields(request, row, &blank, &kinds, zone.as_ref(), cells))
                     }
-                    None => page
-                        .rows
-                        .get(row)
-                        .map(|values| row_fields(request, row, values, &kinds, &zone, cells)),
+                    None => page.rows.get(row).map(|values| {
+                        row_fields(request, row, values, &kinds, zone.as_ref(), cells)
+                    }),
                 };
             }
         }
@@ -3946,7 +3945,6 @@ impl App {
     }
 }
 
-/// Whether the request failed only because the connection went away.
 /// The computer's time zone, or UTC where it cannot be found. Tests have
 /// UTC whatever the computer they run on says, so what they show does not
 /// depend on it: a test of the System zone sets `App::system_zone`.
@@ -3960,6 +3958,7 @@ fn system_zone() -> jiff::tz::TimeZone {
     })
 }
 
+/// Whether the request failed only because the connection went away.
 fn lost<T>(fetch: &Fetch<T>) -> bool {
     fetch.error.as_ref().is_some_and(Error::is_connection_lost)
 }
@@ -5396,16 +5395,14 @@ fn moved(object: &ObjectTab, rows: isize, cols: isize) -> Option<CellPos> {
 /// A row's text for the row panel, formatted once. A cell of the page's
 /// row `row` that is pending in `cells` reads as its new value, and keeps
 /// what it loaded as beside it, so the panel never disagrees with the
-/// grid.
-/// The row panel's texts of a row: each value as the panel shows it, the
-/// pending one where there is one, and a moment with an offset (`kinds`
-/// says which columns hold dates and times) in `zone`.
+/// grid. A moment with an offset in a column of dates and times (`kinds`
+/// says which) is in `zone`, where the engine's values are moved to one.
 fn row_fields(
     request: Option<RequestId>,
     row: usize,
     values: &[tabletist_db::Value],
     kinds: &[tabletist_db::ValueKind],
-    zone: &jiff::tz::TimeZone,
+    zone: Option<&jiff::tz::TimeZone>,
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
     use crate::ui::format::{cell_text, field_text};
@@ -5429,8 +5426,8 @@ fn row_fields(
         .map(|(col, (loaded, pending))| {
             let value = pending.as_ref().map_or(loaded, |cell| &cell.new);
             let temporal = kinds.get(col) == Some(&tabletist_db::ValueKind::Temporal);
-            match value {
-                tabletist_db::Value::Text(text) if temporal => {
+            match (value, zone) {
+                (tabletist_db::Value::Text(text), Some(zone)) if temporal => {
                     match crate::ui::format::in_zone(text, zone) {
                         Some(moved) => field_text(&tabletist_db::Value::Text(moved.into())),
                         None => field_text(value),

@@ -932,7 +932,9 @@ pub struct Workspace {
     /// The grid shows timestamps in full rather than to the second.
     pub full_precision: bool,
     /// The zone a value with an offset is shown in: the settings' zone,
-    /// set when the workspace opens and when the option changes.
+    /// set when the workspace opens and when the option changes. Read
+    /// through [`Workspace::zone_shown`], which says whether its engine's
+    /// values are moved to it.
     pub zone: jiff::tz::TimeZone,
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
@@ -3904,6 +3906,13 @@ impl SqlTab {
 }
 
 impl Workspace {
+    /// The zone a moment with an offset is shown and edited in, where the
+    /// engine sends one (`edit::shows_in_zone`): elsewhere none, and values
+    /// are shown as stored.
+    pub fn zone_shown(&self) -> Option<&jiff::tz::TimeZone> {
+        crate::edit::shows_in_zone(self.driver.dialect()).then_some(&self.zone)
+    }
+
     /// Whether a SQL editor of this workspace can run read-write, or why
     /// none can.
     pub fn sql_writes(&self) -> Result<(), NoWrites> {
