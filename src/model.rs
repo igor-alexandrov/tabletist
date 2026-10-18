@@ -1294,6 +1294,9 @@ pub struct ConnectionForm {
     /// The tables in force when the dialog opened: others are the
     /// person's own, and the same keep what the file says.
     pub agents_tables_opened: tabletist_db::agent::Tables,
+    /// The masked columns in force when the dialog opened, carried to the
+    /// save as they are: the editor has no control for them yet.
+    pub agents_masked: Vec<tabletist_db::agent::ColumnName>,
     /// The name being typed after Add table…, while its field is open.
     pub agents_table_typed: Option<String>,
     /// Why the name typed does not read, said under the names.
@@ -1427,6 +1430,7 @@ impl Default for ConnectionForm {
             agents_opened: crate::connections::AgentAccess::Off,
             agents_tables: TablesChoice::default(),
             agents_tables_opened: tabletist_db::agent::Tables::All,
+            agents_masked: Vec::new(),
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
@@ -1579,6 +1583,7 @@ impl ConnectionForm {
             agents_opened: saved.agents.access,
             agents_tables: TablesChoice::of(&saved.agents.tables),
             agents_tables_opened: saved.agents.tables.clone(),
+            agents_masked: saved.agents.masked.clone(),
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
@@ -1906,6 +1911,7 @@ impl ConnectionForm {
             rows,
             timeout_secs,
             tables: self.agents_tables.tables(),
+            masked: self.agents_masked.clone(),
         })
     }
 }
