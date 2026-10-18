@@ -3713,12 +3713,15 @@ impl App {
         let loaded = Settings::from_toml_over(&text, &changed);
         let live = self.settings_file.live;
         let saved = self.settings_file.saved.take();
-        let (settings, file) = loaded.into_parts();
+        let (mut settings, file) = loaded.into_parts();
         self.settings_file = SettingsFile {
             live,
             saved,
             ..file
         };
+        // The text is read again, a zone the database turned down with it:
+        // it stays turned down, and its line ignored.
+        self.refuse_unknown_zone(&mut settings, changed.tz.clone());
         // The app's own controls show what they turn on: never held.
         if !self.settings.mcp_enabled && settings.mcp_enabled {
             self.agents_shown.enabled = true;

@@ -604,3 +604,27 @@ fn a_zone_the_database_turned_down_is_no_step_of_the_terminal_screen() {
     assert_eq!(harness.app.settings.tz, Zone::Utc);
     assert!(!harness.app.settings_file.text.contains("Mars/Olympus"));
 }
+
+#[test]
+fn a_zone_the_database_turned_down_stays_down_through_a_change_in_the_app() {
+    let mut harness = Harness::new();
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\ntz = \"Mars/Olympus\"\n".into(),
+            own: false,
+        }));
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    harness
+        .app
+        .change_settings(|settings| settings.page_size = 500);
+    assert_eq!(harness.app.settings.tz, Zone::System);
+    assert_eq!(harness.app.named_zone, None);
+    assert_eq!(harness.app.settings_file.invalid, [2]);
+    assert!(harness.app.zone().is_some());
+}
