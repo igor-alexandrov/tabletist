@@ -96,6 +96,9 @@ pub struct App {
     /// The label columns chosen for the tables foreign keys point at, from
     /// labels.json. Read through `App::label_of` only.
     pub labels: crate::labels::Labels,
+    /// How each connection lists its tables where its user chose, by id,
+    /// from table_lists.json. One with no choice takes the setting's.
+    pub table_lists: std::collections::BTreeMap<String, crate::settings::TableList>,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -150,6 +153,21 @@ pub struct App {
     next_id: u64,
 }
 
+/// How each connection lists its tables, from `table_lists.json`. A value
+/// this version does not know is skipped, not the file: a newer version
+/// may have written it, and the other connections keep their choices.
+fn load_table_lists(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<String, crate::settings::TableList> {
+    let read: std::collections::BTreeMap<String, serde_json::Value> = crate::util::load_json(path);
+    read.into_iter()
+        .filter_map(|(id, list)| {
+            let list = crate::settings::TableList::from_name(list.as_str()?)?;
+            Some((id, list))
+        })
+        .collect()
+}
+
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
         let source = loaded.source;
@@ -176,6 +194,7 @@ impl App {
             Some(crate::labels::database_key(spec.driver, &spec.database))
         });
         let agents_shown = crate::agents_shown::Shown::load(&dirs.agents_shown_file());
+        let table_lists = load_table_lists(&dirs.table_lists_file());
         let mut app = Self {
             dirs,
             settings,
@@ -191,6 +210,7 @@ impl App {
             backend,
             connections,
             labels,
+            table_lists,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -660,8 +680,22 @@ impl App {
                 }
             }
             Action::ToggleFlatTree(tab) => {
-                if let Some(workspace) = self.workspace_mut(tab) {
-                    workspace.tree.flat = !workspace.tree.flat;
+                let flipped = self
+                    .workspace(tab)
+                    .map(|workspace| (workspace.conn_id.clone(), !workspace.tree.flat));
+                // The choice is the connection's from now on: the setting no
+                // longer moves it, and its other windows list it so too.
+                if let Some((id, flat)) = flipped {
+                    for entry in &mut self.tabs {
+                        if let ConnTabContent::Workspace(workspace) = &mut entry.content
+                            && workspace.conn_id == id
+                        {
+                            workspace.tree.flat = flat;
+                        }
+                    }
+                    self.table_lists
+                        .insert(id.0, crate::settings::TableList::of(flat));
+                    self.save_table_lists();
                 }
             }
             Action::ToggleSidebar(tab) => {
@@ -2001,7 +2035,10 @@ impl App {
             Action::SwitchDatabase { tab, database } => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.spec.database = database;
+                    // The other database's objects, listed as these were.
+                    let flat = workspace.tree.flat;
                     workspace.tree = Tree::default();
+                    workspace.tree.flat = flat;
                     workspace.catalog_changed();
                     // The other database has other objects, but a SQL
                     // editor's text is the user's work: it stays, and so
@@ -2102,6 +2139,10 @@ impl App {
                     // open on it falls back to Automatic.
                     if self.labels.forget(&id) {
                         self.save_labels();
+                    }
+                    // And its table list.
+                    if self.table_lists.remove(&id.0).is_some() {
+                        self.save_table_lists();
                     }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
@@ -2326,11 +2367,13 @@ impl App {
         let request = RequestId(self.next_id());
         // Where the option puts it; the grid's link switches it from there.
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
+        let flat = self.lists_flat(&saved.id);
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
         let mut workspace = Workspace::new(session, request, saved, typed);
         workspace.full_precision = full_precision;
+        workspace.tree.flat = flat;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
     }
 
@@ -3324,6 +3367,37 @@ impl App {
         });
     }
 
+    /// Whether the connection `id` lists its tables flat: as its user
+    /// chose for it, else as the setting has it.
+    pub fn lists_flat(&self, id: &crate::connections::ConnectionId) -> bool {
+        self.table_lists
+            .get(&id.0)
+            .copied()
+            .unwrap_or(self.settings.table_list)
+            .flat()
+    }
+
+    /// Saves how each saved connection lists its tables, on the backend.
+    /// The choice for one that is not saved is held while the app runs.
+    fn save_table_lists(&mut self) {
+        let saved = |id: &String| {
+            self.connections
+                .connections
+                .iter()
+                .any(|saved| saved.id.0 == *id)
+        };
+        let lists = self
+            .table_lists
+            .iter()
+            .filter(|(id, _)| saved(id))
+            .map(|(id, list)| (id.clone(), *list))
+            .collect();
+        self.backend.send(Command::Save {
+            path: self.dirs.table_lists_file(),
+            file: StateFile::TableLists(lists),
+        });
+    }
+
     /// Saves when each connection last connected, on the backend. A file
     /// of its own: a connect does not write the file of connections.
     fn save_last_used(&mut self) {
@@ -3637,6 +3711,17 @@ impl App {
             for tab in &mut self.tabs {
                 if let ConnTabContent::Workspace(workspace) = &mut tab.content {
                     workspace.catalog_changed();
+                }
+            }
+        }
+        if old.table_list != self.settings.table_list {
+            // Every open connection with no list of its own follows.
+            let flat = self.settings.table_list.flat();
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content
+                    && !self.table_lists.contains_key(&workspace.conn_id.0)
+                {
+                    workspace.tree.flat = flat;
                 }
             }
         }

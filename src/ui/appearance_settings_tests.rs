@@ -3,8 +3,9 @@
 
 use egui::accesskit::Role;
 
+use crate::backend::{Command, StateFile};
 use crate::model::{Action, ConnTabId, TabId};
-use crate::settings::{RowHeight, Settings};
+use crate::settings::{RowHeight, Settings, TableList};
 use crate::testing::{Harness, bounds};
 use crate::theme::Look;
 
@@ -202,4 +203,145 @@ fn without_column_types_the_header_is_one_line() {
         assert!(shows(&mut harness, "publisher_id"), "{}", look.name);
         assert!(!typed(&mut harness), "{}", look.name);
     }
+}
+
+#[test]
+fn the_table_list_default_applies_to_connections_without_a_choice() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_fake();
+    let flat = |harness: &Harness, tab| harness.app.workspace(tab).unwrap().tree.flat;
+    assert!(!flat(&harness, tab), "a tree until set");
+    change(&mut harness, |settings| {
+        settings.table_list = TableList::Flat
+    });
+    assert!(flat(&harness, tab), "the open connection follows");
+    // The sidebar's toggle is the connection's choice, and saved.
+    harness.app.apply(Action::ToggleFlatTree(tab));
+    assert!(!flat(&harness, tab));
+    let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+    assert_eq!(harness.app.table_lists.get(&conn.0), Some(&TableList::Tree));
+    assert!(harness.app.backend.sent.iter().any(|command| matches!(
+        command,
+        Command::Save { file: StateFile::TableLists(lists), path }
+            if lists.get(&conn.0) == Some(&TableList::Tree)
+                && *path == harness.app.dirs.table_lists_file()
+    )));
+    // The setting no longer moves it, there or in a new window on it.
+    change(&mut harness, |settings| {
+        settings.table_list = TableList::Tree
+    });
+    change(&mut harness, |settings| {
+        settings.table_list = TableList::Flat
+    });
+    assert!(!flat(&harness, tab));
+    harness.app.apply(Action::Connect {
+        tab,
+        conn: conn.clone(),
+    });
+    assert!(!flat(&harness, tab), "opened again");
+    // Another connection, with no choice, takes the setting's.
+    let other = harness.connect_fake();
+    assert!(flat(&harness, other));
+    // Deleting the connection forgets it.
+    harness.app.apply(Action::DeleteConnection(conn.clone()));
+    assert!(!harness.app.table_lists.contains_key(&conn.0));
+}
+
+#[test]
+fn a_saved_table_list_is_read_back_at_a_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = crate::paths::AppDirs::at(dir.path());
+    dirs.ensure().unwrap();
+    let lists = std::collections::BTreeMap::from([("green".to_owned(), TableList::Flat)]);
+    // As the backend saves it.
+    crate::util::save_json(&dirs.table_lists_file(), &lists).unwrap();
+    let app = crate::app::App::new(
+        dirs,
+        Settings::default().into(),
+        crate::backend::Backend::recording(),
+    );
+    assert_eq!(app.table_lists, lists);
+    assert!(app.lists_flat(&crate::connections::ConnectionId("green".into())));
+    assert!(!app.lists_flat(&crate::connections::ConnectionId("blue".into())));
+}
+
+#[test]
+fn a_connection_open_twice_lists_its_tables_alike() {
+    let mut harness = Harness::new();
+    let first = harness.connect_fake();
+    let conn = harness.app.workspace(first).unwrap().conn_id.clone();
+    harness.app.apply(Action::ShowConnections);
+    let second = harness.app.active_tab_id();
+    harness.app.apply(Action::Connect {
+        tab: second,
+        conn: conn.clone(),
+    });
+    assert_ne!(first, second);
+    harness.app.apply(Action::ToggleFlatTree(first));
+    for tab in [first, second] {
+        assert!(harness.app.workspace(tab).unwrap().tree.flat, "{tab:?}");
+    }
+}
+
+#[test]
+fn a_connection_that_is_not_saved_keeps_its_list_while_the_app_runs() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_fake();
+    let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+    harness.app.connections.remove(&conn);
+    harness.app.apply(Action::ToggleFlatTree(tab));
+    // Not written: the file is the saved connections'.
+    let written = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Save {
+                file: StateFile::TableLists(lists),
+                ..
+            } => Some(lists.clone()),
+            _ => None,
+        });
+    assert_eq!(written, Some(std::collections::BTreeMap::new()));
+    // And the setting does not move it.
+    change(&mut harness, |settings| {
+        settings.table_list = TableList::Flat
+    });
+    change(&mut harness, |settings| {
+        settings.table_list = TableList::Tree
+    });
+    assert!(harness.app.workspace(tab).unwrap().tree.flat);
+}
+
+#[test]
+fn a_list_this_version_does_not_know_costs_only_its_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = crate::paths::AppDirs::at(dir.path());
+    dirs.ensure().unwrap();
+    std::fs::write(
+        dirs.table_lists_file(),
+        br#"{"green": "flat", "blue": "grouped", "red": 3}"#,
+    )
+    .unwrap();
+    let app = crate::app::App::new(
+        dirs,
+        Settings::default().into(),
+        crate::backend::Backend::recording(),
+    );
+    let expected = std::collections::BTreeMap::from([("green".to_owned(), TableList::Flat)]);
+    assert_eq!(app.table_lists, expected);
+}
+
+#[test]
+fn another_database_lists_its_tables_as_the_one_before() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_fake();
+    harness.app.apply(Action::ToggleFlatTree(tab));
+    harness.app.apply(Action::SwitchDatabase {
+        tab,
+        database: "bookshop_review".into(),
+    });
+    assert!(harness.app.workspace(tab).unwrap().tree.flat);
 }
