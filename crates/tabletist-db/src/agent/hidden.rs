@@ -469,6 +469,18 @@ impl Hidden {
         !self.masked.is_empty()
     }
 
+    /// The masked column the view `name` of `schema` reads, as the person
+    /// writes its entry, where it is a view that reads one: a statement
+    /// that reads it is refused, though the view is not hidden.
+    pub fn reads_masked(&self, schema: &str, name: &str) -> Option<String> {
+        self.relations
+            .get(&fold(name))?
+            .iter()
+            .find(|listed| same(&listed.schema, schema))?
+            .masks
+            .clone()
+    }
+
     /// A masked column of the relation `table` of `schema`, as the person
     /// writes its entry, where it has one: for a whole row of it.
     pub fn masks_table(&self, schema: Option<&str>, table: &str) -> Option<String> {
@@ -2089,6 +2101,12 @@ mod tests {
             through("recent_orders")
         );
         assert!(!hidden.hides("public", "recent_orders"));
+        assert_eq!(
+            hidden.reads_masked("public", "recent_orders"),
+            Some("orders.email".into())
+        );
+        assert_eq!(hidden.reads_masked("public", "order_ids"), None);
+        assert_eq!(hidden.reads_masked("public", "orders"), None);
         // Where the catalog does not say what a view reads column by
         // column, a view over the table reads it.
         let unsaid = masking(&["orders.email"], None);
