@@ -1157,6 +1157,32 @@ otherwise than above:
   those that name a relation, an alias or an index: a table named like
   its masked column (`city.city`) is no use of the column.
 
+**As built in 3a's run 2** (`2026-10-17-mcp-server-3a-2-server.md`): the
+server's side. A connection's masked columns come with it from the
+gateway (`Listed::masked`; the app passes none until run 3 reads the
+setting), and go to the database layer with every check and read.
+`list_connections` names them (`"masked": ["orders.email"]`), as it names
+the hidden tables. `describe_schema` marks a masked column
+`"masked": true` and leaves out what says what its values are: its
+default, the values it may hold, the list MySQL writes into an `enum` or
+a `set` type, and its comment, whose author may give one as an example
+(found by the review). A view that reads one stays listed, marked
+`"reads_masked": "orders.email"`, in the list and in its description
+(agreed on 2026-10-17: the agent knows before it asks, as for a hidden
+table it is told the name). `run_query` marks a masked column of its
+answer `"masked": true`, and the log keeps the answer's masked columns,
+by their names in the answer, in its `masked` field, a JSON list, which
+C.1 gave it from the start.
+
+- **A generated column of a table with a masked column** is masked with
+  it, by an entry of its own (`public.orders.low`): one computed from it
+  (`lower(email)`) answered its value in full, and could be filtered on
+  (found by the review, on PostgreSQL and SQLite). Each driver says which
+  columns of the masked columns' tables are generated: PostgreSQL's
+  `attgenerated`, MySQL's `EXTRA`, SQLite's `pragma_table_xinfo`. Whether
+  the column is computed from the masked one is not asked: it errs toward
+  masking.
+
 **The rule.** It applies to any statement that reads a table with a masked
 column.
 
@@ -2593,7 +2619,7 @@ is off until the person turns it on.
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
-| 3a. Masked columns | 5, below | Runs 1a and 1b built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`): the rule, its stops, the engines' fences and the values. Run 2, the server's side, is next (order changed on 2026-10-17) |
+| 3a. Masked columns | 5, below | Runs 1a, 1b and 2 built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`): the rule, its stops, the engines' fences, the values and the server's side. Run 3, the setting in `connections.toml`, is next (order changed on 2026-10-17) |
 | 3b. The Log view, in full | Not cut yet | After 3a |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
@@ -2788,7 +2814,8 @@ pull request:
    engine's fence and the values replaced by the result columns' origins
    (`2026-10-17-mcp-server-3a-1b-masked-values.md`, built).
 2. The server's side: the setting read, `list_connections`' masked
-   columns, `describe_schema`'s mark, and `masked: true` in an answer.
+   columns, `describe_schema`'s mark, and `masked: true` in an answer
+   (`2026-10-17-mcp-server-3a-2-server.md`, built).
 3. The setting in `connections.toml`, as 1c-2b's for tables.
 4. The editor's Masked columns control with **Add column…** and its mark,
    and the website's guide.

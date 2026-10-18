@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tabletist_db::agent::{Answer, Hidden, Limits, Read, Tables};
+use tabletist_db::agent::{Answer, ColumnName, Hidden, Limits, Read, Tables};
 use tabletist_db::{
     Access, CancelHandle, ConnectSpec, Connection, Error, HostKeys, ObjectInfo, ObjectRef, Secrets,
     StopFlag, Structure,
@@ -658,6 +658,8 @@ impl Gateway for AppGateway {
                 dialect: agentable.spec.driver.dialect(),
                 limits: agentable.limits,
                 tables: agentable.tables.clone(),
+                // Masked columns are read from the setting in the next run.
+                masked: Vec::new(),
             })
             .collect()
     }
@@ -904,17 +906,24 @@ impl Session for AppSession {
         self.ended(None, connection.describe(object)).await
     }
 
-    async fn hidden(&self, tables: &Tables) -> Result<Hidden, Failure> {
+    async fn hidden(&self, tables: &Tables, masked: &[ColumnName]) -> Result<Hidden, Failure> {
         let connection = self.connection()?;
-        self.ended(None, connection.agent_hidden(tables, &[])).await
+        self.ended(None, connection.agent_hidden(tables, masked))
+            .await
     }
 
-    async fn read(&self, read: &Read, limits: Limits, tables: &Tables) -> Result<Answer, Failure> {
+    async fn read(
+        &self,
+        read: &Read,
+        limits: Limits,
+        tables: &Tables,
+        masked: &[ColumnName],
+    ) -> Result<Answer, Failure> {
         let connection = self.connection()?;
         let flag = StopFlag::new();
         self.ended(
             Some(&flag),
-            connection.run_agent_read(read, limits, tables, &[], &flag),
+            connection.run_agent_read(read, limits, tables, masked, &flag),
         )
         .await
     }
@@ -976,6 +985,7 @@ mod tests {
                     timeout: Duration::from_secs(10),
                 },
                 &Tables::All,
+                &[],
             )
             .await
     }
@@ -1130,6 +1140,7 @@ mod tests {
                     timeout: Duration::from_secs(10),
                 },
                 &customers,
+                &[],
             )
             .await;
         assert!(
@@ -1141,7 +1152,7 @@ mod tests {
             ),
             "{refused:?}"
         );
-        let hidden = session.hidden(&customers).await.unwrap();
+        let hidden = session.hidden(&customers, &[]).await.unwrap();
         assert!(hidden.hides("main", "customers") && !hidden.hides("main", "books"));
     }
 

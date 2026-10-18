@@ -678,6 +678,56 @@ async fn a_masked_columns_values_are_never_answered(connection: &Connection, on:
     assert_eq!(found, Ok(Vec::new()), "{on}");
 }
 
+/// A generated column computed from a masked column, on the table
+/// `gift_notes` the caller made (`kind`, and `shout` from it): masked with
+/// it, its values answered as `•••`, a use of it refused, and so is the
+/// caller's view `gift_shouts`, which reads it.
+async fn a_column_computed_from_a_masked_one_is_masked(connection: &Connection, on: &str) {
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT id, shout FROM gift_notes WHERE id = 1",
+    )
+    .await
+    .map(|answer| (answer.masked, answer.rows));
+    assert_eq!(
+        found,
+        Ok((
+            vec![false, true],
+            vec![vec![Value::Int(1), Value::Text(agent::MASKED.into())]]
+        )),
+        "{on}"
+    );
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT id FROM gift_notes WHERE shout = 'SELF'",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(found, Error::Agent(Refusal::MaskedColumnUsed { .. })),
+        "{on}: {found:?}"
+    );
+    let found = masking(
+        connection,
+        &["gift_notes.kind"],
+        "SELECT shout FROM gift_shouts",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            &found,
+            Error::Agent(Refusal::MaskedColumnUsed {
+                how: MaskedUse::Through(view),
+                ..
+            }) if view == "gift_shouts"
+        ),
+        "{on}: {found:?}"
+    );
+}
+
 /// What every engine is asked.
 async fn an_agent_reads_the_bookshop(connection: &Connection, on: &str) {
     a_read_answers_its_rows(connection, on).await;
@@ -760,6 +810,18 @@ mod sqlite {
     async fn a_masked_column_is_used_only_as_it_is_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         a_masked_column_is_used_only_as_it_is(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_sqlite() {
+        let (connection, _dir) = bookshop_with(
+            "CREATE TABLE gift_notes (id INTEGER PRIMARY KEY, kind TEXT,
+                 shout TEXT GENERATED ALWAYS AS (upper(kind)) VIRTUAL);
+             INSERT INTO gift_notes (id, kind) VALUES (1, 'self');
+             CREATE VIEW gift_shouts AS SELECT id, shout FROM gift_notes;",
+        )
+        .await;
+        a_column_computed_from_a_masked_one_is_masked(&connection, "sqlite").await;
     }
 
     #[tokio::test]
@@ -1115,6 +1177,72 @@ mod postgres {
         a_masked_column_is_used_only_as_it_is(&connection, "postgres").await;
     }
 
+    /// A database of the test's own, `bookshop_gifts`, made where it is
+    /// not there: what it makes and drops there is in no other test's
+    /// catalog while that one reads it.
+    async fn gifts(url: &str) -> Connection {
+        let server = admin(url, None).await;
+        let made = server
+            .query_opt(
+                "SELECT 1 FROM pg_database WHERE datname = 'bookshop_gifts'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .is_some();
+        if !made {
+            // Two runs may race to make it: the second's error is the
+            // first's database.
+            let _ = server.batch_execute("CREATE DATABASE bookshop_gifts").await;
+        }
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = TlsMode::Disable;
+        spec.database = "bookshop_gifts".into();
+        Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::ReadOnly)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_postgres() {
+        let Some(url) = url() else {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+            return;
+        };
+        let connection = gifts(&url).await;
+        let owner = admin(&url, Some("bookshop_gifts")).await;
+        owner
+            .batch_execute(
+                "DROP TABLE IF EXISTS gift_notes CASCADE;
+                 CREATE TABLE gift_notes (id int PRIMARY KEY, kind text,
+                     shout text GENERATED ALWAYS AS (upper(kind)) STORED);
+                 INSERT INTO gift_notes (id, kind) VALUES (1, 'self');
+                 CREATE VIEW gift_shouts AS SELECT id, shout FROM gift_notes;
+                 CREATE TABLE gift_cards (loud text GENERATED ALWAYS AS (upper(kind)) STORED)
+                     INHERITS (gift_notes);
+                 INSERT INTO gift_cards (id, kind) VALUES (2, 'gift');",
+            )
+            .await
+            .unwrap();
+        a_column_computed_from_a_masked_one_is_masked(&connection, "postgres").await;
+        // A child table's own generated column is masked with its parent's.
+        let found = masking(
+            &connection,
+            &["gift_notes.kind"],
+            "SELECT loud FROM gift_cards",
+        )
+        .await
+        .map(|answer| (answer.masked, answer.rows));
+        assert_eq!(
+            found,
+            Ok((vec![true], vec![vec![Value::Text(agent::MASKED.into())]]))
+        );
+        owner
+            .batch_execute("DROP TABLE gift_notes CASCADE")
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn a_masked_columns_values_are_never_answered_on_postgres() {
         let Some(connection) = bookshop().await else {
@@ -1418,6 +1546,32 @@ mod mysql {
             return;
         };
         a_masked_column_is_used_only_as_it_is(&connection, "mysql").await;
+    }
+
+    #[tokio::test]
+    async fn a_column_computed_from_a_masked_one_is_masked_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL").unwrap();
+        let mut owner = admin(&url).await;
+        for sql in [
+            "DROP TABLE IF EXISTS bookshop.gift_notes",
+            "CREATE TABLE bookshop.gift_notes (id int PRIMARY KEY, kind varchar(10), \
+             shout varchar(10) GENERATED ALWAYS AS (upper(kind)) VIRTUAL)",
+            "INSERT INTO bookshop.gift_notes (id, kind) VALUES (1, 'self')",
+            "CREATE OR REPLACE VIEW bookshop.gift_shouts AS \
+             SELECT id, shout FROM bookshop.gift_notes",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
+        a_column_computed_from_a_masked_one_is_masked(&connection, "mysql").await;
+        for sql in [
+            "DROP VIEW bookshop.gift_shouts",
+            "DROP TABLE bookshop.gift_notes",
+        ] {
+            owner.query_drop(sql).await.unwrap();
+        }
     }
 
     #[tokio::test]

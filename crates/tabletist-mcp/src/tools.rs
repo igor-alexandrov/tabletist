@@ -69,6 +69,8 @@ pub(crate) struct Note {
     /// The statement's rows, where the answer holds them all.
     pub matched: Option<u64>,
     pub columns: Option<u64>,
+    /// The answer's masked columns, by name, as a JSON list.
+    pub masked: Option<String>,
     pub took: Option<Duration>,
 }
 
