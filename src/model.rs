@@ -3161,7 +3161,8 @@ pub struct ObjectTab {
     pub label_chooser: Option<crate::labels::Chooser>,
     /// Reopened from what the window last had (`session.json`), and not
     /// read yet: it is read when it is first in front
-    /// (`App::read_reopened`), not with the connect.
+    /// (`App::read_reopened`, or any read of it). The one in front is read
+    /// with the connect; one behind it is not.
     pub reopened: bool,
 }
 

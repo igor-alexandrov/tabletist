@@ -609,7 +609,7 @@ impl OptionId {
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
-    /// The General pane's sections: Startup, Data, then Safety.
+    /// The General pane's sections, in order: Startup, Data and Safety.
     pub const STARTUP: [OptionId; 1] = [Self::RestoreTabs];
     pub const DATA: [OptionId; 5] = [
         Self::PageSize,

@@ -2750,6 +2750,10 @@ impl App {
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let zone = self.zone();
         let flat = self.lists_flat(&saved.id);
+        // The connection the window had closes in it. That comes first, so
+        // that what the window just had is what reopens, if this connection
+        // was it.
+        let replaced = self.keep_tabs(tab);
         // The tables the connection's window last had, where the settings
         // reopen them and they are of the database it opens on.
         let kept = self
@@ -2761,8 +2765,6 @@ impl App {
                     && kept.database == crate::session::database_of(&saved.spec)
             })
             .cloned();
-        // The connection the window had closes in it.
-        let replaced = self.keep_tabs(tab);
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -2822,7 +2824,6 @@ impl App {
             })
             .collect();
         for (tab, id) in due {
-            self.describe(tab, id);
             self.fetch_rows(tab, id);
         }
     }
@@ -3372,6 +3373,24 @@ impl App {
                     && node.objects.finish(request, result)
                 {
                     workspace.catalog_changed();
+                    // A table reopened by a connect is open before the tree
+                    // is listed, so it gets here the estimate that one opened
+                    // from the sidebar had when it opened. A count that came
+                    // first is exact and stays.
+                    let estimates: Vec<(TabId, u64)> = workspace
+                        .object_tabs()
+                        .filter(|object| object.object.schema == schema)
+                        .filter(|object| object.estimated_rows.is_none())
+                        .filter_map(|object| {
+                            let info = workspace.tree.object_info(&object.object)?;
+                            Some((object.id, info.estimated_rows?))
+                        })
+                        .collect();
+                    for (id, estimate) in estimates {
+                        if let Some(object) = workspace.object_tab_mut(id) {
+                            object.estimated_rows = Some(estimate);
+                        }
+                    }
                 }
             }
             Event::Rows {
@@ -4583,6 +4602,9 @@ impl App {
                 if object.reopened && !is_active {
                     return (object.id, false, false, count);
                 }
+                // Reopened in front and not read yet: its rows are read
+                // here, and that asks for its structure too.
+                let described = object.reopened;
                 (
                     object.id,
                     is_active
@@ -4590,11 +4612,12 @@ impl App {
                         || lost(&object.rows)
                         || object.rows.needs_load()
                         || object.rows.asked,
-                    object.structure.is_loading()
-                        || lost(&object.structure)
-                        || object.structure.needs_load()
-                        || object.structure.asked
-                        || (is_active && object.structure.value.is_some()),
+                    !described
+                        && (object.structure.is_loading()
+                            || lost(&object.structure)
+                            || object.structure.needs_load()
+                            || object.structure.asked
+                            || (is_active && object.structure.value.is_some())),
                     count,
                 )
             })
@@ -5674,11 +5697,18 @@ impl App {
     /// here: a new Rows per page lands on the next one.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
         let size = self.settings.page_size;
+        let mut reopened = false;
         if let Some(object) = self.object_tab_mut(tab, id) {
             object.page_size = size;
             // Read now, whatever asked: a reopened tab is not read again
             // when it is shown.
-            object.reopened = false;
+            reopened = std::mem::take(&mut object.reopened);
+        }
+        // Nothing else asked for its structure, which a tab opened from the
+        // sidebar gets as it opens, so the first read, from whatever path,
+        // brings it.
+        if reopened {
+            self.describe(tab, id);
         }
         self.fetch_page(tab, id, size);
     }

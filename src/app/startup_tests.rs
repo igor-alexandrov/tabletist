@@ -175,6 +175,25 @@ fn another_connection_put_in_a_window_keeps_the_one_it_had() {
 }
 
 #[test]
+fn a_connection_put_in_its_own_window_reopens_what_the_window_just_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    books(&mut app, tab, "books");
+    app.apply(Action::Connect {
+        tab,
+        conn: conn.clone(),
+    });
+    let workspace = app.workspace(tab).unwrap();
+    let front = workspace.active_object_tab().expect("books is in front");
+    assert_eq!(front.object.name, "books");
+    assert!(front.reopened);
+    let session = written(&app).expect("written as the window's connection closed");
+    assert_eq!(session.connections[&conn.0].tabs[0].name, "books");
+}
+
+#[test]
 fn a_deleted_connection_takes_its_tables_out_of_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_in(dir.path());
@@ -317,6 +336,17 @@ fn fetched(app: &App, from: usize) -> Vec<tabletist_db::RowQuery> {
         .collect()
 }
 
+/// The tables whose structure was asked for since the `from`th command.
+fn described(app: &App, from: usize) -> Vec<ObjectRef> {
+    app.backend.sent[from..]
+        .iter()
+        .filter_map(|command| match command {
+            Command::Describe { object, .. } => Some(object.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Bookshop's window with `books` sorted by title and `authors` filtered
 /// to Ireland, `books` in front, closed: what the session keeps of it.
 fn closed_with_tables(app: &mut App) -> crate::connections::ConnectionId {
@@ -370,6 +400,8 @@ fn a_connection_opened_again_reopens_its_tables_and_reads_the_one_in_front() {
     assert_eq!(pages[0].object.name, "books");
     assert_eq!(pages[0].sort[0].column, "title");
     assert_eq!(pages[0].sort[0].dir, SortDir::Asc);
+    let books = ObjectRef::new("main", "books");
+    assert_eq!(described(&app, before), [books]);
     // The other is read when it is first shown, with its filter.
     let before = app.backend.sent.len();
     app.apply(Action::ActivateTab { tab, id: authors });
@@ -377,6 +409,7 @@ fn a_connection_opened_again_reopens_its_tables_and_reads_the_one_in_front() {
     let pages = fetched(&app, before);
     assert_eq!(pages.len(), 1, "{pages:?}");
     assert_eq!(pages[0].object.name, "authors");
+    assert_eq!(described(&app, before), [ObjectRef::new("main", "authors")]);
     assert_eq!(pages[0].filters[0].column, "country");
     assert_eq!(pages[0].filters[0].value, "IE");
     let object = app.workspace(tab).unwrap().object_tab(authors).unwrap();
@@ -385,6 +418,91 @@ fn a_connection_opened_again_reopens_its_tables_and_reads_the_one_in_front() {
     let before = app.backend.sent.len();
     app.apply_actions();
     assert!(fetched(&app, before).is_empty());
+}
+
+#[test]
+fn a_reopened_table_read_by_following_a_key_gets_its_structure_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = closed_with_tables(&mut app);
+    let tab = open_window(&mut app, &conn);
+    // Before the actions are applied, the front table is read by the
+    // connect alone, and asked its structure once.
+    let before = app.backend.sent.len();
+    connected(&mut app);
+    assert_eq!(described(&app, before), [ObjectRef::new("main", "books")]);
+    app.apply_actions();
+    let authors = ObjectRef::new("main", "authors");
+    let before = app.backend.sent.len();
+    app.apply(Action::OpenFiltered {
+        tab,
+        object: authors.clone(),
+        by: vec![("id".into(), "7".into())],
+    });
+    app.apply_actions();
+    assert_eq!(described(&app, before), std::slice::from_ref(&authors));
+    let pages = fetched(&app, before);
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    assert_eq!(pages[0].object, authors);
+    assert_eq!(pages[0].filters[0].column, "id");
+}
+
+#[test]
+fn the_trees_estimates_reach_the_reopened_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = closed_with_tables(&mut app);
+    let tab = open_window(&mut app, &conn);
+    connected(&mut app);
+    app.apply_actions();
+    let (session, request) = app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::ListSchemas { session, request } => Some((*session, *request)),
+            _ => None,
+        })
+        .expect("the schemas were asked for");
+    app.apply(Action::Backend(crate::backend::Event::Schemas {
+        session,
+        request,
+        result: Ok(vec!["main".into()]),
+    }));
+    let request = app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::ListObjects { request, .. } => Some(*request),
+            _ => None,
+        })
+        .expect("the objects were asked for");
+    let listed = |name: &str, estimate| tabletist_db::ObjectInfo {
+        name: name.into(),
+        kind: ObjectKind::Table,
+        estimated_rows: estimate,
+    };
+    app.apply(Action::Backend(crate::backend::Event::Objects {
+        session,
+        request,
+        schema: "main".into(),
+        result: Ok(vec![
+            listed("authors", Some(1_200)),
+            listed("books", Some(48_000)),
+        ]),
+    }));
+    // The one in front was read with the connect, before the tree was
+    // listed; the other has not been read at all.
+    let estimates: Vec<Option<u64>> = app
+        .workspace(tab)
+        .unwrap()
+        .object_tabs()
+        .map(|object| object.estimated_rows)
+        .collect();
+    assert_eq!(estimates, [Some(48_000), Some(1_200)]);
 }
 
 #[test]

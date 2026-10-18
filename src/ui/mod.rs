@@ -1076,7 +1076,7 @@ mod tests {
         harness.set_look(crate::theme::Look::omarchy());
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
         assert!(settings_open(&harness));
-        for _ in crate::settings::OptionId::STARTUP {
+        for _ in 0..crate::settings::OptionId::STARTUP.len() {
             harness.press(egui::Key::J, egui::Modifiers::NONE);
         }
         harness
