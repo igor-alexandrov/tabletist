@@ -16,7 +16,7 @@ fn app_in(dir: &std::path::Path) -> App {
     )
 }
 
-/// A saved Bookshop: the demo's SQLite file, by its own id.
+/// A saved Bookshop on a SQLite file, by its own id.
 fn bookshop(app: &mut App, name: &str) -> crate::connections::ConnectionId {
     let mut saved = crate::testing::fixture_connection();
     saved.name = name.into();
@@ -185,6 +185,20 @@ fn a_deleted_connection_takes_its_tables_out_of_the_file() {
     assert!(written(&app).unwrap().connections.contains_key(&conn.0));
     app.apply(Action::DeleteConnection(conn.clone()));
     assert!(!written(&app).unwrap().connections.contains_key(&conn.0));
+}
+
+#[test]
+fn a_connection_deleted_while_its_window_is_open_is_in_no_part_of_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    books(&mut app, tab, "books");
+    app.apply(Action::DeleteConnection(conn.clone()));
+    app.save_session();
+    let session = written(&app).unwrap();
+    assert!(!session.open.contains(&Some(conn.clone())));
+    assert!(!session.connections.contains_key(&conn.0));
 }
 
 #[test]

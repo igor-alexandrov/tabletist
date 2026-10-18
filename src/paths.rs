@@ -117,7 +117,8 @@ impl AppDirs {
 
     /// The connection tabs open at the last quit, and each connection's
     /// tables as its window last had them. Of this computer, and written
-    /// at quit and when a connection's tab closes.
+    /// at quit, when a connection's window closes or has another
+    /// connection put in it, and when a connection is deleted.
     pub fn session_file(&self) -> PathBuf {
         self.state.join("session.json")
     }

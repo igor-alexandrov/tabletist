@@ -26,6 +26,10 @@ pub struct Session {
     /// Each saved connection's table tabs as its window last had them, by
     /// its id. Changed through [`Session::keep`] and [`Session::forget`].
     pub connections: BTreeMap<String, Kept>,
+    /// The number of the newest version that wrote the file, where newer
+    /// than this one (0 where not), written back: a newer reader that branches on it
+    /// would misread what is kept for it under an older number.
+    version: u32,
     /// The connections' parts this version could not read, by id, as the
     /// file had them: a newer version may have written them, and they are
     /// written back until the connection's window closes again here.
@@ -147,25 +151,41 @@ impl Session {
             match serde_json::from_value(kept.clone()) {
                 Ok(kept) => drop(session.connections.insert(id, kept)),
                 Err(error) => {
-                    log::warn!("the tabs of {id} were not read: {error}");
+                    // Not the error's text: it can quote a stored filter value.
+                    log::warn!(
+                        "the tabs of {id} were not read: {:?} at line {}, column {}",
+                        error.classify(),
+                        error.line(),
+                        error.column()
+                    );
                     session.unread.insert(id, kept);
                 }
             }
         }
         // A window that is neither an id nor the picker is left out.
-        session.open = file
-            .open
-            .into_iter()
-            .filter_map(|entry| match entry {
-                serde_json::Value::String(id) => Some(Some(ConnectionId(id))),
-                serde_json::Value::Null => Some(None),
-                _ => None,
-            })
-            .collect();
-        session.active = file
-            .active
+        let mut active = None;
+        let wanted = file.active.as_u64();
+        for (at, entry) in file.open.into_iter().enumerate() {
+            let window = match entry {
+                serde_json::Value::String(id) => Some(ConnectionId(id)),
+                serde_json::Value::Null => None,
+                _ => continue,
+            };
+            if wanted == Some(at as u64) {
+                active = Some(session.open.len());
+            }
+            session.open.push(window);
+        }
+        // Counted against the windows read: one that pointed at a window
+        // left out, or past the end, is the first.
+        session.active = active.unwrap_or(0);
+        // Kept only where newer than this one's, so that what is read
+        // back of a file this version wrote is the session written.
+        session.version = file
+            .version
             .as_u64()
-            .and_then(|at| usize::try_from(at).ok())
+            .and_then(|number| u32::try_from(number).ok())
+            .filter(|number| *number > VERSION)
             .unwrap_or(0);
         session.rest = file.rest;
         session
@@ -193,7 +213,7 @@ impl Session {
                 .filter_map(|(id, kept)| Some((id.clone(), serde_json::to_value(kept).ok()?))),
         );
         let file = File {
-            version: VERSION.into(),
+            version: VERSION.max(self.version).into(),
             open: self
                 .open
                 .iter()
@@ -447,6 +467,13 @@ mod tests {
         assert_eq!(session.open, vec![Some(ConnectionId("a".into())), None]);
         assert_eq!(session.active, 0);
         assert_eq!(session.connections["a"].tabs[0].name, "books");
+        // The front window is counted among the ones read.
+        std::fs::write(&path, r#"{"open":[7,"a",null],"active":2}"#).unwrap();
+        let session = Session::load(&path);
+        assert_eq!(session.open, vec![Some(ConnectionId("a".into())), None]);
+        assert_eq!(session.active, 1);
+        std::fs::write(&path, r#"{"open":[7,"a",null],"active":0}"#).unwrap();
+        assert_eq!(Session::load(&path).active, 0);
     }
 
     #[test]
@@ -502,8 +529,8 @@ mod tests {
         assert_eq!(kept["pane"], "grid");
         assert_eq!(kept["tabs"][0]["hidden"][0], "price");
         assert_eq!(kept["tabs"][0]["filter"]["split"], 2);
-        // This version writes its own number.
-        assert_eq!(written["version"], 1);
+        // The number of the newest version that wrote it is kept.
+        assert_eq!(written["version"], 2);
     }
 
     #[test]
