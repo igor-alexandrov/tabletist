@@ -2409,6 +2409,39 @@ Phase 1b ships the list for this connection, the switch to All connections,
 and the detail line. Phase 3b adds the other filters, the search, the detail
 pane, export and "Open in SQL editor".
 
+**As built in 3b's run 1** (`2026-10-18-mcp-server-3b-1-log-filters.md`). Agreed on 2026-10-18, where it
+went otherwise:
+
+- **macOS**: the board's bar, a dropdown each for whose calls (This
+  connection or All connections, where Phase 1b drew a segmented
+  control), the agent and the result, then the search, and the count at
+  its right. The agents offered are those that called on what is shown,
+  read with each first page (`Page::agents`), and the one chosen where it
+  did not; the results are those a call can end with today, said as the
+  list says them (writes add theirs). The search is **Search requests…**,
+  not the board's "Search SQL…": it finds its text in the Request column,
+  a statement or the tables `describe_schema` was asked for, with `LIKE`,
+  its `%` and `_` taken as themselves, English letters in either case.
+- **Omarchy**: the board draws `/ filter` alone. `/` opens the filters
+  over the list, the search with the keyboard and rows of words for the
+  agent and the result, which Tab moves among and Enter or Space picks, as
+  the editor's rows work today; the keymap's Esc (`CloseAgentsLogFilters`)
+  closes them and keeps them, and a line under the bar says what they are
+  set to.
+- With a filter set, the count says "12 calls match", and a list that none
+  matches says so. A filter's change reads the first page again, the one
+  read before it no longer taken, and selects nothing.
+- `LogFilter` (`tabletist-mcp`) holds the four, and a page's statement and
+  count are built of the parts asked alone; with a connection, the agent's
+  and the result's conditions take no index of theirs (`+result = ?`), so
+  that one connection's calls are read through its own index and not every
+  connection's that ended one way.
+- The run's review found the result's index taken in the connection's
+  place, the filters shown open again with nothing to type in after the
+  view was left from a word, and a test of them run on an empty log: each
+  is fixed with a test. The view left closes them, and each `/` gives the
+  search the keyboard.
+
 ### D.6 The keymap
 
 Checked against `src/keymap.rs` and the keyboard brief
@@ -2694,7 +2727,7 @@ is off until the person turns it on.
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 | 3a. Masked columns | 5, below | Built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`, `2026-10-18-mcp-server-3a-4-columns-control.md`): the rule, its stops, the engines' fences, the values, the server's side, the setting, and the editor's control with the website's guide. 3b is next (order changed on 2026-10-17) |
-| 3b. The Log view, in full | Not cut yet | After 3a |
+| 3b. The Log view, in full | 3, below | Run 1 built (`2026-10-18-mcp-server-3b-1-log-filters.md`): the agent and result filters and the search. Run 2, the detail pane and Open in SQL editor, is next |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2903,6 +2936,15 @@ pull request:
   ("Open in SQL editor").
 - Risks: small.
 - Tests: the rest of F.4, the UI tests of the filters.
+
+**3b in three runs** (cut on 2026-10-18, as 3a went). Each is a plan and a
+pull request:
+
+1. The agent and result filters and the search of the requests, with the
+   count of what matches, in both looks
+   (`2026-10-18-mcp-server-3b-1-log-filters.md`, built).
+2. The detail pane for the selected call, and **Open in SQL editor**.
+3. **Export…**, and the website's guide to the log.
 
 ## Open questions
 

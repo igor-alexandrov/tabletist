@@ -342,6 +342,8 @@ commands! {
     ShowAgentsElsewhere,
     ShowAgentsLog,
     ToggleAgentsLogScope,
+    FilterAgentsLog,
+    CloseAgentsLogFilters,
     AllowAgents,
     ShowAgentSettings,
     ChangeAgentAccess,
@@ -614,6 +616,14 @@ impl Command {
                 "",
                 Window,
             )),
+            C::FilterAgentsLog => agents(info(
+                "Filter the log by agent, result or request",
+                "",
+                Window,
+            )),
+            C::CloseAgentsLogFilters => {
+                agents(info("Close the log's filters, and keep them", "", Window))
+            }
             C::ToggleSidebar => info("Toggle sidebar", "Toggle sidebar", Navigation),
             C::PaneLeft => info("Pane to the left", PANES, Navigation),
             C::PaneDown => info("Pane below", PANES, Navigation).reserved(),
@@ -1024,6 +1034,8 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ShowAgentsLog, GLOBAL, NONE, keys(&[k(":agents log")])),
         bind(C::ShowAgentsLog, AGENTS, NONE, keys(&[k("l")])),
         bind(C::ToggleAgentsLogScope, AGENTS, NONE, keys(&[k("L")])),
+        bind(C::FilterAgentsLog, AGENTS, NONE, keys(&[k("/")])),
+        bind(C::CloseAgentsLogFilters, AGENTS, NONE, keys(&[k("esc")])),
         bind(C::AllowAgents, AGENTS, NONE, keys(&[k("e")])),
         bind(C::ShowAgentSettings, AGENTS, NONE, keys(&[k("s")])),
         bind(C::ChangeAgentAccess, CONNECTIONS, NONE, keys(&[k("a")])),

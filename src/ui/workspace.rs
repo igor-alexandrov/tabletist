@@ -2046,13 +2046,14 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .filter(|workspace| workspace.agents_in_front())
         .and_then(|_| app.agents_here(tab));
     // The tab's own `l`, not the prompt's `:agents log`.
-    let (agents_log_key, agents_scope_key) = (
+    let (agents_log_key, agents_scope_key, agents_filter_key) = (
         app.keymap.key_in(
             app.layout(),
             Command::ShowAgentsLog,
             crate::keymap::Scope::Agents,
         ),
         key(Command::ToggleAgentsLogScope),
+        key(Command::FilterAgentsLog),
     );
     // Its Log view, while it shows, and whether every connection's.
     let agents_log = app.workspace(tab).and_then(|workspace| {
@@ -2301,6 +2302,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 gettext(locale, "calls"),
                 gettext(locale, "all connections"),
                 gettext(locale, "this connection"),
+                gettext(locale, "filter"),
             ];
             match agents_log {
                 // The Log view's keys in the place of the activity's.
@@ -2309,6 +2311,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     agents_hints = vec![
                         (&agents_log_key, &*log_words[1], true),
                         (&agents_scope_key, scope, true),
+                        (&agents_filter_key, &*log_words[5], true),
                         (&agents_move_key, &*log_words[2], true),
                     ];
                 }

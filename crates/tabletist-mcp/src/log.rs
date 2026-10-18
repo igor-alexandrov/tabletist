@@ -129,11 +129,87 @@ pub struct Logged {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Page {
     pub calls: Vec<Logged>,
-    /// How many calls the log holds of what was asked: one connection's,
-    /// or every one.
+    /// How many calls the log holds of what was asked: those that pass
+    /// the filter.
     pub total: u64,
     /// Whether there are older ones.
     pub more: bool,
+    /// The agents that called, on the filter's connection or on every one,
+    /// whatever else it asks: what the agent filter offers. Read with a
+    /// first page alone; empty with a later one.
+    pub agents: Vec<String>,
+}
+
+/// Which calls a page of the log holds: those on one connection or on
+/// every one, of one agent or any, that ended one way or any, and whose
+/// request holds a text or not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LogFilter {
+    /// The connection's id.
+    pub connection: Option<String>,
+    /// The agent, as it names itself.
+    pub agent: Option<String>,
+    /// How the call ended, as [`Entry::result`] says it.
+    pub result: Option<String>,
+    /// Text the request holds: the statement, or the tables
+    /// `describe_schema` was asked for. English letters match in either
+    /// case.
+    pub search: Option<String>,
+}
+
+impl LogFilter {
+    /// The filter of every call on `connection`, or on every connection.
+    pub fn on(connection: Option<String>) -> Self {
+        Self {
+            connection,
+            ..Self::default()
+        }
+    }
+
+    /// The conditions a call passes, and the values they are bound to, in
+    /// order. One for each part asked: a part that may be nothing, bound
+    /// as a value, would plan the statement without its index. With a
+    /// connection, the agent and the result are written so that no index
+    /// of theirs is taken (a `+` before the column): one connection's
+    /// calls are read through its own, not every connection's that ended
+    /// one way.
+    fn conditions(&self) -> (Vec<&'static str>, Vec<String>) {
+        let mut conditions = Vec::new();
+        let mut values = Vec::new();
+        let one = self.connection.is_some();
+        if let Some(connection) = &self.connection {
+            conditions.push("connection_id = ?");
+            values.push(connection.clone());
+        }
+        if let Some(agent) = &self.agent {
+            conditions.push(if one { "+agent = ?" } else { "agent = ?" });
+            values.push(agent.clone());
+        }
+        if let Some(result) = &self.result {
+            conditions.push(if one { "+result = ?" } else { "result = ?" });
+            values.push(result.clone());
+        }
+        if let Some(search) = self.search.as_deref().filter(|search| !search.is_empty()) {
+            // The text as it is: `%`, `_` and the escape match themselves.
+            let escaped = search
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let pattern = format!("%{escaped}%");
+            conditions.push("(sql LIKE ? ESCAPE '\\' OR request LIKE ? ESCAPE '\\')");
+            values.push(pattern.clone());
+            values.push(pattern);
+        }
+        (conditions, values)
+    }
+
+    /// `WHERE` and the conditions, or nothing for every call.
+    fn clause(conditions: &[&str]) -> String {
+        match conditions.is_empty() {
+            true => String::new(),
+            false => format!(" WHERE {}", conditions.join(" AND ")),
+        }
+    }
 }
 
 /// The log, open. A clone writes to the same file.
@@ -287,7 +363,7 @@ impl Log {
 
     /// The last `limit` entries, the newest first.
     pub async fn latest(&self, limit: u32) -> Result<Vec<Entry>, LogError> {
-        let page = self.page(None, None, limit).await?;
+        let page = self.page(LogFilter::default(), None, limit).await?;
         Ok(page.calls.into_iter().map(|logged| logged.entry).collect())
     }
 
@@ -321,11 +397,12 @@ impl Log {
         }
     }
 
-    /// A page of the log, the newest first: `limit` calls from before the
-    /// one `before` names, those on `connection` alone where it is given.
+    /// A page of the log, the newest first: `limit` calls that pass
+    /// `filter`, from before the one `before` names. A first page says the
+    /// agents of the filter's connection too.
     pub async fn page(
         &self,
-        connection: Option<String>,
+        filter: LogFilter,
         before: Option<i64>,
         limit: u32,
     ) -> Result<Page, LogError> {
@@ -339,26 +416,25 @@ impl Log {
                     entry: entry_at(row, 1)?,
                 })
             };
-            // A statement for each: one whose filter is a bound value that
-            // may be nothing is planned without the connection's index.
-            let (mut calls, total) = match &connection {
-                Some(connection) => {
-                    let calls = db
-                        .prepare(&page_of_one())?
-                        .query_map(params![connection, before, asked], logged)?
-                        .collect::<Result<Vec<Logged>, rusqlite::Error>>()?;
-                    let total: i64 = db.query_row(COUNT_OF_ONE, [connection], |row| row.get(0))?;
-                    (calls, total)
-                }
-                None => {
-                    let calls = db
-                        .prepare(&page_of_all())?
-                        .query_map(params![before, asked], logged)?
-                        .collect::<Result<Vec<Logged>, rusqlite::Error>>()?;
-                    let total: i64 =
-                        db.query_row("SELECT count(*) FROM calls", [], |row| row.get(0))?;
-                    (calls, total)
-                }
+            let (conditions, values) = filter.conditions();
+            let mut calls = {
+                let mut bound: Vec<&dyn rusqlite::ToSql> = values
+                    .iter()
+                    .map(|value| value as &dyn rusqlite::ToSql)
+                    .collect();
+                bound.extend([&before as &dyn rusqlite::ToSql, &asked]);
+                db.prepare(&page_of(&conditions))?
+                    .query_map(bound.as_slice(), logged)?
+                    .collect::<Result<Vec<Logged>, rusqlite::Error>>()?
+            };
+            let total: i64 = db.query_row(
+                &count_of(&conditions),
+                rusqlite::params_from_iter(&values),
+                |row| row.get(0),
+            )?;
+            let agents = match before == i64::MAX {
+                true => agents_of(db, filter.connection.as_deref())?,
+                false => Vec::new(),
             };
             let more = calls.len() > limit as usize;
             calls.truncate(limit as usize);
@@ -366,6 +442,7 @@ impl Log {
                 calls,
                 total: u64::try_from(total).unwrap_or_default(),
                 more,
+                agents,
             })
         })
         .await
@@ -404,21 +481,41 @@ const COLUMNS: &str = "at_ms, session, agent, project, transport, connection_id,
     tool, sql, params, request, result, code, message, ran_as, rows, matched, columns, bytes, \
     masked, took_ms";
 
-/// A page of one connection's calls, through its index.
-fn page_of_one() -> String {
+/// A page of the calls that pass `conditions`, from before a call: their
+/// values are bound first, then the call's place and the page's length.
+fn page_of(conditions: &[&str]) -> String {
+    let mut all = conditions.to_vec();
+    all.push("id < ?");
     format!(
-        "SELECT id, {COLUMNS} FROM calls WHERE connection_id = ?1 AND id < ?2 \
-         ORDER BY id DESC LIMIT ?3"
+        "SELECT id, {COLUMNS} FROM calls{} ORDER BY id DESC LIMIT ?",
+        LogFilter::clause(&all)
     )
 }
 
-/// A page of every connection's calls.
-fn page_of_all() -> String {
-    format!("SELECT id, {COLUMNS} FROM calls WHERE id < ?1 ORDER BY id DESC LIMIT ?2")
+/// How many calls pass `conditions`.
+fn count_of(conditions: &[&str]) -> String {
+    format!(
+        "SELECT count(*) FROM calls{}",
+        LogFilter::clause(conditions)
+    )
 }
 
-/// How many calls one connection has, from its index alone.
-const COUNT_OF_ONE: &str = "SELECT count(*) FROM calls WHERE connection_id = ?1";
+/// The agents that called on `connection`, or on any, by name.
+fn agents_of(db: &Connection, connection: Option<&str>) -> Result<Vec<String>, rusqlite::Error> {
+    let (sql, values): (&str, Vec<&str>) = match connection {
+        Some(connection) => (
+            "SELECT DISTINCT agent FROM calls WHERE connection_id = ? ORDER BY agent",
+            vec![connection],
+        ),
+        None => (
+            "SELECT DISTINCT agent FROM calls ORDER BY agent",
+            Vec::new(),
+        ),
+    };
+    db.prepare(sql)?
+        .query_map(rusqlite::params_from_iter(values), |row| row.get(0))?
+        .collect()
+}
 
 /// The entry in `row`, from its column `at` on, in [`COLUMNS`]'s order.
 fn entry_at(row: &Row<'_>, at: usize) -> Result<Entry, rusqlite::Error> {
@@ -540,15 +637,104 @@ mod tests {
                 .map(|logged| logged.entry.at_ms)
                 .collect::<Vec<_>>()
         };
-        let first = log.page(None, None, 2).await.unwrap();
+        let all = LogFilter::default;
+        let first = log.page(all(), None, 2).await.unwrap();
         assert_eq!((at(&first), first.total, first.more), (vec![4, 3], 5, true));
-        let next = log.page(None, Some(first.calls[1].id), 2).await.unwrap();
+        let next = log.page(all(), Some(first.calls[1].id), 2).await.unwrap();
         assert_eq!((at(&next), next.more), (vec![2, 1], true));
-        let shop = log.page(Some("shop".into()), None, 10).await.unwrap();
+        let shop = log
+            .page(LogFilter::on(Some("shop".into())), None, 10)
+            .await
+            .unwrap();
         assert_eq!(
             (at(&shop), shop.total, shop.more),
             (vec![4, 2, 0], 3, false)
         );
+    }
+
+    #[tokio::test]
+    async fn a_page_holds_the_calls_of_an_agent_a_result_and_a_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = open(&dir.path().join("agents.sqlite3"));
+        let calls = [
+            ("Claude Code", "ok", Some("SELECT * FROM books"), None),
+            (
+                "Cursor",
+                "refused",
+                Some("select name from customers"),
+                None,
+            ),
+            ("Cursor", "ok", None, Some("books, authors")),
+            ("Cursor", "ok", Some("SELECT '100%' AS sure"), None),
+            ("Claude Code", "error", Some("SELECT x_y FROM orders"), None),
+        ];
+        for (n, (agent, result, sql, request)) in calls.into_iter().enumerate() {
+            let mut call = entry(n as i64, "run_query");
+            call.agent = agent.into();
+            call.result = result.into();
+            call.sql = sql.map(str::to_owned);
+            call.request = request.map(str::to_owned);
+            call.connection_id = Some(if n == 4 { "ledger" } else { "shop" }.into());
+            log.record(call).await.unwrap();
+        }
+        let at = |filter: LogFilter| {
+            let log = log.clone();
+            async move {
+                let page = log.page(filter, None, 10).await.unwrap();
+                let at: Vec<i64> = page.calls.iter().map(|logged| logged.entry.at_ms).collect();
+                (at, page.total)
+            }
+        };
+        let search = |text: &str| LogFilter {
+            search: Some(text.into()),
+            ..LogFilter::default()
+        };
+        // An agent, a result, and both, with the connection.
+        let cursor = LogFilter {
+            agent: Some("Cursor".into()),
+            ..LogFilter::default()
+        };
+        assert_eq!(at(cursor.clone()).await, (vec![3, 2, 1], 3));
+        let refused = LogFilter {
+            result: Some("refused".into()),
+            ..cursor.clone()
+        };
+        assert_eq!(at(refused).await, (vec![1], 1));
+        let ledger = LogFilter {
+            connection: Some("ledger".into()),
+            ..cursor
+        };
+        assert_eq!(at(ledger).await, (vec![], 0));
+        // The search reads the statement and the tables asked for, in any
+        // case of English letters; `%` and `_` are themselves.
+        assert_eq!(at(search("from")).await, (vec![4, 1, 0], 3));
+        assert_eq!(at(search("authors")).await, (vec![2], 1));
+        assert_eq!(at(search("100%")).await, (vec![3], 1));
+        assert_eq!(at(search("x_y")).await, (vec![4], 1));
+        assert_eq!(at(search("x%y")).await, (vec![], 0));
+        assert_eq!(at(search("")).await, (vec![4, 3, 2, 1, 0], 5));
+        // The agents of the connection, whatever else is asked; a later
+        // page says none.
+        let page = log
+            .page(
+                LogFilter {
+                    connection: Some("shop".into()),
+                    result: Some("error".into()),
+                    ..LogFilter::default()
+                },
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.agents, ["Claude Code", "Cursor"]);
+        assert_eq!(page.total, 0);
+        let page = log.page(LogFilter::default(), None, 1).await.unwrap();
+        let later = log
+            .page(LogFilter::default(), Some(page.calls[0].id), 1)
+            .await
+            .unwrap();
+        assert!(later.agents.is_empty());
     }
 
     #[tokio::test]
@@ -577,7 +763,7 @@ mod tests {
         std::fs::copy(journal(&path), journal(&crashed)).unwrap();
         drop(writer);
         let log = Log::open_to_read(&crashed).unwrap().unwrap();
-        let page = log.page(None, None, 1).await.unwrap();
+        let page = log.page(LogFilter::default(), None, 1).await.unwrap();
         assert_eq!(page.total, 2_000);
         assert_eq!(page.calls[0].entry.tool, "run_query");
     }
@@ -595,10 +781,49 @@ mod tests {
                 .unwrap();
             rows.map(Result::unwrap).collect::<Vec<_>>().join("; ")
         };
-        let page = plan(&page_of_one(), params!["shop", i64::MAX, 201]);
+        let (one, _) = LogFilter::on(Some("shop".into())).conditions();
+        let page = plan(&page_of(&one), params!["shop", i64::MAX, 201]);
         assert!(page.contains("calls_connection"), "{page}");
-        let count = plan(COUNT_OF_ONE, params!["shop"]);
+        let count = plan(&count_of(&one), params!["shop"]);
         assert!(count.contains("calls_connection"), "{count}");
+        // With an agent, a result or a search too, alone or together:
+        // still the connection's index, for the page and for the count.
+        let parts = |agent: bool, result: bool, search: bool| LogFilter {
+            connection: Some("shop".into()),
+            agent: agent.then(|| "Cursor".into()),
+            result: result.then(|| "ok".into()),
+            search: search.then(|| "books".into()),
+        };
+        for (agent, result, search) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, false),
+            (true, true, true),
+        ] {
+            let (conditions, values) = parts(agent, result, search).conditions();
+            let mut bound: Vec<&dyn rusqlite::ToSql> = values
+                .iter()
+                .map(|value| value as &dyn rusqlite::ToSql)
+                .collect();
+            let count = plan(&count_of(&conditions), &bound);
+            assert!(count.contains("calls_connection"), "{count}");
+            bound.extend([&i64::MAX as &dyn rusqlite::ToSql, &201]);
+            let page = plan(&page_of(&conditions), &bound);
+            assert!(page.contains("calls_connection"), "{page}");
+        }
+        // Without a connection, a result's own index.
+        let (conditions, values) = LogFilter {
+            result: Some("ok".into()),
+            ..LogFilter::default()
+        }
+        .conditions();
+        let bound: Vec<&dyn rusqlite::ToSql> = values
+            .iter()
+            .map(|value| value as &dyn rusqlite::ToSql)
+            .collect();
+        let count = plan(&count_of(&conditions), &bound);
+        assert!(count.contains("calls_result"), "{count}");
     }
 
     #[tokio::test]
@@ -613,7 +838,13 @@ mod tests {
             .await
             .unwrap();
         let log = Log::open_to_read(&path).unwrap().unwrap();
-        assert_eq!(log.page(None, None, 10).await.unwrap().total, 1);
+        assert_eq!(
+            log.page(LogFilter::default(), None, 10)
+                .await
+                .unwrap()
+                .total,
+            1
+        );
         // A file that is not a log is said so, and left where it is.
         let other = dir.path().join("other.sqlite3");
         let made = Connection::open(&other).unwrap();

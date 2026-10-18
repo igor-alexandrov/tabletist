@@ -156,12 +156,11 @@ pub enum AgentsCommand {
     /// stopped them, and its agent is let go. Nothing where it is gone.
     StopSession(String),
     /// Reads a page of the log at `log`, whether the server runs or not:
-    /// the calls on `connection`, or on every one, from before the call
-    /// `before` names. Answered with [`AgentsEvent::LogRead`], `asked`
-    /// with it.
+    /// the calls that pass `filter`, from before the call `before` names.
+    /// Answered with [`AgentsEvent::LogRead`], `asked` with it.
     ReadLog {
         log: PathBuf,
-        connection: Option<String>,
+        filter: tabletist_mcp::LogFilter,
         before: Option<i64>,
         asked: u64,
     },
@@ -267,13 +266,13 @@ impl Agents {
             }
             AgentsCommand::ReadLog {
                 log,
-                connection,
+                filter,
                 before,
                 asked,
             } => {
                 let outbox = outbox.clone();
                 tokio::spawn(async move {
-                    let page = read_log(log, connection, before).await;
+                    let page = read_log(log, filter, before).await;
                     outbox.emit(super::Event::Agents(AgentsEvent::LogRead { asked, page }));
                 });
             }
@@ -479,7 +478,7 @@ async fn sessions(
 /// aside. No log yet is an empty one.
 async fn read_log(
     log: PathBuf,
-    connection: Option<String>,
+    filter: tabletist_mcp::LogFilter,
     before: Option<i64>,
 ) -> Result<tabletist_mcp::Page, String> {
     let opened = tokio::task::spawn_blocking(move || Log::open_to_read(&log))
@@ -488,7 +487,7 @@ async fn read_log(
         .map_err(|error| error.to_string())?;
     match opened {
         Some(log) => log
-            .page(connection, before, LOG_PAGE)
+            .page(filter, before, LOG_PAGE)
             .await
             .map_err(|error| error.to_string()),
         None => Ok(tabletist_mcp::Page::default()),
@@ -1704,7 +1703,7 @@ mod tests {
         let read = |backend: &mut Backend, connection: Option<&str>| {
             backend.send(Command::Agents(AgentsCommand::ReadLog {
                 log: path.clone(),
-                connection: connection.map(str::to_owned),
+                filter: tabletist_mcp::LogFilter::on(connection.map(str::to_owned)),
                 before: None,
                 asked: 7,
             }));

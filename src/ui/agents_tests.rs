@@ -792,9 +792,9 @@ fn log_asked(harness: &Harness) -> (u64, Option<String>) {
         .find_map(|sent| match sent {
             crate::backend::Command::Agents(crate::backend::AgentsCommand::ReadLog {
                 asked,
-                connection,
+                filter,
                 ..
-            }) => Some((*asked, connection.clone())),
+            }) => Some((*asked, filter.connection.clone())),
             _ => None,
         })
         .expect("a read of the log")
@@ -822,6 +822,7 @@ fn log_answered(harness: &mut Harness) {
         calls: vec![tabletist_mcp::Logged { id: 5, entry }],
         total: 1,
         more: false,
+        agents: vec!["Claude Code".into(), "Cursor".into()],
     };
     said(
         harness,
@@ -878,11 +879,205 @@ fn the_log_lists_the_calls_and_says_what_the_selected_one_came_to() {
         if look.terminal {
             super::tests::type_key(&mut harness, egui::Key::L, "L");
         } else {
+            harness.click("Calls on");
+            harness.settle();
             harness.click("All connections");
             harness.settle();
         }
         assert_eq!(log_asked(&harness).1, None, "{}", look.name);
     }
+}
+
+/// The filter of the last read of the log.
+fn log_filter(harness: &Harness) -> tabletist_mcp::LogFilter {
+    harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|sent| match sent {
+            crate::backend::Command::Agents(crate::backend::AgentsCommand::ReadLog {
+                filter,
+                ..
+            }) => Some(filter.clone()),
+            _ => None,
+        })
+        .expect("a read of the log")
+}
+
+/// Answers the log's last read with no call, of a log in which Claude
+/// Code and Cursor called: what a filter that matches nothing reads.
+fn log_answered_empty(harness: &mut Harness) {
+    let (asked, _) = log_asked(harness);
+    let page = tabletist_mcp::Page {
+        agents: vec!["Claude Code".into(), "Cursor".into()],
+        ..tabletist_mcp::Page::default()
+    };
+    said(
+        harness,
+        AgentsEvent::LogRead {
+            asked,
+            page: Ok(page),
+        },
+    );
+}
+
+/// Gives the keyboard to the field named `label`, as a screen reader
+/// would.
+fn focus_field(harness: &mut Harness, label: &str) {
+    use egui::accesskit::Role;
+    let tree = harness.settle();
+    let field = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::TextInput && node.label() == Some(label))
+        .map(|(id, _)| *id)
+        .unwrap_or_else(|| panic!("no field named {label:?}"));
+    harness.frame(vec![egui::Event::AccessKitActionRequest(
+        egui::accesskit::ActionRequest {
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: field,
+            action: egui::accesskit::Action::Focus,
+            data: None,
+        },
+    )]);
+    harness.settle();
+}
+
+/// The Log view of `tab`'s connection, read once: one call of Claude
+/// Code's, in a log Cursor called on too.
+fn on_the_log(look: Look) -> (Harness, ConnTabId) {
+    let (mut harness, tab) = connected(look);
+    harness.app.settings.mcp_enabled = true;
+    allow(&mut harness, tab, AgentAccess::Read);
+    harness.app.apply(Action::ShowAgentsView {
+        tab,
+        view: crate::model::AgentsView::Log,
+    });
+    harness.settle();
+    log_answered(&mut harness);
+    assert!(harness.painted_rect("SELECT id FROM books").is_some());
+    (harness, tab)
+}
+
+#[test]
+fn the_logs_filters_read_an_agents_calls_a_result_and_a_search() {
+    let (mut harness, tab) = on_the_log(Look::macos());
+    let conn = harness.app.workspace(tab).unwrap().conn_id.0.clone();
+    // The agents that called on the connection are offered.
+    harness.click("Agent");
+    harness.settle();
+    assert!(harness.has("Claude Code"));
+    harness.click("Cursor");
+    harness.settle();
+    let mut wanted = tabletist_mcp::LogFilter {
+        connection: Some(conn.clone()),
+        agent: Some("Cursor".into()),
+        ..tabletist_mcp::LogFilter::default()
+    };
+    assert_eq!(log_filter(&harness), wanted);
+    // How they ended, as the list says it.
+    harness.click("Result");
+    harness.settle();
+    harness.click("refused");
+    harness.settle();
+    wanted.result = Some("refused".into());
+    assert_eq!(log_filter(&harness), wanted);
+    // What the requests hold, as it is typed.
+    focus_field(&mut harness, "Search requests");
+    harness.frame(vec![egui::Event::Text("from books".into())]);
+    harness.settle();
+    wanted.search = Some("from books".into());
+    assert_eq!(log_filter(&harness), wanted);
+    // Matched by none: said so. One that matches is counted as such.
+    log_answered_empty(&mut harness);
+    assert!(harness.has("No calls in the log match these filters."));
+    harness.frame(vec![egui::Event::Text("s".into())]);
+    harness.settle();
+    log_answered(&mut harness);
+    assert!(harness.has("This connection · 1 call matches · last 30 days · on this computer"));
+    wanted.search = Some("from bookss".into());
+    // Every agent again, and every connection: the other filters stay.
+    harness.click("Agent");
+    harness.settle();
+    harness.click("All agents");
+    harness.settle();
+    harness.click("Calls on");
+    harness.settle();
+    harness.click("All connections");
+    harness.settle();
+    wanted.agent = None;
+    wanted.connection = None;
+    assert_eq!(log_filter(&harness), wanted);
+}
+
+#[test]
+fn omarchys_slash_opens_the_logs_filters_and_esc_keeps_them() {
+    let (mut harness, tab) = on_the_log(Look::omarchy());
+    let conn = harness.app.workspace(tab).unwrap().conn_id.0.clone();
+    let view = |harness: &Harness| {
+        harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .tabs
+            .iter()
+            .find_map(|open| match open {
+                crate::model::Tab::Agents(agents) => Some((agents.view, agents.log.filters_open)),
+                _ => None,
+            })
+    };
+    use crate::model::AgentsView;
+    assert!(harness.painted_rect("/ filter").is_some());
+    super::tests::type_key(&mut harness, egui::Key::Slash, "/");
+    harness.settle();
+    assert_eq!(view(&harness), Some((AgentsView::Log, true)));
+    // The search has the keyboard: what is typed is the search's, the
+    // tab's letters among it.
+    harness.frame(vec![egui::Event::Text("all".into())]);
+    harness.settle();
+    assert_eq!(view(&harness), Some((AgentsView::Log, true)));
+    assert_eq!(log_filter(&harness).search.as_deref(), Some("all"));
+    // Tab goes to the agents, then to Claude Code's, which Space picks.
+    harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+    harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+    harness.press(egui::Key::Space, egui::Modifiers::NONE);
+    harness.settle();
+    assert_eq!(log_filter(&harness).agent.as_deref(), Some("Claude Code"));
+    // Esc closes them and keeps them, which the line under the bar says.
+    harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+    harness.settle();
+    assert_eq!(view(&harness), Some((AgentsView::Log, false)));
+    assert!(harness.has("filters agent claude code · search “all”"));
+    assert_eq!(
+        log_filter(&harness),
+        tabletist_mcp::LogFilter {
+            connection: Some(conn),
+            agent: Some("Claude Code".into()),
+            result: None,
+            search: Some("all".into()),
+        }
+    );
+    // Open again, the search has the keyboard again, with what it holds.
+    super::tests::type_key(&mut harness, egui::Key::Slash, "/");
+    harness.settle();
+    harness.press(egui::Key::Backspace, egui::Modifiers::NONE);
+    harness.settle();
+    assert_eq!(log_filter(&harness).search.as_deref(), Some("al"));
+    // Left from a word with `l`, and shown again: they are closed, and `/`
+    // gives the search the keyboard once more.
+    harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+    super::tests::type_key(&mut harness, egui::Key::L, "l");
+    assert_eq!(view(&harness), Some((AgentsView::Activity, false)));
+    super::tests::type_key(&mut harness, egui::Key::L, "l");
+    assert_eq!(view(&harness), Some((AgentsView::Log, false)));
+    super::tests::type_key(&mut harness, egui::Key::Slash, "/");
+    harness.settle();
+    harness.frame(vec![egui::Event::Text("l".into())]);
+    harness.settle();
+    assert_eq!(log_filter(&harness).search.as_deref(), Some("all"));
+    assert_eq!(view(&harness), Some((AgentsView::Log, true)));
 }
 
 #[test]
@@ -963,6 +1158,7 @@ fn a_call_selected_with_j_is_kept_in_sight() {
         calls,
         total: 200,
         more: false,
+        agents: Vec::new(),
     };
     said(
         &mut harness,

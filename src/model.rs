@@ -646,6 +646,18 @@ pub enum Action {
     ToggleAgentsLogScope(ConnTabId),
     /// The Log view: read the page after the last call shown.
     MoreAgentsLog(ConnTabId),
+    /// The Log view: show only the calls of an agent, that ended one way,
+    /// or whose request holds a text; or every one again.
+    FilterAgentsLog {
+        tab: ConnTabId,
+        filter: AgentsLogFilter,
+    },
+    /// The Log view, in the terminal look: open its filters, or close
+    /// them and keep what they are set to.
+    ShowAgentsLogFilters {
+        tab: ConnTabId,
+        open: bool,
+    },
     /// The Log view: select a call, by its place in the log.
     SelectAgentsLogCall {
         tab: ConnTabId,
@@ -3372,7 +3384,7 @@ pub enum Tab {
     Object(Box<ObjectTab>),
     Sql(Box<SqlTab>),
     /// What agents do on the workspace's connection. One at most.
-    Agents(AgentsTab),
+    Agents(Box<AgentsTab>),
 }
 
 impl Tab {
@@ -3464,12 +3476,42 @@ pub enum AgentsView {
     Log,
 }
 
+/// One of the Log view's filters, set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentsLogFilter {
+    /// One agent's calls, or every agent's.
+    Agent(Option<String>),
+    /// The calls that ended one way, as the log says it, or every one.
+    Result(Option<String>),
+    /// The calls whose request holds this text: every call where it is
+    /// empty.
+    Search(String),
+}
+
+/// How a call can end, as the log keeps it: what the result filter
+/// offers. A write's outcomes come with writes.
+pub const LOG_RESULTS: [&str; 6] = ["ok", "refused", "error", "timeout", "cancelled", "stopped"];
+
 /// The Agents tab's Log view: the log of calls, a page at a time, the
 /// newest first, read from the log's file whether the server runs or not.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentsLog {
     /// Every connection's calls, not this one's alone.
     pub all: bool,
+    /// The agent whose calls alone are shown.
+    pub agent: Option<String>,
+    /// How the calls shown ended, as the log says it.
+    pub result: Option<String>,
+    /// Text the requests shown hold; none where it is empty.
+    pub search: String,
+    /// The agents that called on what is shown, whatever else is
+    /// filtered: what the agent filter offers. Said by each first page.
+    pub agents: Vec<String>,
+    /// The terminal look's filters, open over the list.
+    pub filters_open: bool,
+    /// How many times they were asked to open: each time, the search takes
+    /// the keyboard.
+    pub filters_asked: u64,
     pub calls: Vec<tabletist_mcp::Logged>,
     /// How many calls the log holds of what is shown.
     pub total: u64,
@@ -3486,6 +3528,24 @@ pub struct AgentsLog {
     pub selected: Option<i64>,
     /// Whether it was read once at least.
     pub read: bool,
+}
+
+impl AgentsLog {
+    /// Whether any filter but the connection's is set.
+    pub fn filtered(&self) -> bool {
+        self.agent.is_some() || self.result.is_some() || !self.search.is_empty()
+    }
+
+    /// The filter a page of it is read with, the calls on `conn` alone
+    /// where it shows this connection's.
+    pub fn filter(&self, conn: &str) -> tabletist_mcp::LogFilter {
+        tabletist_mcp::LogFilter {
+            connection: (!self.all).then(|| conn.to_owned()),
+            agent: self.agent.clone(),
+            result: self.result.clone(),
+            search: (!self.search.is_empty()).then(|| self.search.clone()),
+        }
+    }
 }
 
 /// What the app knows of the agent server: the sessions open on it, as
@@ -4448,7 +4508,7 @@ impl Workspace {
     /// The Agents tab, where it is open.
     pub fn agents_tab_mut(&mut self) -> Option<&mut AgentsTab> {
         self.tabs.iter_mut().find_map(|open| match open {
-            Tab::Agents(agents) => Some(agents),
+            Tab::Agents(agents) => Some(&mut **agents),
             Tab::Object(_) | Tab::Sql(_) => None,
         })
     }

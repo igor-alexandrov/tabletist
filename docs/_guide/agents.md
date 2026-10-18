@@ -217,6 +217,17 @@ on all of them: the tool, the statement, how many rows it returned and how
 long it took. Rows themselves are never logged. **Settings › Agents ›
 Keep the activity log** says for how many days a call is kept.
 
+Its bar narrows the list: **This connection** or **All connections**, one
+agent of those that called or **All agents**, one way a call ended
+(**ok**, **refused**, **failed**, **timed out**, **cancelled**,
+**stopped**) or **All results**, and **Search requests…**, which finds
+the text anywhere in a statement or in the tables `describe_schema` was
+asked for, English letters in either case. The count then says how many
+calls match. In the Omarchy look, `/` opens the same filters over the
+list, with the keyboard in the search: Tab moves to the agents and the
+results, Enter or Space picks one, and Esc closes them and keeps them. A
+line under the bar says what they are set to.
+
 When an agent connects, Tabletist tells you: a notification on Linux,
 whose **Review** shows the Agents tab, the Dock icon bouncing on macOS,
 and the taskbar button flashing on Windows.

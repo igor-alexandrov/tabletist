@@ -2297,6 +2297,12 @@ fn letters(
             {
                 actions.push(Action::ToggleAgentsLogScope(tab));
             }
+            (Some(Command::FilterAgentsLog), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+            {
+                opened = true;
+                actions.push(Action::ShowAgentsLogFilters { tab, open: true });
+            }
             (Some(Command::MoveInAgentSessions), _)
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
             {
