@@ -6735,14 +6735,18 @@ mod tests {
         read(&mut harness, "Gone", None);
         assert!(crate::ui::toast::said(&harness.ctx).is_some());
         crate::ui::toast::say(&harness.ctx, "something else");
-        // Omarchy switched: the folder and the pin are read again, the
-        // pin first.
+        // Omarchy switched twice: the folder and the pin are read again,
+        // the pin first. The second read of the folder waits for the
+        // first, so the one logic pass below cannot see the folder read,
+        // however soon the first read ends.
         let folder = tempfile::tempdir().unwrap();
         let waker = fastframe_theme::Waker::default();
-        harness
-            .app
-            .themes
-            .start(folder.path().to_owned(), None, &waker);
+        for _ in 0..2 {
+            harness
+                .app
+                .themes
+                .start(folder.path().to_owned(), None, &waker);
+        }
         read(&mut harness, "Gone", None);
         assert_eq!(harness.app.pin_state(), Some(PinState::Reading));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
