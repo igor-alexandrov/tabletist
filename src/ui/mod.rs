@@ -67,6 +67,8 @@ pub mod value_tags;
 pub mod widgets;
 pub mod workspace;
 pub mod write_prompts;
+#[cfg(test)]
+mod zone_tests;
 
 use egui::Frame;
 

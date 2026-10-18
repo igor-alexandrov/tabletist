@@ -79,6 +79,9 @@ pub struct App {
     /// The settings file as the app last read or wrote it or, before any
     /// file exists, as it would be written.
     pub settings_file: SettingsFile,
+    /// The computer's time zone as the app found it at its start: what the
+    /// System zone of the settings is.
+    pub system_zone: jiff::tz::TimeZone,
     pub locale: Locale,
     pub palette: Palette,
     pub look: crate::theme::Look,
@@ -180,6 +183,7 @@ impl App {
             dirs,
             settings,
             settings_file,
+            system_zone: system_zone(),
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
@@ -432,6 +436,11 @@ impl App {
         !self.cancellable(tab).is_empty()
     }
 
+    /// The zone a value with an offset is shown in, as the settings say.
+    pub fn zone(&self) -> jiff::tz::TimeZone {
+        self.settings.tz.resolve(&self.system_zone)
+    }
+
     /// How the look in use binds and writes its keys.
     pub fn layout(&self) -> crate::keymap::Layout {
         crate::keymap::Layout::of(&self.look)
@@ -473,6 +482,7 @@ impl App {
                 continue;
             };
             let shown = workspace.row_panel_tab();
+            let zone = workspace.zone.clone();
             for sql in workspace.sql_tabs_mut() {
                 let row = sql.selected_row().filter(|_| shown == Some(sql.id));
                 let Some(row) = row else {
@@ -484,9 +494,16 @@ impl App {
                     continue;
                 }
                 let request = sql.run.loaded;
-                let values = sql.shown_rows().and_then(|(_, rows, _)| rows.get(row));
+                let Some((columns, rows, _)) = sql.shown_rows() else {
+                    sql.fields = None;
+                    continue;
+                };
+                let kinds: Vec<_> = columns.iter().map(|column| column.kind).collect();
                 let nothing = std::collections::BTreeMap::new();
-                sql.fields = values.map(|values| row_fields(request, row, values, &nothing));
+                let fields = rows
+                    .get(row)
+                    .map(|values| row_fields(request, row, values, &kinds, &zone, &nothing));
+                sql.fields = fields;
             }
             for object in workspace.object_tabs_mut() {
                 let row = object
@@ -506,18 +523,19 @@ impl App {
                 // it is made again from the set as it stands.
                 let request = object.rows.loaded;
                 let cells = &object.edits.cells;
+                let kinds: Vec<_> = page.columns.iter().map(|column| column.kind).collect();
                 object.fields = match crate::edit::new_id(row) {
                     // A new row loaded nothing: each field is what was
                     // set in it, and a NULL to draw where nothing was.
                     Some(new) => {
                         let held = object.edits.added.iter().any(|added| added.id == new);
                         let blank = vec![tabletist_db::Value::Null; page.columns.len()];
-                        held.then(|| row_fields(request, row, &blank, cells))
+                        held.then(|| row_fields(request, row, &blank, &kinds, &zone, cells))
                     }
                     None => page
                         .rows
                         .get(row)
-                        .map(|values| row_fields(request, row, values, cells)),
+                        .map(|values| row_fields(request, row, values, &kinds, &zone, cells)),
                 };
             }
         }
@@ -2326,11 +2344,13 @@ impl App {
         let request = RequestId(self.next_id());
         // Where the option puts it; the grid's link switches it from there.
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
+        let zone = self.zone();
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
         let mut workspace = Workspace::new(session, request, saved, typed);
         workspace.full_precision = full_precision;
+        workspace.zone = zone;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
     }
 
@@ -3638,6 +3658,21 @@ impl App {
                 }
             }
         }
+        if old.tz != self.settings.tz {
+            let zone = self.zone();
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    workspace.zone = zone.clone();
+                    // The row panels' texts are made again, in the zone.
+                    for sql in workspace.sql_tabs_mut() {
+                        sql.fields = None;
+                    }
+                    for object in workspace.object_tabs_mut() {
+                        object.fields = None;
+                    }
+                }
+            }
+        }
         if old.show_system_schemas != self.settings.show_system_schemas {
             // A completion list offers the schemas that are shown, and an
             // open one is worked out again only when its script, its cursor
@@ -3901,6 +3936,19 @@ impl App {
 }
 
 /// Whether the request failed only because the connection went away.
+/// The computer's time zone, or UTC where it cannot be found. Tests have
+/// UTC whatever the computer they run on says, so what they show does not
+/// depend on it: a test of the System zone sets `App::system_zone`.
+fn system_zone() -> jiff::tz::TimeZone {
+    if cfg!(test) {
+        return jiff::tz::TimeZone::UTC;
+    }
+    jiff::tz::TimeZone::try_system().unwrap_or_else(|error| {
+        log::warn!("the system's time zone could not be found, UTC is used: {error}");
+        jiff::tz::TimeZone::UTC
+    })
+}
+
 fn lost<T>(fetch: &Fetch<T>) -> bool {
     fetch.error.as_ref().is_some_and(Error::is_connection_lost)
 }
@@ -5338,10 +5386,15 @@ fn moved(object: &ObjectTab, rows: isize, cols: isize) -> Option<CellPos> {
 /// row `row` that is pending in `cells` reads as its new value, and keeps
 /// what it loaded as beside it, so the panel never disagrees with the
 /// grid.
+/// The row panel's texts of a row: each value as the panel shows it, the
+/// pending one where there is one, and a moment with an offset (`kinds`
+/// says which columns hold dates and times) in `zone`.
 fn row_fields(
     request: Option<RequestId>,
     row: usize,
     values: &[tabletist_db::Value],
+    kinds: &[tabletist_db::ValueKind],
+    zone: &jiff::tz::TimeZone,
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
     use crate::ui::format::{cell_text, field_text};
@@ -5361,7 +5414,20 @@ fn row_fields(
     let fields = values
         .iter()
         .zip(&pending)
-        .map(|(loaded, pending)| field_text(pending.as_ref().map_or(loaded, |cell| &cell.new)))
+        .enumerate()
+        .map(|(col, (loaded, pending))| {
+            let value = pending.as_ref().map_or(loaded, |cell| &cell.new);
+            let temporal = kinds.get(col) == Some(&tabletist_db::ValueKind::Temporal);
+            match value {
+                tabletist_db::Value::Text(text) if temporal => {
+                    match crate::ui::format::in_zone(text, zone) {
+                        Some(moved) => field_text(&tabletist_db::Value::Text(moved.into())),
+                        None => field_text(value),
+                    }
+                }
+                _ => field_text(value),
+            }
+        })
         .collect();
     crate::model::RowFields {
         request,

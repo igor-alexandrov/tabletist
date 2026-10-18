@@ -423,6 +423,162 @@ pub fn to_the_second(text: &str) -> Cow<'_, str> {
     Cow::Owned(format!("{before}{}", &rest[digits..]))
 }
 
+/// A date and a time as a server writes them, with what follows them:
+/// `2026-01-12 09:14:03.482915+00` is the date and time, the fraction's six
+/// digits, the separator ` `, and `+00`.
+struct Stamp<'a> {
+    at: jiff::civil::DateTime,
+    separator: char,
+    /// The fraction's digits as written, none where it has none.
+    digits: usize,
+    rest: &'a str,
+}
+
+/// Reads `text` as `YYYY-MM-DD HH:MM:SS[.fraction]` (or with a `T`), and
+/// whatever comes after it. `None` for anything else: another form, or a
+/// date or time that is no date or time.
+fn stamp(text: &str) -> Option<Stamp<'_>> {
+    let bytes = text.as_bytes();
+    let number = |range: std::ops::Range<usize>| -> Option<i32> {
+        let part = text.get(range)?;
+        part.bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| part.parse().ok())?
+    };
+    if bytes.len() < 19
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let separator = match bytes[10] {
+        b' ' => ' ',
+        b'T' => 'T',
+        _ => return None,
+    };
+    let mut end = 19;
+    let mut digits = 0;
+    if bytes.get(19) == Some(&b'.') {
+        digits = bytes[20..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digits == 0 || digits > 9 {
+            return None;
+        }
+        end = 20 + digits;
+    }
+    let nanos = if digits == 0 {
+        0
+    } else {
+        let written: i32 = text[20..end].parse().ok()?;
+        written * 10_i32.pow(9 - digits as u32)
+    };
+    let at = jiff::civil::DateTime::new(
+        i16::try_from(number(0..4)?).ok()?,
+        i8::try_from(number(5..7)?).ok()?,
+        i8::try_from(number(8..10)?).ok()?,
+        i8::try_from(number(11..13)?).ok()?,
+        i8::try_from(number(14..16)?).ok()?,
+        i8::try_from(number(17..19)?).ok()?,
+        nanos,
+    )
+    .ok()?;
+    Some(Stamp {
+        at,
+        separator,
+        digits,
+        rest: &text[end..],
+    })
+}
+
+/// An offset as PostgreSQL writes one: `+00`, `-05`, `+05:30`,
+/// `-03:30:15`. `None` for anything else.
+fn offset_of(text: &str) -> Option<jiff::tz::Offset> {
+    let sign = match text.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let mut parts = text[1..].split(':');
+    let mut seconds = 0;
+    for (index, scale) in [3_600, 60, 1].into_iter().enumerate() {
+        let Some(part) = parts.next() else {
+            // The hours are always there.
+            if index == 0 {
+                return None;
+            }
+            break;
+        };
+        if part.len() != 2 || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        seconds += part.parse::<i32>().ok()? * scale;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    jiff::tz::Offset::from_seconds(sign * seconds).ok()
+}
+
+/// An offset as [`offset_of`] reads it: the minutes and the seconds only
+/// where they are not nothing.
+fn written_offset(offset: jiff::tz::Offset) -> String {
+    let seconds = offset.seconds();
+    let sign = if seconds < 0 { '-' } else { '+' };
+    let seconds = seconds.unsigned_abs();
+    let (hours, minutes, seconds) = (seconds / 3_600, seconds / 60 % 60, seconds % 60);
+    match (minutes, seconds) {
+        (0, 0) => format!("{sign}{hours:02}"),
+        (_, 0) => format!("{sign}{hours:02}:{minutes:02}"),
+        _ => format!("{sign}{hours:02}:{minutes:02}:{seconds:02}"),
+    }
+}
+
+/// `at` written as a [`Stamp`] is, with `digits` of its fraction.
+fn written_stamp(at: jiff::civil::DateTime, separator: char, digits: usize) -> String {
+    let mut out = format!(
+        "{:04}-{:02}-{:02}{separator}{:02}:{:02}:{:02}",
+        at.year(),
+        at.month(),
+        at.day(),
+        at.hour(),
+        at.minute(),
+        at.second()
+    );
+    if digits > 0 {
+        let nanos = format!("{:09}", at.subsec_nanosecond());
+        out.push('.');
+        out.push_str(&nanos[..digits]);
+    }
+    out
+}
+
+/// A value with an offset (a `timestamptz`, as PostgreSQL writes one) as
+/// the same moment in `zone`, with that zone's offset then, and the
+/// fraction the server sent: `2026-01-12 09:14:03.482915+00` in New York
+/// is `2026-01-12 04:14:03.482915-05`. `None` for text that is no such
+/// value: one without an offset, a time with no date, `infinity`, a date
+/// before Christ (PostgreSQL writes ` BC` after the offset).
+pub fn in_zone(text: &str, zone: &jiff::tz::TimeZone) -> Option<String> {
+    let stamp = stamp(text)?;
+    let offset = offset_of(stamp.rest)?;
+    let moment = offset.to_timestamp(stamp.at).ok()?;
+    let shown = moment.to_zoned(zone.clone());
+    // Before the year 1 PostgreSQL writes ` BC`, which a value moved there
+    // would need: it is shown as the server sent it.
+    if shown.year() < 1 {
+        return None;
+    }
+    Some(format!(
+        "{}{}",
+        written_stamp(shown.datetime(), stamp.separator, stamp.digits),
+        written_offset(shown.offset())
+    ))
+}
+
 /// `text` cut in the middle with "…" to fit `max` points as measured by
 /// `width`, keeping both ends (a file's name and its extension).
 pub fn ellipsize_middle(text: &str, max: f32, width: impl Fn(&str) -> f32) -> String {
@@ -989,6 +1145,64 @@ mod tests {
     }
 
     use super::*;
+
+    fn new_york() -> jiff::tz::TimeZone {
+        jiff::tz::db().get("America/New_York").unwrap()
+    }
+
+    #[test]
+    fn a_value_with_an_offset_is_shown_in_the_zone() {
+        let zone = new_york();
+        assert_eq!(
+            in_zone("2026-01-12 09:14:03.482915+00", &zone).as_deref(),
+            Some("2026-01-12 04:14:03.482915-05")
+        );
+        // Summer time, and a moment the zone's day is the day before.
+        assert_eq!(
+            in_zone("2026-07-01 02:00:00+02", &zone).as_deref(),
+            Some("2026-06-30 20:00:00-04")
+        );
+        // An offset in minutes, and one in seconds, read; the separator
+        // and the fraction's digits kept.
+        assert_eq!(
+            in_zone("2026-01-12T09:14:03.5+05:30", &jiff::tz::TimeZone::UTC).as_deref(),
+            Some("2026-01-12T03:44:03.5+00")
+        );
+        assert_eq!(
+            in_zone("1900-01-01 00:00:00-00:17:30", &jiff::tz::TimeZone::UTC).as_deref(),
+            Some("1900-01-01 00:17:30+00")
+        );
+        let kolkata = jiff::tz::db().get("Asia/Kolkata").unwrap();
+        assert_eq!(
+            in_zone("2026-01-12 09:14:03+00", &kolkata).as_deref(),
+            Some("2026-01-12 14:44:03+05:30")
+        );
+    }
+
+    #[test]
+    fn what_is_no_moment_with_an_offset_is_left_as_it_is() {
+        let zone = new_york();
+        for text in [
+            "2026-01-12 09:14:03",
+            "2026-01-12 09:14:03.482915",
+            "09:14:03+00",
+            "2026-01-12",
+            "infinity",
+            "-infinity",
+            "2026-01-12 09:14:03+00 BC",
+            "2026-02-30 09:14:03+00",
+            "2026-01-12 09:14:03+0",
+            "2026-01-12 09:14:03+00:00:00:00",
+            "2026-01-12 09:14:03.+00",
+            "",
+        ] {
+            assert_eq!(in_zone(text, &zone), None, "{text}");
+        }
+        // The first moment of the year 1 is the year before it in New
+        // York, which PostgreSQL writes with ` BC`.
+        assert_eq!(in_zone("0001-01-01 00:00:00+00", &zone), None);
+    }
+
     use std::time::Duration;
     use tabletist_db::Value;
 

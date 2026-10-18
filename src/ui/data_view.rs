@@ -870,6 +870,9 @@ pub struct Fit {
     pub grouped: bool,
     /// Values of a closed set as tags, which pad their text.
     pub value_tags: bool,
+    /// A hash of the zone's name: a value moved to another zone can be
+    /// wider.
+    pub zone: Option<u64>,
 }
 
 impl Fit {
@@ -878,6 +881,12 @@ impl Fit {
             full_precision: workspace.full_precision,
             grouped: app.settings.grouped(app.layout()),
             value_tags: app.settings.value_tags,
+            zone: workspace.zone.iana_name().map(|name| {
+                use std::hash::{Hash as _, Hasher as _};
+                let mut hasher = std::hash::DefaultHasher::new();
+                name.hash(&mut hasher);
+                hasher.finish()
+            }),
         }
     }
 }
@@ -1353,6 +1362,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         return;
     };
     let fit = Fit::of(workspace, app);
+    // Kept apart from the workspace, which the editor's text is taken from.
+    let zone = workspace.zone.clone();
     // The arrows are the grid's once the user worked in it.
     let keys = workspace.pane == crate::model::Pane::Grid;
     let Some(object) = workspace.object_tab(object_tab) else {
@@ -1499,6 +1510,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             .map(|column| Shown {
                 full_precision: fit.full_precision,
                 grouped: fit.grouped && !is_key(&column.name, structure),
+                zone: Some(&zone),
             })
             .collect();
         // What is pending, and what else of editing the cells show: read
@@ -2462,11 +2474,14 @@ fn empty_rows(
 
 /// How a cell writes its value out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Shown {
+pub struct Shown<'z> {
     /// Timestamps with the fraction the server sent.
     pub full_precision: bool,
     /// A number's integer digits in threes.
     pub grouped: bool,
+    /// The zone a value with an offset is shown in. None shows it as the
+    /// server sent it.
+    pub zone: Option<&'z jiff::tz::TimeZone>,
 }
 
 /// Whether `name` is a column of the table's primary key or of one of its
@@ -2595,6 +2610,15 @@ pub fn plain_cell<'a>(
                 _ => text,
             }
         }
+    };
+    // A moment with an offset in the zone it is shown in, before it is
+    // cut to the second.
+    let text = match shown.zone {
+        Some(zone) if kind == ValueKind::Temporal => match format::in_zone(&text, zone) {
+            Some(moved) => moved.into(),
+            None => text,
+        },
+        _ => text,
     };
     let text = if kind == ValueKind::Temporal && !shown.full_precision {
         match format::to_the_second(&text) {

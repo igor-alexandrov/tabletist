@@ -931,6 +931,9 @@ pub struct Workspace {
     pub sidebar_hidden: bool,
     /// The grid shows timestamps in full rather than to the second.
     pub full_precision: bool,
+    /// The zone a value with an offset is shown in: the settings' zone,
+    /// set when the workspace opens and when the option changes.
+    pub zone: jiff::tz::TimeZone,
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
     /// The terminal look's `:` prompt: the text after the colon while it
@@ -3992,6 +3995,7 @@ impl Workspace {
             recent: Vec::new(),
             sidebar_hidden: false,
             full_precision: false,
+            zone: jiff::tz::TimeZone::UTC,
             focus_where: false,
             command: None,
             focus_command: false,

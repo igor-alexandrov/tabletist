@@ -67,7 +67,7 @@ notify = true
 | --- | --- | --- |
 | `data.page_size` | 10 to 10000. A table takes a new size when it next loads (opened, refreshed, sorted, filtered or reconnected), not while you page through it | `1000` |
 | `data.timestamps` | `"second"` or `"full"` | `"second"` |
-| `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read | `"system"` |
+| `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read. A `timestamptz` value is shown in this zone, and a copy gives it as the server sent it | `"system"` |
 | `data.group_digits` | `true` or `false` | Not set: grouped on macOS and Windows, not in the Omarchy look |
 | `data.value_tags` | `true` or `false` | `true` |
 | `sidebar.show_system_schemas` | `true` shows schemas such as `pg_catalog` and `information_schema` | `false` |

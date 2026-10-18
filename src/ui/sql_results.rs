@@ -186,6 +186,8 @@ struct Place<'a> {
     sql: &'a SqlTab,
     /// How the cells are drawn, as the workspace's tables draw them.
     fit: data_view::Fit,
+    /// The zone a value with an offset is shown in.
+    zone: &'a jiff::tz::TimeZone,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
     /// The write a database refused in the last run, when that run was
@@ -213,6 +215,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         tab,
         sql,
         fit: data_view::Fit::of(workspace, app),
+        zone: &workspace.zone,
         driver: workspace.driver,
         blocked: blocked(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
@@ -1579,6 +1582,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         tab,
         sql,
         fit,
+        zone,
         keys,
         ..
     } = *place;
@@ -1711,6 +1715,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                     full_precision: fit.full_precision,
                     // A result has no key to leave alone.
                     grouped: fit.grouped,
+                    zone: Some(zone),
                 },
             )
         },
