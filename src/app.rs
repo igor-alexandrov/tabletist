@@ -1961,6 +1961,13 @@ impl App {
                     self.dialog = Some(Dialog::About);
                 }
             }
+            Action::TextSize(larger) => {
+                let terminal = self.look.terminal;
+                self.change_settings(|settings| {
+                    settings.font_size =
+                        larger.map(|larger| settings.stepped_font_size(terminal, larger));
+                });
+            }
             Action::ShowSettings => {
                 // The shortcuts dialog offers it, and gives way to it. Asked
                 // for while it is open, it stays as it is.
@@ -5569,6 +5576,9 @@ impl App {
     /// and tests, which must not scan the user's themes or Omarchy.
     pub fn attach(&mut self, ctx: &egui::Context, follow_desktop: bool) {
         self.follow_desktop = follow_desktop;
+        // The font size keys are the keymap's: they change the setting,
+        // where egui's would zoom the whole window and forget it.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
         theme::install(ctx, follow_desktop, &self.look);
         if follow_desktop {
             theme::enable_desktop_themes(&mut self.themes);
@@ -5803,6 +5813,7 @@ impl App {
         // the last frame's actions left, after anything the backend
         // delivered just now.
         self.refresh_completion(ui.ctx());
+        crate::ui::keys::text_size(self, ui.ctx());
         // A dialog takes the keyboard: no shortcut acts behind it, and a
         // first key that waited for its second (`cc`) waits no longer.
         if self.dialog.is_none() {

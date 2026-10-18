@@ -800,6 +800,9 @@ pub enum Action {
     ShowAbout,
     /// Show the Settings window.
     ShowSettings,
+    /// The font size a step larger (`Some(true)`), smaller, or back to the
+    /// look's own (`None`), written to the settings.
+    TextSize(Option<bool>),
     /// Show the Settings window on its Agents pane: from the Agents tab.
     ShowAgentSettings,
     /// Show this pane of the Settings window, its cursor on its first row.

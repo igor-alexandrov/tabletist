@@ -2,6 +2,9 @@
 //! data font of macOS and Windows, the terminal look's one font and size,
 //! and the keys that change the size wherever the keyboard is.
 
+use egui::{Key, Modifiers};
+
+use super::appearance_settings_tests::{on_the_pane, settings_saves};
 use crate::settings::{FontSize, InterfaceSize};
 use crate::testing::Harness;
 use crate::theme::Look;
@@ -28,6 +31,11 @@ fn terminal() -> Harness {
     let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
     harness.set_look(Look::omarchy());
     harness
+}
+
+/// The settings file as the app last wrote it.
+fn file(harness: &Harness) -> &str {
+    &harness.app.settings_file.text
 }
 
 #[test]
@@ -91,4 +99,49 @@ fn a_grid_row_holds_a_line_of_its_data_at_every_size() {
     };
     assert_eq!(Look::macos().with_grid(&compact).row(), 29.0);
     assert_eq!(Look::standard().with_grid(&compact).row(), 18.0);
+}
+
+#[test]
+fn the_mac_keys_step_and_reset_the_data_size_and_write_it() {
+    let mut harness = sheet(Look::macos());
+    let saves = settings_saves(&harness);
+    harness.press(Key::Equals, Modifiers::COMMAND);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(13.0));
+    assert!(file(&harness).contains("font_size = 13\n"));
+    harness.press(Key::Minus, Modifiers::COMMAND);
+    harness.press(Key::Minus, Modifiers::COMMAND);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(12.0));
+    harness.press(Key::Num0, Modifiers::COMMAND);
+    assert_eq!(harness.app.settings.font_size, None);
+    assert!(!file(&harness).contains("font_size"));
+    assert_eq!(settings_saves(&harness), saves + 4);
+    // egui zooms nothing: the keys are the keymap's.
+    logic(&mut harness);
+    assert_eq!(harness.ctx.zoom_factor(), 1.0);
+    assert!(!harness.ctx.options(|options| options.zoom_with_keyboard));
+    // Under the Settings window too, which shows the size.
+    on_the_pane(&mut harness);
+    harness.press(Key::Equals, Modifiers::COMMAND);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(13.0));
+}
+
+#[test]
+fn the_terminal_keys_step_the_size_anywhere_and_stop_at_its_ends() {
+    let mut harness = terminal();
+    harness.press(Key::Equals, Modifiers::CTRL);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(14.0));
+    // Under the Settings screen, whose row follows.
+    on_the_pane(&mut harness);
+    harness.press(Key::Minus, Modifiers::CTRL);
+    harness.press(Key::Minus, Modifiers::CTRL);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(12.0));
+    assert!(harness.app.dialog.is_some(), "the screen stays open");
+    harness
+        .app
+        .change_settings(|settings| settings.font_size = FontSize::of(9.0));
+    harness.press(Key::Minus, Modifiers::CTRL);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(9.0));
+    // No key resets it here: `R` on its row does.
+    harness.press(Key::Num0, Modifiers::CTRL);
+    assert_eq!(harness.app.settings.font_size, FontSize::of(9.0));
 }
