@@ -228,6 +228,19 @@ list, with the keyboard in the search: Tab moves to the agents and the
 results, Enter or Space picks one, and Esc closes them and keeps them. A
 line under the bar says what they are set to.
 
+A call you select shows its details beside the list: the statement as it
+ran, its values, what it returned, the columns that were masked, how it
+ran and how long it took, or why it was refused or failed. **Open in SQL
+editor** puts the statement in a new SQL editor of its connection, in
+read-only mode and not run, in a window of that connection on its saved
+database: this one for a call on this connection, another that is open,
+or one that opens and connects for it. Its values come first, as the log
+keeps them, in a comment line each (`-- $1 = 9100000000000000004` on
+PostgreSQL, `?1` on SQLite, `? #1` on MySQL), for you to put in its
+placeholders. A call on a connection
+deleted since cannot be opened. In the Omarchy look the details show
+with Enter, `o` opens the statement, and Esc closes them.
+
 When an agent connects, Tabletist tells you: a notification on Linux,
 whose **Review** shows the Agents tab, the Dock icon bouncing on macOS,
 and the taskbar button flashing on Windows.

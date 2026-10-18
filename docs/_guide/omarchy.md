@@ -123,7 +123,9 @@ key. Nor has copying a whole row.
 | `l` | Show the log of agents' calls, and back |
 | `L` | In the log, every connection's calls, or this one's |
 | `/` | In the log, open its filters: the search, the agent and the result. Tab moves among them, Enter or Space picks |
-| Esc | Close the log's filters, and keep them |
+| Enter | In the log, show the selected call's details, and close them |
+| `o` | In the log, open the selected call's statement in a SQL editor, read-only and not run |
+| Esc | Close the log's filters, and keep them, or the call's details |
 | `j` / `k` | In the log, move among the calls |
 
 ### The Structure view

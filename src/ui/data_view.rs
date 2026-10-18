@@ -1378,6 +1378,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let Some(object) = workspace.object_tab(object_tab) else {
         return;
     };
+    // Rows that wait for a connect that restarts the tab (see
+    // `App::wake_to_read`): how long it has been going, None until it is
+    // sent (a prompt asks first). They are on their way as a fetch is.
+    let reconnect = (object.rows.needs_load() && workspace.restarts_once_up())
+        .then(|| workspace.connecting_for());
     // What editing asks of the workspace and the tab together, read before
     // the tab is taken for its editor's text.
     let computed = computed_columns(workspace, object);
@@ -1471,6 +1476,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // below sees the same wait.
     let waited = object.rows.running_for();
     let lasted = waited.is_some_and(states::lasted);
+    let reconnected = reconnect.is_some_and(|waited| waited.is_none_or(states::lasted));
     if let Some(error) = shown_error(&object.rows) {
         Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
             error_box(ui, error, &look, &palette, locale, || {
@@ -1817,13 +1823,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 &mut actions,
             );
         }
-    } else if lasted {
+    } else if lasted || reconnected {
         // Rows on their way and none to show yet: the shape of a grid.
         if !look.terminal {
             states::progress(ui, area.x_range(), area.top(), &palette);
         }
         let rows = Rect::from_min_max(pos2(area.left(), area.top() + 2.0), area.max);
         states::skeleton(ui, rows, &grid_look, &palette);
+    } else if let Some(Some(waited)) = reconnect {
+        // Come back when the connect's wait is long enough to show.
+        ui.ctx().request_repaint_after(states::DELAY - waited);
     }
     // A fetch that has lasted, over whatever is up: a refresh and the next
     // page keep the page they replace on screen.

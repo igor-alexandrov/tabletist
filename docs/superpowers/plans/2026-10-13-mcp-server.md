@@ -2442,6 +2442,42 @@ went otherwise:
   is fixed with a test. The view left closes them, and each `/` gives the
   search the keyboard.
 
+**As built in 3b's run 2** (`2026-10-18-mcp-server-3b-2-call-pane.md`). Agreed on 2026-10-18, where it
+went otherwise:
+
+- **The pane**: on macOS beside the list, as the board draws it, while a
+  call is selected, in the place of Phase 1b's line under the list; on
+  Omarchy, whose board draws `enter details` and no pane, the same pane,
+  which Enter shows and closes and Esc closes, the line staying while it
+  is closed. It says the tool and how the call ended, the agent and the
+  moment (and the connection under All connections), the statement in its
+  dialect's colours (plain where its connection was deleted), then line by
+  line its values, the tables asked for, what it returned, the columns
+  masked, why it was refused or failed and its code, how it ran, how long
+  it took and the agent's project; and, for a statement, that rows are not
+  logged. What a write adds (the rows changed against the dry run, the
+  wait, who approved, the reason) comes with writes.
+- **Open in SQL editor**: a new SQL editor of the call's connection, read-only
+  and not run, in front, in a window of that connection on its saved
+  database: this one for a call on this connection, else one open, else
+  one opened and connected; one whose session ended connects again. The
+  statement as it ran, after a comment line for each of its values as the
+  driver names a parameter (`-- $1 = 9100000000000000004`, `?1` on SQLite,
+  `? #1` on MySQL), each value's JSON as the log keeps it (a number is not
+  read and written again); values the log cut, or that do not read, are
+  said to be. Off, with why, for a call on a connection deleted
+  since. On Omarchy `o`, while the Log view shows (`When::AgentsLog`, so
+  that the activity's `o` and Enter keep their own).
+- The Omarchy bar names `enter details` and `o open in sql tab` with a call
+  selected, where it has the room; the footer names the keys too, `o` only
+  where it opens something. The pane takes at most half the view.
+- The run's review found a window switched to another database taken for
+  the call's, a window whose session had ended given the editor and left
+  so, a value's number read and written again (a long one rounded, one
+  out of range dropping every value), the footer naming `o` where it does
+  nothing, the list given no room in a narrow window, and the pane left
+  open as a filter cleared the selection: each is fixed with a test.
+
 ### D.6 The keymap
 
 Checked against `src/keymap.rs` and the keyboard brief
@@ -2727,7 +2763,7 @@ is off until the person turns it on.
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
 | 3a. Masked columns | 5, below | Built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`, `2026-10-18-mcp-server-3a-4-columns-control.md`): the rule, its stops, the engines' fences, the values, the server's side, the setting, and the editor's control with the website's guide. 3b is next (order changed on 2026-10-17) |
-| 3b. The Log view, in full | 3, below | Run 1 built (`2026-10-18-mcp-server-3b-1-log-filters.md`): the agent and result filters and the search. Run 2, the detail pane and Open in SQL editor, is next |
+| 3b. The Log view, in full | 3, below | Runs 1 and 2 built (`2026-10-18-mcp-server-3b-1-log-filters.md`, `2026-10-18-mcp-server-3b-2-call-pane.md`): the filters and the search, the detail pane and Open in SQL editor. Run 3, Export… and the guide, is next |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
 The move of the connections to `connections.toml` came between 1a and 1b
@@ -2943,7 +2979,8 @@ pull request:
 1. The agent and result filters and the search of the requests, with the
    count of what matches, in both looks
    (`2026-10-18-mcp-server-3b-1-log-filters.md`, built).
-2. The detail pane for the selected call, and **Open in SQL editor**.
+2. The detail pane for the selected call, and **Open in SQL editor**
+   (`2026-10-18-mcp-server-3b-2-call-pane.md`, built).
 3. **Export…**, and the website's guide to the log.
 
 ## Open questions

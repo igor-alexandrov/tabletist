@@ -161,6 +161,9 @@ pub enum When {
     /// grid's keys that act on a row have nothing to act on, and the
     /// view's own act on the line of a column.
     Structure,
+    /// The Agents tab shows its Log view: its keys come before the
+    /// activity's.
+    AgentsLog,
 }
 
 /// The mode a chord holds in: with the keyboard in a text field (insert),
@@ -346,7 +349,9 @@ commands! {
     ShowAgentsLog,
     ToggleAgentsLogScope,
     FilterAgentsLog,
-    CloseAgentsLogFilters,
+    CloseAgentsLogPane,
+    ShowAgentsLogDetails,
+    OpenAgentsLogCall,
     AllowAgents,
     ShowAgentSettings,
     ChangeAgentAccess,
@@ -627,9 +632,21 @@ impl Command {
                 "",
                 Window,
             )),
-            C::CloseAgentsLogFilters => {
-                agents(info("Close the log's filters, and keep them", "", Window))
-            }
+            C::CloseAgentsLogPane => agents(info(
+                "Close the log's filters, and keep them, or the call's details",
+                "",
+                Window,
+            )),
+            C::ShowAgentsLogDetails => agents(info(
+                "Show the selected call's details in the log, or close them",
+                "",
+                Window,
+            )),
+            C::OpenAgentsLogCall => agents(info(
+                "Open the selected call's statement in a SQL editor",
+                "",
+                Window,
+            )),
             C::ToggleSidebar => info("Toggle sidebar", "Toggle sidebar", Navigation),
             C::PaneLeft => info("Pane to the left", PANES, Navigation),
             C::PaneDown => info("Pane below", PANES, Navigation).reserved(),
@@ -1058,7 +1075,9 @@ pub const BINDINGS: &[Binding] = {
         bind(C::ShowAgentsLog, AGENTS, NONE, keys(&[k("l")])),
         bind(C::ToggleAgentsLogScope, AGENTS, NONE, keys(&[k("L")])),
         bind(C::FilterAgentsLog, AGENTS, NONE, keys(&[k("/")])),
-        bind(C::CloseAgentsLogFilters, AGENTS, NONE, keys(&[k("esc")])),
+        bind(C::CloseAgentsLogPane, AGENTS, NONE, keys(&[k("esc")])),
+        bind(C::ShowAgentsLogDetails, AGENTS, NONE, keys(&[k("enter")])).when(When::AgentsLog),
+        bind(C::OpenAgentsLogCall, AGENTS, NONE, keys(&[k("o")])).when(When::AgentsLog),
         bind(C::AllowAgents, AGENTS, NONE, keys(&[k("e")])),
         bind(C::ShowAgentSettings, AGENTS, NONE, keys(&[k("s")])),
         bind(C::ChangeAgentAccess, CONNECTIONS, NONE, keys(&[k("a")])),

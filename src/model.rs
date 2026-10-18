@@ -658,6 +658,18 @@ pub enum Action {
         tab: ConnTabId,
         open: bool,
     },
+    /// The Log view, in the terminal look: show the selected call's pane,
+    /// or close it.
+    ShowAgentsLogDetails {
+        tab: ConnTabId,
+        open: bool,
+    },
+    /// The Log view: the statement of a call, by its place in the log, in
+    /// a new SQL editor of its connection's window, read-only and not run.
+    OpenAgentsLogCall {
+        tab: ConnTabId,
+        id: i64,
+    },
     /// The Log view: select a call, by its place in the log.
     SelectAgentsLogCall {
         tab: ConnTabId,
@@ -2648,6 +2660,10 @@ pub struct Fetch<T> {
     pub loaded: Option<RequestId>,
     /// When the pending request was sent, for the time a wait shows.
     pub started: Option<std::time::Instant>,
+    /// A read the person asked for while a connect that restarts the tab
+    /// was under way, and not sent (see `App::wake_to_read`):
+    /// `App::after_connect` sends it once the session is up.
+    pub asked: bool,
 }
 
 impl<T> Default for Fetch<T> {
@@ -2658,6 +2674,7 @@ impl<T> Default for Fetch<T> {
             error: None,
             loaded: None,
             started: None,
+            asked: false,
         }
     }
 }
@@ -2667,6 +2684,7 @@ impl<T> Fetch<T> {
         self.pending = Some(request);
         self.error = None;
         self.started = Some(std::time::Instant::now());
+        self.asked = false;
     }
 
     /// Applies a result if it answers the pending request. Returns whether it did.
@@ -3551,6 +3569,30 @@ pub enum AgentsLogFilter {
     Search(String),
 }
 
+/// A call's values, as the log keeps them (`Entry::params`): each one's
+/// JSON as it came, not read and written again; the length of what the log
+/// cut; or nothing to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoggedValues {
+    Each(Vec<String>),
+    Cut(Option<u64>),
+    Unread,
+}
+
+impl LoggedValues {
+    pub fn of(params: &str) -> Self {
+        if let Ok(values) = serde_json::from_str::<Vec<&serde_json::value::RawValue>>(params) {
+            return Self::Each(values.iter().map(|value| value.get().to_owned()).collect());
+        }
+        match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(params) {
+            Ok(cut) if cut.contains_key("cut") => {
+                Self::Cut(cut.get("bytes").and_then(serde_json::Value::as_u64))
+            }
+            _ => Self::Unread,
+        }
+    }
+}
+
 /// How a call can end, as the log keeps it: what the result filter
 /// offers. A write's outcomes come with writes.
 pub const LOG_RESULTS: [&str; 6] = ["ok", "refused", "error", "timeout", "cancelled", "stopped"];
@@ -3575,6 +3617,9 @@ pub struct AgentsLog {
     /// How many times they were asked to open: each time, the search takes
     /// the keyboard.
     pub filters_asked: u64,
+    /// The terminal look's pane of the selected call, open beside the
+    /// list. macOS shows it whenever a call is selected.
+    pub details_open: bool,
     pub calls: Vec<tabletist_mcp::Logged>,
     /// How many calls the log holds of what is shown.
     pub total: u64,

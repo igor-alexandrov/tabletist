@@ -631,7 +631,15 @@ mod tests {
                 .map(|page| page.rows.len())
         };
         let wait = std::time::Duration::from_secs(20);
-        assert!(harness.run_until(wait, |app| rows(app) == Some(5)));
+        // And nothing else waited for: a session still asked for the
+        // structure or the sidebar's lists is in use, and not closed.
+        let settled = |app: &crate::app::App| {
+            rows(app) == Some(5)
+                && app
+                    .workspace(app.active_tab_id())
+                    .is_some_and(|workspace| !workspace.waits())
+        };
+        assert!(harness.run_until(wait, settled));
         let tab = harness.app.active_tab_id();
         let old = harness.app.workspace(tab).unwrap().session;
         let later = std::time::Instant::now() + std::time::Duration::from_secs(31 * 60);
