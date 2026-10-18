@@ -1183,6 +1183,27 @@ C.1 gave it from the start.
   the column is computed from the masked one is not asked: it errs toward
   masking.
 
+**As built in 3a's run 3** (`2026-10-17-mcp-server-3a-3-setting.md`): the
+setting, as 1c-2b's for the tables. A connection's `[connections.agents]`
+table takes `masked = ["orders.email"]`, read through `ColumnName` and
+written back as the person writes it; a file with a masked column is
+version 6, so that a Tabletist that would answer its values as they are
+never reads it. `agents_shown.json` keeps each connection's masked
+columns as last shown. A change made outside the app that masks less (an
+entry taken out, or one with a schema in place of one for every schema)
+is held (`Raised::Masked`), with the sentence a table's has ("agents may
+read more of …"); one that masks more is taken. While one is held, what
+was shown is in force with what the file says now, so that a column the
+change also masks is masked at once; **Put back** writes what was shown
+back. A shown entry that does not read, which only a hand could write,
+holds every change, and while one is held the connection is Off to
+agents, since what that entry masked cannot be kept masked; **Put back**
+writes the entries that read, and they are what was shown from then on
+(found by the review). A connection that hides and masks less is said
+once in the bar. The editor has no control for them until run 4: its
+save keeps what the file says. The app's gateway passes them to the
+server, which has used them since run 2.
+
 **The rule.** It applies to any statement that reads a table with a masked
 column.
 
@@ -2619,7 +2640,7 @@ is off until the person turns it on.
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
-| 3a. Masked columns | 5, below | Runs 1a, 1b and 2 built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`): the rule, its stops, the engines' fences, the values and the server's side. Run 3, the setting in `connections.toml`, is next (order changed on 2026-10-17) |
+| 3a. Masked columns | 5, below | Runs 1a to 3 built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`): the rule, its stops, the engines' fences, the values, the server's side and the setting. Run 4, the editor's Masked columns control and the website's guide, is next (order changed on 2026-10-17) |
 | 3b. The Log view, in full | Not cut yet | After 3a |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
@@ -2816,7 +2837,8 @@ pull request:
 2. The server's side: the setting read, `list_connections`' masked
    columns, `describe_schema`'s mark, and `masked: true` in an answer
    (`2026-10-17-mcp-server-3a-2-server.md`, built).
-3. The setting in `connections.toml`, as 1c-2b's for tables.
+3. The setting in `connections.toml`, as 1c-2b's for tables
+   (`2026-10-17-mcp-server-3a-3-setting.md`, built).
 4. The editor's Masked columns control with **Add column…** and its mark,
    and the website's guide.
 
