@@ -205,5 +205,10 @@ egui_kittest = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b2
 emath = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
 epaint = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
 epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
-# crmne/winit apps-0.30, used by the eframe fork above.
-winit = { git = "https://github.com/crmne/winit", rev = "fc4f39ff0993dd235952b749dd16b856c0194e1f" }
+# crmne/winit apps-0.30, used by the eframe fork above. Held one commit
+# behind the branch tip: the tip (fc4f39f) reports dropped files on Wayland
+# through a wl_data_device of winit's own, created before smithay-clipboard
+# creates its device. Hyprland sends the clipboard selection only to a
+# client's first data device, so with the tip paste never worked there
+# (#115). The app takes no dropped files.
+winit = { git = "https://github.com/crmne/winit", rev = "a7b78b2754555196756d37b12b2c78da1668e31a" }
