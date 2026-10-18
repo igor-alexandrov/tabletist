@@ -1490,6 +1490,10 @@ pub struct ConnectionForm {
     pub environment: Option<crate::env::Environment>,
     /// Read-only as saved: `None` until the user sets it.
     pub read_only: Option<bool>,
+    /// Whether production is read-only while the switch is not set: the
+    /// settings' "New production connections open read-only" for a new
+    /// connection, the built-in rule (yes) for a saved one.
+    pub production_read_only: bool,
     /// What agents may do on the connection: its access as the person
     /// chooses it here. Rows and the timeout are typed in the two fields
     /// below.
@@ -1647,6 +1651,7 @@ impl Default for ConnectionForm {
             name: String::new(),
             environment: None,
             read_only: None,
+            production_read_only: true,
             agents: crate::connections::Agents::default(),
             agents_opened: crate::connections::AgentAccess::Off,
             agents_tables: TablesChoice::default(),
@@ -1792,10 +1797,23 @@ impl ConnectionForm {
     }
 
     /// Whether the connection is saved read-only: as set, else the
-    /// environment's default.
+    /// environment's default, which for production is
+    /// [`Self::production_read_only`].
     pub fn read_only(&self) -> bool {
+        self.read_only.unwrap_or_else(|| {
+            // Production is the one environment read-only by default.
+            self.environment().read_only_by_default() && self.production_read_only
+        })
+    }
+
+    /// The switch as the connection is saved with it: as set; for a new
+    /// connection to production, as it shows, so that it keeps what the
+    /// settings said when it was made; else not set, and the environment's
+    /// rule applies.
+    fn saved_read_only(&self) -> Option<bool> {
+        let new_production = self.editing.is_none() && self.environment().read_only_by_default();
         self.read_only
-            .unwrap_or(self.environment().read_only_by_default())
+            .or_else(|| new_production.then(|| self.read_only()))
     }
 
     pub fn from_saved(saved: &crate::connections::SavedConnection) -> Self {
@@ -1805,6 +1823,7 @@ impl ConnectionForm {
             name: saved.name.clone(),
             environment: Some(saved.environment),
             read_only: saved.read_only,
+            production_read_only: true,
             agents: saved.agents.clone(),
             agents_opened: saved.agents.access,
             agents_tables: TablesChoice::of(&saved.agents.tables),
@@ -2074,7 +2093,7 @@ impl ConnectionForm {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),
             environment: self.environment(),
-            read_only: self.read_only,
+            read_only: self.saved_read_only(),
             password,
             ssh_secret,
             spec,
@@ -2461,6 +2480,8 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::Tz),
                 SettingsRow::Option(OptionId::GroupDigits),
                 SettingsRow::Option(OptionId::ValueTags),
+                SettingsRow::Option(OptionId::ProductionReadOnly),
+                SettingsRow::Option(OptionId::ConfirmCloseEdits),
             ],
             Self::Appearance => &[
                 SettingsRow::Option(OptionId::RowHeight),
@@ -5830,6 +5851,51 @@ mod tests {
             ssh_key_file: "/home/me/.ssh/id_ed25519".into(),
             ..ConnectionForm::default()
         }
+    }
+
+    /// A new connection to production, its switch as the settings start
+    /// it.
+    fn production_form(production_read_only: bool) -> ConnectionForm {
+        ConnectionForm {
+            environment: Some(crate::env::Environment::Production),
+            production_read_only,
+            ..ssh_form()
+        }
+    }
+
+    #[test]
+    fn a_new_production_connection_keeps_the_switch_the_settings_gave_it() {
+        for on in [true, false] {
+            let form = production_form(on);
+            assert_eq!(form.read_only(), on);
+            // Saved with the switch set: a later change of the settings
+            // changes no saved connection.
+            assert_eq!(form.to_saved().unwrap().read_only, Some(on));
+        }
+        // What the person sets wins.
+        let form = ConnectionForm {
+            read_only: Some(true),
+            ..production_form(false)
+        };
+        assert_eq!(form.to_saved().unwrap().read_only, Some(true));
+        // Another environment has its own rule, and saves no switch.
+        let form = ConnectionForm {
+            environment: Some(crate::env::Environment::Staging),
+            ..production_form(true)
+        };
+        assert!(!form.read_only());
+        assert_eq!(form.to_saved().unwrap().read_only, None);
+    }
+
+    #[test]
+    fn a_saved_connection_keeps_the_built_in_rule_whatever_the_settings_say() {
+        let saved = crate::connections::SavedConnection {
+            read_only: None,
+            ..production_form(false).to_saved().unwrap()
+        };
+        let form = ConnectionForm::from_saved(&saved);
+        assert!(form.read_only(), "production is read-only by its rule");
+        assert_eq!(form.to_saved().unwrap().read_only, None, "and stays unset");
     }
 
     #[test]

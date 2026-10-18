@@ -154,7 +154,7 @@ pub(super) fn show(
                 SettingsPane::General => content(
                     &mut pane,
                     ("General", Some(GENERAL)),
-                    &[("Data", &OptionId::GENERAL)],
+                    &[("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)],
                     &app.settings,
                     limit,
                     &skin,
@@ -285,7 +285,7 @@ fn nav(
 }
 
 /// What the General pane says under its title.
-const GENERAL: &str = "How Tabletist shows data. Changes apply right away.";
+const GENERAL: &str = "How Tabletist shows data and protects your work. Changes apply right away.";
 
 /// The tab: its title, what it is for where it says, and its options under
 /// the heading of each group. The rows end at `limit` at the latest, and
@@ -401,12 +401,15 @@ pub(super) fn row(
     after: Option<After<'_>>,
 ) {
     let Skin { look, palette, .. } = *skin;
+    // Wrapped in its column too: a narrow sheet takes from the labels'
+    // column, and a long label would run under the control.
     let name = Text::one(
         look,
         TextRole::UiBody,
         &skin.say(label(option)),
         palette.text,
     )
+    .wrap(column)
     .layout(ui.ctx());
     let print = small_print(option).map(|print| {
         Text::one(look, TextRole::Secondary, &skin.say(print), palette.dim)
@@ -484,6 +487,8 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
         OptionId::ValueTags
+        | OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
         | OptionId::Zebra
@@ -598,6 +603,8 @@ fn control(
             }
         }
         OptionId::ValueTags
+        | OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
         | OptionId::Zebra
@@ -764,7 +771,9 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
         // What the Appearance pane's rows say is their small print.
-        OptionId::AgentsOn
+        OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
+        | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
         | OptionId::RowHeight

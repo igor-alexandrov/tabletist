@@ -29,6 +29,8 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::Tz => "Time zone for timestamptz",
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
+        OptionId::ProductionReadOnly => "New production connections open read-only",
+        OptionId::ConfirmCloseEdits => "Ask before closing with unsaved edits",
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
@@ -47,6 +49,8 @@ pub(super) fn label(option: OptionId) -> &'static str {
 pub(super) fn terminal_label(option: OptionId) -> &'static str {
     match option {
         OptionId::Tz => "timestamptz zone",
+        OptionId::ProductionReadOnly => "production opens read-only",
+        OptionId::ConfirmCloseEdits => "confirm close with edits",
         OptionId::RowHeight => "Row height",
         OptionId::Zebra => "Alternate rows",
         OptionId::ColumnTypes => "Column types",
@@ -69,11 +73,13 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
         OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
+        OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
         OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
         OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
         OptionId::EnvBar => Some("Production always uses the full tint"),
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
         | OptionId::RowHeight
@@ -106,6 +112,8 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
     matches!(
         value,
         OptionValue::ValueTags(true)
+            | OptionValue::ProductionReadOnly(true)
+            | OptionValue::ConfirmCloseEdits(true)
             | OptionValue::AgentsOn(true)
             | OptionValue::AgentsNotify(true)
             | OptionValue::Zebra(Some(true))
@@ -193,6 +201,14 @@ pub(super) fn choices(
         OptionId::ValueTags => vec![
             (Word("off"), OptionValue::ValueTags(false)),
             (Word("on"), OptionValue::ValueTags(true)),
+        ],
+        OptionId::ProductionReadOnly => vec![
+            (Word("off"), OptionValue::ProductionReadOnly(false)),
+            (Word("on"), OptionValue::ProductionReadOnly(true)),
+        ],
+        OptionId::ConfirmCloseEdits => vec![
+            (Word("off"), OptionValue::ConfirmCloseEdits(false)),
+            (Word("on"), OptionValue::ConfirmCloseEdits(true)),
         ],
         OptionId::AgentsOn => vec![
             (Word("off"), OptionValue::AgentsOn(false)),

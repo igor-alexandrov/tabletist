@@ -1299,7 +1299,7 @@ value_tags   = true
             for text in [
                 "Settings",
                 "General",
-                "How Tabletist shows data. Changes apply right away.",
+                "How Tabletist shows data and protects your work. Changes apply right away.",
                 "Rows per page",
                 "Table view; the SQL editor has its own limit",
                 "Timestamps",
@@ -1351,6 +1351,87 @@ value_tags   = true
             assert_eq!(settings_saves(&harness), before + 5);
             assert!(settings_open(&harness), "the window stays open");
         }
+    }
+
+    #[test]
+    fn the_safety_group_of_the_sheet_sets_where_a_new_production_connection_starts() {
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            for text in [
+                // A section's heading is written in capitals.
+                "SAFETY",
+                "New production connections open read-only",
+                "Default for the switch in each connection",
+            ] {
+                assert!(harness.has(text), "{text}");
+            }
+            harness.click("New production connections open read-only");
+            assert!(!harness.app.settings.production_read_only);
+            let text = &harness.app.settings_file.text;
+            assert!(
+                text.ends_with("[safety]\nproduction_read_only = false\n"),
+                "{text}"
+            );
+            harness.click("Ask before closing with unsaved edits");
+            assert!(!harness.app.settings.confirm_close_edits);
+            let text = &harness.app.settings_file.text;
+            assert!(text.ends_with("confirm_close_edits = false\n"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_long_label_of_the_sheet_wraps_before_its_control_in_a_narrow_window() {
+        use egui::accesskit::Role;
+        let label = "New production connections open read-only";
+        for width in [720.0, 800.0, 1280.0] {
+            for look in SHEET_LOOKS {
+                let mut harness = Harness::with_size(egui::vec2(width, 1000.0));
+                harness.set_look(look());
+                harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+                let tree = harness.settle();
+                let text = harness.painted_rect(label).expect("the label");
+                let switch =
+                    crate::testing::bounds(&tree, label, Role::CheckBox).expect("the switch");
+                assert!(
+                    text.right() <= switch.left(),
+                    "{width}: {text:?} {switch:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_safety_group_of_the_screen_has_its_rows_and_space_flips_them() {
+        let mut harness = settings_screen_on_the_artboard();
+        for text in [
+            "safety",
+            "production opens read-only",
+            "default for new connections",
+            "confirm close with edits",
+        ] {
+            assert!(harness.painted_color(text).is_some(), "{text}");
+        }
+        let row = crate::model::SettingsPane::General
+            .rows()
+            .iter()
+            .position(|row| {
+                *row == crate::model::SettingsRow::Option(
+                    crate::settings::OptionId::ProductionReadOnly,
+                )
+            })
+            .expect("the row");
+        for _ in 0..row {
+            harness.press(egui::Key::J, egui::Modifiers::NONE);
+        }
+        assert!(
+            harness
+                .painted_color("▌production opens read-only")
+                .is_some()
+        );
+        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        assert!(!harness.app.settings.production_read_only);
+        harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+        assert!(harness.app.settings.production_read_only);
     }
 
     #[test]
@@ -1556,21 +1637,21 @@ value_tags   = true
             harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
             // The last row's switch: the window has room for one row or
             // two, and it is under them.
-            tab_to_settings(&mut harness, "Value tags");
+            let last = "Ask before closing with unsaved edits";
+            tab_to_settings(&mut harness, last);
             let tree = harness.settle();
-            let switch =
-                crate::testing::bounds(&tree, "Value tags", Role::CheckBox).expect("the switch");
+            let switch = crate::testing::bounds(&tree, last, Role::CheckBox).expect("the switch");
             // The rows came with the keyboard: the switch is in the
-            // window, between the rows' heading and the footer.
+            // window, between the tab's lead and the footer.
             let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             assert!(window.contains_rect(switch), "{switch:?}");
             let stored = harness.painted_rect("Stored in").expect("the footer");
             assert!(switch.bottom() < stored.top(), "{switch:?} {stored:?}");
-            let lead = "How Tabletist shows data. Changes apply right away.";
+            let lead = "How Tabletist shows data and protects your work. Changes apply right away.";
             let lead = harness.painted_rect(lead).expect("the tab's lead");
             assert!(switch.top() > lead.bottom(), "{switch:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..4 {
+            for _ in 0..6 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();
@@ -7716,6 +7797,44 @@ value_tags   = true
             before,
             "the fields stay under the pointer"
         );
+    }
+
+    #[test]
+    fn a_new_production_connection_starts_its_switch_where_the_settings_say() {
+        for on in [false, true] {
+            let mut harness = Harness::new();
+            harness.app.settings.production_read_only = on;
+            new_connection(&mut harness);
+            harness.click("Production");
+            assert_eq!(form(&harness).read_only(), on);
+            // The box shows it.
+            let tree = harness.settle();
+            let id = crate::testing::node(&tree, "Open read-only", egui::accesskit::Role::CheckBox)
+                .expect("the box");
+            let toggled = tree
+                .nodes
+                .iter()
+                .find(|(node, _)| *node == id)
+                .and_then(|(_, data)| data.toggled());
+            let expected = if on {
+                egui::accesskit::Toggled::True
+            } else {
+                egui::accesskit::Toggled::False
+            };
+            assert_eq!(toggled, Some(expected));
+        }
+        // A saved connection's dialog keeps the rule.
+        let mut harness = Harness::new();
+        harness.app.settings.production_read_only = false;
+        let mut saved = crate::testing::fixture_connection();
+        saved.environment = crate::env::Environment::Production;
+        saved.read_only = None;
+        let conn = saved.id.clone();
+        harness.app.connections.upsert(saved);
+        harness
+            .app
+            .apply(crate::model::Action::EditConnection(conn));
+        assert!(form(&harness).read_only());
     }
 
     #[test]
@@ -19237,6 +19356,83 @@ value_tags   = true
             ask_to_close(&mut harness);
             assert!(!sends(&harness, CancelClose), "{}", look.name);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn with_the_question_off_the_edits_go_and_what_was_asked_for_happens() {
+        use egui::ViewportCommand::Close;
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            // A reload of the page: no question, and the page comes again
+            // without the change.
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            let before = fetches(&harness);
+            harness.app.apply(Action::Refresh(tab));
+            assert!(!leaving(&harness), "{}", look.name);
+            assert!(!edits(&harness, tab, id).holds(), "{}", look.name);
+            assert_eq!(fetches(&harness), before + 1, "{}", look.name);
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            // The window: it closes.
+            make_pending(&mut harness, tab, id, (2, 1), "cy@example.com");
+            ask_to_close(&mut harness);
+            assert!(!leaving(&harness), "{}", look.name);
+            assert!(harness.app.closing, "{}", look.name);
+            assert!(sends(&harness, Close), "{}", look.name);
+            // The tab: it closes.
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(!leaving(&harness), "{}", look.name);
+            assert!(!open(&harness, tab, id), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn with_the_question_off_a_dialog_about_the_edits_still_holds_them() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            // The save's confirmation, which a production save asks first.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let confirming = |harness: &Harness| {
+                matches!(
+                    harness.app.dialog,
+                    Some(crate::model::Dialog::ConfirmWrite(_))
+                )
+            };
+            assert!(confirming(&harness), "{}", look.name);
+            // A reload under it, as the key runs while a dialog is open:
+            // the edits the confirmation shows stay, as with the question on.
+            harness.app.apply(Action::Refresh(tab));
+            assert!(confirming(&harness), "{}", look.name);
+            assert!(edits(&harness, tab, id).holds(), "{}", look.name);
+            assert!(harness.app.notice.is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn with_the_question_off_a_save_that_runs_still_holds() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            // The tab stays, with its set, as it does with the question on.
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(open(&harness, tab, id), "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            // The window asks: a save cannot be dropped without a word.
+            ask_to_close(&mut harness);
+            assert!(leaving(&harness), "{}", look.name);
+            assert!(!harness.app.closing, "{}", look.name);
         }
     }
 

@@ -891,6 +891,23 @@ fn review_sql_says_what_the_deletes_take_with_them() {
     assert!(harness.has(ALSO_DELETES));
 }
 
+/// With the question off, a tab closed with deletes marked stops the
+/// counts of what they take, as Discard does.
+#[test]
+fn with_the_question_off_closing_stops_what_the_deletes_were_counting() {
+    let (mut harness, tab, id) = publishers_in(Look::macos());
+    harness.app.settings.confirm_close_edits = false;
+    mark(&mut harness, tab, id, 0);
+    review(&mut harness, tab, id, true);
+    let asked = counts_asked(&harness);
+    assert_eq!(asked.len(), 2);
+    harness.app.apply(Action::CloseTab { tab, id });
+    assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
+    for (request, _) in &asked {
+        assert!(stopped(&harness).contains(request));
+    }
+}
+
 /// A mark that changes while the counts are out stops them, and the next
 /// review asks for the rows that are marked now.
 #[test]

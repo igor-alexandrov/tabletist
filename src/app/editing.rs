@@ -290,6 +290,12 @@ impl App {
     /// ends), but not the window's close: no control of the app's asks for
     /// it, and a save that never answers must not keep the window open
     /// for good. A dialog the user is in is never replaced.
+    ///
+    /// With "Ask before closing with unsaved edits" off nothing is asked:
+    /// the edits are dropped as Discard drops them, and `held` goes ahead.
+    /// Not while a save runs, which is never dropped without a word, nor
+    /// under a dialog, which may be about those edits (a save's
+    /// confirmation): those are as above.
     pub(super) fn hold(&mut self, held: Held, tabs: Vec<(ConnTabId, TabId)>) {
         let edits = |&(tab, id): &(ConnTabId, TabId)| {
             self.workspace(tab)
@@ -304,6 +310,11 @@ impl App {
         }
         if self.dialog.is_some() {
             self.notice = Some("Save or discard the pending changes first.".into());
+            return;
+        }
+        if !saving && !self.settings.confirm_close_edits {
+            self.discard_edits(&tabs);
+            self.perform(held);
             return;
         }
         let changes = tabs.iter().map(|&(tab, id)| self.unwritten(tab, id)).sum();
@@ -355,6 +366,23 @@ impl App {
             _ => counts.changes,
         };
         (changes + counts.added + counts.deleted).max(1)
+    }
+
+    /// Drops the edits of `tabs`, as the question's Discard does. A save one
+    /// of them runs goes with its set: its answer finds no tab saving, and
+    /// tells none.
+    pub(super) fn discard_edits(&mut self, tabs: &[(ConnTabId, TabId)]) {
+        for &(tab, id) in tabs {
+            let mut stale = Vec::new();
+            if let Some(object) = self.object_tab_mut(tab, id) {
+                // The counts of what its deletes take go with them.
+                stale = object.edits.counts_out();
+                object.edits.discard();
+                object.off_new_rows();
+                object.fields = None;
+            }
+            self.stop_counts(tab, stale);
+        }
     }
 
     /// Does what was held, now that nothing is in its way. It passes the

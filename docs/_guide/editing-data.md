@@ -188,6 +188,18 @@ Where the window leaves the bar little room, it says less, and
 **Discard all** and **Review SQL** move into the **…** menu beside
 **Save**.
 
+While changes are pending, Tabletist asks before anything that would drop
+them: closing the table's tab, its connection or the window, disconnecting,
+opening another connection in that tab, switching database, loading
+another page of the table (refreshing, paging, sorting, filtering,
+retrying), or following a foreign key into it. You can discard them or
+stay, and save them first where one table holds them. With
+**Ask before closing with unsaved edits** off in
+[Settings]({% link _reference/settings-and-files.md %}#the-settings-window),
+nothing is asked and the changes are discarded, except while a dialog is
+open, such as a production save's confirmation. While a save runs, these
+do nothing until it ends, and closing the window asks either way.
+
 A save to a production connection asks first, with every statement on
 screen.
 

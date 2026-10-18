@@ -219,7 +219,9 @@ SQLite file is opened read-only.
 
 The box is ticked by default for production, and not for the other
 environments. Turn it off to edit. A change applies from the next time
-you connect.
+you connect. Where a new production connection's box starts is
+**New production connections open read-only** in
+[Settings]({% link _reference/settings-and-files.md %}#the-settings-window).
 
 Production stays careful with the box off too:
 
