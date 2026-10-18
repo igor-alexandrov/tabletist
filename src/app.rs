@@ -315,8 +315,7 @@ impl App {
             agents_held: Vec::new(),
             next_id: 1,
         };
-        let tab = app.picker_tab();
-        app.tabs.push(tab);
+        app.launch();
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
         // which a connection had no id yet.
@@ -2456,6 +2455,16 @@ impl App {
                     if self.session.forget(&id) {
                         self.save_session();
                     }
+                    // A launch that was to open it shows the connections.
+                    let chosen = crate::settings::Launch::Connection {
+                        id: id.clone(),
+                        name: String::new(),
+                    };
+                    if self.settings.on_launch == chosen {
+                        self.change_settings(|settings| {
+                            settings.on_launch = crate::settings::Launch::Connections;
+                        });
+                    }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
                     }
@@ -2670,6 +2679,129 @@ impl App {
         if let Some(session) = session {
             self.backend.send(Command::Close { session });
         }
+    }
+
+    /// Opens what the settings say a launch opens: the windows open at the
+    /// last quit, in their order and the one in front in front again, the
+    /// picker, or the chosen connection. A chosen connection that is
+    /// deleted opens the picker, says so, and sets the option to the
+    /// picker, so that the next launch does what the menu says; with
+    /// connections that could not be read, nothing is known to be
+    /// deleted, and the option stays. Whatever opens nothing opens the
+    /// picker.
+    fn launch(&mut self) {
+        match self.settings.on_launch.clone() {
+            crate::settings::Launch::Restore => self.open_last_session(),
+            crate::settings::Launch::Connections => {}
+            crate::settings::Launch::Connection { id, .. } => {
+                match self.connections.get(&id).cloned() {
+                    Some(saved) => {
+                        let tab = self.picker_tab();
+                        let id = tab.id;
+                        self.tabs.push(tab);
+                        self.connect_tab(id, saved, Secrets::default());
+                    }
+                    None if self.writes_session => {
+                        self.say(
+                            "The connection chosen to open at launch was deleted. \
+                             Tabletist showed Connections instead.",
+                        );
+                        self.change_settings(|settings| {
+                            settings.on_launch = crate::settings::Launch::Connections;
+                        });
+                    }
+                    None => {}
+                }
+            }
+        }
+        if self.tabs.is_empty() {
+            let tab = self.picker_tab();
+            self.tabs.push(tab);
+        }
+    }
+
+    /// The windows open at the last quit, each connecting as a connection
+    /// does, asking for what it needs: the one in front first, so that a
+    /// password it asks for is asked over it, and the others in their
+    /// order after it. A connection deleted since is left out, and the
+    /// picker is one window at most.
+    fn open_last_session(&mut self) {
+        let open = self.session.open.clone();
+        let mut windows = Vec::new();
+        let mut active = None;
+        // Every window opens as a picker until it connects, below: the
+        // picker kept is counted here.
+        let mut picker = false;
+        for (index, entry) in open.into_iter().enumerate() {
+            let saved = match entry {
+                Some(id) => match self.connections.get(&id).cloned() {
+                    Some(saved) => Some(saved),
+                    None => continue,
+                },
+                None if picker => continue,
+                None => {
+                    picker = true;
+                    None
+                }
+            };
+            let tab = self.picker_tab();
+            windows.push((tab.id, saved));
+            self.tabs.push(tab);
+            if index <= self.session.active {
+                active = Some(self.tabs.len() - 1);
+            }
+        }
+        let active = active.unwrap_or(0);
+        self.active = active;
+        if active < windows.len() {
+            let front = windows.remove(active);
+            windows.insert(0, front);
+        }
+        for (tab, saved) in windows {
+            if let Some(saved) = saved {
+                self.connect_tab(tab, saved, Secrets::default());
+            }
+        }
+    }
+
+    /// Writes the name of `saved` beside it in the settings file, where it
+    /// is the connection a launch opens and its name there is another:
+    /// the comment is the only thing that changes.
+    fn rename_launch(&mut self, saved: &SavedConnection) {
+        let crate::settings::Launch::Connection { id, name } = &self.settings.on_launch else {
+            return;
+        };
+        if *id != saved.id || *name == saved.name {
+            return;
+        }
+        let mut renamed = self.settings.clone();
+        renamed.on_launch = crate::settings::Launch::Connection {
+            id: id.clone(),
+            name: saved.name.clone(),
+        };
+        let text = renamed.write_into(&self.settings_file.text, &[crate::settings::Key::OnLaunch]);
+        self.settings.on_launch = renamed.on_launch;
+        if text != self.settings_file.text {
+            let loaded = Settings::from_toml_over(&text, &self.settings);
+            let live = self.settings_file.live;
+            let saved = self.settings_file.saved.take();
+            let (_, file) = loaded.into_parts();
+            self.settings_file = SettingsFile {
+                live,
+                saved,
+                ..file
+            };
+            self.save_settings();
+        }
+    }
+
+    /// Shows `text` in the notice, after what it says already: a start can
+    /// have more than one thing to say.
+    fn say(&mut self, text: &str) {
+        self.notice = Some(match self.notice.take() {
+            Some(said) => format!("{said} {text}"),
+            None => text.to_owned(),
+        });
     }
 
     /// Keeps the table tabs of `tab`'s window in the session, for the
@@ -4487,6 +4619,7 @@ impl App {
         }
         self.connections.upsert(saved.clone());
         self.save_connections();
+        self.rename_launch(&saved);
         if saved.password == PasswordMode::Keyring {
             if typed.is_some() || stale {
                 self.store_secret(&saved.id, false, typed.clone().map(SecretString), false);
@@ -9540,6 +9673,7 @@ mod tests {
             settings.confirm_close_edits = false;
             settings.idle_disconnect = crate::settings::Idle::Never;
             settings.restore_tabs = false;
+            settings.on_launch = crate::settings::Launch::Connections;
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
         });
@@ -9568,6 +9702,7 @@ mod tests {
         assert_eq!(app.settings.idle_disconnect, defaults.idle_disconnect);
         // And the Startup group's.
         assert!(app.settings.restore_tabs);
+        assert_eq!(app.settings.on_launch, crate::settings::Launch::Restore);
         assert!(app.settings.show_system_schemas);
         assert_eq!(app.settings.sql_limit, 50);
         assert_eq!(app.settings_file.text, app.settings.to_toml());

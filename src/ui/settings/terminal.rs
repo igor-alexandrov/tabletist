@@ -59,6 +59,9 @@ pub(super) struct Skin<'a> {
     pub(super) system: Option<&'a str>,
     /// The last named zone the session had, which the zone's steps reach.
     pub(super) named: Option<&'a str>,
+    /// The saved connections, and what On launch steps through.
+    pub(super) connections: &'a [crate::connections::SavedConnection],
+    pub(super) launches: &'a [crate::settings::Launch],
     /// What the theme's rows say of the desktop.
     pub(super) desktop: Desktop<'a>,
 }
@@ -121,6 +124,7 @@ pub(super) fn show(
 ) {
     let (pane, row) = (dialog.pane, dialog.row);
     let settings = super::shown(app);
+    let launches = super::launch_choices(&app.connections.connections);
     let skin = Skin {
         look: &app.look,
         palette: &app.palette,
@@ -128,6 +132,8 @@ pub(super) fn show(
         window: app.agents_window().is_some(),
         system: app.system_zone.iana_name(),
         named: app.named_zone.as_deref(),
+        connections: &app.connections.connections,
+        launches: &launches,
         desktop: Desktop::of(app),
     };
     let screen = ctx.content_rect();
@@ -809,7 +815,7 @@ fn widths(ui: &Ui, options: &[OptionId], settings: &Settings, skin: &Skin) -> (f
         .fold(0.0, f32::max);
     let hints = options
         .iter()
-        .flat_map(|option| choices(*option, settings, skin.named))
+        .flat_map(|option| choices(*option, settings, skin.named, skin.launches))
         .map(|(_, value)| {
             let mut changed = settings.clone();
             value.set(&mut changed);
@@ -854,16 +860,18 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
     let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
     match option {
         // Between its chevrons, as the cursor's row has it.
-        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect => {
-            width(&format!("‹ {} ›", stepped_text(option, settings, skin)))
-        }
+        OptionId::PageSize
+        | OptionId::LogDays
+        | OptionId::Tz
+        | OptionId::IdleDisconnect
+        | OptionId::OnLaunch => width(&format!("‹ {} ›", stepped_text(option, settings, skin))),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::Theme
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar => {
-            let words = choices(option, settings, skin.named);
+            let words = choices(option, settings, skin.named, skin.launches);
             let between = width(" ") * words.len().saturating_sub(1) as f32;
             let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
             segments.sum::<f32>() + between
@@ -898,6 +906,23 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
             }
             (zone, system) => super::zone_text(skin.locale, zone, system),
         }),
+        // A connection by its name as it is saved, and where it points:
+        // three of one name are told apart.
+        OptionId::OnLaunch => {
+            let text = super::launch_text(skin.locale, &settings.on_launch, skin.connections);
+            match &settings.on_launch {
+                crate::settings::Launch::Connection { id, .. } => {
+                    let saved = skin.connections.iter().find(|saved| saved.id == *id);
+                    match saved.map(super::place).filter(|place| !place.is_empty()) {
+                        Some(place) => format!("{text} ({place})"),
+                        None => text,
+                    }
+                }
+                crate::settings::Launch::Restore | crate::settings::Launch::Connections => {
+                    skin.look.label(&text)
+                }
+            }
+        }
         _ => settings.page_size.to_string(),
     }
 }
@@ -1010,7 +1035,11 @@ fn option_row(
     if let Some(button) = button
         && matches!(
             option,
-            OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect
+            OptionId::PageSize
+                | OptionId::LogDays
+                | OptionId::Tz
+                | OptionId::IdleDisconnect
+                | OptionId::OnLaunch
         )
     {
         let name = gettext(locale, terminal_label(option));
@@ -1032,9 +1061,11 @@ fn option_row(
         on_cursor,
     };
     match option {
-        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect => {
-            stepper(ui, cell, option, settings, skin, actions)
-        }
+        OptionId::PageSize
+        | OptionId::LogDays
+        | OptionId::Tz
+        | OptionId::IdleDisconnect
+        | OptionId::OnLaunch => stepper(ui, cell, option, settings, skin, actions),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::Theme
@@ -1078,7 +1109,9 @@ fn stepper(
     let y = cell.row.center().y;
     let value = stepped_text(option, settings, skin);
     let current = settings.value(option);
-    let Ok([fewer, more]) = <[_; 2]>::try_from(choices(option, settings, skin.named)) else {
+    let Ok([fewer, more]) =
+        <[_; 2]>::try_from(choices(option, settings, skin.named, skin.launches))
+    else {
         return;
     };
     let text = if cell.on_cursor {
@@ -1153,7 +1186,7 @@ fn check(
     );
     // One mark stands for both values, and a click on it flips it: the
     // value it is not set to is the button on top.
-    let mut values = choices(option, settings, skin.named);
+    let mut values = choices(option, settings, skin.named, skin.launches);
     values.sort_by_key(|(_, value)| *value != current);
     for (word, value) in values {
         let press = Press::Value {
@@ -1194,6 +1227,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .add(role, "ebook", second)
         }
         OptionId::RestoreTabs => dim(&skin.say("per connection")),
+        OptionId::OnLaunch => dim(&skin.say("or connections · a chosen connection")),
         OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),
         // As drawn: nothing to add.
         OptionId::ConfirmCloseEdits => Text::new(look),
@@ -1426,7 +1460,7 @@ fn segments(
     let line = role.row_height(ui.ctx(), look.faces);
     let gap = role.width(ui.ctx(), look.faces, " ");
     let mut left = cell.left;
-    for (word, value) in choices(option, settings, skin.named) {
+    for (word, value) in choices(option, settings, skin.named, skin.launches) {
         let text = skin.written(word);
         let width = segment(ui, word, skin);
         let place = Rect::from_min_size(

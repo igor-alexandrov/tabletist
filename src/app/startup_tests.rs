@@ -571,6 +571,225 @@ fn a_reopened_table_that_is_gone_says_why_as_an_open_one_does() {
     assert_eq!(front.query.sort[0].column, "title");
 }
 
+/// The Bookshop on a server, by its URL, as the screenshots have it.
+fn bookshop_at(app: &mut App, url: &str) -> crate::connections::ConnectionId {
+    let (spec, _) = tabletist_db::ConnectSpec::from_url(url).unwrap();
+    let mut saved = crate::testing::fixture_connection();
+    saved.name = "Bookshop".into();
+    saved.spec = spec;
+    let id = saved.id.clone();
+    app.connections.upsert(saved);
+    id
+}
+
+/// Writes what the app holds of its connections and settings, as the
+/// backend would, for the next start to read.
+fn write_files(app: &App) {
+    app.dirs.ensure().unwrap();
+    app.connections.save(&app.dirs.connections_file()).unwrap();
+    std::fs::write(app.dirs.settings_file(), &app.settings_file.text).unwrap();
+}
+
+/// A start over `dir`, with the settings its file has.
+fn start(dir: &std::path::Path) -> App {
+    let dirs = AppDirs::at(dir);
+    let settings = Settings::load(&dirs);
+    App::new(dirs, settings, Backend::recording())
+}
+
+/// The saved connection each window of the bar has, in order: `None` for
+/// the picker.
+fn windows(app: &App) -> Vec<Option<crate::connections::ConnectionId>> {
+    app.tabs
+        .iter()
+        .map(|tab| match &tab.content {
+            ConnTabContent::Workspace(workspace) => Some(workspace.conn_id.clone()),
+            ConnTabContent::Picker(_) => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_launch_restores_the_windows_open_at_the_last_quit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let first = bookshop(&mut app, "Bookshop");
+    let second = bookshop(&mut app, "Bookshop");
+    open_window(&mut app, &first);
+    let tab = open_window(&mut app, &second);
+    books(&mut app, tab, "books");
+    app.save_session();
+    write_files(&app);
+    written(&app)
+        .unwrap()
+        .save(&app.dirs.session_file())
+        .unwrap();
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(first), Some(second.clone())]);
+    // The one in front is in front again, connecting, with its tables.
+    assert_eq!(app.active, 1);
+    let workspace = app.workspace(app.tabs[1].id).unwrap();
+    assert_eq!(workspace.conn_id, second);
+    assert!(matches!(workspace.status, SessionStatus::Connecting { .. }));
+    assert_eq!(workspace.object_tabs().count(), 1);
+    let connects = app
+        .backend
+        .sent
+        .iter()
+        .filter(|command| matches!(command, Command::Connect { .. }))
+        .count();
+    assert_eq!(connects, 2);
+}
+
+#[test]
+fn a_launch_with_no_session_and_a_deleted_window_leaves_them_out() {
+    let dir = tempfile::tempdir().unwrap();
+    // No file: the picker.
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![None]);
+    // A window of a connection deleted since, and the picker.
+    let mut app = app_in(dir.path());
+    let kept = bookshop(&mut app, "Bookshop");
+    write_files(&app);
+    let mut session = Session::default();
+    session.open = vec![
+        Some(crate::connections::ConnectionId("deleted".into())),
+        None,
+        Some(kept.clone()),
+    ];
+    session.active = 2;
+    session.save(&app.dirs.session_file()).unwrap();
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![None, Some(kept)]);
+    assert_eq!(app.active, 1);
+}
+
+#[test]
+fn a_launch_set_to_connections_shows_them_whatever_was_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    open_window(&mut app, &conn);
+    app.save_session();
+    app.apply(Action::SetOption(crate::settings::OptionValue::OnLaunch(
+        crate::settings::Launch::Connections,
+    )));
+    write_files(&app);
+    written(&app)
+        .unwrap()
+        .save(&app.dirs.session_file())
+        .unwrap();
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![None]);
+}
+
+#[test]
+fn a_launch_opens_the_chosen_connection_by_its_id_of_two_of_one_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    bookshop_at(
+        &mut app,
+        "postgres://demo@localhost:5432/bookshop_development",
+    );
+    let chosen = bookshop_at(&mut app, "postgres://demo@localhost:5432/bookshop_preview");
+    app.apply(Action::SetOption(crate::settings::OptionValue::OnLaunch(
+        crate::settings::Launch::Connection {
+            id: chosen.clone(),
+            name: "Bookshop".into(),
+        },
+    )));
+    // The id is what the file holds, and the name its comment.
+    let line = format!("on_launch = \"conn:{}\"  # Bookshop\n", chosen.0);
+    assert!(
+        app.settings_file.text.contains(&line),
+        "{}",
+        app.settings_file.text
+    );
+    write_files(&app);
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(chosen.clone())]);
+    let workspace = app.workspace(app.tabs[0].id).unwrap();
+    assert_eq!(workspace.spec.database, "bookshop_preview");
+    assert!(app.notice.is_none());
+}
+
+#[test]
+fn a_deleted_chosen_connection_shows_connections_says_so_once_and_sets_the_option_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = AppDirs::at(dir.path());
+    dirs.ensure().unwrap();
+    std::fs::write(
+        dirs.settings_file(),
+        "[startup]\non_launch = \"conn:6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11\"  # Bookshop\n",
+    )
+    .unwrap();
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![None]);
+    assert_eq!(
+        app.notice.as_deref(),
+        Some(
+            "The connection chosen to open at launch was deleted. \
+             Tabletist showed Connections instead."
+        )
+    );
+    assert_eq!(app.settings.on_launch, crate::settings::Launch::Connections);
+    let saved = app.backend.sent.iter().find_map(|command| match command {
+        Command::Save {
+            file: StateFile::Settings(text),
+            ..
+        } => Some(text.clone()),
+        _ => None,
+    });
+    let saved = saved.expect("the settings were written");
+    assert!(saved.contains("on_launch = \"connections\""), "{saved}");
+    // The next start has nothing to say.
+    std::fs::write(dirs.settings_file(), saved).unwrap();
+    let again = start(dir.path());
+    assert!(again.notice.is_none());
+    assert_eq!(windows(&again), vec![None]);
+}
+
+#[test]
+fn with_connections_that_cannot_be_read_the_chosen_one_is_not_taken_for_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = AppDirs::at(dir.path());
+    dirs.ensure().unwrap();
+    std::fs::write(
+        dirs.connections_file(),
+        "version = 3\n\n[[connections]]\nname = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dirs.settings_file(),
+        "[startup]\non_launch = \"conn:6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11\"\n",
+    )
+    .unwrap();
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![None]);
+    assert!(matches!(
+        app.settings.on_launch,
+        crate::settings::Launch::Connection { .. }
+    ));
+    let notice = app.notice.clone().unwrap();
+    assert!(!notice.contains("chosen to open at launch"), "{notice}");
+}
+
+#[test]
+fn deleting_the_chosen_connection_sets_the_launch_to_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    app.apply(Action::SetOption(crate::settings::OptionValue::OnLaunch(
+        crate::settings::Launch::Connection {
+            id: conn.clone(),
+            name: "Bookshop".into(),
+        },
+    )));
+    app.apply(Action::DeleteConnection(conn));
+    assert_eq!(app.settings.on_launch, crate::settings::Launch::Connections);
+    assert!(app.notice.is_none());
+}
+
 #[test]
 fn tables_of_another_sqlite_file_are_not_reopened() {
     let dir = tempfile::tempdir().unwrap();
@@ -581,4 +800,88 @@ fn tables_of_another_sqlite_file_are_not_reopened() {
     app.connections.upsert(saved);
     let tab = open_window(&mut app, &conn);
     assert_eq!(app.workspace(tab).unwrap().tabs.len(), 0);
+}
+
+#[test]
+fn a_restore_asks_first_for_the_window_in_front() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let first = bookshop_at(
+        &mut app,
+        "postgres://demo@localhost:5432/bookshop_development",
+    );
+    let second = bookshop_at(&mut app, "postgres://demo@localhost:5432/bookshop_preview");
+    for id in [&first, &second] {
+        let mut saved = app.connections.get(id).unwrap().clone();
+        saved.password = crate::connections::PasswordMode::Ask;
+        app.connections.upsert(saved);
+    }
+    write_files(&app);
+    let mut session = Session::default();
+    session.open = vec![Some(first.clone()), Some(second.clone())];
+    session.active = 1;
+    session.save(&app.dirs.session_file()).unwrap();
+    let app = start(dir.path());
+    // In their order, the second in front, and asking.
+    assert_eq!(windows(&app), vec![Some(first), Some(second)]);
+    assert_eq!(app.active, 1);
+    let front = app.tabs[1].id;
+    match &app.dialog {
+        Some(crate::model::Dialog::Password(prompt)) => assert_eq!(prompt.tab, front),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn renaming_the_chosen_connection_renames_its_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    app.apply(Action::SetOption(crate::settings::OptionValue::OnLaunch(
+        crate::settings::Launch::Connection {
+            id: conn.clone(),
+            name: "Bookshop".into(),
+        },
+    )));
+    app.apply(Action::EditConnection(conn.clone()));
+    match app.dialog.as_mut() {
+        Some(crate::model::Dialog::Connection(form)) => form.name = "Bookshop staging".into(),
+        other => panic!("{other:?}"),
+    }
+    app.apply(Action::SaveConnection { connect: false });
+    let line = format!("on_launch = \"conn:{}\"  # Bookshop staging\n", conn.0);
+    assert!(
+        app.settings_file.text.contains(&line),
+        "{}",
+        app.settings_file.text
+    );
+    // Written, as any change of the settings is.
+    let saved = app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Save {
+                file: StateFile::Settings(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        });
+    assert_eq!(saved.as_deref(), Some(app.settings_file.text.as_str()));
+}
+
+#[test]
+fn a_launch_restores_the_picker_after_a_window_and_in_front() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let kept = bookshop(&mut app, "Bookshop");
+    write_files(&app);
+    let mut session = Session::default();
+    session.open = vec![Some(kept.clone()), None, None];
+    session.active = 1;
+    session.save(&app.dirs.session_file()).unwrap();
+    let app = start(dir.path());
+    assert_eq!(windows(&app), vec![Some(kept), None]);
+    assert_eq!(app.active, 1);
 }

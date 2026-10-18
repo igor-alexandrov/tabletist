@@ -2555,6 +2555,7 @@ impl SettingsPane {
         use crate::settings::OptionId;
         match self {
             Self::General => &[
+                SettingsRow::Option(OptionId::OnLaunch),
                 SettingsRow::Option(OptionId::RestoreTabs),
                 SettingsRow::Option(OptionId::PageSize),
                 SettingsRow::Option(OptionId::Timestamps),

@@ -1394,21 +1394,99 @@ value_tags   = true
         }
     }
 
+    /// Two saved Bookshops of one name, on two databases of a server.
+    fn two_bookshops(harness: &mut Harness) -> [crate::connections::ConnectionId; 2] {
+        ["bookshop_development", "bookshop_preview"].map(|database| {
+            let url = format!("postgres://demo@localhost:5432/{database}");
+            let (spec, _) = tabletist_db::ConnectSpec::from_url(&url).unwrap();
+            let mut saved = crate::testing::fixture_connection();
+            saved.name = "Bookshop".into();
+            saved.spec = spec;
+            let id = saved.id.clone();
+            harness.app.connections.upsert(saved);
+            id
+        })
+    }
+
     #[test]
-    fn the_startup_group_of_the_screen_has_its_row_first_and_space_flips_it() {
+    fn on_launch_in_the_sheet_lists_each_connection_with_where_it_points() {
+        use crate::settings::Launch;
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            let [_, preview] = two_bookshops(&mut harness);
+            // The board's hint, under the label: beside the menu it has
+            // no room.
+            let hint = "Or: show Connections · open a chosen connection";
+            let hint = harness.painted_rect(hint).expect("the hint");
+            let label = harness.painted_rect("On launch").expect("the label");
+            assert!(hint.top() > label.bottom(), "{hint:?} {label:?}");
+            harness.click("On launch");
+            for entry in [
+                "On launch Restore last session",
+                "On launch Show Connections",
+                "On launch Bookshop localhost:5432/bookshop_development",
+                "On launch Bookshop localhost:5432/bookshop_preview",
+            ] {
+                assert!(harness.has(entry), "{entry}");
+            }
+            harness.click("On launch Bookshop localhost:5432/bookshop_preview");
+            assert_eq!(
+                harness.app.settings.on_launch,
+                Launch::Connection {
+                    id: preview.clone(),
+                    name: String::new(),
+                }
+            );
+            let text = &harness.app.settings_file.text;
+            let line = format!("on_launch = \"conn:{}\"  # Bookshop\n", preview.0);
+            assert!(text.contains(&line), "{text}");
+            harness.click("On launch");
+            harness.click("On launch Show Connections");
+            assert_eq!(harness.app.settings.on_launch, Launch::Connections);
+        }
+    }
+
+    #[test]
+    fn the_startup_group_of_the_screen_steps_on_launch_and_flips_restore() {
+        use crate::settings::Launch;
         let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
         harness.set_look(crate::theme::Look::omarchy());
+        let [development, _] = two_bookshops(&mut harness);
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
-        for text in ["startup", "per connection"] {
+        for text in [
+            "startup",
+            "or connections · a chosen connection",
+            "per connection",
+        ] {
             assert!(harness.painted_color(text).is_some(), "{text}");
         }
-        // The cursor opens on it.
+        // The cursor opens on the first.
+        assert!(harness.painted_color("▌on launch").is_some());
+        assert!(harness.painted_color("‹ restore last session ›").is_some());
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.on_launch, Launch::Connections);
+        assert!(harness.painted_color("‹ show connections ›").is_some());
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(
+            harness.app.settings.on_launch,
+            Launch::Connection {
+                id: development.clone(),
+                name: String::new(),
+            }
+        );
+        let shown = "‹ Bookshop (localhost:5432/bookshop_development) ›";
+        assert!(harness.painted_color(shown).is_some());
+        let text = &harness.app.settings_file.text;
+        let line = format!("on_launch = \"conn:{}\"  # Bookshop\n", development.0);
+        assert!(text.contains(&line), "{text}");
+        harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+        assert_eq!(harness.app.settings.on_launch, Launch::Restore);
+        // The row under it.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
         assert!(harness.painted_color("▌restore tabs and filters").is_some());
         harness.press(egui::Key::Space, egui::Modifiers::NONE);
         assert!(!harness.app.settings.restore_tabs);
         assert!(harness.painted_color("restore_tabs = ").is_some());
-        harness.press(egui::Key::R, egui::Modifiers::SHIFT);
-        assert!(harness.app.settings.restore_tabs);
     }
 
     #[test]
@@ -1731,9 +1809,7 @@ value_tags   = true
             // the first of them.
             let stored = harness.painted_rect("Stored in").expect("the footer");
             assert!(stored.bottom() < size.y, "{stored:?}");
-            let row = harness
-                .painted_rect("Restore tabs and filters")
-                .expect("a row");
+            let row = harness.painted_rect("On launch").expect("a row");
             assert!(row.bottom() < stored.top(), "{row:?} {stored:?}");
             harness.click("Export…");
             assert_eq!(harness.app.backend.saves.len(), 1);
@@ -2356,7 +2432,7 @@ value_tags   = true
         let mut harness = Harness::with_size(egui::vec2(1000.0, 700.0));
         harness.set_look(crate::theme::Look::omarchy());
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
-        assert!(harness.painted_color("▌restore tabs and filters").is_some());
+        assert!(harness.painted_color("▌on launch").is_some());
         assert!(harness.painted_color("[data]").is_none());
     }
 

@@ -655,7 +655,7 @@ impl Opening {
 
 /// Where a connection points, as the rows say it: host and port, then the
 /// database (a file's name for SQLite).
-fn target(connection: &SavedConnection) -> (String, String) {
+pub(crate) fn target(connection: &SavedConnection) -> (String, String) {
     use tabletist_db::Driver;
     let spec = &connection.spec;
     match spec.driver {
