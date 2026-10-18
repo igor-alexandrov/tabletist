@@ -172,6 +172,8 @@ pub enum Command {
     WatchSettings {
         path: PathBuf,
     },
+    /// Reads the time zone database whole. Answered with [`Event::Zones`].
+    LoadZones,
     /// Opens the settings file `path` in the editor, written from `text`
     /// first when it is not there. Answered with
     /// [`Event::SettingsFileOpened`].
@@ -203,7 +205,8 @@ pub enum StateFile {
     /// The note that the connections are kept in `connections.toml`.
     ConnectionsMoved,
     KnownHosts(HostKeys),
-    Settings(crate::settings::Settings),
+    /// The settings file's text, as the app made it.
+    Settings(String),
     Labels(crate::labels::Labels),
     /// What agents may do, as the app last showed it.
     AgentsShown(crate::agents_shown::Shown),
@@ -221,7 +224,7 @@ impl StateFile {
                 crate::util::write_atomic(path, crate::connections::MOVED.as_bytes())
             }
             Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
-            Self::Settings(settings) => settings.save(path),
+            Self::Settings(text) => crate::util::write_atomic(path, text.as_bytes()),
             Self::Labels(labels) => labels.save(path),
             Self::AgentsShown(shown) => shown.save(path),
             Self::TableLists(lists) => crate::util::save_json(path, lists),
@@ -342,6 +345,8 @@ pub enum Event {
     /// a directory that cannot be watched, or such a directory that can be
     /// watched after all.
     SettingsWatch { live: bool },
+    /// The time zone database, read whole ([`Command::LoadZones`]).
+    Zones(Arc<crate::zones::Zones>),
     /// The settings file changed on disk: its text. `own` when it is, byte
     /// for byte, what the backend itself wrote there last: the app's own
     /// save coming back, which it must not take for someone else's change.
@@ -865,14 +870,14 @@ impl Saves {
             };
             let result = match &file {
                 // Known to the settings file's reader for the app's own.
-                StateFile::Settings(settings) => {
+                StateFile::Settings(text) => {
                     let mut written = lock(&self.settings_written);
                     let result = file.save(path);
                     // After a write that failed nothing on the disk is
                     // known to be the app's: the text there may be an
                     // older write of its own, but the app has moved on
                     // from it, and someone putting it back must be heard.
-                    *written = result.is_ok().then(|| settings.to_toml());
+                    *written = result.is_ok().then(|| text.clone());
                     result
                 }
                 _ => file.save(path),
@@ -1843,6 +1848,12 @@ impl Worker {
                 };
                 self.outbox.emit(Event::SettingsWatch { live });
             }
+            Command::LoadZones => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    outbox.emit(Event::Zones(Arc::new(crate::zones::Zones::load())));
+                });
+            }
             Command::EditSettingsFile { path, text } => {
                 let outbox = self.outbox.clone();
                 let written = Arc::clone(&self.saves.settings_written);
@@ -1918,6 +1929,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::Flush { .. }
@@ -1946,6 +1958,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::Flush { .. }
@@ -2032,6 +2045,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::Flush { .. }
@@ -2314,6 +2328,7 @@ async fn run_session(
             | Command::StoreSecret { .. }
             | Command::Save { .. }
             | Command::WatchSettings { .. }
+            | Command::LoadZones
             | Command::EditSettingsFile { .. }
             | Command::RevealSettingsFile { .. }
             | Command::Flush { .. }
@@ -4244,7 +4259,7 @@ mod tests {
         let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(settings.clone()),
+            file: StateFile::Settings(settings.to_toml()),
         });
         match backend.wait(WAIT) {
             Some(Event::Saved { result: Ok(()), .. }) => {}
@@ -4269,7 +4284,7 @@ mod tests {
         let files = [
             (
                 "settings.toml",
-                StateFile::Settings(crate::settings::Settings::default()),
+                StateFile::Settings(crate::settings::Settings::default().to_toml()),
             ),
             (
                 "connections.toml",
@@ -5877,7 +5892,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(settings.clone()),
+            file: StateFile::Settings(settings.to_toml()),
         });
         assert_eq!(
             files_until(&mut backend, &settings.to_toml()),
@@ -5897,7 +5912,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(newer.clone()),
+            file: StateFile::Settings(newer.to_toml()),
         });
         assert_eq!(
             files_until(&mut backend, &newer.to_toml()),
@@ -5922,7 +5937,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(first.clone()),
+            file: StateFile::Settings(first.to_toml()),
         });
         assert_eq!(
             files_until(&mut backend, &first.to_toml()),
@@ -5938,7 +5953,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(second),
+            file: StateFile::Settings(second.to_toml()),
         });
         let deadline = std::time::Instant::now() + WAIT;
         loop {

@@ -186,6 +186,8 @@ struct Place<'a> {
     sql: &'a SqlTab,
     /// How the cells are drawn, as the workspace's tables draw them.
     fit: data_view::Fit,
+    /// The zone a value with an offset is shown in.
+    zone: Option<&'a jiff::tz::TimeZone>,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
     /// The write a database refused in the last run, when that run was
@@ -215,7 +217,8 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
     let place = Place {
         tab,
         sql,
-        fit: data_view::Fit::of(workspace, &app.settings),
+        fit: data_view::Fit::of(workspace, app),
+        zone: workspace.zone_shown(),
         driver: workspace.driver,
         blocked: blocked(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
@@ -1583,6 +1586,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         tab,
         sql,
         fit,
+        zone,
         keys,
         grid: grid_look,
         ..
@@ -1716,6 +1720,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                     full_precision: fit.full_precision,
                     // A result has no key to leave alone.
                     grouped: fit.grouped,
+                    zone,
                 },
             )
         },
@@ -3982,7 +3987,7 @@ mod tests {
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![result_with("email")])), None);
         let narrow = width(&mut harness, "email");
-        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app.settings);
+        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app);
         let first = sql(&harness, tab).run.loaded;
         let first = grid_id(tab, sql(&harness, tab).id, first, fit);
         assert!(crate::ui::grid::remembered(&harness.ctx, first));

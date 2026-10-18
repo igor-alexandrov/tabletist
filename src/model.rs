@@ -931,6 +931,11 @@ pub struct Workspace {
     pub sidebar_hidden: bool,
     /// The grid shows timestamps in full rather than to the second.
     pub full_precision: bool,
+    /// The zone a value with an offset is shown in: the settings' zone,
+    /// set when the workspace opens and when the option changes. Read
+    /// through [`Workspace::zone_shown`], which says whether its engine's
+    /// values are moved to it.
+    pub zone: Option<jiff::tz::TimeZone>,
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
     /// The terminal look's `:` prompt: the text after the colon while it
@@ -2172,6 +2177,7 @@ impl SettingsPane {
             Self::General => &[
                 SettingsRow::Option(OptionId::PageSize),
                 SettingsRow::Option(OptionId::Timestamps),
+                SettingsRow::Option(OptionId::Tz),
                 SettingsRow::Option(OptionId::GroupDigits),
                 SettingsRow::Option(OptionId::ValueTags),
             ],
@@ -2726,6 +2732,10 @@ pub struct ObjectTab {
     pub pinned: bool,
     pub view: ObjectView,
     pub query: RowQuery,
+    /// The size the tab pages by: the settings' Rows per page when it last
+    /// loaded from a place (opened, refreshed, sorted, filtered). Next and
+    /// Previous keep it, so a new size never lands while the person pages.
+    pub page_size: u32,
     pub rows: Fetch<RowPage>,
     pub structure: Fetch<Structure>,
     pub selection: Option<CellPos>,
@@ -2960,6 +2970,7 @@ impl ObjectTab {
         Self {
             id,
             query: RowQuery::new(object.clone(), page_size),
+            page_size,
             object,
             kind,
             pinned,
@@ -3913,6 +3924,17 @@ impl SqlTab {
 }
 
 impl Workspace {
+    /// The zone a moment with an offset is shown and edited in, where the
+    /// engine sends one (`edit::shows_in_zone`): elsewhere none, and values
+    /// are shown as stored.
+    pub fn zone_shown(&self) -> Option<&jiff::tz::TimeZone> {
+        if crate::edit::shows_in_zone(self.driver.dialect()) {
+            self.zone.as_ref()
+        } else {
+            None
+        }
+    }
+
     /// Whether a SQL editor of this workspace can run read-write, or why
     /// none can.
     pub fn sql_writes(&self) -> Result<(), NoWrites> {
@@ -4005,6 +4027,7 @@ impl Workspace {
             recent: Vec::new(),
             sidebar_hidden: false,
             full_precision: false,
+            zone: None,
             focus_where: false,
             command: None,
             focus_command: false,

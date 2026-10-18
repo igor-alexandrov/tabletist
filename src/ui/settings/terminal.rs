@@ -53,6 +53,10 @@ pub(super) struct Skin<'a> {
     /// Whether a connection window is open: what Enter on the Agents
     /// pane's status and log rows shows the tab of.
     pub(super) window: bool,
+    /// The computer's zone's name, which the System zone writes beside it.
+    pub(super) system: Option<&'a str>,
+    /// The last named zone the session had, which the zone's steps reach.
+    pub(super) named: Option<&'a str>,
 }
 
 impl Skin<'_> {
@@ -94,6 +98,8 @@ pub(super) fn show(
         palette: &app.palette,
         locale: app.locale,
         window: app.agents_window().is_some(),
+        system: app.system_zone.iana_name(),
+        named: app.named_zone.as_deref(),
     };
     let screen = ctx.content_rect();
     let id = egui::Id::new("settings");
@@ -655,7 +661,7 @@ fn widths(ui: &Ui, options: &[OptionId], settings: &Settings, skin: &Skin) -> (f
         .fold(0.0, f32::max);
     let hints = options
         .iter()
-        .flat_map(|option| choices(*option, settings))
+        .flat_map(|option| choices(*option, settings, skin.named))
         .map(|(_, value)| {
             let mut changed = settings.clone();
             value.set(&mut changed);
@@ -700,7 +706,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
     let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
     match option {
         // Between its chevrons, as the cursor's row has it.
-        OptionId::PageSize | OptionId::LogDays => {
+        OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
             width(&format!("‹ {} ›", stepped_text(option, settings, skin)))
         }
         OptionId::Timestamps
@@ -708,7 +714,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar => {
-            let words = choices(option, settings);
+            let words = choices(option, settings, skin.named);
             let between = width(" ") * words.len().saturating_sub(1) as f32;
             let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
             segments.sum::<f32>() + between
@@ -728,6 +734,13 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
         OptionId::LogDays => skin
             .look
             .label(&super::days(skin.locale, settings.mcp_log_days)),
+        // As the artboard writes it: `system (america/new_york)`.
+        OptionId::Tz => skin.look.label(&match (&settings.tz, skin.system) {
+            (crate::settings::Zone::System, Some(name)) => {
+                format!("{} ({name})", gettext(skin.locale, "System"))
+            }
+            (zone, system) => super::zone_text(skin.locale, zone, system),
+        }),
         _ => settings.page_size.to_string(),
     }
 }
@@ -838,7 +851,10 @@ fn option_row(
     let y = row.center().y;
     // A stepped option has no button that is its value: its row says it.
     if let Some(button) = button
-        && matches!(option, OptionId::PageSize | OptionId::LogDays)
+        && matches!(
+            option,
+            OptionId::PageSize | OptionId::LogDays | OptionId::Tz
+        )
     {
         let name = gettext(locale, terminal_label(option));
         let value = stepped_text(option, settings, skin);
@@ -859,7 +875,7 @@ fn option_row(
         on_cursor,
     };
     match option {
-        OptionId::PageSize | OptionId::LogDays => {
+        OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
             stepper(ui, cell, option, settings, skin, actions)
         }
         OptionId::Timestamps
@@ -901,23 +917,23 @@ fn stepper(
     let y = cell.row.center().y;
     let value = stepped_text(option, settings, skin);
     let current = settings.value(option);
-    let [fewer, more] = choices(option, settings)[..] else {
+    let Ok([fewer, more]) = <[_; 2]>::try_from(choices(option, settings, skin.named)) else {
         return;
     };
     let text = if cell.on_cursor {
-        let chevron = |(_, step): (Said, OptionValue)| {
-            if step == current {
+        let chevron = |(_, step): &(Said, OptionValue)| {
+            if *step == current {
                 palette.dim
             } else {
                 palette.accent
             }
         };
         Text::new(look)
-            .add(role, "‹", chevron(fewer))
+            .add(role, "‹", chevron(&fewer))
             .space(role, " ")
             .add(role, &value, palette.text)
             .space(role, " ")
-            .add(role, "›", chevron(more))
+            .add(role, "›", chevron(&more))
     } else {
         Text::one(look, role, &value, palette.text)
     };
@@ -963,7 +979,7 @@ fn check(
 ) {
     let Skin { look, palette, .. } = *skin;
     let current = settings.value(option);
-    let (glyph, color) = if super::is_on(current) {
+    let (glyph, color) = if super::is_on(&current) {
         ("[x]", palette.success)
     } else {
         ("[ ]", palette.dim)
@@ -976,7 +992,7 @@ fn check(
     );
     // One mark stands for both values, and a click on it flips it: the
     // value it is not set to is the button on top.
-    let mut values = choices(option, settings);
+    let mut values = choices(option, settings, skin.named);
     values.sort_by_key(|(_, value)| *value != current);
     for (word, value) in values {
         let press = Press::Value {
@@ -994,8 +1010,9 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
     let dim = |text: &str| Text::one(look, role, text, palette.dim);
     match option {
         OptionId::PageSize => dim(&skin.say("table view")),
+        OptionId::Tz => dim(&skin.say("sent with offset")),
         OptionId::Timestamps => dim(sample_timestamp(settings.timestamps)),
-        OptionId::GroupDigits => dim(&skin.say(if settings.group_digits {
+        OptionId::GroupDigits => dim(&skin.say(if settings.group_digits.unwrap_or_default() {
             "grouping on"
         } else {
             "grouping off"
@@ -1237,7 +1254,7 @@ fn segments(
     let line = role.row_height(ui.ctx(), look.faces);
     let gap = role.width(ui.ctx(), look.faces, " ");
     let mut left = cell.left;
-    for (word, value) in choices(option, settings) {
+    for (word, value) in choices(option, settings, skin.named) {
         let text = skin.written(word);
         let width = segment(ui, word, skin);
         let place = Rect::from_min_size(

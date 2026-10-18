@@ -69,6 +69,8 @@ pub mod value_tags;
 pub mod widgets;
 pub mod workspace;
 pub mod write_prompts;
+#[cfg(test)]
+mod zone_tests;
 
 use egui::Frame;
 
@@ -624,8 +626,18 @@ mod tests {
             .expect("a FetchRows was sent")
     }
 
+    /// `harness`'s settings with Rows per page at `size`.
+    fn page_size_set(harness: &mut Harness, size: u32) {
+        let settings = crate::settings::Settings {
+            page_size: size,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+    }
+
     #[test]
-    fn a_new_page_size_fetches_an_open_page_again_from_where_it_is() {
+    fn a_new_page_size_lands_on_the_next_load_and_not_on_the_page_shown() {
+        let size = crate::settings::Settings::DEFAULT_PAGE_SIZE;
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.click("users");
@@ -634,80 +646,79 @@ mod tests {
         harness
             .app
             .apply(crate::model::Action::NextPage { tab, object_tab });
-        assert_eq!(last_fetch(&harness), (300, 300));
+        assert_eq!(last_fetch(&harness), (u64::from(size), size));
         harness.answer_rows(crate::testing::page(3, true));
         let before = fetches(&harness);
-        let settings = crate::settings::Settings {
-            page_size: 500,
-            ..harness.app.settings.clone()
-        };
-        harness.app.apply_settings(settings);
-        // The same offset, the new size.
-        assert_eq!(fetches(&harness), before + 1);
-        assert_eq!(last_fetch(&harness), (300, 500));
-        // The page of the old size is not left on screen meanwhile: were
-        // this fetch to fail, Next would move past it by the new size.
+        page_size_set(&mut harness, 500);
+        // Nothing is fetched, and the page stays where it is.
+        assert_eq!(fetches(&harness), before);
         let object = harness
             .app
             .workspace(tab)
             .unwrap()
             .active_object_tab()
             .unwrap();
-        assert!(object.page().is_none());
-        harness.answer_rows(crate::testing::page(3, true));
-        // Next moves by the size of the page that is shown: no row skipped.
+        assert!(object.page().is_some());
+        // Paging keeps the size the table loaded with.
         harness
             .app
             .apply(crate::model::Action::NextPage { tab, object_tab });
-        assert_eq!(last_fetch(&harness), (800, 500));
+        assert_eq!(last_fetch(&harness), (2 * u64::from(size), size));
+        harness.answer_rows(crate::testing::page(3, true));
+        // A refresh is a load: from where it is, at the new size, which
+        // Next then moves by.
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        assert_eq!(last_fetch(&harness), (2 * u64::from(size), 500));
+        harness.answer_rows(crate::testing::page(3, true));
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (2 * u64::from(size) + 500, 500));
     }
 
     #[test]
-    fn a_page_still_on_its_way_is_fetched_again_at_the_new_size() {
+    fn a_page_still_on_its_way_is_left_to_land() {
+        let size = crate::settings::Settings::DEFAULT_PAGE_SIZE;
         let mut harness = Harness::new();
-        harness.connect_fake();
+        let tab = harness.connect_fake();
         harness.click("users");
         // Not answered: the first page is in flight at the old size.
         let before = fetches(&harness);
-        let settings = crate::settings::Settings {
-            page_size: 500,
-            ..harness.app.settings.clone()
-        };
-        harness.app.apply_settings(settings);
-        assert_eq!(fetches(&harness), before + 1);
-        assert_eq!(last_fetch(&harness), (0, 500));
+        page_size_set(&mut harness, 500);
+        assert_eq!(fetches(&harness), before);
+        let object = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap();
+        assert!(object.rows.pending.is_some());
+        assert_eq!(object.query.limit, size);
     }
 
     #[test]
-    fn a_table_whose_session_is_down_waits_for_its_next_fetch() {
+    fn a_table_opened_or_sorted_after_a_new_page_size_loads_at_it() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.click("users");
         harness.answer_rows(crate::testing::page(3, true));
-        harness.app.workspace_mut(tab).unwrap().status =
-            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
-        let before = fetches(&harness);
-        let settings = crate::settings::Settings {
-            page_size: 500,
-            ..harness.app.settings.clone()
-        };
-        harness.app.apply_settings(settings);
-        assert_eq!(
-            fetches(&harness),
-            before,
-            "nothing is asked of a dead session"
-        );
-        // Its next fetch moves by the page it shows and asks for the new size.
-        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        page_size_set(&mut harness, 500);
+        harness.click("orders");
+        assert_eq!(last_fetch(&harness), (0, 500));
+        harness.answer_rows(crate::testing::page(3, true));
+        page_size_set(&mut harness, 100);
         let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
-        harness
-            .app
-            .apply(crate::model::Action::NextPage { tab, object_tab });
-        assert_eq!(last_fetch(&harness), (300, 500));
+        harness.app.apply(crate::model::Action::SortBy {
+            tab,
+            object_tab,
+            column: "id".into(),
+        });
+        assert_eq!(last_fetch(&harness), (0, 100));
     }
 
     #[test]
-    fn previous_moves_by_the_size_of_the_page_it_fetches() {
+    fn previous_moves_by_the_size_the_table_pages_by() {
+        let size = crate::settings::Settings::DEFAULT_PAGE_SIZE;
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.click("users");
@@ -719,26 +730,17 @@ mod tests {
                 .apply(crate::model::Action::NextPage { tab, object_tab });
             harness.answer_rows(crate::testing::page(3, true));
         }
-        assert_eq!(last_fetch(&harness), (900, 300));
-        // The size changes while the session is down: the page keeps its own.
-        harness.app.workspace_mut(tab).unwrap().status =
-            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
-        let settings = crate::settings::Settings {
-            page_size: 100,
-            ..harness.app.settings.clone()
-        };
-        harness.app.apply_settings(settings);
-        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        assert_eq!(last_fetch(&harness), (3 * u64::from(size), size));
+        page_size_set(&mut harness, 100);
         harness
             .app
             .apply(crate::model::Action::PrevPage { tab, object_tab });
-        // The page fetched has the new size and ends where the one that was
-        // shown begins. Back by the old size, rows 700 to 899 are skipped.
-        assert_eq!(last_fetch(&harness), (800, 100));
+        assert_eq!(last_fetch(&harness), (2 * u64::from(size), size));
     }
 
     #[test]
     fn previous_near_the_start_fetches_only_the_rows_before_the_page() {
+        let size = crate::settings::Settings::DEFAULT_PAGE_SIZE;
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.click("users");
@@ -747,29 +749,27 @@ mod tests {
         harness
             .app
             .apply(crate::model::Action::NextPage { tab, object_tab });
-        assert_eq!(last_fetch(&harness), (300, 300));
+        assert_eq!(last_fetch(&harness), (u64::from(size), size));
         harness.answer_rows(crate::testing::page(3, true));
-        // The size grows: the page on screen is rows 300 to 799.
-        let settings = crate::settings::Settings {
-            page_size: 500,
-            ..harness.app.settings.clone()
-        };
-        harness.app.apply_settings(settings);
-        assert_eq!(last_fetch(&harness), (300, 500));
+        // The size grows and the table is refreshed: the page on screen
+        // starts a page of the old size from the start.
+        page_size_set(&mut harness, 5 * size);
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        assert_eq!(last_fetch(&harness), (u64::from(size), 5 * size));
         harness.answer_rows(crate::testing::page(3, true));
         harness
             .app
             .apply(crate::model::Action::PrevPage { tab, object_tab });
-        // Only 300 rows are before that page. A whole page from the start
-        // would show rows 300 to 499 a second time.
-        assert_eq!(last_fetch(&harness), (0, 300));
+        // Only a page of the old size is before it. A whole page from the
+        // start would show its first rows a second time.
+        assert_eq!(last_fetch(&harness), (0, size));
         harness.answer_rows(crate::testing::page(3, true));
-        // Next moves by the short page, back to where the user was, and the
-        // page fetched there has the settings' size again.
+        // Next moves by the short page, back to where the user was, and
+        // the page fetched there has the table's size again.
         harness
             .app
             .apply(crate::model::Action::NextPage { tab, object_tab });
-        assert_eq!(last_fetch(&harness), (300, 500));
+        assert_eq!(last_fetch(&harness), (u64::from(size), 5 * size));
     }
 
     #[test]
@@ -824,24 +824,12 @@ mod tests {
     #[test]
     fn an_option_that_is_not_the_page_size_fetches_no_page_again() {
         let mut harness = Harness::new();
-        let tab = harness.connect_fake();
+        harness.connect_fake();
         harness.click("users");
         harness.answer_rows(crate::testing::page(3, true));
-        // A page of the old size on a session that answers again: the size
-        // changed while it was down, and nothing was fetched since.
-        harness.app.workspace_mut(tab).unwrap().status =
-            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
-        let settings = crate::settings::Settings {
-            page_size: 500,
-            ..harness.app.settings.clone()
-        };
-        harness.app.apply_settings(settings);
-        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
         let before = fetches(&harness);
-        // A new page size would fetch this page again. Another option is no
-        // reason to.
         let settings = crate::settings::Settings {
-            group_digits: true,
+            group_digits: Some(true),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
@@ -864,7 +852,7 @@ mod tests {
             .app
             .apply(crate::model::Action::ToggleFullPrecision(tab));
         let settings = crate::settings::Settings {
-            group_digits: true,
+            group_digits: Some(true),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
@@ -874,6 +862,7 @@ mod tests {
     #[test]
     fn a_grid_is_fitted_again_when_an_option_widens_its_cells() {
         let mut harness = Harness::new();
+        harness.app.settings.group_digits = Some(false);
         harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -882,7 +871,7 @@ mod tests {
         harness.settle();
         assert!(harness.painted_color("9223372036854775807").is_some());
         let settings = crate::settings::Settings {
-            group_digits: true,
+            group_digits: Some(true),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
@@ -899,7 +888,7 @@ mod tests {
         let tab = harness.connect_fake();
         let group = |harness: &mut Harness, group_digits| {
             let settings = crate::settings::Settings {
-                group_digits,
+                group_digits: Some(group_digits),
                 ..harness.app.settings.clone()
             };
             harness.app.apply_settings(settings);
@@ -929,6 +918,7 @@ mod tests {
     #[test]
     fn an_edit_of_the_file_changes_what_an_open_grid_shows() {
         let mut harness = Harness::new();
+        harness.app.settings.group_digits = Some(false);
         harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -949,7 +939,7 @@ mod tests {
     #[test]
     fn numbers_are_grouped_when_the_settings_say_so_but_keys_never_are() {
         let mut harness = Harness::new();
-        harness.app.settings.group_digits = true;
+        harness.app.settings.group_digits = Some(true);
         let tab = harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -991,6 +981,7 @@ mod tests {
     #[test]
     fn numbers_are_plain_when_the_settings_do_not_group() {
         let mut harness = Harness::new();
+        harness.app.settings.group_digits = Some(false);
         harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -998,6 +989,26 @@ mod tests {
         harness.answer_rows(page);
         harness.settle();
         assert!(harness.painted_color("1234567").is_some());
+    }
+
+    #[test]
+    fn numbers_not_set_are_grouped_as_the_look_has_them() {
+        for (look, grouped) in [
+            (crate::theme::Look::macos(), "1,234,567"),
+            (crate::theme::Look::standard(), "1,234,567"),
+            (crate::theme::Look::omarchy(), "1234567"),
+        ] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            assert_eq!(harness.app.settings.group_digits, None);
+            harness.connect_fake();
+            harness.click("users");
+            let mut page = crate::testing::page(1, false);
+            page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+            harness.answer_rows(page);
+            harness.settle();
+            assert!(harness.painted_color(grouped).is_some(), "{grouped}");
+        }
     }
 
     /// The colours a table's grid paints `true` and a plain text cell in,
@@ -1048,10 +1059,43 @@ mod tests {
 
     /// A harness in the terminal look with the Settings screen open.
     fn settings_screen() -> Harness {
-        let mut harness = Harness::new();
+        settings_screen_in(Harness::new())
+    }
+
+    /// The Settings screen as the artboard draws it: on a screen of
+    /// 1920 by 1080, where every hint has room beside the file.
+    fn settings_screen_on_the_artboard() -> Harness {
+        settings_screen_in(Harness::with_size(egui::vec2(1920.0, 1080.0)))
+    }
+
+    fn settings_screen_in(mut harness: Harness) -> Harness {
         harness.set_look(crate::theme::Look::omarchy());
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
         assert!(settings_open(&harness));
+        harness
+    }
+
+    /// A settings file as a version before this one wrote it: every key of
+    /// the Data table, aligned.
+    const OLDER_FILE: &str = "\
+# written by tabletist, safe to edit by hand
+[data]
+page_size    = 300
+timestamps   = \"second\"  # second | full
+group_digits = false
+value_tags   = true
+";
+
+    /// The Settings screen over [`OLDER_FILE`], as read from the disk.
+    fn settings_screen_over_older_file() -> Harness {
+        let mut harness = settings_screen();
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: OLDER_FILE.into(),
+                own: false,
+            },
+        ));
+        harness.settle();
         harness
     }
 
@@ -1290,10 +1334,13 @@ mod tests {
             );
             // It is written as before: the word alone.
             assert!(harness.painted_color("Full precision").is_some());
-            harness.click("Numbers: 1,240.50");
-            assert!(harness.app.settings.group_digits);
+            // Grouped is the look's default: set, it is not set at all,
+            // and nothing is written.
             harness.click("Numbers: 1240.50");
-            assert!(!harness.app.settings.group_digits);
+            assert_eq!(harness.app.settings.group_digits, Some(false));
+            harness.click("Numbers: 1,240.50");
+            assert_eq!(harness.app.settings.group_digits, None);
+            assert!(harness.app.settings.grouped(harness.app.layout()));
             let tags = harness.app.settings.value_tags;
             harness.click("Value tags");
             assert_eq!(harness.app.settings.value_tags, !tags);
@@ -1313,7 +1360,7 @@ mod tests {
             crate::settings::OptionValue::PageSize(250),
         ));
         harness.click("Rows per page");
-        for size in ["100", "250", "300", "500", "1,000", "5,000"] {
+        for size in ["100", "250", "500", "1,000", "5,000", "10,000"] {
             let entry = format!("Rows per page {size}");
             assert!(harness.has(&entry), "{entry}");
         }
@@ -1371,7 +1418,7 @@ mod tests {
             let mut harness = settings_sheet(look());
             harness.click("Timestamps: Full precision");
             harness.click("Reset to defaults");
-            assert!(harness.has("Reset every option on this tab?"));
+            assert!(harness.has("Reset all General settings to their defaults?"));
             assert!(!harness.has("Export…"), "the links give way");
             harness.click("Cancel");
             assert!(harness.has("Export…"));
@@ -1422,7 +1469,7 @@ mod tests {
         harness.click("Timestamps: Full precision");
         tab_to_settings(&mut harness, "Reset to defaults");
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
-        assert!(harness.has("Reset every option on this tab?"));
+        assert!(harness.has("Reset all General settings to their defaults?"));
         assert_eq!(focused_name(&harness.settle()), "Cancel");
         // A second Enter is the answer that changes nothing.
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
@@ -1455,7 +1502,7 @@ mod tests {
         for _ in 0..4 {
             harness.frame(vec![held(true)]);
         }
-        assert!(!harness.has("Reset every option on this tab?"));
+        assert!(!harness.has("Reset all General settings to their defaults?"));
         harness.frame(vec![crate::testing::release(egui::Key::Space, none)]);
         // Escape answers no, and takes the keyboard from where it was: it
         // is put back on the link too.
@@ -1463,7 +1510,7 @@ mod tests {
         assert_eq!(focused_name(&harness.settle()), "Cancel");
         harness.press(egui::Key::Escape, egui::Modifiers::NONE);
         assert!(settings_open(&harness));
-        assert!(!harness.has("Reset every option on this tab?"));
+        assert!(!harness.has("Reset all General settings to their defaults?"));
         assert_eq!(focused_name(&harness.settle()), "Reset to defaults");
     }
 
@@ -1523,7 +1570,7 @@ mod tests {
             let lead = harness.painted_rect(lead).expect("the tab's lead");
             assert!(switch.top() > lead.bottom(), "{switch:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..3 {
+            for _ in 0..4 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();
@@ -1573,7 +1620,7 @@ mod tests {
             harness.press(egui::Key::Escape, egui::Modifiers::NONE);
             assert!(settings_open(&harness), "the menu closes first");
             assert!(!harness.has("Rows per page 500"));
-            assert_eq!(harness.app.settings.page_size, 300);
+            assert_eq!(harness.app.settings.page_size, 1_000);
             harness.press(egui::Key::Escape, egui::Modifiers::NONE);
             assert!(harness.app.dialog.is_none());
         }
@@ -1674,13 +1721,14 @@ mod tests {
 
     #[test]
     fn h_and_l_change_the_cursors_option_and_save_it() {
-        use crate::settings::Timestamps;
-        let mut harness = settings_screen();
+        use crate::settings::{Timestamps, Zone};
+        let mut harness = settings_screen_on_the_artboard();
         // Rows per page.
         harness.press(egui::Key::L, egui::Modifiers::NONE);
-        assert_eq!(harness.app.settings.page_size, 500);
+        assert_eq!(harness.app.settings.page_size, 5_000);
         assert_eq!(settings_saves(&harness), 1);
         harness.press(egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        harness.press(egui::Key::H, egui::Modifiers::NONE);
         harness.press(egui::Key::H, egui::Modifiers::NONE);
         assert_eq!(harness.app.settings.page_size, 100);
         // At the end of the choices a step changes and writes nothing.
@@ -1697,10 +1745,21 @@ mod tests {
                 .painted_color("2026-01-12 09:14:03.482915")
                 .is_some()
         );
+        // The zone: the computer's, then UTC, and no further.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        assert!(harness.painted_color("‹ system (utc) ›").is_some());
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.tz, Zone::Utc);
+        assert!(harness.painted_color("‹ utc ›").is_some());
+        let saved = settings_saves(&harness);
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(settings_saves(&harness), saved);
+        harness.press(egui::Key::H, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.tz, Zone::System);
         // Numbers: grouped is the left of the two.
         harness.press(egui::Key::J, egui::Modifiers::NONE);
         harness.press(egui::Key::H, egui::Modifiers::NONE);
-        assert!(harness.app.settings.group_digits);
+        assert!(harness.app.settings.grouped(harness.app.layout()));
         assert!(harness.painted_color("grouping on").is_some());
     }
 
@@ -1710,7 +1769,7 @@ mod tests {
         // Space on the page size does nothing: it has more than two values.
         harness.press(egui::Key::Space, egui::Modifiers::NONE);
         assert_eq!(settings_saves(&harness), 0);
-        for _ in 0..3 {
+        for _ in 0..4 {
             harness.press(egui::Key::J, egui::Modifiers::NONE);
         }
         harness.press(egui::Key::Space, egui::Modifiers::NONE);
@@ -1777,14 +1836,14 @@ mod tests {
         use crate::settings::Timestamps;
         let mut harness = settings_screen();
         harness.click("Numbers");
-        assert_eq!(settings_cursor(&harness), 2);
+        assert_eq!(settings_cursor(&harness), 3);
         harness.click("Timestamps: full");
         assert_eq!(harness.app.settings.timestamps, Timestamps::Full);
         assert_eq!(settings_cursor(&harness), 1, "the cursor follows the click");
         harness.click("Value tags: off");
         assert!(!harness.app.settings.value_tags);
         harness.click("Rows per page: more");
-        assert_eq!(harness.app.settings.page_size, 500);
+        assert_eq!(harness.app.settings.page_size, 5_000);
     }
 
     #[test]
@@ -1842,15 +1901,15 @@ mod tests {
         harness.press(egui::Key::J, egui::Modifiers::NONE);
         // No chevron is drawn on that row: the number starts where the
         // cursor's row has one.
-        let number = harness.painted_rect("300").expect("the page size");
+        let number = harness.painted_rect("1000").expect("the page size");
         click_at(&mut harness, number.left_center() + egui::vec2(1.0, 0.0));
         assert_eq!(settings_cursor(&harness), 0);
-        assert_eq!(harness.app.settings.page_size, 300);
+        assert_eq!(harness.app.settings.page_size, 1_000);
         assert_eq!(settings_saves(&harness), 0);
         // On the cursor's row the chevrons are drawn, and each takes a click.
-        let stepper = harness.painted_rect("‹ 300 ›").expect("the chevrons");
+        let stepper = harness.painted_rect("‹ 1000 ›").expect("the chevrons");
         click_at(&mut harness, stepper.left_center() + egui::vec2(1.0, 0.0));
-        assert_eq!(harness.app.settings.page_size, 100);
+        assert_eq!(harness.app.settings.page_size, 500);
     }
 
     #[test]
@@ -1870,7 +1929,7 @@ mod tests {
 
     #[test]
     fn the_settings_screen_shows_the_file_beside_the_options() {
-        let mut harness = settings_screen();
+        let mut harness = settings_screen_over_older_file();
         // The text the app holds, a line of the file per line.
         assert!(harness.painted_color("[data]").is_some());
         assert!(harness.painted_color("page_size    = ").is_some());
@@ -1923,7 +1982,7 @@ mod tests {
 
     #[test]
     fn the_file_pane_marks_the_line_of_the_cursors_option() {
-        let mut harness = settings_screen();
+        let mut harness = settings_screen_over_older_file();
         let selection = harness.app.palette.selection;
         // The fill behind the line the text `key` starts.
         let marked = |harness: &Harness, key: &str| {
@@ -1942,6 +2001,22 @@ mod tests {
     }
 
     #[test]
+    fn with_no_file_the_pane_shows_the_header_and_marks_no_line() {
+        let harness = settings_screen();
+        let selection = harness.app.palette.selection;
+        let header = "# written by tabletist, safe to edit by hand";
+        assert!(harness.painted_color(header).is_some());
+        assert!(harness.painted_color("[data]").is_none());
+        // Nothing behind the header: the cursor's option has no line.
+        let line = harness.painted_rect(header).expect("the header");
+        assert!(!harness.fills.iter().any(|(rect, color)| {
+            *color == selection
+                && rect.y_range().contains(line.center().y)
+                && rect.x_range().contains(line.center().x)
+        }));
+    }
+
+    #[test]
     fn the_file_panes_note_reads_as_one_sentence_without_its_marks() {
         let harness = settings_screen();
         // The marks say which word is coloured, and are not written.
@@ -1954,8 +2029,7 @@ mod tests {
     /// lines of comments, with one line that is ignored among the first.
     fn settings_screen_over_a_long_file(notes: usize) -> Harness {
         let mut harness = settings_screen();
-        let settings = harness.app.settings.to_toml();
-        let settings = settings.replace("group_digits = false", "group_digits = \"yes\"");
+        let settings = OLDER_FILE.replace("group_digits = false", "group_digits = \"yes\"");
         let notes: String = (1..=notes).map(|note| format!("# note {note}\n")).collect();
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::SettingsFile {
@@ -2142,7 +2216,7 @@ mod tests {
 
     #[test]
     fn the_settings_screen_shows_a_notice_until_it_is_dismissed() {
-        let mut harness = settings_screen();
+        let mut harness = settings_screen_over_older_file();
         let message = "Could not save the password in the keyring.";
         harness.app.notice = Some(message.into());
         let shown = settings_notice(&mut harness, message).expect("the notice on the screen");
@@ -2207,7 +2281,7 @@ mod tests {
         let tree = harness.settle();
         let row = crate::testing::node(&tree, "Rows per page", Role::Button).expect("the row");
         let (_, row) = tree.nodes.iter().find(|(node, _)| *node == row).unwrap();
-        assert_eq!(row.value(), Some("300"));
+        assert_eq!(row.value(), Some("1000"));
     }
 
     /// Tabs until the control named `name` has the keyboard.
@@ -2225,26 +2299,28 @@ mod tests {
     fn a_focused_button_of_the_settings_screen_keeps_space_and_the_arrows() {
         let mut harness = settings_screen();
         // The cursor on an option Space flips.
-        for _ in 0..3 {
+        for _ in 0..4 {
             harness.press(egui::Key::J, egui::Modifiers::NONE);
         }
         tab_to_settings(&mut harness, "Numbers");
         // Space presses the button, which is another row's: the cursor
         // goes there, and the option it was on is as it was.
         harness.press(egui::Key::Space, egui::Modifiers::NONE);
-        assert_eq!(settings_cursor(&harness), 2);
+        assert_eq!(settings_cursor(&harness), 3);
         assert!(harness.app.settings.value_tags);
         // An arrow moves the keyboard from the button, and nothing else.
         // Where it takes the keyboard is egui's to say: each arrow starts
         // from a button again.
         harness.press(egui::Key::ArrowLeft, egui::Modifiers::NONE);
-        assert!(!harness.app.settings.group_digits);
+        assert!(!harness.app.settings.grouped(harness.app.layout()));
         assert_eq!(settings_saves(&harness), 0);
         tab_to_settings(&mut harness, "Numbers");
         harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
-        assert_eq!(settings_cursor(&harness), 2);
+        assert_eq!(settings_cursor(&harness), 3);
         // The letters are the screen's wherever the keyboard is.
         tab_to_settings(&mut harness, "Close");
+        harness.press(egui::Key::K, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 2);
         harness.press(egui::Key::K, egui::Modifiers::NONE);
         assert_eq!(settings_cursor(&harness), 1);
         harness.press(egui::Key::L, egui::Modifiers::NONE);
@@ -3737,7 +3813,7 @@ mod tests {
         harness.answer_rows(crate::testing::page(300, true));
         harness.click("Next page");
         match crate::testing::last_sent(&harness.app) {
-            Command::FetchRows { query, .. } => assert_eq!(query.offset, 300),
+            Command::FetchRows { query, .. } => assert_eq!(query.offset, 1_000),
             other => panic!("{other:?}"),
         }
     }
@@ -5894,7 +5970,7 @@ mod tests {
     #[test]
     fn a_result_groups_every_number_when_the_settings_say_so() {
         let mut harness = Harness::new();
-        harness.app.settings.group_digits = true;
+        harness.app.settings.group_digits = Some(true);
         let tab = harness.connect_fake();
         let mut page = crate::testing::page(1, false);
         page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
@@ -7266,7 +7342,7 @@ mod tests {
         harness.answer_rows(crate::testing::page(300, true));
         harness.press(Key::ArrowRight, Modifiers::COMMAND | Modifiers::ALT);
         match crate::testing::last_sent(&harness.app) {
-            Command::FetchRows { query, .. } => assert_eq!(query.offset, 300),
+            Command::FetchRows { query, .. } => assert_eq!(query.offset, 1_000),
             other => panic!("{other:?}"),
         }
         harness.press(Key::Period, Modifiers::COMMAND);
@@ -12203,6 +12279,8 @@ mod tests {
     fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
         let mut harness = Harness::new();
         harness.set_look(look);
+        // The values are read as they were typed: no look groups them here.
+        harness.app.settings.group_digits = Some(false);
         let (tab, id) = harness.book_covers();
         focus_grid(&mut harness, tab);
         harness.settle();

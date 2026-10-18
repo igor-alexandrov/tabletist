@@ -79,6 +79,15 @@ pub struct App {
     /// The settings file as the app last read or wrote it or, before any
     /// file exists, as it would be written.
     pub settings_file: SettingsFile,
+    /// The computer's time zone as the app found it at its start: what the
+    /// System zone of the settings is.
+    pub system_zone: jiff::tz::TimeZone,
+    /// The time zone database, once the backend has read it
+    /// (`Command::LoadZones`): the zone menu's names, and each zone.
+    pub zones: Option<std::sync::Arc<crate::zones::Zones>>,
+    /// The last named zone the settings had this session: the Omarchy
+    /// screen's steps reach it after a step off it.
+    pub named_zone: Option<String>,
     pub locale: Locale,
     pub palette: Palette,
     pub look: crate::theme::Look,
@@ -212,11 +221,18 @@ impl App {
             Some(crate::labels::database_key(spec.driver, &spec.database))
         });
         let agents_shown = crate::agents_shown::Shown::load(&dirs.agents_shown_file());
+        let named_zone = match &settings.tz {
+            crate::settings::Zone::Named(name) => Some(name.clone()),
+            crate::settings::Zone::System | crate::settings::Zone::Utc => None,
+        };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let mut app = Self {
             dirs,
             settings,
             settings_file,
+            system_zone: system_zone(),
+            named_zone,
+            zones: None,
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
@@ -471,6 +487,74 @@ impl App {
         !self.cancellable(tab).is_empty()
     }
 
+    /// The zone a value with an offset is shown in, as the settings say.
+    /// `None` for a named zone until the backend has read the zone
+    /// database: values are shown as sent until then.
+    pub fn zone(&self) -> Option<jiff::tz::TimeZone> {
+        self.settings
+            .tz
+            .resolve(&self.system_zone, self.zones.as_deref())
+    }
+
+    /// Gives every workspace the zone of the settings, and has the row
+    /// panels' texts made again in it.
+    fn refresh_zone(&mut self) {
+        let zone = self.zone();
+        for tab in &mut self.tabs {
+            if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                workspace.zone = zone.clone();
+                for sql in workspace.sql_tabs_mut() {
+                    sql.fields = None;
+                }
+                for object in workspace.object_tabs_mut() {
+                    object.fields = None;
+                }
+            }
+        }
+    }
+
+    /// A named zone in `settings` that the zone database, once read, does
+    /// not know: it is not applied (the zone stays `last`), it is no
+    /// longer the session's named zone for the Omarchy screen's steps, and
+    /// its line is one that was ignored, as a value its key cannot have
+    /// is.
+    fn refuse_unknown_zone(&mut self, settings: &mut Settings, last: crate::settings::Zone) {
+        let Some(zones) = &self.zones else {
+            return;
+        };
+        let crate::settings::Zone::Named(name) = &settings.tz else {
+            return;
+        };
+        if zones.get(name).is_some() {
+            return;
+        }
+        log::warn!(
+            "{}: {name} is no zone of the zone database, and is ignored",
+            self.dirs.settings_file().display()
+        );
+        // The start or a reload before the database was read may have
+        // taken it for the session's: a step must not reach it.
+        if self.named_zone.as_deref() == Some(name.as_str()) {
+            self.named_zone = match &last {
+                crate::settings::Zone::Named(kept) => Some(kept.clone()),
+                crate::settings::Zone::System | crate::settings::Zone::Utc => None,
+            };
+        }
+        settings.tz = last;
+        let file = &mut self.settings_file;
+        let line = file
+            .lines
+            .iter()
+            .find(|(key, _)| *key == crate::settings::Key::Tz)
+            .map(|(_, line)| *line);
+        if let Some(line) = line
+            && !file.invalid.contains(&line)
+        {
+            file.invalid.push(line);
+            file.invalid.sort_unstable();
+        }
+    }
+
     /// How the look in use binds and writes its keys.
     pub fn layout(&self) -> crate::keymap::Layout {
         crate::keymap::Layout::of(&self.look)
@@ -512,6 +596,7 @@ impl App {
                 continue;
             };
             let shown = workspace.row_panel_tab();
+            let zone = workspace.zone_shown().cloned();
             for sql in workspace.sql_tabs_mut() {
                 let row = sql.selected_row().filter(|_| shown == Some(sql.id));
                 let Some(row) = row else {
@@ -523,9 +608,16 @@ impl App {
                     continue;
                 }
                 let request = sql.run.loaded;
-                let values = sql.shown_rows().and_then(|(_, rows, _)| rows.get(row));
+                let Some((columns, rows, _)) = sql.shown_rows() else {
+                    sql.fields = None;
+                    continue;
+                };
+                let kinds: Vec<_> = columns.iter().map(|column| column.kind).collect();
                 let nothing = std::collections::BTreeMap::new();
-                sql.fields = values.map(|values| row_fields(request, row, values, &nothing));
+                let fields = rows.get(row).map(|values| {
+                    row_fields(request, row, values, &kinds, zone.as_ref(), &nothing)
+                });
+                sql.fields = fields;
             }
             for object in workspace.object_tabs_mut() {
                 let row = object
@@ -545,18 +637,18 @@ impl App {
                 // it is made again from the set as it stands.
                 let request = object.rows.loaded;
                 let cells = &object.edits.cells;
+                let kinds: Vec<_> = page.columns.iter().map(|column| column.kind).collect();
                 object.fields = match crate::edit::new_id(row) {
                     // A new row loaded nothing: each field is what was
                     // set in it, and a NULL to draw where nothing was.
                     Some(new) => {
                         let held = object.edits.added.iter().any(|added| added.id == new);
                         let blank = vec![tabletist_db::Value::Null; page.columns.len()];
-                        held.then(|| row_fields(request, row, &blank, cells))
+                        held.then(|| row_fields(request, row, &blank, &kinds, zone.as_ref(), cells))
                     }
-                    None => page
-                        .rows
-                        .get(row)
-                        .map(|values| row_fields(request, row, values, cells)),
+                    None => page.rows.get(row).map(|values| {
+                        row_fields(request, row, values, &kinds, zone.as_ref(), cells)
+                    }),
                 };
             }
         }
@@ -986,24 +1078,24 @@ impl App {
                     true
                 });
                 if moved {
-                    self.fetch_rows(tab, object_tab);
+                    self.fetch_next_page(tab, object_tab);
                 }
             }
             Action::PrevPage { tab, object_tab } => {
                 // Back by the size of the page about to be fetched, which
                 // must end where the one on screen begins. That one may be
-                // of another size (the size changed while its session was
-                // down): back by its limit, the rows between the two would
-                // be skipped. The page fetched has the settings' size, or
-                // is only the rows before this one when they are fewer (the
-                // size grew on a page near the start): a whole page from
+                // of another size (a short page near the start): back by
+                // its limit, the rows between the two would be skipped. The
+                // page fetched has the tab's size, or is only the rows
+                // before this one when they are fewer (the tab loaded a
+                // larger size on a page near the start): a whole page from
                 // the start would show the first rows of this one a second
                 // time, and Next from it would not come back here.
-                let page_size = self.settings.page_size;
                 let step = self.object_tab_mut(tab, object_tab).and_then(|object| {
                     if object.query.offset == 0 {
                         return None;
                     }
+                    let page_size = object.page_size;
                     let step = u32::try_from(object.query.offset)
                         .map_or(page_size, |before| before.min(page_size));
                     object.query.offset -= u64::from(step);
@@ -1809,12 +1901,12 @@ impl App {
                     text,
                 });
             }
-            // The app's own text, whatever the file holds: a line the app
-            // ignores is not a setting to hand on.
+            // A copy of the file as the app holds it: the person's
+            // comments with it, and a line the app ignores as it is.
             Action::ExportSettings => self.backend.save_bytes(
                 "Export settings",
                 "tabletist-settings.toml".to_owned(),
-                self.settings.to_toml().into_bytes(),
+                self.settings_file.text.clone().into_bytes(),
             ),
             Action::ResetSettings => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
@@ -2392,12 +2484,14 @@ impl App {
         let request = RequestId(self.next_id());
         // Where the option puts it; the grid's link switches it from there.
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
+        let zone = self.zone();
         let flat = self.lists_flat(&saved.id);
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
         let mut workspace = Workspace::new(session, request, saved, typed);
         workspace.full_precision = full_precision;
+        workspace.zone = zone;
         workspace.tree.flat = flat;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
     }
@@ -3136,6 +3230,15 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
+            // A named zone resolves from here on, and one the database does
+            // not know is said to be ignored.
+            Event::Zones(zones) => {
+                self.zones = Some(zones);
+                let mut settings = self.settings.clone();
+                self.refuse_unknown_zone(&mut settings, crate::settings::Zone::System);
+                self.apply_settings(settings);
+                self.refresh_zone();
+            }
             Event::SettingsFile { text, own } => {
                 // What the app holds already: its own write coming back,
                 // or a save that changed nothing.
@@ -3155,12 +3258,12 @@ impl App {
                 if own && !newest {
                     return;
                 }
-                let loaded = Settings::from_toml(&text);
+                let loaded = Settings::from_toml_over(&text, &self.settings);
                 loaded.warn_invalid(&self.dirs.settings_file());
                 let live = self.settings_file.live;
                 let saved = self.settings_file.saved.take();
                 let offered = std::mem::take(&mut self.settings_file.offered);
-                let (settings, file) = loaded.into_parts();
+                let (mut settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
                 // line that was ignored stays where they can see it.
                 self.settings_file = SettingsFile {
@@ -3169,6 +3272,7 @@ impl App {
                     offered,
                     ..file
                 };
+                self.refuse_unknown_zone(&mut settings, self.settings.tz.clone());
                 self.apply_settings(settings);
             }
             // What the person turned on in the file and does not get is
@@ -3701,13 +3805,14 @@ impl App {
     /// [`App::change_settings`] and the start that read the old
     /// settings.json call it.
     fn save_settings(&mut self) {
-        self.settings_file.saved = Some(self.settings.to_toml());
+        let text = self.settings_file.text.clone();
+        self.settings_file.saved = Some(text.clone());
         // The save is newer than any text handed over with the file: where
         // one of those was written, this lands over it.
         self.settings_file.offered.clear();
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
-            file: StateFile::Settings(self.settings.clone()),
+            file: StateFile::Settings(text),
         });
     }
 
@@ -3732,24 +3837,37 @@ impl App {
     }
 
     /// A change made in the app (a menu, the Settings window): applied, and
-    /// written as the canonical text, which is the file from then on. The
-    /// lines the reader had ignored are gone with the text they were in.
-    /// A change that changes nothing writes nothing.
+    /// written into the file's text, where it changes the keys that changed
+    /// and nothing else (`Settings::write_into`). The lines the reader had
+    /// ignored stay, and are still ignored. A change that changes nothing
+    /// writes nothing.
     pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
         let mut changed = self.settings.clone();
         change(&mut changed);
-        let loaded = Loaded::of(changed, Source::Toml);
-        if loaded.settings == self.settings {
+        // What the look has anyway, set here, is not set: it is not
+        // written, and follows the look. One the file has is the person's,
+        // and stays as they wrote it.
+        let mut changed = changed.validated();
+        if changed.group_digits != self.settings.group_digits {
+            changed = changed.for_layout(self.layout());
+        }
+        let keys = self.settings.changed_keys(&changed);
+        if keys.is_empty() {
             return;
         }
+        let text = changed.write_into(&self.settings_file.text, &keys);
+        let loaded = Settings::from_toml_over(&text, &changed);
         let live = self.settings_file.live;
         let saved = self.settings_file.saved.take();
-        let (settings, file) = loaded.into_parts();
+        let (mut settings, file) = loaded.into_parts();
         self.settings_file = SettingsFile {
             live,
             saved,
             ..file
         };
+        // The text is read again, a zone the database turned down with it:
+        // it stays turned down, and its line ignored.
+        self.refuse_unknown_zone(&mut settings, changed.tz.clone());
         // The app's own controls show what they turn on: never held.
         if !self.settings.mcp_enabled && settings.mcp_enabled {
             self.agents_shown.enabled = true;
@@ -3773,8 +3891,11 @@ impl App {
                 }
             }
         }
-        if old.page_size != self.settings.page_size {
-            self.resize_pages();
+        if let crate::settings::Zone::Named(name) = &self.settings.tz {
+            self.named_zone = Some(name.clone());
+        }
+        if old.tz != self.settings.tz {
+            self.refresh_zone();
         }
         if old.show_system_schemas != self.settings.show_system_schemas {
             // A completion list offers the schemas that are shown, and an
@@ -3814,37 +3935,6 @@ impl App {
                 }
                 _ => {}
             }
-        }
-    }
-
-    /// Fetches again, at the settings' page size, every table that shows a
-    /// page or waits for one on a session that can answer. `fetch_rows`
-    /// drops the page of the old size as it takes the new one. The others,
-    /// and a table that holds edits, take the size, and lose their page
-    /// the same way, when they next fetch.
-    fn resize_pages(&mut self) {
-        let size = self.settings.page_size;
-        let mut again = Vec::new();
-        for tab in &self.tabs {
-            let ConnTabContent::Workspace(workspace) = &tab.content else {
-                continue;
-            };
-            if !matches!(workspace.status, SessionStatus::Connected) {
-                continue;
-            }
-            again.extend(
-                workspace
-                    .object_tabs()
-                    .filter(|object| object.query.limit != size)
-                    .filter(|object| object.page().is_some() || object.rows.pending.is_some())
-                    // A page with pending changes stays: the tab takes the
-                    // size at its next fetch.
-                    .filter(|object| !object.edits.holds())
-                    .map(|object| (tab.id, object.id)),
-            );
-        }
-        for (tab, id) in again {
-            self.fetch_rows(tab, id);
         }
     }
 
@@ -4081,6 +4171,19 @@ impl App {
             self.open_object(tab, object, kind, true);
         }
     }
+}
+
+/// The computer's time zone, or UTC where it cannot be found. Tests have
+/// UTC whatever the computer they run on says, so what they show does not
+/// depend on it: a test of the System zone sets `App::system_zone`.
+fn system_zone() -> jiff::tz::TimeZone {
+    if cfg!(test) {
+        return jiff::tz::TimeZone::UTC;
+    }
+    jiff::tz::TimeZone::try_system().unwrap_or_else(|error| {
+        log::warn!("the system's time zone could not be found, UTC is used: {error}");
+        jiff::tz::TimeZone::UTC
+    })
 }
 
 /// Whether the request failed only because the connection went away.
@@ -4969,16 +5072,31 @@ impl App {
         self.cancel(session, running);
     }
 
-    /// Loads the object tab's rows at the settings' page size, replacing
-    /// any load still pending. A page of another size does not stay on
-    /// screen meanwhile, whatever the caller kept.
+    /// Loads the object tab's rows from where it is, at the settings' page
+    /// size, which the tab pages by from then on, replacing any load still
+    /// pending. A page of another size does not stay on screen meanwhile,
+    /// whatever the caller kept. Every load but Next's and Previous's comes
+    /// here: a new Rows per page lands on the next one.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
-        self.fetch_page(tab, id, self.settings.page_size);
+        let size = self.settings.page_size;
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.page_size = size;
+        }
+        self.fetch_page(tab, id, size);
+    }
+
+    /// Loads the page after the one on screen, at the size the tab pages
+    /// by: Next has moved past that page by its limit.
+    fn fetch_next_page(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(size) = self.object_tab_mut(tab, id).map(|object| object.page_size) else {
+            return;
+        };
+        self.fetch_page(tab, id, size);
     }
 
     /// Loads a page of `limit` rows, as [`App::fetch_rows`] does at the
-    /// settings' size. Only Previous asks for another: the rows before a
-    /// page that begins less than a page from the start.
+    /// settings' size. Previous asks for the tab's size, or for the rows
+    /// before a page that begins less than a page from the start.
     fn fetch_page(&mut self, tab: ConnTabId, id: TabId, limit: u32) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
@@ -5242,6 +5360,9 @@ impl App {
         self.system_theme = ctx.system_theme();
         self.palette = self.resolve_palette();
         theme::apply(ctx, &self.palette, &self.look);
+        // In tests and the demo too: the zones are a database, not the
+        // person's files.
+        self.backend.send(Command::LoadZones);
     }
 
     fn resolve_palette(&self) -> Palette {
@@ -5505,11 +5626,14 @@ fn moved(object: &ObjectTab, rows: isize, cols: isize) -> Option<CellPos> {
 /// A row's text for the row panel, formatted once. A cell of the page's
 /// row `row` that is pending in `cells` reads as its new value, and keeps
 /// what it loaded as beside it, so the panel never disagrees with the
-/// grid.
+/// grid. A moment with an offset in a column of dates and times (`kinds`
+/// says which) is in `zone`, where the engine's values are moved to one.
 fn row_fields(
     request: Option<RequestId>,
     row: usize,
     values: &[tabletist_db::Value],
+    kinds: &[tabletist_db::ValueKind],
+    zone: Option<&jiff::tz::TimeZone>,
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
     use crate::ui::format::{cell_text, field_text};
@@ -5529,7 +5653,20 @@ fn row_fields(
     let fields = values
         .iter()
         .zip(&pending)
-        .map(|(loaded, pending)| field_text(pending.as_ref().map_or(loaded, |cell| &cell.new)))
+        .enumerate()
+        .map(|(col, (loaded, pending))| {
+            let value = pending.as_ref().map_or(loaded, |cell| &cell.new);
+            let temporal = kinds.get(col) == Some(&tabletist_db::ValueKind::Temporal);
+            match (value, zone) {
+                (tabletist_db::Value::Text(text), Some(zone)) if temporal => {
+                    match crate::ui::format::in_zone(text, zone) {
+                        Some(moved) => field_text(&tabletist_db::Value::Text(moved.into())),
+                        None => field_text(value),
+                    }
+                }
+                _ => field_text(value),
+            }
+        })
         .collect();
     crate::model::RowFields {
         request,
@@ -5799,7 +5936,7 @@ mod tests {
                     matches!(
                         command,
                         Command::Save { path: to, file: StateFile::Settings(saved) }
-                            if *to == path && *saved == settings
+                            if *to == path && Settings::from_toml(saved).settings == settings
                     )
                 })
                 .count()
@@ -7581,15 +7718,16 @@ mod tests {
         );
     }
 
-    fn settings_saves(app: &App) -> Vec<&Settings> {
+    /// The settings each save of the settings file writes, as they read.
+    fn settings_saves(app: &App) -> Vec<Settings> {
         app.backend
             .sent
             .iter()
             .filter_map(|command| match command {
                 Command::Save {
-                    file: StateFile::Settings(settings),
+                    file: StateFile::Settings(text),
                     ..
-                } => Some(settings),
+                } => Some(Settings::from_toml(text).settings),
                 _ => None,
             })
             .collect()
@@ -7609,14 +7747,52 @@ mod tests {
         assert_eq!(app.settings.sql_limit, 100);
         assert_eq!(app.settings.page_size, 100, "what the file set stays");
         let saved = settings_saves(&app);
-        assert_eq!(saved.len(), 1);
-        assert_eq!(*saved[0], app.settings);
-        // The file is the canonical text now: nothing in it is invalid.
-        assert_eq!(app.settings_file.text, app.settings.to_toml());
-        assert!(app.settings_file.invalid.is_empty());
+        assert_eq!(saved, [app.settings.clone()]);
+        // The new key joins the file, and the rest stays as the person
+        // wrote it: the line the reader ignored is still there, and still
+        // ignored.
+        assert_eq!(
+            app.settings_file.text,
+            "[data]\npage_size = 100\ngroup_digits = \"yes\"\n\n[editor]\nsql_limit = 100\n"
+        );
+        assert_eq!(app.settings_file.invalid, [3]);
         assert_eq!(
             app.settings_file.lines,
-            Settings::from_toml(&app.settings.to_toml()).lines
+            Settings::from_toml(&app.settings_file.text).lines
+        );
+    }
+
+    #[test]
+    fn grouping_numbers_as_the_look_does_anyway_writes_nothing() {
+        let (mut app, _dir) = app();
+        let layout = app.layout();
+        let default = Settings::grouped_by_default(layout);
+        app.change_settings(|settings| settings.group_digits = Some(default));
+        assert!(settings_saves(&app).is_empty());
+        app.change_settings(|settings| settings.group_digits = Some(!default));
+        assert_eq!(app.settings.group_digits, Some(!default));
+        assert!(
+            app.settings_file
+                .text
+                .contains(&format!("group_digits = {}", !default))
+        );
+        // Back to the look's: the key goes.
+        app.change_settings(|settings| settings.group_digits = Some(default));
+        assert_eq!(app.settings.group_digits, None);
+        assert!(!app.settings_file.text.contains("group_digits"));
+    }
+
+    #[test]
+    fn grouping_the_file_sets_as_the_look_does_stays_through_another_change() {
+        let (mut app, _dir) = app();
+        let default = Settings::grouped_by_default(app.layout());
+        let text = format!("[data]\ngroup_digits = {default} # mine\npage_size = 500\n");
+        app.apply(from_disk(&text, false));
+        assert_eq!(app.settings.group_digits, Some(default));
+        app.change_settings(|settings| settings.page_size = 100);
+        assert_eq!(
+            app.settings_file.text,
+            format!("[data]\ngroup_digits = {default} # mine\npage_size = 100\n")
         );
     }
 
@@ -7648,6 +7824,24 @@ mod tests {
     }
 
     #[test]
+    fn a_value_the_file_gets_wrong_keeps_the_last_good_one_and_is_reported() {
+        let (mut app, _dir) = app();
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        app.apply(from_disk("[data]\npage_size = \"lots\"\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(app.settings_file.invalid, [2]);
+        // A change made in the app then keeps it too, and the line.
+        app.change_settings(|settings| settings.value_tags = false);
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(
+            app.settings_file.text,
+            "[data]\npage_size = \"lots\"\nvalue_tags = false\n"
+        );
+        assert_eq!(app.settings_file.invalid, [2]);
+    }
+
+    #[test]
     fn a_change_of_the_file_is_applied_and_not_written_back() {
         let (mut app, _dir) = app();
         let text = "[data]\npage_size = 500\ngroup_digits = \"yes\"\ntimestamps = \"full\"\n";
@@ -7657,7 +7851,7 @@ mod tests {
         }));
         assert_eq!(app.settings.page_size, 500);
         assert_eq!(app.settings.timestamps, crate::settings::Timestamps::Full);
-        assert!(!app.settings.group_digits);
+        assert_eq!(app.settings.group_digits, None);
         // The file as the user wrote it, with the line that was ignored.
         assert_eq!(app.settings_file.text, text);
         assert_eq!(app.settings_file.invalid, vec![3]);
@@ -7920,13 +8114,14 @@ mod tests {
     }
 
     #[test]
-    fn export_offers_the_canonical_text_under_the_settings_name() {
+    fn export_offers_a_copy_of_the_file_under_the_settings_name() {
         let (mut app, _dir) = app();
-        // A file as someone wrote it: not the text the app would write.
-        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        // A file as someone wrote it, with a comment the app would not
+        // write: the copy has it.
+        let text = "# mine\n[data]\npage_size = 500\n";
+        app.apply(from_disk(text, false));
         assert_eq!(app.settings.page_size, 500);
-        let text = app.settings.to_toml();
-        assert_ne!(app.settings_file.text.len(), text.len());
+        assert_ne!(app.settings.to_toml().len(), text.len());
         app.apply(Action::ExportSettings);
         assert_eq!(
             app.backend.saves.last(),
@@ -7939,13 +8134,14 @@ mod tests {
     }
 
     #[test]
-    fn reset_asks_first_and_then_resets_only_the_four_options() {
+    fn reset_asks_first_and_then_resets_only_the_general_options() {
         let (mut app, _dir) = app();
         app.apply(Action::ShowSettings);
-        // An option of the window, and a key it does not show.
+        // Options of the window, and a key it does not show.
         app.change_settings(|settings| {
             settings.page_size = 500;
-            settings.group_digits = true;
+            settings.tz = crate::settings::Zone::Utc;
+            settings.group_digits = Some(false);
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
         });
@@ -7960,12 +8156,13 @@ mod tests {
         app.apply(Action::ConfirmResetSettings(false));
         assert!(!resetting(&app));
         assert_eq!(app.settings.page_size, 500);
-        // Reset puts the four back and leaves the others.
+        // Reset puts the General tab's back and leaves the others.
         app.apply(Action::ResetSettings);
         app.apply(Action::ConfirmResetSettings(true));
         assert!(!resetting(&app));
         let defaults = Settings::default();
         assert_eq!(app.settings.page_size, defaults.page_size);
+        assert_eq!(app.settings.tz, defaults.tz);
         assert_eq!(app.settings.group_digits, defaults.group_digits);
         assert!(app.settings.show_system_schemas);
         assert_eq!(app.settings.sql_limit, 50);
@@ -9956,8 +10153,8 @@ mod tests {
         });
         assert!(matches!(
             last_sent(&harness.app),
-            Command::Save { file: StateFile::Settings(settings), .. }
-                if settings.sql_limit == 100
+            Command::Save { file: StateFile::Settings(text), .. }
+                if Settings::from_toml(text).settings.sql_limit == 100
         ));
         let sent = harness.app.backend.sent.len();
         harness.app.apply(Action::SetSqlTimeout {
@@ -9967,8 +10164,9 @@ mod tests {
         });
         assert!(matches!(
             &harness.app.backend.sent[sent..],
-            [Command::Save { file: StateFile::Settings(settings), .. }]
-                if settings.sql_limit == 100 && settings.sql_timeout_secs.is_none()
+            [Command::Save { file: StateFile::Settings(text), .. }]
+                if Settings::from_toml(text).settings.sql_limit == 100
+                    && Settings::from_toml(text).settings.sql_timeout_secs.is_none()
         ));
         type_sql(&mut harness, tab, id, "SELECT 1", 0);
         run(&mut harness, tab, id, false);
@@ -10301,12 +10499,13 @@ mod tests {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
         let id = open(&mut harness, tab, "users", false);
-        harness.answer_rows(page(300, true));
+        let size = Settings::DEFAULT_PAGE_SIZE;
+        harness.answer_rows(page(size as usize, true));
         harness.app.apply(Action::NextPage {
             tab,
             object_tab: id,
         });
-        assert_eq!(last_query(&harness).offset, 300);
+        assert_eq!(last_query(&harness).offset, u64::from(size));
         assert!(object(&harness, tab, id).pinned);
         harness.answer_rows(page(10, false));
         let sent = harness.app.backend.sent.len();
@@ -15168,21 +15367,17 @@ mod tests {
                 ..harness.app.settings.clone()
             };
             harness.app.apply_settings(settings);
-            // Only the tab without edits is fetched again.
-            let fetched: Vec<&ObjectRef> = harness.app.backend.sent[before..]
-                .iter()
-                .filter_map(|command| match command {
-                    Command::FetchRows { query, .. } => Some(&query.object),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(fetched, [&ObjectRef::new("main", "orders")]);
-            assert_eq!(object(&harness, tab, orders).query.limit, 500);
+            // No tab is fetched again: each takes the size when it loads.
+            assert!(
+                !harness.app.backend.sent[before..]
+                    .iter()
+                    .any(|command| matches!(command, Command::FetchRows { .. }))
+            );
+            assert_ne!(object(&harness, tab, orders).query.limit, 500);
             let users_tab = object(&harness, tab, id);
             assert_eq!(users_tab.edits.cells.len(), 1);
             assert_eq!(users_tab.page().unwrap().rows.len(), 5);
-            assert_ne!(users_tab.query.limit, 500);
-            // It takes the new size at its next fetch.
+            // It takes the new size at its next load.
             harness.app.apply(Action::DiscardEdits { tab, id });
             harness.app.apply(Action::ActivateTab { tab, id });
             harness.app.apply(Action::Refresh(tab));

@@ -761,6 +761,7 @@ mod tests {
             gone: &NONE_GONE,
             added: &[],
             deleted: &crate::edit::NONE_DELETED,
+            zone: Some(&crate::testing::UTC),
         }
     }
 

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::keymap::Layout;
 use crate::paths::AppDirs;
 use crate::util::toml_string;
 
@@ -31,6 +32,77 @@ impl Timestamps {
         [Self::Second, Self::Full]
             .into_iter()
             .find(|choice| choice.name() == name)
+    }
+}
+
+/// The zone a `timestamptz` value is shown in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+pub enum Zone {
+    /// The computer's own, as it was when the app started.
+    #[default]
+    System,
+    Utc,
+    /// A zone of the IANA database, by its name: `America/New_York`.
+    Named(String),
+}
+
+impl Zone {
+    /// As the file says it: `system`, `utc` or the zone's name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::System => "system",
+            Self::Utc => "utc",
+            Self::Named(name) => name,
+        }
+    }
+
+    /// The zone the file names, where it is one: `system`, `utc` (in any
+    /// case), or a name of the form the zone database's have
+    /// (`America/New_York`, `Etc/GMT+5`). Whether the database knows the
+    /// name is the app's to say, once the backend has read it
+    /// ([`crate::zones::Zones`]): reading the file reads no zone.
+    pub fn from_name(name: &str) -> Option<Self> {
+        let formed = !name.is_empty()
+            && !name.starts_with('/')
+            && !name.ends_with('/')
+            && !name.contains("//")
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/_+-".contains(&byte));
+        if name.eq_ignore_ascii_case("system") {
+            Some(Self::System)
+        } else if name.eq_ignore_ascii_case("utc") {
+            Some(Self::Utc)
+        } else if formed {
+            Some(Self::Named(name.to_owned()))
+        } else {
+            None
+        }
+    }
+
+    /// The zone itself. `system` is the zone the app found at its start;
+    /// a named one is looked up in `zones`, the database the backend read.
+    /// `None` for a named zone before the database is read, or one it does
+    /// not know.
+    pub fn resolve(
+        &self,
+        system: &jiff::tz::TimeZone,
+        zones: Option<&crate::zones::Zones>,
+    ) -> Option<jiff::tz::TimeZone> {
+        match self {
+            Self::System => Some(system.clone()),
+            Self::Utc => Some(jiff::tz::TimeZone::UTC),
+            Self::Named(name) => zones?.get(name).cloned(),
+        }
+    }
+}
+
+/// The JSON of versions before the TOML file has no zone: anything else
+/// it says is no zone either, and is the default.
+impl From<String> for Zone {
+    fn from(name: String) -> Self {
+        Self::from_name(&name).unwrap_or_default()
     }
 }
 
@@ -140,9 +212,14 @@ pub struct Settings {
     pub page_size: u32,
     /// Timestamps in grid cells: to the second, or as the server sent them.
     pub timestamps: Timestamps,
+    /// The zone a value with an offset (a `timestamptz`) is shown in, and
+    /// a value typed into such a column without one is sent from.
+    pub tz: Zone,
     /// Numbers in grid cells with their integer digits in threes. Display
-    /// only: a copy gives the value as it is.
-    pub group_digits: bool,
+    /// only: a copy gives the value as it is. `None` is the look's default
+    /// ([`Settings::grouped`]), which is not written: grouped on macOS and
+    /// Windows, as their artboards draw it, and not on Omarchy.
+    pub group_digits: Option<bool>,
     /// Enum, CHECK and boolean values drawn as coloured tags.
     pub value_tags: bool,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
@@ -182,6 +259,7 @@ pub struct Settings {
 pub enum Key {
     PageSize,
     Timestamps,
+    Tz,
     GroupDigits,
     ValueTags,
     ShowSystemSchemas,
@@ -200,9 +278,10 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 16] = [
+    pub const ALL: [Key; 17] = [
         Self::PageSize,
         Self::Timestamps,
+        Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
         Self::ShowSystemSchemas,
@@ -224,6 +303,7 @@ impl Key {
         match self {
             Self::PageSize => ("data", "page_size"),
             Self::Timestamps => ("data", "timestamps"),
+            Self::Tz => ("data", "tz"),
             Self::GroupDigits => ("data", "group_digits"),
             Self::ValueTags => ("data", "value_tags"),
             Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
@@ -246,6 +326,7 @@ impl Key {
     fn note(self) -> Option<&'static str> {
         match self {
             Self::Timestamps => Some("second | full"),
+            Self::Tz => Some("system | utc | \"Area/City\""),
             Self::SqlTimeoutSecs => Some("0 waits forever"),
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
@@ -260,6 +341,8 @@ impl Key {
 pub enum OptionId {
     PageSize,
     Timestamps,
+    /// The zone a `timestamptz` is shown in: `data.tz`.
+    Tz,
     GroupDigits,
     ValueTags,
     /// Whether agents can reach the app: `mcp.enabled`.
@@ -278,9 +361,10 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 12] = [
+    pub const ALL: [OptionId; 13] = [
         Self::PageSize,
         Self::Timestamps,
+        Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
         Self::RowHeight,
@@ -293,9 +377,10 @@ impl OptionId {
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 4] = [
+    pub const GENERAL: [OptionId; 5] = [
         Self::PageSize,
         Self::Timestamps,
+        Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
     ];
@@ -323,6 +408,7 @@ impl OptionId {
         match self {
             Self::PageSize => Key::PageSize,
             Self::Timestamps => Key::Timestamps,
+            Self::Tz => Key::Tz,
             Self::GroupDigits => Key::GroupDigits,
             Self::ValueTags => Key::ValueTags,
             Self::AgentsOn => Key::McpEnabled,
@@ -343,11 +429,13 @@ impl OptionId {
 }
 
 /// An option with a value: what a key, a click or a reset sets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionValue {
     PageSize(u32),
     Timestamps(Timestamps),
-    GroupDigits(bool),
+    Tz(Zone),
+    /// `None` is the look's default.
+    GroupDigits(Option<bool>),
     ValueTags(bool),
     AgentsOn(bool),
     LogDays(u32),
@@ -361,10 +449,11 @@ pub enum OptionValue {
 }
 
 impl OptionValue {
-    pub fn option(self) -> OptionId {
+    pub fn option(&self) -> OptionId {
         match self {
             Self::PageSize(_) => OptionId::PageSize,
             Self::Timestamps(_) => OptionId::Timestamps,
+            Self::Tz(_) => OptionId::Tz,
             Self::GroupDigits(_) => OptionId::GroupDigits,
             Self::ValueTags(_) => OptionId::ValueTags,
             Self::AgentsOn(_) => OptionId::AgentsOn,
@@ -379,10 +468,11 @@ impl OptionValue {
     }
 
     /// Puts the value in `settings`.
-    pub fn set(self, settings: &mut Settings) {
-        match self {
+    pub fn set(&self, settings: &mut Settings) {
+        match self.clone() {
             Self::PageSize(size) => settings.page_size = size,
             Self::Timestamps(choice) => settings.timestamps = choice,
+            Self::Tz(zone) => settings.tz = zone,
             Self::GroupDigits(on) => settings.group_digits = on,
             Self::ValueTags(on) => settings.value_tags = on,
             Self::AgentsOn(on) => settings.mcp_enabled = on,
@@ -575,29 +665,236 @@ fn last_line(text: &str) -> Option<usize> {
         .last()
 }
 
-/// `text` with the lines numbered in `lines` (from 1) emptied. Their line
-/// breaks stay, so every other line keeps its number.
+/// `text` with the lines numbered in `lines` (from 1) blanked: each byte
+/// but the line break becomes a space. Every other line keeps its number,
+/// and every byte its offset, so what is found in the blanked text is at
+/// the same place in `text`.
 fn without_lines(text: &str, lines: &[usize]) -> String {
     text.split_inclusive('\n')
         .enumerate()
         .map(|(index, line)| {
             if !lines.contains(&(index + 1)) {
-                line
-            } else if line.ends_with('\n') {
-                "\n"
-            } else {
-                ""
+                return line.to_owned();
             }
+            let body = line.strip_suffix('\n');
+            let mut blank = " ".repeat(body.unwrap_or(line).len());
+            if body.is_some() {
+                blank.push('\n');
+            }
+            blank
         })
         .collect()
 }
 
+/// `text` as the reader reads it: every line the parser rejects blanked,
+/// until it rejects nothing more, and those lines. The parser recovers
+/// from a bad line in two ways that are not "ignored": it stops reading at
+/// some (a key with no `=`), and reads past others with a guess at the
+/// value (`full` unquoted). So a line it rejects is blanked and the text
+/// read again.
+fn readable(text: &str) -> (String, Vec<usize>) {
+    let mut working = text.to_owned();
+    let mut invalid: Vec<usize> = Vec::new();
+    loop {
+        let (_, errors) = toml::de::DeTable::parse_recoverable(&working);
+        let mut rejected = Vec::new();
+        for error in &errors {
+            match error.span() {
+                // The parser blames the end of the text for a value that
+                // never closes (`"""` with no end). That is no line of the
+                // file, so the last line with anything on it goes: the
+                // lines are blanked from the bottom up until the opening
+                // one is. With every line blank the error marks none.
+                Some(span) if span.start >= working.len() => {
+                    rejected.extend(last_line(&working));
+                }
+                Some(span) => rejected.push(line_of(&working, span.start)),
+                None => log::warn!("settings: {}", error.message()),
+            }
+        }
+        // A line already blanked has nothing left to reject: an error
+        // that still names one ends the loop.
+        rejected.retain(|line| !invalid.contains(line));
+        rejected.sort_unstable();
+        rejected.dedup();
+        if rejected.is_empty() {
+            return (working, invalid);
+        }
+        working = without_lines(&working, &rejected);
+        invalid.extend(rejected);
+    }
+}
+
+/// `text` without the table `name` where it has a header of its own and
+/// nothing with it: no key, no table of its own, no comment beside its
+/// header, and nothing of the person's (a comment, a line the reader
+/// ignored) before the next header that was read. Its header goes, with
+/// the blank lines under it.
+fn without_empty_table(text: &str, name: &str) -> String {
+    let (working, _) = readable(text);
+    let (document, _) = toml::de::DeTable::parse_recoverable(&working);
+    let document = document.into_inner();
+    let Ok(Some(table)) = item_at(&document, name) else {
+        return text.to_owned();
+    };
+    let header = table.span();
+    let empty = table
+        .get_ref()
+        .as_table()
+        .is_some_and(|items| items.is_empty());
+    if !empty || !working[header.clone()].starts_with('[') {
+        return text.to_owned();
+    }
+    let blank = |line: &str| line.trim_matches([' ', '\t', '\r', '\n']).is_empty();
+    let start = line_start(&working, header.start);
+    let mut end = line_end(&working, header.end);
+    // A comment beside the header is the person's: the table stays with it.
+    if !blank(&text[header.end..end]) {
+        return text.to_owned();
+    }
+    while end < working.len() {
+        let next = line_end(&working, end);
+        // The next header that was read ends the table.
+        if working[end..next]
+            .trim_start_matches([' ', '\t'])
+            .starts_with('[')
+        {
+            break;
+        }
+        // Anything else of the person's text keeps it: a comment, or a
+        // line the reader ignored, which is blank only where it was read.
+        if !blank(&text[end..next]) {
+            return text.to_owned();
+        }
+        end = next;
+    }
+    let mut out = text.to_owned();
+    out.replace_range(start..end, "");
+    out
+}
+
+/// The key a line the parser rejected would have set: its name before
+/// the `=` (bare, in quotes, or dotted), under the last table header above
+/// it that was read (`working`, where rejected lines are blank). A line
+/// with no `=`, or a name of another form, says none.
+fn key_on_line(text: &str, working: &str, line: usize) -> Option<Key> {
+    // The parts of a dotted name, each bare or in quotes with nothing to
+    // escape.
+    let parts = |name: &str| -> Option<Vec<String>> {
+        name.split('.')
+            .map(|part| {
+                let part = part.trim_matches([' ', '\t']);
+                let part = ['"', '\'']
+                    .into_iter()
+                    .find_map(|quote| part.strip_prefix(quote)?.strip_suffix(quote))
+                    .unwrap_or(part);
+                let bare = !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+                bare.then(|| part.to_owned())
+            })
+            .collect()
+    };
+    let unmarked = |line: &str| line.trim_start_matches('\u{feff}').to_owned();
+    let written = unmarked(text.lines().nth(line.checked_sub(1)?)?);
+    let name = parts(written.split_once('=')?.0)?;
+    let table = working
+        .lines()
+        .take(line - 1)
+        .filter_map(|above| {
+            let above = unmarked(above);
+            let above = above.split('#').next()?.trim_matches([' ', '\t']);
+            let inner = above.strip_prefix('[')?.strip_suffix(']')?;
+            (!inner.starts_with('[')).then(|| parts(inner)).flatten()
+        })
+        .last()
+        .unwrap_or_default();
+    let path = [table, name].concat();
+    Key::ALL.into_iter().find(|key| {
+        let (table, name) = key.path();
+        table
+            .split('.')
+            .chain([name])
+            .eq(path.iter().map(String::as_str))
+    })
+}
+
+/// A part of a dotted table path that names a value, not a table
+/// (`appearance = 5` for `appearance.grid`).
+#[derive(Debug)]
+struct NotATable;
+
+/// What the dotted `path` names in `document` (`appearance.grid`): the
+/// item, a table or not, with its span; `None` where nothing is there. A
+/// part before the last that is no table is [`NotATable`].
+fn item_at<'d, 'i>(
+    document: &'d toml::de::DeTable<'i>,
+    path: &str,
+) -> Result<Option<&'d toml::Spanned<toml::de::DeValue<'i>>>, NotATable> {
+    let mut parts = path.split('.');
+    let Some(mut item) = parts.next().and_then(|first| document.get(first)) else {
+        return Ok(None);
+    };
+    for part in parts {
+        let Some(table) = item.get_ref().as_table() else {
+            return Err(NotATable);
+        };
+        let Some(next) = table.get(part) else {
+            return Ok(None);
+        };
+        item = next;
+    }
+    Ok(Some(item))
+}
+
+/// Whether an item of a table is a table with a header of its own under
+/// it (`[data.more]`, `[[data.list]]`), and not a value of it: an array
+/// is written with a bracket too.
+fn is_subtable(working: &str, item: &toml::de::DeValue<'_>, span: std::ops::Range<usize>) -> bool {
+    let written = &working[span];
+    match item {
+        toml::de::DeValue::Table(_) => written.starts_with('['),
+        toml::de::DeValue::Array(items) => {
+            written.starts_with("[[")
+                && items
+                    .iter()
+                    .all(|item| matches!(item.get_ref(), toml::de::DeValue::Table(_)))
+        }
+        _ => false,
+    }
+}
+
+/// Where the line that `offset` is on begins.
+fn line_start(text: &str, offset: usize) -> usize {
+    text[..offset].rfind('\n').map_or(0, |at| at + 1)
+}
+
+/// Where the line after the one `offset` is on begins: past its break, or
+/// the end of the text.
+fn line_end(text: &str, offset: usize) -> usize {
+    text[offset..]
+        .find('\n')
+        .map_or(text.len(), |at| offset + at + 1)
+}
+
+/// Whether `range` of `text` is a line of its own (or lines): nothing but
+/// spaces and tabs before it on its first line, and nothing but those and
+/// a comment after it on its last.
+fn own_lines(text: &str, range: std::ops::Range<usize>) -> bool {
+    let before = &text[line_start(text, range.start)..range.start];
+    let after = &text[range.end..line_end(text, range.end)];
+    let after = after.trim_start_matches([' ', '\t']);
+    before.trim_matches([' ', '\t']).is_empty()
+        && (after.starts_with('#') || after.trim_matches(['\r', '\n']).is_empty())
+}
+
 impl Settings {
-    pub const DEFAULT_PAGE_SIZE: u32 = 300;
+    pub const DEFAULT_PAGE_SIZE: u32 = 1_000;
     pub const MIN_PAGE_SIZE: u32 = 10;
     pub const MAX_PAGE_SIZE: u32 = 10_000;
     /// The page sizes the Settings window offers.
-    pub const PAGE_SIZES: [u32; 5] = [100, 300, 500, 1_000, 5_000];
+    pub const PAGE_SIZES: [u32; 5] = [100, 500, 1_000, 5_000, 10_000];
     /// The most rows a SQL editor statement keeps.
     pub const MAX_SQL_LIMIT: u32 = 10_000;
     /// The row limits the SQL editor's Limit menu offers.
@@ -611,6 +908,31 @@ impl Settings {
     pub const MAX_MCP_LOG_DAYS: u32 = 3_650;
     /// The days the Settings window offers for the log.
     pub const LOG_DAYS: [u32; 4] = [7, 30, 90, 365];
+
+    /// Whether numbers are grouped in `layout`: as set, or the look's
+    /// default.
+    pub fn grouped(&self, layout: Layout) -> bool {
+        self.group_digits
+            .unwrap_or_else(|| Self::grouped_by_default(layout))
+    }
+
+    /// Whether numbers are grouped in `layout` before anyone sets it: as
+    /// each look's artboard draws them.
+    pub fn grouped_by_default(layout: Layout) -> bool {
+        match layout {
+            Layout::Mac | Layout::Windows => true,
+            Layout::Omarchy => false,
+        }
+    }
+
+    /// The settings with what is set to the look's default taken for not
+    /// set, so that it is not written and follows the look.
+    pub fn for_layout(mut self, layout: Layout) -> Self {
+        if self.group_digits == Some(Self::grouped_by_default(layout)) {
+            self.group_digits = None;
+        }
+        self
+    }
 
     /// The SQL editor's timeout as a duration; `None` waits forever.
     pub fn sql_timeout(&self) -> Option<std::time::Duration> {
@@ -638,6 +960,7 @@ impl Settings {
         match option {
             OptionId::PageSize => OptionValue::PageSize(self.page_size),
             OptionId::Timestamps => OptionValue::Timestamps(self.timestamps),
+            OptionId::Tz => OptionValue::Tz(self.tz.clone()),
             OptionId::GroupDigits => OptionValue::GroupDigits(self.group_digits),
             OptionId::ValueTags => OptionValue::ValueTags(self.value_tags),
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
@@ -675,13 +998,16 @@ impl Settings {
                 };
                 OptionValue::PageSize(next.unwrap_or(size))
             }
+            // System, UTC, and the zone the file names, where it names
+            // one: any other is set in the file.
+            OptionId::Tz => self.stepped_zone(None, forward),
             OptionId::Timestamps => OptionValue::Timestamps(if forward {
                 Timestamps::Full
             } else {
                 Timestamps::Second
             }),
             // Grouped is the left of the two.
-            OptionId::GroupDigits => OptionValue::GroupDigits(!forward),
+            OptionId::GroupDigits => OptionValue::GroupDigits(Some(!forward)),
             OptionId::ValueTags => OptionValue::ValueTags(forward),
             OptionId::AgentsOn => OptionValue::AgentsOn(forward),
             OptionId::LogDays => {
@@ -719,15 +1045,36 @@ impl Settings {
         }
     }
 
+    /// The zone one step from this one: System, UTC, then a named zone,
+    /// the one set or else `named` (the last the session had), so that a
+    /// step off it can come back. Any other zone is set in the file.
+    pub fn stepped_zone(&self, named: Option<&str>, forward: bool) -> OptionValue {
+        let mut zones = vec![Zone::System, Zone::Utc];
+        match (&self.tz, named) {
+            (Zone::Named(_), _) => zones.push(self.tz.clone()),
+            (Zone::System | Zone::Utc, Some(name)) => zones.push(Zone::Named(name.to_owned())),
+            (Zone::System | Zone::Utc, None) => {}
+        }
+        let at = zones.iter().position(|zone| *zone == self.tz).unwrap_or(0);
+        let to = if forward {
+            (at + 1).min(zones.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        OptionValue::Tz(zones.swap_remove(to))
+    }
+
     /// The other value of an option that has two; `None` for one with more.
     pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
         match option {
-            OptionId::PageSize => None,
+            OptionId::PageSize | OptionId::Tz => None,
             OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
             })),
-            OptionId::GroupDigits => Some(OptionValue::GroupDigits(!self.group_digits)),
+            OptionId::GroupDigits => Some(OptionValue::GroupDigits(Some(
+                !self.group_digits.unwrap_or_default(),
+            ))),
             OptionId::ValueTags => Some(OptionValue::ValueTags(!self.value_tags)),
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
@@ -749,11 +1096,12 @@ impl Settings {
 
     /// `key`'s value as TOML writes it. `None` for a key the file leaves
     /// out: a theme that is not set, and stripes left to the look.
-    fn literal(&self, key: Key) -> Option<String> {
+    fn written(&self, key: Key) -> Option<String> {
         Some(match key {
             Key::PageSize => self.page_size.to_string(),
             Key::Timestamps => toml_string(self.timestamps.name()),
-            Key::GroupDigits => self.group_digits.to_string(),
+            Key::Tz => toml_string(self.tz.name()),
+            Key::GroupDigits => self.group_digits?.to_string(),
             Key::ValueTags => self.value_tags.to_string(),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
             Key::SqlLimit => self.sql_limit.to_string(),
@@ -771,42 +1119,191 @@ impl Settings {
         })
     }
 
-    /// The file's text: the one form the app writes, the same every time.
-    /// Tables in a fixed order, a table's keys aligned, and a note beside
-    /// the keys that have one.
-    pub fn to_toml(&self) -> String {
-        let written: Vec<(Key, String)> = Key::ALL
+    /// `key`'s value as the file has it: `None` where it is the default,
+    /// which the file leaves out.
+    fn literal(&self, key: Key) -> Option<String> {
+        self.written(key)
+            .filter(|written| Some(written) != Settings::default().written(key).as_ref())
+    }
+
+    /// The keys whose value differs between `self` and `other`, in the
+    /// order of [`Key::ALL`]: what a write of `other` over `self` touches.
+    pub fn changed_keys(&self, other: &Settings) -> Vec<Key> {
+        Key::ALL
             .into_iter()
-            .filter_map(|key| Some((key, self.literal(key)?)))
+            .filter(|key| self.literal(*key) != other.literal(*key))
+            .collect()
+    }
+
+    /// The text of a file that holds nothing but these settings: the
+    /// header line, and a table for the keys that are not at their
+    /// default, in the order of [`Key::ALL`], each with its note.
+    pub fn to_toml(&self) -> String {
+        self.write_into("", &Key::ALL)
+    }
+
+    /// `text` with `keys` set to their values here, and nothing else of it
+    /// changed: the person's comments, the order of their keys, keys and
+    /// tables this version does not know, and the lines the reader ignored
+    /// all stay. A key at its default is taken out, with its line, and a
+    /// table left with nothing in it goes too. A key the file has gets its
+    /// new value in place, the comment beside it kept; one it lacks goes at
+    /// the end of its table, with its note, and a table it lacks at the end
+    /// of the file. An empty text starts as the header line.
+    ///
+    /// A table the file writes inline (`data = { page_size = 500 }`) or
+    /// with dotted keys can have a value replaced in place and nothing
+    /// more: a key to add or take out there gets the file written as
+    /// [`Settings::to_toml`] has it. So does a text too long to be read.
+    pub fn write_into(&self, text: &str, keys: &[Key]) -> String {
+        if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
+            return self.to_toml();
+        }
+        let text = if text.trim_matches([' ', '\t', '\r', '\n']).is_empty() {
+            HEADER
+        } else {
+            text
+        };
+        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let (working, rejected) = readable(text);
+        // The keys the rejected lines would set: one of them taken out of
+        // the file would leave the rejected line to be read in its place.
+        let shadowed: Vec<Key> = rejected
+            .iter()
+            .filter_map(|line| key_on_line(text, &working, *line))
             .collect();
-        let mut out = String::from(HEADER);
-        let mut open = None;
-        for (key, literal) in &written {
-            let (table, name) = key.path();
-            if open != Some(table) {
-                if open.is_some() {
-                    out.push('\n');
+        let (document, _) = toml::de::DeTable::parse_recoverable(&working);
+        let document = document.into_inner();
+        // Replacements of ranges of the text, each with its place in the
+        // order they were found: inserts at one place keep that order.
+        let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+        let mut new_tables: Vec<(&str, String)> = Vec::new();
+        let mut emptied: Vec<&str> = Vec::new();
+        let line = |key: Key, literal: &str| {
+            let name = key.path().1;
+            match key.note() {
+                Some(note) => format!("{name} = {literal}  # {note}{newline}"),
+                None => format!("{name} = {literal}{newline}"),
+            }
+        };
+        for &key in keys {
+            let (table_name, name) = key.path();
+            let literal = self.literal(key);
+            let table = match item_at(&document, table_name) {
+                Ok(Some(table)) => table,
+                Ok(None) => {
+                    if let Some(literal) = literal {
+                        new_tables.push((table_name, line(key, &literal)));
+                    }
+                    continue;
                 }
-                out.push_str(&format!("[{table}]\n"));
+                Err(NotATable) => {
+                    log::warn!("settings: {table_name} is not a table, {name} is not written");
+                    continue;
+                }
+            };
+            let header = table.span();
+            // A table with a header of its own, which lines can be added
+            // to and taken from.
+            let headed = working[header.clone()].starts_with('[');
+            let Some(items) = table.get_ref().as_table() else {
+                // The name is a value (`data = 5`) or a list of tables:
+                // nothing of ours can be written there, and nothing of the
+                // person's is taken to make room.
+                log::warn!("settings: {table_name} is not a table, {name} is not written");
+                continue;
+            };
+            // A table no header names, there because one under it is
+            // (`[data.more]`): a header of its own can follow.
+            let implicit = !headed
+                && !items.is_empty()
+                && items
+                    .iter()
+                    .all(|(_, item)| is_subtable(&working, item.get_ref(), item.span()));
+            match (items.get_key_value(name), literal) {
+                (Some((_, value)), Some(literal)) => edits.push((value.span(), literal)),
+                // The default in place: taken out, the rejected line of
+                // the same key would be the one read.
+                (Some((_, value)), None) if shadowed.contains(&key) => {
+                    if let Some(default) = Settings::default().written(key) {
+                        edits.push((value.span(), default));
+                    }
+                }
+                (Some((found, value)), None) => {
+                    let whole = found.span().start..value.span().end;
+                    if !headed || !own_lines(&working, whole.clone()) {
+                        return self.to_toml();
+                    }
+                    let lines = line_start(&working, whole.start)..line_end(&working, whole.end);
+                    edits.push((lines, String::new()));
+                    emptied.push(table_name);
+                }
+                (None, None) => {}
+                (None, Some(literal)) if implicit => {
+                    new_tables.push((table_name, line(key, &literal)));
+                }
+                (None, Some(literal)) => {
+                    if !headed {
+                        return self.to_toml();
+                    }
+                    // After the table's last key, or under its header. A
+                    // table under it (`[data.more]`) is no key of it.
+                    let last = items
+                        .iter()
+                        .filter(|(_, item)| !is_subtable(&working, item.get_ref(), item.span()))
+                        .map(|(_, item)| item.span().end)
+                        .max()
+                        .unwrap_or(header.end);
+                    let at = line_end(&working, last);
+                    let mut added = line(key, &literal);
+                    if !working[..at].ends_with('\n') {
+                        added.insert_str(0, newline);
+                    }
+                    edits.push((at..at, added));
+                }
+            }
+        }
+        let mut out = text.to_owned();
+        let mut order: Vec<usize> = (0..edits.len()).collect();
+        // From the end, so a range found in the text is where it was; at
+        // one place the last found goes in first, and the ones before it
+        // go in front of it.
+        order.sort_by(|a, b| (edits[*b].0.start, *b).cmp(&(edits[*a].0.start, *a)));
+        for index in order {
+            let (range, with) = &edits[index];
+            out.replace_range(range.clone(), with);
+        }
+        let emptied_any = !emptied.is_empty();
+        for table in emptied {
+            out = without_empty_table(&out, table);
+        }
+        if emptied_any {
+            let kept = out.trim_end_matches(['\r', '\n']).len();
+            out.truncate(kept);
+            // A file left with nothing in it stays empty.
+            if !out.is_empty() {
+                out.push_str(newline);
+            }
+        }
+        let mut open: Option<&str> = None;
+        for (table, added) in new_tables {
+            if open != Some(table) {
+                if !out.ends_with('\n') {
+                    out.push_str(newline);
+                }
+                if out != HEADER {
+                    out.push_str(newline);
+                }
+                out.push_str(&format!("[{table}]{newline}"));
                 open = Some(table);
             }
-            let width = written
-                .iter()
-                .filter(|(other, _)| other.path().0 == table)
-                .map(|(other, _)| other.path().1.len())
-                .max()
-                .unwrap_or(0);
-            out.push_str(&format!("{name:width$} = {literal}"));
-            if let Some(note) = key.note() {
-                out.push_str(&format!("  # {note}"));
-            }
-            out.push('\n');
+            out.push_str(&added);
         }
         out
     }
 
     /// The settings with every number in its range.
-    fn validated(mut self) -> Self {
+    pub fn validated(mut self) -> Self {
         self.page_size = self
             .page_size
             .clamp(Self::MIN_PAGE_SIZE, Self::MAX_PAGE_SIZE);
@@ -835,7 +1332,8 @@ impl Settings {
             Key::Timestamps => text
                 .and_then(Timestamps::from_name)
                 .map(|choice| self.timestamps = choice),
-            Key::GroupDigits => flag.map(|flag| self.group_digits = flag),
+            Key::Tz => text.and_then(Zone::from_name).map(|zone| self.tz = zone),
+            Key::GroupDigits => flag.map(|flag| self.group_digits = Some(flag)),
             Key::ValueTags => flag.map(|flag| self.value_tags = flag),
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
             Key::SqlLimit => number.map(|number| self.sql_limit = number),
@@ -869,6 +1367,18 @@ impl Settings {
     /// settings file can be (`MAX_LINES`, `MAX_BYTES`) is not read at all:
     /// every line of it that says something is one that was ignored.
     pub fn from_toml(text: &str) -> Loaded {
+        Self::read(text, &Settings::default())
+    }
+
+    /// Reads a new text of the file over the settings it last gave: as
+    /// [`Settings::from_toml`], but a key whose line is ignored keeps its
+    /// value in `last`, its last good one, and not its default. A key the
+    /// text leaves out takes its default: it was taken out.
+    pub fn from_toml_over(text: &str, last: &Settings) -> Loaded {
+        Self::read(text, last)
+    }
+
+    fn read(text: &str, last: &Settings) -> Loaded {
         if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
             let invalid = text
                 .lines()
@@ -877,79 +1387,60 @@ impl Settings {
                 .map(|(index, _)| index + 1)
                 .collect();
             return Loaded {
-                settings: Settings::default(),
+                settings: last.clone(),
                 text: text.to_owned(),
                 invalid,
                 lines: Vec::new(),
                 source: Source::Toml,
             };
         }
-        // The parser recovers from a bad line in two ways that are not
-        // "ignored": it stops reading at some (a key with no `=`), and
-        // reads past others with a guess at the value (`full` unquoted).
-        // So a line it rejects is emptied and the text read again, until
-        // it rejects nothing more.
-        let mut working = text.to_owned();
-        let mut invalid: Vec<usize> = Vec::new();
-        loop {
-            let (_, errors) = toml::de::DeTable::parse_recoverable(&working);
-            let mut rejected = Vec::new();
-            for error in &errors {
-                match error.span() {
-                    // The parser blames the end of the text for a value
-                    // that never closes (`"""` with no end). That is no
-                    // line of the file, so the last line with anything on
-                    // it goes: the lines are emptied from the bottom up
-                    // until the opening one is. With every line blank the
-                    // error marks none.
-                    Some(span) if span.start >= working.len() => {
-                        rejected.extend(last_line(&working));
-                    }
-                    Some(span) => rejected.push(line_of(&working, span.start)),
-                    None => log::warn!("settings: {}", error.message()),
-                }
-            }
-            // A line already emptied has nothing left to reject: an error
-            // that still names one ends the loop.
-            rejected.retain(|line| !invalid.contains(line));
-            rejected.sort_unstable();
-            rejected.dedup();
-            if rejected.is_empty() {
-                break;
-            }
-            working = without_lines(&working, &rejected);
-            invalid.extend(rejected);
-        }
+        let (working, mut invalid) = readable(text);
         let (document, _) = toml::de::DeTable::parse_recoverable(&working);
         let document = document.into_inner();
         let mut settings = Settings::default();
         let mut lines = Vec::new();
+        // The keys the rejected lines would have set, as far as a line
+        // says it: those keep their last good value, unless a line that
+        // was read sets them.
+        let mut kept: Vec<Key> = invalid
+            .iter()
+            .filter_map(|line| key_on_line(text, &working, *line))
+            .collect();
         for key in Key::ALL {
             let (table, name) = key.path();
-            // A table under another is found by its dotted path.
-            let mut parts = table.split('.');
-            let first = parts
-                .next()
-                .and_then(|part| document.get(part))
-                .and_then(|table| table.get_ref().as_table());
-            let Some((found, value)) = parts
-                .fold(first, |table, part| {
-                    table
-                        .and_then(|table| table.get(part))
-                        .and_then(|table| table.get_ref().as_table())
-                })
+            let place = match item_at(&document, table) {
+                Ok(place) => place,
+                // A table's name, or a part of it, the file gives a value
+                // (`data = 5`): its keys cannot be read or written there,
+                // and keep what they had.
+                Err(NotATable) => {
+                    kept.push(key);
+                    continue;
+                }
+            };
+            if place.is_some_and(|place| place.get_ref().as_table().is_none()) {
+                kept.push(key);
+                continue;
+            }
+            let Some((found, value)) = place
+                .and_then(|table| table.get_ref().as_table())
                 .and_then(|table| table.get_key_value(name))
             else {
                 continue;
             };
-            // Emptied lines kept their breaks: a line has the same number
+            // Blanked lines kept their breaks: a line has the same number
             // in `working` as in `text`.
             let line = line_of(&working, found.span().start);
             if settings.take(key, value.get_ref()) {
                 lines.push((key, line));
+                kept.retain(|other| *other != key);
             } else {
                 invalid.push(line);
+                kept.push(key);
             }
+        }
+        for key in kept {
+            settings.keep(key, last);
         }
         invalid.sort_unstable();
         invalid.dedup();
@@ -959,6 +1450,29 @@ impl Settings {
             invalid,
             lines,
             source: Source::Toml,
+        }
+    }
+
+    /// Takes `key`'s value from `other`.
+    fn keep(&mut self, key: Key, other: &Settings) {
+        match key {
+            Key::PageSize => self.page_size = other.page_size,
+            Key::Timestamps => self.timestamps = other.timestamps,
+            Key::Tz => self.tz = other.tz.clone(),
+            Key::GroupDigits => self.group_digits = other.group_digits,
+            Key::ValueTags => self.value_tags = other.value_tags,
+            Key::ShowSystemSchemas => self.show_system_schemas = other.show_system_schemas,
+            Key::SqlLimit => self.sql_limit = other.sql_limit,
+            Key::SqlTimeoutSecs => self.sql_timeout_secs = other.sql_timeout_secs,
+            Key::McpEnabled => self.mcp_enabled = other.mcp_enabled,
+            Key::McpLogDays => self.mcp_log_days = other.mcp_log_days,
+            Key::McpNotify => self.mcp_notify = other.mcp_notify,
+            Key::Theme => self.custom_theme = other.custom_theme.clone(),
+            Key::RowHeight => self.row_height = other.row_height,
+            Key::Zebra => self.zebra = other.zebra,
+            Key::ColumnTypes => self.column_types = other.column_types,
+            Key::TableList => self.table_list = other.table_list,
+            Key::EnvBar => self.env_bar = other.env_bar,
         }
     }
 
@@ -999,11 +1513,6 @@ impl Settings {
             }
         }
     }
-
-    /// Writes the canonical text, atomically.
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        crate::util::write_atomic(path, self.to_toml().as_bytes())
-    }
 }
 
 impl Default for Settings {
@@ -1011,7 +1520,8 @@ impl Default for Settings {
         Self {
             page_size: Self::DEFAULT_PAGE_SIZE,
             timestamps: Timestamps::Second,
-            group_digits: false,
+            tz: Zone::System,
+            group_digits: None,
             value_tags: true,
             show_system_schemas: false,
             custom_theme: None,
@@ -1036,9 +1546,9 @@ mod tests {
     #[test]
     fn defaults_match_the_spec() {
         let settings = Settings::default();
-        assert_eq!(settings.page_size, 300);
+        assert_eq!(settings.page_size, 1_000);
         assert_eq!(settings.timestamps, Timestamps::Second);
-        assert!(!settings.group_digits);
+        assert_eq!(settings.group_digits, None);
         assert!(settings.value_tags);
         assert!(!settings.show_system_schemas);
         assert_eq!(settings.custom_theme, None);
@@ -1061,36 +1571,69 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_written_as_the_canonical_text() {
+    fn the_defaults_are_written_as_the_header_alone() {
+        assert_eq!(Settings::default().to_toml(), HEADER);
+    }
+
+    /// Every key away from its default.
+    fn all_set() -> Settings {
+        Settings {
+            page_size: 500,
+            timestamps: Timestamps::Full,
+            tz: Zone::Named("America/New_York".into()),
+            group_digits: Some(true),
+            value_tags: false,
+            show_system_schemas: true,
+            custom_theme: Some("My \"Nord\".json".into()),
+            sql_limit: 100,
+            sql_timeout_secs: None,
+            mcp_enabled: true,
+            mcp_log_days: 7,
+            mcp_notify: false,
+            row_height: RowHeight::Roomy,
+            zebra: Some(false),
+            column_types: false,
+            table_list: TableList::Flat,
+            env_bar: EnvBar::Label,
+        }
+    }
+
+    #[test]
+    fn only_what_is_not_the_default_is_written_each_table_in_its_place() {
         assert_eq!(
-            Settings::default().to_toml(),
+            all_set().to_toml(),
             "\
 # written by tabletist, safe to edit by hand
 [data]
-page_size    = 300
-timestamps   = \"second\"  # second | full
-group_digits = false
-value_tags   = true
+page_size = 500
+timestamps = \"full\"  # second | full
+tz = \"America/New_York\"  # system | utc | \"Area/City\"
+group_digits = true
+value_tags = false
 
 [sidebar]
-show_system_schemas = false
+show_system_schemas = true
 
 [editor]
-sql_limit        = 1000
-sql_timeout_secs = 30  # 0 waits forever
+sql_limit = 100
+sql_timeout_secs = 0  # 0 waits forever
 
 [mcp]
-enabled  = false
-log_days = 30
-notify   = true
+enabled = true
+log_days = 7
+notify = false
+
+[appearance]
+theme = \"My \\\"Nord\\\".json\"
 
 [appearance.grid]
-row_height   = \"regular\"  # compact | regular | roomy
-column_types = true
-table_list   = \"tree\"  # tree | flat
+row_height = \"roomy\"  # compact | regular | roomy
+zebra = false
+column_types = false
+table_list = \"flat\"  # tree | flat
 
 [appearance.env]
-bar = \"tint\"  # tint | label
+bar = \"label\"  # tint | label
 "
         );
     }
@@ -1105,17 +1648,17 @@ bar = \"tint\"  # tint | label
         };
         let text = settings.to_toml();
         assert!(
-            text.contains("timestamps   = \"full\"  # second | full\n"),
+            text.contains("timestamps = \"full\"  # second | full\n"),
             "{text}"
         );
         assert!(
             text.contains("sql_timeout_secs = 0  # 0 waits forever\n"),
             "{text}"
         );
+        // The only key of its table that is not at its default: the grid's
+        // table under it is not written.
         assert!(
-            text.contains(
-                "\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n\n[appearance.grid]\n"
-            ),
+            text.ends_with("\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n"),
             "{text}"
         );
     }
@@ -1130,24 +1673,7 @@ bar = \"tint\"  # tint | label
 
     #[test]
     fn what_is_written_reads_back_the_same() {
-        let settings = Settings {
-            page_size: 500,
-            timestamps: Timestamps::Full,
-            group_digits: true,
-            value_tags: false,
-            show_system_schemas: true,
-            custom_theme: Some("My \"Nord\".json".into()),
-            sql_limit: 100,
-            sql_timeout_secs: None,
-            mcp_enabled: true,
-            mcp_log_days: 7,
-            mcp_notify: false,
-            row_height: RowHeight::Roomy,
-            zebra: Some(false),
-            column_types: false,
-            table_list: TableList::Flat,
-            env_bar: EnvBar::Label,
-        };
+        let settings = all_set();
         let text = settings.to_toml();
         let loaded = Settings::from_toml(&text);
         assert_eq!(loaded.settings, settings);
@@ -1160,25 +1686,537 @@ bar = \"tint\"  # tint | label
 
     #[test]
     fn each_key_is_found_on_its_line() {
-        let loaded = Settings::from_toml(&Settings::default().to_toml());
+        let loaded = Settings::from_toml(&all_set().to_toml());
         assert_eq!(
             loaded.lines,
             vec![
                 (Key::PageSize, 3),
                 (Key::Timestamps, 4),
-                (Key::GroupDigits, 5),
-                (Key::ValueTags, 6),
-                (Key::ShowSystemSchemas, 9),
-                (Key::SqlLimit, 12),
-                (Key::SqlTimeoutSecs, 13),
-                (Key::McpEnabled, 16),
-                (Key::McpLogDays, 17),
-                (Key::McpNotify, 18),
-                (Key::RowHeight, 21),
-                (Key::ColumnTypes, 22),
-                (Key::TableList, 23),
-                (Key::EnvBar, 26),
+                (Key::Tz, 5),
+                (Key::GroupDigits, 6),
+                (Key::ValueTags, 7),
+                (Key::ShowSystemSchemas, 10),
+                (Key::SqlLimit, 13),
+                (Key::SqlTimeoutSecs, 14),
+                (Key::McpEnabled, 17),
+                (Key::McpLogDays, 18),
+                (Key::McpNotify, 19),
+                (Key::Theme, 22),
+                (Key::RowHeight, 25),
+                (Key::Zebra, 26),
+                (Key::ColumnTypes, 27),
+                (Key::TableList, 28),
+                (Key::EnvBar, 31),
             ]
+        );
+    }
+
+    /// `text` with `change` made in the app: what the file says after.
+    fn written(text: &str, change: impl FnOnce(&mut Settings)) -> String {
+        let before = Settings::from_toml(text).settings;
+        let mut after = before.clone();
+        change(&mut after);
+        after.write_into(text, &before.changed_keys(&after))
+    }
+
+    #[test]
+    fn a_value_is_set_in_place_and_the_comment_beside_it_stays() {
+        let text = "# mine\n[data]\n# rows\npage_size = 500 # as I like it\nvalue_tags = false\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size = 100),
+            "# mine\n[data]\n# rows\npage_size = 100 # as I like it\nvalue_tags = false\n"
+        );
+    }
+
+    #[test]
+    fn a_key_set_to_its_default_goes_with_its_line_and_its_comments_stay() {
+        let text = "[data]\n# rows\npage_size = 500 # as I like it\nvalue_tags = false\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size =
+                Settings::DEFAULT_PAGE_SIZE),
+            "[data]\n# rows\nvalue_tags = false\n"
+        );
+    }
+
+    #[test]
+    fn a_table_left_with_nothing_in_it_goes() {
+        let text = "# mine\n\n[data]\npage_size = 500\n\n[editor]\nsql_limit = 100\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size =
+                Settings::DEFAULT_PAGE_SIZE),
+            "# mine\n\n[editor]\nsql_limit = 100\n"
+        );
+        // The last table too, and the blank lines it leaves at the end.
+        assert_eq!(
+            written(text, |settings| settings.sql_limit = 1_000),
+            "# mine\n\n[data]\npage_size = 500\n"
+        );
+    }
+
+    #[test]
+    fn a_table_with_a_comment_left_in_it_stays() {
+        let text = "[data]\npage_size = 500\n# keep me\n\n[editor]\nsql_limit = 100\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size =
+                Settings::DEFAULT_PAGE_SIZE),
+            "[data]\n# keep me\n\n[editor]\nsql_limit = 100\n"
+        );
+    }
+
+    #[test]
+    fn a_new_key_goes_at_the_end_of_its_table_with_its_note() {
+        let text = "[data]\npage_size = 500\n\n[data.more]\nx = 1\n\n[editor]\nsql_limit = 100\n";
+        assert_eq!(
+            written(text, |settings| settings.timestamps = Timestamps::Full),
+            "[data]\npage_size = 500\ntimestamps = \"full\"  # second | full\n\n\
+             [data.more]\nx = 1\n\n[editor]\nsql_limit = 100\n"
+        );
+        // Under the header of a table that has no key yet.
+        assert_eq!(
+            written("[data]\n", |settings| settings.page_size = 500),
+            "[data]\npage_size = 500\n"
+        );
+    }
+
+    #[test]
+    fn a_new_table_goes_at_the_end_of_the_file() {
+        let text = "[data]\npage_size = 500\n# the end";
+        assert_eq!(
+            written(text, |settings| settings.sql_limit = 100),
+            "[data]\npage_size = 500\n# the end\n\n[editor]\nsql_limit = 100\n"
+        );
+    }
+
+    #[test]
+    fn unknown_keys_and_tables_and_their_comments_survive_a_write() {
+        let text = "[data]\nfrom_the_future = 1 # later\npage_size = 500\n\n[tomorrow]\nkey = 1\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size = 100),
+            "[data]\nfrom_the_future = 1 # later\npage_size = 100\n\n[tomorrow]\nkey = 1\n"
+        );
+        assert_eq!(
+            written(text, |settings| settings.page_size =
+                Settings::DEFAULT_PAGE_SIZE),
+            "[data]\nfrom_the_future = 1 # later\n\n[tomorrow]\nkey = 1\n"
+        );
+    }
+
+    #[test]
+    fn a_key_at_its_default_by_hand_stays_until_it_is_changed() {
+        let text = format!("[data]\npage_size = {}\n", Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(
+            written(&text, |settings| settings.value_tags = false),
+            format!("{text}value_tags = false\n")
+        );
+    }
+
+    #[test]
+    fn a_line_the_reader_ignored_stays_through_a_write() {
+        let text = "[data]\ntimestamps = full\ngroup_digits = \"yes\"\npage_size = 500\n";
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.invalid, [2, 3]);
+        let out = written(text, |settings| settings.page_size = 100);
+        assert_eq!(
+            out,
+            "[data]\ntimestamps = full\ngroup_digits = \"yes\"\npage_size = 100\n"
+        );
+        assert_eq!(Settings::from_toml(&out).invalid, [2, 3]);
+        // A key whose value was refused gets the new one in its place.
+        assert_eq!(
+            written(text, |settings| settings.group_digits = Some(true)),
+            "[data]\ntimestamps = full\ngroup_digits = true\npage_size = 500\n"
+        );
+    }
+
+    #[test]
+    fn a_file_with_crlf_endings_gets_crlf_lines() {
+        let text = "[data]\r\npage_size = 500\r\n";
+        assert_eq!(
+            written(text, |settings| settings.value_tags = false),
+            "[data]\r\npage_size = 500\r\nvalue_tags = false\r\n"
+        );
+    }
+
+    #[test]
+    fn an_inline_table_gets_values_in_place_and_otherwise_the_whole_file() {
+        let text = "data = { page_size = 500 } # inline\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size = 100),
+            "data = { page_size = 100 } # inline\n"
+        );
+        let mut settings = Settings::from_toml(text).settings;
+        settings.value_tags = false;
+        let out = written(text, |changed| changed.value_tags = false);
+        assert_eq!(out, settings.to_toml());
+    }
+
+    #[test]
+    fn a_value_that_is_ignored_keeps_its_last_good_value() {
+        let last = Settings {
+            page_size: 500,
+            timestamps: Timestamps::Full,
+            ..Settings::default()
+        };
+        // A value of the wrong type, and a line the parser rejects.
+        let text = "[data]\npage_size = \"lots\"\ntimestamps = full\n";
+        let loaded = Settings::from_toml_over(text, &last);
+        assert_eq!(loaded.invalid, [2, 3]);
+        assert_eq!(loaded.settings.page_size, 500);
+        assert_eq!(loaded.settings.timestamps, Timestamps::Full);
+        // Read with nothing before it, the last good value is the default.
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(loaded.settings.timestamps, Timestamps::Second);
+    }
+
+    #[test]
+    fn a_key_taken_out_of_the_file_takes_its_default() {
+        let last = Settings {
+            page_size: 500,
+            ..Settings::default()
+        };
+        let loaded = Settings::from_toml_over("[data]\nvalue_tags = false\n", &last);
+        assert_eq!(loaded.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert!(!loaded.settings.value_tags);
+    }
+
+    #[test]
+    fn a_rejected_line_is_taken_for_the_key_of_the_table_above_it() {
+        assert_eq!(
+            key_on_line("[data] # rows\npage_size = 1 2\n", "[data] # rows\n", 2),
+            Some(Key::PageSize)
+        );
+        assert_eq!(
+            key_on_line("[editor]\npage_size = x y\n", "[editor]\n", 2),
+            None
+        );
+        assert_eq!(key_on_line("[data]\npage_size\n", "[data]\n", 2), None);
+        assert_eq!(key_on_line("page_size = x y\n", "", 1), None);
+        // In quotes, dotted, and under a header after a byte order mark.
+        assert_eq!(
+            key_on_line("[data]\n\"page_size\" = x y\n", "[data]\n", 2),
+            Some(Key::PageSize)
+        );
+        assert_eq!(
+            key_on_line("data.page_size = x y\n", "", 1),
+            Some(Key::PageSize)
+        );
+        assert_eq!(
+            key_on_line("\u{feff}[data]\npage_size = x y\n", "\u{feff}[data]\n", 2),
+            Some(Key::PageSize)
+        );
+        assert_eq!(
+            key_on_line("[data]\nx.page_size = 1 2\n", "[data]\n", 2),
+            None
+        );
+    }
+
+    #[test]
+    fn a_text_too_long_to_read_keeps_every_last_good_value() {
+        let last = Settings {
+            page_size: 500,
+            ..Settings::default()
+        };
+        let text = "# note\n".repeat(MAX_LINES + 1);
+        assert_eq!(Settings::from_toml_over(&text, &last).settings, last);
+    }
+
+    #[test]
+    fn a_table_with_a_line_the_reader_ignored_stays() {
+        let text = "[data]\npage_size = 500\nnot toml at all\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size =
+                Settings::DEFAULT_PAGE_SIZE),
+            "[data]\nnot toml at all\n"
+        );
+        // A header given twice, the second rejected: it stays rejected.
+        let text = "[data]\ntimestamps = \"full\"\n[data]\n";
+        let out = written(text, |settings| settings.timestamps = Timestamps::Second);
+        assert_eq!(out, "[data]\n[data]\n");
+        assert_eq!(Settings::from_toml(&out).invalid, [2]);
+    }
+
+    #[test]
+    fn a_comment_beside_a_header_keeps_its_table() {
+        let text = "[data] # my table\npage_size = 500\n";
+        assert_eq!(
+            written(text, |settings| settings.page_size =
+                Settings::DEFAULT_PAGE_SIZE),
+            "[data] # my table\n"
+        );
+    }
+
+    #[test]
+    fn a_file_left_with_nothing_stays_empty() {
+        assert_eq!(
+            written("[data]\npage_size = 500\n", |settings| {
+                settings.page_size = Settings::DEFAULT_PAGE_SIZE;
+            }),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_key_with_a_rejected_twin_is_set_to_its_default_in_place() {
+        // The second line is rejected: taking out the first would make it
+        // the one read.
+        let text = "[data]\npage_size = 500\npage_size = 100\n";
+        let out = written(text, |settings| {
+            settings.page_size = Settings::DEFAULT_PAGE_SIZE
+        });
+        assert_eq!(
+            out,
+            format!(
+                "[data]\npage_size = {}\npage_size = 100\n",
+                Settings::DEFAULT_PAGE_SIZE
+            )
+        );
+        assert_eq!(
+            Settings::from_toml(&out).settings.page_size,
+            Settings::DEFAULT_PAGE_SIZE
+        );
+    }
+
+    #[test]
+    fn a_table_only_a_table_under_it_names_gets_a_header_at_the_end() {
+        let text = "# mine\n[data.more]\ny = 1\n";
+        let out = written(text, |settings| settings.page_size = 100);
+        assert_eq!(
+            out,
+            "# mine\n[data.more]\ny = 1\n\n[data]\npage_size = 100\n"
+        );
+        assert_eq!(Settings::from_toml(&out).settings.page_size, 100);
+    }
+
+    #[test]
+    fn a_name_that_is_a_value_is_left_as_the_person_wrote_it() {
+        for text in ["# mine\ndata = 5\n", "# mine\n[[data]]\nx = 1\n"] {
+            assert_eq!(written(text, |settings| settings.page_size = 100), text);
+        }
+    }
+
+    #[test]
+    fn a_table_name_given_a_value_keeps_its_keys_last_good_values() {
+        let last = Settings {
+            page_size: 100,
+            ..Settings::default()
+        };
+        for text in ["data = 5\n", "[[data]]\npage_size = 500\n"] {
+            let loaded = Settings::from_toml_over(text, &last);
+            assert_eq!(loaded.settings.page_size, 100, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_new_key_goes_after_a_key_whose_value_is_an_array() {
+        let text = "[data]\npage_size = 500\nmine = [1, 2]\n";
+        assert_eq!(
+            written(text, |settings| settings.value_tags = false),
+            "[data]\npage_size = 500\nmine = [1, 2]\nvalue_tags = false\n"
+        );
+        let text = "[data]\nmine = [1, 2]\n";
+        assert_eq!(
+            written(text, |settings| settings.value_tags = false),
+            "[data]\nmine = [1, 2]\nvalue_tags = false\n"
+        );
+    }
+
+    #[test]
+    fn a_rejected_line_in_quotes_or_dotted_keeps_the_last_good_value() {
+        let last = Settings {
+            timestamps: Timestamps::Full,
+            ..Settings::default()
+        };
+        for text in [
+            "[data]\n\"timestamps\" = full\n",
+            "data.timestamps = full\n",
+            "\u{feff}[data]\ntimestamps = full\n",
+        ] {
+            let loaded = Settings::from_toml_over(text, &last);
+            assert_eq!(loaded.settings.timestamps, Timestamps::Full, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn numbers_not_set_are_grouped_as_the_look_has_them() {
+        let settings = Settings::default();
+        assert!(settings.grouped(Layout::Mac));
+        assert!(settings.grouped(Layout::Windows));
+        assert!(!settings.grouped(Layout::Omarchy));
+        let set = Settings {
+            group_digits: Some(false),
+            ..Settings::default()
+        };
+        assert!(!set.grouped(Layout::Mac));
+    }
+
+    #[test]
+    fn what_the_look_has_anyway_is_not_set() {
+        let grouped = Settings {
+            group_digits: Some(true),
+            ..Settings::default()
+        };
+        assert_eq!(grouped.clone().for_layout(Layout::Mac).group_digits, None);
+        assert_eq!(grouped.for_layout(Layout::Omarchy).group_digits, Some(true));
+        // Not set, nothing is written.
+        assert_eq!(Settings::default().written(Key::GroupDigits), None);
+    }
+
+    #[test]
+    fn a_zone_is_system_utc_or_a_name_the_database_knows() {
+        assert_eq!(Zone::from_name("system"), Some(Zone::System));
+        assert_eq!(Zone::from_name("UTC"), Some(Zone::Utc));
+        assert_eq!(
+            Zone::from_name("Europe/Lisbon"),
+            Some(Zone::Named("Europe/Lisbon".into()))
+        );
+        // Of the form, whether the database knows it or not: the app asks
+        // the database once it is read.
+        assert_eq!(
+            Zone::from_name("Mars/Olympus"),
+            Some(Zone::Named("Mars/Olympus".into()))
+        );
+        for name in [
+            "",
+            "/etc/passwd",
+            "America//York",
+            "Europe/",
+            "Lisbon zone",
+            "Asia/東京",
+        ] {
+            assert_eq!(Zone::from_name(name), None, "{name}");
+        }
+        for zone in [Zone::System, Zone::Utc, Zone::Named("Asia/Tokyo".into())] {
+            assert_eq!(Zone::from_name(zone.name()), Some(zone));
+        }
+        let system = jiff::tz::TimeZone::fixed(jiff::tz::offset(3));
+        let zones = crate::testing::zones();
+        assert_eq!(Zone::System.resolve(&system, None), Some(system.clone()));
+        assert_eq!(
+            Zone::Utc.resolve(&system, None),
+            Some(jiff::tz::TimeZone::UTC)
+        );
+        let tokyo = Zone::Named("Asia/Tokyo".into());
+        assert_eq!(
+            tokyo
+                .resolve(&system, Some(zones))
+                .and_then(|zone| zone.iana_name().map(str::to_owned)),
+            Some("Asia/Tokyo".to_owned())
+        );
+        // Before the database is read, and a name it does not know: none.
+        assert_eq!(tokyo.resolve(&system, None), None);
+        assert_eq!(
+            Zone::Named("Mars/Olympus".into()).resolve(&system, Some(zones)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_zone_of_no_zones_form_is_ignored_and_keeps_the_last_good_one() {
+        let last = Settings {
+            tz: Zone::Utc,
+            ..Settings::default()
+        };
+        let text = "[data]\ntz = \"Lisbon zone\"\npage_size = 500\n";
+        let loaded = Settings::from_toml_over(text, &last);
+        assert_eq!(loaded.invalid, [2]);
+        assert_eq!(loaded.settings.tz, Zone::Utc);
+        assert_eq!(loaded.settings.page_size, 500);
+    }
+
+    #[test]
+    fn a_zone_goes_in_the_data_table_with_its_note() {
+        assert_eq!(
+            written("[data]\npage_size = 500\n", |settings| {
+                settings.tz = Zone::Named("Europe/Lisbon".into());
+            }),
+            "[data]\npage_size = 500\ntz = \"Europe/Lisbon\"  # system | utc | \"Area/City\"\n"
+        );
+        // Back to the computer's own, which is not written.
+        assert_eq!(
+            written("[data]\ntz = \"utc\"\n", |settings| settings.tz =
+                Zone::System),
+            ""
+        );
+    }
+
+    #[test]
+    fn the_zone_steps_through_system_utc_and_the_one_the_file_names() {
+        let step = |tz: Zone, forward: bool| {
+            let settings = Settings {
+                tz,
+                ..Settings::default()
+            };
+            settings.stepped(OptionId::Tz, forward)
+        };
+        let lisbon = || Zone::Named("Europe/Lisbon".into());
+        assert_eq!(step(Zone::System, true), OptionValue::Tz(Zone::Utc));
+        assert_eq!(step(Zone::System, false), OptionValue::Tz(Zone::System));
+        assert_eq!(step(Zone::Utc, true), OptionValue::Tz(Zone::Utc));
+        assert_eq!(step(lisbon(), false), OptionValue::Tz(Zone::Utc));
+        assert_eq!(step(lisbon(), true), OptionValue::Tz(lisbon()));
+        assert_eq!(Settings::default().flipped(OptionId::Tz), None);
+        // Stepped off, the zone the session had is a step away still.
+        let utc = Settings {
+            tz: Zone::Utc,
+            ..Settings::default()
+        };
+        assert_eq!(
+            utc.stepped_zone(Some("Europe/Lisbon"), true),
+            OptionValue::Tz(lisbon())
+        );
+        assert_eq!(
+            utc.stepped_zone(Some("Europe/Lisbon"), false),
+            OptionValue::Tz(Zone::System)
+        );
+    }
+
+    #[test]
+    fn a_key_of_a_table_under_another_is_written_in_its_table() {
+        // Into the table where it is, by its dotted path.
+        let text = "# mine\n[appearance.grid]\nzebra = true\n";
+        assert_eq!(
+            written(text, |settings| settings.row_height = RowHeight::Compact),
+            "# mine\n[appearance.grid]\nzebra = true\nrow_height = \"compact\"  # compact | regular | roomy\n"
+        );
+        // A table the file lacks gets its dotted header at the end.
+        assert_eq!(
+            written("[data]\npage_size = 500\n", |settings| settings.env_bar =
+                EnvBar::Label),
+            "[data]\npage_size = 500\n\n[appearance.env]\nbar = \"label\"  # tint | label\n"
+        );
+        // Taken out, the table under another goes with its last key.
+        assert_eq!(
+            written(
+                "[data]\npage_size = 500\n\n[appearance.env]\nbar = \"label\"\n",
+                |settings| {
+                    settings.env_bar = EnvBar::Tint;
+                }
+            ),
+            "[data]\npage_size = 500\n"
+        );
+        // A part of the path that is a value: nothing is written there.
+        let text = "# mine\nappearance = 5\n";
+        assert_eq!(
+            written(text, |settings| settings.row_height = RowHeight::Roomy),
+            text
+        );
+        // A rejected line under a dotted header is taken for its key.
+        assert_eq!(
+            key_on_line(
+                "[appearance.grid]\nrow_height = x y\n",
+                "[appearance.grid]\n",
+                2
+            ),
+            Some(Key::RowHeight)
+        );
+    }
+
+    #[test]
+    fn an_empty_file_starts_with_the_header() {
+        assert_eq!(
+            written("", |settings| settings.page_size = 500),
+            "# written by tabletist, safe to edit by hand\n[data]\npage_size = 500\n"
         );
     }
 
@@ -1222,7 +2260,7 @@ bar = \"tint\"  # tint | label
         assert_eq!(loaded.invalid, vec![3]);
         assert_eq!(loaded.settings.page_size, 100);
         // The lines and the tables under the bad one are still read.
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
         assert_eq!(loaded.settings.sql_limit, 100);
         assert_eq!(
             loaded.lines,
@@ -1427,7 +2465,7 @@ bar = \"tint\"  # tint | label
         );
         assert_eq!(loaded.invalid, vec![3]);
         assert_eq!(loaded.settings.page_size, 100);
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
         assert_eq!(
             loaded.lines,
             vec![(Key::PageSize, 2), (Key::GroupDigits, 4)]
@@ -1489,7 +2527,7 @@ bar = \"tint\"  # tint | label
         let loaded = Settings::from_toml("[data]\npage_size = 100\ngroup_digits = true\n\r");
         assert_eq!(loaded.invalid, vec![4]);
         assert_eq!(loaded.settings.page_size, 100);
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
         let loaded = Settings::from_toml("\r");
         assert_eq!(loaded.invalid, vec![1]);
         assert_eq!(loaded.settings, Settings::default());
@@ -1501,7 +2539,7 @@ bar = \"tint\"  # tint | label
         let loaded = Settings::from_toml("[data]\npage_size = 100\ngroup_digits = true\n\u{a0}");
         assert_eq!(loaded.invalid, vec![4]);
         assert_eq!(loaded.settings.page_size, 100);
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
     }
 
     fn dirs() -> (crate::paths::AppDirs, tempfile::TempDir) {
@@ -1526,11 +2564,11 @@ bar = \"tint\"  # tint | label
         let (dirs, _root) = dirs();
         let settings = Settings {
             page_size: 500,
-            group_digits: true,
+            group_digits: Some(true),
             sql_timeout_secs: None,
             ..Settings::default()
         };
-        settings.save(&dirs.settings_file()).unwrap();
+        crate::util::write_atomic(&dirs.settings_file(), settings.to_toml().as_bytes()).unwrap();
         let loaded = Settings::load(&dirs);
         assert_eq!(loaded.settings, settings);
         assert_eq!(loaded.source, Source::Toml);
@@ -1659,7 +2697,7 @@ bar = \"tint\"  # tint | label
                 OptionId::Timestamps,
                 OptionValue::Timestamps(Timestamps::Full),
             ),
-            (OptionId::GroupDigits, OptionValue::GroupDigits(true)),
+            (OptionId::GroupDigits, OptionValue::GroupDigits(Some(true))),
             (OptionId::ValueTags, OptionValue::ValueTags(false)),
         ] {
             assert_eq!(value.option(), option);
@@ -1669,7 +2707,7 @@ bar = \"tint\"  # tint | label
         }
         assert_eq!(settings.page_size, 500);
         assert_eq!(settings.timestamps, Timestamps::Full);
-        assert!(settings.group_digits);
+        assert_eq!(settings.group_digits, Some(true));
         assert!(!settings.value_tags);
     }
 
@@ -1681,6 +2719,7 @@ bar = \"tint\"  # tint | label
             vec![
                 Key::PageSize,
                 Key::Timestamps,
+                Key::Tz,
                 Key::GroupDigits,
                 Key::ValueTags,
                 Key::RowHeight,
@@ -1719,14 +2758,14 @@ bar = \"tint\"  # tint | label
             };
             settings.stepped(OptionId::PageSize, forward)
         };
+        assert_eq!(step(1_000, true), OptionValue::PageSize(5_000));
+        assert_eq!(step(500, false), OptionValue::PageSize(100));
+        assert_eq!(step(100, false), OptionValue::PageSize(100));
+        assert_eq!(step(10_000, true), OptionValue::PageSize(10_000));
+        // A size set by hand is between two choices: it steps to the next.
         assert_eq!(step(300, true), OptionValue::PageSize(500));
         assert_eq!(step(300, false), OptionValue::PageSize(100));
-        assert_eq!(step(100, false), OptionValue::PageSize(100));
-        assert_eq!(step(5_000, true), OptionValue::PageSize(5_000));
-        // A size set by hand is between two choices: it steps to the next.
-        assert_eq!(step(250, true), OptionValue::PageSize(300));
-        assert_eq!(step(250, false), OptionValue::PageSize(100));
-        assert_eq!(step(9_000, true), OptionValue::PageSize(9_000));
+        assert_eq!(step(9_000, true), OptionValue::PageSize(10_000));
         assert_eq!(step(9_000, false), OptionValue::PageSize(5_000));
     }
 
@@ -1765,11 +2804,11 @@ bar = \"tint\"  # tint | label
         // Numbers: grouped on the left, plain on the right.
         assert_eq!(
             settings.stepped(OptionId::GroupDigits, false),
-            OptionValue::GroupDigits(true)
+            OptionValue::GroupDigits(Some(true))
         );
         assert_eq!(
             settings.stepped(OptionId::GroupDigits, true),
-            OptionValue::GroupDigits(false)
+            OptionValue::GroupDigits(Some(false))
         );
         // A check: off to the left, on to the right.
         assert_eq!(
@@ -1791,7 +2830,7 @@ bar = \"tint\"  # tint | label
         );
         assert_eq!(
             settings.flipped(OptionId::GroupDigits),
-            Some(OptionValue::GroupDigits(true))
+            Some(OptionValue::GroupDigits(Some(true)))
         );
         assert_eq!(
             settings.flipped(OptionId::Timestamps),
@@ -1801,7 +2840,7 @@ bar = \"tint\"  # tint | label
         // And back, from the other value of each.
         let settings = Settings {
             value_tags: false,
-            group_digits: true,
+            group_digits: Some(true),
             timestamps: Timestamps::Full,
             ..Default::default()
         };
@@ -1811,7 +2850,7 @@ bar = \"tint\"  # tint | label
         );
         assert_eq!(
             settings.flipped(OptionId::GroupDigits),
-            Some(OptionValue::GroupDigits(false))
+            Some(OptionValue::GroupDigits(Some(false)))
         );
         assert_eq!(
             settings.flipped(OptionId::Timestamps),
@@ -1854,7 +2893,7 @@ bar = \"tint\"  # tint | label
         );
         // Once set, the stripes are written, whatever the look.
         let text = loaded.settings.to_toml();
-        assert!(text.contains("zebra        = true\n"), "{text}");
+        assert!(text.contains("[appearance.grid]\nrow_height = \"compact\"  # compact | regular | roomy\nzebra = true\n"), "{text}");
         assert_eq!(Settings::from_toml(&text).settings, loaded.settings);
         // A table written inline is the same table.
         let inline = Settings::from_toml("[appearance]\ngrid = { row_height = \"roomy\" }\n");

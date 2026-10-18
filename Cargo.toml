@@ -112,9 +112,9 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 # features fastframe-theme already brings in for following the desktop's
 # theme: nothing new is built.
 notify = "8.2"
-# The person's clock and time zone, for the times of agents' calls. The
-# version and the features env_logger already brings in: nothing new is
-# built.
+# The person's clock and time zone, for the times of agents' calls, and the
+# zone database a `timestamptz` value is shown in. The version and the
+# features env_logger already brings in: nothing new is built.
 jiff = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]

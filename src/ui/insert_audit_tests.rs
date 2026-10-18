@@ -29,6 +29,8 @@ const HARBOR_PRESS: &str = "9100000000000000004";
 pub(super) fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
     let mut harness = Harness::new();
     harness.set_look(look);
+    // The values are read as they were typed: no look groups them here.
+    harness.app.settings.group_digits = Some(false);
     let (tab, id) = harness.book_covers();
     harness.app.workspace_mut(tab).unwrap().pane = Pane::Grid;
     harness.settle();

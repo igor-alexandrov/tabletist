@@ -122,6 +122,9 @@ pub struct Table<'a> {
     pub added: &'a [NewRow],
     /// The page's rows marked for deletion (`Edits::deleted`).
     pub deleted: &'a BTreeMap<usize, Doomed>,
+    /// The zone a moment with an offset is shown and typed in, where the
+    /// engine sends one and the zone is known (`Workspace::zone_shown`).
+    pub zone: Option<&'a jiff::tz::TimeZone>,
 }
 
 impl<'a> Table<'a> {
@@ -141,6 +144,7 @@ impl<'a> Table<'a> {
             gone: &object.edits.gone,
             added: &object.edits.added,
             deleted: &object.edits.deleted,
+            zone: workspace.zone_shown(),
         })
     }
 }
@@ -969,6 +973,42 @@ pub fn is_change(loaded: &Value, new: &NewValue, class: ColumnClass) -> bool {
             laid_out(text.clone()) != start_text(loaded, class)
         }
         NewValue::Text(text) => *text != start_text(loaded, class),
+    }
+}
+
+/// Whether `new` is the moment `loaded` holds, written another way: in
+/// another zone, with `Z`. Only a column of dates and times holds a moment:
+/// the caller asks of those alone, as a text column's text is its own.
+pub fn same_moment_typed(loaded: &Value, new: &NewValue) -> bool {
+    match (loaded, new) {
+        (Value::Text(was), NewValue::Text(text)) => crate::ui::format::same_moment(was, text),
+        _ => false,
+    }
+}
+
+/// Whether the engine sends a moment with its offset (PostgreSQL's
+/// `timestamptz`), which is shown and edited in the settings' zone. A
+/// SQLite or MySQL value with an offset in its text is text the person
+/// stored, and is shown and edited as it is.
+pub fn shows_in_zone(dialect: Dialect) -> bool {
+    match dialect {
+        Dialect::Postgres => true,
+        Dialect::MySql | Dialect::Sqlite => false,
+    }
+}
+
+/// Whether a column of `type_name` keeps a moment with its offset, so that
+/// a value typed into it without one is read in the server session's zone
+/// (PostgreSQL's `timestamptz`). MySQL's `TIMESTAMP` and SQLite's dates
+/// keep no offset: what is typed is what is kept.
+pub fn keeps_offset(dialect: Dialect, type_name: &str) -> bool {
+    match dialect {
+        Dialect::Postgres => {
+            let name = type_name.trim().to_ascii_lowercase();
+            name.starts_with("timestamptz")
+                || (name.starts_with("timestamp") && name.ends_with("with time zone"))
+        }
+        Dialect::MySql | Dialect::Sqlite => false,
     }
 }
 
@@ -3124,6 +3164,7 @@ mod tests {
             gone: &edits.gone,
             added: &edits.added,
             deleted: &edits.deleted,
+            zone: Some(&crate::testing::UTC),
         }
     }
 
@@ -4753,6 +4794,7 @@ mod tests {
             gone: &NONE_GONE,
             added: &[],
             deleted: &NONE_DELETED,
+            zone: Some(&crate::testing::UTC),
         }
     }
 

@@ -807,6 +807,47 @@ pub fn book_covers_page(rows: usize) -> RowPage {
     }
 }
 
+/// The zone database, read once for every test.
+fn zones_shared() -> std::sync::Arc<crate::zones::Zones> {
+    static ZONES: std::sync::OnceLock<std::sync::Arc<crate::zones::Zones>> =
+        std::sync::OnceLock::new();
+    std::sync::Arc::clone(ZONES.get_or_init(|| std::sync::Arc::new(crate::zones::Zones::load())))
+}
+
+/// The zone database, as the backend reads it.
+pub fn zones() -> &'static crate::zones::Zones {
+    static ZONES: std::sync::OnceLock<std::sync::Arc<crate::zones::Zones>> =
+        std::sync::OnceLock::new();
+    ZONES.get_or_init(zones_shared)
+}
+
+/// UTC, for a test's [`crate::edit::Table`] to hold a zone by reference.
+pub static UTC: jiff::tz::TimeZone = jiff::tz::TimeZone::UTC;
+
+/// When the Bookshop's covers were made, as PostgreSQL sends a
+/// `timestamptz` in a session whose zone is UTC.
+pub const COVERS_MADE: &str = "2026-01-12 09:14:03.482915+00";
+
+/// The structure of `book_covers` on PostgreSQL, where `created_at` is a
+/// `timestamptz`.
+pub fn stamped_covers_structure() -> tabletist_db::Structure {
+    let mut structure = book_covers_structure();
+    structure.columns[4].type_name = "timestamp with time zone".into();
+    structure
+}
+
+/// A page of `book_covers` with `created_at` as a `timestamptz`, made at
+/// [`COVERS_MADE`].
+pub fn stamped_covers_page(rows: usize) -> RowPage {
+    let mut page = book_covers_page(rows);
+    page.columns[4].type_name = "timestamptz".into();
+    page.columns[4].kind = ValueKind::Temporal;
+    for row in &mut page.rows {
+        row[4] = Value::Text(COVERS_MADE.into());
+    }
+    page
+}
+
 /// The Bookshop's publishers, as (id, name).
 pub const PUBLISHERS: [(i64, &str); 3] = [
     (9_100_000_000_000_000_001, "Northlight Books"),
@@ -1127,6 +1168,28 @@ impl Harness {
         });
         self.answer_structure(book_covers_structure());
         self.answer_rows(book_covers_page(3));
+        let id = self
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_tab)
+            .expect("the table's tab is open");
+        (tab, id)
+    }
+
+    /// `book_covers` with `created_at` as a `timestamptz`, open in a table
+    /// tab: [`Harness::book_covers`] over [`stamped_covers_page`], on a
+    /// session that is PostgreSQL's, whose values these are.
+    pub fn stamped_covers(&mut self) -> (ConnTabId, TabId) {
+        let tab = self.connect_fake_as(false);
+        self.app.workspace_mut(tab).expect("a workspace").driver = Driver::Postgres;
+        self.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "book_covers"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        self.answer_structure(stamped_covers_structure());
+        self.answer_rows(stamped_covers_page(3));
         let id = self
             .app
             .workspace(tab)
@@ -1469,6 +1532,11 @@ impl Harness {
         // later: no test waits.
         app.lookup_delay = std::time::Duration::ZERO;
         app.attach(&ctx, false);
+        // The zone database, as the backend answers the attach's
+        // `LoadZones`.
+        app.apply(Action::Backend(
+            crate::backend::Event::Zones(zones_shared()),
+        ));
         Self {
             app,
             ctx,

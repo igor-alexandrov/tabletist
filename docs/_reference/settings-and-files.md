@@ -8,13 +8,14 @@ nav_order: 2
 
 Cmd/Ctrl+, opens Settings. Changes apply right away.
 
-{% include shot.html file="macos-settings" alt="The Settings window with its four options" %}
+{% include shot.html file="macos-settings" alt="The Settings window with its General options" %}
 
 | Option | Choices | Default |
 | --- | --- | --- |
-| **Rows per page** | 100, 300, 500, 1,000 or 5,000 | 300 |
+| **Rows per page** | 100, 500, 1,000, 5,000 or 10,000. A table takes a new size when it next loads, not while you page through it | 1,000 |
 | **Timestamps** | To the second, or full precision | To the second |
-| **Numbers** | `1240.50` or `1,240.50`. Grouping is for display only: a copy gives the raw value | `1240.50` |
+| **Time zone for timestamptz** | System, UTC or any zone. A PostgreSQL `timestamptz` is shown in this zone, a copy gives the value as the server sent it, and a value you type without an offset is sent with this zone's. In the Omarchy look `h`/`l` choose System, UTC or the last zone the file named; any other zone is set in the file | System |
+| **Numbers** | `1,240.50` or `1240.50`. Grouping is for display only: a copy gives the raw value | `1,240.50` on macOS and Windows, `1240.50` in the Omarchy look |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 
 A second pane, **Appearance**, sets how the grids and the connection bar
@@ -48,13 +49,17 @@ it is. In the Omarchy look the file is shown beside the options.
 ## The settings file
 
 Settings are kept in `settings.toml`, which is safe to edit by hand.
-Tabletist watches the file and applies your edits while it runs.
+Tabletist watches the file and applies your edits while it runs. The file
+holds only what differs from the defaults. Until you change an option
+there is no file, and one the app writes starts with a header line. Here
+is every key at its default (`group_digits` has none of its own: it
+follows the look):
 
 ```toml
 [data]
-page_size = 300
+page_size = 1000
 timestamps = "second"
-group_digits = false
+tz = "system"
 value_tags = true
 
 [sidebar]
@@ -80,9 +85,10 @@ bar = "tint"
 
 | Key | Values | Default |
 | --- | --- | --- |
-| `data.page_size` | 10 to 10000 | `300` |
+| `data.page_size` | 10 to 10000. A table takes a new size when it next loads (opened, refreshed, sorted, filtered or reconnected), not while you page through it | `1000` |
 | `data.timestamps` | `"second"` or `"full"` | `"second"` |
-| `data.group_digits` | `true` or `false` | `false` |
+| `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read. A PostgreSQL `timestamptz` value is shown and edited in this zone, a copy gives it as the server sent it, and one you type without an offset is sent with this zone's | `"system"` |
+| `data.group_digits` | `true` or `false` | Not set: grouped on macOS and Windows, not in the Omarchy look |
 | `data.value_tags` | `true` or `false` | `true` |
 | `sidebar.show_system_schemas` | `true` shows schemas such as `pg_catalog` and `information_schema` | `false` |
 | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
@@ -100,9 +106,22 @@ bar = "tint"
 `show_system_schemas` and `theme` are set only in the file. The SQL
 editor's **Limit** and **Timeout** menus set the two `editor` keys.
 
-A line that cannot be read is ignored, keeps its default, and is reported
-in the Settings window. When you change an option in the app, the file is
-written again in a standard form, which drops comments you added.
+A line that cannot be read is ignored and reported in the Settings window,
+and its key keeps its last good value: the one it had before the edit, or
+its default when Tabletist starts. When you change an option in the app,
+only its key is written: set back to its default, the key is taken out of
+the file, and otherwise it gets the new value where it is, or goes at the
+end of its table. Your comments, the order of your keys, the lines that
+could not be read and keys Tabletist does not know all stay as you wrote
+them. The one exception is a table written inline (`data = { … }`) or
+with dotted keys (`data.page_size = 500`): a key added to it or taken out
+of it writes the whole file again, without your comments. **Export…**
+saves a copy of the file as it is.
+
+A file an older version wrote holds every key, at the values it had then,
+the defaults of that time too (`page_size = 300`, `group_digits = false`).
+Those stay until you change them: take a key out of the file, or reset the
+tab, to have today's default.
 
 ## Files
 
