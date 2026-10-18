@@ -57,7 +57,7 @@ The spec's own departures were approved with it; the one of this step ("Ask befo
 
 Every task's state was built here and passed `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings` and `cargo test --locked --workspace --all-targets` with the test PostgreSQL, MySQL and SSH servers (3,612 tests after task 1, 3,637 after task 5, none failed). Each task's tests were run alone on the code before it, and failed as its Step 2 says. The last state also passed `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` and `docs/bin/check`. Both Settings screens were rendered headless at the boards' sizes (1440 by 1000 on macOS, 1920 by 1080 on Omarchy) and compared with the "Settings, General" artboards by eye; the pictures were not kept. A reviewer given the draft wrote throwaway tests against it and found four defects (two in the connect again for a use, one in the question off under a dialog, one in the sheet's layout), each fixed in the task it belongs to and covered by a test there (marked "found by the review" below). A second reviewer read the generated plan against its diffs and the spec, and found where the prose said more than the code, and four more defects (a save sent before a connect that asks for a secret, a "Reconnecting" strip on every use, a foreign key's list that did not count as waiting, a doc comment out of place); those were fixed the same way. Every diff in this plan was applied in order to a copy of the base and the result compared with the last state. Not run: CI, macOS and Windows, and the app by hand.
 
-Tasks 3 to 5 were generated again on 2026-10-18, on `main` at `660cfd9` (tasks 1 and 2 merged). Task 3's diffs applied as they were; task 4's took the Appearance keys in `Key::ALL` and the key lines of the file; task 5's put `OptionId::IdleDisconnect` in `OptionId::SAFETY`, where General's sections (`content` in `src/ui/settings/sheet.rs`, `rows()` in `src/ui/settings/terminal.rs`) find it, in place of `group_starting`, and take the Appearance options in every match. Each task's state passed `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings` and `cargo test --locked --workspace --all-targets` with the test PostgreSQL, MySQL and SSH servers (3,680 tests after task 3, 3,698 after task 4, 3,699 after task 5, none failed; `the_agent_opens_the_tunnel` skipped, as `TABLETIST_TEST_SSH_AGENT` needs an agent that holds the test key, which CI loads). Each task's Step 2 failed as it says. The last state also passed `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` and `docs/bin/check`, and the six diffs, applied in order to `main`, give that state.
+Tasks 3 to 5 were generated again on 2026-10-18, on `main` at `660cfd9` (tasks 1 and 2 merged). Task 3's diffs applied as they were; task 4's took the Appearance keys in `Key::ALL` and the key lines of the file; task 5's put `OptionId::IdleDisconnect` in `OptionId::SAFETY`, where General's sections (`content` in `src/ui/settings/sheet.rs`, `rows()` in `src/ui/settings/terminal.rs`) find it, in place of `group_starting`, and take the Appearance options in every match. Each task's state passed `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings` and `cargo test --locked --workspace --all-targets` with the test PostgreSQL, MySQL and SSH servers (3,680 tests after task 3, 3,698 after task 4, 3,699 after task 5, none failed; as committed, with the reviews' fixes, 3,680, 3,699 and 3,700, and 3,711 after the final review's fixes; rebased on `main` at `d8ec583` (Settings › Appearance's theme, #159), each commit passed the three checks again with 3,711, 3,730, 3,731 and 3,742 tests; `the_agent_opens_the_tunnel` skipped, as `TABLETIST_TEST_SSH_AGENT` needs an agent that holds the test key, which CI loads). Each task's Step 2 failed as it says. The last state also passed `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` and `docs/bin/check`, and the six diffs, applied in order to `main`, give that state.
 
 ## Files
 
@@ -1583,6 +1583,8 @@ The backend's worker holds a command for a session whose connect is under way, a
 
 **Files:** Modify `src/backend.rs`.
 
+> **Committed as `346a037`, with the reviews' fixes, which the diffs below do not have.** `adopt`'s doc says the order: `Connected`, then what waited, then the session in the map. A session closed before its connect ended answers anything still waiting as lost (it is empty, but nothing is dropped silently), and the closed half of `what_waits_for_a_connect_that_fails_or_is_closed_is_lost` sends one more command after the close and sees it lost at once. The field's doc gives the idle reconnect as its reason; a lost answer says the tab asks again once connected. The helpers are `next_event` and `is_lost`.
+
 - [ ] **Step 1: Write the failing tests**
 
 ````diff
@@ -1893,6 +1895,8 @@ git commit -m "Keep what is sent to a session that is still connecting until it 
 The key `safety.idle_disconnect` (`Idle`, default `30m`), `SessionStatus::Idle`, `App::close_idle` from `App::logic`, `App::wake` in every sender of a command a use needs, and `App::note_use` for the person's input. A session closed while idle draws no banner, and its chip and card say so. A connect again that fails clears what waited for it; one that has to ask for a secret first sends no save and no run before it. The window's row comes in task 5: until then the key is set in the file.
 
 **Files:** Modify `docs/_reference/settings-and-files.md`; Modify `src/app.rs`; Modify `src/app/editing.rs`; Modify `src/app/key_picker.rs`; Modify `src/entrypoint.rs`; Modify `src/model.rs`; Modify `src/settings.rs`; Modify `src/ui/sql_results.rs`; Modify `src/ui/workspace.rs`.
+
+> **Committed as `7bd3e55`, with the reviews' fixes, which the diffs below do not have.** `a_key_in_the_connections_tab_is_a_use` no longer takes an hour from `Instant::now()` (on Windows the clock counts from boot, and CI starts within the hour): it compares with the `used` the tab starts with. The new test `the_apps_logic_closes_idle_sessions_and_asks_to_be_run_when_the_next_is_due` runs `App::logic` and sees the repaint asked for when the next session is due. The run half of `a_save_or_a_run_connects_again_too` checks the session was closed and the run went to a new one after its `Connect`. `mod idle` has its own doc, and the editing tests' doc is back on `mod editing`. `App::logic`'s doc names the closing, and a comment says why it comes before the frame notes the input (a hidden window runs `logic` alone, with the last frame's input). `Settings::default` takes `Idle::default()`, and `send_write`'s comment names every session that is not up.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3399,6 +3403,8 @@ The row in both looks: a menu on macOS and Windows, a stepper on Omarchy. The op
 
 **Files:** Modify `docs/_reference/settings-and-files.md`; Modify `src/app.rs`; Modify `src/model.rs`; Modify `src/settings.rs`; Modify `src/ui/mod.rs`; Modify `src/ui/settings/mod.rs`; Modify `src/ui/settings/sheet.rs`; Modify `src/ui/settings/terminal.rs`.
 
+> **Committed as `49d03b7`, with the reviews' fixes, which the diffs below do not have.** The Omarchy row writes Never through gettext (`never`), and its test steps down to it. `idle_text` counts with `ngettext`, as the log's days do. The docs of `stepped_text`, `stepper` and `Settings::stepped` name the idle time. The two Safety group tests are `the_safety_group_of_the_sheet_sets_its_three_options` and `the_safety_group_of_the_screen_has_its_rows_space_flips_them_and_arrows_step_the_idle_time`, and the second checks the cursor is on the idle row before it steps.
+
 - [ ] **Step 1: Write the failing tests**
 
 ````diff
@@ -3919,6 +3925,15 @@ Expected: no warning, every test passes.
 git add docs/_reference/settings-and-files.md src/app.rs src/model.rs src/settings.rs src/ui/mod.rs src/ui/settings/mod.rs src/ui/settings/sheet.rs src/ui/settings/terminal.rs
 git commit -m "Add Disconnect when idle to Settings › General"
 ```
+
+### After task 5: what the final review found
+
+A review of the three tasks together found four things, fixed in `d82c5ef` after task 5, each with its tests (3,711 tests after it). Igor chose the second and third on 2026-10-18.
+
+- Typing through an input method (`egui::Event::Ime`) is a use.
+- A reconnect read twice: since task 3 a page, structure, count, column list or tree list asked while a connect that restarts the tab is under way (`Workspace::restarts_once_up`: a reconnect, the first connect, or a connect again for a use whose secret was not at hand) was answered by the new session and then read again by `after_connect`. Those senders now go through `App::wake_to_read` and send nothing then; `after_connect` also reads a tab's page and structure that `needs_load()`. A lost session (Disconnected, Cancelled) is still sent the read, and answers it as lost, as before.
+- A connect again for a use keeps the access the window had (`Workspace::keep_access`, until the session is up, and after a refused password typed again); Reconnect and trusting a new host key read the saved Open read-only box again.
+- Agents › Masked columns can read a table's columns through a window closed while idle, if waking it asks the person for nothing (`Workspace::connects_unasked`, from the `SecretStep`s `authenticate` walks), since a prompt cannot open over the connection dialog; it wakes one window of a connection at a time, and asks a connected one first.
 
 ## Pull request
 
