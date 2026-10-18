@@ -3,7 +3,7 @@
 
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
-use crate::settings::RowHeight;
+use crate::settings::{Mode, RowHeight, Theme};
 
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
@@ -536,21 +536,92 @@ pub fn mix(base: Color32, color: Color32, amount: f32) -> Color32 {
     base.lerp_to_gamma(color, amount)
 }
 
-/// Picks the palette to draw with: the user's chosen file, else Omarchy's
-/// live palette when the desktop is Omarchy, else the OS light/dark setting.
-pub fn resolve(catalog: &Catalog, custom: Option<&str>, system: Option<egui::Theme>) -> Palette {
-    if let Some(theme) = custom.and_then(|name| catalog.find(name)) {
-        return theme.palette.with_readable_labels();
+/// Where a pinned theme is read from, as its name is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinFrom<'a> {
+    /// `Nord.json`: a palette file in the themes folder, as older versions
+    /// named one.
+    File(&'a str),
+    /// `/…` or `~/…`: a palette file, or an Omarchy theme's folder.
+    Path(&'a str),
+    /// `Tokyo Night`: an Omarchy theme, else a palette of the themes folder
+    /// by its name.
+    Name(&'a str),
+}
+
+impl<'a> PinFrom<'a> {
+    pub fn of(name: &'a str) -> Self {
+        if name.starts_with('/') || name.starts_with("~/") {
+            Self::Path(name)
+        } else if !name.contains(['/', '\\'])
+            && name
+                .rsplit_once('.')
+                .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("json"))
+        {
+            Self::File(name)
+        } else {
+            Self::Name(name)
+        }
+    }
+
+    /// The palette file the themes folder is to read first, for a pin
+    /// that names one.
+    pub fn file(self) -> Option<&'a str> {
+        match self {
+            Self::File(file) => Some(file),
+            Self::Path(_) | Self::Name(_) => None,
+        }
+    }
+}
+
+/// The palette of the themes folder a pin names: its file, or a palette
+/// called `name` whatever its case (`tokyo night` is `Tokyo Night.json`).
+/// Never Omarchy's live palette, which is no theme of its own.
+pub fn catalog_pin(catalog: &Catalog, name: &str) -> Option<Palette> {
+    let named = |theme: &&CustomTheme| {
+        theme.filename != fastframe_theme::omarchy::FILENAME
+            && (theme.filename == name
+                || fastframe_theme::display_name(&theme.filename).to_lowercase()
+                    == name.to_lowercase())
+    };
+    catalog
+        .themes()
+        .iter()
+        .find(named)
+        .map(|theme| theme.palette)
+}
+
+/// Picks the palette to draw with. macOS and Windows draw light or dark:
+/// the system's, or the one `theme` names. The terminal look draws the
+/// pinned theme where it was read (`pinned`), else Omarchy's live palette
+/// when the desktop is Omarchy, else the system's light or dark.
+pub fn resolve(
+    look: &Look,
+    theme: &Theme,
+    pinned: Option<Palette>,
+    catalog: &Catalog,
+    system: Option<egui::Theme>,
+) -> Palette {
+    let system = match system {
+        Some(egui::Theme::Light) => Palette::light(),
+        _ => Palette::dark(),
+    };
+    if !look.terminal {
+        return match theme.mode() {
+            Mode::System => system,
+            Mode::Light => Palette::light(),
+            Mode::Dark => Palette::dark(),
+        };
+    }
+    if let Some(palette) = pinned {
+        return palette.with_readable_labels();
     }
     if catalog.follows_omarchy()
         && let Some(theme) = catalog.system_theme()
     {
         return theme.palette.with_readable_labels();
     }
-    match system {
-        Some(egui::Theme::Light) => Palette::light(),
-        _ => Palette::dark(),
-    }
+    system
 }
 
 /// Adds the shared presets and, on Omarchy, the desktop's live palette.
@@ -798,45 +869,97 @@ mod tests {
         assert!(!palette.set("no_such_colour", egui::Color32::RED));
     }
 
+    /// What the terminal look draws with `theme`, the pin read from the
+    /// catalog as the app reads one of the themes folder.
+    fn terminal(catalog: &Catalog, theme: &Theme, system: Option<egui::Theme>) -> Palette {
+        let pinned = theme.pin().and_then(|name| catalog_pin(catalog, name));
+        resolve(&Look::omarchy(), theme, pinned, catalog, system)
+    }
+
     #[test]
     fn without_a_choice_the_os_theme_decides() {
         let catalog = Catalog::preview(vec![nord()], false);
-        assert_eq!(
-            resolve(&catalog, None, Some(egui::Theme::Light)),
-            Palette::light()
-        );
-        assert_eq!(
-            resolve(&catalog, None, Some(egui::Theme::Dark)),
-            Palette::dark()
-        );
-        assert_eq!(resolve(&catalog, None, None), Palette::dark());
+        for look in Look::ALL {
+            let at = |system| resolve(&look, &Theme::Unset, None, &catalog, system);
+            assert_eq!(at(Some(egui::Theme::Light)), Palette::light());
+            assert_eq!(at(Some(egui::Theme::Dark)), Palette::dark());
+            assert_eq!(at(None), Palette::dark());
+        }
+    }
+
+    #[test]
+    fn macos_and_windows_draw_the_mode_the_settings_name() {
+        let catalog = Catalog::preview(vec![nord(), omarchy()], true);
+        for look in [Look::macos(), Look::standard()] {
+            let at = |theme: Theme, system| resolve(&look, &theme, None, &catalog, system);
+            let light = Some(egui::Theme::Light);
+            assert_eq!(at(Theme::Dark, light), Palette::dark());
+            assert_eq!(at(Theme::Light, Some(egui::Theme::Dark)), Palette::light());
+            assert_eq!(at(Theme::System, light), Palette::light());
+            // The terminal look's values are the system's here, Omarchy
+            // followed or not, a palette there or not.
+            assert_eq!(at(Theme::Omarchy, light), Palette::light());
+            assert_eq!(
+                at(Theme::Pinned("Nord.json".into()), light),
+                Palette::light()
+            );
+        }
     }
 
     #[test]
     fn omarchy_wins_over_the_os_theme_when_followed() {
         let catalog = Catalog::preview(vec![omarchy()], true);
-        assert_eq!(
-            resolve(&catalog, None, Some(egui::Theme::Dark)),
-            omarchy().palette
-        );
+        let dark = Some(egui::Theme::Dark);
+        for theme in [Theme::Unset, Theme::Omarchy, Theme::Light, Theme::Dark] {
+            assert_eq!(
+                terminal(&catalog, &theme, dark),
+                omarchy().palette,
+                "{theme:?}"
+            );
+        }
     }
 
     #[test]
-    fn a_chosen_theme_wins_over_everything() {
+    fn a_pinned_theme_wins_over_everything_in_the_terminal_look() {
         let catalog = Catalog::preview(vec![nord(), omarchy()], true);
-        assert_eq!(
-            resolve(&catalog, Some("Nord.json"), Some(egui::Theme::Light)),
-            nord().palette
-        );
+        let light = Some(egui::Theme::Light);
+        for name in ["Nord.json", "Nord", "nord"] {
+            let theme = Theme::Pinned(name.into());
+            assert_eq!(terminal(&catalog, &theme, light), nord().palette, "{name}");
+        }
+        // Omarchy's live palette is no theme to pin by its file's name.
+        let theme = Theme::Pinned("omarchy".into());
+        assert_eq!(catalog_pin(&catalog, "Omarchy"), None);
+        assert_eq!(terminal(&catalog, &theme, light), omarchy().palette);
     }
 
     #[test]
-    fn an_unknown_custom_theme_falls_back_to_the_system_theme() {
+    fn an_unknown_pin_falls_back_to_the_desktop() {
         let catalog = Catalog::preview(vec![nord()], false);
+        let theme = Theme::Pinned("Missing.json".into());
         assert_eq!(
-            resolve(&catalog, Some("Missing.json"), Some(egui::Theme::Light)),
+            terminal(&catalog, &theme, Some(egui::Theme::Light)),
             Palette::light()
         );
+    }
+
+    #[test]
+    fn a_pin_is_read_from_where_its_name_says() {
+        assert_eq!(PinFrom::of("Nord.json"), PinFrom::File("Nord.json"));
+        assert_eq!(PinFrom::of("my.JSON"), PinFrom::File("my.JSON"));
+        assert_eq!(PinFrom::of("Tokyo Night"), PinFrom::Name("Tokyo Night"));
+        assert_eq!(PinFrom::of("/x/Nord.json"), PinFrom::Path("/x/Nord.json"));
+        assert_eq!(
+            PinFrom::of("~/themes/sunset"),
+            PinFrom::Path("~/themes/sunset")
+        );
+        // Neither a file of the folder nor a path the app can find.
+        assert_eq!(
+            PinFrom::of("themes/Nord.json"),
+            PinFrom::Name("themes/Nord.json")
+        );
+        assert_eq!(PinFrom::of("Nord.json").file(), Some("Nord.json"));
+        assert_eq!(PinFrom::of("Nord").file(), None);
     }
 
     #[test]

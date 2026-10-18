@@ -3981,7 +3981,7 @@ impl App {
                 }
             }
         }
-        if old.custom_theme != self.settings.custom_theme {
+        if old.theme != self.settings.theme {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
         }
@@ -5450,7 +5450,7 @@ impl App {
             let repaint = ctx.clone();
             self.themes.start(
                 self.dirs.themes_dir(),
-                self.settings.custom_theme.clone(),
+                self.palette_file(),
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
             // Not in tests or the demo, which must not watch the user's
@@ -5465,10 +5465,28 @@ impl App {
         self.backend.send(Command::LoadZones);
     }
 
+    /// The palette file a pin names, which the themes folder reads first.
+    fn palette_file(&self) -> Option<String> {
+        let pin = self.settings.theme.pin()?;
+        theme::PinFrom::of(pin).file().map(str::to_owned)
+    }
+
+    /// The pinned theme's palette, where the terminal look has one: read
+    /// from the themes folder.
+    fn pinned_palette(&self) -> Option<Palette> {
+        if !self.look.terminal {
+            return None;
+        }
+        let pin = self.settings.theme.pin()?;
+        theme::catalog_pin(&self.themes, pin)
+    }
+
     fn resolve_palette(&self) -> Palette {
         theme::resolve(
+            &self.look,
+            &self.settings.theme,
+            self.pinned_palette(),
             &self.themes,
-            self.settings.custom_theme.as_deref(),
             self.system_theme,
         )
     }
@@ -5483,7 +5501,7 @@ impl App {
             let repaint = ctx.clone();
             self.themes.start(
                 self.dirs.themes_dir(),
-                self.settings.custom_theme.clone(),
+                self.palette_file(),
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
         }
@@ -6082,6 +6100,8 @@ mod tests {
     #[test]
     fn a_new_theme_name_is_resolved_at_the_next_logic_pass() {
         let mut harness = Harness::new();
+        // A pin is the terminal look's, on every platform the tests run on.
+        harness.app.look = crate::theme::Look::omarchy();
         // A catalog that holds the theme already: no directory is read.
         let mut nord = Palette::dark();
         nord.accent = egui::Color32::from_rgb(0x88, 0xc0, 0xd0);
@@ -6093,7 +6113,7 @@ mod tests {
             false,
         );
         let settings = Settings {
-            custom_theme: Some("Nord.json".into()),
+            theme: crate::settings::Theme::Pinned("Nord.json".into()),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);

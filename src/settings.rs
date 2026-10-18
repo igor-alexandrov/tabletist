@@ -201,6 +201,88 @@ impl EnvBar {
     }
 }
 
+/// What `appearance.theme` says. macOS and Windows read `"system"`,
+/// `"light"` and `"dark"`; the terminal look reads `"omarchy"`, a theme's
+/// name and a path. A value meant for the other looks is drawn as the
+/// look's own default, and kept: the file says it as it did until the
+/// theme is changed in this look.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "Option<String>")]
+pub enum Theme {
+    /// No value: each look follows its desktop.
+    #[default]
+    Unset,
+    /// The system's light or dark, as it changes.
+    System,
+    Light,
+    Dark,
+    /// The Omarchy theme of the moment, as `omarchy-theme` switches it.
+    Omarchy,
+    /// A theme by name or path that stays when Omarchy's changes: what the
+    /// file said, as it said it.
+    Pinned(String),
+}
+
+/// What macOS and Windows draw: the system's light or dark, or one of the
+/// two whatever the system says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    /// What the file's text says. An empty text says nothing.
+    pub fn of(text: &str) -> Self {
+        match text {
+            "" => Self::Unset,
+            "system" => Self::System,
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            "omarchy" => Self::Omarchy,
+            name => Self::Pinned(name.to_owned()),
+        }
+    }
+
+    /// The file's text: `None` for no value.
+    pub fn text(&self) -> Option<&str> {
+        Some(match self {
+            Self::Unset => return None,
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::Omarchy => "omarchy",
+            Self::Pinned(name) => name,
+        })
+    }
+
+    /// What macOS and Windows draw. A value of the terminal look's is the
+    /// system's.
+    pub fn mode(&self) -> Mode {
+        match self {
+            Self::Light => Mode::Light,
+            Self::Dark => Mode::Dark,
+            Self::Unset | Self::System | Self::Omarchy | Self::Pinned(_) => Mode::System,
+        }
+    }
+
+    /// The terminal look's pin: `None` follows the desktop. A value of
+    /// macOS and Windows follows it too.
+    pub fn pin(&self) -> Option<&str> {
+        match self {
+            Self::Pinned(name) => Some(name),
+            Self::Unset | Self::System | Self::Light | Self::Dark | Self::Omarchy => None,
+        }
+    }
+}
+
+impl From<Option<String>> for Theme {
+    fn from(text: Option<String>) -> Self {
+        text.map_or(Self::Unset, |text| Self::of(&text))
+    }
+}
+
 /// Everything the user can set. A key the file lacks takes its default and
 /// one this version does not know is ignored, so older and newer files both
 /// load. The serde derive reads the `settings.json` of versions before the
@@ -233,9 +315,10 @@ pub struct Settings {
     pub confirm_close_edits: bool,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
     pub show_system_schemas: bool,
-    /// A palette file name in the themes directory. `None` follows the
-    /// desktop: Omarchy when present, else the OS light/dark setting.
-    pub custom_theme: Option<String>,
+    /// The theme each look draws. Older versions wrote a palette file's
+    /// name here, which the terminal look still reads.
+    #[serde(rename = "custom_theme")]
+    pub theme: Theme,
     /// Rows a SQL editor statement keeps (the Limit menu).
     pub sql_limit: u32,
     /// Seconds before a SQL editor run is cancelled; `None` waits forever.
@@ -346,6 +429,13 @@ impl Key {
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
             Self::EnvBar => Some("tint | label"),
+            // The values of the look the platform draws: Linux has the
+            // terminal look, the others the system's light and dark.
+            Self::Theme => Some(if cfg!(target_os = "linux") {
+                "omarchy | \"Tokyo Night\" | path"
+            } else {
+                "system | light | dark"
+            }),
             _ => None,
         }
     }
@@ -1165,7 +1255,7 @@ impl Settings {
             Key::McpEnabled => self.mcp_enabled.to_string(),
             Key::McpLogDays => self.mcp_log_days.to_string(),
             Key::McpNotify => self.mcp_notify.to_string(),
-            Key::Theme => toml_string(self.custom_theme.as_deref()?),
+            Key::Theme => toml_string(self.theme.text()?),
             Key::RowHeight => toml_string(self.row_height.name()),
             Key::Zebra => self.zebra?.to_string(),
             Key::ColumnTypes => self.column_types.to_string(),
@@ -1398,7 +1488,10 @@ impl Settings {
             Key::McpEnabled => flag.map(|flag| self.mcp_enabled = flag),
             Key::McpLogDays => number.map(|number| self.mcp_log_days = number),
             Key::McpNotify => flag.map(|flag| self.mcp_notify = flag),
-            Key::Theme => text.map(|name| self.custom_theme = Some(name.to_owned())),
+            // An empty name names nothing: the line is ignored.
+            Key::Theme => text
+                .filter(|text| !text.is_empty())
+                .map(|text| self.theme = Theme::of(text)),
             Key::RowHeight => text
                 .and_then(RowHeight::from_name)
                 .map(|height| self.row_height = height),
@@ -1526,7 +1619,7 @@ impl Settings {
             Key::McpEnabled => self.mcp_enabled = other.mcp_enabled,
             Key::McpLogDays => self.mcp_log_days = other.mcp_log_days,
             Key::McpNotify => self.mcp_notify = other.mcp_notify,
-            Key::Theme => self.custom_theme = other.custom_theme.clone(),
+            Key::Theme => self.theme = other.theme.clone(),
             Key::RowHeight => self.row_height = other.row_height,
             Key::Zebra => self.zebra = other.zebra,
             Key::ColumnTypes => self.column_types = other.column_types,
@@ -1585,7 +1678,7 @@ impl Default for Settings {
             production_read_only: true,
             confirm_close_edits: true,
             show_system_schemas: false,
-            custom_theme: None,
+            theme: Theme::Unset,
             sql_limit: 1_000,
             sql_timeout_secs: Some(30),
             mcp_enabled: false,
@@ -1612,7 +1705,7 @@ mod tests {
         assert_eq!(settings.group_digits, None);
         assert!(settings.value_tags);
         assert!(!settings.show_system_schemas);
-        assert_eq!(settings.custom_theme, None);
+        assert_eq!(settings.theme, Theme::Unset);
         assert_eq!(settings.sql_limit, 1_000);
         assert_eq!(settings.sql_timeout_secs, Some(30));
         assert!(!settings.mcp_enabled);
@@ -1647,7 +1740,7 @@ mod tests {
             production_read_only: false,
             confirm_close_edits: false,
             show_system_schemas: true,
-            custom_theme: Some("My \"Nord\".json".into()),
+            theme: Theme::Pinned("My \"Nord\".json".into()),
             sql_limit: 100,
             sql_timeout_secs: None,
             mcp_enabled: true,
@@ -1663,9 +1756,12 @@ mod tests {
 
     #[test]
     fn only_what_is_not_the_default_is_written_each_table_in_its_place() {
+        // The theme's note names the values of the look this platform draws.
+        let note = Key::Theme.note().unwrap();
         assert_eq!(
             all_set().to_toml(),
-            "\
+            format!(
+                "\
 # written by tabletist, safe to edit by hand
 [data]
 page_size = 500
@@ -1691,7 +1787,7 @@ log_days = 7
 notify = false
 
 [appearance]
-theme = \"My \\\"Nord\\\".json\"
+theme = \"My \\\"Nord\\\".json\"  # {note}
 
 [appearance.grid]
 row_height = \"roomy\"  # compact | regular | roomy
@@ -1702,13 +1798,14 @@ table_list = \"flat\"  # tree | flat
 [appearance.env]
 bar = \"label\"  # tint | label
 "
+            )
         );
     }
 
     #[test]
     fn a_theme_gets_its_table_and_no_timeout_is_zero() {
         let settings = Settings {
-            custom_theme: Some("My \"Nord\".json".into()),
+            theme: Theme::Pinned("My \"Nord\".json".into()),
             sql_timeout_secs: None,
             timestamps: Timestamps::Full,
             ..Settings::default()
@@ -1723,9 +1820,13 @@ bar = \"label\"  # tint | label
             "{text}"
         );
         // The only key of its table that is not at its default: the grid's
-        // table under it is not written.
+        // table under it is not written. The note names the values of the
+        // look this platform draws.
+        let note = Key::Theme.note().unwrap();
         assert!(
-            text.ends_with("\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n"),
+            text.ends_with(&format!(
+                "\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"  # {note}\n"
+            )),
             "{text}"
         );
     }
@@ -2560,7 +2661,7 @@ bar = \"label\"  # tint | label
                     [editor]\nsql_limit = 100\n";
         let loaded = Settings::from_toml(text);
         assert_eq!(loaded.invalid, vec![4, 5, 6]);
-        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.theme, Theme::Unset);
         assert_eq!(loaded.settings.page_size, 100);
         assert_eq!(loaded.settings.sql_limit, Settings::default().sql_limit);
         assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
@@ -2574,7 +2675,7 @@ bar = \"label\"  # tint | label
         // The same on a last line with no break after it.
         let loaded = Settings::from_toml("[appearance]\ntheme = \"\"\"Nord");
         assert_eq!(loaded.invalid, vec![2]);
-        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.theme, Theme::Unset);
     }
 
     #[test]
@@ -2585,7 +2686,7 @@ bar = \"label\"  # tint | label
              [editor]\r\nsql_limit = 100\r\n\r\n\r\n",
         );
         assert_eq!(loaded.invalid, vec![4, 5, 6]);
-        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.theme, Theme::Unset);
         assert_eq!(loaded.settings.page_size, 100);
         assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
     }
@@ -2655,7 +2756,7 @@ bar = \"label\"  # tint | label
         let expected = Settings {
             page_size: 100,
             show_system_schemas: true,
-            custom_theme: Some("Nord.json".into()),
+            theme: Theme::Pinned("Nord.json".into()),
             sql_limit: 100,
             sql_timeout_secs: None,
             ..Settings::default()
@@ -3036,5 +3137,72 @@ bar = \"label\"  # tint | label
         );
         // A reset leaves them to the look.
         assert_eq!(OptionId::Zebra.default_value(), OptionValue::Zebra(None));
+    }
+
+    #[test]
+    fn each_theme_value_is_read_and_written_as_it_was() {
+        for (text, theme) in [
+            ("system", Theme::System),
+            ("light", Theme::Light),
+            ("dark", Theme::Dark),
+            ("omarchy", Theme::Omarchy),
+            ("Tokyo Night", Theme::Pinned("Tokyo Night".into())),
+            ("Nord.json", Theme::Pinned("Nord.json".into())),
+            ("~/themes/sunset", Theme::Pinned("~/themes/sunset".into())),
+            // A word in another case is a name, not the word.
+            ("Dark", Theme::Pinned("Dark".into())),
+        ] {
+            let loaded = Settings::from_toml(&format!("[appearance]\ntheme = {text:?}\n"));
+            assert_eq!(loaded.invalid, Vec::<usize>::new(), "{text}");
+            assert_eq!(loaded.settings.theme, theme, "{text}");
+            assert_eq!(theme.text(), Some(text));
+            let written = loaded.settings.to_toml();
+            assert!(
+                written.contains(&format!("theme = {text:?}  #")),
+                "{written}"
+            );
+            assert_eq!(Settings::from_toml(&written).settings.theme, theme);
+        }
+        // Unset, it is not written; an empty name or no text is ignored.
+        assert!(!Settings::default().to_toml().contains("theme"));
+        for line in ["theme = \"\"", "theme = 1"] {
+            let loaded = Settings::from_toml(&format!("[appearance]\n{line}\n"));
+            assert_eq!(loaded.invalid, vec![2], "{line}");
+            assert_eq!(loaded.settings.theme, Theme::Unset);
+        }
+    }
+
+    #[test]
+    fn each_look_reads_its_own_theme_values_and_follows_its_desktop_on_the_others() {
+        let pinned = Theme::Pinned("Tokyo Night".into());
+        // macOS and Windows: the three tiles; anything else is the system's.
+        for (theme, mode) in [
+            (Theme::Unset, Mode::System),
+            (Theme::System, Mode::System),
+            (Theme::Light, Mode::Light),
+            (Theme::Dark, Mode::Dark),
+            (Theme::Omarchy, Mode::System),
+            (pinned.clone(), Mode::System),
+        ] {
+            assert_eq!(theme.mode(), mode, "{theme:?}");
+        }
+        // The terminal look: a pin, or the desktop for anything else.
+        for (theme, pin) in [
+            (Theme::Unset, None),
+            (Theme::System, None),
+            (Theme::Light, None),
+            (Theme::Dark, None),
+            (Theme::Omarchy, None),
+            (pinned.clone(), Some("Tokyo Night")),
+        ] {
+            assert_eq!(theme.pin(), pin, "{theme:?}");
+        }
+        // A value the look does not read is kept through another change.
+        let mut settings = Settings::from_toml("[appearance]\ntheme = \"omarchy\"\n").settings;
+        settings.row_height = RowHeight::Roomy;
+        assert_eq!(
+            Settings::from_toml(&settings.to_toml()).settings.theme,
+            Theme::Omarchy
+        );
     }
 }
