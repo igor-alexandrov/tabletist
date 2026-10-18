@@ -803,6 +803,9 @@ pub fn book_covers_page(rows: usize) -> RowPage {
     }
 }
 
+/// UTC, for a test's [`crate::edit::Table`] to hold a zone by reference.
+pub static UTC: jiff::tz::TimeZone = jiff::tz::TimeZone::UTC;
+
 /// When the Bookshop's covers were made, as PostgreSQL sends a
 /// `timestamptz` in a session whose zone is UTC.
 pub const COVERS_MADE: &str = "2026-01-12 09:14:03.482915+00";

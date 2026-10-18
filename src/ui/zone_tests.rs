@@ -195,3 +195,129 @@ fn the_row_panel_shows_the_system_zone_too() {
             .is_some()
     );
 }
+
+/// The covers' tab on PostgreSQL, the one engine with an offset to send.
+fn covers_on_postgres() -> (Harness, ConnTabId, TabId) {
+    let (mut harness, tab, id) = covers();
+    harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Postgres;
+    (harness, tab, id)
+}
+
+/// Opens the editor on `created_at` of the first row, from its value.
+fn open_editor(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos { row: 0, col: MADE },
+        start: crate::model::EditStart::Value,
+    });
+}
+
+fn editor_text(harness: &Harness, tab: ConnTabId, id: TabId) -> String {
+    let workspace = harness.app.workspace(tab).unwrap();
+    let object = workspace.object_tab(id).unwrap();
+    object
+        .edits
+        .editor
+        .as_ref()
+        .expect("an editor")
+        .text
+        .clone()
+}
+
+/// Types `text` into the open editor and commits it.
+fn commit(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str) {
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let object = workspace.object_tab_mut(id).unwrap();
+    object.edits.editor.as_mut().expect("an editor").text = text.to_owned();
+    harness.app.apply(Action::EditorTyped { tab, id });
+    harness.app.apply(Action::CommitEdit {
+        tab,
+        id,
+        then: crate::model::Advance::Stay,
+    });
+}
+
+/// The cell's pending text, where it has one.
+fn pending(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<String> {
+    let workspace = harness.app.workspace(tab).unwrap();
+    let object = workspace.object_tab(id).unwrap();
+    match &object.edits.cells.get(&(0, MADE))?.new {
+        tabletist_db::NewValue::Text(text) => Some(text.clone()),
+        other => panic!("not a text: {other:?}"),
+    }
+}
+
+#[test]
+fn the_editor_opens_on_the_moment_as_the_cell_shows_it() {
+    let (mut harness, tab, id) = covers_on_postgres();
+    zone(&mut harness, new_york());
+    open_editor(&mut harness, tab, id);
+    assert_eq!(
+        editor_text(&harness, tab, id),
+        "2026-01-12 04:14:03.482915-05"
+    );
+    // Committed as it opened, or as the server wrote it: the moment that
+    // was loaded, and no change.
+    commit(&mut harness, tab, id, "2026-01-12 04:14:03.482915-05");
+    assert_eq!(pending(&harness, tab, id), None);
+    open_editor(&mut harness, tab, id);
+    commit(&mut harness, tab, id, COVERS_MADE);
+    assert_eq!(pending(&harness, tab, id), None);
+}
+
+#[test]
+fn a_moment_typed_without_an_offset_is_sent_with_the_zones() {
+    let (mut harness, tab, id) = covers_on_postgres();
+    zone(&mut harness, new_york());
+    open_editor(&mut harness, tab, id);
+    commit(&mut harness, tab, id, "2026-01-12 06:00:00");
+    assert_eq!(
+        pending(&harness, tab, id).as_deref(),
+        Some("2026-01-12 06:00:00-05")
+    );
+    // One typed with an offset is sent as typed.
+    open_editor(&mut harness, tab, id);
+    commit(&mut harness, tab, id, "2026-01-12 06:00:00+01");
+    assert_eq!(
+        pending(&harness, tab, id).as_deref(),
+        Some("2026-01-12 06:00:00+01")
+    );
+}
+
+#[test]
+fn an_engine_that_keeps_no_offset_is_sent_what_was_typed() {
+    // The fake session is SQLite's.
+    let (mut harness, tab, id) = covers();
+    zone(&mut harness, new_york());
+    open_editor(&mut harness, tab, id);
+    commit(&mut harness, tab, id, "2026-01-12 06:00:00");
+    assert_eq!(
+        pending(&harness, tab, id).as_deref(),
+        Some("2026-01-12 06:00:00")
+    );
+}
+
+#[test]
+fn a_text_column_takes_a_moment_written_another_way_as_a_change() {
+    // `created_at` is TEXT here: what it holds is text, not a moment.
+    let mut harness = Harness::new();
+    let tab = harness.connect_fake_as(false);
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: tabletist_db::ObjectRef::new("main", "book_covers"),
+        kind: tabletist_db::ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(crate::testing::book_covers_structure());
+    let mut page = crate::testing::book_covers_page(1);
+    page.rows[0][MADE] = tabletist_db::Value::Text(COVERS_MADE.into());
+    harness.answer_rows(page);
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    open_editor(&mut harness, tab, id);
+    commit(&mut harness, tab, id, "2026-01-12T09:14:03.482915Z");
+    assert_eq!(
+        pending(&harness, tab, id).as_deref(),
+        Some("2026-01-12T09:14:03.482915Z")
+    );
+}

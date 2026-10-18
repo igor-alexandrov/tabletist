@@ -43,6 +43,15 @@ sent: numbers and their ranges, booleans, enum values, the maximum length,
 and the syntax of JSON. A foreign key you type is also looked up in the
 table it points at, as a [warning](#foreign-keys).
 
+### Dates and times with a zone
+
+A PostgreSQL `timestamptz` is shown, and opens to be edited, in the zone
+of [Time zone for timestamptz]({% link _reference/settings-and-files.md %}#the-settings-window),
+with that zone's offset. A value you type without an offset is sent with
+the zone's, so the server reads it as the time you see; one with an
+offset is sent as you typed it. Typing back the same moment, in any zone,
+changes nothing.
+
 ### Words that are not text
 
 In a column that is not text, three words typed into a cell are what they

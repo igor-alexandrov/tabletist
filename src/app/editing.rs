@@ -158,11 +158,27 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
         return None;
     }
     // What was typed, as the column reads it: a keyword where it is one.
-    let new = crate::edit::typed_as(table.dialect, column, &editor.text);
+    let mut new = crate::edit::typed_as(table.dialect, column, &editor.text);
+    // A moment typed with no offset is the zone's, where the column keeps
+    // one: the server would read it in its own.
+    if let NewValue::Text(text) = &new
+        && crate::edit::keeps_offset(table.dialect, &column.type_name)
+        && let Some(sent) = crate::ui::format::with_offset(text, table.zone)
+    {
+        new = NewValue::Text(sent);
+    }
+    // A moment typed back as it was, in the zone it is shown in or in any
+    // other, is the moment that was loaded: in a column of dates and
+    // times, where it is a moment and not text.
+    let temporal = table.page.columns.get(cell.col).map(|column| column.kind)
+        == Some(tabletist_db::ValueKind::Temporal);
     let changed = match (&new, loaded) {
         // A new row's unset cell is its default already.
         (NewValue::Default { .. }, None) => false,
-        (new, loaded) => loaded.is_none_or(|loaded| is_change(loaded, new, class)),
+        (new, loaded) => loaded.is_none_or(|loaded| {
+            is_change(loaded, new, class)
+                && !(temporal && crate::edit::same_moment_typed(loaded, new))
+        }),
     };
     let problem = changed
         .then(|| crate::edit::problem(table.dialect, column, &editor.text))
@@ -789,9 +805,20 @@ impl App {
                         NewValue::Null | NewValue::Default { .. } | NewValue::Now => String::new(),
                     },
                     // A new row's cell starts from nothing.
+                    // A moment with an offset as the cell shows it: in
+                    // the zone, and edited there.
                     None => table
                         .loaded(cell)
-                        .map(|loaded| start_text(loaded, class))
+                        .map(|loaded| {
+                            let start = start_text(loaded, class);
+                            let temporal =
+                                table.page.columns.get(cell.col).map(|column| column.kind)
+                                    == Some(tabletist_db::ValueKind::Temporal);
+                            temporal
+                                .then(|| crate::ui::format::in_zone(&start, table.zone))
+                                .flatten()
+                                .unwrap_or(start)
+                        })
                         .unwrap_or_default(),
                 },
             };
