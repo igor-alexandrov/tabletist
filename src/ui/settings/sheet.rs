@@ -10,7 +10,8 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    EnvBar, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
+    EnvBar, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, ThemeChoice, Timestamps,
+    Zone,
 };
 use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
@@ -53,6 +54,9 @@ const ZONE_LIST: f32 = 240.0;
 /// A segment's height, and the switch's.
 const SEGMENT: f32 = 22.0;
 const SWITCH: f32 = 18.0;
+/// A theme tile's window, and the space round it inside the tile's ring.
+const TILE: egui::Vec2 = vec2(120.0, 72.0);
+const TILE_PAD: f32 = 6.0;
 /// What a short window leaves of the rows at the least: about one of them.
 const ROWS_MIN: f32 = 56.0;
 /// The footer: the space over and under what it says, and between its
@@ -166,6 +170,7 @@ pub(super) fn show(
                     &mut pane,
                     ("Appearance", None),
                     &[
+                        ("Theme", &OptionId::THEME),
                         ("Grid", &OptionId::GRID),
                         ("Environment color", &OptionId::ENVIRONMENT),
                     ],
@@ -346,20 +351,154 @@ fn content(
                     ui.add_space(2.0);
                 }
                 for option in options.iter().copied() {
-                    row(
-                        ui,
-                        option,
-                        index < last,
-                        column,
-                        settings,
-                        skin,
-                        actions,
-                        None,
-                    );
+                    if option == OptionId::Theme {
+                        tiles(ui, settings, skin, actions);
+                    } else {
+                        row(
+                            ui,
+                            option,
+                            index < last,
+                            column,
+                            settings,
+                            skin,
+                            actions,
+                            None,
+                        );
+                    }
                     index += 1;
                 }
             }
         });
+}
+
+/// The Theme section: a tile for each mode, a radio group named by the
+/// option, the one set ringed in the accent, and what System does after
+/// them. Each tile draws a window in its palette: the sidebar's colour
+/// round the content's, System's half one and half the other.
+fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+    let Skin { look, palette, .. } = *skin;
+    let name = skin.say(label(OptionId::Theme));
+    let label_role = TextRole::UiBody;
+    let line = label_role.row_height(ui.ctx(), look.faces);
+    let tile = vec2(
+        TILE.x + 2.0 * TILE_PAD,
+        TILE_PAD + TILE.y + 6.0 + line + TILE_PAD,
+    );
+    let height = 6.0 + tile.y + 12.0 + 1.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
+    // The tiles in a Ui of their own, whose node is their parent in the
+    // accessibility tree: a radio group with the option's name.
+    let place = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - 1.0));
+    let group = ui.new_child(egui::UiBuilder::new().id_salt("theme").max_rect(place));
+    group
+        .ctx()
+        .accesskit_node_builder(group.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::RadioGroup);
+            node.set_label(name.as_str());
+        });
+    let (light, dark) = (Palette::light(), Palette::dark());
+    let mut x = rect.left();
+    let top = rect.top() + 6.0;
+    for (mode, word) in [
+        (Mode::System, "System"),
+        (Mode::Light, "Light"),
+        (Mode::Dark, "Dark"),
+    ] {
+        let area = Rect::from_min_size(pos2(x, top), tile);
+        x += tile.x + 12.0;
+        let word = skin.say(word);
+        let set = settings.theme.mode() == mode;
+        let button = group.interact(area, group.id().with(word.as_str()), Sense::click());
+        button.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, set, &word));
+        focus::hint(&group, &button, area, Ring::Outer { radius: 10 });
+        if button.clicked() && !set {
+            let choice = match mode {
+                Mode::System => ThemeChoice::System,
+                Mode::Light => ThemeChoice::Light,
+                Mode::Dark => ThemeChoice::Dark,
+            };
+            actions.push(Action::SetOption(OptionValue::Theme(choice)));
+        }
+        let painter = group.painter();
+        if set {
+            let ring = Stroke::new(2.0, palette.accent);
+            painter.rect_stroke(
+                area,
+                CornerRadius::same(10),
+                ring,
+                egui::StrokeKind::Outside,
+            );
+        }
+        let window = Rect::from_min_size(area.min + vec2(TILE_PAD, TILE_PAD), TILE);
+        let content = Rect::from_min_max(
+            window.min + vec2(22.0, 12.0),
+            pos2(window.right() - 10.0, window.bottom()),
+        );
+        let halves = |rect: Rect| rect.split_left_right_at_x(window.center().x);
+        let parts = match mode {
+            Mode::System => {
+                let ((left, right), (inner_left, inner_right)) = (halves(window), halves(content));
+                vec![
+                    (left, light.panel),
+                    (right, dark.panel),
+                    (inner_left, light.window),
+                    (inner_right, dark.window),
+                ]
+            }
+            Mode::Light => vec![(window, light.panel), (content, light.window)],
+            Mode::Dark => vec![(window, dark.panel), (content, dark.window)],
+        };
+        let window_radius = CornerRadius::same(8);
+        let content_radius = CornerRadius {
+            nw: 6,
+            ..CornerRadius::ZERO
+        };
+        for (index, (part, color)) in parts.into_iter().enumerate() {
+            // The window's corners are its own; the content's only at its
+            // top left, as the board draws it. System's halves are cut
+            // down the middle.
+            let mut radius = if part.top() == window.top() {
+                window_radius
+            } else {
+                content_radius
+            };
+            if mode == Mode::System {
+                let left = index % 2 == 0;
+                if left {
+                    radius.ne = 0;
+                    radius.se = 0;
+                } else {
+                    radius.nw = 0;
+                    radius.sw = 0;
+                }
+            }
+            painter.rect_filled(part, radius, color);
+        }
+        let border = Stroke::new(1.0, palette.border);
+        painter.rect_stroke(window, window_radius, border, egui::StrokeKind::Inside);
+        let role = if set {
+            TextRole::UiBodyStrong
+        } else {
+            label_role
+        };
+        let text = Text::one(look, role, &word, palette.text).layout(group.ctx());
+        text.paint_left(
+            painter,
+            area.center().x - text.width() / 2.0,
+            window.bottom() + 6.0 + line / 2.0,
+        );
+    }
+    let hint = if cfg!(target_os = "windows") {
+        "System follows Windows."
+    } else {
+        "System follows macOS, including Auto."
+    };
+    let hint = Text::one(look, TextRole::Secondary, &skin.say(hint), palette.dim).layout(ui.ctx());
+    let at = x - 12.0 + 8.0;
+    if at + hint.width() <= rect.right() {
+        write(ui, at, top + tile.y / 2.0, &hint);
+    }
 }
 
 /// How wide the rows' labels have it: `LABEL`, or what the widest small

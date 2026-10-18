@@ -144,6 +144,9 @@ pub struct App {
     follow_desktop: bool,
     /// The settings named another theme since the last `logic`.
     theme_changed: bool,
+    /// The light or dark the window's own parts were last told to take:
+    /// the system's until the settings name one.
+    window_theme: egui::SystemTheme,
     /// What the backend last read of Omarchy's themes: the name of the
     /// theme of the moment, and the pinned theme.
     pub desktop_theme: crate::desktop_theme::Read,
@@ -277,6 +280,7 @@ impl App {
             system_theme: None,
             follow_desktop: false,
             theme_changed: false,
+            window_theme: egui::SystemTheme::SystemDefault,
             desktop_theme: crate::desktop_theme::Read::default(),
             desktop_read: false,
             pin_told: None,
@@ -5635,6 +5639,17 @@ impl App {
             }
         }
         self.tell_missing_pin(ctx);
+        // macOS and Windows: the window's own parts (its title bar, the
+        // menus and panels of the system) in the mode the settings name.
+        let mode = match (self.look.terminal, self.settings.theme.mode()) {
+            (true, _) | (false, crate::settings::Mode::System) => egui::SystemTheme::SystemDefault,
+            (false, crate::settings::Mode::Light) => egui::SystemTheme::Light,
+            (false, crate::settings::Mode::Dark) => egui::SystemTheme::Dark,
+        };
+        if mode != self.window_theme {
+            self.window_theme = mode;
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(mode));
+        }
         // A hidden window draws no frame: its close request is answered
         // here, or nothing would hold it back.
         self.hold_close(ctx);

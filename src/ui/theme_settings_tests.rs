@@ -1,5 +1,6 @@
 //! Settings › Appearance, its Theme section: the terminal look's follow
-//! and pin with the palette they give, and the tiles of macOS and Windows.
+//! and pin with the palette they give, and the tiles of macOS and Windows
+//! with the window's own light or dark.
 
 use egui::accesskit::{Role, Toggled};
 
@@ -46,8 +47,23 @@ fn following() -> Harness {
         true,
     );
     harness.app.desktop_theme.current = Some("Tokyo Night".into());
-    harness.app.logic(&harness.ctx.clone());
+    logic(&mut harness);
     harness
+}
+
+/// One pass of the app's logic, as the window runs it between frames: the
+/// window commands it sent. The system's light or dark is the last
+/// frame's.
+fn logic(harness: &mut Harness) -> Vec<egui::ViewportCommand> {
+    let mut input = egui::RawInput::default();
+    input.viewports.entry(egui::ViewportId::ROOT).or_default();
+    let app = &mut harness.app;
+    let output = harness.ctx.run_logic(&input, |ctx| app.logic(ctx));
+    output
+        .viewport_commands
+        .get(&egui::ViewportId::ROOT)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// The settings with `theme`, as an edit of the file sets it: the file's
@@ -61,7 +77,7 @@ fn with_theme(harness: &mut Harness, theme: Theme) {
     harness
         .app
         .apply(Action::Backend(Event::SettingsFile { text, own: false }));
-    harness.app.logic(&harness.ctx.clone());
+    logic(harness);
 }
 
 /// What the backend read of the pin `name`: an Omarchy theme's palette.
@@ -77,7 +93,7 @@ fn read(harness: &mut Harness, name: &str, palette: Option<Palette>) {
         )),
     };
     harness.app.apply(Action::Backend(Event::Theme(read)));
-    harness.app.logic(&harness.ctx.clone());
+    logic(harness);
 }
 
 fn key(harness: &mut Harness, key: egui::Key, text: &str) {
@@ -236,7 +252,133 @@ fn a_pin_found_nowhere_is_said_beside_it() {
         )),
     };
     harness.app.apply(Action::Backend(Event::Theme(file)));
-    harness.app.logic(&harness.ctx.clone());
+    logic(&mut harness);
     assert!(shows(&mut harness, "now: ~/mine/Sunset.json · pinned"));
     assert!(shows(&mut harness, "read from ~/mine/Sunset.json"));
+}
+
+/// The sheet's look on its Appearance pane, the system light.
+fn sheet(look: Look) -> Harness {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    harness.system_theme = Some(egui::Theme::Light);
+    on_the_pane(&mut harness);
+    logic(&mut harness);
+    harness
+}
+
+#[test]
+fn the_sheet_sets_the_theme_with_its_tiles() {
+    let hint = if cfg!(target_os = "windows") {
+        "System follows Windows."
+    } else {
+        "System follows macOS, including Auto."
+    };
+    for look in [Look::macos(), Look::standard()] {
+        let mut harness = sheet(look);
+        assert!(shows(&mut harness, "THEME"), "{}", look.name);
+        assert!(shows(&mut harness, hint), "{}", look.name);
+        // A radio group named Theme, its tiles in the board's order.
+        let tree = harness.settle();
+        let group = crate::testing::node(&tree, "Theme", Role::RadioGroup).expect("the group");
+        let (_, group) = tree.nodes.iter().find(|(id, _)| *id == group).unwrap();
+        let tiles: Vec<_> = group
+            .children()
+            .iter()
+            .filter_map(|child| tree.nodes.iter().find(|(id, _)| id == child))
+            .filter(|(_, node)| node.role() == Role::RadioButton)
+            .filter_map(|(_, node)| node.label())
+            .collect();
+        assert_eq!(tiles, ["System", "Light", "Dark"], "{}", look.name);
+        assert_eq!(set(&mut harness, "System"), Some(true));
+        let saves = settings_saves(&harness);
+        harness.click("Dark");
+        harness.settle();
+        assert_eq!(harness.app.settings.theme, Theme::Dark);
+        assert_eq!(set(&mut harness, "Dark"), Some(true));
+        logic(&mut harness);
+        assert_eq!(
+            harness.app.palette,
+            Palette::dark(),
+            "whatever the system says"
+        );
+        harness.click("Light");
+        harness.click("System");
+        harness.settle();
+        assert_eq!(harness.app.settings.theme, Theme::System);
+        assert!(
+            harness
+                .app
+                .settings_file
+                .text
+                .contains("theme = \"system\"")
+        );
+        assert_eq!(settings_saves(&harness), saves + 3);
+        logic(&mut harness);
+        assert_eq!(harness.app.palette, Palette::light());
+    }
+}
+
+#[test]
+fn a_mode_the_settings_name_is_the_windows_own_and_system_gives_it_back() {
+    let mut harness = sheet(Look::macos());
+    assert_eq!(
+        logic(&mut harness),
+        Vec::new(),
+        "the system's, as it starts"
+    );
+    harness.click("Dark");
+    assert_eq!(
+        logic(&mut harness),
+        vec![egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark)]
+    );
+    // Told once.
+    assert_eq!(logic(&mut harness), Vec::new());
+    harness.click("System");
+    assert_eq!(
+        logic(&mut harness),
+        vec![egui::ViewportCommand::SetTheme(
+            egui::SystemTheme::SystemDefault
+        )]
+    );
+    // The terminal look never tells the window: its palette is the theme's.
+    let mut harness = following();
+    let settings = Settings {
+        theme: Theme::Dark,
+        ..harness.app.settings.clone()
+    };
+    harness.app.apply_settings(settings);
+    assert_eq!(logic(&mut harness), Vec::new());
+}
+
+#[test]
+fn a_value_of_the_terminal_look_is_the_system_here_and_stays_in_the_file() {
+    let mut harness = sheet(Look::macos());
+    with_theme(&mut harness, Theme::Pinned("Tokyo Night".into()));
+    assert_eq!(set(&mut harness, "System"), Some(true));
+    assert_eq!(harness.app.palette, Palette::light());
+    harness.click("Row density: Compact · 28");
+    harness.settle();
+    assert!(
+        harness
+            .app
+            .settings_file
+            .text
+            .contains("theme = \"Tokyo Night\"")
+    );
+    // A tile clicked is this look's choice: the other's value goes.
+    harness.click("Dark");
+    harness.settle();
+    assert_eq!(harness.app.settings.theme, Theme::Dark);
+}
+
+#[test]
+fn reset_to_defaults_puts_the_theme_back_to_the_desktops() {
+    let mut harness = sheet(Look::macos());
+    with_theme(&mut harness, Theme::Dark);
+    harness.app.apply(Action::ResetSettings);
+    harness.app.apply(Action::ConfirmResetSettings(true));
+    harness.settle();
+    assert_eq!(harness.app.settings.theme, Theme::Unset);
+    assert!(!harness.app.settings_file.text.contains("theme ="));
 }
