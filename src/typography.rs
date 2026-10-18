@@ -8,12 +8,18 @@
 //! look's faces (Plex on macOS, the terminal's monospace on Omarchy, Inter
 //! elsewhere).
 //!
+//! A role's size in [`TextRole::spec`] is the design's. The settings size
+//! the text on macOS and Windows ([`TextRole::spec_in`]): the data roles
+//! keep to the data's size, 12.5 points in the design, and the others to
+//! the interface's, 13. The terminal look draws the whole window larger or
+//! smaller instead, its roles as they are.
+//!
 //! Text is built with [`Text`] and drawn from the [`Laid`] it lays out.
 
 pub mod desktop_font;
 mod fonts;
 
-pub use fonts::configure;
+pub use fonts::{TerminalFaces, configure};
 
 use std::sync::Arc;
 
@@ -22,7 +28,12 @@ use egui::{
     Color32, FontFamily, FontId, Galley, Painter, Pos2, Response, Sense, TextFormat, Ui, Vec2,
 };
 
-use crate::theme::{Faces, Look};
+use crate::theme::{DataFace, Faces, Look, Typeface};
+
+/// The data's size and the interface's in the design: what a role's size
+/// in [`TextRole::spec`] is drawn at before the settings change them.
+const DESIGN_DATA: f32 = 12.5;
+const DESIGN_INTERFACE: f32 = 13.0;
 
 /// Sans or monospace: what a role asks for. The Omarchy look has one
 /// monospace face for both.
@@ -99,6 +110,9 @@ pub enum TextRole {
     Legend,
     /// What an empty area or a failed connection says first.
     StateTitle,
+    /// Grid cells and row-panel values in Inter, where the look draws data
+    /// in its sans (Windows).
+    DataBody,
     // Omarchy, from the spec.
     OBody,
     OTableTitle,
@@ -120,7 +134,7 @@ pub enum TextRole {
 }
 
 impl TextRole {
-    pub const ALL: [TextRole; 42] = [
+    pub const ALL: [TextRole; 43] = [
         Self::UiBody,
         Self::UiBodyStrong,
         Self::TableTitle,
@@ -150,6 +164,7 @@ impl TextRole {
         Self::FormLabel,
         Self::Legend,
         Self::StateTitle,
+        Self::DataBody,
         Self::OBody,
         Self::OTableTitle,
         Self::OScreenTitle,
@@ -197,6 +212,7 @@ impl TextRole {
             Self::FormLabel => "form-label",
             Self::Legend => "legend",
             Self::StateTitle => "state-title",
+            Self::DataBody => "data-body",
             Self::OBody => "o-body",
             Self::OTableTitle => "o-table-title",
             Self::OScreenTitle => "o-screen-title",
@@ -277,6 +293,7 @@ impl TextRole {
             Self::FormLabel => style(Sans, 500, 12.0),
             Self::Legend => style(Sans, 600, 12.0),
             Self::StateTitle => style(Sans, 600, 15.0),
+            Self::DataBody => style(Sans, 400, 13.0),
             Self::OBody => style(Mono, 400, 13.0),
             Self::OTableTitle => style(Mono, 700, 15.0),
             Self::OScreenTitle => style(Mono, 700, 14.0),
@@ -293,30 +310,78 @@ impl TextRole {
         }
     }
 
+    /// Whether the role draws data, which the data's size sizes (and on
+    /// macOS its face draws, where the role is monospace): grid cells,
+    /// the SQL editor and JSON. Every other role is the interface's.
+    pub const fn is_data(self) -> bool {
+        matches!(
+            self,
+            Self::GridCell
+                | Self::Json
+                | Self::ValueTag
+                | Self::JsonChip
+                | Self::InspectorValue
+                | Self::Code
+                | Self::CompletionName
+                | Self::CompletionMatch
+                | Self::DataBody
+        )
+    }
+
+    /// The role as `faces` draw it: [`Self::spec`] at the settings' sizes.
+    /// A data role keeps to the data's size as the design's keeps to 12.5
+    /// points, and the others to the interface's as the design's to 13.
+    /// The terminal look's are the design's.
+    pub fn spec_in(self, faces: Faces) -> Spec {
+        let mut spec = self.spec();
+        let (size, design) = match faces.typeface {
+            Typeface::Terminal => return spec,
+            Typeface::Inter | Typeface::Plex if self.is_data() => {
+                (faces.data_size.points(), DESIGN_DATA)
+            }
+            Typeface::Inter | Typeface::Plex => (faces.interface.points(), DESIGN_INTERFACE),
+        };
+        spec.size = spec.size * size / design;
+        spec
+    }
+
     /// The Omarchy role when the look is a terminal's, else the macOS one.
     pub fn pick(look: &Look, mac: Self, omarchy: Self) -> Self {
         if look.terminal { omarchy } else { mac }
     }
 
-    pub fn size(self) -> f32 {
-        self.spec().size
+    /// The role's size in points in `faces`.
+    pub fn size(self, faces: Faces) -> f32 {
+        self.spec_in(faces).size
+    }
+
+    /// The data face `faces` draw the role in, where they draw it in one:
+    /// a monospace data role on macOS.
+    fn data_face(self, faces: Faces) -> Option<DataFace> {
+        let spec = self.spec();
+        (faces.typeface == Typeface::Plex && self.is_data() && spec.kind == Kind::Mono)
+            .then_some(faces.data)
     }
 
     /// The role's font in `faces`.
     pub fn font_id(self, faces: Faces) -> FontId {
-        let spec = self.spec();
-        FontId::new(spec.size, family(faces, spec.kind, spec.weight))
+        let spec = self.spec_in(faces);
+        let family = match self.data_face(faces) {
+            Some(face) => data_family(face, spec.weight),
+            None => family(faces, spec.kind, spec.weight),
+        };
+        FontId::new(spec.size, family)
     }
 
-    /// Letter spacing in points.
-    pub fn tracking(self) -> f32 {
-        let spec = self.spec();
+    /// Letter spacing in points, in `faces`.
+    pub fn tracking(self, faces: Faces) -> f32 {
+        let spec = self.spec_in(faces);
         spec.tracking * spec.size
     }
 
-    /// Line height in points, when the role sets one.
-    pub fn line_height(self) -> Option<f32> {
-        let spec = self.spec();
+    /// Line height in points in `faces`, when the role sets one.
+    pub fn line_height(self, faces: Faces) -> Option<f32> {
+        let spec = self.spec_in(faces);
         spec.line_height.map(|factor| factor * spec.size)
     }
 
@@ -324,8 +389,8 @@ impl TextRole {
     pub fn format(self, faces: Faces, color: Color32) -> TextFormat {
         TextFormat {
             font_id: self.font_id(faces),
-            extra_letter_spacing: self.tracking(),
-            line_height: self.line_height(),
+            extra_letter_spacing: self.tracking(faces),
+            line_height: self.line_height(faces),
             color,
             ..Default::default()
         }
@@ -352,9 +417,12 @@ impl TextRole {
     }
 
     /// The height of the role's capitals in points, in faces whose line box
-    /// does not centre on them (Plex).
+    /// does not centre on them (Plex, and not JetBrains Mono).
     fn capitals(self, faces: Faces) -> Option<f32> {
-        fonts::capitals(faces).map(|ems| ems * self.size())
+        if self.data_face(faces) == Some(DataFace::JetBrainsMono) {
+            return None;
+        }
+        fonts::capitals(faces.typeface).map(|ems| ems * self.size(faces))
     }
 
     /// Where a line of the role centres, below its top (see
@@ -369,43 +437,63 @@ impl TextRole {
 
     /// The height of one line in the role, in `faces`.
     pub fn row_height(self, ctx: &egui::Context, faces: Faces) -> f32 {
-        self.line_height()
+        self.line_height(faces)
             .unwrap_or_else(|| ctx.fonts_mut(|fonts| fonts.row_height(&self.font_id(faces))))
     }
 }
 
-/// The weights `faces` has for `kind`.
-fn weights(faces: Faces, kind: Kind) -> &'static [u16] {
-    match (faces, kind) {
-        (Faces::Plex, Kind::Sans) => &[400, 500, 600],
-        (Faces::Plex, Kind::Mono) => &[400, 500],
-        (Faces::Terminal, _) => &[400, 500, 700],
-        (Faces::Inter, Kind::Sans) => &[400, 500, 600, 700],
-        (Faces::Inter, Kind::Mono) => &[400],
+/// The weights `typeface` has for `kind`.
+fn weights(typeface: Typeface, kind: Kind) -> &'static [u16] {
+    match (typeface, kind) {
+        (Typeface::Plex, Kind::Sans) => &[400, 500, 600],
+        (Typeface::Plex, Kind::Mono) => &[400, 500],
+        (Typeface::Terminal, _) => &[400, 500, 700],
+        (Typeface::Inter, Kind::Sans) => &[400, 500, 600, 700],
+        (Typeface::Inter, Kind::Mono) => &[400],
     }
 }
 
-/// The name of the family holding `faces`' `kind` at `weight`.
-pub fn family_name(faces: Faces, kind: Kind, weight: u16) -> String {
-    let face = match (faces, kind) {
-        (Faces::Plex, Kind::Sans) => "plex-sans",
-        (Faces::Plex, Kind::Mono) => "plex-mono",
-        (Faces::Terminal, _) => "omarchy-mono",
-        (Faces::Inter, Kind::Sans) => "inter",
-        (Faces::Inter, Kind::Mono) => "standard-mono",
+/// The name of the family holding `typeface`'s `kind` at `weight`.
+pub fn family_name(typeface: Typeface, kind: Kind, weight: u16) -> String {
+    let face = match (typeface, kind) {
+        (Typeface::Plex, Kind::Sans) => "plex-sans",
+        (Typeface::Plex, Kind::Mono) => "plex-mono",
+        (Typeface::Terminal, _) => "omarchy-mono",
+        (Typeface::Inter, Kind::Sans) => "inter",
+        (Typeface::Inter, Kind::Mono) => "standard-mono",
     };
     format!("{face}-{weight}")
 }
 
-/// The family for `kind` at `weight` in `faces`, at the nearest weight the
-/// faces have (ties go heavier).
-pub fn family(faces: Faces, kind: Kind, weight: u16) -> FontFamily {
-    let nearest = weights(faces, kind)
+/// The name of the family holding the data face `face` at `weight`: each
+/// is bundled at 400 and 500, as Plex Mono is.
+pub fn data_family_name(face: DataFace, weight: u16) -> String {
+    match face {
+        DataFace::PlexMono => family_name(Typeface::Plex, Kind::Mono, weight),
+        DataFace::JetBrainsMono => format!("jetbrains-mono-{weight}"),
+    }
+}
+
+/// The nearest of `weights` to `weight` (ties go heavier).
+fn nearest(weights: &[u16], weight: u16) -> u16 {
+    weights
         .iter()
         .copied()
         .min_by_key(|have| (have.abs_diff(weight), u16::MAX - have))
-        .unwrap_or(400);
-    FontFamily::Name(family_name(faces, kind, nearest).into())
+        .unwrap_or(400)
+}
+
+/// The family for `kind` at `weight` in `faces`, at the nearest weight the
+/// faces have.
+pub fn family(faces: Faces, kind: Kind, weight: u16) -> FontFamily {
+    let weight = nearest(weights(faces.typeface, kind), weight);
+    FontFamily::Name(family_name(faces.typeface, kind, weight).into())
+}
+
+/// The family of the data face `face` at the nearest weight it has.
+fn data_family(face: DataFace, weight: u16) -> FontFamily {
+    let weight = nearest(weights(Typeface::Plex, Kind::Mono), weight);
+    FontFamily::Name(data_family_name(face, weight).into())
 }
 
 /// Text in one or more roles, before layout.
@@ -646,7 +734,7 @@ pub fn layouter(
 /// roles.
 pub fn text_styles(faces: Faces) -> std::collections::BTreeMap<egui::TextStyle, FontId> {
     use egui::TextStyle;
-    let (small, body, heading, mono) = if faces == Faces::Terminal {
+    let (small, body, heading, mono) = if faces.typeface == Typeface::Terminal {
         (
             TextRole::OSecondary,
             TextRole::OBody,

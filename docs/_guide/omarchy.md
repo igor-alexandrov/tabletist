@@ -37,6 +37,7 @@ back.
 | Ctrl+H, Ctrl+L | Move between the parts of the window |
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
+| Ctrl+=, Ctrl+- | Larger and smaller text: the whole window, under a dialog too |
 | `:agents` | Show the Agents tab |
 | `:agents log` | Show the Agents tab's log |
 | `?` | The list of keys |
@@ -321,5 +322,23 @@ Tabletist follows the desktop instead. The folder and the file are described in
 Cmd/Ctrl+, opens Settings. In the Omarchy look it is a full screen with
 `settings.toml` shown beside the options. Edits made to the file in your
 editor are applied while Tabletist runs.
+
+### The font and its size
+
+Tabletist draws in the desktop's monospace font, as fontconfig resolves
+it (`omarchy font set` changes it), and **Settings › Appearance** names the
+font drawn. Another font is named in `settings.toml` by its fontconfig
+name; one fontconfig does not have is drawn as the system's monospace,
+and the font row says so:
+
+```toml
+[appearance]
+font = "Fira Code"
+font_size = 15
+```
+
+The size, 9 to 24, sizes the whole window, as a terminal's font size
+does. `h` and `l` on the size row change it, and so do Ctrl+= and Ctrl+-
+anywhere in the window; `R` on the row puts back 13.
 
 {% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look: the options on the left and settings.toml on the right" width="2880" height="1800" %}

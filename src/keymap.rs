@@ -12,7 +12,7 @@
 
 use egui::Key;
 
-use crate::theme::{Faces, Look};
+use crate::theme::{Look, Typeface};
 
 /// How a look binds its keys and writes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +31,7 @@ impl Layout {
     pub fn of(look: &Look) -> Self {
         if look.terminal {
             Self::Omarchy
-        } else if look.faces == Faces::Plex {
+        } else if look.faces.typeface == Typeface::Plex {
             Self::Mac
         } else {
             Self::Windows
@@ -321,6 +321,9 @@ commands! {
     GoToConnectionWindow,
     SwitchDatabase,
     Settings,
+    LargerText,
+    SmallerText,
+    DefaultTextSize,
     CloseConnection,
     NextConnection,
     PreviousConnection,
@@ -576,6 +579,9 @@ impl Command {
             }
             C::SwitchDatabase => info("Switch database", "Switch database", Window).reserved(),
             C::Settings => info("Settings", "Settings", Window),
+            C::LargerText => info("Larger text", "", Window),
+            C::SmallerText => info("Smaller text", "", Window),
+            C::DefaultTextSize => info("Default text size", "", Window),
             C::CloseConnection => info("Close connection", "", Window),
             C::NextConnection => info("Next connection", "", Window),
             C::PreviousConnection => info("Previous connection", "", Window),
@@ -913,6 +919,8 @@ impl Binding {
 }
 
 const GLOBAL: &[Scope] = &[Scope::Global];
+/// The global scope and a prompt's: keys that hold under a dialog too.
+const ANYWHERE: &[Scope] = &[Scope::Global, Scope::Prompt];
 const CONNECTIONS: &[Scope] = &[Scope::Connections];
 const SIDEBAR: &[Scope] = &[Scope::Sidebar];
 const GRID: &[Scope] = &[Scope::Grid];
@@ -953,6 +961,21 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+,")]),
             keys(&[k("ctrl+,")]),
         ),
+        // The text's size, under a dialog too: the Settings window shows
+        // what it changes. The terminal look resets it from that window.
+        bind(
+            C::LargerText,
+            ANYWHERE,
+            keys(&[k("cmd+=")]),
+            keys(&[k("ctrl+=")]),
+        ),
+        bind(
+            C::SmallerText,
+            ANYWHERE,
+            keys(&[k("cmd+-")]),
+            keys(&[k("ctrl+-")]),
+        ),
+        bind(C::DefaultTextSize, ANYWHERE, keys(&[k("cmd+0")]), NONE),
         bind(
             C::CloseConnection,
             GLOBAL,

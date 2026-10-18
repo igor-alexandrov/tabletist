@@ -885,7 +885,7 @@ mod tests {
         assert_eq!(sections[0].format, format);
         for section in sections {
             assert_eq!(section.format.font_id, format.font_id);
-            assert_eq!(section.format.line_height, role.line_height());
+            assert_eq!(section.format.line_height, role.line_height(look.faces));
         }
         // An empty script is one line, as tall as any other.
         let empty = &galleys[1];

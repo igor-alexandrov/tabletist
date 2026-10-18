@@ -159,6 +159,24 @@ pub struct App {
     /// The pin the status line last said could not be read: it is said
     /// once.
     pin_told: Option<String>,
+    /// What fontconfig gave the terminal look for the font the settings
+    /// name: nothing in tests, the demo and the other looks.
+    pub desktop_font: crate::typography::desktop_font::Read,
+    /// The number of the last font read asked for, and of the newest one
+    /// taken, as for the theme's.
+    font_asked: u64,
+    font_taken: u64,
+    /// A font read came back since the last `logic`: its faces are to be
+    /// drawn.
+    font_read: bool,
+    /// The fonts set at the start, which a font read puts its faces in.
+    pub(crate) fonts: egui::FontDefinitions,
+    /// The look's text changed since the last `logic`: egui's own text
+    /// styles follow it.
+    restyle: bool,
+    /// The zoom the window was last given: the terminal look's text size,
+    /// which sizes the whole window there.
+    zoom: Option<f32>,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
     /// What the next frame asks of the window: to come forward, or the
@@ -252,6 +270,7 @@ impl App {
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
+        let look = crate::theme::Look::for_platform().with_text(&settings);
         let mut app = Self {
             dirs,
             settings,
@@ -261,7 +280,7 @@ impl App {
             zones: None,
             locale: Locale::default(),
             palette: Palette::dark(),
-            look: crate::theme::Look::for_platform(),
+            look,
             keymap: std::sync::Arc::default(),
             themes: Catalog::default(),
             tabs: Vec::new(),
@@ -290,6 +309,13 @@ impl App {
             theme_asked: 0,
             theme_taken: 0,
             pin_told: None,
+            desktop_font: crate::typography::desktop_font::Read::default(),
+            font_asked: 0,
+            font_taken: 0,
+            font_read: false,
+            fonts: egui::FontDefinitions::empty(),
+            restyle: false,
+            zoom: None,
             window_title: "Tabletist".into(),
             window_asks: Vec::new(),
             closed_editors: Vec::new(),
@@ -1983,6 +2009,13 @@ impl App {
                     self.dialog = Some(Dialog::About);
                 }
             }
+            Action::TextSize(larger) => {
+                let terminal = self.look.terminal;
+                self.change_settings(|settings| {
+                    settings.font_size =
+                        larger.map(|larger| settings.stepped_font_size(terminal, larger));
+                });
+            }
             Action::ShowSettings => {
                 // The shortcuts dialog offers it, and gives way to it. Asked
                 // for while it is open, it stays as it is.
@@ -3423,6 +3456,15 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
+            Event::Font { asked, read } => {
+                // An older read that ends later read a font since renamed.
+                if asked < self.font_taken {
+                    return;
+                }
+                self.font_taken = asked;
+                self.desktop_font = *read;
+                self.font_read = true;
+            }
             Event::Theme { asked, read } => {
                 // Reads end in any order: one older than the newest taken
                 // saw a theme of Omarchy's that is gone, and one that read
@@ -4142,6 +4184,16 @@ impl App {
         if old.theme != self.settings.theme {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
+        }
+        // The text's sizes and the data's face: every role drawn from here
+        // on has them, and egui's own styles are set again in `logic`.
+        let look = self.look.with_text(&self.settings);
+        if look != self.look {
+            self.look = look;
+            self.restyle = true;
+        }
+        if old.font != self.settings.font {
+            self.read_desktop_font();
         }
         // An edit of the file that turns the server on is held.
         self.check_agents();
@@ -5792,7 +5844,17 @@ impl App {
     /// and tests, which must not scan the user's themes or Omarchy.
     pub fn attach(&mut self, ctx: &egui::Context, follow_desktop: bool) {
         self.follow_desktop = follow_desktop;
-        theme::install(ctx, follow_desktop, &self.look);
+        // The font size keys are the keymap's: they change the setting,
+        // where egui's would zoom the whole window and forget it.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
+        // Read here, before the first frame, as the desktop's monospace
+        // always was: a font that arrived later would move every line.
+        if follow_desktop && self.look.terminal {
+            self.desktop_font =
+                crate::typography::desktop_font::read(self.settings.font.as_deref());
+        }
+        let desktop = self.desktop_font.faces.as_ref();
+        self.fonts = theme::install_with(ctx, follow_desktop, &self.look, desktop);
         if follow_desktop {
             theme::enable_desktop_themes(&mut self.themes);
             let repaint = ctx.clone();
@@ -5837,6 +5899,30 @@ impl App {
             pin,
             asked: self.theme_asked,
         });
+    }
+
+    /// Asks the backend for the terminal look's font as the settings name
+    /// it, where the desktop's fonts are read (not in tests or the demo).
+    fn read_desktop_font(&mut self) {
+        if !self.look.terminal || !self.follow_desktop {
+            return;
+        }
+        self.font_asked += 1;
+        self.backend.send(Command::ReadFont {
+            font: self.settings.font.clone(),
+            asked: self.font_asked,
+        });
+    }
+
+    /// How large the window draws everything: the terminal look's text
+    /// size against its 13 points. The other looks size their text by
+    /// role, and draw at 1.
+    pub fn zoom_factor(&self) -> f32 {
+        if self.look.terminal {
+            self.settings.font_size_in(true).points() / 13.0
+        } else {
+            1.0
+        }
     }
 
     /// The pin the backend reads: one by name or path. A palette file is
@@ -5937,6 +6023,19 @@ impl App {
             }
         }
         self.tell_missing_pin(ctx);
+        if std::mem::take(&mut self.font_read) {
+            let desktop = self.desktop_font.faces.as_ref();
+            theme::set_terminal_faces(ctx, &mut self.fonts, &self.look, desktop);
+            crate::ui::grid::forget_marks(ctx, &self.look);
+        }
+        if std::mem::take(&mut self.restyle) {
+            theme::apply(ctx, &self.palette, &self.look);
+        }
+        let zoom = self.zoom_factor();
+        if self.zoom != Some(zoom) {
+            self.zoom = Some(zoom);
+            ctx.set_zoom_factor(zoom);
+        }
         // macOS and Windows: the window's own parts (its title bar, the
         // menus and panels of the system) in the mode the settings name.
         let mode = match (self.look.terminal, self.settings.theme.mode()) {
@@ -6130,6 +6229,7 @@ impl App {
         // the last frame's actions left, after anything the backend
         // delivered just now.
         self.refresh_completion(ui.ctx());
+        crate::ui::keys::text_size(self, ui.ctx());
         // A dialog takes the keyboard: no shortcut acts behind it, and a
         // first key that waited for its second (`cc`) waits no longer.
         if self.dialog.is_none() {
@@ -6973,6 +7073,93 @@ mod tests {
         harness.app.follow_desktop = false;
         pin(&mut harness, "Dusk");
         assert_eq!(asked(&mut harness), Vec::<Option<String>>::new());
+    }
+
+    /// The fonts the backend was asked to read since the last call.
+    fn fonts_asked(harness: &mut Harness) -> Vec<(Option<String>, u64)> {
+        std::mem::take(&mut harness.app.backend.sent)
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::ReadFont { font, asked } => Some((font, asked)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_font_is_read_where_the_desktops_fonts_are() {
+        let mut harness = Harness::new();
+        harness.app.look = crate::theme::Look::omarchy();
+        harness.app.follow_desktop = true;
+        let font = |harness: &mut Harness, font: Option<&str>| {
+            let font = font.map(str::to_owned);
+            harness.app.change_settings(|settings| settings.font = font);
+        };
+        font(&mut harness, Some("Fira Code"));
+        assert_eq!(
+            fonts_asked(&mut harness),
+            vec![(Some("Fira Code".into()), 1)]
+        );
+        font(&mut harness, None);
+        assert_eq!(fonts_asked(&mut harness), vec![(None, 2)]);
+        // A change of something else reads nothing.
+        harness
+            .app
+            .change_settings(|settings| settings.page_size = 500);
+        assert_eq!(fonts_asked(&mut harness), vec![]);
+        // Not in tests and the demo, nor in the other looks, whose fonts
+        // are bundled.
+        harness.app.follow_desktop = false;
+        font(&mut harness, Some("Iosevka"));
+        assert_eq!(fonts_asked(&mut harness), vec![]);
+        harness.app.follow_desktop = true;
+        harness.app.look = crate::theme::Look::macos();
+        font(&mut harness, Some("JetBrains Mono"));
+        assert_eq!(fonts_asked(&mut harness), vec![]);
+    }
+
+    #[test]
+    fn a_font_read_is_drawn_and_an_older_one_that_ends_later_is_dropped() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let read = |family: &str| crate::typography::desktop_font::Read {
+            asked: Some(family.into()),
+            // Faces of their own, to tell them apart.
+            faces: Some(std::array::from_fn(|_| {
+                let hack = egui::FontDefinitions::default().font_data["Hack"].clone();
+                std::sync::Arc::new((*hack).clone())
+            })),
+            family: Some(family.into()),
+            missing: false,
+        };
+        let answer = |harness: &mut Harness, asked: u64, family: &str| {
+            harness.app.apply(Action::Backend(Event::Font {
+                asked,
+                read: Box::new(read(family)),
+            }));
+        };
+        // The marks the old face had are found again for the new one.
+        harness.settle();
+        let marks = crate::ui::grid::marks_id(&harness.app.look);
+        crate::ui::grid::marks(&harness.ctx, &harness.app.look);
+        answer(&mut harness, 2, "Iosevka");
+        answer(&mut harness, 1, "Fira Code");
+        assert_eq!(harness.app.desktop_font.family.as_deref(), Some("Iosevka"));
+        // Drawn at the next pass of the logic: the terminal's families lead
+        // with the face read, Hack's here.
+        harness.app.logic(&harness.ctx.clone());
+        harness.settle();
+        let hack = egui::FontDefinitions::default().font_data["Hack"]
+            .font
+            .len();
+        let drawn = harness
+            .ctx
+            .fonts(|fonts| fonts.definitions().font_data["omarchy-mono-400"].font.len());
+        assert_eq!(drawn, hack);
+        let kept = harness
+            .ctx
+            .data(|data| data.get_temp::<crate::ui::format::Marks>(marks));
+        assert!(kept.is_none());
     }
 
     fn ids(app: &App) -> Vec<u64> {
