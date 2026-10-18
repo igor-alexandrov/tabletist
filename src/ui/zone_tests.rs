@@ -574,3 +574,33 @@ fn the_menu_lists_no_zones_before_the_database_is_read() {
     assert!(harness.has("Time zone for timestamptz UTC"));
     assert!(!harness.has("Time zone for timestamptz Asia/Tokyo"));
 }
+
+#[test]
+fn a_zone_the_database_turned_down_is_no_step_of_the_terminal_screen() {
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.app.zones = None;
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\ntz = \"Mars/Olympus\"\n".into(),
+            own: false,
+        }));
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Zones(
+            std::sync::Arc::new(crate::testing::zones().clone()),
+        )));
+    assert_eq!(harness.app.settings.tz, Zone::System);
+    assert_eq!(harness.app.named_zone, None);
+    harness.press(Key::Comma, Modifiers::COMMAND);
+    for _ in 0..2 {
+        harness.press(Key::J, Modifiers::NONE);
+    }
+    harness.press(Key::L, Modifiers::NONE);
+    assert_eq!(harness.app.settings.tz, Zone::Utc);
+    // From UTC there is no step further: the refused name is not one.
+    harness.press(Key::L, Modifiers::NONE);
+    assert_eq!(harness.app.settings.tz, Zone::Utc);
+    assert!(!harness.app.settings_file.text.contains("Mars/Olympus"));
+}

@@ -475,8 +475,10 @@ impl App {
     }
 
     /// A named zone in `settings` that the zone database, once read, does
-    /// not know: it is not applied (the zone stays `last`), and its line
-    /// is one that was ignored, as a value its key cannot have is.
+    /// not know: it is not applied (the zone stays `last`), it is no
+    /// longer the session's named zone for the Omarchy screen's steps, and
+    /// its line is one that was ignored, as a value its key cannot have
+    /// is.
     fn refuse_unknown_zone(&mut self, settings: &mut Settings, last: crate::settings::Zone) {
         let Some(zones) = &self.zones else {
             return;
@@ -491,6 +493,14 @@ impl App {
             "{}: {name} is no zone of the zone database, and is ignored",
             self.dirs.settings_file().display()
         );
+        // The start or a reload before the database was read may have
+        // taken it for the session's: a step must not reach it.
+        if self.named_zone.as_deref() == Some(name.as_str()) {
+            self.named_zone = match &last {
+                crate::settings::Zone::Named(kept) => Some(kept.clone()),
+                crate::settings::Zone::System | crate::settings::Zone::Utc => None,
+            };
+        }
         settings.tz = last;
         let file = &mut self.settings_file;
         let line = file
