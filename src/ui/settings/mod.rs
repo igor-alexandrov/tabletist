@@ -87,6 +87,16 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
     }
 }
 
+/// What is said of a pinned theme that is nowhere to be found, `{name}`
+/// for its name: what is drawn instead. English.
+pub fn pin_missing(catalog: &crate::theme::Catalog) -> &'static str {
+    if catalog.follows_omarchy() {
+        "Theme “{name}” not found: following Omarchy"
+    } else {
+        "Theme “{name}” not found: following the system"
+    }
+}
+
 /// A zone as the window writes it: the computer's with its own name
 /// beside it where it has one (`System · America/New_York`), UTC, or the
 /// zone's name. `system` is the computer's zone's name. English: the
