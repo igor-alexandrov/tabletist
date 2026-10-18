@@ -870,6 +870,8 @@ pub struct Fit {
     pub grouped: bool,
     /// Values of a closed set as tags, which pad their text.
     pub value_tags: bool,
+    /// The header's types' line, which a column is as wide as.
+    pub column_types: bool,
 }
 
 impl Fit {
@@ -878,6 +880,7 @@ impl Fit {
             full_precision: workspace.full_precision,
             grouped: settings.group_digits,
             value_tags: settings.value_tags,
+            column_types: settings.column_types,
         }
     }
 }
@@ -1343,6 +1346,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    // The grid's rows as dense and as striped, and its header as tall, as
+    // the settings have them.
+    let grid_look = look.with_grid(&app.settings);
     // An editor that is open has the keyboard, unless a dialog has it.
     let hold = app.dialog.is_none();
     let editor_keys = cell_editor::Keys::of(&app.keymap, app.layout());
@@ -1600,7 +1606,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             object.selection.and_then(placed),
             keys,
             &palette,
-            &look,
+            &grid_look,
             &|place| match order.row(place) {
                 Some(row) => match crate::edit::new_id(row) {
                     Some(id) => grid::Row {
@@ -1784,7 +1790,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         if order.is_empty() && !lasted {
             // The headers stay: the columns are still worth reading.
             let under = Rect::from_min_max(
-                pos2(area.left(), area.top() + grid::header_height(&look)),
+                pos2(area.left(), area.top() + grid::header_height(&grid_look)),
                 area.max,
             );
             empty_rows(
@@ -1802,7 +1808,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             states::progress(ui, area.x_range(), area.top(), &palette);
         }
         let rows = Rect::from_min_max(pos2(area.left(), area.top() + 2.0), area.max);
-        states::skeleton(ui, rows, &look, &palette);
+        states::skeleton(ui, rows, &grid_look, &palette);
     }
     // A fetch that has lasted, over whatever is up: a refresh and the next
     // page keep the page they replace on screen.
