@@ -936,7 +936,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
     match option {
         OptionId::PageSize => dim(&skin.say("table view")),
         OptionId::Timestamps => dim(sample_timestamp(settings.timestamps)),
-        OptionId::GroupDigits => dim(&skin.say(if settings.group_digits {
+        OptionId::GroupDigits => dim(&skin.say(if settings.group_digits.unwrap_or_default() {
             "grouping on"
         } else {
             "grouping off"

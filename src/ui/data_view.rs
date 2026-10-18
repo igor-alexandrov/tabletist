@@ -873,11 +873,11 @@ pub struct Fit {
 }
 
 impl Fit {
-    pub fn of(workspace: &crate::model::Workspace, settings: &crate::settings::Settings) -> Self {
+    pub fn of(workspace: &crate::model::Workspace, app: &crate::app::App) -> Self {
         Self {
             full_precision: workspace.full_precision,
-            grouped: settings.group_digits,
-            value_tags: settings.value_tags,
+            grouped: app.settings.grouped(app.layout()),
+            value_tags: app.settings.value_tags,
         }
     }
 }
@@ -992,7 +992,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         .workspace(tab)
         .filter(|_| view == ObjectView::Data)
         .and_then(|workspace| {
-            let fit = Fit::of(workspace, &app.settings);
+            let fit = Fit::of(workspace, app);
             columns_note(ui.ctx(), tab, object, fit, &look, locale)
         });
     let mut actions = Vec::new();
@@ -1352,7 +1352,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let fit = Fit::of(workspace, &app.settings);
+    let fit = Fit::of(workspace, app);
     // The arrows are the grid's once the user worked in it.
     let keys = workspace.pane == crate::model::Pane::Grid;
     let Some(object) = workspace.object_tab(object_tab) else {

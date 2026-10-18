@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::keymap::Layout;
 use crate::paths::AppDirs;
 use crate::util::toml_string;
 
@@ -46,8 +47,10 @@ pub struct Settings {
     /// Timestamps in grid cells: to the second, or as the server sent them.
     pub timestamps: Timestamps,
     /// Numbers in grid cells with their integer digits in threes. Display
-    /// only: a copy gives the value as it is.
-    pub group_digits: bool,
+    /// only: a copy gives the value as it is. `None` is the look's default
+    /// ([`Settings::grouped`]), which is not written: grouped on macOS and
+    /// Windows, as their artboards draw it, and not on Omarchy.
+    pub group_digits: Option<bool>,
     /// Enum, CHECK and boolean values drawn as coloured tags.
     pub value_tags: bool,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
@@ -190,7 +193,8 @@ impl OptionId {
 pub enum OptionValue {
     PageSize(u32),
     Timestamps(Timestamps),
-    GroupDigits(bool),
+    /// `None` is the look's default.
+    GroupDigits(Option<bool>),
     ValueTags(bool),
     AgentsOn(bool),
     LogDays(u32),
@@ -617,6 +621,31 @@ impl Settings {
     /// The days the Settings window offers for the log.
     pub const LOG_DAYS: [u32; 4] = [7, 30, 90, 365];
 
+    /// Whether numbers are grouped in `layout`: as set, or the look's
+    /// default.
+    pub fn grouped(&self, layout: Layout) -> bool {
+        self.group_digits
+            .unwrap_or_else(|| Self::grouped_by_default(layout))
+    }
+
+    /// Whether numbers are grouped in `layout` before anyone sets it: as
+    /// each look's artboard draws them.
+    pub fn grouped_by_default(layout: Layout) -> bool {
+        match layout {
+            Layout::Mac | Layout::Windows => true,
+            Layout::Omarchy => false,
+        }
+    }
+
+    /// The settings with what is set to the look's default taken for not
+    /// set, so that it is not written and follows the look.
+    pub fn for_layout(mut self, layout: Layout) -> Self {
+        if self.group_digits == Some(Self::grouped_by_default(layout)) {
+            self.group_digits = None;
+        }
+        self
+    }
+
     /// The SQL editor's timeout as a duration; `None` waits forever.
     pub fn sql_timeout(&self) -> Option<std::time::Duration> {
         Self::timeout_of(self.sql_timeout_secs)
@@ -675,7 +704,7 @@ impl Settings {
                 Timestamps::Second
             }),
             // Grouped is the left of the two.
-            OptionId::GroupDigits => OptionValue::GroupDigits(!forward),
+            OptionId::GroupDigits => OptionValue::GroupDigits(Some(!forward)),
             OptionId::ValueTags => OptionValue::ValueTags(forward),
             OptionId::AgentsOn => OptionValue::AgentsOn(forward),
             OptionId::LogDays => {
@@ -702,7 +731,9 @@ impl Settings {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
             })),
-            OptionId::GroupDigits => Some(OptionValue::GroupDigits(!self.group_digits)),
+            OptionId::GroupDigits => Some(OptionValue::GroupDigits(Some(
+                !self.group_digits.unwrap_or_default(),
+            ))),
             OptionId::ValueTags => Some(OptionValue::ValueTags(!self.value_tags)),
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
@@ -716,7 +747,7 @@ impl Settings {
         Some(match key {
             Key::PageSize => self.page_size.to_string(),
             Key::Timestamps => toml_string(self.timestamps.name()),
-            Key::GroupDigits => self.group_digits.to_string(),
+            Key::GroupDigits => self.group_digits?.to_string(),
             Key::ValueTags => self.value_tags.to_string(),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
             Key::SqlLimit => self.sql_limit.to_string(),
@@ -935,7 +966,7 @@ impl Settings {
             Key::Timestamps => text
                 .and_then(Timestamps::from_name)
                 .map(|choice| self.timestamps = choice),
-            Key::GroupDigits => flag.map(|flag| self.group_digits = flag),
+            Key::GroupDigits => flag.map(|flag| self.group_digits = Some(flag)),
             Key::ValueTags => flag.map(|flag| self.value_tags = flag),
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
             Key::SqlLimit => number.map(|number| self.sql_limit = number),
@@ -1098,7 +1129,7 @@ impl Default for Settings {
         Self {
             page_size: Self::DEFAULT_PAGE_SIZE,
             timestamps: Timestamps::Second,
-            group_digits: false,
+            group_digits: None,
             value_tags: true,
             show_system_schemas: false,
             custom_theme: None,
@@ -1120,7 +1151,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.page_size, 1_000);
         assert_eq!(settings.timestamps, Timestamps::Second);
-        assert!(!settings.group_digits);
+        assert_eq!(settings.group_digits, None);
         assert!(settings.value_tags);
         assert!(!settings.show_system_schemas);
         assert_eq!(settings.custom_theme, None);
@@ -1152,7 +1183,7 @@ mod tests {
         Settings {
             page_size: 500,
             timestamps: Timestamps::Full,
-            group_digits: true,
+            group_digits: Some(true),
             value_tags: false,
             show_system_schemas: true,
             custom_theme: Some("My \"Nord\".json".into()),
@@ -1371,7 +1402,7 @@ theme = \"My \\\"Nord\\\".json\"
         assert_eq!(Settings::from_toml(&out).invalid, [2, 3]);
         // A key whose value was refused gets the new one in its place.
         assert_eq!(
-            written(text, |settings| settings.group_digits = true),
+            written(text, |settings| settings.group_digits = Some(true)),
             "[data]\ntimestamps = full\ngroup_digits = true\npage_size = 500\n"
         );
     }
@@ -1586,6 +1617,31 @@ theme = \"My \\\"Nord\\\".json\"
     }
 
     #[test]
+    fn numbers_not_set_are_grouped_as_the_look_has_them() {
+        let settings = Settings::default();
+        assert!(settings.grouped(Layout::Mac));
+        assert!(settings.grouped(Layout::Windows));
+        assert!(!settings.grouped(Layout::Omarchy));
+        let set = Settings {
+            group_digits: Some(false),
+            ..Settings::default()
+        };
+        assert!(!set.grouped(Layout::Mac));
+    }
+
+    #[test]
+    fn what_the_look_has_anyway_is_not_set() {
+        let grouped = Settings {
+            group_digits: Some(true),
+            ..Settings::default()
+        };
+        assert_eq!(grouped.clone().for_layout(Layout::Mac).group_digits, None);
+        assert_eq!(grouped.for_layout(Layout::Omarchy).group_digits, Some(true));
+        // Not set, nothing is written.
+        assert_eq!(Settings::default().written(Key::GroupDigits), None);
+    }
+
+    #[test]
     fn an_empty_file_starts_with_the_header() {
         assert_eq!(
             written("", |settings| settings.page_size = 500),
@@ -1633,7 +1689,7 @@ theme = \"My \\\"Nord\\\".json\"
         assert_eq!(loaded.invalid, vec![3]);
         assert_eq!(loaded.settings.page_size, 100);
         // The lines and the tables under the bad one are still read.
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
         assert_eq!(loaded.settings.sql_limit, 100);
         assert_eq!(
             loaded.lines,
@@ -1838,7 +1894,7 @@ theme = \"My \\\"Nord\\\".json\"
         );
         assert_eq!(loaded.invalid, vec![3]);
         assert_eq!(loaded.settings.page_size, 100);
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
         assert_eq!(
             loaded.lines,
             vec![(Key::PageSize, 2), (Key::GroupDigits, 4)]
@@ -1900,7 +1956,7 @@ theme = \"My \\\"Nord\\\".json\"
         let loaded = Settings::from_toml("[data]\npage_size = 100\ngroup_digits = true\n\r");
         assert_eq!(loaded.invalid, vec![4]);
         assert_eq!(loaded.settings.page_size, 100);
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
         let loaded = Settings::from_toml("\r");
         assert_eq!(loaded.invalid, vec![1]);
         assert_eq!(loaded.settings, Settings::default());
@@ -1912,7 +1968,7 @@ theme = \"My \\\"Nord\\\".json\"
         let loaded = Settings::from_toml("[data]\npage_size = 100\ngroup_digits = true\n\u{a0}");
         assert_eq!(loaded.invalid, vec![4]);
         assert_eq!(loaded.settings.page_size, 100);
-        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.group_digits, Some(true));
     }
 
     fn dirs() -> (crate::paths::AppDirs, tempfile::TempDir) {
@@ -1937,7 +1993,7 @@ theme = \"My \\\"Nord\\\".json\"
         let (dirs, _root) = dirs();
         let settings = Settings {
             page_size: 500,
-            group_digits: true,
+            group_digits: Some(true),
             sql_timeout_secs: None,
             ..Settings::default()
         };
@@ -2070,7 +2126,7 @@ theme = \"My \\\"Nord\\\".json\"
                 OptionId::Timestamps,
                 OptionValue::Timestamps(Timestamps::Full),
             ),
-            (OptionId::GroupDigits, OptionValue::GroupDigits(true)),
+            (OptionId::GroupDigits, OptionValue::GroupDigits(Some(true))),
             (OptionId::ValueTags, OptionValue::ValueTags(false)),
         ] {
             assert_eq!(value.option(), option);
@@ -2080,7 +2136,7 @@ theme = \"My \\\"Nord\\\".json\"
         }
         assert_eq!(settings.page_size, 500);
         assert_eq!(settings.timestamps, Timestamps::Full);
-        assert!(settings.group_digits);
+        assert_eq!(settings.group_digits, Some(true));
         assert!(!settings.value_tags);
     }
 
@@ -2163,11 +2219,11 @@ theme = \"My \\\"Nord\\\".json\"
         // Numbers: grouped on the left, plain on the right.
         assert_eq!(
             settings.stepped(OptionId::GroupDigits, false),
-            OptionValue::GroupDigits(true)
+            OptionValue::GroupDigits(Some(true))
         );
         assert_eq!(
             settings.stepped(OptionId::GroupDigits, true),
-            OptionValue::GroupDigits(false)
+            OptionValue::GroupDigits(Some(false))
         );
         // A check: off to the left, on to the right.
         assert_eq!(
@@ -2189,7 +2245,7 @@ theme = \"My \\\"Nord\\\".json\"
         );
         assert_eq!(
             settings.flipped(OptionId::GroupDigits),
-            Some(OptionValue::GroupDigits(true))
+            Some(OptionValue::GroupDigits(Some(true)))
         );
         assert_eq!(
             settings.flipped(OptionId::Timestamps),
@@ -2199,7 +2255,7 @@ theme = \"My \\\"Nord\\\".json\"
         // And back, from the other value of each.
         let settings = Settings {
             value_tags: false,
-            group_digits: true,
+            group_digits: Some(true),
             timestamps: Timestamps::Full,
             ..Default::default()
         };
@@ -2209,7 +2265,7 @@ theme = \"My \\\"Nord\\\".json\"
         );
         assert_eq!(
             settings.flipped(OptionId::GroupDigits),
-            Some(OptionValue::GroupDigits(false))
+            Some(OptionValue::GroupDigits(Some(false)))
         );
         assert_eq!(
             settings.flipped(OptionId::Timestamps),

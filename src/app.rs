@@ -3594,7 +3594,13 @@ impl App {
     pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
         let mut changed = self.settings.clone();
         change(&mut changed);
-        let changed = changed.validated();
+        // What the look has anyway, set here, is not set: it is not
+        // written, and follows the look. One the file has is the person's,
+        // and stays as they wrote it.
+        let mut changed = changed.validated();
+        if changed.group_digits != self.settings.group_digits {
+            changed = changed.for_layout(self.layout());
+        }
         let keys = self.settings.changed_keys(&changed);
         if keys.is_empty() {
             return;
@@ -7277,6 +7283,40 @@ mod tests {
     }
 
     #[test]
+    fn grouping_numbers_as_the_look_does_anyway_writes_nothing() {
+        let (mut app, _dir) = app();
+        let layout = app.layout();
+        let default = Settings::grouped_by_default(layout);
+        app.change_settings(|settings| settings.group_digits = Some(default));
+        assert!(settings_saves(&app).is_empty());
+        app.change_settings(|settings| settings.group_digits = Some(!default));
+        assert_eq!(app.settings.group_digits, Some(!default));
+        assert!(
+            app.settings_file
+                .text
+                .contains(&format!("group_digits = {}", !default))
+        );
+        // Back to the look's: the key goes.
+        app.change_settings(|settings| settings.group_digits = Some(default));
+        assert_eq!(app.settings.group_digits, None);
+        assert!(!app.settings_file.text.contains("group_digits"));
+    }
+
+    #[test]
+    fn grouping_the_file_sets_as_the_look_does_stays_through_another_change() {
+        let (mut app, _dir) = app();
+        let default = Settings::grouped_by_default(app.layout());
+        let text = format!("[data]\ngroup_digits = {default} # mine\npage_size = 500\n");
+        app.apply(from_disk(&text, false));
+        assert_eq!(app.settings.group_digits, Some(default));
+        app.change_settings(|settings| settings.page_size = 100);
+        assert_eq!(
+            app.settings_file.text,
+            format!("[data]\ngroup_digits = {default} # mine\npage_size = 100\n")
+        );
+    }
+
+    #[test]
     fn a_change_that_changes_nothing_is_not_written() {
         let (mut app, _dir) = app();
         let limit = app.settings.sql_limit;
@@ -7331,7 +7371,7 @@ mod tests {
         }));
         assert_eq!(app.settings.page_size, 500);
         assert_eq!(app.settings.timestamps, crate::settings::Timestamps::Full);
-        assert!(!app.settings.group_digits);
+        assert_eq!(app.settings.group_digits, None);
         // The file as the user wrote it, with the line that was ignored.
         assert_eq!(app.settings_file.text, text);
         assert_eq!(app.settings_file.invalid, vec![3]);
@@ -7620,7 +7660,7 @@ mod tests {
         // An option of the window, and a key it does not show.
         app.change_settings(|settings| {
             settings.page_size = 500;
-            settings.group_digits = true;
+            settings.group_digits = Some(false);
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
         });

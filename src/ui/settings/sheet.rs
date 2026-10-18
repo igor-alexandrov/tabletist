@@ -477,9 +477,11 @@ fn control(
         OptionId::GroupDigits => {
             // A number as each value writes it: no language has others.
             let words = ["1,240.50".to_owned(), "1240.50".to_owned()];
-            let selected = usize::from(!settings.group_digits);
+            let selected = usize::from(!settings.group_digits.unwrap_or_default());
             if let Some(picked) = segments(ui, &name, &words, selected, skin) {
-                actions.push(Action::SetOption(OptionValue::GroupDigits(picked == 0)));
+                actions.push(Action::SetOption(OptionValue::GroupDigits(Some(
+                    picked == 0,
+                ))));
             }
         }
         OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => {

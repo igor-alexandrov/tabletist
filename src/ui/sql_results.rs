@@ -212,7 +212,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
     let place = Place {
         tab,
         sql,
-        fit: data_view::Fit::of(workspace, &app.settings),
+        fit: data_view::Fit::of(workspace, app),
         driver: workspace.driver,
         blocked: blocked(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
@@ -3977,7 +3977,7 @@ mod tests {
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![result_with("email")])), None);
         let narrow = width(&mut harness, "email");
-        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app.settings);
+        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app);
         let first = sql(&harness, tab).run.loaded;
         let first = grid_id(tab, sql(&harness, tab).id, first, fit);
         assert!(crate::ui::grid::remembered(&harness.ctx, first));

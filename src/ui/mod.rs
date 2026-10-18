@@ -817,7 +817,7 @@ mod tests {
         harness.answer_rows(crate::testing::page(3, true));
         let before = fetches(&harness);
         let settings = crate::settings::Settings {
-            group_digits: true,
+            group_digits: Some(true),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
@@ -840,7 +840,7 @@ mod tests {
             .app
             .apply(crate::model::Action::ToggleFullPrecision(tab));
         let settings = crate::settings::Settings {
-            group_digits: true,
+            group_digits: Some(true),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
@@ -850,6 +850,7 @@ mod tests {
     #[test]
     fn a_grid_is_fitted_again_when_an_option_widens_its_cells() {
         let mut harness = Harness::new();
+        harness.app.settings.group_digits = Some(false);
         harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -858,7 +859,7 @@ mod tests {
         harness.settle();
         assert!(harness.painted_color("9223372036854775807").is_some());
         let settings = crate::settings::Settings {
-            group_digits: true,
+            group_digits: Some(true),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
@@ -875,7 +876,7 @@ mod tests {
         let tab = harness.connect_fake();
         let group = |harness: &mut Harness, group_digits| {
             let settings = crate::settings::Settings {
-                group_digits,
+                group_digits: Some(group_digits),
                 ..harness.app.settings.clone()
             };
             harness.app.apply_settings(settings);
@@ -905,6 +906,7 @@ mod tests {
     #[test]
     fn an_edit_of_the_file_changes_what_an_open_grid_shows() {
         let mut harness = Harness::new();
+        harness.app.settings.group_digits = Some(false);
         harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -925,7 +927,7 @@ mod tests {
     #[test]
     fn numbers_are_grouped_when_the_settings_say_so_but_keys_never_are() {
         let mut harness = Harness::new();
-        harness.app.settings.group_digits = true;
+        harness.app.settings.group_digits = Some(true);
         let tab = harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -967,6 +969,7 @@ mod tests {
     #[test]
     fn numbers_are_plain_when_the_settings_do_not_group() {
         let mut harness = Harness::new();
+        harness.app.settings.group_digits = Some(false);
         harness.connect_fake();
         harness.click("users");
         let mut page = crate::testing::page(1, false);
@@ -974,6 +977,26 @@ mod tests {
         harness.answer_rows(page);
         harness.settle();
         assert!(harness.painted_color("1234567").is_some());
+    }
+
+    #[test]
+    fn numbers_not_set_are_grouped_as_the_look_has_them() {
+        for (look, grouped) in [
+            (crate::theme::Look::macos(), "1,234,567"),
+            (crate::theme::Look::standard(), "1,234,567"),
+            (crate::theme::Look::omarchy(), "1234567"),
+        ] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            assert_eq!(harness.app.settings.group_digits, None);
+            harness.connect_fake();
+            harness.click("users");
+            let mut page = crate::testing::page(1, false);
+            page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+            harness.answer_rows(page);
+            harness.settle();
+            assert!(harness.painted_color(grouped).is_some(), "{grouped}");
+        }
     }
 
     /// The colours a table's grid paints `true` and a plain text cell in,
@@ -1290,10 +1313,13 @@ value_tags   = true
             );
             // It is written as before: the word alone.
             assert!(harness.painted_color("Full precision").is_some());
-            harness.click("Numbers: 1,240.50");
-            assert!(harness.app.settings.group_digits);
+            // Grouped is the look's default: set, it is not set at all,
+            // and nothing is written.
             harness.click("Numbers: 1240.50");
-            assert!(!harness.app.settings.group_digits);
+            assert_eq!(harness.app.settings.group_digits, Some(false));
+            harness.click("Numbers: 1,240.50");
+            assert_eq!(harness.app.settings.group_digits, None);
+            assert!(harness.app.settings.grouped(harness.app.layout()));
             let tags = harness.app.settings.value_tags;
             harness.click("Value tags");
             assert_eq!(harness.app.settings.value_tags, !tags);
@@ -1701,7 +1727,7 @@ value_tags   = true
         // Numbers: grouped is the left of the two.
         harness.press(egui::Key::J, egui::Modifiers::NONE);
         harness.press(egui::Key::H, egui::Modifiers::NONE);
-        assert!(harness.app.settings.group_digits);
+        assert!(harness.app.settings.grouped(harness.app.layout()));
         assert!(harness.painted_color("grouping on").is_some());
     }
 
@@ -2254,7 +2280,7 @@ value_tags   = true
         // Where it takes the keyboard is egui's to say: each arrow starts
         // from a button again.
         harness.press(egui::Key::ArrowLeft, egui::Modifiers::NONE);
-        assert!(!harness.app.settings.group_digits);
+        assert!(!harness.app.settings.grouped(harness.app.layout()));
         assert_eq!(settings_saves(&harness), 0);
         tab_to_settings(&mut harness, "Numbers");
         harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
@@ -5910,7 +5936,7 @@ value_tags   = true
     #[test]
     fn a_result_groups_every_number_when_the_settings_say_so() {
         let mut harness = Harness::new();
-        harness.app.settings.group_digits = true;
+        harness.app.settings.group_digits = Some(true);
         let tab = harness.connect_fake();
         let mut page = crate::testing::page(1, false);
         page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
@@ -12219,6 +12245,8 @@ value_tags   = true
     fn covers_in(look: Look) -> (Harness, ConnTabId, TabId) {
         let mut harness = Harness::new();
         harness.set_look(look);
+        // The values are read as they were typed: no look groups them here.
+        harness.app.settings.group_digits = Some(false);
         let (tab, id) = harness.book_covers();
         focus_grid(&mut harness, tab);
         harness.settle();

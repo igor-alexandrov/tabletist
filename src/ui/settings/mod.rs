@@ -62,10 +62,12 @@ pub(super) fn is_on(value: OptionValue) -> bool {
 
 /// The settings as the window shows them: the server's switch as it is in
 /// force, off where a change made outside the app that turned it on is
-/// held.
+/// held, and the grouping of numbers as the look has it where it is not
+/// set.
 pub(super) fn shown(app: &App) -> Settings {
     let mut settings = app.settings.clone();
     settings.mcp_enabled = app.agents_on();
+    settings.group_digits = Some(app.settings.grouped(app.layout()));
     settings
 }
 
@@ -121,8 +123,8 @@ pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(Said, Optio
         ],
         // A number as each value writes it.
         OptionId::GroupDigits => vec![
-            (Sample("1,240.50"), OptionValue::GroupDigits(true)),
-            (Sample("1240.50"), OptionValue::GroupDigits(false)),
+            (Sample("1,240.50"), OptionValue::GroupDigits(Some(true))),
+            (Sample("1240.50"), OptionValue::GroupDigits(Some(false))),
         ],
         OptionId::ValueTags => vec![
             (Word("off"), OptionValue::ValueTags(false)),
