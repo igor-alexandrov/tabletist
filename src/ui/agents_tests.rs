@@ -792,9 +792,9 @@ fn log_asked(harness: &Harness) -> (u64, Option<String>) {
         .find_map(|sent| match sent {
             crate::backend::Command::Agents(crate::backend::AgentsCommand::ReadLog {
                 asked,
-                connection,
+                filter,
                 ..
-            }) => Some((*asked, connection.clone())),
+            }) => Some((*asked, filter.connection.clone())),
             _ => None,
         })
         .expect("a read of the log")
@@ -822,6 +822,7 @@ fn log_answered(harness: &mut Harness) {
         calls: vec![tabletist_mcp::Logged { id: 5, entry }],
         total: 1,
         more: false,
+        agents: vec!["Claude Code".into(), "Cursor".into()],
     };
     said(
         harness,
@@ -963,6 +964,7 @@ fn a_call_selected_with_j_is_kept_in_sight() {
         calls,
         total: 200,
         more: false,
+        agents: Vec::new(),
     };
     said(
         &mut harness,
