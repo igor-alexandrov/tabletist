@@ -143,7 +143,16 @@ pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
 /// file is private to the user (0600) wherever it is, and its directory is
 /// flushed after the rename so the new name survives a crash too.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    put_atomic(path, bytes, true).map(|_| ())
+    put_atomic(path, |file| file.write_all(bytes), true).map(|_| ())
+}
+
+/// [`write_atomic`], with what is written put by `write` into the
+/// temporary file as it goes: a file too long to be held whole first.
+pub fn write_atomic_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    put_atomic(path, write, true).map(|_| ())
 }
 
 /// Writes `bytes` to `path` as [`write_atomic`] does, but only where no
@@ -151,12 +160,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// left as it is. Whether it wrote. Looking for the file first and writing
 /// after would replace a file made between the two.
 pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
-    put_atomic(path, bytes, false)
+    put_atomic(path, |file| file.write_all(bytes), false)
 }
 
 /// [`write_atomic`], or with `replace` false [`create_atomic`]. Whether it
 /// wrote.
-fn put_atomic(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<bool> {
+fn put_atomic(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+    replace: bool,
+) -> std::io::Result<bool> {
     let destination = resolve_link(path)?;
     let dir = directory_of(&destination);
     if destination == path {
@@ -166,7 +179,7 @@ fn put_atomic(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<bool>
         .prefix(".tabletist-")
         .suffix(".tmp")
         .tempfile_in(dir)?;
-    file.write_all(bytes)?;
+    write(file.as_file_mut())?;
     file.as_file().sync_all()?;
     if replace {
         file.persist(&destination).map_err(|error| error.error)?;
