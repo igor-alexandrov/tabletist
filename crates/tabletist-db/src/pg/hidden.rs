@@ -87,15 +87,23 @@ ORDER BY n.nspname, c.relname"
 }
 
 /// The columns of the relations of the names in `$1`, folded to lower
-/// case: the masked columns' tables; and whether each is generated.
+/// case, and of their child tables at any depth: the masked columns'
+/// tables; and whether each is generated, which PostgreSQL 11 has no
+/// `attgenerated` to say (read through `to_jsonb`, as `pg.rs` does).
 const COLUMNS_SQL: &str = "\
-SELECT n.nspname, c.relname, a.attname, a.attgenerated <> ''
+WITH RECURSIVE tables AS (
+    SELECT c.oid FROM pg_class c WHERE lower(c.relname) = ANY($1)
+    UNION
+    SELECT i.inhrelid FROM pg_inherits i JOIN tables t ON i.inhparent = t.oid
+)
+SELECT n.nspname, c.relname, a.attname,
+    COALESCE(to_jsonb(a) ->> 'attgenerated', '') <> ''
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE a.attnum > 0 AND NOT a.attisdropped
     AND c.relkind IN ('r', 'v', 'm', 'p', 'f')
-    AND lower(c.relname) = ANY($1)";
+    AND c.oid IN (SELECT oid FROM tables)";
 
 /// The columns of the names in `$1`, folded to lower case, that a view's or
 /// a materialized view's rules read, as `pg_depend` keeps them: the view,
@@ -594,20 +602,23 @@ pub(super) async fn catalog(
                 .iter()
                 .map(|entry| entry.table.to_lowercase())
                 .collect();
-            let names: Vec<String> = masked
-                .iter()
-                .map(|entry| entry.column.to_lowercase())
-                .collect();
             let listed = client
                 .query(COLUMNS_SQL, &[&tables])
                 .await
                 .map_err(query_error)?;
             let column = |row: &tokio_postgres::Row| (row.get(0), row.get(1), row.get(2));
             let columns = listed.iter().map(column).collect();
-            let generated = listed
+            let generated: Vec<(String, String, String)> = listed
                 .iter()
                 .filter(|row| row.get::<_, bool>(3))
                 .map(column)
+                .collect();
+            // What the views read of the masked columns, the generated
+            // ones masked with them too.
+            let names: Vec<String> = masked
+                .iter()
+                .map(|entry| entry.column.to_lowercase())
+                .chain(generated.iter().map(|(_, _, name)| name.to_lowercase()))
                 .collect();
             let reads: Vec<ColumnRead> = client
                 .query(COLUMN_READS_SQL, &[&names])

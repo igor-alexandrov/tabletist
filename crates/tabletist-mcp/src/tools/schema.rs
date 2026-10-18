@@ -327,7 +327,9 @@ impl Room {
 /// MySQL writes into it (`enum('new','paid')` is `enum`).
 fn type_of(type_name: &str, masked: bool) -> &str {
     let listed = ["enum(", "set("].iter().any(|kind| {
-        type_name.len() >= kind.len() && type_name[..kind.len()].eq_ignore_ascii_case(kind)
+        type_name
+            .get(..kind.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(kind))
     });
     match (masked, listed) {
         (true, true) => type_name.split('(').next().unwrap_or(type_name),
@@ -471,6 +473,9 @@ mod tests {
         assert_eq!(type_of("enum('new','paid')", false), "enum('new','paid')");
         assert_eq!(type_of("varchar(255)", true), "varchar(255)");
         assert_eq!(type_of("text", true), "text");
+        // A name of other letters than ASCII is no MySQL list either.
+        assert_eq!(type_of("ééé", true), "ééé");
+        assert_eq!(type_of("éé", false), "éé");
     }
 
     #[test]
