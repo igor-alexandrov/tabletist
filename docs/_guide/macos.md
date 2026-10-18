@@ -24,9 +24,8 @@ launch, are on the
   tabs do in Safari. In full screen the window's buttons are hidden and
   the bar takes the whole width.
 - **Light and dark follow the system.** Tabletist changes with the
-  Appearance setting while it runs.
-  [Your own colors]({% link _guide/omarchy.md %}#your-own-colors) work on a
-  Mac too.
+  Appearance setting while it runs. **Settings › Appearance** can keep it
+  light or dark whatever the system says.
 - **The app menu has the usual two.** **Tabletist → About Tabletist**
   shows the version, and **Tabletist → Settings…** opens Settings.
 

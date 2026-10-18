@@ -251,7 +251,7 @@ offers.
 | `j` `k` | Move |
 | `h` `l` | Change the option |
 | Space | Toggle the option |
-| Ctrl+H, Ctrl+L | The pane before or after: General, Agents |
+| Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Agents |
 | Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row |
 | `y` | On the Agents pane: copy the command that connects Claude Code |
 | Ctrl+E | Open `settings.toml` in your editor |
@@ -271,20 +271,45 @@ system's light or dark setting.
 Tabletist maps an Omarchy theme onto its own palette with a template. The
 one it ships is
 [`contrib/omarchy/tabletist.json.tpl`](https://github.com/igor-alexandrov/tabletist/blob/main/contrib/omarchy/tabletist.json.tpl)
-in the source.
+in the source; a `tabletist.json.tpl` of your own in
+`~/.config/omarchy/themed` is used instead.
+
+### Pinning a theme
+
+**Settings › Appearance** shows the theme drawn now and the palette it
+gave. `l` on the theme row pins the theme Omarchy shows: Tabletist keeps
+it when you switch Omarchy's theme, and `h` follows Omarchy again.
+
+A theme can also be pinned in `settings.toml`, by the name of an Omarchy
+theme, yours or one Omarchy ships:
+
+```toml
+[appearance]
+theme = "Tokyo Night"
+```
 
 ### Your own colors
 
 A palette file in the `themes` folder of Tabletist's settings folder can
-replace the desktop's colors. Name the file in `settings.toml`:
+replace the desktop's colors. Pin it by its file's name:
 
 ```toml
 [appearance]
 theme = "my-theme.json"
 ```
 
-A named file wins over the Omarchy theme and over the system's light or
-dark setting. The folder and the file are described in
+A name alone (`"my-theme"`) is an Omarchy theme's first, and the
+palette's only where no Omarchy theme has it. A file or an Omarchy
+theme's folder anywhere is pinned by its path, starting with `/` or `~/`:
+
+```toml
+[appearance]
+theme = "~/themes/my-theme.json"
+```
+
+A pin that cannot be found or read is told in the status line once a
+connection is open, and on the theme row of Settings › Appearance, and
+Tabletist follows the desktop instead. The folder and the file are described in
 [Settings and Files]({% link _reference/settings-and-files.md %}).
 
 ## Settings
