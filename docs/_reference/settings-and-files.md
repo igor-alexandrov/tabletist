@@ -103,7 +103,7 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
-| `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access |
+| `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access, hidden tables and masked columns |
 | `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key each proves it holds before either says more, and the lock the app holds while it listens. The socket and the key are there while agents are on |
 | `mcp.pipe` | State | On Windows, in the socket's place: the name of the pipe `tabletist mcp` reaches the app by, new each time agents are turned on |
 
@@ -201,9 +201,31 @@ system catalogs either (`information_schema`, `pg_catalog`, `mysql`,
 or dropped, agents may not use the connection at all until you take the
 name out of the list or put the right one in.
 
-A file in which a connection hides a table says `version = 5`, one in
-which a connection has the table and hides nothing says `version = 4`,
-and one in which none has it stays `version = 3`. Agents use the table only while
+`masked` names the columns whose values agents get as `•••`, every value,
+an empty one too:
+
+```toml
+[connections.agents]
+access = "read"
+masked = ["orders.email", "sales.customers.phone"]
+```
+
+An entry is a table and a column, or a schema, a table and a column, each
+part written as in `hidden`. One without a schema is that column of the
+table of that name in every schema. Agents may select a masked column as
+it is, and may not filter, join, sort, group or compute on it, nor on any
+column of the same name in any table. A view that reads one is refused,
+and so is any view over its table on MySQL. Its partitions and child
+tables have it masked too, and so does a generated column of its table.
+If a column that `masked` names is renamed or dropped, agents may not use
+the connection at all until you take it out of the list or put the right
+one in.
+
+A file in which a connection masks a column says `version = 6`, one in
+which a connection hides a table and masks none says `version = 5`, one
+in which a connection has the table and neither hides nor masks says
+`version = 4`, and one in which none has it stays `version = 3`. Agents
+use the table only while
 `[mcp] enabled` is `true` in `settings.toml`. **Stop agents here**, in a
 connection's Agents tab, stops the agents working on it and sets its
 `access` to `off`, so that an agent that connects again does not see it.
@@ -212,14 +234,18 @@ connection's Agents tab, stops the agents working on it and sets its
 
 A change to either file that lets agents do more than Tabletist last
 showed you is not applied at once: turning `[mcp] enabled` on, a
-connection's `access` up from `off`, or a connection hiding less: a name
+connection's `access` up from `off`, a connection hiding less (a name
 taken out of `hidden` or put into `only`, or a `hidden` list made an
-`only` one. Tabletist says what
+`only` one), or a connection masking less: a name taken out of `masked`,
+or one that named a column in every schema made to name it in one.
+Tabletist says what
 changed in a bar under the top of the window, and until you answer,
 agents may do what they could before. **Keep** applies the change. **Put
 back** undoes it in the files: it turns `[mcp] enabled` off, sets the
-connection's `access` back to `off`, or puts its tables back as they were,
-and leaves your other settings and connections as they are. A change that
+connection's `access` back to `off`, or puts its tables or its masked
+columns back as they were, and leaves your other settings and connections
+as they are. While a name taken out of `masked` is held, a column put into
+it at the same time is masked at once. A change that
 lets agents do less applies at once.
 
 Turning agents on in Tabletist itself, with **Turn on** in a connection's
