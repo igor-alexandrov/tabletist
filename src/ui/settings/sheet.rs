@@ -10,8 +10,8 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    EnvBar, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, ThemeChoice, Timestamps,
-    Zone,
+    EnvBar, Idle, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, ThemeChoice,
+    Timestamps, Zone,
 };
 use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
@@ -632,7 +632,7 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         | OptionId::AgentsNotify
         | OptionId::Zebra
         | OptionId::ColumnTypes => SWITCH,
-        OptionId::LogDays => look.control_height,
+        OptionId::LogDays | OptionId::IdleDisconnect => look.control_height,
         // The Theme section is tiles, drawn on their own: no row's.
         OptionId::Theme => 0.0,
     }
@@ -756,6 +756,28 @@ fn control(
             {
                 actions.push(Action::SetOption(flipped));
             }
+        }
+        OptionId::IdleDisconnect => {
+            let shown = super::idle_text(skin.locale, settings.idle_disconnect);
+            let dropdown = menu::Dropdown::new("idle", &shown, MENU);
+            let menu = dropdown.show(ui, look, palette, |ui| {
+                for choice in Idle::ALL {
+                    let text = super::idle_text(skin.locale, choice);
+                    let entry_name = format!("{name} {text}");
+                    let entry = menu::Item::choice(&text, choice == settings.idle_disconnect)
+                        .name(&entry_name)
+                        .show(ui, look, palette);
+                    if entry.clicked() {
+                        actions.push(Action::SetOption(OptionValue::IdleDisconnect(choice)));
+                        ui.close();
+                    }
+                }
+            });
+            menu.response.widget_info(|| {
+                let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, &name);
+                info.current_text_value = Some(shown.clone());
+                info
+            });
         }
         OptionId::LogDays => {
             let shown = super::days(skin.locale, settings.mcp_log_days);
@@ -918,6 +940,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         OptionId::Theme
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
+        | OptionId::IdleDisconnect
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify

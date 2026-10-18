@@ -549,6 +549,9 @@ pub enum OptionId {
     ProductionReadOnly,
     /// Whether dropping unsaved edits asks first: `safety.confirm_close_edits`.
     ConfirmCloseEdits,
+    /// How long a connection goes unused before its session is closed:
+    /// `safety.idle_disconnect`.
+    IdleDisconnect,
     /// Whether agents can reach the app: `mcp.enabled`.
     AgentsOn,
     /// How long the log of agents' calls keeps one: `mcp.log_days`.
@@ -566,7 +569,7 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 16] = [
+    pub const ALL: [OptionId; 17] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -574,6 +577,7 @@ impl OptionId {
         Self::ValueTags,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
+        Self::IdleDisconnect,
         Self::Theme,
         Self::RowHeight,
         Self::Zebra,
@@ -585,7 +589,7 @@ impl OptionId {
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 7] = [
+    pub const GENERAL: [OptionId; 8] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -593,6 +597,7 @@ impl OptionId {
         Self::ValueTags,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
+        Self::IdleDisconnect,
     ];
     /// The General pane's sections: Data, then Safety.
     pub const DATA: [OptionId; 5] = [
@@ -602,7 +607,11 @@ impl OptionId {
         Self::GroupDigits,
         Self::ValueTags,
     ];
-    pub const SAFETY: [OptionId; 2] = [Self::ProductionReadOnly, Self::ConfirmCloseEdits];
+    pub const SAFETY: [OptionId; 3] = [
+        Self::ProductionReadOnly,
+        Self::ConfirmCloseEdits,
+        Self::IdleDisconnect,
+    ];
     /// The Appearance pane's, in the order it has them: its Theme
     /// section's, its Grid section's, then its Environment section's.
     pub const APPEARANCE: [OptionId; 6] = [
@@ -634,6 +643,7 @@ impl OptionId {
             Self::ValueTags => Key::ValueTags,
             Self::ProductionReadOnly => Key::ProductionReadOnly,
             Self::ConfirmCloseEdits => Key::ConfirmCloseEdits,
+            Self::IdleDisconnect => Key::IdleDisconnect,
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
@@ -663,6 +673,7 @@ pub enum OptionValue {
     ValueTags(bool),
     ProductionReadOnly(bool),
     ConfirmCloseEdits(bool),
+    IdleDisconnect(Idle),
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
@@ -685,6 +696,7 @@ impl OptionValue {
             Self::ValueTags(_) => OptionId::ValueTags,
             Self::ProductionReadOnly(_) => OptionId::ProductionReadOnly,
             Self::ConfirmCloseEdits(_) => OptionId::ConfirmCloseEdits,
+            Self::IdleDisconnect(_) => OptionId::IdleDisconnect,
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
@@ -707,6 +719,7 @@ impl OptionValue {
             Self::ValueTags(on) => settings.value_tags = on,
             Self::ProductionReadOnly(on) => settings.production_read_only = on,
             Self::ConfirmCloseEdits(on) => settings.confirm_close_edits = on,
+            Self::IdleDisconnect(choice) => settings.idle_disconnect = choice,
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
@@ -1211,6 +1224,7 @@ impl Settings {
                 OptionValue::ProductionReadOnly(self.production_read_only)
             }
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(self.confirm_close_edits),
+            OptionId::IdleDisconnect => OptionValue::IdleDisconnect(self.idle_disconnect),
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
@@ -1231,8 +1245,8 @@ impl Settings {
 
     /// The value one step from `option`'s, towards the right (`forward`)
     /// or the left, as the window draws its choices: the next page size
-    /// (none past the ends), the segment on that side, a check on to the
-    /// right and off to the left.
+    /// or the next choice of a menu (none past the ends), the segment on
+    /// that side, a check on to the right and off to the left.
     pub fn stepped(&self, option: OptionId, forward: bool) -> OptionValue {
         match option {
             OptionId::PageSize => {
@@ -1260,6 +1274,19 @@ impl Settings {
             OptionId::ValueTags => OptionValue::ValueTags(forward),
             OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
+            // Never is the first: the shortest wait is one to the right.
+            OptionId::IdleDisconnect => {
+                let at = Idle::ALL
+                    .iter()
+                    .position(|choice| *choice == self.idle_disconnect)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (at + 1).min(Idle::ALL.len() - 1)
+                } else {
+                    at.saturating_sub(1)
+                };
+                OptionValue::IdleDisconnect(Idle::ALL[next])
+            }
             OptionId::AgentsOn => OptionValue::AgentsOn(forward),
             OptionId::LogDays => {
                 let days = self.mcp_log_days;
@@ -1324,7 +1351,7 @@ impl Settings {
     /// The other value of an option that has two; `None` for one with more.
     pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
         match option {
-            OptionId::PageSize | OptionId::Tz => None,
+            OptionId::PageSize | OptionId::Tz | OptionId::IdleDisconnect => None,
             OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
@@ -3058,6 +3085,7 @@ bar = \"label\"  # tint | label
                 Key::ValueTags,
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
+                Key::IdleDisconnect,
                 Key::Theme,
                 Key::RowHeight,
                 Key::Zebra,
@@ -3112,6 +3140,38 @@ bar = \"label\"  # tint | label
         assert_eq!(step(300, false), OptionValue::PageSize(100));
         assert_eq!(step(9_000, true), OptionValue::PageSize(10_000));
         assert_eq!(step(9_000, false), OptionValue::PageSize(5_000));
+    }
+
+    #[test]
+    fn the_idle_time_steps_through_its_choices_and_stops_at_the_ends() {
+        let step = |choice: Idle, forward: bool| {
+            let settings = Settings {
+                idle_disconnect: choice,
+                ..Settings::default()
+            };
+            settings.stepped(OptionId::IdleDisconnect, forward)
+        };
+        assert_eq!(
+            step(Idle::Minutes30, true),
+            OptionValue::IdleDisconnect(Idle::Hour1)
+        );
+        assert_eq!(
+            step(Idle::Minutes30, false),
+            OptionValue::IdleDisconnect(Idle::Minutes15)
+        );
+        assert_eq!(
+            step(Idle::Minutes5, false),
+            OptionValue::IdleDisconnect(Idle::Never)
+        );
+        assert_eq!(
+            step(Idle::Never, false),
+            OptionValue::IdleDisconnect(Idle::Never)
+        );
+        assert_eq!(
+            step(Idle::Hours4, true),
+            OptionValue::IdleDisconnect(Idle::Hours4)
+        );
+        assert_eq!(Settings::default().flipped(OptionId::IdleDisconnect), None);
     }
 
     #[test]

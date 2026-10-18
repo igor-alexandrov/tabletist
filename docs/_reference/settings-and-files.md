@@ -19,6 +19,7 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 | **New production connections open read-only** | On or off: where the **Open read-only** box of a new production connection starts. A connection you saved keeps its own box | On |
 | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
+| **Disconnect when idle** | Never, or after 5, 15 or 30 minutes, 1 hour or 4 hours unused. The server session is closed; the tabs stay, and the connection connects again when something next needs it: a refresh, a page, a table opened, a run or a save | After 30 min |
 
 A second pane, **Appearance**, sets the theme and how the grids and the
 connection bar are drawn. Each change shows in every open window at once.

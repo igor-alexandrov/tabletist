@@ -2505,6 +2505,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::ValueTags),
                 SettingsRow::Option(OptionId::ProductionReadOnly),
                 SettingsRow::Option(OptionId::ConfirmCloseEdits),
+                SettingsRow::Option(OptionId::IdleDisconnect),
             ],
             Self::Appearance => &[
                 SettingsRow::Option(OptionId::Theme),

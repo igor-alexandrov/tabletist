@@ -8942,6 +8942,9 @@ mod tests {
             settings.page_size = 500;
             settings.tz = crate::settings::Zone::Utc;
             settings.group_digits = Some(false);
+            settings.production_read_only = false;
+            settings.confirm_close_edits = false;
+            settings.idle_disconnect = crate::settings::Idle::Never;
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
         });
@@ -8964,6 +8967,10 @@ mod tests {
         assert_eq!(app.settings.page_size, defaults.page_size);
         assert_eq!(app.settings.tz, defaults.tz);
         assert_eq!(app.settings.group_digits, defaults.group_digits);
+        // The Safety group's too.
+        assert!(app.settings.production_read_only);
+        assert!(app.settings.confirm_close_edits);
+        assert_eq!(app.settings.idle_disconnect, defaults.idle_disconnect);
         assert!(app.settings.show_system_schemas);
         assert_eq!(app.settings.sql_limit, 50);
         assert_eq!(app.settings_file.text, app.settings.to_toml());
