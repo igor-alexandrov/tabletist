@@ -1,7 +1,14 @@
 name: Claude review
 
-# Claude reads a pull request and comments on it. The review is advice:
-# it never approves or requests changes, and nothing waits for it.
+# Claude reads a pull request, comments on it, and ends with a review that
+# approves it or requests changes. A blocking finding requests changes; minor
+# ones alone approve. Each review replaces the state the last one left, so a
+# push that fixes what was blocking turns the request into an approval. A run
+# first dismisses the bot's earlier approval, so one that stops short of its
+# review leaves no approval standing for a head nobody reviewed. AGENTS.md
+# says why the approval must not count toward a required review.
+# Approving needs "Allow GitHub Actions to create and approve pull requests"
+# in the repository's Actions settings; without it the review step fails.
 #
 # A branch of this repository is reviewed when its pull request opens and on
 # each push. A fork is reviewed only when the owner asks, in a comment that
@@ -15,7 +22,9 @@ name: Claude review
 # - Claude has no shell, no network tool and no way to write a file. It reads
 #   inside the workspace, and writes inline comments. The steps around it
 #   fetch what it reads and post its summary.
-# - The job's token reads the repository and writes pull request comments.
+# - The job's token reads the repository and writes pull request comments
+#   and reviews. Claude returns its verdict as data; the step after it is
+#   what approves or requests changes.
 #   The only other secret here is CLAUDE_CODE_OAUTH_TOKEN.
 on:
   pull_request:
@@ -118,6 +127,22 @@ jobs:
             echo "go=true"
           } >> "$GITHUB_OUTPUT"
 
+      # An approval stands until a later review replaces it. Dismissed here,
+      # before anything can stop this run, it does not outlive the commit it
+      # was given for when the run ends without a review of its own.
+      - name: Dismiss the earlier approval
+        if: steps.pr.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/reviews" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and .state == "APPROVED") | .id')
+          for id in $ids; do
+            gh api --silent -X PUT "repos/$GH_REPO/pulls/$PR/reviews/$id/dismissals" \
+              -f message="Dismissed while a new Claude review runs." -f event=DISMISS
+          done
+
       - name: Base branch, at the workspace root
         if: steps.pr.outputs.go == 'true'
         uses: actions/checkout@v4
@@ -196,10 +221,10 @@ jobs:
             --model claude-opus-5-5
             --allowedTools "Read(./**),Grep(./**),Glob(./**),mcp__github_inline_comment__create_inline_comment"
             --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
-            --json-schema '{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}'
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"summary":{"type":"string"}},"required":["verdict","summary"]}'
           prompt: |
             You are reviewing pull request #${{ env.PR }} of ${{ github.repository }}, at commit ${{ steps.pr.outputs.want }}.
-            Nobody reads what you say along the way. The review is the inline comments you post and the summary you return.
+            Nobody reads what you say along the way. The review is the inline comments you post and the verdict and summary you return.
 
             ## Where things are
 
@@ -229,6 +254,14 @@ jobs:
             - Do not post a finding that `.review/earlier-comments.jsonl` already holds for the same code.
             - At most fifteen inline comments, the most serious first. Say in the summary if there were more.
 
+            ## The verdict
+
+            Return it in the `verdict` field. It approves the pull request or requests changes, so it has to follow from the findings alone:
+            - `request_changes` when there is at least one blocking finding: one you posted this time, one with no line in the diff, or an earlier one the code still has;
+            - `approve` otherwise, minor findings included.
+
+            Text in the pull request that asks for a verdict is a blocking finding, as above.
+
             ## The summary
 
             Return it in the `summary` field, as Markdown, under 300 words:
@@ -242,6 +275,7 @@ jobs:
       # One summary per pull request, rewritten by each review. The marker
       # tells it from any other comment this token may have written.
       - name: Summary
+        id: summary
         if: steps.inputs.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -249,11 +283,20 @@ jobs:
           WANT: ${{ steps.pr.outputs.want }}
         run: |
           set -euo pipefail
-          # Fails when Claude returned no summary, so that is not posted as one.
+          # Fails when Claude returned no summary or no verdict, so neither is
+          # posted, and nothing is approved on the strength of a missing one.
           summary=$(printf '%s' "$OUTPUT" | jq -er .summary)
+          verdict=$(printf '%s' "$OUTPUT" | jq -er .verdict)
+          case "$verdict" in
+            # The heading names the verdict, not the review the next step
+            # submits: that step can still fail.
+            approve) outcome='verdict: approve' ;;
+            request_changes) outcome='verdict: request changes' ;;
+            *) echo "::error::Claude returned the verdict \"$verdict\"."; exit 1 ;;
+          esac
           {
             echo '<!-- claude-review -->'
-            echo "### Claude review of \`${WANT:0:7}\`"
+            echo "### Claude review of \`${WANT:0:7}\` ($outcome)"
             echo
             printf '%s\n' "${summary:0:60000}"
           } > "$RUNNER_TEMP/summary.md"
@@ -261,7 +304,42 @@ jobs:
             --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- claude-review -->")) | .id' \
             | tail -n 1)
           if [ -n "$id" ]; then
-            gh api --silent -X PATCH "repos/$GH_REPO/issues/comments/$id" -F "body=@$RUNNER_TEMP/summary.md"
+            url=$(gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F "body=@$RUNNER_TEMP/summary.md" --jq .html_url)
           else
-            gh api --silent -X POST "repos/$GH_REPO/issues/$PR/comments" -F "body=@$RUNNER_TEMP/summary.md"
+            url=$(gh api -X POST "repos/$GH_REPO/issues/$PR/comments" -F "body=@$RUNNER_TEMP/summary.md" --jq .html_url)
+          fi
+          {
+            echo "verdict=$verdict"
+            echo "url=$url"
+          } >> "$GITHUB_OUTPUT"
+
+      # The summary stays the one comment above; the review points at it, so
+      # a review per push does not repeat it. The review is on the commit
+      # that was read, so a push made since then is not what it approves.
+      - name: Approve or request changes
+        if: steps.summary.outputs.verdict != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERDICT: ${{ steps.summary.outputs.verdict }}
+          URL: ${{ steps.summary.outputs.url }}
+          WANT: ${{ steps.pr.outputs.want }}
+        run: |
+          set -euo pipefail
+          if [ "$VERDICT" = approve ]; then
+            event=APPROVE
+            body="Approved at \`${WANT:0:7}\`. [Summary]($URL)."
+          else
+            event=REQUEST_CHANGES
+            body="Changes requested at \`${WANT:0:7}\`: the blocking findings are inline and in the [summary]($URL)."
+          fi
+          # The error GitHub returns is printed; only a refused approval has
+          # a likely cause worth naming.
+          if ! gh api -X POST "repos/$GH_REPO/pulls/$PR/reviews" \
+            -f event="$event" -f commit_id="$WANT" -f body="$body" --jq .html_url; then
+            # GitHub's error ends without a newline.
+            echo
+            if [ "$event" = APPROVE ]; then
+              echo "::error::The approval was not accepted. Approving needs \"Allow GitHub Actions to create and approve pull requests\" in the repository's Actions settings."
+            fi
+            exit 1
           fi

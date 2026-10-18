@@ -86,8 +86,11 @@ saying why the rule does not apply.
 
 `ci.yml`, and `packaging.yml` when packaging paths changed, start on the pull
 request themselves. `claude-review.yml` has Claude review the change. The
-review is advice: it never approves or requests changes, and nothing waits
-for it.
+review ends by approving it, or by requesting changes when a blocking finding
+stands. The approval is not meant to count toward a required review: `main`
+requires none, so it lets nothing merge that could not merge before. Keep it
+so. It is a model's reading of text the author wrote, so before `main`
+requires an approval, take the review step out of the workflow.
 
 - The paths that start `packaging.yml` are listed twice: in its `pull_request`
   trigger and in its `push` trigger. Change them together.
@@ -97,9 +100,12 @@ for it.
   reviews a branch of this repository again. The words begin the comment, and
   the comment gets an eyes reaction when it is taken as a request.
 - The review posts inline comments and one summary comment, which each later
-  review rewrites. It reads `AGENTS.md` from the base branch, so a rule the
-  review should hold a change to belongs here. `Cargo.lock` and
-  `docs/superpowers/` are not reviewed.
+  review rewrites. A run dismisses the bot's earlier approval before Claude
+  reads anything, so a run that stops short leaves none standing for a head
+  nobody reviewed. A fork's push starts no run, so its approval stays until
+  the next `@claude review`. The review reads `AGENTS.md` from the base
+  branch, so a rule the review should hold a change to belongs here.
+  `Cargo.lock` and `docs/superpowers/` are not reviewed.
 - Claude has no shell there and reads nothing outside the workspace. The
   pull request's code is never run. Keep it so: do not give the job another
   secret, a tool that runs commands, or a permission beyond
