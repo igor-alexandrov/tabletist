@@ -1120,6 +1120,45 @@ pub struct LoadedTables {
     pub schemas_cut: bool,
     /// Each loaded schema with its tables' and views' names.
     pub loaded: Vec<(String, Vec<String>)>,
+    /// The tables and views whose columns a window fetched, each with its
+    /// schema and its columns' names.
+    pub columns: Vec<(ObjectRef, Vec<String>)>,
+    /// The tables and views whose columns are on their way.
+    pub columns_loading: Vec<ObjectRef>,
+    /// The tables and views whose columns could not be fetched.
+    pub columns_failed: Vec<ObjectRef>,
+}
+
+/// A row of Add column…'s list: a table, to be chosen for its columns, or
+/// one of its columns, to be masked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfferedColumn {
+    Table(tabletist_db::agent::TableName),
+    Column(tabletist_db::agent::ColumnName),
+}
+
+/// As the row says it: `orders.` for a table, as the field takes it to
+/// list its columns, and `orders.email` for a column.
+impl std::fmt::Display for OfferedColumn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table(table) => write!(f, "{table}."),
+            Self::Column(column) => write!(f, "{column}"),
+        }
+    }
+}
+
+/// What Add column…'s list shows for what is typed: its rows, and the
+/// tables whose columns they are, where the text names a loaded one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ColumnsOffered {
+    pub rows: Vec<OfferedColumn>,
+    /// The table the text names, as typed, where it names a loaded one:
+    /// then the rows are its columns.
+    pub of: Option<tabletist_db::agent::TableName>,
+    /// The loaded tables that name stands for: one in every schema for a
+    /// name without one.
+    pub tables: Vec<ObjectRef>,
 }
 
 /// How many tables Add table…'s list shows at once.
@@ -1249,25 +1288,183 @@ impl LoadedTables {
                 if self.loaded.iter().any(|(_, names)| in_schema(names)) {
                     return Some(true);
                 }
-                let all = !self.schemas.is_empty()
-                    && !self.schemas_cut
-                    && self.schemas.iter().all(|schema| {
-                        self.loaded
-                            .iter()
-                            .any(|(loaded, names)| same(loaded, schema) && whole(names.len()))
-                    });
-                all.then_some(false)
+                self.whole().then_some(false)
             }
+        }
+    }
+
+    /// Whether every schema of the database is loaded, each wholly: then
+    /// what no loaded schema has, no schema has.
+    fn whole(&self) -> bool {
+        let whole = |count: usize| count < tabletist_db::MAX_LISTED as usize;
+        !self.schemas.is_empty()
+            && !self.schemas_cut
+            && self.schemas.iter().all(|schema| {
+                self.loaded
+                    .iter()
+                    .any(|(loaded, names)| same_name(loaded, schema) && whole(names.len()))
+            })
+    }
+
+    /// The loaded tables and views `schema` and `table` name: the one of
+    /// that schema, or, without a schema, the one of that name in each.
+    /// None of the system's.
+    pub fn named(&self, schema: Option<&str>, table: &str) -> Vec<ObjectRef> {
+        let name = tabletist_db::agent::TableName {
+            schema: schema.map(str::to_owned),
+            name: table.to_owned(),
+        };
+        if self.system_table(&name) {
+            return Vec::new();
+        }
+        self.loaded
+            .iter()
+            .filter(|(loaded, _)| !self.system_schema(loaded))
+            .filter(|(loaded, _)| schema.is_none_or(|schema| same_name(schema, loaded)))
+            .flat_map(|(loaded, names)| {
+                names
+                    .iter()
+                    .filter(|known| same_name(known, table))
+                    .map(move |known| ObjectRef::new(loaded.clone(), known.clone()))
+            })
+            .collect()
+    }
+
+    /// The columns a window fetched of `object`, where it fetched them:
+    /// that table's own, by its name as the catalog has it, and not those
+    /// of one whose name differs only in case.
+    fn columns_of(&self, object: &ObjectRef) -> Option<&[String]> {
+        self.columns
+            .iter()
+            .find(|(known, _)| known == object)
+            .map(|(_, columns)| columns.as_slice())
+    }
+
+    /// Whether `entry` names a column of the database, where what the
+    /// windows loaded and fetched can say: `Some(false)` marks it, as the
+    /// agent server finds it missing. A table not in the database has no
+    /// column; one whose columns were not fetched is not known; an entry
+    /// without a schema is the table of that name in any schema, so it is
+    /// missing only when every schema is loaded.
+    pub fn has_column(&self, entry: &tabletist_db::agent::ColumnName) -> Option<bool> {
+        let table = tabletist_db::agent::TableName {
+            schema: entry.schema.clone(),
+            name: entry.table.clone(),
+        };
+        if !self.has(&table)? {
+            return Some(false);
+        }
+        let mut known = true;
+        for object in self.named(entry.schema.as_deref(), &entry.table) {
+            match self.columns_of(&object) {
+                Some(columns) if columns.iter().any(|name| same_name(name, &entry.column)) => {
+                    return Some(true);
+                }
+                Some(_) => {}
+                None => known = false,
+            }
+        }
+        (known && (entry.schema.is_some() || self.whole())).then_some(false)
+    }
+
+    /// Add column…'s list for `typed`. A table and a dot, `orders.em`,
+    /// where the table is loaded: its columns that match what follows the
+    /// dot, written with the table as typed (with its schema where one is
+    /// typed), none an entry of `listed` already masks. Else the loaded
+    /// tables that match, as Add table… offers them, each to be chosen for
+    /// its columns. At most [`OFFERED`] rows; nothing for nothing typed.
+    pub fn offered_columns(
+        &self,
+        typed: &str,
+        listed: &[tabletist_db::agent::ColumnName],
+    ) -> ColumnsOffered {
+        use tabletist_db::agent::{ColumnName, TableName};
+        // Read as the file reads a name, quotes and all: a table and a dot,
+        // or a table, a dot and the start of a column.
+        let typed_now = typed.trim();
+        let parts = match typed_now.strip_suffix('.') {
+            Some(front) => front
+                .parse::<TableName>()
+                .ok()
+                .map(|of| (of, String::new())),
+            None => typed_now.parse::<ColumnName>().ok().map(|entry| {
+                let of = TableName {
+                    schema: entry.schema,
+                    name: entry.table,
+                };
+                (of, entry.column)
+            }),
+        };
+        if let Some((of, rest)) = parts {
+            let rest = rest.as_str();
+            let tables = self.named(of.schema.as_deref(), &of.name);
+            if !tables.is_empty() {
+                let masks = |column: &str| {
+                    listed.iter().any(|entry| {
+                        same_name(&entry.table, &of.name)
+                            && same_name(&entry.column, column)
+                            && match (&entry.schema, &of.schema) {
+                                (None, _) => true,
+                                (Some(own), Some(schema)) => same_name(own, schema),
+                                (Some(_), None) => false,
+                            }
+                    })
+                };
+                let mut seen = HashSet::new();
+                let mut scored: Vec<(i64, String, String)> = tables
+                    .iter()
+                    .filter_map(|table| self.columns_of(table))
+                    .flatten()
+                    .filter(|column| seen.insert(column.to_lowercase()))
+                    .filter(|column| !masks(column))
+                    .filter_map(|column| {
+                        let score = match rest.is_empty() {
+                            true => 0,
+                            false => crate::util::fuzzy_score(rest, column)?,
+                        };
+                        Some((score, column.to_lowercase(), column.clone()))
+                    })
+                    .collect();
+                scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                scored.truncate(OFFERED);
+                // The table's own name, as the catalog has it.
+                let table = tables[0].name.clone();
+                let schema = of.schema.as_ref().map(|_| tables[0].schema.clone());
+                let rows = scored
+                    .into_iter()
+                    .map(|(_, _, column)| {
+                        OfferedColumn::Column(ColumnName {
+                            schema: schema.clone(),
+                            table: table.clone(),
+                            column,
+                        })
+                    })
+                    .collect();
+                return ColumnsOffered {
+                    rows,
+                    of: Some(of),
+                    tables,
+                };
+            }
+        }
+        ColumnsOffered {
+            rows: self
+                .offered(typed, &[], false)
+                .into_iter()
+                .map(OfferedColumn::Table)
+                .collect(),
+            ..ColumnsOffered::default()
         }
     }
 }
 
-/// Where the Tables control puts the keyboard on the next frame.
+/// Where the Tables or the Masked columns control puts the keyboard on
+/// the next frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableFocus {
     /// The field for a name: opened, or still open after a name.
     Field,
-    /// Add table…, once the field is closed with Escape.
+    /// Add table… or Add column…, once the field is closed with Escape.
     Add,
 }
 
@@ -1294,17 +1491,30 @@ pub struct ConnectionForm {
     /// The tables in force when the dialog opened: others are the
     /// person's own, and the same keep what the file says.
     pub agents_tables_opened: tabletist_db::agent::Tables,
-    /// The masked columns in force when the dialog opened, carried to the
-    /// save as they are: the editor has no control for them yet.
+    /// The Masked columns control: the columns whose values agents get
+    /// as `•••`.
     pub agents_masked: Vec<tabletist_db::agent::ColumnName>,
+    /// The masked columns in force when the dialog opened: others are the
+    /// person's own, and the same keep what the file says.
+    pub agents_masked_opened: Vec<tabletist_db::agent::ColumnName>,
+    /// The name being typed after Add column…, while its field is open.
+    pub agents_column_typed: Option<String>,
+    /// Why the column's name typed does not read, said under the names.
+    pub agents_column_error: Option<String>,
+    /// Where the Masked columns control puts the keyboard on the next
+    /// frame.
+    pub agents_column_focus: Option<TableFocus>,
+    /// The row of Add column…'s list the keyboard is on, by its place.
+    pub agents_column_pick: Option<usize>,
     /// The name being typed after Add table…, while its field is open.
     pub agents_table_typed: Option<String>,
     /// Why the name typed does not read, said under the names.
     pub agents_table_error: Option<String>,
     /// Where the Tables control puts the keyboard on the next frame.
     pub agents_table_focus: Option<TableFocus>,
-    /// What an open window of the connection has loaded, for Add table…'s
-    /// list and the mark of a name in no table; `None` with none open.
+    /// What an open window of the connection has loaded, for the lists of
+    /// Add table… and Add column…, and the mark of a name in no table or
+    /// column; `None` with none open.
     pub agents_loaded: Option<LoadedTables>,
     /// The table of Add table…'s list the keyboard is on, by its place.
     pub agents_table_pick: Option<usize>,
@@ -1431,6 +1641,11 @@ impl Default for ConnectionForm {
             agents_tables: TablesChoice::default(),
             agents_tables_opened: tabletist_db::agent::Tables::All,
             agents_masked: Vec::new(),
+            agents_masked_opened: Vec::new(),
+            agents_column_typed: None,
+            agents_column_error: None,
+            agents_column_focus: None,
+            agents_column_pick: None,
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
@@ -1584,6 +1799,11 @@ impl ConnectionForm {
             agents_tables: TablesChoice::of(&saved.agents.tables),
             agents_tables_opened: saved.agents.tables.clone(),
             agents_masked: saved.agents.masked.clone(),
+            agents_masked_opened: saved.agents.masked.clone(),
+            agents_column_typed: None,
+            agents_column_error: None,
+            agents_column_focus: None,
+            agents_column_pick: None,
             agents_table_typed: None,
             agents_table_error: None,
             agents_table_focus: None,
@@ -1883,6 +2103,61 @@ impl ConnectionForm {
             }
             Err(why) => {
                 self.agents_table_error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Masks the column `written` names, where no entry masks it already
+    /// as written, in any case; `Err` with why it does not read.
+    pub fn add_masked(&mut self, written: &str) -> Result<(), String> {
+        let entry: tabletist_db::agent::ColumnName = written.trim().parse()?;
+        let key = |entry: &tabletist_db::agent::ColumnName| entry.to_string().to_lowercase();
+        if !self
+            .agents_masked
+            .iter()
+            .any(|known| key(known) == key(&entry))
+        {
+            self.agents_masked.push(entry);
+        }
+        Ok(())
+    }
+
+    /// Add column…'s list for what its field holds.
+    pub fn columns_offered(&self, typed: &str) -> ColumnsOffered {
+        self.agents_loaded
+            .as_ref()
+            .map(|loaded| loaded.offered_columns(typed, &self.agents_masked))
+            .unwrap_or_default()
+    }
+
+    /// Takes into the Masked columns control a name typed and not yet
+    /// added, as a Save does: added, or `Err` with why it does not read,
+    /// which is then also said under the names. The column chosen in Add
+    /// column…'s list is added in place of what is typed; a table chosen
+    /// there is no column, and what is typed is taken.
+    pub fn take_typed_column(&mut self) -> Result<(), String> {
+        let Some(mut typed) = self.agents_column_typed.clone() else {
+            return Ok(());
+        };
+        if let Some(at) = self.agents_column_pick.take()
+            && let Some(OfferedColumn::Column(picked)) =
+                self.columns_offered(&typed).rows.into_iter().nth(at)
+        {
+            typed = picked.to_string();
+        }
+        if typed.trim().is_empty() {
+            self.agents_column_typed = None;
+            return Ok(());
+        }
+        match self.add_masked(&typed) {
+            Ok(()) => {
+                self.agents_column_typed = None;
+                self.agents_column_error = None;
+                Ok(())
+            }
+            Err(why) => {
+                self.agents_column_error = Some(why.clone());
                 Err(why)
             }
         }
@@ -5600,6 +5875,136 @@ mod tests {
     }
 
     #[test]
+    fn add_column_offers_tables_then_their_columns_and_marks_a_column_in_none() {
+        use tabletist_db::agent::ColumnName;
+        let entry = |written: &str| -> ColumnName { written.parse().unwrap() };
+        let rows = |offered: ColumnsOffered| -> Vec<String> {
+            offered.rows.iter().map(ToString::to_string).collect()
+        };
+        let loaded = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into(), "sales".into(), "audit".into()],
+            schemas_cut: false,
+            loaded: vec![
+                ("public".into(), vec!["customers".into(), "orders".into()]),
+                ("sales".into(), vec!["orders".into()]),
+            ],
+            columns: vec![
+                (
+                    ObjectRef::new("public", "orders"),
+                    vec!["id".into(), "email".into(), "phone".into()],
+                ),
+                (
+                    ObjectRef::new("sales", "orders"),
+                    vec!["id".into(), "email".into(), "total".into()],
+                ),
+            ],
+            columns_loading: vec![ObjectRef::new("public", "customers")],
+            columns_failed: Vec::new(),
+        };
+        // A table typed: the loaded ones that match, each to be chosen for
+        // its columns.
+        assert_eq!(
+            rows(loaded.offered_columns("ord", &[])),
+            ["public.orders.", "sales.orders."]
+        );
+        assert_eq!(rows(loaded.offered_columns("cust", &[])), ["customers."]);
+        // A table and a dot: its columns, every schema's for a name
+        // without one, written as typed; what follows the dot narrows them.
+        let offered = loaded.offered_columns("orders.", &[]);
+        assert_eq!(
+            offered.tables,
+            [
+                ObjectRef::new("public", "orders"),
+                ObjectRef::new("sales", "orders")
+            ]
+        );
+        assert_eq!(
+            rows(offered),
+            ["orders.email", "orders.id", "orders.phone", "orders.total"]
+        );
+        assert_eq!(
+            rows(loaded.offered_columns("sales.orders.to", &[])),
+            ["sales.orders.total"]
+        );
+        // What an entry masks already is not offered: one without a
+        // schema masks every schema's.
+        assert_eq!(
+            rows(loaded.offered_columns("orders.", &[entry("ORDERS.email")])),
+            ["orders.id", "orders.phone", "orders.total"]
+        );
+        assert_eq!(
+            rows(loaded.offered_columns("orders.em", &[entry("sales.orders.email")])),
+            ["orders.email"]
+        );
+        // A table whose columns are on their way offers none yet.
+        let waiting = loaded.offered_columns("customers.", &[]);
+        assert!(waiting.rows.is_empty());
+        assert_eq!(waiting.tables, [ObjectRef::new("public", "customers")]);
+        // A column of a fetched table: known either way. A table not in
+        // the database has none; one whose columns are not fetched, or in
+        // a schema not loaded, is not known.
+        assert_eq!(loaded.has_column(&entry("orders.email")), Some(true));
+        assert_eq!(loaded.has_column(&entry("sales.orders.phone")), Some(false));
+        assert_eq!(loaded.has_column(&entry("public.orders.mail")), Some(false));
+        assert_eq!(
+            loaded.has_column(&entry("sales.clients.email")),
+            Some(false)
+        );
+        assert_eq!(loaded.has_column(&entry("customers.email")), None);
+        assert_eq!(loaded.has_column(&entry("audit.log.who")), None);
+        // Without a schema: any schema's table of that name, so missing
+        // only when every schema is loaded.
+        assert_eq!(loaded.has_column(&entry("orders.mail")), None);
+        let whole = LoadedTables {
+            schemas: vec!["public".into(), "sales".into()],
+            ..loaded.clone()
+        };
+        assert_eq!(whole.has_column(&entry("orders.mail")), Some(false));
+        assert_eq!(whole.has_column(&entry("orders.TOTAL")), Some(true));
+        // The system's are never marked.
+        assert_eq!(whole.has_column(&entry("pg_catalog.pg_class.oid")), None);
+        // Two tables whose names differ in case are two tables: the
+        // columns of one are not the other's. An entry names both, in any
+        // case, as the agent server reads it.
+        let cased = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into()],
+            loaded: vec![("public".into(), vec!["Orders".into(), "orders".into()])],
+            columns: vec![(ObjectRef::new("public", "orders"), vec!["id".into()])],
+            ..LoadedTables::default()
+        };
+        assert_eq!(cased.has_column(&entry("public.Orders.email")), None);
+        assert_eq!(cased.has_column(&entry("orders.email")), None);
+        assert_eq!(cased.has_column(&entry("public.orders.email")), None);
+        let both = LoadedTables {
+            columns: vec![
+                (ObjectRef::new("public", "orders"), vec!["id".into()]),
+                (ObjectRef::new("public", "Orders"), vec!["email".into()]),
+            ],
+            ..cased.clone()
+        };
+        assert_eq!(both.has_column(&entry("public.orders.email")), Some(true));
+        assert_eq!(both.has_column(&entry("orders.phone")), Some(false));
+        // A table whose name holds a dot is read in its quotes.
+        let dotted = LoadedTables {
+            driver: Some(Driver::Postgres),
+            home: Some("public".into()),
+            schemas: vec!["public".into()],
+            loaded: vec![("public".into(), vec!["my.table".into()])],
+            columns: vec![(ObjectRef::new("public", "my.table"), vec!["note".into()])],
+            ..LoadedTables::default()
+        };
+        assert_eq!(rows(dotted.offered_columns("my", &[])), ["\"my.table\"."]);
+        assert_eq!(
+            rows(dotted.offered_columns("\"my.table\".", &[])),
+            ["\"my.table\".note"]
+        );
+    }
+
+    #[test]
     fn what_a_window_loaded_is_offered_and_marks_a_name_in_no_table() {
         let names = |written: &[&str]| -> Vec<tabletist_db::agent::TableName> {
             written.iter().map(|entry| entry.parse().unwrap()).collect()
@@ -5620,6 +6025,7 @@ mod tests {
                 ),
                 ("sales".into(), vec!["orders".into(), "customers".into()]),
             ],
+            ..LoadedTables::default()
         };
         // A home table whose name no other schema has goes without its
         // schema; one another schema shares, or under "Only", with it; and
@@ -5689,6 +6095,7 @@ mod tests {
             schemas: vec!["main".into()],
             schemas_cut: false,
             loaded: vec![("main".into(), vec!["books".into()])],
+            ..LoadedTables::default()
         };
         assert_eq!(sqlite.has(&name("sqlite_stat1")), None);
         assert_eq!(sqlite.has(&name("dbstat")), None);
