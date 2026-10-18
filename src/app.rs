@@ -99,6 +99,10 @@ pub struct App {
     /// How each connection lists its tables where its user chose, by id,
     /// from table_lists.json. One with no choice takes the setting's.
     pub table_lists: std::collections::BTreeMap<String, crate::settings::TableList>,
+    /// The choices in table_lists.json that this version cannot read, by
+    /// id, as the file had them: a newer version may have written them,
+    /// and they are written back with the others.
+    table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -153,19 +157,33 @@ pub struct App {
     next_id: u64,
 }
 
-/// How each connection lists its tables, from `table_lists.json`. A value
-/// this version does not know is skipped, not the file: a newer version
-/// may have written it, and the other connections keep their choices.
-fn load_table_lists(
-    path: &std::path::Path,
-) -> std::collections::BTreeMap<String, crate::settings::TableList> {
-    let read: std::collections::BTreeMap<String, serde_json::Value> = crate::util::load_json(path);
-    read.into_iter()
-        .filter_map(|(id, list)| {
-            let list = crate::settings::TableList::from_name(list.as_str()?)?;
-            Some((id, list))
-        })
-        .collect()
+/// The choices of `table_lists.json` this version reads.
+type TableLists = std::collections::BTreeMap<String, crate::settings::TableList>;
+/// The file's other choices, as it had them.
+type Unread = std::collections::BTreeMap<String, serde_json::Value>;
+
+/// How each connection lists its tables, from `table_lists.json`, and the
+/// values this version does not know. Such a value costs its connection,
+/// not the file: a newer version may have written it, so it is kept to be
+/// written back, and the other connections keep their choices.
+fn load_table_lists(path: &std::path::Path) -> (TableLists, Unread) {
+    let read: Unread = crate::util::load_json(path);
+    let mut lists = TableLists::new();
+    let mut unread = Unread::new();
+    for (id, value) in read {
+        match value
+            .as_str()
+            .and_then(crate::settings::TableList::from_name)
+        {
+            Some(list) => {
+                lists.insert(id, list);
+            }
+            None => {
+                unread.insert(id, value);
+            }
+        }
+    }
+    (lists, unread)
 }
 
 impl App {
@@ -194,7 +212,7 @@ impl App {
             Some(crate::labels::database_key(spec.driver, &spec.database))
         });
         let agents_shown = crate::agents_shown::Shown::load(&dirs.agents_shown_file());
-        let table_lists = load_table_lists(&dirs.table_lists_file());
+        let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let mut app = Self {
             dirs,
             settings,
@@ -211,6 +229,7 @@ impl App {
             connections,
             labels,
             table_lists,
+            table_lists_unread,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -693,6 +712,8 @@ impl App {
                             workspace.tree.flat = flat;
                         }
                     }
+                    // A value this version could not read gives way to it.
+                    self.table_lists_unread.remove(&id.0);
                     self.table_lists
                         .insert(id.0, crate::settings::TableList::of(flat));
                     self.save_table_lists();
@@ -2141,7 +2162,8 @@ impl App {
                         self.save_labels();
                     }
                     // And its table list.
-                    if self.table_lists.remove(&id.0).is_some() {
+                    let unread = self.table_lists_unread.remove(&id.0).is_some();
+                    if self.table_lists.remove(&id.0).is_some() || unread {
                         self.save_table_lists();
                     }
                     if removed.password == PasswordMode::Keyring {
@@ -3377,8 +3399,9 @@ impl App {
             .flat()
     }
 
-    /// Saves how each saved connection lists its tables, on the backend.
-    /// The choice for one that is not saved is held while the app runs.
+    /// Saves how each saved connection lists its tables, on the backend,
+    /// with the values this version could not read as they were. The
+    /// choice for one that is not saved is held while the app runs.
     fn save_table_lists(&mut self) {
         let saved = |id: &String| {
             self.connections
@@ -3386,12 +3409,13 @@ impl App {
                 .iter()
                 .any(|saved| saved.id.0 == *id)
         };
-        let lists = self
-            .table_lists
-            .iter()
-            .filter(|(id, _)| saved(id))
-            .map(|(id, list)| (id.clone(), *list))
-            .collect();
+        let mut lists = self.table_lists_unread.clone();
+        lists.extend(
+            self.table_lists
+                .iter()
+                .filter(|(id, _)| saved(id))
+                .map(|(id, list)| (id.clone(), serde_json::json!(list.name()))),
+        );
         self.backend.send(Command::Save {
             path: self.dirs.table_lists_file(),
             file: StateFile::TableLists(lists),
@@ -5541,6 +5565,37 @@ mod tests {
         );
         assert_eq!(saves(&again), 0);
         assert_eq!(again.labels, app.labels);
+    }
+
+    #[test]
+    fn a_table_list_this_version_cannot_read_is_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        dirs.ensure().unwrap();
+        std::fs::write(
+            dirs.table_lists_file(),
+            br#"{"blue": "grouped", "red": 3, "green": "flat"}"#,
+        )
+        .unwrap();
+        let mut app = App::new(dirs, Settings::default().into(), Backend::recording());
+        let mut green = crate::testing::fixture_connection();
+        green.id = ConnectionId("green".into());
+        app.connections.upsert(green);
+        app.save_table_lists();
+        let written = app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Save {
+                    file: StateFile::TableLists(lists),
+                    ..
+                } => Some(lists.clone()),
+                _ => None,
+            });
+        let expected = serde_json::json!({"blue": "grouped", "red": 3, "green": "flat"});
+        assert_eq!(serde_json::to_value(written.unwrap()).unwrap(), expected);
     }
 
     /// How many times `app` had the backend save `path`.

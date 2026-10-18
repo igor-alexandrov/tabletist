@@ -207,8 +207,9 @@ pub enum StateFile {
     Labels(crate::labels::Labels),
     /// What agents may do, as the app last showed it.
     AgentsShown(crate::agents_shown::Shown),
-    /// How each connection lists its tables where its user chose, by id.
-    TableLists(std::collections::BTreeMap<String, crate::settings::TableList>),
+    /// How each connection lists its tables where its user chose, by id:
+    /// a list's name, or a value a newer version wrote, kept as it was.
+    TableLists(std::collections::BTreeMap<String, serde_json::Value>),
 }
 
 impl StateFile {

@@ -224,7 +224,7 @@ fn the_table_list_default_applies_to_connections_without_a_choice() {
     assert!(harness.app.backend.sent.iter().any(|command| matches!(
         command,
         Command::Save { file: StateFile::TableLists(lists), path }
-            if lists.get(&conn.0) == Some(&TableList::Tree)
+            if lists.get(&conn.0) == Some(&serde_json::json!("tree"))
                 && *path == harness.app.dirs.table_lists_file()
     )));
     // The setting no longer moves it, there or in a new window on it.
