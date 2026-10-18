@@ -20,7 +20,7 @@ use crate::env::{EnvColors, Environment, Platform, env_colors};
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Scope};
 use crate::model::{Action, ConnectionForm, Dialog, SshAuthKind, SshHints, TestState};
-use crate::theme::{self, Faces, Icon, Look, Palette};
+use crate::theme::{self, Icon, Look, Palette, Typeface};
 use crate::typography::{Text, TextRole};
 use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -186,7 +186,7 @@ impl<'a> Skin<'a> {
 
     /// Where saved passwords go, as this platform calls it.
     fn keyring(&self) -> &'static str {
-        if self.look.faces == Faces::Plex {
+        if self.look.faces.typeface == Typeface::Plex {
             "Keychain"
         } else {
             "Keyring"
@@ -196,7 +196,7 @@ impl<'a> Skin<'a> {
     /// The name of the box that keeps the SSH secret: the database
     /// password's has the same text beside it.
     fn ssh_keyring(&self) -> &'static str {
-        if self.look.faces == Faces::Plex {
+        if self.look.faces.typeface == Typeface::Plex {
             "Keychain for the SSH secret"
         } else {
             "Keyring for the SSH secret"
@@ -204,7 +204,7 @@ impl<'a> Skin<'a> {
     }
 
     fn saved_hint(&self) -> &'static str {
-        if self.look.faces == Faces::Plex {
+        if self.look.faces.typeface == Typeface::Plex {
             "Saved in the keychain"
         } else {
             "Saved in the keyring"

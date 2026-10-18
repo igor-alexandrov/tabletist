@@ -159,6 +159,12 @@ pub struct App {
     /// The pin the status line last said could not be read: it is said
     /// once.
     pin_told: Option<String>,
+    /// The look's text changed since the last `logic`: egui's own text
+    /// styles follow it.
+    restyle: bool,
+    /// The zoom the window was last given: the terminal look's text size,
+    /// which sizes the whole window there.
+    zoom: Option<f32>,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
     /// What the next frame asks of the window: to come forward, or the
@@ -252,6 +258,7 @@ impl App {
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
+        let look = crate::theme::Look::for_platform().with_text(&settings);
         let mut app = Self {
             dirs,
             settings,
@@ -261,7 +268,7 @@ impl App {
             zones: None,
             locale: Locale::default(),
             palette: Palette::dark(),
-            look: crate::theme::Look::for_platform(),
+            look,
             keymap: std::sync::Arc::default(),
             themes: Catalog::default(),
             tabs: Vec::new(),
@@ -290,6 +297,8 @@ impl App {
             theme_asked: 0,
             theme_taken: 0,
             pin_told: None,
+            restyle: false,
+            zoom: None,
             window_title: "Tabletist".into(),
             window_asks: Vec::new(),
             closed_editors: Vec::new(),
@@ -4091,6 +4100,13 @@ impl App {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
         }
+        // The text's sizes and the data's face: every role drawn from here
+        // on has them, and egui's own styles are set again in `logic`.
+        let look = self.look.with_text(&self.settings);
+        if look != self.look {
+            self.look = look;
+            self.restyle = true;
+        }
         // An edit of the file that turns the server on is held.
         self.check_agents();
         if self.serves_agents {
@@ -5600,6 +5616,17 @@ impl App {
         });
     }
 
+    /// How large the window draws everything: the terminal look's text
+    /// size against its 13 points. The other looks size their text by
+    /// role, and draw at 1.
+    pub fn zoom_factor(&self) -> f32 {
+        if self.look.terminal {
+            self.settings.font_size_in(true).points() / 13.0
+        } else {
+            1.0
+        }
+    }
+
     /// The pin the backend reads: one by name or path. A palette file is
     /// the themes folder's to read.
     fn pin_to_read(&self) -> Option<&str> {
@@ -5698,6 +5725,14 @@ impl App {
             }
         }
         self.tell_missing_pin(ctx);
+        if std::mem::take(&mut self.restyle) {
+            theme::apply(ctx, &self.palette, &self.look);
+        }
+        let zoom = self.zoom_factor();
+        if self.zoom != Some(zoom) {
+            self.zoom = Some(zoom);
+            ctx.set_zoom_factor(zoom);
+        }
         // macOS and Windows: the window's own parts (its title bar, the
         // menus and panels of the system) in the mode the settings name.
         let mode = match (self.look.terminal, self.settings.theme.mode()) {

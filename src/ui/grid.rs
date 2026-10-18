@@ -36,9 +36,9 @@ const MAX_INITIAL_WIDTH: f32 = 331.0;
 /// A numeric key column's width, as the design's grids fix it: 64 on
 /// macOS, 56 in the terminal (0 elsewhere: sized to its content).
 fn key_width(look: &crate::theme::Look) -> f32 {
-    match (look.terminal, look.faces) {
+    match (look.terminal, look.faces.typeface) {
         (true, _) => 56.0,
-        (false, crate::theme::Faces::Plex) => 64.0,
+        (false, crate::theme::Typeface::Plex) => 64.0,
         _ => 0.0,
     }
 }
@@ -276,7 +276,8 @@ fn text_width(ui: &Ui, text: &str, role: TextRole, look: &Look) -> f32 {
 /// elsewhere. Row-panel values use it too.
 pub fn data_role(look: &Look) -> TextRole {
     match look.data_font {
-        DataFont::Proportional => TextRole::UiBody,
+        // The interface's sans, at the data's size.
+        DataFont::Proportional => TextRole::DataBody,
         DataFont::Monospace => TextRole::pick(look, TextRole::GridCell, TextRole::OBody),
     }
 }

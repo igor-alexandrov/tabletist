@@ -3,7 +3,7 @@
 
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
-use crate::settings::{Mode, RowHeight, Theme};
+use crate::settings::{FontSize, FontSizes, InterfaceSize, Mode, RowHeight, Settings, Theme};
 
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
@@ -329,13 +329,90 @@ pub enum DataFont {
 
 /// The typefaces a look draws with (see [`crate::typography`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Faces {
+pub enum Typeface {
     /// Inter, with egui's monospace.
     Inter,
     /// IBM Plex Sans and IBM Plex Mono.
     Plex,
     /// One monospace face for everything.
     Terminal,
+}
+
+/// The monospace face macOS draws data in: one of the two it bundles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DataFace {
+    #[default]
+    PlexMono,
+    JetBrainsMono,
+}
+
+impl DataFace {
+    /// In the order the menu lists them.
+    pub const ALL: [DataFace; 2] = [Self::PlexMono, Self::JetBrainsMono];
+
+    /// The face's name, as the menu and the file write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PlexMono => "IBM Plex Mono",
+            Self::JetBrainsMono => "JetBrains Mono",
+        }
+    }
+
+    /// The face `font` names, whatever its case: the default for none, and
+    /// for `monospace`, which names the desktop's own (the terminal
+    /// look's default). A name of no bundled face is given back: it falls
+    /// back to the default, which says so.
+    pub fn of(font: Option<&str>) -> Result<Self, &str> {
+        let font = font.map(str::trim);
+        let Some(font) = font.filter(|font| !font.eq_ignore_ascii_case("monospace")) else {
+            return Ok(Self::default());
+        };
+        Self::ALL
+            .into_iter()
+            .find(|face| face.name().eq_ignore_ascii_case(font))
+            .ok_or(font)
+    }
+}
+
+/// A look's typefaces at the sizes the settings give them: what every
+/// text role is drawn in. The terminal look keeps its roles' sizes and
+/// draws the whole window larger or smaller
+/// ([`Settings::font_size_in`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Faces {
+    pub typeface: Typeface,
+    /// The interface's own text, on macOS and Windows.
+    pub interface: InterfaceSize,
+    /// The data's face, on macOS.
+    pub data: DataFace,
+    /// The data's size, on macOS and Windows.
+    pub data_size: FontSize,
+}
+
+impl Faces {
+    /// `typeface` at the sizes it has before the settings say any.
+    pub const fn of(typeface: Typeface) -> Self {
+        Self {
+            typeface,
+            interface: InterfaceSize::Default,
+            data: DataFace::PlexMono,
+            data_size: FontSizes::of(false).default,
+        }
+    }
+
+    /// The faces at the sizes `settings` give, and the data in the face
+    /// they name. The terminal look's stay as they are.
+    pub fn with_text(self, settings: &Settings) -> Self {
+        if self.typeface == Typeface::Terminal {
+            return Self::of(self.typeface);
+        }
+        Self {
+            typeface: self.typeface,
+            interface: settings.interface_size,
+            data: DataFace::of(settings.font.as_deref()).unwrap_or_default(),
+            data_size: settings.font_size_in(false),
+        }
+    }
 }
 
 /// How the one primary button in a view draws.
@@ -421,7 +498,7 @@ impl Look {
             sidebar_tinted: true,
             panel_separators: true,
             data_font: DataFont::Proportional,
-            faces: Faces::Inter,
+            faces: Faces::of(Typeface::Inter),
             primary: PrimaryStyle::Accent,
             terminal: false,
         }
@@ -449,7 +526,7 @@ impl Look {
             sidebar_tinted: true,
             panel_separators: true,
             data_font: DataFont::Monospace,
-            faces: Faces::Plex,
+            faces: Faces::of(Typeface::Plex),
             primary: PrimaryStyle::Ink,
             terminal: false,
         }
@@ -477,9 +554,18 @@ impl Look {
             sidebar_tinted: false,
             panel_separators: true,
             data_font: DataFont::Monospace,
-            faces: Faces::Terminal,
+            faces: Faces::of(Typeface::Terminal),
             primary: PrimaryStyle::Outline,
             terminal: true,
+        }
+    }
+
+    /// The look with its text as `settings` have it: the interface's size,
+    /// and the data's face and size.
+    pub fn with_text(self, settings: &Settings) -> Self {
+        Self {
+            faces: self.faces.with_text(settings),
+            ..self
         }
     }
 
@@ -497,16 +583,26 @@ impl Look {
 
     /// A grid row's height at the look's density. The terminal counts in
     /// lines, a regular row being one and a half: one or two. The others
-    /// step 8 either side, the regular row's rule kept in each.
+    /// step 8 either side, the regular row's rule kept in each, and are at
+    /// least as tall as a line of their data: a large data size makes the
+    /// short rows taller.
     pub fn row(&self) -> f32 {
         let regular = self.grid_row;
-        match (self.density, self.terminal) {
+        let row = match (self.density, self.terminal) {
             (RowHeight::Regular, _) => regular,
             (RowHeight::Compact, true) => regular * 2.0 / 3.0,
             (RowHeight::Roomy, true) => regular * 4.0 / 3.0,
             (RowHeight::Compact, false) => regular - 8.0,
             (RowHeight::Roomy, false) => regular + 8.0,
+        };
+        if self.terminal {
+            return row;
         }
+        // A line of Inter and of Plex Mono is at most 1.3 times the data's
+        // size. JetBrains Mono's is 1.32, where the rows of macOS are
+        // taller than that needs anyway.
+        let line = (self.faces.data_size.points() * 1.3).ceil();
+        row.max(line)
     }
 
     /// The look of the OS this build runs on. Every Linux desktop gets the
@@ -839,6 +935,78 @@ mod tests {
         assert_eq!(data_role(&Look::macos()), TextRole::GridCell);
         assert_eq!(data_role(&Look::macos()).spec().kind, Kind::Mono);
         assert_eq!(data_role(&Look::standard()).spec().kind, Kind::Sans);
+        // Data in every look, which the data's size sizes.
+        for look in Look::ALL {
+            assert!(data_role(&look).is_data() || look.terminal, "{}", look.name);
+        }
+    }
+
+    /// The settings with the interface's size, the data font and its size
+    /// as given.
+    fn text(interface: InterfaceSize, font: Option<&str>, size: f64) -> Settings {
+        Settings {
+            interface_size: interface,
+            font: font.map(str::to_owned),
+            font_size: FontSize::of(size),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn the_settings_size_the_interface_and_the_data_apart() {
+        use crate::typography::TextRole;
+        for look in [Look::macos(), Look::standard()] {
+            let faces = look
+                .with_text(&text(InterfaceSize::Large, None, 16.0))
+                .faces;
+            // The interface's roles keep to the body's 14 as the design's
+            // to 13, the data's to 16 as the design's to 12.5.
+            assert_eq!(TextRole::UiBody.size(faces), 14.0, "{}", look.name);
+            assert_eq!(TextRole::Secondary.size(faces), 12.0 * 14.0 / 13.0);
+            assert_eq!(TextRole::MonoSecondary.size(faces), 12.0 * 14.0 / 13.0);
+            assert_eq!(TextRole::GridCell.size(faces), 16.0);
+            assert_eq!(TextRole::DataBody.size(faces), 13.0 * 16.0 / 12.5);
+            assert_eq!(TextRole::Code.size(faces), 13.0 * 16.0 / 12.5);
+            // Lines keep to their size: the editor's 22 at 13.
+            let code = TextRole::Code.line_height(faces).unwrap();
+            assert!((code - 22.0 * 16.0 / 12.5).abs() < 1e-4, "{code}");
+        }
+        // Before any is set, and in the terminal look whatever is set, the
+        // design's.
+        for faces in [
+            Look::macos().faces,
+            Look::omarchy()
+                .with_text(&text(InterfaceSize::Large, Some("Fira Code"), 20.0))
+                .faces,
+        ] {
+            for role in TextRole::ALL {
+                assert_eq!(role.size(faces), role.spec().size, "{}", role.id());
+            }
+        }
+    }
+
+    #[test]
+    fn a_data_font_is_one_of_the_bundled_by_its_name() {
+        assert_eq!(DataFace::of(None), Ok(DataFace::PlexMono));
+        assert_eq!(
+            DataFace::of(Some("jetbrains mono")),
+            Ok(DataFace::JetBrainsMono)
+        );
+        assert_eq!(DataFace::of(Some("IBM Plex Mono")), Ok(DataFace::PlexMono));
+        // The terminal look's default names the desktop's own: the default
+        // here too, and nothing to say.
+        assert_eq!(DataFace::of(Some("monospace")), Ok(DataFace::PlexMono));
+        assert_eq!(DataFace::of(Some(" monospace ")), Ok(DataFace::PlexMono));
+        assert_eq!(
+            DataFace::of(Some(" JetBrains Mono ")),
+            Ok(DataFace::JetBrainsMono)
+        );
+        assert_eq!(DataFace::of(Some("Fira Code")), Err("Fira Code"));
+        let look = Look::macos().with_text(&text(InterfaceSize::Default, Some("Fira Code"), 12.5));
+        assert_eq!(look.faces.data, DataFace::PlexMono);
+        let look =
+            Look::macos().with_text(&text(InterfaceSize::Default, Some("JetBrains Mono"), 12.5));
+        assert_eq!(look.faces.data, DataFace::JetBrainsMono);
     }
 
     fn nord() -> CustomTheme {

@@ -12,7 +12,7 @@
 
 use egui::Key;
 
-use crate::theme::{Faces, Look};
+use crate::theme::{Look, Typeface};
 
 /// How a look binds its keys and writes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +31,7 @@ impl Layout {
     pub fn of(look: &Look) -> Self {
         if look.terminal {
             Self::Omarchy
-        } else if look.faces == Faces::Plex {
+        } else if look.faces.typeface == Typeface::Plex {
             Self::Mac
         } else {
             Self::Windows
