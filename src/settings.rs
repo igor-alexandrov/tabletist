@@ -35,6 +35,62 @@ impl Timestamps {
     }
 }
 
+/// The zone a `timestamptz` value is shown in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+pub enum Zone {
+    /// The computer's own, as it was when the app started.
+    #[default]
+    System,
+    Utc,
+    /// A zone of the IANA database, by its name: `America/New_York`.
+    Named(String),
+}
+
+impl Zone {
+    /// As the file says it: `system`, `utc` or the zone's name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::System => "system",
+            Self::Utc => "utc",
+            Self::Named(name) => name,
+        }
+    }
+
+    /// The zone the file names, where it is one: `system`, `utc` (in any
+    /// case), or a name the zone database knows.
+    pub fn from_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case("system") {
+            Some(Self::System)
+        } else if name.eq_ignore_ascii_case("utc") {
+            Some(Self::Utc)
+        } else if !name.is_empty() && jiff::tz::db().get(name).is_ok() {
+            Some(Self::Named(name.to_owned()))
+        } else {
+            None
+        }
+    }
+
+    /// The zone itself. `system` is the zone the app found at its start.
+    pub fn resolve(&self, system: &jiff::tz::TimeZone) -> jiff::tz::TimeZone {
+        match self {
+            Self::System => system.clone(),
+            Self::Utc => jiff::tz::TimeZone::UTC,
+            // Known to the database when it was read: a name that has
+            // gone from it since shows as UTC.
+            Self::Named(name) => jiff::tz::db().get(name).unwrap_or(jiff::tz::TimeZone::UTC),
+        }
+    }
+}
+
+/// The JSON of versions before the TOML file has no zone: anything else
+/// it says is no zone either, and is the default.
+impl From<String> for Zone {
+    fn from(name: String) -> Self {
+        Self::from_name(&name).unwrap_or_default()
+    }
+}
+
 /// Everything the user can set. A key the file lacks takes its default and
 /// one this version does not know is ignored, so older and newer files both
 /// load. The serde derive reads the `settings.json` of versions before the
@@ -46,6 +102,9 @@ pub struct Settings {
     pub page_size: u32,
     /// Timestamps in grid cells: to the second, or as the server sent them.
     pub timestamps: Timestamps,
+    /// The zone a value with an offset (a `timestamptz`) is shown in, and
+    /// a value typed into such a column without one is sent from.
+    pub tz: Zone,
     /// Numbers in grid cells with their integer digits in threes. Display
     /// only: a copy gives the value as it is. `None` is the look's default
     /// ([`Settings::grouped`]), which is not written: grouped on macOS and
@@ -78,6 +137,7 @@ pub struct Settings {
 pub enum Key {
     PageSize,
     Timestamps,
+    Tz,
     GroupDigits,
     ValueTags,
     ShowSystemSchemas,
@@ -91,9 +151,10 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 11] = [
+    pub const ALL: [Key; 12] = [
         Self::PageSize,
         Self::Timestamps,
+        Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
         Self::ShowSystemSchemas,
@@ -110,6 +171,7 @@ impl Key {
         match self {
             Self::PageSize => ("data", "page_size"),
             Self::Timestamps => ("data", "timestamps"),
+            Self::Tz => ("data", "tz"),
             Self::GroupDigits => ("data", "group_digits"),
             Self::ValueTags => ("data", "value_tags"),
             Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
@@ -127,6 +189,7 @@ impl Key {
     fn note(self) -> Option<&'static str> {
         match self {
             Self::Timestamps => Some("second | full"),
+            Self::Tz => Some("system | utc | \"Area/City\""),
             Self::SqlTimeoutSecs => Some("0 waits forever"),
             _ => None,
         }
@@ -747,6 +810,7 @@ impl Settings {
         Some(match key {
             Key::PageSize => self.page_size.to_string(),
             Key::Timestamps => toml_string(self.timestamps.name()),
+            Key::Tz => toml_string(self.tz.name()),
             Key::GroupDigits => self.group_digits?.to_string(),
             Key::ValueTags => self.value_tags.to_string(),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
@@ -966,6 +1030,7 @@ impl Settings {
             Key::Timestamps => text
                 .and_then(Timestamps::from_name)
                 .map(|choice| self.timestamps = choice),
+            Key::Tz => text.and_then(Zone::from_name).map(|zone| self.tz = zone),
             Key::GroupDigits => flag.map(|flag| self.group_digits = Some(flag)),
             Key::ValueTags => flag.map(|flag| self.value_tags = flag),
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
@@ -1073,6 +1138,7 @@ impl Settings {
         match key {
             Key::PageSize => self.page_size = other.page_size,
             Key::Timestamps => self.timestamps = other.timestamps,
+            Key::Tz => self.tz = other.tz.clone(),
             Key::GroupDigits => self.group_digits = other.group_digits,
             Key::ValueTags => self.value_tags = other.value_tags,
             Key::ShowSystemSchemas => self.show_system_schemas = other.show_system_schemas,
@@ -1129,6 +1195,7 @@ impl Default for Settings {
         Self {
             page_size: Self::DEFAULT_PAGE_SIZE,
             timestamps: Timestamps::Second,
+            tz: Zone::System,
             group_digits: None,
             value_tags: true,
             show_system_schemas: false,
@@ -1183,6 +1250,7 @@ mod tests {
         Settings {
             page_size: 500,
             timestamps: Timestamps::Full,
+            tz: Zone::Named("America/New_York".into()),
             group_digits: Some(true),
             value_tags: false,
             show_system_schemas: true,
@@ -1204,6 +1272,7 @@ mod tests {
 [data]
 page_size = 500
 timestamps = \"full\"  # second | full
+tz = \"America/New_York\"  # system | utc | \"Area/City\"
 group_digits = true
 value_tags = false
 
@@ -1277,15 +1346,16 @@ theme = \"My \\\"Nord\\\".json\"
             vec![
                 (Key::PageSize, 3),
                 (Key::Timestamps, 4),
-                (Key::GroupDigits, 5),
-                (Key::ValueTags, 6),
-                (Key::ShowSystemSchemas, 9),
-                (Key::SqlLimit, 12),
-                (Key::SqlTimeoutSecs, 13),
-                (Key::McpEnabled, 16),
-                (Key::McpLogDays, 17),
-                (Key::McpNotify, 18),
-                (Key::Theme, 21),
+                (Key::Tz, 5),
+                (Key::GroupDigits, 6),
+                (Key::ValueTags, 7),
+                (Key::ShowSystemSchemas, 10),
+                (Key::SqlLimit, 13),
+                (Key::SqlTimeoutSecs, 14),
+                (Key::McpEnabled, 17),
+                (Key::McpLogDays, 18),
+                (Key::McpNotify, 19),
+                (Key::Theme, 22),
             ]
         );
     }
@@ -1639,6 +1709,59 @@ theme = \"My \\\"Nord\\\".json\"
         assert_eq!(grouped.for_layout(Layout::Omarchy).group_digits, Some(true));
         // Not set, nothing is written.
         assert_eq!(Settings::default().written(Key::GroupDigits), None);
+    }
+
+    #[test]
+    fn a_zone_is_system_utc_or_a_name_the_database_knows() {
+        assert_eq!(Zone::from_name("system"), Some(Zone::System));
+        assert_eq!(Zone::from_name("UTC"), Some(Zone::Utc));
+        assert_eq!(
+            Zone::from_name("Europe/Lisbon"),
+            Some(Zone::Named("Europe/Lisbon".into()))
+        );
+        assert_eq!(Zone::from_name("Mars/Olympus"), None);
+        assert_eq!(Zone::from_name(""), None);
+        for zone in [Zone::System, Zone::Utc, Zone::Named("Asia/Tokyo".into())] {
+            assert_eq!(Zone::from_name(zone.name()), Some(zone));
+        }
+        let system = jiff::tz::TimeZone::fixed(jiff::tz::offset(3));
+        assert_eq!(Zone::System.resolve(&system), system);
+        assert_eq!(Zone::Utc.resolve(&system), jiff::tz::TimeZone::UTC);
+        assert_eq!(
+            Zone::Named("Asia/Tokyo".into())
+                .resolve(&system)
+                .iana_name(),
+            Some("Asia/Tokyo")
+        );
+    }
+
+    #[test]
+    fn a_zone_the_database_does_not_know_is_ignored_and_keeps_the_last_good_one() {
+        let last = Settings {
+            tz: Zone::Utc,
+            ..Settings::default()
+        };
+        let text = "[data]\ntz = \"Mars/Olympus\"\npage_size = 500\n";
+        let loaded = Settings::from_toml_over(text, &last);
+        assert_eq!(loaded.invalid, [2]);
+        assert_eq!(loaded.settings.tz, Zone::Utc);
+        assert_eq!(loaded.settings.page_size, 500);
+    }
+
+    #[test]
+    fn a_zone_goes_in_the_data_table_with_its_note() {
+        assert_eq!(
+            written("[data]\npage_size = 500\n", |settings| {
+                settings.tz = Zone::Named("Europe/Lisbon".into());
+            }),
+            "[data]\npage_size = 500\ntz = \"Europe/Lisbon\"  # system | utc | \"Area/City\"\n"
+        );
+        // Back to the computer's own, which is not written.
+        assert_eq!(
+            written("[data]\ntz = \"utc\"\n", |settings| settings.tz =
+                Zone::System),
+            ""
+        );
     }
 
     #[test]
