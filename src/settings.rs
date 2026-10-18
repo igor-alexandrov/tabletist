@@ -232,6 +232,20 @@ pub enum Mode {
     Dark,
 }
 
+/// A theme as the window sets one: a tile of macOS and Windows, or the
+/// terminal look's follow and pin. Unlike [`Theme`] it holds no name: a
+/// pin set from the window is the theme Omarchy shows, whose name the app
+/// knows and the settings do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Unset,
+    System,
+    Light,
+    Dark,
+    Omarchy,
+    Pinned,
+}
+
 impl Theme {
     /// What the file's text says. An empty text says nothing.
     pub fn of(text: &str) -> Self {
@@ -264,6 +278,18 @@ impl Theme {
             Self::Light => Mode::Light,
             Self::Dark => Mode::Dark,
             Self::Unset | Self::System | Self::Omarchy | Self::Pinned(_) => Mode::System,
+        }
+    }
+
+    /// What the window shows as set: a pin without its name.
+    pub fn choice(&self) -> ThemeChoice {
+        match self {
+            Self::Unset => ThemeChoice::Unset,
+            Self::System => ThemeChoice::System,
+            Self::Light => ThemeChoice::Light,
+            Self::Dark => ThemeChoice::Dark,
+            Self::Omarchy => ThemeChoice::Omarchy,
+            Self::Pinned(_) => ThemeChoice::Pinned,
         }
     }
 
@@ -461,6 +487,7 @@ pub enum OptionId {
     LogDays,
     /// Whether a new agent is told of: `mcp.notify`.
     AgentsNotify,
+    Theme,
     RowHeight,
     Zebra,
     ColumnTypes,
@@ -471,7 +498,7 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 15] = [
+    pub const ALL: [OptionId; 16] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -479,6 +506,7 @@ impl OptionId {
         Self::ValueTags,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
+        Self::Theme,
         Self::RowHeight,
         Self::Zebra,
         Self::ColumnTypes,
@@ -507,15 +535,17 @@ impl OptionId {
         Self::ValueTags,
     ];
     pub const SAFETY: [OptionId; 2] = [Self::ProductionReadOnly, Self::ConfirmCloseEdits];
-    /// The Appearance pane's, in the order it has them: its Grid
-    /// section's, then its Environment section's.
-    pub const APPEARANCE: [OptionId; 5] = [
+    /// The Appearance pane's, in the order it has them: its Theme
+    /// section's, its Grid section's, then its Environment section's.
+    pub const APPEARANCE: [OptionId; 6] = [
+        Self::Theme,
         Self::RowHeight,
         Self::Zebra,
         Self::ColumnTypes,
         Self::TableList,
         Self::EnvBar,
     ];
+    pub const THEME: [OptionId; 1] = [Self::Theme];
     pub const GRID: [OptionId; 4] = [
         Self::RowHeight,
         Self::Zebra,
@@ -539,6 +569,7 @@ impl OptionId {
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
+            Self::Theme => Key::Theme,
             Self::RowHeight => Key::RowHeight,
             Self::Zebra => Key::Zebra,
             Self::ColumnTypes => Key::ColumnTypes,
@@ -567,6 +598,7 @@ pub enum OptionValue {
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
+    Theme(ThemeChoice),
     RowHeight(RowHeight),
     /// `None` is the look's default.
     Zebra(Option<bool>),
@@ -588,6 +620,7 @@ impl OptionValue {
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
+            Self::Theme(_) => OptionId::Theme,
             Self::RowHeight(_) => OptionId::RowHeight,
             Self::Zebra(_) => OptionId::Zebra,
             Self::ColumnTypes(_) => OptionId::ColumnTypes,
@@ -609,6 +642,18 @@ impl OptionValue {
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
+            Self::Theme(choice) => {
+                settings.theme = match choice {
+                    ThemeChoice::Unset => Theme::Unset,
+                    ThemeChoice::System => Theme::System,
+                    ThemeChoice::Light => Theme::Light,
+                    ThemeChoice::Dark => Theme::Dark,
+                    ThemeChoice::Omarchy => Theme::Omarchy,
+                    // A pin keeps its name. A new one is named by
+                    // `App::apply`, which knows Omarchy's theme.
+                    ThemeChoice::Pinned => return,
+                }
+            }
             Self::RowHeight(height) => settings.row_height = height,
             Self::Zebra(on) => settings.zebra = on,
             Self::ColumnTypes(on) => settings.column_types = on,
@@ -1101,6 +1146,7 @@ impl Settings {
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
+            OptionId::Theme => OptionValue::Theme(self.theme.choice()),
             OptionId::RowHeight => OptionValue::RowHeight(self.row_height),
             OptionId::Zebra => OptionValue::Zebra(self.zebra),
             OptionId::ColumnTypes => OptionValue::ColumnTypes(self.column_types),
@@ -1160,6 +1206,12 @@ impl Settings {
                 OptionValue::LogDays(next.unwrap_or(days))
             }
             OptionId::AgentsNotify => OptionValue::AgentsNotify(forward),
+            // The terminal look's two: follow at the left, pin at the right.
+            OptionId::Theme => OptionValue::Theme(if forward {
+                ThemeChoice::Pinned
+            } else {
+                ThemeChoice::Omarchy
+            }),
             OptionId::RowHeight => {
                 let at = RowHeight::ALL
                     .iter()
@@ -1222,6 +1274,11 @@ impl Settings {
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
+            // As the terminal look draws it: a pin, or the desktop followed.
+            OptionId::Theme => Some(OptionValue::Theme(match self.theme.pin() {
+                Some(_) => ThemeChoice::Omarchy,
+                None => ThemeChoice::Pinned,
+            })),
             OptionId::RowHeight => None,
             // Unset, it is flipped from off: the window flips the
             // settings as it shows them, with the look's default in.
@@ -2894,6 +2951,7 @@ bar = \"label\"  # tint | label
                 Key::ValueTags,
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
+                Key::Theme,
                 Key::RowHeight,
                 Key::Zebra,
                 Key::ColumnTypes,
@@ -2915,7 +2973,12 @@ bar = \"label\"  # tint | label
         // options, in order.
         let sections = [&OptionId::DATA[..], &OptionId::SAFETY[..]].concat();
         assert_eq!(sections, OptionId::GENERAL);
-        let sections = [&OptionId::GRID[..], &OptionId::ENVIRONMENT[..]].concat();
+        let sections = [
+            &OptionId::THEME[..],
+            &OptionId::GRID[..],
+            &OptionId::ENVIRONMENT[..],
+        ]
+        .concat();
         assert_eq!(sections, OptionId::APPEARANCE);
         assert_eq!(panes, OptionId::ALL);
         let defaults = Settings::default();

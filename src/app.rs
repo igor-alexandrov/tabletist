@@ -1958,6 +1958,10 @@ impl App {
                     dialog.row = row;
                 }
             }
+            // A pin set from the window: the settings know no name for it.
+            Action::SetOption(crate::settings::OptionValue::Theme(
+                crate::settings::ThemeChoice::Pinned,
+            )) => self.pin_theme(),
             // The server's switch, turned on: the person's own doing, as
             // Turn on is, which keeps a change made outside that is held.
             Action::SetOption(crate::settings::OptionValue::AgentsOn(true)) => {
@@ -3970,6 +3974,18 @@ impl App {
         }
         self.apply_settings(settings);
         self.save_settings();
+    }
+
+    /// Pins the theme Omarchy shows now, by its name. A pin stays as it
+    /// is. With no theme of Omarchy's to name (another desktop, or none
+    /// read yet), nothing is pinned: the file pins one by name.
+    fn pin_theme(&mut self) {
+        if self.settings.theme.pin().is_some() {
+            return;
+        }
+        if let Some(name) = self.desktop_theme.current.clone() {
+            self.change_settings(|settings| settings.theme = crate::settings::Theme::Pinned(name));
+        }
     }
 
     /// Replaces the settings and does what the ones that changed ask for.

@@ -2484,6 +2484,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::ConfirmCloseEdits),
             ],
             Self::Appearance => &[
+                SettingsRow::Option(OptionId::Theme),
                 SettingsRow::Option(OptionId::RowHeight),
                 SettingsRow::Option(OptionId::Zebra),
                 SettingsRow::Option(OptionId::ColumnTypes),

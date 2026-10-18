@@ -17,7 +17,8 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    EnvBar, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
+    EnvBar, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, Theme, ThemeChoice,
+    Timestamps, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -34,6 +35,7 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
+        OptionId::Theme => "Theme",
         OptionId::RowHeight => "Row density",
         OptionId::Zebra => "Alternate row shading",
         OptionId::ColumnTypes => "Show column types",
@@ -62,6 +64,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
+        | OptionId::Theme
         | OptionId::TableList => label(option),
     }
 }
@@ -82,6 +85,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
+        | OptionId::Theme
         | OptionId::RowHeight
         | OptionId::Zebra => None,
     }
@@ -134,13 +138,34 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
 /// The settings as the window shows them: the server's switch as it is in
 /// force, off where a change made outside the app that turned it on is
 /// held, the grouping of numbers as the look has it where it is not set,
-/// and the stripes as the look draws them while they are not set.
+/// the stripes as the look draws them while they are not set, and the
+/// theme as the look reads it: a value of the other looks' is the desktop
+/// followed.
 pub(super) fn shown(app: &App) -> Settings {
     let mut settings = app.settings.clone();
     settings.mcp_enabled = app.agents_on();
     settings.group_digits = Some(app.settings.grouped(app.layout()));
     settings.zebra = Some(settings.zebra_in(app.look.terminal));
+    settings.theme = match (app.look.terminal, settings.theme.mode()) {
+        (true, _) if settings.theme.pin().is_some() => settings.theme,
+        (true, _) => Theme::Omarchy,
+        (false, Mode::System) => Theme::System,
+        (false, Mode::Light) => Theme::Light,
+        (false, Mode::Dark) => Theme::Dark,
+    };
     settings
+}
+
+/// Puts `value` in the window's own copy of the settings, as `App::apply`
+/// will put it in the app's: a new pin is Omarchy's theme of the moment.
+fn set_shown(app: &App, value: &OptionValue, settings: &mut Settings) {
+    value.set(settings);
+    if *value == OptionValue::Theme(ThemeChoice::Pinned)
+        && settings.theme.pin().is_none()
+        && let Some(name) = &app.desktop_theme.current
+    {
+        settings.theme = Theme::Pinned(name.clone());
+    }
 }
 
 /// A timestamp as the grid shows one at each precision.
@@ -231,6 +256,14 @@ pub(super) fn choices(
         OptionId::AgentsNotify => vec![
             (Word("off"), OptionValue::AgentsNotify(false)),
             (Word("on"), OptionValue::AgentsNotify(true)),
+        ],
+        // The terminal look's: macOS and Windows draw their tiles.
+        OptionId::Theme => vec![
+            (
+                Word("follow omarchy"),
+                OptionValue::Theme(ThemeChoice::Omarchy),
+            ),
+            (Word("pin"), OptionValue::Theme(ThemeChoice::Pinned)),
         ],
         OptionId::RowHeight => vec![
             (Word("compact"), OptionValue::RowHeight(RowHeight::Compact)),
@@ -466,8 +499,16 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
                         Asked::Step { forward } => Some(settings.stepped(option, forward)),
                         _ => settings.flipped(option),
                     };
-                    if let Some(value) = value {
-                        value.set(&mut settings);
+                    // A step to the theme the row shows already changes
+                    // nothing: a value of the other looks', shown as the
+                    // desktop followed, stays in the file.
+                    let same = |value: &OptionValue| {
+                        option == OptionId::Theme
+                            && asked != Asked::Reset
+                            && *value == settings.value(option)
+                    };
+                    if let Some(value) = value.filter(|value| !same(value)) {
+                        set_shown(app, &value, &mut settings);
                         // Stripes put back to the look's are drawn as the
                         // look draws them: the next key flips those.
                         settings.zebra = Some(settings.zebra_in(app.look.terminal));

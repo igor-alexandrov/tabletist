@@ -7,7 +7,7 @@
 use egui::emath::GuiRounding as _;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
-use crate::app::App;
+use crate::app::{App, PinState};
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::Command;
 use crate::model::{Action, SettingsDialog, SettingsPane, SettingsRow};
@@ -38,6 +38,8 @@ const LABEL: f32 = 280.0;
 const VALUE: f32 = 320.0;
 /// The space at each side of a segment's word.
 const SEGMENT_PAD: f32 = 6.0;
+/// One of the palette's swatches.
+const SWATCH: egui::Vec2 = vec2(18.0, 14.0);
 /// The file's pane: this wide, or this share of the window where that is
 /// less, and not there in a window narrower than `FILE_FROM`.
 const FILE: f32 = 620.0;
@@ -57,6 +59,32 @@ pub(super) struct Skin<'a> {
     pub(super) system: Option<&'a str>,
     /// The last named zone the session had, which the zone's steps reach.
     pub(super) named: Option<&'a str>,
+    /// What the theme's rows say of the desktop.
+    pub(super) desktop: Desktop<'a>,
+}
+
+/// What the Appearance pane's theme rows say beside their values: Omarchy's
+/// theme of the moment, and how a pin stands.
+#[derive(Clone, Copy)]
+pub(super) struct Desktop<'a> {
+    /// The name of Omarchy's theme of the moment, where it is known.
+    pub(super) current: Option<&'a str>,
+    /// The pin as the settings write it, and how it stands.
+    pub(super) pin: Option<(&'a str, PinState)>,
+    /// Whether Omarchy's palette is followed: else the system's light or
+    /// dark is.
+    pub(super) follows_omarchy: bool,
+}
+
+impl<'a> Desktop<'a> {
+    pub(super) fn of(app: &'a App) -> Self {
+        let pin = app.settings.theme.pin().zip(app.pin_state());
+        Self {
+            current: app.desktop_theme.current.as_deref(),
+            pin,
+            follows_omarchy: app.themes.follows_omarchy(),
+        }
+    }
 }
 
 impl Skin<'_> {
@@ -100,6 +128,7 @@ pub(super) fn show(
         window: app.agents_window().is_some(),
         system: app.system_zone.iana_name(),
         named: app.named_zone.as_deref(),
+        desktop: Desktop::of(app),
     };
     let screen = ctx.content_rect();
     let id = egui::Id::new("settings");
@@ -354,7 +383,8 @@ fn appearance_rows(
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Grid", 8.0, &OptionId::GRID[..]),
+        ("Theme", 8.0, &OptionId::THEME[..]),
+        ("Grid", 12.0, &OptionId::GRID[..]),
         ("Environment", 12.0, &OptionId::ENVIRONMENT[..]),
     ] {
         heading(ui, heading_text, top, skin);
@@ -369,6 +399,116 @@ fn appearance_rows(
                 actions,
             );
             index += 1;
+        }
+        // Under the theme, the colours it gave: no row of the cursor's.
+        if options == OptionId::THEME {
+            palette_row(ui, columns, skin, actions);
+        }
+    }
+}
+
+/// The colours the theme gave, eight of them as the board has them, and
+/// where they were read from. Nothing to change: the cursor passes it.
+fn palette_row(
+    ui: &mut Ui,
+    (label_width, value_width): (f32, f32),
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let palette = skin.palette;
+    let (row, left, right, _) = row_frame(ui, (usize::MAX, "Palette"), false, skin, actions);
+    let label_width = label_width.min(right - left);
+    let value_width = value_width.min(right - left - label_width);
+    let swatches = [
+        palette.window,
+        palette.accent,
+        palette.success,
+        palette.warning,
+        palette.danger,
+        palette.magenta,
+        palette.info,
+        palette.orange,
+    ];
+    let mut x = left + label_width;
+    for color in swatches {
+        let swatch = Rect::from_center_size(pos2(x + SWATCH.x / 2.0, row.center().y), SWATCH);
+        ui.painter().rect(
+            swatch,
+            CornerRadius::same(2),
+            color,
+            Stroke::new(1.0, palette.outline),
+            StrokeKind::Inside,
+        );
+        x += SWATCH.x + 4.0;
+    }
+    let hint = palette_source(skin).layout(ui.ctx());
+    let hint_left = left + label_width + value_width;
+    if hint_left + hint.width() <= right {
+        hint.paint_left(ui.painter(), hint_left, row.center().y);
+        widgets::announce(
+            ui,
+            Rect::from_min_size(pos2(hint_left, row.top()), vec2(hint.width(), ROW)),
+            hint.galley.text(),
+        );
+    }
+}
+
+/// Where the drawn colours came from: an Omarchy theme, a palette file the
+/// pin names, or the app's own light or dark.
+fn palette_source(skin: &Skin) -> Text {
+    let Skin {
+        look,
+        palette,
+        desktop,
+        ..
+    } = *skin;
+    let said = match desktop.pin {
+        Some((_, PinState::Drawn(pinned))) if pinned.omarchy => {
+            skin.say("read from the omarchy theme")
+        }
+        Some((name, PinState::Drawn(_))) => skin.say("read from {name}").replace("{name}", name),
+        _ if desktop.follows_omarchy => skin.say("read from the omarchy theme"),
+        _ => skin.say("tabletist's own light or dark"),
+    };
+    Text::one(look, TextRole::OBody, &said, palette.dim)
+}
+
+/// What the theme's row says beside its value: the theme drawn now, and
+/// what changes it, or why a pin is not drawn.
+fn theme_hint(skin: &Skin) -> Text {
+    let Skin {
+        look,
+        palette,
+        desktop,
+        ..
+    } = *skin;
+    let role = TextRole::OBody;
+    match desktop.pin {
+        Some((name, PinState::Drawn(_))) => {
+            let said = skin.say("now: {name} · pinned").replace("{name}", name);
+            Text::one(look, role, &said, palette.dim)
+        }
+        Some((name, PinState::Missing)) => {
+            let said = skin.say(if desktop.follows_omarchy {
+                "“{name}” not found · following omarchy"
+            } else {
+                "“{name}” not found · following the system"
+            });
+            Text::one(look, role, &said.replace("{name}", name), palette.warning)
+        }
+        // A pin still being read is drawn as the desktop until it is.
+        Some((_, PinState::Reading)) | None if desktop.follows_omarchy => {
+            let name = look.label(desktop.current.unwrap_or("Omarchy"));
+            let said = skin.say("now: {name} · switches with omarchy-theme");
+            Text::one(look, role, &said.replace("{name}", &name), palette.dim)
+        }
+        Some((_, PinState::Reading)) | None => {
+            let said = skin.say(if palette.dark {
+                "now: dark, from the system"
+            } else {
+                "now: light, from the system"
+            });
+            Text::one(look, role, &said, palette.dim)
         }
     }
 }
@@ -718,6 +858,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         }
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Theme
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar => {
@@ -889,6 +1030,7 @@ fn option_row(
         }
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::Theme
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar => {
@@ -1058,6 +1200,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             )
             .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
         OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
+        OptionId::Theme => theme_hint(skin),
         OptionId::RowHeight => dim(&skin.say("1 · 1.5 · 2 lines")),
         OptionId::Zebra => Text::new(look),
         OptionId::ColumnTypes => dim(&skin.say("second header line")),
@@ -1247,7 +1390,12 @@ fn choice(
     }
     if button.clicked() {
         actions.push(Action::SelectSettingsRow(index));
-        actions.push(Action::SetOption(value));
+        // The theme it shows already: a value of the other looks', shown
+        // as the desktop followed, stays in the file.
+        let shown = matches!(press, Press::Value { set: true });
+        if !(shown && value.option() == OptionId::Theme) {
+            actions.push(Action::SetOption(value));
+        }
     }
 }
 

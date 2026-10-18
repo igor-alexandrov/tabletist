@@ -43,7 +43,7 @@ fn covers(look: Look, rows: usize) -> (Harness, ConnTabId, TabId) {
 }
 
 /// Whether the last frame painted a text that has `words` in it.
-fn shows(harness: &mut Harness, words: &str) -> bool {
+pub(super) fn shows(harness: &mut Harness, words: &str) -> bool {
     harness.settle();
     harness.painted.iter().any(|(text, _)| text.contains(words))
 }
@@ -356,7 +356,7 @@ fn pane(harness: &Harness) -> Option<SettingsPane> {
 }
 
 /// How many times the settings were saved.
-fn settings_saves(harness: &Harness) -> usize {
+pub(super) fn settings_saves(harness: &Harness) -> usize {
     harness
         .app
         .backend
@@ -375,7 +375,7 @@ fn settings_saves(harness: &Harness) -> usize {
 }
 
 /// Settings on its Appearance pane.
-fn on_the_pane(harness: &mut Harness) {
+pub(super) fn on_the_pane(harness: &mut Harness) {
     harness.app.apply(Action::ShowSettings);
     harness
         .app
@@ -462,7 +462,8 @@ fn the_screen_sets_each_appearance_option_with_its_keys() {
     let key = |harness: &mut Harness, key: egui::Key, text: &str| {
         super::tests::type_key(harness, key, text);
     };
-    // Row height: one to the left, compact.
+    // Row height, under the theme: one to the left, compact.
+    key(&mut harness, egui::Key::J, "j");
     key(&mut harness, egui::Key::H, "h");
     // Alternate rows, on in the terminal until set: space turns it off.
     key(&mut harness, egui::Key::J, "j");
@@ -544,7 +545,9 @@ fn a_reset_and_a_toggle_in_one_frame_turn_the_look_s_stripes_off() {
     let mut harness = Harness::new();
     harness.set_look(Look::omarchy());
     on_the_pane(&mut harness);
-    super::tests::type_key(&mut harness, egui::Key::J, "j");
+    for _ in 0..2 {
+        super::tests::type_key(&mut harness, egui::Key::J, "j");
+    }
     change(&mut harness, |settings| settings.zebra = Some(true));
     // R puts them back to the look's, which shows them; Space then turns
     // them off.

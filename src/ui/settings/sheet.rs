@@ -494,6 +494,8 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         | OptionId::Zebra
         | OptionId::ColumnTypes => SWITCH,
         OptionId::LogDays => look.control_height,
+        // The Theme section is tiles, drawn on their own: no row's.
+        OptionId::Theme => 0.0,
     }
 }
 
@@ -638,6 +640,8 @@ fn control(
                 info
             });
         }
+        // The Theme section is tiles, drawn on their own: no row's.
+        OptionId::Theme => {}
     }
 }
 
@@ -770,8 +774,10 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
-        // What the Appearance pane's rows say is their small print.
-        OptionId::ProductionReadOnly
+        // What the Appearance pane's rows say is their small print, and its
+        // tiles have their own line.
+        OptionId::Theme
+        | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::LogDays

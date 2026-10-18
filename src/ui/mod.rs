@@ -64,6 +64,8 @@ pub mod sql_text;
 pub mod states;
 pub mod structure;
 pub mod terminal_dialog;
+#[cfg(test)]
+mod theme_settings_tests;
 pub mod toast;
 pub mod value_tags;
 pub mod widgets;
