@@ -1204,6 +1204,10 @@ once in the bar. The editor has no control for them until run 4: its
 save keeps what the file says. The app's gateway passes them to the
 server, which has used them since run 2.
 
+**As built in 3a's run 4** (`2026-10-18-mcp-server-3a-4-columns-control.md`):
+the editor's control, in D.3 below, and the website's guide, "Mask
+columns" in `docs/_guide/agents.md`.
+
 **The rule.** It applies to any statement that reads a table with a masked
 column.
 
@@ -2041,6 +2045,55 @@ otherwise:
   a change of every row's, for another time.
 - The hint (B.3) is under the control, in both looks.
 
+**As built for 3a** (`2026-10-18-mcp-server-3a-4-columns-control.md`).
+Agreed on 2026-10-18, where it went otherwise:
+
+- **Masked columns**, in both looks: the masked columns as chips with a
+  ×, and **Add column…**, which opens a field for a table and a column as
+  the file writes them (`orders.email`, `sales.orders.email`) and works
+  as Add table…'s does: Enter, a name the field holds when it loses the
+  keyboard or at a save, Escape, a name that does not read said under the
+  names and refusing a save. On macOS it stands beside Tables, as the
+  board draws them; on Omarchy it is the `masked` row after the tables.
+- The list: while the field holds a name, the tables the sidebar of an
+  open window loaded that match it, as Add table…'s list has them, each
+  written with a dot after it (`orders.`). Enter or a click on one puts it
+  in the field, the caret after it, and the list then offers that table's
+  columns (every schema's table of that name for one without a schema),
+  none an entry masks already, at most eight, with a line that says
+  whose columns they are or that they are on their way. They are asked of
+  an open window as the SQL editor's completion asks for them, and kept
+  with its columns: once, a failed one not again. Up and Down move in the
+  list with `FormTableMove`. Tab or a click away takes what is typed: a
+  table chosen is no column.
+- The mark: the columns of every table a masked column names are asked
+  for when the form shows them, and a masked column that the loaded
+  schemas and fetched columns show is no column of the database is marked
+  "not in this database", with the line that says agents may not use the
+  connection until it is taken out or put right (C.3). A column of a table
+  whose columns were not fetched, or of a schema not loaded, is not
+  marked; one without a schema only when every schema is loaded. One is
+  marked wrongly, and left so: a hidden column of a SQLite virtual table
+  (an FTS5 table's own), which the window's columns leave out and the
+  agent server counts.
+- The run's review found the columns of one table taken for those of
+  another whose name differs in case, the row chosen in the list changing
+  as more columns came, "Loading the columns…" kept after the window's
+  session was gone, a table whose name holds a dot offering no columns,
+  and a fetch that failed shown as a table without columns: each is fixed
+  with a test. The row chosen now follows its value in Add table…'s list
+  too.
+- The form opens with the masked columns in force; ones the person
+  changed are theirs and shown, more or fewer, and ones left as they
+  opened keep what the file says, a change made outside staying held, as
+  the tables do. Where the masked columns in force changed while the form
+  was open, a change of the person's is refused and the form shows them as
+  they are now.
+- The hint is not the board's "The agent sees the name and type; values
+  come back as •••." alone: "Agents see the name and type; values come
+  back as •••. A query that filters, joins, sorts or computes with one is
+  refused, in any table with a column of that name." In both looks.
+
 ### D.4 The Agents tab
 
 Boards: `macOS – Agents tab, activity and approval`, `macOS – Agents tab, no
@@ -2640,7 +2693,7 @@ is off until the person turns it on.
 | 1b on Windows: the way in | 1 | Built (`2026-10-15-mcp-server-1b-6-windows.md`) |
 | 1c. Hidden tables | 6, below | Built (`2026-10-15-mcp-server-1c-1-checks.md`, `2026-10-15-mcp-server-1c-2a-server.md`, `2026-10-16-mcp-server-1c-2b-setting.md`, `2026-10-16-mcp-server-1c-3a-tables-control.md`, `2026-10-16-mcp-server-1c-3b-table-list.md`) |
 | 1d. HTTP with tokens | 1 | Dropped for now (2026-10-15) |
-| 3a. Masked columns | 5, below | Runs 1a to 3 built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`): the rule, its stops, the engines' fences, the values, the server's side and the setting. Run 4, the editor's Masked columns control and the website's guide, is next (order changed on 2026-10-17) |
+| 3a. Masked columns | 5, below | Built (`2026-10-17-mcp-server-3a-1a-masked-rule.md`, `2026-10-17-mcp-server-3a-1b-masked-values.md`, `2026-10-17-mcp-server-3a-2-server.md`, `2026-10-17-mcp-server-3a-3-setting.md`, `2026-10-18-mcp-server-3a-4-columns-control.md`): the rule, its stops, the engines' fences, the values, the server's side, the setting, and the editor's control with the website's guide. 3b is next (order changed on 2026-10-17) |
 | 3b. The Log view, in full | Not cut yet | After 3a |
 | 2. Approved writes | Not cut yet | Last, after 3b (moved on 2026-10-17) |
 
@@ -2840,7 +2893,8 @@ pull request:
 3. The setting in `connections.toml`, as 1c-2b's for tables
    (`2026-10-17-mcp-server-3a-3-setting.md`, built).
 4. The editor's Masked columns control with **Add column…** and its mark,
-   and the website's guide.
+   and the website's guide
+   (`2026-10-18-mcp-server-3a-4-columns-control.md`, built).
 
 **3b. The Log view, in full.** (This was a log window before 2026-10-13.)
 
