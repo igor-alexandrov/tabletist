@@ -34,6 +34,101 @@ impl Timestamps {
     }
 }
 
+/// How tall the grid's rows are: the look's own, a step less, or a step
+/// more.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RowHeight {
+    Compact,
+    #[default]
+    Regular,
+    Roomy,
+}
+
+impl RowHeight {
+    /// In the order the window draws them.
+    pub const ALL: [RowHeight; 3] = [Self::Compact, Self::Regular, Self::Roomy];
+
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Regular => "regular",
+            Self::Roomy => "roomy",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.name() == name)
+    }
+}
+
+/// How the sidebar lists a connection's tables when it has no choice of
+/// its own: in groups of a shared prefix, or one list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TableList {
+    #[default]
+    Tree,
+    Flat,
+}
+
+impl TableList {
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Tree => "tree",
+            Self::Flat => "flat",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Tree, Self::Flat]
+            .into_iter()
+            .find(|choice| choice.name() == name)
+    }
+
+    /// Whether the list is flat.
+    pub fn flat(self) -> bool {
+        match self {
+            Self::Tree => false,
+            Self::Flat => true,
+        }
+    }
+
+    /// The list that `flat` says.
+    pub fn of(flat: bool) -> Self {
+        if flat { Self::Flat } else { Self::Tree }
+    }
+}
+
+/// How much of its environment's colour the connection bar takes: the
+/// tint and the stripe or label, or the stripe or label alone. Production
+/// is tinted either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EnvBar {
+    #[default]
+    Tint,
+    Label,
+}
+
+impl EnvBar {
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Tint => "tint",
+            Self::Label => "label",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Tint, Self::Label]
+            .into_iter()
+            .find(|choice| choice.name() == name)
+    }
+}
+
 /// Everything the user can set. A key the file lacks takes its default and
 /// one this version does not know is ignored, so older and newer files both
 /// load. The serde derive reads the `settings.json` of versions before the
@@ -68,6 +163,18 @@ pub struct Settings {
     /// macOS the Dock's bounce, on Windows the taskbar button's flash. The
     /// Agents entry says who is here either way.
     pub mcp_notify: bool,
+    /// How tall the grids' rows are.
+    pub row_height: RowHeight,
+    /// Odd rows shaded in the grids. `None` until the user sets it: the
+    /// look's own default, off on macOS and on in the terminal.
+    pub zebra: Option<bool>,
+    /// The header's second line: each column's type.
+    pub column_types: bool,
+    /// How the sidebar lists the tables of a connection with no choice of
+    /// its own.
+    pub table_list: TableList,
+    /// How the connection bar shows a connection's environment.
+    pub env_bar: EnvBar,
 }
 
 /// A key of the settings file.
@@ -84,11 +191,16 @@ pub enum Key {
     McpLogDays,
     McpNotify,
     Theme,
+    RowHeight,
+    Zebra,
+    ColumnTypes,
+    TableList,
+    EnvBar,
 }
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 11] = [
+    pub const ALL: [Key; 16] = [
         Self::PageSize,
         Self::Timestamps,
         Self::GroupDigits,
@@ -100,6 +212,11 @@ impl Key {
         Self::McpLogDays,
         Self::McpNotify,
         Self::Theme,
+        Self::RowHeight,
+        Self::Zebra,
+        Self::ColumnTypes,
+        Self::TableList,
+        Self::EnvBar,
     ];
 
     /// The key's table and its name there.
@@ -116,6 +233,11 @@ impl Key {
             Self::McpLogDays => ("mcp", "log_days"),
             Self::McpNotify => ("mcp", "notify"),
             Self::Theme => ("appearance", "theme"),
+            Self::RowHeight => ("appearance.grid", "row_height"),
+            Self::Zebra => ("appearance.grid", "zebra"),
+            Self::ColumnTypes => ("appearance.grid", "column_types"),
+            Self::TableList => ("appearance.grid", "table_list"),
+            Self::EnvBar => ("appearance.env", "bar"),
         }
     }
 
@@ -125,6 +247,9 @@ impl Key {
         match self {
             Self::Timestamps => Some("second | full"),
             Self::SqlTimeoutSecs => Some("0 waits forever"),
+            Self::RowHeight => Some("compact | regular | roomy"),
+            Self::TableList => Some("tree | flat"),
+            Self::EnvBar => Some("tint | label"),
             _ => None,
         }
     }
@@ -473,6 +598,12 @@ impl Settings {
         }
     }
 
+    /// Whether odd rows are shaded in a look that shades them by default
+    /// (`terminal`) or not.
+    pub fn zebra_in(&self, terminal: bool) -> bool {
+        self.zebra.unwrap_or(terminal)
+    }
+
     /// The value one step from `option`'s, towards the right (`forward`)
     /// or the left, as the window draws its choices: the next page size
     /// (none past the ends), the segment on that side, a check on to the
@@ -533,7 +664,7 @@ impl Settings {
     }
 
     /// `key`'s value as TOML writes it. `None` for a key the file leaves
-    /// out: a theme that is not set.
+    /// out: a theme that is not set, and stripes left to the look.
     fn literal(&self, key: Key) -> Option<String> {
         Some(match key {
             Key::PageSize => self.page_size.to_string(),
@@ -548,6 +679,11 @@ impl Settings {
             Key::McpLogDays => self.mcp_log_days.to_string(),
             Key::McpNotify => self.mcp_notify.to_string(),
             Key::Theme => toml_string(self.custom_theme.as_deref()?),
+            Key::RowHeight => toml_string(self.row_height.name()),
+            Key::Zebra => self.zebra?.to_string(),
+            Key::ColumnTypes => self.column_types.to_string(),
+            Key::TableList => toml_string(self.table_list.name()),
+            Key::EnvBar => toml_string(self.env_bar.name()),
         })
     }
 
@@ -624,6 +760,17 @@ impl Settings {
             Key::McpLogDays => number.map(|number| self.mcp_log_days = number),
             Key::McpNotify => flag.map(|flag| self.mcp_notify = flag),
             Key::Theme => text.map(|name| self.custom_theme = Some(name.to_owned())),
+            Key::RowHeight => text
+                .and_then(RowHeight::from_name)
+                .map(|height| self.row_height = height),
+            Key::Zebra => flag.map(|flag| self.zebra = Some(flag)),
+            Key::ColumnTypes => flag.map(|flag| self.column_types = flag),
+            Key::TableList => text
+                .and_then(TableList::from_name)
+                .map(|list| self.table_list = list),
+            Key::EnvBar => text
+                .and_then(EnvBar::from_name)
+                .map(|bar| self.env_bar = bar),
         }
         .is_some()
     }
@@ -695,9 +842,18 @@ impl Settings {
         let mut lines = Vec::new();
         for key in Key::ALL {
             let (table, name) = key.path();
-            let Some((found, value)) = document
-                .get(table)
-                .and_then(|table| table.get_ref().as_table())
+            // A table under another is found by its dotted path.
+            let mut parts = table.split('.');
+            let first = parts
+                .next()
+                .and_then(|part| document.get(part))
+                .and_then(|table| table.get_ref().as_table());
+            let Some((found, value)) = parts
+                .fold(first, |table, part| {
+                    table
+                        .and_then(|table| table.get(part))
+                        .and_then(|table| table.get_ref().as_table())
+                })
                 .and_then(|table| table.get_key_value(name))
             else {
                 continue;
@@ -780,6 +936,11 @@ impl Default for Settings {
             mcp_enabled: false,
             mcp_log_days: 30,
             mcp_notify: true,
+            row_height: RowHeight::Regular,
+            zebra: None,
+            column_types: true,
+            table_list: TableList::Tree,
+            env_bar: EnvBar::Tint,
         }
     }
 }
@@ -838,6 +999,14 @@ sql_timeout_secs = 30  # 0 waits forever
 enabled  = false
 log_days = 30
 notify   = true
+
+[appearance.grid]
+row_height   = \"regular\"  # compact | regular | roomy
+column_types = true
+table_list   = \"tree\"  # tree | flat
+
+[appearance.env]
+bar = \"tint\"  # tint | label
 "
         );
     }
@@ -860,7 +1029,9 @@ notify   = true
             "{text}"
         );
         assert!(
-            text.ends_with("\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n"),
+            text.contains(
+                "\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n\n[appearance.grid]\n"
+            ),
             "{text}"
         );
     }
@@ -887,6 +1058,11 @@ notify   = true
             mcp_enabled: true,
             mcp_log_days: 7,
             mcp_notify: false,
+            row_height: RowHeight::Roomy,
+            zebra: Some(false),
+            column_types: false,
+            table_list: TableList::Flat,
+            env_bar: EnvBar::Label,
         };
         let text = settings.to_toml();
         let loaded = Settings::from_toml(&text);
@@ -914,6 +1090,10 @@ notify   = true
                 (Key::McpEnabled, 16),
                 (Key::McpLogDays, 17),
                 (Key::McpNotify, 18),
+                (Key::RowHeight, 21),
+                (Key::ColumnTypes, 22),
+                (Key::TableList, 23),
+                (Key::EnvBar, 26),
             ]
         );
     }
@@ -1541,5 +1721,60 @@ notify   = true
             Some(OptionValue::Timestamps(Timestamps::Second))
         );
         assert_eq!(settings.flipped(OptionId::PageSize), None);
+    }
+
+    #[test]
+    fn the_appearance_keys_default_to_todays_grid() {
+        let settings = Settings::default();
+        assert_eq!(settings.row_height, RowHeight::Regular);
+        assert_eq!(settings.zebra, None);
+        assert!(settings.column_types);
+        assert_eq!(settings.table_list, TableList::Tree);
+        assert_eq!(settings.env_bar, EnvBar::Tint);
+        // Stripes left to the look: off on macOS, on in the terminal.
+        assert!(!settings.zebra_in(false));
+        assert!(settings.zebra_in(true));
+        assert!(!settings.to_toml().contains("zebra"));
+    }
+
+    #[test]
+    fn each_appearance_key_is_read_from_its_nested_table() {
+        let loaded = Settings::from_toml(
+            "[appearance.grid]\nrow_height = \"compact\"\nzebra = true\n\
+             column_types = false\ntable_list = \"flat\"\n\n[appearance.env]\nbar = \"label\"\n",
+        );
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert_eq!(
+            loaded.settings,
+            Settings {
+                row_height: RowHeight::Compact,
+                zebra: Some(true),
+                column_types: false,
+                table_list: TableList::Flat,
+                env_bar: EnvBar::Label,
+                ..Settings::default()
+            }
+        );
+        // Once set, the stripes are written, whatever the look.
+        let text = loaded.settings.to_toml();
+        assert!(text.contains("zebra        = true\n"), "{text}");
+        assert_eq!(Settings::from_toml(&text).settings, loaded.settings);
+        // A table written inline is the same table.
+        let inline = Settings::from_toml("[appearance]\ngrid = { row_height = \"roomy\" }\n");
+        assert_eq!(inline.settings.row_height, RowHeight::Roomy);
+    }
+
+    #[test]
+    fn an_appearance_value_the_key_cannot_have_is_ignored_by_its_line() {
+        let loaded = Settings::from_toml(
+            "[appearance.grid]\nrow_height = \"dense\"\nzebra = \"yes\"\n\
+             column_types = 1\ntable_list = \"grouped\"\n\n[appearance.env]\nbar = \"stripe\"\n",
+        );
+        assert_eq!(loaded.invalid, vec![2, 3, 4, 5, 8]);
+        assert_eq!(loaded.settings, Settings::default());
+        // A key under the wrong table is one this version does not know.
+        let loaded = Settings::from_toml("[appearance]\nrow_height = \"compact\"\n");
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert_eq!(loaded.settings.row_height, RowHeight::Regular);
     }
 }
