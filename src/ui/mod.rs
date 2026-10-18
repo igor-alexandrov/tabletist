@@ -1045,6 +1045,30 @@ mod tests {
         harness
     }
 
+    /// A settings file as a version before this one wrote it: every key of
+    /// the Data table, aligned.
+    const OLDER_FILE: &str = "\
+# written by tabletist, safe to edit by hand
+[data]
+page_size    = 300
+timestamps   = \"second\"  # second | full
+group_digits = false
+value_tags   = true
+";
+
+    /// The Settings screen over [`OLDER_FILE`], as read from the disk.
+    fn settings_screen_over_older_file() -> Harness {
+        let mut harness = settings_screen();
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: OLDER_FILE.into(),
+                own: false,
+            },
+        ));
+        harness.settle();
+        harness
+    }
+
     fn settings_open(harness: &Harness) -> bool {
         matches!(harness.app.dialog, Some(crate::model::Dialog::Settings(_)))
     }
@@ -1860,7 +1884,7 @@ mod tests {
 
     #[test]
     fn the_settings_screen_shows_the_file_beside_the_options() {
-        let mut harness = settings_screen();
+        let mut harness = settings_screen_over_older_file();
         // The text the app holds, a line of the file per line.
         assert!(harness.painted_color("[data]").is_some());
         assert!(harness.painted_color("page_size    = ").is_some());
@@ -1913,7 +1937,7 @@ mod tests {
 
     #[test]
     fn the_file_pane_marks_the_line_of_the_cursors_option() {
-        let mut harness = settings_screen();
+        let mut harness = settings_screen_over_older_file();
         let selection = harness.app.palette.selection;
         // The fill behind the line the text `key` starts.
         let marked = |harness: &Harness, key: &str| {
@@ -1932,6 +1956,22 @@ mod tests {
     }
 
     #[test]
+    fn with_no_file_the_pane_shows_the_header_and_marks_no_line() {
+        let harness = settings_screen();
+        let selection = harness.app.palette.selection;
+        let header = "# written by tabletist, safe to edit by hand";
+        assert!(harness.painted_color(header).is_some());
+        assert!(harness.painted_color("[data]").is_none());
+        // Nothing behind the header: the cursor's option has no line.
+        let line = harness.painted_rect(header).expect("the header");
+        assert!(!harness.fills.iter().any(|(rect, color)| {
+            *color == selection
+                && rect.y_range().contains(line.center().y)
+                && rect.x_range().contains(line.center().x)
+        }));
+    }
+
+    #[test]
     fn the_file_panes_note_reads_as_one_sentence_without_its_marks() {
         let harness = settings_screen();
         // The marks say which word is coloured, and are not written.
@@ -1944,8 +1984,7 @@ mod tests {
     /// lines of comments, with one line that is ignored among the first.
     fn settings_screen_over_a_long_file(notes: usize) -> Harness {
         let mut harness = settings_screen();
-        let settings = harness.app.settings.to_toml();
-        let settings = settings.replace("group_digits = false", "group_digits = \"yes\"");
+        let settings = OLDER_FILE.replace("group_digits = false", "group_digits = \"yes\"");
         let notes: String = (1..=notes).map(|note| format!("# note {note}\n")).collect();
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::SettingsFile {
@@ -2132,7 +2171,7 @@ mod tests {
 
     #[test]
     fn the_settings_screen_shows_a_notice_until_it_is_dismissed() {
-        let mut harness = settings_screen();
+        let mut harness = settings_screen_over_older_file();
         let message = "Could not save the password in the keyring.";
         harness.app.notice = Some(message.into());
         let shown = settings_notice(&mut harness, message).expect("the notice on the screen");

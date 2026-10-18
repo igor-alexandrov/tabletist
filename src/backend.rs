@@ -203,7 +203,8 @@ pub enum StateFile {
     /// The note that the connections are kept in `connections.toml`.
     ConnectionsMoved,
     KnownHosts(HostKeys),
-    Settings(crate::settings::Settings),
+    /// The settings file's text, as the app made it.
+    Settings(String),
     Labels(crate::labels::Labels),
     /// What agents may do, as the app last showed it.
     AgentsShown(crate::agents_shown::Shown),
@@ -218,7 +219,7 @@ impl StateFile {
                 crate::util::write_atomic(path, crate::connections::MOVED.as_bytes())
             }
             Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
-            Self::Settings(settings) => settings.save(path),
+            Self::Settings(text) => crate::util::write_atomic(path, text.as_bytes()),
             Self::Labels(labels) => labels.save(path),
             Self::AgentsShown(shown) => shown.save(path),
         }
@@ -861,14 +862,14 @@ impl Saves {
             };
             let result = match &file {
                 // Known to the settings file's reader for the app's own.
-                StateFile::Settings(settings) => {
+                StateFile::Settings(text) => {
                     let mut written = lock(&self.settings_written);
                     let result = file.save(path);
                     // After a write that failed nothing on the disk is
                     // known to be the app's: the text there may be an
                     // older write of its own, but the app has moved on
                     // from it, and someone putting it back must be heard.
-                    *written = result.is_ok().then(|| settings.to_toml());
+                    *written = result.is_ok().then(|| text.clone());
                     result
                 }
                 _ => file.save(path),
@@ -4240,7 +4241,7 @@ mod tests {
         let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(settings.clone()),
+            file: StateFile::Settings(settings.to_toml()),
         });
         match backend.wait(WAIT) {
             Some(Event::Saved { result: Ok(()), .. }) => {}
@@ -4265,7 +4266,7 @@ mod tests {
         let files = [
             (
                 "settings.toml",
-                StateFile::Settings(crate::settings::Settings::default()),
+                StateFile::Settings(crate::settings::Settings::default().to_toml()),
             ),
             (
                 "connections.toml",
@@ -5873,7 +5874,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(settings.clone()),
+            file: StateFile::Settings(settings.to_toml()),
         });
         assert_eq!(
             files_until(&mut backend, &settings.to_toml()),
@@ -5893,7 +5894,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(newer.clone()),
+            file: StateFile::Settings(newer.to_toml()),
         });
         assert_eq!(
             files_until(&mut backend, &newer.to_toml()),
@@ -5918,7 +5919,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(first.clone()),
+            file: StateFile::Settings(first.to_toml()),
         });
         assert_eq!(
             files_until(&mut backend, &first.to_toml()),
@@ -5934,7 +5935,7 @@ mod tests {
         };
         backend.send(Command::Save {
             path: path.clone(),
-            file: StateFile::Settings(second),
+            file: StateFile::Settings(second.to_toml()),
         });
         let deadline = std::time::Instant::now() + WAIT;
         loop {

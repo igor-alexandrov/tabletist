@@ -37,7 +37,10 @@ it is. In the Omarchy look the file is shown beside the options.
 ## The settings file
 
 Settings are kept in `settings.toml`, which is safe to edit by hand.
-Tabletist watches the file and applies your edits while it runs.
+Tabletist watches the file and applies your edits while it runs. The file
+holds only what differs from the defaults. Until you change an option
+there is no file, and one the app writes starts with a header line. Here
+is every key at its default:
 
 ```toml
 [data]
@@ -76,9 +79,17 @@ notify = true
 `show_system_schemas` and `theme` are set only in the file. The SQL
 editor's **Limit** and **Timeout** menus set the two `editor` keys.
 
-A line that cannot be read is ignored, keeps its default, and is reported
-in the Settings window. When you change an option in the app, the file is
-written again in a standard form, which drops comments you added.
+A line that cannot be read is ignored and reported in the Settings window,
+and its key keeps its last good value: the one it had before the edit, or
+its default when Tabletist starts. When you change an option in the app,
+only its key is written: set back to its default, the key is taken out of
+the file, and otherwise it gets the new value where it is, or goes at the
+end of its table. Your comments, the order of your keys, the lines that
+could not be read and keys Tabletist does not know all stay as you wrote
+them. The one exception is a table written inline (`data = { … }`) or
+with dotted keys (`data.page_size = 500`): a key added to it or taken out
+of it writes the whole file again, without your comments. **Export…**
+saves a copy of the file as it is.
 
 ## Files
 

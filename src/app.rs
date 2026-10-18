@@ -1754,12 +1754,12 @@ impl App {
                     text,
                 });
             }
-            // The app's own text, whatever the file holds: a line the app
-            // ignores is not a setting to hand on.
+            // A copy of the file as the app holds it: the person's
+            // comments with it, and a line the app ignores as it is.
             Action::ExportSettings => self.backend.save_bytes(
                 "Export settings",
                 "tabletist-settings.toml".to_owned(),
-                self.settings.to_toml().into_bytes(),
+                self.settings_file.text.clone().into_bytes(),
             ),
             Action::ResetSettings => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
@@ -3087,7 +3087,7 @@ impl App {
                 if own && !newest {
                     return;
                 }
-                let loaded = Settings::from_toml(&text);
+                let loaded = Settings::from_toml_over(&text, &self.settings);
                 loaded.warn_invalid(&self.dirs.settings_file());
                 let live = self.settings_file.live;
                 let saved = self.settings_file.saved.take();
@@ -3555,13 +3555,14 @@ impl App {
     /// [`App::change_settings`] and the start that read the old
     /// settings.json call it.
     fn save_settings(&mut self) {
-        self.settings_file.saved = Some(self.settings.to_toml());
+        let text = self.settings_file.text.clone();
+        self.settings_file.saved = Some(text.clone());
         // The save is newer than any text handed over with the file: where
         // one of those was written, this lands over it.
         self.settings_file.offered.clear();
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
-            file: StateFile::Settings(self.settings.clone()),
+            file: StateFile::Settings(text),
         });
     }
 
@@ -3586,16 +3587,20 @@ impl App {
     }
 
     /// A change made in the app (a menu, the Settings window): applied, and
-    /// written as the canonical text, which is the file from then on. The
-    /// lines the reader had ignored are gone with the text they were in.
-    /// A change that changes nothing writes nothing.
+    /// written into the file's text, where it changes the keys that changed
+    /// and nothing else (`Settings::write_into`). The lines the reader had
+    /// ignored stay, and are still ignored. A change that changes nothing
+    /// writes nothing.
     pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
         let mut changed = self.settings.clone();
         change(&mut changed);
-        let loaded = Loaded::of(changed, Source::Toml);
-        if loaded.settings == self.settings {
+        let changed = changed.validated();
+        let keys = self.settings.changed_keys(&changed);
+        if keys.is_empty() {
             return;
         }
+        let text = changed.write_into(&self.settings_file.text, &keys);
+        let loaded = Settings::from_toml_over(&text, &changed);
         let live = self.settings_file.live;
         let saved = self.settings_file.saved.take();
         let (settings, file) = loaded.into_parts();
@@ -5608,7 +5613,7 @@ mod tests {
                     matches!(
                         command,
                         Command::Save { path: to, file: StateFile::Settings(saved) }
-                            if *to == path && *saved == settings
+                            if *to == path && Settings::from_toml(saved).settings == settings
                     )
                 })
                 .count()
@@ -7246,15 +7251,16 @@ mod tests {
         );
     }
 
-    fn settings_saves(app: &App) -> Vec<&Settings> {
+    /// The settings each save of the settings file writes, as they read.
+    fn settings_saves(app: &App) -> Vec<Settings> {
         app.backend
             .sent
             .iter()
             .filter_map(|command| match command {
                 Command::Save {
-                    file: StateFile::Settings(settings),
+                    file: StateFile::Settings(text),
                     ..
-                } => Some(settings),
+                } => Some(Settings::from_toml(text).settings),
                 _ => None,
             })
             .collect()
@@ -7274,14 +7280,18 @@ mod tests {
         assert_eq!(app.settings.sql_limit, 100);
         assert_eq!(app.settings.page_size, 100, "what the file set stays");
         let saved = settings_saves(&app);
-        assert_eq!(saved.len(), 1);
-        assert_eq!(*saved[0], app.settings);
-        // The file is the canonical text now: nothing in it is invalid.
-        assert_eq!(app.settings_file.text, app.settings.to_toml());
-        assert!(app.settings_file.invalid.is_empty());
+        assert_eq!(saved, [app.settings.clone()]);
+        // The new key joins the file, and the rest stays as the person
+        // wrote it: the line the reader ignored is still there, and still
+        // ignored.
+        assert_eq!(
+            app.settings_file.text,
+            "[data]\npage_size = 100\ngroup_digits = \"yes\"\n\n[editor]\nsql_limit = 100\n"
+        );
+        assert_eq!(app.settings_file.invalid, [3]);
         assert_eq!(
             app.settings_file.lines,
-            Settings::from_toml(&app.settings.to_toml()).lines
+            Settings::from_toml(&app.settings_file.text).lines
         );
     }
 
@@ -7310,6 +7320,24 @@ mod tests {
         app.change_settings(|settings| settings.page_size = 5);
         assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
         assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn a_value_the_file_gets_wrong_keeps_the_last_good_one_and_is_reported() {
+        let (mut app, _dir) = app();
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        app.apply(from_disk("[data]\npage_size = \"lots\"\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(app.settings_file.invalid, [2]);
+        // A change made in the app then keeps it too, and the line.
+        app.change_settings(|settings| settings.value_tags = false);
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(
+            app.settings_file.text,
+            "[data]\npage_size = \"lots\"\nvalue_tags = false\n"
+        );
+        assert_eq!(app.settings_file.invalid, [2]);
     }
 
     #[test]
@@ -7585,13 +7613,14 @@ mod tests {
     }
 
     #[test]
-    fn export_offers_the_canonical_text_under_the_settings_name() {
+    fn export_offers_a_copy_of_the_file_under_the_settings_name() {
         let (mut app, _dir) = app();
-        // A file as someone wrote it: not the text the app would write.
-        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        // A file as someone wrote it, with a comment the app would not
+        // write: the copy has it.
+        let text = "# mine\n[data]\npage_size = 500\n";
+        app.apply(from_disk(text, false));
         assert_eq!(app.settings.page_size, 500);
-        let text = app.settings.to_toml();
-        assert_ne!(app.settings_file.text.len(), text.len());
+        assert_ne!(app.settings.to_toml().len(), text.len());
         app.apply(Action::ExportSettings);
         assert_eq!(
             app.backend.saves.last(),
@@ -9621,8 +9650,8 @@ mod tests {
         });
         assert!(matches!(
             last_sent(&harness.app),
-            Command::Save { file: StateFile::Settings(settings), .. }
-                if settings.sql_limit == 100
+            Command::Save { file: StateFile::Settings(text), .. }
+                if Settings::from_toml(text).settings.sql_limit == 100
         ));
         let sent = harness.app.backend.sent.len();
         harness.app.apply(Action::SetSqlTimeout {
@@ -9632,8 +9661,9 @@ mod tests {
         });
         assert!(matches!(
             &harness.app.backend.sent[sent..],
-            [Command::Save { file: StateFile::Settings(settings), .. }]
-                if settings.sql_limit == 100 && settings.sql_timeout_secs.is_none()
+            [Command::Save { file: StateFile::Settings(text), .. }]
+                if Settings::from_toml(text).settings.sql_limit == 100
+                    && Settings::from_toml(text).settings.sql_timeout_secs.is_none()
         ));
         type_sql(&mut harness, tab, id, "SELECT 1", 0);
         run(&mut harness, tab, id, false);
