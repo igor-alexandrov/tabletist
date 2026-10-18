@@ -115,6 +115,13 @@ impl AppDirs {
         self.state.join("last_used.json")
     }
 
+    /// The connection tabs open at the last quit, and each connection's
+    /// tables as its window last had them. Of this computer, and written
+    /// at quit and when a connection's tab closes.
+    pub fn session_file(&self) -> PathBuf {
+        self.state.join("session.json")
+    }
+
     /// The note that the connections are kept in `connections.toml`: made
     /// at the first start that finds that file. Once it is there, what an
     /// older version kept in `connections.json` is never read again,
@@ -222,6 +229,10 @@ mod tests {
         assert_eq!(
             dirs.connections_moved_file(),
             PathBuf::from("/root/state/connections.moved")
+        );
+        assert_eq!(
+            dirs.session_file(),
+            PathBuf::from("/root/state/session.json")
         );
         assert_eq!(
             dirs.known_hosts_file(),

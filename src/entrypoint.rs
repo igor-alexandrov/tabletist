@@ -380,6 +380,8 @@ impl eframe::App for Window {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // What is open, for the next launch.
+        self.app.save_session();
         // Connections and known hosts saved just before quitting still land.
         self.app.backend.flush(std::time::Duration::from_secs(5));
     }

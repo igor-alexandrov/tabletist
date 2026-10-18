@@ -30,6 +30,8 @@ use crate::theme::{self, Catalog, Palette};
 mod editing;
 mod key_picker;
 mod labels;
+#[cfg(test)]
+mod startup_tests;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -123,6 +125,13 @@ pub struct App {
     /// id, as the file had them: a newer version may have written them,
     /// and they are written back with the others.
     table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
+    /// What was open at the last quit, and each connection's tables as
+    /// its window last had them, from session.json.
+    pub session: crate::session::Session,
+    /// Whether session.json is written: not while the connections could
+    /// not be read, when no window could be open and the file would lose
+    /// every connection's tables.
+    writes_session: bool,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -252,6 +261,8 @@ impl App {
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
+        let session = crate::session::Session::load(&dirs.session_file());
+        let writes_session = loaded_connections.problem.is_none();
         let mut app = Self {
             dirs,
             settings,
@@ -272,6 +283,8 @@ impl App {
             labels,
             table_lists,
             table_lists_unread,
+            session,
+            writes_session,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -832,11 +845,15 @@ impl App {
                         self.close_tab(tab);
                         self.apply(Action::ShowConnections);
                     } else {
-                        self.backend.send(Command::Close { session });
+                        let kept = self.keep_tabs(tab);
                         self.close_editors(tab);
                         if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
                             entry.content = ConnTabContent::Picker(PickerState::default());
                         }
+                        if kept {
+                            self.save_session();
+                        }
+                        self.backend.send(Command::Close { session });
                     }
                 }
             }
@@ -2434,6 +2451,10 @@ impl App {
                     if self.table_lists.remove(&id.0).is_some() || unread {
                         self.save_table_lists();
                     }
+                    // And the tables its window last had.
+                    if self.session.forget(&id) {
+                        self.save_session();
+                    }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
                     }
@@ -2626,11 +2647,11 @@ impl App {
         let Some(index) = self.tab_index(id) else {
             return;
         };
-        if let ConnTabContent::Workspace(workspace) = &self.tabs[index].content {
-            self.backend.send(Command::Close {
-                session: workspace.session,
-            });
-        }
+        let session = match &self.tabs[index].content {
+            ConnTabContent::Workspace(workspace) => Some(workspace.session),
+            ConnTabContent::Picker(_) => None,
+        };
+        let closes_window = self.keep_tabs(id);
         self.close_editors(id);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
@@ -2642,6 +2663,75 @@ impl App {
         } else {
             self.active = self.active.min(self.tabs.len() - 1);
         }
+        if closes_window {
+            self.save_session();
+        }
+        if let Some(session) = session {
+            self.backend.send(Command::Close { session });
+        }
+    }
+
+    /// Keeps the table tabs of `tab`'s window in the session, for the
+    /// next time its connection opens: before the window closes, or has
+    /// another connection put in its place. Whether there was a window of
+    /// a saved connection to keep.
+    ///
+    /// A window switched to another database than its connection's keeps
+    /// nothing: the connection opens on its own, where those tables are
+    /// not, and what it kept of that one stays.
+    fn keep_tabs(&mut self, tab: ConnTabId) -> bool {
+        let Some(workspace) = self.workspace(tab) else {
+            return false;
+        };
+        let Some(saved) = self.connections.get(&workspace.conn_id) else {
+            return false;
+        };
+        let database = crate::session::database_of(&workspace.spec);
+        if database != crate::session::database_of(&saved.spec) {
+            return true;
+        }
+        let kept = crate::session::Kept::of(workspace);
+        let id = workspace.conn_id.clone();
+        self.session.keep(&id, kept);
+        true
+    }
+
+    /// Writes session.json on the backend: the connection tabs open now,
+    /// in order, the picker as none, and the tables of every window open,
+    /// with what is kept of the connections closed before. A connection
+    /// that is not saved (deleted while its window is open) is left out.
+    /// The window calls it as the app quits.
+    pub fn save_session(&mut self) {
+        if !self.writes_session {
+            return;
+        }
+        let ids: Vec<ConnTabId> = self.tabs.iter().map(|tab| tab.id).collect();
+        for id in &ids {
+            self.keep_tabs(*id);
+        }
+        let mut open = Vec::new();
+        let mut active = 0;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let entry = match &tab.content {
+                ConnTabContent::Picker(_) => None,
+                ConnTabContent::Workspace(workspace) => {
+                    if self.connections.get(&workspace.conn_id).is_none() {
+                        continue;
+                    }
+                    Some(workspace.conn_id.clone())
+                }
+            };
+            if index == self.active {
+                active = open.len();
+            }
+            open.push(entry);
+        }
+        self.session.open = open;
+        self.session.active = active;
+        self.backend.send(Command::Save {
+            path: self.dirs.session_file(),
+            file: StateFile::Session(self.session.clone()),
+        });
     }
 
     /// Opens `saved` in `tab`; `typed` holds secrets typed in the dialog.
@@ -2659,6 +2749,8 @@ impl App {
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let zone = self.zone();
         let flat = self.lists_flat(&saved.id);
+        // The connection the window had closes in it.
+        let replaced = self.keep_tabs(tab);
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -2667,6 +2759,9 @@ impl App {
         workspace.zone = zone;
         workspace.tree.flat = flat;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
+        if replaced {
+            self.save_session();
+        }
     }
 
     /// Fills the tab's secrets one at a time (the database password, then
