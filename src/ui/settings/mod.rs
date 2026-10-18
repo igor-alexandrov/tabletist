@@ -16,7 +16,7 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
-use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
+use crate::settings::{EnvBar, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps};
 
 /// The label of an option's row. English: the caller translates, and the
 /// terminal look lower-cases.
@@ -29,6 +29,30 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
+        OptionId::RowHeight => "Row density",
+        OptionId::Zebra => "Alternate row shading",
+        OptionId::ColumnTypes => "Show column types",
+        OptionId::TableList => "Table list",
+        OptionId::EnvBar => "Window header",
+    }
+}
+
+/// The label of an option's row in the terminal look, which names some of
+/// the Appearance pane's options its own way. English, as [`label`]'s.
+pub(super) fn terminal_label(option: OptionId) -> &'static str {
+    match option {
+        OptionId::RowHeight => "Row height",
+        OptionId::Zebra => "Alternate rows",
+        OptionId::ColumnTypes => "Column types",
+        OptionId::EnvBar => "Connection bar",
+        OptionId::PageSize
+        | OptionId::Timestamps
+        | OptionId::GroupDigits
+        | OptionId::ValueTags
+        | OptionId::AgentsOn
+        | OptionId::LogDays
+        | OptionId::AgentsNotify
+        | OptionId::TableList => label(option),
     }
 }
 
@@ -38,10 +62,15 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
+        OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
+        OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
+        OptionId::EnvBar => Some("Production always uses the full tint"),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::AgentsOn
-        | OptionId::AgentsNotify => None,
+        | OptionId::AgentsNotify
+        | OptionId::RowHeight
+        | OptionId::Zebra => None,
     }
 }
 
@@ -57,15 +86,18 @@ pub(super) fn is_on(value: OptionValue) -> bool {
         OptionValue::ValueTags(true)
             | OptionValue::AgentsOn(true)
             | OptionValue::AgentsNotify(true)
+            | OptionValue::Zebra(Some(true))
+            | OptionValue::ColumnTypes(true)
     )
 }
 
 /// The settings as the window shows them: the server's switch as it is in
 /// force, off where a change made outside the app that turned it on is
-/// held.
+/// held, and the stripes as the look draws them while they are not set.
 pub(super) fn shown(app: &App) -> Settings {
     let mut settings = app.settings.clone();
     settings.mcp_enabled = app.agents_on();
+    settings.zebra = Some(settings.zebra_in(app.look.terminal));
     settings
 }
 
@@ -139,6 +171,27 @@ pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(Said, Optio
         OptionId::AgentsNotify => vec![
             (Word("off"), OptionValue::AgentsNotify(false)),
             (Word("on"), OptionValue::AgentsNotify(true)),
+        ],
+        OptionId::RowHeight => vec![
+            (Word("compact"), OptionValue::RowHeight(RowHeight::Compact)),
+            (Word("regular"), OptionValue::RowHeight(RowHeight::Regular)),
+            (Word("roomy"), OptionValue::RowHeight(RowHeight::Roomy)),
+        ],
+        OptionId::Zebra => vec![
+            (Word("off"), OptionValue::Zebra(Some(false))),
+            (Word("on"), OptionValue::Zebra(Some(true))),
+        ],
+        OptionId::ColumnTypes => vec![
+            (Word("off"), OptionValue::ColumnTypes(false)),
+            (Word("on"), OptionValue::ColumnTypes(true)),
+        ],
+        OptionId::TableList => vec![
+            (Word("tree"), OptionValue::TableList(TableList::Tree)),
+            (Word("flat"), OptionValue::TableList(TableList::Flat)),
+        ],
+        OptionId::EnvBar => vec![
+            (Word("tint + label"), OptionValue::EnvBar(EnvBar::Tint)),
+            (Word("label only"), OptionValue::EnvBar(EnvBar::Label)),
         ],
     }
 }
@@ -352,6 +405,9 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
                     };
                     if let Some(value) = value {
                         value.set(&mut settings);
+                        // Stripes put back to the look's are drawn as the
+                        // look draws them: the next key flips those.
+                        settings.zebra = Some(settings.zebra_in(app.look.terminal));
                         actions.push(Action::SetOption(value));
                     }
                 }

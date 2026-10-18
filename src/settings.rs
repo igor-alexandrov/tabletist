@@ -268,15 +268,26 @@ pub enum OptionId {
     LogDays,
     /// Whether a new agent is told of: `mcp.notify`.
     AgentsNotify,
+    RowHeight,
+    Zebra,
+    ColumnTypes,
+    TableList,
+    EnvBar,
 }
 
 impl OptionId {
-    /// Every option, the General pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 7] = [
+    /// Every option, the General pane's, the Appearance pane's and then
+    /// the Agents pane's.
+    pub const ALL: [OptionId; 12] = [
         Self::PageSize,
         Self::Timestamps,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::RowHeight,
+        Self::Zebra,
+        Self::ColumnTypes,
+        Self::TableList,
+        Self::EnvBar,
         Self::AgentsOn,
         Self::LogDays,
         Self::AgentsNotify,
@@ -288,6 +299,22 @@ impl OptionId {
         Self::GroupDigits,
         Self::ValueTags,
     ];
+    /// The Appearance pane's, in the order it has them: its Grid
+    /// section's, then its Environment section's.
+    pub const APPEARANCE: [OptionId; 5] = [
+        Self::RowHeight,
+        Self::Zebra,
+        Self::ColumnTypes,
+        Self::TableList,
+        Self::EnvBar,
+    ];
+    pub const GRID: [OptionId; 4] = [
+        Self::RowHeight,
+        Self::Zebra,
+        Self::ColumnTypes,
+        Self::TableList,
+    ];
+    pub const ENVIRONMENT: [OptionId; 1] = [Self::EnvBar];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
 
@@ -301,6 +328,11 @@ impl OptionId {
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
+            Self::RowHeight => Key::RowHeight,
+            Self::Zebra => Key::Zebra,
+            Self::ColumnTypes => Key::ColumnTypes,
+            Self::TableList => Key::TableList,
+            Self::EnvBar => Key::EnvBar,
         }
     }
 
@@ -320,6 +352,12 @@ pub enum OptionValue {
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
+    RowHeight(RowHeight),
+    /// `None` is the look's default.
+    Zebra(Option<bool>),
+    ColumnTypes(bool),
+    TableList(TableList),
+    EnvBar(EnvBar),
 }
 
 impl OptionValue {
@@ -332,6 +370,11 @@ impl OptionValue {
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
+            Self::RowHeight(_) => OptionId::RowHeight,
+            Self::Zebra(_) => OptionId::Zebra,
+            Self::ColumnTypes(_) => OptionId::ColumnTypes,
+            Self::TableList(_) => OptionId::TableList,
+            Self::EnvBar(_) => OptionId::EnvBar,
         }
     }
 
@@ -345,6 +388,11 @@ impl OptionValue {
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
+            Self::RowHeight(height) => settings.row_height = height,
+            Self::Zebra(on) => settings.zebra = on,
+            Self::ColumnTypes(on) => settings.column_types = on,
+            Self::TableList(list) => settings.table_list = list,
+            Self::EnvBar(bar) => settings.env_bar = bar,
         }
     }
 }
@@ -595,6 +643,11 @@ impl Settings {
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
+            OptionId::RowHeight => OptionValue::RowHeight(self.row_height),
+            OptionId::Zebra => OptionValue::Zebra(self.zebra),
+            OptionId::ColumnTypes => OptionValue::ColumnTypes(self.column_types),
+            OptionId::TableList => OptionValue::TableList(self.table_list),
+            OptionId::EnvBar => OptionValue::EnvBar(self.env_bar),
         }
     }
 
@@ -644,6 +697,25 @@ impl Settings {
                 OptionValue::LogDays(next.unwrap_or(days))
             }
             OptionId::AgentsNotify => OptionValue::AgentsNotify(forward),
+            OptionId::RowHeight => {
+                let at = RowHeight::ALL
+                    .iter()
+                    .position(|choice| *choice == self.row_height)
+                    .unwrap_or(1);
+                let next = if forward {
+                    (at + 1).min(RowHeight::ALL.len() - 1)
+                } else {
+                    at.saturating_sub(1)
+                };
+                OptionValue::RowHeight(RowHeight::ALL[next])
+            }
+            OptionId::Zebra => OptionValue::Zebra(Some(forward)),
+            OptionId::ColumnTypes => OptionValue::ColumnTypes(forward),
+            // The tree is the left of the two, the tint too.
+            OptionId::TableList => OptionValue::TableList(TableList::of(forward)),
+            OptionId::EnvBar => {
+                OptionValue::EnvBar(if forward { EnvBar::Label } else { EnvBar::Tint })
+            }
         }
     }
 
@@ -660,6 +732,18 @@ impl Settings {
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
+            OptionId::RowHeight => None,
+            // Unset, it is flipped from off: the window flips the
+            // settings as it shows them, with the look's default in.
+            OptionId::Zebra => Some(OptionValue::Zebra(Some(!self.zebra.unwrap_or(false)))),
+            OptionId::ColumnTypes => Some(OptionValue::ColumnTypes(!self.column_types)),
+            OptionId::TableList => Some(OptionValue::TableList(TableList::of(
+                !self.table_list.flat(),
+            ))),
+            OptionId::EnvBar => Some(OptionValue::EnvBar(match self.env_bar {
+                EnvBar::Tint => EnvBar::Label,
+                EnvBar::Label => EnvBar::Tint,
+            })),
         }
     }
 
@@ -1599,13 +1683,26 @@ bar = \"tint\"  # tint | label
                 Key::Timestamps,
                 Key::GroupDigits,
                 Key::ValueTags,
+                Key::RowHeight,
+                Key::Zebra,
+                Key::ColumnTypes,
+                Key::TableList,
+                Key::EnvBar,
                 Key::McpEnabled,
                 Key::McpLogDays,
                 Key::McpNotify,
             ]
         );
         // Each pane has its own, and every one is on a pane.
-        let panes = [&OptionId::GENERAL[..], &OptionId::AGENTS[..]].concat();
+        let panes = [
+            &OptionId::GENERAL[..],
+            &OptionId::APPEARANCE[..],
+            &OptionId::AGENTS[..],
+        ]
+        .concat();
+        // The Appearance pane's sections hold its options, in order.
+        let sections = [&OptionId::GRID[..], &OptionId::ENVIRONMENT[..]].concat();
+        assert_eq!(sections, OptionId::APPEARANCE);
         assert_eq!(panes, OptionId::ALL);
         let defaults = Settings::default();
         for option in OptionId::ALL {
@@ -1776,5 +1873,55 @@ bar = \"tint\"  # tint | label
         let loaded = Settings::from_toml("[appearance]\nrow_height = \"compact\"\n");
         assert_eq!(loaded.invalid, Vec::<usize>::new());
         assert_eq!(loaded.settings.row_height, RowHeight::Regular);
+    }
+
+    #[test]
+    fn the_appearance_options_step_to_the_side_they_are_drawn_on() {
+        let settings = Settings::default();
+        let height = |settings: &Settings, forward| settings.stepped(OptionId::RowHeight, forward);
+        assert_eq!(
+            height(&settings, false),
+            OptionValue::RowHeight(RowHeight::Compact)
+        );
+        assert_eq!(
+            height(&settings, true),
+            OptionValue::RowHeight(RowHeight::Roomy)
+        );
+        let roomy = Settings {
+            row_height: RowHeight::Roomy,
+            ..Settings::default()
+        };
+        assert_eq!(
+            height(&roomy, true),
+            OptionValue::RowHeight(RowHeight::Roomy)
+        );
+        assert_eq!(settings.flipped(OptionId::RowHeight), None);
+        assert_eq!(
+            settings.stepped(OptionId::TableList, true),
+            OptionValue::TableList(TableList::Flat)
+        );
+        assert_eq!(
+            settings.stepped(OptionId::EnvBar, true),
+            OptionValue::EnvBar(EnvBar::Label)
+        );
+        assert_eq!(
+            settings.flipped(OptionId::EnvBar),
+            Some(OptionValue::EnvBar(EnvBar::Label))
+        );
+        assert_eq!(
+            settings.flipped(OptionId::ColumnTypes),
+            Some(OptionValue::ColumnTypes(false))
+        );
+        // Stripes the window shows on are flipped off.
+        let shown = Settings {
+            zebra: Some(true),
+            ..Settings::default()
+        };
+        assert_eq!(
+            shown.flipped(OptionId::Zebra),
+            Some(OptionValue::Zebra(Some(false)))
+        );
+        // A reset leaves them to the look.
+        assert_eq!(OptionId::Zebra.default_value(), OptionValue::Zebra(None));
     }
 }

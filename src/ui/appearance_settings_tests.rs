@@ -1,11 +1,12 @@
 //! Settings › Appearance, in both looks: what each option does to the
-//! grids and the sidebar's list.
+//! grids and the sidebar's list, and the pane that sets them with a click
+//! or a key and writes them to the file.
 
 use egui::accesskit::Role;
 
 use crate::backend::{Command, StateFile};
-use crate::model::{Action, ConnTabId, TabId};
-use crate::settings::{RowHeight, Settings, TableList};
+use crate::model::{Action, ConnTabId, Dialog, SettingsPane, TabId};
+use crate::settings::{EnvBar, OptionValue, RowHeight, Settings, TableList};
 use crate::testing::{Harness, bounds};
 use crate::theme::Look;
 
@@ -344,4 +345,197 @@ fn another_database_lists_its_tables_as_the_one_before() {
         database: "bookshop_review".into(),
     });
     assert!(harness.app.workspace(tab).unwrap().tree.flat);
+}
+
+/// The pane Settings shows, while it is open.
+fn pane(harness: &Harness) -> Option<SettingsPane> {
+    match &harness.app.dialog {
+        Some(Dialog::Settings(dialog)) => Some(dialog.pane),
+        _ => None,
+    }
+}
+
+/// How many times the settings were saved.
+fn settings_saves(harness: &Harness) -> usize {
+    harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                Command::Save {
+                    file: StateFile::Settings(_),
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+/// Settings on its Appearance pane.
+fn on_the_pane(harness: &mut Harness) {
+    harness.app.apply(Action::ShowSettings);
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(SettingsPane::Appearance));
+    harness.settle();
+}
+
+#[test]
+fn settings_lists_an_appearance_pane_after_general() {
+    for look in looks() {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        harness.app.apply(Action::ShowSettings);
+        harness.settle();
+        if look.terminal {
+            harness.press(egui::Key::L, egui::Modifiers::CTRL);
+        } else {
+            harness.click("Appearance");
+        }
+        harness.settle();
+        assert_eq!(
+            pane(&harness),
+            Some(SettingsPane::Appearance),
+            "{}",
+            look.name
+        );
+        let first = if look.terminal {
+            "Row height"
+        } else {
+            "Row density"
+        };
+        assert!(harness.has(first), "{}", look.name);
+        assert!(!harness.has("Rows per page"), "{}", look.name);
+    }
+}
+
+#[test]
+fn the_sheet_sets_each_appearance_option_with_a_click() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    on_the_pane(&mut harness);
+    // The board's words.
+    for words in [
+        "GRID",
+        "ENVIRONMENT COLOR",
+        "Second line in headers: int8, varchar, jsonb",
+        "Default for new connections; the sidebar toggle overrides it",
+        "Production always uses the full tint",
+    ] {
+        assert!(shows(&mut harness, words), "{words}");
+    }
+    let saves = settings_saves(&harness);
+    harness.click("Row density: Compact · 28");
+    harness.click("Alternate row shading");
+    harness.click("Show column types");
+    harness.click("Table list: Flat");
+    harness.click("Window header: Stripe only");
+    harness.settle();
+    let settings = &harness.app.settings;
+    assert_eq!(settings.row_height, RowHeight::Compact);
+    assert_eq!(settings.zebra, Some(true), "off on macOS until set");
+    assert!(!settings.column_types);
+    assert_eq!(settings.table_list, TableList::Flat);
+    assert_eq!(settings.env_bar, EnvBar::Label);
+    assert_eq!(settings_saves(&harness), saves + 5);
+}
+
+#[test]
+fn the_screen_sets_each_appearance_option_with_its_keys() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    on_the_pane(&mut harness);
+    for words in [
+        "grid",
+        "environment",
+        "1 · 1.5 · 2 lines",
+        "second header line",
+        "toggles",
+        "PROD always tinted",
+    ] {
+        assert!(shows(&mut harness, words), "{words}");
+    }
+    let saves = settings_saves(&harness);
+    let key = |harness: &mut Harness, key: egui::Key, text: &str| {
+        super::tests::type_key(harness, key, text);
+    };
+    // Row height: one to the left, compact.
+    key(&mut harness, egui::Key::H, "h");
+    // Alternate rows, on in the terminal until set: space turns it off.
+    key(&mut harness, egui::Key::J, "j");
+    harness.press(egui::Key::Space, egui::Modifiers::NONE);
+    // Column types off, the list flat, the bar's label alone.
+    key(&mut harness, egui::Key::J, "j");
+    harness.press(egui::Key::Space, egui::Modifiers::NONE);
+    key(&mut harness, egui::Key::J, "j");
+    key(&mut harness, egui::Key::L, "l");
+    key(&mut harness, egui::Key::J, "j");
+    key(&mut harness, egui::Key::L, "l");
+    harness.settle();
+    let settings = &harness.app.settings;
+    assert_eq!(settings.row_height, RowHeight::Compact);
+    assert_eq!(settings.zebra, Some(false));
+    assert!(!settings.column_types);
+    assert_eq!(settings.table_list, TableList::Flat);
+    assert_eq!(settings.env_bar, EnvBar::Label);
+    assert_eq!(settings_saves(&harness), saves + 5);
+    // R puts the bar back, and the stripes back to the look's.
+    harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+    for _ in 0..3 {
+        key(&mut harness, egui::Key::K, "k");
+    }
+    harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+    harness.settle();
+    assert_eq!(harness.app.settings.env_bar, EnvBar::Tint);
+    assert_eq!(harness.app.settings.zebra, None);
+}
+
+#[test]
+fn reset_to_defaults_puts_the_appearance_options_back() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    for value in [
+        OptionValue::RowHeight(RowHeight::Roomy),
+        OptionValue::Zebra(Some(true)),
+        OptionValue::ColumnTypes(false),
+        OptionValue::TableList(TableList::Flat),
+        OptionValue::EnvBar(EnvBar::Label),
+        OptionValue::PageSize(500),
+    ] {
+        harness.app.apply(Action::SetOption(value));
+    }
+    on_the_pane(&mut harness);
+    harness.app.apply(Action::ResetSettings);
+    harness.app.apply(Action::ConfirmResetSettings(true));
+    harness.settle();
+    let settings = &harness.app.settings;
+    let defaults = Settings::default();
+    assert_eq!(settings.row_height, defaults.row_height);
+    assert_eq!(settings.zebra, None);
+    assert_eq!(settings.column_types, defaults.column_types);
+    assert_eq!(settings.table_list, defaults.table_list);
+    assert_eq!(settings.env_bar, defaults.env_bar);
+    // Another pane's options are its own.
+    assert_eq!(settings.page_size, 500);
+}
+
+#[test]
+fn a_reset_and_a_toggle_in_one_frame_turn_the_look_s_stripes_off() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    on_the_pane(&mut harness);
+    super::tests::type_key(&mut harness, egui::Key::J, "j");
+    change(&mut harness, |settings| settings.zebra = Some(true));
+    // R puts them back to the look's, which shows them; Space then turns
+    // them off.
+    harness.frame(vec![
+        crate::testing::key(egui::Key::R, egui::Modifiers::SHIFT),
+        egui::Event::Text("R".into()),
+        crate::testing::key(egui::Key::Space, egui::Modifiers::NONE),
+    ]);
+    harness.settle();
+    assert_eq!(harness.app.settings.zebra, Some(false));
 }
