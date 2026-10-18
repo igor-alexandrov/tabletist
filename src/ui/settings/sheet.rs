@@ -10,10 +10,10 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    EnvBar, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, ThemeChoice, Timestamps,
-    Zone,
+    EnvBar, FontSizes, InterfaceSize, Mode, OptionId, OptionValue, RowHeight, Settings, TableList,
+    ThemeChoice, Timestamps, Zone,
 };
-use crate::theme::{Look, Palette};
+use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format::group_digits;
@@ -49,6 +49,13 @@ const HINT_GAP: f32 = 12.0;
 const MENU: f32 = 120.0;
 /// The zone's menu: as wide as the artboard's, for `System · America/…`.
 const ZONE_MENU: f32 = 220.0;
+/// The data font's menu and its size's, as wide as the artboard's. A
+/// narrow sheet takes from the font's, down to the least it has.
+const FONT_MENU: f32 = 220.0;
+const FONT_MENU_MIN: f32 = 100.0;
+const SIZE_MENU: f32 = 90.0;
+/// Between the data font's menu and its size's.
+const MENU_GAP: f32 = 12.0;
 /// How tall the zone menu's list of zones is at most: it scrolls.
 const ZONE_LIST: f32 = 240.0;
 /// A segment's height, and the switch's.
@@ -171,6 +178,7 @@ pub(super) fn show(
                     ("Appearance", None),
                     &[
                         ("Theme", &OptionId::THEME),
+                        ("Text", &OptionId::TEXT),
                         ("Grid", &OptionId::GRID),
                         ("Environment color", &OptionId::ENVIRONMENT),
                     ],
@@ -550,8 +558,17 @@ pub(super) fn row(
     )
     .wrap(column)
     .layout(ui.ctx());
-    let print = small_print(option).map(|print| {
-        Text::one(look, TextRole::Secondary, &skin.say(print), palette.dim)
+    // A data font that is not bundled is said in place of the small
+    // print, where the row has the room for it.
+    let print = match not_bundled(option, settings, look) {
+        Some(missing) => {
+            let said = skin.say(super::FONT_NOT_BUNDLED).replace("{name}", missing);
+            Some((said, palette.warning))
+        }
+        None => small_print(option).map(|print| (skin.say(print), palette.dim)),
+    };
+    let print = print.map(|(print, color)| {
+        Text::one(look, TextRole::Secondary, &print, color)
             .wrap(column)
             .layout(ui.ctx())
     });
@@ -605,6 +622,15 @@ pub(super) fn row(
     hint(ui, pos2(left, middle), rect.right(), option, settings, skin);
 }
 
+/// The data font the settings name, on its row, where it is no face the
+/// look has: the default is drawn in its place.
+fn not_bundled<'a>(option: OptionId, settings: &'a Settings, look: &Look) -> Option<&'a str> {
+    let plex = look.faces.typeface == Typeface::Plex;
+    (option == OptionId::Font && plex)
+        .then(|| DataFace::of(settings.font.as_deref()).err())
+        .flatten()
+}
+
 /// Whether the keyboard came in this frame to a control in `place`, on the
 /// layer `ui` draws on: the open menu's entries hang over the rows under
 /// it, on a layer of their own.
@@ -625,6 +651,8 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
+        OptionId::InterfaceSize => SEGMENT + 4.0,
+        OptionId::Font | OptionId::FontSize => look.control_height,
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
@@ -726,6 +754,40 @@ fn control(
                 )));
             }
         }
+        OptionId::InterfaceSize => {
+            // Each with the size of its body text, as the board writes
+            // them.
+            let words = InterfaceSize::ALL.map(|size| {
+                let word = match size {
+                    InterfaceSize::Small => "Small",
+                    InterfaceSize::Default => "Default",
+                    InterfaceSize::Large => "Large",
+                };
+                format!("{} · {}", skin.say(word), size.points())
+            });
+            let selected = InterfaceSize::ALL
+                .iter()
+                .position(|size| *size == settings.interface_size)
+                .unwrap_or(1);
+            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+                actions.push(Action::SetOption(OptionValue::InterfaceSize(
+                    InterfaceSize::ALL[picked],
+                )));
+            }
+        }
+        // The face's menu where the look draws data in a face of its own
+        // (macOS), then the size's. Windows draws its data in Inter, the
+        // interface's face: the size's alone.
+        OptionId::Font => {
+            if look.faces.typeface == Typeface::Plex {
+                let width =
+                    (ui.available_width() - MENU_GAP - SIZE_MENU).clamp(FONT_MENU_MIN, FONT_MENU);
+                font_menu(ui, (&name, width), settings, skin, actions);
+                ui.add_space(MENU_GAP);
+            }
+            size_menu(ui, settings, skin, actions);
+        }
+        OptionId::FontSize => size_menu(ui, settings, skin, actions),
         OptionId::TableList => {
             let words = [skin.say("Grouped by prefix"), skin.say("Flat")];
             let selected = usize::from(settings.table_list.flat());
@@ -782,6 +844,68 @@ fn control(
         // The Theme section is tiles, drawn on their own: no row's.
         OptionId::Theme => {}
     }
+}
+
+/// The data font's menu: the bundled faces. A name that is none of them
+/// is drawn as the default, which the row's hint says.
+fn font_menu(
+    ui: &mut Ui,
+    (name, width): (&str, f32),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let drawn = DataFace::of(settings.font.as_deref()).unwrap_or_default();
+    let dropdown = menu::Dropdown::new("data-font", drawn.name(), width);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for face in DataFace::ALL {
+            let entry_name = format!("{name} {}", face.name());
+            let entry = menu::Item::choice(face.name(), face == drawn)
+                .name(&entry_name)
+                .show(ui, look, palette);
+            if entry.clicked() {
+                // The default is no value: the file leaves it out.
+                let font = (face != DataFace::default()).then(|| face.name().to_owned());
+                actions.push(Action::SetOption(OptionValue::Font(font)));
+                ui.close();
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(drawn.name().to_owned());
+        info
+    });
+}
+
+/// The data's size: a menu of every size macOS and Windows draw, by half
+/// points.
+fn size_menu(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+    let Skin { look, palette, .. } = *skin;
+    let name = skin.say(label(OptionId::FontSize));
+    let points = |size: crate::settings::FontSize| format!("{} pt", size.text());
+    let drawn = settings.font_size_in(false);
+    let shown = points(drawn);
+    let dropdown = menu::Dropdown::new("data-font-size", &shown, SIZE_MENU);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for size in FontSizes::of(false).all() {
+            let text = points(size);
+            let entry_name = format!("{name} {text}");
+            let entry = menu::Item::choice(&text, size == drawn)
+                .name(&entry_name)
+                .show(ui, look, palette);
+            if entry.clicked() {
+                actions.push(Action::SetOption(OptionValue::FontSize(Some(size))));
+                ui.close();
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, &name);
+        info.current_text_value = Some(shown.clone());
+        info
+    });
 }
 
 /// The days the log's menu offers: the list, with the days in use in their
@@ -921,6 +1045,9 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
+        | OptionId::InterfaceSize
+        | OptionId::Font
+        | OptionId::FontSize
         | OptionId::RowHeight
         | OptionId::Zebra
         | OptionId::ColumnTypes

@@ -61,6 +61,30 @@ pub(super) struct Skin<'a> {
     pub(super) named: Option<&'a str>,
     /// What the theme's rows say of the desktop.
     pub(super) desktop: Desktop<'a>,
+    /// What the font's row says of the font drawn.
+    pub(super) font: FontShown<'a>,
+}
+
+/// What fontconfig gave for the font the settings name, which the font's
+/// row says beside its value.
+#[derive(Clone, Copy)]
+pub(super) struct FontShown<'a> {
+    /// The family drawn, as fontconfig names it: `None` where nothing was
+    /// read from it (the bundled face is drawn then).
+    pub(super) family: Option<&'a str>,
+    /// The font the settings name, where fontconfig does not have it: the
+    /// system's monospace is drawn in its place.
+    pub(super) missing: Option<&'a str>,
+}
+
+impl<'a> FontShown<'a> {
+    pub(super) fn of(app: &'a App) -> Self {
+        let read = &app.desktop_font;
+        Self {
+            family: read.family.as_deref(),
+            missing: read.asked.as_deref().filter(|_| read.missing),
+        }
+    }
 }
 
 /// What the Appearance pane's theme rows say beside their values: Omarchy's
@@ -129,6 +153,7 @@ pub(super) fn show(
         system: app.system_zone.iana_name(),
         named: app.named_zone.as_deref(),
         desktop: Desktop::of(app),
+        font: FontShown::of(app),
     };
     let screen = ctx.content_rect();
     let id = egui::Id::new("settings");
@@ -513,6 +538,49 @@ fn theme_hint(skin: &Skin) -> Text {
     }
 }
 
+/// What the font's row says beside its value: the family fontconfig drew,
+/// or that the font named is not there.
+fn font_hint(skin: &Skin) -> Text {
+    let Skin {
+        look,
+        palette,
+        font,
+        ..
+    } = *skin;
+    let role = TextRole::OBody;
+    let family = font.family.map(|family| look.label(family));
+    match (font.missing, family) {
+        (None, Some(family)) => {
+            let said = skin.say("now: {family}, from fontconfig");
+            Text::one(look, role, &said.replace("{family}", &family), palette.dim)
+        }
+        (None, None) => Text::one(
+            look,
+            role,
+            &skin.say("now: jetbrains mono, bundled"),
+            palette.dim,
+        ),
+        // Shorter: the row has the room for what was not found first.
+        (Some(name), family) => {
+            let drawn = family.unwrap_or_else(|| skin.say("jetbrains mono, bundled"));
+            let said = skin.say("“{name}” not found · now: {family}");
+            let said = said.replace("{name}", name).replace("{family}", &drawn);
+            Text::one(look, role, &said, palette.warning)
+        }
+    }
+}
+
+/// The font's value: its name as the settings write it, or the system's
+/// monospace.
+fn font_value(settings: &Settings, skin: &Skin) -> String {
+    match settings.font.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() && !name.eq_ignore_ascii_case("monospace") => {
+            name.to_owned()
+        }
+        _ => skin.say("system monospace"),
+    }
+}
+
 /// The Agents pane: the server's switch and its status, how to connect an
 /// agent, where access is set, and the log. Its rows are
 /// [`SettingsPane::rows`]'s, in order; the command, the line for other
@@ -853,12 +921,14 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
     let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
     match option {
         // Between its chevrons, as the cursor's row has it.
-        OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
+        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::FontSize => {
             width(&format!("‹ {} ›", stepped_text(option, settings, skin)))
         }
+        OptionId::Font => width(&font_value(settings, skin)),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::Theme
+        | OptionId::InterfaceSize
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar => {
@@ -891,6 +961,7 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
             }
             (zone, system) => super::zone_text(skin.locale, zone, system),
         }),
+        OptionId::FontSize => settings.font_size_in(true).text(),
         _ => settings.page_size.to_string(),
     }
 }
@@ -1003,7 +1074,7 @@ fn option_row(
     if let Some(button) = button
         && matches!(
             option,
-            OptionId::PageSize | OptionId::LogDays | OptionId::Tz
+            OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::FontSize
         )
     {
         let name = gettext(locale, terminal_label(option));
@@ -1025,12 +1096,23 @@ fn option_row(
         on_cursor,
     };
     match option {
-        OptionId::PageSize | OptionId::LogDays | OptionId::Tz => {
+        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::FontSize => {
             stepper(ui, cell, option, settings, skin, actions)
+        }
+        // Nothing to step to: a name is set in the file.
+        OptionId::Font => {
+            let value = Text::one(
+                skin.look,
+                TextRole::OBody,
+                &font_value(settings, skin),
+                skin.palette.text,
+            );
+            widgets::paint_text(ui, cell.left, y, value);
         }
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::Theme
+        | OptionId::InterfaceSize
         | OptionId::RowHeight
         | OptionId::TableList
         | OptionId::EnvBar => {
@@ -1201,6 +1283,16 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             .add(role, &format!(" {}", skin.say("shows it")), palette.dim),
         OptionId::AgentsNotify => dim(&skin.say("a desktop notification")),
         OptionId::Theme => theme_hint(skin),
+        // macOS's and Windows's: no row of this look's.
+        OptionId::InterfaceSize => Text::new(look),
+        OptionId::Font => font_hint(skin),
+        // The keys that change it, from the keymap, wherever the keyboard
+        // is.
+        OptionId::FontSize => Text::new(look)
+            .add(role, &key(ui, look, Command::LargerText), palette.accent)
+            .add(role, " / ", palette.dim)
+            .add(role, &key(ui, look, Command::SmallerText), palette.accent)
+            .add(role, &format!(" {}", skin.say("anywhere")), palette.dim),
         OptionId::RowHeight => dim(&skin.say("1 · 1.5 · 2 lines")),
         OptionId::Zebra => Text::new(look),
         OptionId::ColumnTypes => dim(&skin.say("second header line")),

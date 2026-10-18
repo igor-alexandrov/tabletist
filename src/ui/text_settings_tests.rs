@@ -4,10 +4,11 @@
 
 use egui::{Key, Modifiers};
 
-use super::appearance_settings_tests::{on_the_pane, settings_saves};
-use crate::settings::{FontSize, InterfaceSize};
+use super::appearance_settings_tests::{on_the_pane, settings_saves, shows};
+use crate::model::Action;
+use crate::settings::{FontSize, InterfaceSize, OptionValue};
 use crate::testing::Harness;
-use crate::theme::Look;
+use crate::theme::{DataFace, Look};
 
 /// One pass of the app's logic, as the window runs it between frames.
 fn logic(harness: &mut Harness) {
@@ -123,6 +124,12 @@ fn the_mac_keys_step_and_reset_the_data_size_and_write_it() {
     on_the_pane(&mut harness);
     harness.press(Key::Equals, Modifiers::COMMAND);
     assert_eq!(harness.app.settings.font_size, FontSize::of(13.0));
+    assert!(harness.has("Data font size"));
+    let tree = harness.settle();
+    let menu = crate::testing::node(&tree, "Data font size", egui::accesskit::Role::ComboBox)
+        .and_then(|id| tree.nodes.iter().find(|(node, _)| *node == id))
+        .map(|(_, node)| node.value().map(str::to_owned));
+    assert_eq!(menu, Some(Some("13 pt".to_owned())));
 }
 
 #[test]
@@ -144,4 +151,123 @@ fn the_terminal_keys_step_the_size_anywhere_and_stop_at_its_ends() {
     // No key resets it here: `R` on its row does.
     harness.press(Key::Num0, Modifiers::CTRL);
     assert_eq!(harness.app.settings.font_size, FontSize::of(9.0));
+}
+
+#[test]
+fn the_sheet_sets_the_interface_size_and_the_data_font() {
+    let mut harness = sheet(Look::macos());
+    on_the_pane(&mut harness);
+    // The board's words.
+    for words in [
+        "TEXT",
+        "Sidebar, tabs, buttons, inspector labels",
+        "Grid cells, SQL editor, JSON",
+    ] {
+        assert!(shows(&mut harness, words), "{words}");
+    }
+    for size in ["Small · 12", "Default · 13", "Large · 14"] {
+        assert!(harness.has(&format!("Interface size: {size}")), "{size}");
+    }
+    let saves = settings_saves(&harness);
+    harness.click("Interface size: Large · 14");
+    harness.click("Data font");
+    harness.click("Data font JetBrains Mono");
+    harness.click("Data font size");
+    harness.click("Data font size 14 pt");
+    harness.settle();
+    let settings = &harness.app.settings;
+    assert_eq!(settings.interface_size, InterfaceSize::Large);
+    assert_eq!(settings.font.as_deref(), Some("JetBrains Mono"));
+    assert_eq!(settings.font_size, FontSize::of(14.0));
+    assert_eq!(settings_saves(&harness), saves + 3);
+    for line in [
+        "interface_size = \"large\"",
+        "font = \"JetBrains Mono\"",
+        "font_size = 14\n",
+    ] {
+        assert!(file(&harness).contains(line), "{line}");
+    }
+    // Every role drawn from here on has them.
+    let faces = harness.app.look.faces;
+    assert_eq!(faces.interface, InterfaceSize::Large);
+    assert_eq!(faces.data, DataFace::JetBrainsMono);
+    assert_eq!(faces.data_size, FontSize::halves(28));
+    // The default face is no value: the file leaves it out.
+    harness.click("Data font");
+    harness.click("Data font IBM Plex Mono");
+    harness.settle();
+    assert_eq!(harness.app.settings.font, None);
+    assert!(!file(&harness).contains("font = "));
+}
+
+#[test]
+fn windows_sizes_its_data_and_has_no_face_to_pick() {
+    let mut harness = sheet(Look::standard());
+    on_the_pane(&mut harness);
+    assert!(harness.has("Interface size: Default · 13"));
+    let tree = harness.settle();
+    let menu = |name| crate::testing::node(&tree, name, egui::accesskit::Role::ComboBox);
+    assert!(menu("Data font size").is_some());
+    assert!(menu("Data font").is_none(), "its data is drawn in Inter");
+    harness.click("Data font size");
+    harness.click("Data font size 11 pt");
+    harness.settle();
+    assert_eq!(harness.app.settings.font_size, FontSize::of(11.0));
+}
+
+#[test]
+fn a_data_font_that_is_not_bundled_is_drawn_as_the_default_and_said() {
+    let mut harness = sheet(Look::macos());
+    harness.app.change_settings(|settings| {
+        settings.font = Some("Fira Code".into());
+    });
+    assert_eq!(harness.app.look.faces.data, DataFace::PlexMono);
+    on_the_pane(&mut harness);
+    assert!(shows(
+        &mut harness,
+        "“Fira Code” is not bundled: IBM Plex Mono is used"
+    ));
+    assert!(!shows(&mut harness, "Grid cells, SQL editor, JSON"));
+    // The menu shows the face drawn.
+    let tree = harness.settle();
+    let menu = crate::testing::node(&tree, "Data font", egui::accesskit::Role::ComboBox)
+        .and_then(|id| tree.nodes.iter().find(|(node, _)| *node == id))
+        .map(|(_, node)| node.value().map(str::to_owned));
+    assert_eq!(menu, Some(Some("IBM Plex Mono".to_owned())));
+}
+
+#[test]
+fn the_data_font_row_fits_the_smallest_sheet() {
+    let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+    harness.set_look(Look::macos());
+    on_the_pane(&mut harness);
+    let tree = harness.settle();
+    let menu = |name| crate::testing::bounds(&tree, name, egui::accesskit::Role::ComboBox);
+    let (font, size) = (menu("Data font").unwrap(), menu("Data font size").unwrap());
+    // The sheet ends 40 in from the window's edge, the font's menu gives
+    // way.
+    assert!(size.right() <= 680.0, "{size:?}");
+    assert!(
+        font.width() < 220.0 && font.right() < size.left(),
+        "{font:?}"
+    );
+}
+
+#[test]
+fn reset_to_defaults_puts_the_text_back() {
+    let mut harness = sheet(Look::macos());
+    for value in [
+        OptionValue::InterfaceSize(InterfaceSize::Small),
+        OptionValue::Font(Some("JetBrains Mono".into())),
+        OptionValue::FontSize(FontSize::of(15.0)),
+    ] {
+        harness.app.apply(Action::SetOption(value));
+    }
+    on_the_pane(&mut harness);
+    harness.app.apply(Action::ResetSettings);
+    harness.app.apply(Action::ConfirmResetSettings(true));
+    let settings = &harness.app.settings;
+    assert_eq!(settings.interface_size, InterfaceSize::Default);
+    assert_eq!(settings.font, None);
+    assert_eq!(settings.font_size, None);
 }

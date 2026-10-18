@@ -17,8 +17,8 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    EnvBar, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, Theme, ThemeChoice,
-    Timestamps, Zone,
+    EnvBar, InterfaceSize, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, Theme,
+    ThemeChoice, Timestamps, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -36,6 +36,9 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
         OptionId::Theme => "Theme",
+        OptionId::InterfaceSize => "Interface size",
+        OptionId::Font => "Data font",
+        OptionId::FontSize => "Data font size",
         OptionId::RowHeight => "Row density",
         OptionId::Zebra => "Alternate row shading",
         OptionId::ColumnTypes => "Show column types",
@@ -57,6 +60,9 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         OptionId::Zebra => "Alternate rows",
         OptionId::ColumnTypes => "Column types",
         OptionId::EnvBar => "Connection bar",
+        // One font and one size for everything.
+        OptionId::Font => "Font",
+        OptionId::FontSize => "Size",
         OptionId::PageSize
         | OptionId::Timestamps
         | OptionId::GroupDigits
@@ -65,6 +71,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::LogDays
         | OptionId::AgentsNotify
         | OptionId::Theme
+        | OptionId::InterfaceSize
         | OptionId::TableList => label(option),
     }
 }
@@ -80,16 +87,23 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
         OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
         OptionId::EnvBar => Some("Production always uses the full tint"),
+        OptionId::InterfaceSize => Some("Sidebar, tabs, buttons, inspector labels"),
+        OptionId::Font => Some("Grid cells, SQL editor, JSON"),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
         | OptionId::Theme
+        | OptionId::FontSize
         | OptionId::RowHeight
         | OptionId::Zebra => None,
     }
 }
+
+/// What is said of a data font the settings name that is not bundled,
+/// `{name}` for its name: the default is drawn instead. English.
+pub const FONT_NOT_BUNDLED: &str = "“{name}” is not bundled: IBM Plex Mono is used";
 
 /// What is said of a pinned theme that is nowhere to be found, `{name}`
 /// for its name: what is drawn instead. English.
@@ -138,14 +152,15 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
 /// The settings as the window shows them: the server's switch as it is in
 /// force, off where a change made outside the app that turned it on is
 /// held, the grouping of numbers as the look has it where it is not set,
-/// the stripes as the look draws them while they are not set, and the
-/// theme as the look reads it: a value of the other looks' is the desktop
-/// followed.
+/// the stripes and the font's size as the look draws them while they are
+/// not set, and the theme as the look reads it: a value of the other
+/// looks' is the desktop followed.
 pub(super) fn shown(app: &App) -> Settings {
     let mut settings = app.settings.clone();
     settings.mcp_enabled = app.agents_on();
     settings.group_digits = Some(app.settings.grouped(app.layout()));
     settings.zebra = Some(settings.zebra_in(app.look.terminal));
+    settings.font_size = Some(settings.font_size_in(app.look.terminal));
     settings.theme = match (app.look.terminal, settings.theme.mode()) {
         (true, _) if settings.theme.pin().is_some() => settings.theme,
         (true, _) => Theme::Omarchy,
@@ -264,6 +279,26 @@ pub(super) fn choices(
                 OptionValue::Theme(ThemeChoice::Omarchy),
             ),
             (Word("pin"), OptionValue::Theme(ThemeChoice::Pinned)),
+        ],
+        OptionId::InterfaceSize => vec![
+            (
+                Word("small"),
+                OptionValue::InterfaceSize(InterfaceSize::Small),
+            ),
+            (
+                Word("default"),
+                OptionValue::InterfaceSize(InterfaceSize::Default),
+            ),
+            (
+                Word("large"),
+                OptionValue::InterfaceSize(InterfaceSize::Large),
+            ),
+        ],
+        // A name is set in the file: the window offers none.
+        OptionId::Font => Vec::new(),
+        OptionId::FontSize => vec![
+            (Word("smaller"), settings.stepped(option, false)),
+            (Word("larger"), settings.stepped(option, true)),
         ],
         OptionId::RowHeight => vec![
             (Word("compact"), OptionValue::RowHeight(RowHeight::Compact)),

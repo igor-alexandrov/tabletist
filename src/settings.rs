@@ -647,6 +647,12 @@ pub enum OptionId {
     /// Whether a new agent is told of: `mcp.notify`.
     AgentsNotify,
     Theme,
+    /// macOS's and Windows's Interface size: `appearance.interface_size`.
+    InterfaceSize,
+    /// The data font, or the terminal look's font: `appearance.font`.
+    Font,
+    /// The size that goes with it: `appearance.font_size`.
+    FontSize,
     RowHeight,
     Zebra,
     ColumnTypes,
@@ -657,7 +663,7 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 16] = [
+    pub const ALL: [OptionId; 19] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -666,6 +672,9 @@ impl OptionId {
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
         Self::Theme,
+        Self::InterfaceSize,
+        Self::Font,
+        Self::FontSize,
         Self::RowHeight,
         Self::Zebra,
         Self::ColumnTypes,
@@ -695,9 +704,14 @@ impl OptionId {
     ];
     pub const SAFETY: [OptionId; 2] = [Self::ProductionReadOnly, Self::ConfirmCloseEdits];
     /// The Appearance pane's, in the order it has them: its Theme
-    /// section's, its Grid section's, then its Environment section's.
-    pub const APPEARANCE: [OptionId; 6] = [
+    /// section's, its Text section's, its Grid section's, then its
+    /// Environment section's. Each look shows the Text section's its own
+    /// way ([`OptionId::TEXT`], [`OptionId::TERMINAL_TEXT`]).
+    pub const APPEARANCE: [OptionId; 9] = [
         Self::Theme,
+        Self::InterfaceSize,
+        Self::Font,
+        Self::FontSize,
         Self::RowHeight,
         Self::Zebra,
         Self::ColumnTypes,
@@ -705,6 +719,11 @@ impl OptionId {
         Self::EnvBar,
     ];
     pub const THEME: [OptionId; 1] = [Self::Theme];
+    /// macOS's and Windows's Text section: the interface's size, and the
+    /// data font's row, which has the size's menu beside the font's.
+    pub const TEXT: [OptionId; 2] = [Self::InterfaceSize, Self::Font];
+    /// The terminal look's: one font and one size for everything.
+    pub const TERMINAL_TEXT: [OptionId; 2] = [Self::Font, Self::FontSize];
     pub const GRID: [OptionId; 4] = [
         Self::RowHeight,
         Self::Zebra,
@@ -729,6 +748,9 @@ impl OptionId {
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
             Self::Theme => Key::Theme,
+            Self::InterfaceSize => Key::InterfaceSize,
+            Self::Font => Key::Font,
+            Self::FontSize => Key::FontSize,
             Self::RowHeight => Key::RowHeight,
             Self::Zebra => Key::Zebra,
             Self::ColumnTypes => Key::ColumnTypes,
@@ -758,6 +780,11 @@ pub enum OptionValue {
     LogDays(u32),
     AgentsNotify(bool),
     Theme(ThemeChoice),
+    InterfaceSize(InterfaceSize),
+    /// `None` is the look's own font.
+    Font(Option<String>),
+    /// `None` is the look's own size.
+    FontSize(Option<FontSize>),
     RowHeight(RowHeight),
     /// `None` is the look's default.
     Zebra(Option<bool>),
@@ -780,6 +807,9 @@ impl OptionValue {
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
             Self::Theme(_) => OptionId::Theme,
+            Self::InterfaceSize(_) => OptionId::InterfaceSize,
+            Self::Font(_) => OptionId::Font,
+            Self::FontSize(_) => OptionId::FontSize,
             Self::RowHeight(_) => OptionId::RowHeight,
             Self::Zebra(_) => OptionId::Zebra,
             Self::ColumnTypes(_) => OptionId::ColumnTypes,
@@ -813,6 +843,9 @@ impl OptionValue {
                     ThemeChoice::Pinned => return,
                 }
             }
+            Self::InterfaceSize(size) => settings.interface_size = size,
+            Self::Font(font) => settings.font = font,
+            Self::FontSize(size) => settings.font_size = size,
             Self::RowHeight(height) => settings.row_height = height,
             Self::Zebra(on) => settings.zebra = on,
             Self::ColumnTypes(on) => settings.column_types = on,
@@ -1306,6 +1339,9 @@ impl Settings {
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
             OptionId::Theme => OptionValue::Theme(self.theme.choice()),
+            OptionId::InterfaceSize => OptionValue::InterfaceSize(self.interface_size),
+            OptionId::Font => OptionValue::Font(self.font.clone()),
+            OptionId::FontSize => OptionValue::FontSize(self.font_size),
             OptionId::RowHeight => OptionValue::RowHeight(self.row_height),
             OptionId::Zebra => OptionValue::Zebra(self.zebra),
             OptionId::ColumnTypes => OptionValue::ColumnTypes(self.column_types),
@@ -1384,6 +1420,25 @@ impl Settings {
             } else {
                 ThemeChoice::Omarchy
             }),
+            OptionId::InterfaceSize => {
+                let at = InterfaceSize::ALL
+                    .iter()
+                    .position(|choice| *choice == self.interface_size)
+                    .unwrap_or(1);
+                let next = if forward {
+                    (at + 1).min(InterfaceSize::ALL.len() - 1)
+                } else {
+                    at.saturating_sub(1)
+                };
+                OptionValue::InterfaceSize(InterfaceSize::ALL[next])
+            }
+            // A name is set in the file: the window has none to step to.
+            OptionId::Font => OptionValue::Font(self.font.clone()),
+            // The terminal look's steps: the window steps the size there.
+            // macOS and Windows have a menu of theirs.
+            OptionId::FontSize => {
+                OptionValue::FontSize(Some(self.stepped_font_size(true, forward)))
+            }
             OptionId::RowHeight => {
                 let at = RowHeight::ALL
                     .iter()
@@ -1451,6 +1506,7 @@ impl Settings {
                 Some(_) => ThemeChoice::Omarchy,
                 None => ThemeChoice::Pinned,
             })),
+            OptionId::InterfaceSize | OptionId::Font | OptionId::FontSize => None,
             OptionId::RowHeight => None,
             // Unset, it is flipped from off: the window flips the
             // settings as it shows them, with the look's default in.
@@ -3164,6 +3220,9 @@ bar = \"label\"  # tint | label
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
                 Key::Theme,
+                Key::InterfaceSize,
+                Key::Font,
+                Key::FontSize,
                 Key::RowHeight,
                 Key::Zebra,
                 Key::ColumnTypes,
@@ -3185,13 +3244,22 @@ bar = \"label\"  # tint | label
         // options, in order.
         let sections = [&OptionId::DATA[..], &OptionId::SAFETY[..]].concat();
         assert_eq!(sections, OptionId::GENERAL);
+        // The sheet's Text section has the size beside the font, on its
+        // row; the terminal look's has a row for each, and no interface
+        // size.
         let sections = [
             &OptionId::THEME[..],
+            &OptionId::TEXT[..],
+            &[OptionId::FontSize],
             &OptionId::GRID[..],
             &OptionId::ENVIRONMENT[..],
         ]
         .concat();
         assert_eq!(sections, OptionId::APPEARANCE);
+        assert_eq!(
+            OptionId::TERMINAL_TEXT,
+            [OptionId::Font, OptionId::FontSize]
+        );
         assert_eq!(panes, OptionId::ALL);
         let defaults = Settings::default();
         for option in OptionId::ALL {
@@ -3590,5 +3658,36 @@ bar = \"label\"  # tint | label
         assert_eq!(step(13.0, true, true), "14");
         assert_eq!(step(24.0, true, true), "24");
         assert_eq!(step(9.0, true, false), "9");
+        // The window's steps are the terminal look's.
+        let settings = Settings::default();
+        assert_eq!(
+            settings.stepped(OptionId::FontSize, true),
+            OptionValue::FontSize(FontSize::of(14.0))
+        );
+    }
+
+    #[test]
+    fn the_interface_size_steps_through_its_three() {
+        let step = |size: InterfaceSize, forward: bool| {
+            let settings = Settings {
+                interface_size: size,
+                ..Settings::default()
+            };
+            settings.stepped(OptionId::InterfaceSize, forward)
+        };
+        assert_eq!(
+            step(InterfaceSize::Default, true),
+            OptionValue::InterfaceSize(InterfaceSize::Large)
+        );
+        assert_eq!(
+            step(InterfaceSize::Large, true),
+            OptionValue::InterfaceSize(InterfaceSize::Large)
+        );
+        assert_eq!(
+            step(InterfaceSize::Small, false),
+            OptionValue::InterfaceSize(InterfaceSize::Small)
+        );
+        let points = InterfaceSize::ALL.map(InterfaceSize::points);
+        assert_eq!(points, [12.0, 13.0, 14.0]);
     }
 }
