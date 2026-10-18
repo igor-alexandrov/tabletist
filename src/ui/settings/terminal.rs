@@ -18,7 +18,9 @@ use crate::ui::focus::{self, Ring};
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::{Said, choices, file_pane, label, opened, sample_timestamp, terminal_label};
+use super::{
+    Said, choices, file_pane, group_starting, label, opened, sample_timestamp, terminal_label,
+};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -304,10 +306,9 @@ fn heading(ui: &mut Ui, text: &'static str, top: f32, skin: &Skin) {
     );
 }
 
-/// The General pane's options, one to a row, under the heading of their
-/// group.
+/// The General pane's options, one to a row, under the headings of their
+/// groups.
 fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &mut Vec<Action>) {
-    heading(ui, "Data", 8.0, skin);
     let room = ui.available_width() - 2.0 * ROW_SIDE;
     let columns = columns(
         ui,
@@ -316,6 +317,10 @@ fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &
         skin,
     );
     for (index, option) in OptionId::GENERAL.into_iter().enumerate() {
+        if let Some(text) = group_starting(option) {
+            // The pane's first group stands 8 under its top.
+            heading(ui, text, if index == 0 { 8.0 } else { 0.0 }, skin);
+        }
         option_row(
             ui,
             (index, option),
@@ -677,7 +682,10 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
             let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
             segments.sum::<f32>() + between
         }
-        OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => width("[x]"),
+        OptionId::ValueTags
+        | OptionId::ProductionReadOnly
+        | OptionId::AgentsOn
+        | OptionId::AgentsNotify => width("[x]"),
     }
 }
 
@@ -835,7 +843,10 @@ fn option_row(
         OptionId::Timestamps | OptionId::GroupDigits => {
             segments(ui, cell, option, settings, skin, actions);
         }
-        OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => {
+        OptionId::ValueTags
+        | OptionId::ProductionReadOnly
+        | OptionId::AgentsOn
+        | OptionId::AgentsNotify => {
             check(ui, cell, option, settings, skin, actions);
         }
     }
@@ -978,6 +989,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .space(role, "  ")
                 .add(role, "ebook", second)
         }
+        OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),
         OptionId::AgentsOn => dim(&skin.say("while tabletist is open")),
         // The key that shows the log, from this row, where there is a
         // window to show it in.

@@ -112,6 +112,10 @@ pub struct Settings {
     pub group_digits: Option<bool>,
     /// Enum, CHECK and boolean values drawn as coloured tags.
     pub value_tags: bool,
+    /// Where a new connection to production starts its "Open read-only"
+    /// switch, which it is saved with. A saved connection whose switch was
+    /// never set keeps the built-in rule: production is read-only.
+    pub production_read_only: bool,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
     pub show_system_schemas: bool,
     /// A palette file name in the themes directory. `None` follows the
@@ -140,6 +144,7 @@ pub enum Key {
     Tz,
     GroupDigits,
     ValueTags,
+    ProductionReadOnly,
     ShowSystemSchemas,
     SqlLimit,
     SqlTimeoutSecs,
@@ -151,12 +156,13 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 12] = [
+    pub const ALL: [Key; 13] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::ProductionReadOnly,
         Self::ShowSystemSchemas,
         Self::SqlLimit,
         Self::SqlTimeoutSecs,
@@ -174,6 +180,7 @@ impl Key {
             Self::Tz => ("data", "tz"),
             Self::GroupDigits => ("data", "group_digits"),
             Self::ValueTags => ("data", "value_tags"),
+            Self::ProductionReadOnly => ("safety", "production_read_only"),
             Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
             Self::SqlLimit => ("editor", "sql_limit"),
             Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
@@ -205,6 +212,9 @@ pub enum OptionId {
     Tz,
     GroupDigits,
     ValueTags,
+    /// Where a new production connection's read-only switch starts:
+    /// `safety.production_read_only`.
+    ProductionReadOnly,
     /// Whether agents can reach the app: `mcp.enabled`.
     AgentsOn,
     /// How long the log of agents' calls keeps one: `mcp.log_days`.
@@ -215,23 +225,25 @@ pub enum OptionId {
 
 impl OptionId {
     /// Every option, the General pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 8] = [
+    pub const ALL: [OptionId; 9] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::ProductionReadOnly,
         Self::AgentsOn,
         Self::LogDays,
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 5] = [
+    pub const GENERAL: [OptionId; 6] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::ProductionReadOnly,
     ];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
@@ -244,6 +256,7 @@ impl OptionId {
             Self::Tz => Key::Tz,
             Self::GroupDigits => Key::GroupDigits,
             Self::ValueTags => Key::ValueTags,
+            Self::ProductionReadOnly => Key::ProductionReadOnly,
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
@@ -265,6 +278,7 @@ pub enum OptionValue {
     /// `None` is the look's default.
     GroupDigits(Option<bool>),
     ValueTags(bool),
+    ProductionReadOnly(bool),
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
@@ -278,6 +292,7 @@ impl OptionValue {
             Self::Tz(_) => OptionId::Tz,
             Self::GroupDigits(_) => OptionId::GroupDigits,
             Self::ValueTags(_) => OptionId::ValueTags,
+            Self::ProductionReadOnly(_) => OptionId::ProductionReadOnly,
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
@@ -292,6 +307,7 @@ impl OptionValue {
             Self::Tz(zone) => settings.tz = zone,
             Self::GroupDigits(on) => settings.group_digits = on,
             Self::ValueTags(on) => settings.value_tags = on,
+            Self::ProductionReadOnly(on) => settings.production_read_only = on,
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
@@ -746,6 +762,9 @@ impl Settings {
             OptionId::Tz => OptionValue::Tz(self.tz.clone()),
             OptionId::GroupDigits => OptionValue::GroupDigits(self.group_digits),
             OptionId::ValueTags => OptionValue::ValueTags(self.value_tags),
+            OptionId::ProductionReadOnly => {
+                OptionValue::ProductionReadOnly(self.production_read_only)
+            }
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
@@ -781,6 +800,7 @@ impl Settings {
             // Grouped is the left of the two.
             OptionId::GroupDigits => OptionValue::GroupDigits(Some(!forward)),
             OptionId::ValueTags => OptionValue::ValueTags(forward),
+            OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
             OptionId::AgentsOn => OptionValue::AgentsOn(forward),
             OptionId::LogDays => {
                 let days = self.mcp_log_days;
@@ -829,6 +849,9 @@ impl Settings {
                 !self.group_digits.unwrap_or_default(),
             ))),
             OptionId::ValueTags => Some(OptionValue::ValueTags(!self.value_tags)),
+            OptionId::ProductionReadOnly => {
+                Some(OptionValue::ProductionReadOnly(!self.production_read_only))
+            }
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
@@ -844,6 +867,7 @@ impl Settings {
             Key::Tz => toml_string(self.tz.name()),
             Key::GroupDigits => self.group_digits?.to_string(),
             Key::ValueTags => self.value_tags.to_string(),
+            Key::ProductionReadOnly => self.production_read_only.to_string(),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
             Key::SqlLimit => self.sql_limit.to_string(),
             // TOML has no null: no timeout is no seconds.
@@ -1064,6 +1088,7 @@ impl Settings {
             Key::Tz => text.and_then(Zone::from_name).map(|zone| self.tz = zone),
             Key::GroupDigits => flag.map(|flag| self.group_digits = Some(flag)),
             Key::ValueTags => flag.map(|flag| self.value_tags = flag),
+            Key::ProductionReadOnly => flag.map(|flag| self.production_read_only = flag),
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
             Key::SqlLimit => number.map(|number| self.sql_limit = number),
             Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
@@ -1172,6 +1197,7 @@ impl Settings {
             Key::Tz => self.tz = other.tz.clone(),
             Key::GroupDigits => self.group_digits = other.group_digits,
             Key::ValueTags => self.value_tags = other.value_tags,
+            Key::ProductionReadOnly => self.production_read_only = other.production_read_only,
             Key::ShowSystemSchemas => self.show_system_schemas = other.show_system_schemas,
             Key::SqlLimit => self.sql_limit = other.sql_limit,
             Key::SqlTimeoutSecs => self.sql_timeout_secs = other.sql_timeout_secs,
@@ -1229,6 +1255,7 @@ impl Default for Settings {
             tz: Zone::System,
             group_digits: None,
             value_tags: true,
+            production_read_only: true,
             show_system_schemas: false,
             custom_theme: None,
             sql_limit: 1_000,
@@ -1284,6 +1311,7 @@ mod tests {
             tz: Zone::Named("America/New_York".into()),
             group_digits: Some(true),
             value_tags: false,
+            production_read_only: false,
             show_system_schemas: true,
             custom_theme: Some("My \"Nord\".json".into()),
             sql_limit: 100,
@@ -1306,6 +1334,9 @@ timestamps = \"full\"  # second | full
 tz = \"America/New_York\"  # system | utc | \"Area/City\"
 group_digits = true
 value_tags = false
+
+[safety]
+production_read_only = false
 
 [sidebar]
 show_system_schemas = true
@@ -1380,13 +1411,14 @@ theme = \"My \\\"Nord\\\".json\"
                 (Key::Tz, 5),
                 (Key::GroupDigits, 6),
                 (Key::ValueTags, 7),
-                (Key::ShowSystemSchemas, 10),
-                (Key::SqlLimit, 13),
-                (Key::SqlTimeoutSecs, 14),
-                (Key::McpEnabled, 17),
-                (Key::McpLogDays, 18),
-                (Key::McpNotify, 19),
-                (Key::Theme, 22),
+                (Key::ProductionReadOnly, 10),
+                (Key::ShowSystemSchemas, 13),
+                (Key::SqlLimit, 16),
+                (Key::SqlTimeoutSecs, 17),
+                (Key::McpEnabled, 20),
+                (Key::McpLogDays, 21),
+                (Key::McpNotify, 22),
+                (Key::Theme, 25),
             ]
         );
     }
@@ -2336,6 +2368,7 @@ theme = \"My \\\"Nord\\\".json\"
                 Key::Tz,
                 Key::GroupDigits,
                 Key::ValueTags,
+                Key::ProductionReadOnly,
                 Key::McpEnabled,
                 Key::McpLogDays,
                 Key::McpNotify,

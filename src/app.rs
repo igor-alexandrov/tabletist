@@ -2047,7 +2047,10 @@ impl App {
             }
             Action::Backend(event) => self.apply_event(event),
             Action::NewConnection => {
-                self.dialog = Some(Dialog::Connection(Box::default()));
+                self.dialog = Some(Dialog::Connection(Box::new(ConnectionForm {
+                    production_read_only: self.settings.production_read_only,
+                    ..ConnectionForm::default()
+                })));
                 self.list_ssh_hosts();
             }
             Action::EditConnection(id) => {

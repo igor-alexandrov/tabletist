@@ -27,6 +27,7 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::Tz => "Time zone for timestamptz",
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
+        OptionId::ProductionReadOnly => "New production connections open read-only",
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
@@ -39,6 +40,7 @@ pub(super) fn label(option: OptionId) -> &'static str {
 pub(super) fn terminal_label(option: OptionId) -> &'static str {
     match option {
         OptionId::Tz => "timestamptz zone",
+        OptionId::ProductionReadOnly => "production opens read-only",
         OptionId::PageSize
         | OptionId::Timestamps
         | OptionId::GroupDigits
@@ -49,6 +51,23 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
     }
 }
 
+/// The heading of the group of the General pane that starts at
+/// `option`'s row, where one starts there. English: the caller translates,
+/// and the terminal look lower-cases.
+pub(super) fn group_starting(option: OptionId) -> Option<&'static str> {
+    match option {
+        OptionId::PageSize => Some("Data"),
+        OptionId::ProductionReadOnly => Some("Safety"),
+        OptionId::Timestamps
+        | OptionId::Tz
+        | OptionId::GroupDigits
+        | OptionId::ValueTags
+        | OptionId::AgentsOn
+        | OptionId::LogDays
+        | OptionId::AgentsNotify => None,
+    }
+}
+
 /// What a row says under its label, where it says something. English.
 pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
     match option {
@@ -56,6 +75,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
         OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
+        OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::AgentsOn
@@ -103,6 +123,7 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
     matches!(
         value,
         OptionValue::ValueTags(true)
+            | OptionValue::ProductionReadOnly(true)
             | OptionValue::AgentsOn(true)
             | OptionValue::AgentsNotify(true)
     )
@@ -187,6 +208,10 @@ pub(super) fn choices(
         OptionId::ValueTags => vec![
             (Word("off"), OptionValue::ValueTags(false)),
             (Word("on"), OptionValue::ValueTags(true)),
+        ],
+        OptionId::ProductionReadOnly => vec![
+            (Word("off"), OptionValue::ProductionReadOnly(false)),
+            (Word("on"), OptionValue::ProductionReadOnly(true)),
         ],
         OptionId::AgentsOn => vec![
             (Word("off"), OptionValue::AgentsOn(false)),

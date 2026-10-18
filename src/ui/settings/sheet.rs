@@ -18,7 +18,7 @@ use crate::ui::menu;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
-use super::{label, path_shown, sample_timestamp, small_print, zone_text, zones};
+use super::{group_starting, label, path_shown, sample_timestamp, small_print, zone_text, zones};
 
 /// The sheet at its widest and at its tallest, and what it leaves of the
 /// window at each side.
@@ -256,8 +256,8 @@ fn nav(
     }
 }
 
-/// The tab: its title, what it is for, and its options under the heading
-/// of their group. The rows end at `limit` at the latest, and scroll when
+/// The tab: its title, what it is for, and its options under the headings
+/// of their groups. The rows end at `limit` at the latest, and scroll when
 /// they are taller than that leaves them.
 fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &mut Vec<Action>) {
     let Skin { look, palette, .. } = *skin;
@@ -272,15 +272,11 @@ fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &
     widgets::label(
         ui,
         TextRole::UiBody,
-        &skin.say("How Tabletist shows data. Changes apply right away."),
+        &skin.say("How Tabletist shows data and protects your work. Changes apply right away."),
         palette.dim,
         look,
     );
-    ui.add_space(6.0 + 14.0);
-    widgets::section_label(&skin.say("Data"), look, palette)
-        .layout(ui.ctx())
-        .label(ui);
-    ui.add_space(2.0);
+    ui.add_space(6.0);
     let column = label_column(ui, &OptionId::GENERAL, skin);
     let room = (limit - ui.cursor().top()).max(ROWS_MIN);
     egui::ScrollArea::vertical()
@@ -292,6 +288,13 @@ fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &
             // right over that would read as a double line.
             let last = OptionId::GENERAL.len() - 1;
             for (index, option) in OptionId::GENERAL.into_iter().enumerate() {
+                if let Some(heading) = group_starting(option) {
+                    ui.add_space(14.0);
+                    widgets::section_label(&skin.say(heading), look, palette)
+                        .layout(ui.ctx())
+                        .label(ui);
+                    ui.add_space(2.0);
+                }
                 row(
                     ui,
                     option,
@@ -345,12 +348,15 @@ pub(super) fn row(
     after: Option<After<'_>>,
 ) {
     let Skin { look, palette, .. } = *skin;
+    // Wrapped in its column too: a narrow sheet takes from the labels'
+    // column, and a long label would run under the control.
     let name = Text::one(
         look,
         TextRole::UiBody,
         &skin.say(label(option)),
         palette.text,
     )
+    .wrap(column)
     .layout(ui.ctx());
     let print = small_print(option).map(|print| {
         Text::one(look, TextRole::Secondary, &skin.say(print), palette.dim)
@@ -426,7 +432,10 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::PageSize | OptionId::Tz => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
-        OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => SWITCH,
+        OptionId::ValueTags
+        | OptionId::ProductionReadOnly
+        | OptionId::AgentsOn
+        | OptionId::AgentsNotify => SWITCH,
         OptionId::LogDays => look.control_height,
     }
 }
@@ -493,7 +502,10 @@ fn control(
                 ))));
             }
         }
-        OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => {
+        OptionId::ValueTags
+        | OptionId::ProductionReadOnly
+        | OptionId::AgentsOn
+        | OptionId::AgentsNotify => {
             let on = super::is_on(&settings.value(option));
             if widgets::toggle(ui, on, &name, palette).clicked()
                 && let Some(flipped) = settings.flipped(option)
@@ -650,7 +662,10 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
-        OptionId::AgentsOn | OptionId::LogDays | OptionId::AgentsNotify => return,
+        OptionId::ProductionReadOnly
+        | OptionId::AgentsOn
+        | OptionId::LogDays
+        | OptionId::AgentsNotify => return,
     };
     let text = text.layout(ui.ctx());
     if at.x + text.width() <= right {
