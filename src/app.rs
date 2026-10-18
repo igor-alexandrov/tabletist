@@ -10086,6 +10086,41 @@ mod tests {
     }
 
     #[test]
+    fn rows_that_waited_for_a_prompt_that_could_not_be_shown_are_asked_of_the_lost_session_once() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(page(5, true));
+        let (session, request) = reconnect(&mut harness, tab);
+        // A password the person typed, which the server refuses.
+        harness.app.workspace_mut(tab).unwrap().password_mode = PasswordMode::Ask;
+        harness.app.apply(Action::SortBy {
+            tab,
+            object_tab: id,
+            column: "email".into(),
+        });
+        // The server refuses the password while another dialog is open:
+        // the prompt for a new one cannot be shown over it.
+        harness.app.dialog = Some(Dialog::About);
+        let before = harness.app.backend.sent.len();
+        harness.app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: Error::Auth("password authentication failed".into()),
+        }));
+        assert!(matches!(harness.app.dialog, Some(Dialog::About)));
+        assert!(matches!(
+            harness.app.workspace(tab).unwrap().status,
+            SessionStatus::Disconnected(Error::Auth(_))
+        ));
+        let (fetches, _, _) = reads_of(&harness.app.backend.sent[before..], session);
+        assert_eq!(fetches.len(), 1, "{fetches:?}");
+        assert_eq!(fetches[0].sort[0].column, "email");
+        assert!(object(&harness, tab, id).rows.is_loading());
+    }
+
+    #[test]
     fn reconnecting_restarts_tabs_the_lost_connection_failed() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
