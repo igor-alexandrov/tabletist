@@ -2164,6 +2164,7 @@ impl SettingsPane {
             Self::General => &[
                 SettingsRow::Option(OptionId::PageSize),
                 SettingsRow::Option(OptionId::Timestamps),
+                SettingsRow::Option(OptionId::Tz),
                 SettingsRow::Option(OptionId::GroupDigits),
                 SettingsRow::Option(OptionId::ValueTags),
             ],

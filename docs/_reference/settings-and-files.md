@@ -8,12 +8,13 @@ nav_order: 2
 
 Cmd/Ctrl+, opens Settings. Changes apply right away.
 
-{% include shot.html file="macos-settings" alt="The Settings window with its four options" %}
+{% include shot.html file="macos-settings" alt="The Settings window with its General options" %}
 
 | Option | Choices | Default |
 | --- | --- | --- |
 | **Rows per page** | 100, 500, 1,000, 5,000 or 10,000. A table takes a new size when it next loads, not while you page through it | 1,000 |
 | **Timestamps** | To the second, or full precision | To the second |
+| **Time zone for timestamptz** | System, UTC or any zone. A `timestamptz` is shown in this zone, a copy gives the value as the server sent it, and a value you type without an offset is sent with this zone's. In the Omarchy look `h`/`l` choose System, UTC or the last zone the file named; any other zone is set in the file | System |
 | **Numbers** | `1,240.50` or `1240.50`. Grouping is for display only: a copy gives the raw value | `1,240.50` on macOS and Windows, `1240.50` in the Omarchy look |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
 

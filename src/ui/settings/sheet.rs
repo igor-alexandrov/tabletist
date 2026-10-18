@@ -9,7 +9,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, SettingsDialog, SettingsPane};
-use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
+use crate::settings::{OptionId, OptionValue, Settings, Timestamps, Zone};
 use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::focus::{self, Ring};
@@ -18,7 +18,7 @@ use crate::ui::menu;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
-use super::{label, path_shown, sample_timestamp, small_print};
+use super::{label, path_shown, sample_timestamp, small_print, zone_text, zones};
 
 /// The sheet at its widest and at its tallest, and what it leaves of the
 /// window at each side.
@@ -44,6 +44,10 @@ const CONTROLS: f32 = 210.0;
 const HINT_GAP: f32 = 12.0;
 /// The page size menu's button.
 const MENU: f32 = 120.0;
+/// The zone's menu: as wide as the artboard's, for `System · America/…`.
+const ZONE_MENU: f32 = 220.0;
+/// How tall the zone menu's list of zones is at most: it scrolls.
+const ZONE_LIST: f32 = 240.0;
 /// A segment's height, and the switch's.
 const SEGMENT: f32 = 22.0;
 const SWITCH: f32 = 18.0;
@@ -66,6 +70,8 @@ pub(super) struct Skin<'a> {
     pub(super) look: &'a Look,
     pub(super) palette: &'a Palette,
     pub(super) locale: Locale,
+    /// The computer's zone's name, which the System zone writes beside it.
+    pub(super) system: Option<&'a str>,
 }
 
 impl Skin<'_> {
@@ -86,6 +92,7 @@ pub(super) fn show(
         look: &app.look,
         palette: &app.palette,
         locale: app.locale,
+        system: app.system_zone.iana_name(),
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
@@ -158,7 +165,8 @@ pub(super) fn show(
                 pos2(room.left() + NAV, bottom - foot),
                 pos2(room.right(), bottom),
             );
-            footer(ui, under, app, resetting, ignored.as_ref(), &skin, actions);
+            let asking = resetting.then_some(dialog.pane);
+            footer(ui, under, app, asking, ignored.as_ref(), &skin, actions);
             let side = Rect::from_min_max(room.min, pos2(room.left() + NAV, bottom));
             // The sheet's own corners, inside its border.
             let radius = skin.look.dialog_radius.saturating_sub(1);
@@ -415,7 +423,7 @@ fn keyboard_came_to(ui: &Ui, place: Rect) -> bool {
 /// How tall `option`'s control is: its row is at least as tall.
 fn control_height(option: OptionId, look: &Look) -> f32 {
     match option {
-        OptionId::PageSize => look.control_height,
+        OptionId::PageSize | OptionId::Tz => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => SWITCH,
@@ -466,6 +474,7 @@ fn control(
                 info
             });
         }
+        OptionId::Tz => zone_menu(ui, &name, settings, skin, actions),
         OptionId::Timestamps => {
             let words = [skin.say("To the second"), skin.say("Full precision")];
             let selected = usize::from(settings.timestamps == Timestamps::Full);
@@ -485,7 +494,7 @@ fn control(
             }
         }
         OptionId::ValueTags | OptionId::AgentsOn | OptionId::AgentsNotify => {
-            let on = super::is_on(settings.value(option));
+            let on = super::is_on(&settings.value(option));
             if widgets::toggle(ui, on, &name, palette).clicked()
                 && let Some(flipped) = settings.flipped(option)
             {
@@ -568,13 +577,66 @@ fn page_sizes(current: u32) -> Vec<u32> {
     sizes
 }
 
+/// The zone's menu: the computer's zone and UTC, then every zone of the
+/// database, which a search field over them narrows. What was typed there
+/// is the field's own, kept in egui's memory while the menu is open.
+fn zone_menu(ui: &mut Ui, name: &str, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+    let Skin { look, palette, .. } = *skin;
+    let shown = zone_text(skin.locale, &settings.tz, skin.system);
+    let search_id = ui.id().with("zone-search");
+    let dropdown = menu::Dropdown::new("zone", &shown, ZONE_MENU);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        let mut pick = |ui: &mut Ui, zone: Zone| {
+            let text = zone_text(skin.locale, &zone, skin.system);
+            let entry_name = format!("{name} {text}");
+            let entry = menu::Item::choice(&text, zone == settings.tz)
+                .name(&entry_name)
+                .show(ui, look, palette);
+            if entry.clicked() {
+                actions.push(Action::SetOption(OptionValue::Tz(zone)));
+                ui.close();
+            }
+        };
+        pick(ui, Zone::System);
+        pick(ui, Zone::Utc);
+        let mut typed: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
+        let search = skin.say("Search zones");
+        let field = widgets::search_field(ui, &mut typed, &search, look);
+        widgets::add_search(ui, field, look)
+            .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, &search));
+        ui.data_mut(|data| data.insert_temp(search_id, typed.clone()));
+        let typed = typed.to_lowercase();
+        egui::ScrollArea::vertical()
+            .max_height(ZONE_LIST)
+            .show(ui, |ui| {
+                for zone in zones()
+                    .iter()
+                    .filter(|zone| typed.is_empty() || zone.to_lowercase().contains(&typed))
+                {
+                    pick(ui, Zone::Named(zone.clone()));
+                }
+            });
+    });
+    if menu.inner.is_none() {
+        // Closed: the next opening starts from every zone.
+        ui.data_mut(|data| data.remove::<String>(search_id));
+    }
+    // The row's label is beside it, not its own: named for screen readers,
+    // with the zone as its value.
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(shown.clone());
+        info
+    });
+}
+
 /// What the row says after `option`'s control, from `at` on its middle: a
 /// sample of what the value does, or what it does not do. Whole or left
 /// out: a hint that does not end before `right` tells nothing cut short.
 fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settings, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let text = match option {
-        OptionId::PageSize => return,
+        OptionId::PageSize | OptionId::Tz => return,
         OptionId::Timestamps => Text::one(
             look,
             TextRole::MonoSecondary,
@@ -674,14 +736,23 @@ fn footer_height(ui: &Ui, ignored: Option<&Laid>, skin: &Skin) -> f32 {
     (1.0 + FOOT_PAD + ignored + line + FOOT_PAD).ceil()
 }
 
+/// What Reset to defaults asks on `pane`. English.
+fn reset_question(pane: SettingsPane) -> &'static str {
+    match pane {
+        SettingsPane::General => "Reset all General settings to their defaults?",
+        SettingsPane::Agents => "Reset every option on this tab?",
+    }
+}
+
 /// The footer, in `rect` under the content: where the settings file is
-/// and, at the right, what can be done with it. While `resetting`, the
-/// question Reset to defaults asks stands where those links were.
+/// and, at the right, what can be done with it. While the pane in
+/// `asking` asks it, the question Reset to defaults asks stands where
+/// those links were.
 fn footer(
     ui: &Ui,
     rect: Rect,
     app: &App,
-    resetting: bool,
+    asking: Option<SettingsPane>,
     ignored: Option<&Laid>,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -707,7 +778,7 @@ fn footer(
     // now. Noted in every frame that asks, and read once.
     let asked = ui.id().with("asked");
     let now = ui.ctx().cumulative_frame_nr();
-    let answered = if resetting {
+    let answered = if asking.is_some() {
         ui.data_mut(|data| data.insert_temp(asked, now));
         false
     } else {
@@ -715,9 +786,9 @@ fn footer(
     };
 
     // The right side first: what it leaves is the path's.
-    let parts = if resetting {
+    let parts = if let Some(pane) = asking {
         vec![
-            (skin.say("Reset every option on this tab?"), None),
+            (skin.say(reset_question(pane)), None),
             (
                 skin.say("Reset"),
                 Some((palette.danger, Action::ConfirmResetSettings(true))),

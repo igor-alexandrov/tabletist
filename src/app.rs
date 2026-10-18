@@ -82,6 +82,9 @@ pub struct App {
     /// The computer's time zone as the app found it at its start: what the
     /// System zone of the settings is.
     pub system_zone: jiff::tz::TimeZone,
+    /// The last named zone the settings had this session: the Omarchy
+    /// screen's steps reach it after a step off it.
+    pub named_zone: Option<String>,
     pub locale: Locale,
     pub palette: Palette,
     pub look: crate::theme::Look,
@@ -179,11 +182,16 @@ impl App {
             Some(crate::labels::database_key(spec.driver, &spec.database))
         });
         let agents_shown = crate::agents_shown::Shown::load(&dirs.agents_shown_file());
+        let named_zone = match &settings.tz {
+            crate::settings::Zone::Named(name) => Some(name.clone()),
+            crate::settings::Zone::System | crate::settings::Zone::Utc => None,
+        };
         let mut app = Self {
             dirs,
             settings,
             settings_file,
             system_zone: system_zone(),
+            named_zone,
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
@@ -3657,6 +3665,9 @@ impl App {
                     workspace.full_precision = full;
                 }
             }
+        }
+        if let crate::settings::Zone::Named(name) = &self.settings.tz {
+            self.named_zone = Some(name.clone());
         }
         if old.tz != self.settings.tz {
             let zone = self.zone();
@@ -7720,12 +7731,13 @@ mod tests {
     }
 
     #[test]
-    fn reset_asks_first_and_then_resets_only_the_four_options() {
+    fn reset_asks_first_and_then_resets_only_the_general_options() {
         let (mut app, _dir) = app();
         app.apply(Action::ShowSettings);
-        // An option of the window, and a key it does not show.
+        // Options of the window, and a key it does not show.
         app.change_settings(|settings| {
             settings.page_size = 500;
+            settings.tz = crate::settings::Zone::Utc;
             settings.group_digits = Some(false);
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
@@ -7741,12 +7753,13 @@ mod tests {
         app.apply(Action::ConfirmResetSettings(false));
         assert!(!resetting(&app));
         assert_eq!(app.settings.page_size, 500);
-        // Reset puts the four back and leaves the others.
+        // Reset puts the General tab's back and leaves the others.
         app.apply(Action::ResetSettings);
         app.apply(Action::ConfirmResetSettings(true));
         assert!(!resetting(&app));
         let defaults = Settings::default();
         assert_eq!(app.settings.page_size, defaults.page_size);
+        assert_eq!(app.settings.tz, defaults.tz);
         assert_eq!(app.settings.group_digits, defaults.group_digits);
         assert!(app.settings.show_system_schemas);
         assert_eq!(app.settings.sql_limit, 50);

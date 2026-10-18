@@ -162,6 +162,7 @@ fn status(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
         look,
         palette,
         locale,
+        ..
     } = *skin;
     let role = TextRole::UiBody;
     let on = app.agents_on();
@@ -280,6 +281,7 @@ fn connect(ui: &mut Ui, agent: Agent, skin: &Skin, actions: &mut Vec<Action>) {
         look,
         palette,
         locale,
+        ..
     } = *skin;
     // The switch, and what the agent takes beside it, wrapped in what the
     // switch leaves.
@@ -384,6 +386,7 @@ fn access(ui: &mut Ui, skin: &Skin, actions: &mut Vec<Action>) {
         look,
         palette,
         locale,
+        ..
     } = *skin;
     let label = gettext(locale, "Open Connections");
     let key = crate::ui::keys::written(ui.ctx(), look, Command::Connections);

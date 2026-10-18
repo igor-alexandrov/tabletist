@@ -201,6 +201,8 @@ impl Key {
 pub enum OptionId {
     PageSize,
     Timestamps,
+    /// The zone a `timestamptz` is shown in: `data.tz`.
+    Tz,
     GroupDigits,
     ValueTags,
     /// Whether agents can reach the app: `mcp.enabled`.
@@ -213,9 +215,10 @@ pub enum OptionId {
 
 impl OptionId {
     /// Every option, the General pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 7] = [
+    pub const ALL: [OptionId; 8] = [
         Self::PageSize,
         Self::Timestamps,
+        Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
         Self::AgentsOn,
@@ -223,9 +226,10 @@ impl OptionId {
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 4] = [
+    pub const GENERAL: [OptionId; 5] = [
         Self::PageSize,
         Self::Timestamps,
+        Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
     ];
@@ -237,6 +241,7 @@ impl OptionId {
         match self {
             Self::PageSize => Key::PageSize,
             Self::Timestamps => Key::Timestamps,
+            Self::Tz => Key::Tz,
             Self::GroupDigits => Key::GroupDigits,
             Self::ValueTags => Key::ValueTags,
             Self::AgentsOn => Key::McpEnabled,
@@ -252,10 +257,11 @@ impl OptionId {
 }
 
 /// An option with a value: what a key, a click or a reset sets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionValue {
     PageSize(u32),
     Timestamps(Timestamps),
+    Tz(Zone),
     /// `None` is the look's default.
     GroupDigits(Option<bool>),
     ValueTags(bool),
@@ -265,10 +271,11 @@ pub enum OptionValue {
 }
 
 impl OptionValue {
-    pub fn option(self) -> OptionId {
+    pub fn option(&self) -> OptionId {
         match self {
             Self::PageSize(_) => OptionId::PageSize,
             Self::Timestamps(_) => OptionId::Timestamps,
+            Self::Tz(_) => OptionId::Tz,
             Self::GroupDigits(_) => OptionId::GroupDigits,
             Self::ValueTags(_) => OptionId::ValueTags,
             Self::AgentsOn(_) => OptionId::AgentsOn,
@@ -278,10 +285,11 @@ impl OptionValue {
     }
 
     /// Puts the value in `settings`.
-    pub fn set(self, settings: &mut Settings) {
-        match self {
+    pub fn set(&self, settings: &mut Settings) {
+        match self.clone() {
             Self::PageSize(size) => settings.page_size = size,
             Self::Timestamps(choice) => settings.timestamps = choice,
+            Self::Tz(zone) => settings.tz = zone,
             Self::GroupDigits(on) => settings.group_digits = on,
             Self::ValueTags(on) => settings.value_tags = on,
             Self::AgentsOn(on) => settings.mcp_enabled = on,
@@ -735,6 +743,7 @@ impl Settings {
         match option {
             OptionId::PageSize => OptionValue::PageSize(self.page_size),
             OptionId::Timestamps => OptionValue::Timestamps(self.timestamps),
+            OptionId::Tz => OptionValue::Tz(self.tz.clone()),
             OptionId::GroupDigits => OptionValue::GroupDigits(self.group_digits),
             OptionId::ValueTags => OptionValue::ValueTags(self.value_tags),
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
@@ -761,6 +770,9 @@ impl Settings {
                 };
                 OptionValue::PageSize(next.unwrap_or(size))
             }
+            // System, UTC, and the zone the file names, where it names
+            // one: any other is set in the file.
+            OptionId::Tz => self.stepped_zone(None, forward),
             OptionId::Timestamps => OptionValue::Timestamps(if forward {
                 Timestamps::Full
             } else {
@@ -786,10 +798,29 @@ impl Settings {
         }
     }
 
+    /// The zone one step from this one: System, UTC, then a named zone,
+    /// the one set or else `named` (the last the session had), so that a
+    /// step off it can come back. Any other zone is set in the file.
+    pub fn stepped_zone(&self, named: Option<&str>, forward: bool) -> OptionValue {
+        let mut zones = vec![Zone::System, Zone::Utc];
+        match (&self.tz, named) {
+            (Zone::Named(_), _) => zones.push(self.tz.clone()),
+            (Zone::System | Zone::Utc, Some(name)) => zones.push(Zone::Named(name.to_owned())),
+            (Zone::System | Zone::Utc, None) => {}
+        }
+        let at = zones.iter().position(|zone| *zone == self.tz).unwrap_or(0);
+        let to = if forward {
+            (at + 1).min(zones.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        OptionValue::Tz(zones.swap_remove(to))
+    }
+
     /// The other value of an option that has two; `None` for one with more.
     pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
         match option {
-            OptionId::PageSize => None,
+            OptionId::PageSize | OptionId::Tz => None,
             OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
@@ -1765,6 +1796,37 @@ theme = \"My \\\"Nord\\\".json\"
     }
 
     #[test]
+    fn the_zone_steps_through_system_utc_and_the_one_the_file_names() {
+        let step = |tz: Zone, forward: bool| {
+            let settings = Settings {
+                tz,
+                ..Settings::default()
+            };
+            settings.stepped(OptionId::Tz, forward)
+        };
+        let lisbon = || Zone::Named("Europe/Lisbon".into());
+        assert_eq!(step(Zone::System, true), OptionValue::Tz(Zone::Utc));
+        assert_eq!(step(Zone::System, false), OptionValue::Tz(Zone::System));
+        assert_eq!(step(Zone::Utc, true), OptionValue::Tz(Zone::Utc));
+        assert_eq!(step(lisbon(), false), OptionValue::Tz(Zone::Utc));
+        assert_eq!(step(lisbon(), true), OptionValue::Tz(lisbon()));
+        assert_eq!(Settings::default().flipped(OptionId::Tz), None);
+        // Stepped off, the zone the session had is a step away still.
+        let utc = Settings {
+            tz: Zone::Utc,
+            ..Settings::default()
+        };
+        assert_eq!(
+            utc.stepped_zone(Some("Europe/Lisbon"), true),
+            OptionValue::Tz(lisbon())
+        );
+        assert_eq!(
+            utc.stepped_zone(Some("Europe/Lisbon"), false),
+            OptionValue::Tz(Zone::System)
+        );
+    }
+
+    #[test]
     fn an_empty_file_starts_with_the_header() {
         assert_eq!(
             written("", |settings| settings.page_size = 500),
@@ -2271,6 +2333,7 @@ theme = \"My \\\"Nord\\\".json\"
             vec![
                 Key::PageSize,
                 Key::Timestamps,
+                Key::Tz,
                 Key::GroupDigits,
                 Key::ValueTags,
                 Key::McpEnabled,

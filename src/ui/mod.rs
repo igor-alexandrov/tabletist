@@ -1049,7 +1049,16 @@ mod tests {
 
     /// A harness in the terminal look with the Settings screen open.
     fn settings_screen() -> Harness {
-        let mut harness = Harness::new();
+        settings_screen_in(Harness::new())
+    }
+
+    /// The Settings screen as the artboard draws it: on a screen of
+    /// 1920 by 1080, where every hint has room beside the file.
+    fn settings_screen_on_the_artboard() -> Harness {
+        settings_screen_in(Harness::with_size(egui::vec2(1920.0, 1080.0)))
+    }
+
+    fn settings_screen_in(mut harness: Harness) -> Harness {
         harness.set_look(crate::theme::Look::omarchy());
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
         assert!(settings_open(&harness));
@@ -1399,7 +1408,7 @@ value_tags   = true
             let mut harness = settings_sheet(look());
             harness.click("Timestamps: Full precision");
             harness.click("Reset to defaults");
-            assert!(harness.has("Reset every option on this tab?"));
+            assert!(harness.has("Reset all General settings to their defaults?"));
             assert!(!harness.has("Export…"), "the links give way");
             harness.click("Cancel");
             assert!(harness.has("Export…"));
@@ -1450,7 +1459,7 @@ value_tags   = true
         harness.click("Timestamps: Full precision");
         tab_to_settings(&mut harness, "Reset to defaults");
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
-        assert!(harness.has("Reset every option on this tab?"));
+        assert!(harness.has("Reset all General settings to their defaults?"));
         assert_eq!(focused_name(&harness.settle()), "Cancel");
         // A second Enter is the answer that changes nothing.
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
@@ -1483,7 +1492,7 @@ value_tags   = true
         for _ in 0..4 {
             harness.frame(vec![held(true)]);
         }
-        assert!(!harness.has("Reset every option on this tab?"));
+        assert!(!harness.has("Reset all General settings to their defaults?"));
         harness.frame(vec![crate::testing::release(egui::Key::Space, none)]);
         // Escape answers no, and takes the keyboard from where it was: it
         // is put back on the link too.
@@ -1491,7 +1500,7 @@ value_tags   = true
         assert_eq!(focused_name(&harness.settle()), "Cancel");
         harness.press(egui::Key::Escape, egui::Modifiers::NONE);
         assert!(settings_open(&harness));
-        assert!(!harness.has("Reset every option on this tab?"));
+        assert!(!harness.has("Reset all General settings to their defaults?"));
         assert_eq!(focused_name(&harness.settle()), "Reset to defaults");
     }
 
@@ -1551,7 +1560,7 @@ value_tags   = true
             let lead = harness.painted_rect(lead).expect("the tab's lead");
             assert!(switch.top() > lead.bottom(), "{switch:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..3 {
+            for _ in 0..4 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();
@@ -1702,8 +1711,8 @@ value_tags   = true
 
     #[test]
     fn h_and_l_change_the_cursors_option_and_save_it() {
-        use crate::settings::Timestamps;
-        let mut harness = settings_screen();
+        use crate::settings::{Timestamps, Zone};
+        let mut harness = settings_screen_on_the_artboard();
         // Rows per page.
         harness.press(egui::Key::L, egui::Modifiers::NONE);
         assert_eq!(harness.app.settings.page_size, 5_000);
@@ -1726,6 +1735,17 @@ value_tags   = true
                 .painted_color("2026-01-12 09:14:03.482915")
                 .is_some()
         );
+        // The zone: the computer's, then UTC, and no further.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        assert!(harness.painted_color("‹ system (utc) ›").is_some());
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.tz, Zone::Utc);
+        assert!(harness.painted_color("‹ utc ›").is_some());
+        let saved = settings_saves(&harness);
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(settings_saves(&harness), saved);
+        harness.press(egui::Key::H, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.tz, Zone::System);
         // Numbers: grouped is the left of the two.
         harness.press(egui::Key::J, egui::Modifiers::NONE);
         harness.press(egui::Key::H, egui::Modifiers::NONE);
@@ -1739,7 +1759,7 @@ value_tags   = true
         // Space on the page size does nothing: it has more than two values.
         harness.press(egui::Key::Space, egui::Modifiers::NONE);
         assert_eq!(settings_saves(&harness), 0);
-        for _ in 0..3 {
+        for _ in 0..4 {
             harness.press(egui::Key::J, egui::Modifiers::NONE);
         }
         harness.press(egui::Key::Space, egui::Modifiers::NONE);
@@ -1806,7 +1826,7 @@ value_tags   = true
         use crate::settings::Timestamps;
         let mut harness = settings_screen();
         harness.click("Numbers");
-        assert_eq!(settings_cursor(&harness), 2);
+        assert_eq!(settings_cursor(&harness), 3);
         harness.click("Timestamps: full");
         assert_eq!(harness.app.settings.timestamps, Timestamps::Full);
         assert_eq!(settings_cursor(&harness), 1, "the cursor follows the click");
@@ -2269,14 +2289,14 @@ value_tags   = true
     fn a_focused_button_of_the_settings_screen_keeps_space_and_the_arrows() {
         let mut harness = settings_screen();
         // The cursor on an option Space flips.
-        for _ in 0..3 {
+        for _ in 0..4 {
             harness.press(egui::Key::J, egui::Modifiers::NONE);
         }
         tab_to_settings(&mut harness, "Numbers");
         // Space presses the button, which is another row's: the cursor
         // goes there, and the option it was on is as it was.
         harness.press(egui::Key::Space, egui::Modifiers::NONE);
-        assert_eq!(settings_cursor(&harness), 2);
+        assert_eq!(settings_cursor(&harness), 3);
         assert!(harness.app.settings.value_tags);
         // An arrow moves the keyboard from the button, and nothing else.
         // Where it takes the keyboard is egui's to say: each arrow starts
@@ -2286,9 +2306,11 @@ value_tags   = true
         assert_eq!(settings_saves(&harness), 0);
         tab_to_settings(&mut harness, "Numbers");
         harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
-        assert_eq!(settings_cursor(&harness), 2);
+        assert_eq!(settings_cursor(&harness), 3);
         // The letters are the screen's wherever the keyboard is.
         tab_to_settings(&mut harness, "Close");
+        harness.press(egui::Key::K, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 2);
         harness.press(egui::Key::K, egui::Modifiers::NONE);
         assert_eq!(settings_cursor(&harness), 1);
         harness.press(egui::Key::L, egui::Modifiers::NONE);

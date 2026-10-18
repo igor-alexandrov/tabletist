@@ -321,3 +321,158 @@ fn a_text_column_takes_a_moment_written_another_way_as_a_change() {
         Some("2026-01-12T09:14:03.482915Z")
     );
 }
+
+/// Gives the keyboard to the field labelled `label`, as a screen reader
+/// does: a click through AccessKit presses, and a field takes no press.
+fn focus(harness: &mut Harness, label: &str) {
+    let tree = harness.settle();
+    let (target, _) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some(label))
+        .unwrap_or_else(|| panic!("nothing labelled {label:?}"));
+    let target = *target;
+    harness.frame(vec![egui::Event::AccessKitActionRequest(
+        egui::accesskit::ActionRequest {
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: target,
+            action: egui::accesskit::Action::Focus,
+            data: None,
+        },
+    )]);
+}
+
+/// The Settings sheet of `look`, open.
+fn sheet(look: crate::theme::Look) -> Harness {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    harness.press(Key::Comma, Modifiers::COMMAND);
+    assert!(matches!(
+        harness.app.dialog,
+        Some(crate::model::Dialog::Settings(_))
+    ));
+    harness
+}
+
+#[test]
+fn the_sheets_menu_picks_a_zone_found_by_its_name() {
+    for look in [crate::theme::Look::macos(), crate::theme::Look::standard()] {
+        let mut harness = sheet(look);
+        // Its row, and what it says under its label.
+        assert!(harness.has("Time zone for timestamptz"), "{}", look.name);
+        assert!(
+            harness.has("Values are shown in this zone and sent with their offset"),
+            "{}",
+            look.name
+        );
+        harness.click("Time zone for timestamptz");
+        // The computer's zone with its name, and UTC, first.
+        assert!(harness.has("Time zone for timestamptz System · UTC"));
+        harness.click("Time zone for timestamptz UTC");
+        assert_eq!(harness.app.settings.tz, Zone::Utc, "{}", look.name);
+        // A zone by its name: typed into the menu's field, then picked.
+        harness.click("Time zone for timestamptz");
+        focus(&mut harness, "Search zones");
+        harness.frame(vec![egui::Event::Text("lisb".into())]);
+        harness.settle();
+        assert!(!harness.has("Time zone for timestamptz Asia/Tokyo"));
+        harness.click("Time zone for timestamptz Europe/Lisbon");
+        assert_eq!(harness.app.settings.tz, Zone::Named("Europe/Lisbon".into()));
+        assert!(
+            harness
+                .app
+                .settings_file
+                .text
+                .contains("tz = \"Europe/Lisbon\"")
+        );
+        // Opened again, it lists every zone.
+        harness.click("Time zone for timestamptz");
+        assert!(
+            harness.has("Time zone for timestamptz Asia/Tokyo"),
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[test]
+fn the_terminal_screen_names_the_row_as_its_artboard_does() {
+    let mut harness = Harness::new();
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.press(Key::Comma, Modifiers::COMMAND);
+    assert!(harness.painted_color("timestamptz zone").is_some());
+    assert!(harness.has("timestamptz zone"));
+}
+
+#[test]
+fn the_file_pane_marks_the_zones_line() {
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.press(Key::Comma, Modifiers::COMMAND);
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\npage_size = 500\ntz = \"utc\"\n".into(),
+            own: false,
+        }));
+    for _ in 0..2 {
+        harness.press(Key::J, Modifiers::NONE);
+    }
+    let selection = harness.app.palette.selection;
+    let line = harness.painted_rect("tz = ").expect("the zone's line");
+    assert!(harness.fills.iter().any(|(rect, color)| {
+        *color == selection
+            && rect.y_range().contains(line.center().y)
+            && rect.x_range().contains(line.center().x)
+    }));
+}
+
+#[test]
+fn a_step_off_the_files_zone_can_step_back_to_it() {
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.press(Key::Comma, Modifiers::COMMAND);
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: "[data]\ntz = \"America/New_York\"\n".into(),
+            own: false,
+        }));
+    for _ in 0..2 {
+        harness.press(Key::J, Modifiers::NONE);
+    }
+    harness.press(Key::H, Modifiers::NONE);
+    assert_eq!(harness.app.settings.tz, Zone::Utc);
+    harness.press(Key::L, Modifiers::NONE);
+    assert_eq!(harness.app.settings.tz, new_york());
+    assert!(harness.painted_color("‹ america/new_york ›").is_some());
+}
+
+#[test]
+fn a_zone_the_database_does_not_know_is_reported_in_both_looks() {
+    let text = "[data]\ntz = \"Mars/Olympus\"\n";
+    // Omarchy: the line in the colour of an error.
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.press(Key::Comma, Modifiers::COMMAND);
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: text.into(),
+            own: false,
+        }));
+    harness.settle();
+    assert_eq!(harness.app.settings.tz, Zone::System);
+    let danger = harness.app.palette.danger;
+    assert_eq!(harness.painted_color("tz = \"Mars/Olympus\""), Some(danger));
+    // macOS: the footer counts it.
+    let mut harness = sheet(crate::theme::Look::macos());
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::SettingsFile {
+            text: text.into(),
+            own: false,
+        }));
+    harness.settle();
+    assert!(harness.has("1 line in the file could not be read and was ignored"));
+}

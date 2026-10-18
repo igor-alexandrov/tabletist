@@ -16,7 +16,7 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
-use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
+use crate::settings::{OptionId, OptionValue, Settings, Timestamps, Zone};
 
 /// The label of an option's row. English: the caller translates, and the
 /// terminal look lower-cases.
@@ -24,11 +24,28 @@ pub(super) fn label(option: OptionId) -> &'static str {
     match option {
         OptionId::PageSize => "Rows per page",
         OptionId::Timestamps => "Timestamps",
+        OptionId::Tz => "Time zone for timestamptz",
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
+    }
+}
+
+/// The label of an option's row on the terminal screen, where its
+/// artboard words it apart from the others' (`timestamptz zone`). English,
+/// lower-cased by the look.
+pub(super) fn terminal_label(option: OptionId) -> &'static str {
+    match option {
+        OptionId::Tz => "timestamptz zone",
+        OptionId::PageSize
+        | OptionId::Timestamps
+        | OptionId::GroupDigits
+        | OptionId::ValueTags
+        | OptionId::AgentsOn
+        | OptionId::LogDays
+        | OptionId::AgentsNotify => label(option),
     }
 }
 
@@ -38,10 +55,41 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
+        OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
         OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify => None,
+    }
+}
+
+/// Every zone of the zone database, by name, in alphabetical order: what
+/// the zone menu lists. Read once.
+pub(super) fn zones() -> &'static [String] {
+    static ZONES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ZONES.get_or_init(|| {
+        let mut names: Vec<String> = jiff::tz::db()
+            .available()
+            .map(|name| name.to_string())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    })
+}
+
+/// A zone as the window writes it: the computer's with its own name
+/// beside it where it has one (`System · America/New_York`), UTC, or the
+/// zone's name. `system` is the computer's zone's name. English: the
+/// terminal look writes it its own way.
+pub(super) fn zone_text(locale: Locale, zone: &Zone, system: Option<&str>) -> String {
+    match zone {
+        Zone::System => match system {
+            Some(name) => format!("{} · {name}", gettext(locale, "System")),
+            None => gettext(locale, "System").into_owned(),
+        },
+        Zone::Utc => "UTC".to_owned(),
+        Zone::Named(name) => name.clone(),
     }
 }
 
@@ -51,7 +99,7 @@ pub(super) fn days(locale: Locale, days: u32) -> String {
 }
 
 /// Whether an option of on and off is on.
-pub(super) fn is_on(value: OptionValue) -> bool {
+pub(super) fn is_on(value: &OptionValue) -> bool {
     matches!(
         value,
         OptionValue::ValueTags(true)
@@ -109,9 +157,19 @@ impl Said {
 /// The values a click can set on `option`'s row, each with what it is
 /// called: what the row draws as segments or as a check, and what a screen
 /// reader and the tests call them.
-pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(Said, OptionValue)> {
+/// `named` is the last named zone the session had, which the zone's steps
+/// reach.
+pub(super) fn choices(
+    option: OptionId,
+    settings: &Settings,
+    named: Option<&str>,
+) -> Vec<(Said, OptionValue)> {
     use Said::{Sample, Word};
     match option {
+        OptionId::Tz => vec![
+            (Word("fewer"), settings.stepped_zone(named, false)),
+            (Word("more"), settings.stepped_zone(named, true)),
+        ],
         // Stepped, not listed: one way and the other.
         OptionId::PageSize => vec![
             (Word("fewer"), settings.stepped(option, false)),
@@ -349,6 +407,9 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
                     }
                     let value = match asked {
                         Asked::Reset => Some(option.default_value()),
+                        Asked::Step { forward } if option == OptionId::Tz => {
+                            Some(settings.stepped_zone(app.named_zone.as_deref(), forward))
+                        }
                         Asked::Step { forward } => Some(settings.stepped(option, forward)),
                         _ => settings.flipped(option),
                     };
