@@ -47,6 +47,8 @@ pub struct Agentable {
     pub limits: Limits,
     /// What agents may not read of it.
     pub tables: Tables,
+    /// The columns whose values agents get masked.
+    pub masked: Vec<ColumnName>,
 }
 
 /// The connections of `saved` that agents may use, in its order. One that
@@ -78,6 +80,7 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
                 timeout: Duration::from_secs(u64::from(saved.agents.timeout_secs)),
             },
             tables: saved.agents.tables.clone(),
+            masked: saved.agents.masked.clone(),
         })
         .collect()
 }
@@ -658,8 +661,7 @@ impl Gateway for AppGateway {
                 dialect: agentable.spec.driver.dialect(),
                 limits: agentable.limits,
                 tables: agentable.tables.clone(),
-                // Masked columns are read from the setting in the next run.
-                masked: Vec::new(),
+                masked: agentable.masked.clone(),
             })
             .collect()
     }
@@ -1127,8 +1129,13 @@ mod tests {
         let mut shop = saved("shop", "Bookshop", Environment::Dev, spec);
         let customers = Tables::AllExcept(vec!["customers".parse().unwrap()]);
         shop.agents.tables = customers.clone();
+        shop.agents.masked = vec!["orders.email".parse().unwrap()];
         let gateway = gateway(shop);
         assert_eq!(gateway.connections()[0].tables, customers);
+        assert_eq!(
+            gateway.connections()[0].masked,
+            vec!["orders.email".parse().unwrap()]
+        );
         let stop = CancellationToken::new();
         let session = gateway.open("shop", &stop).await.unwrap();
         let read = check_read(Dialect::Sqlite, "SELECT * FROM customers", &[]).unwrap();

@@ -70,6 +70,9 @@ pub struct Agents {
     /// The tables agents may not read: all may be read, all but a list,
     /// or only a list. An "All except" list that is empty is "All".
     pub tables: tabletist_db::agent::Tables,
+    /// The columns whose values agents get as `•••`, and may select but
+    /// not filter, join, sort or compute on.
+    pub masked: Vec<tabletist_db::agent::ColumnName>,
 }
 
 /// The most rows an agent's answer may be given: half of what the SQL
@@ -86,6 +89,7 @@ impl Default for Agents {
             rows: 500,
             timeout_secs: 10,
             tables: tabletist_db::agent::Tables::All,
+            masked: Vec::new(),
         }
     }
 }

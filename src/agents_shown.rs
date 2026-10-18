@@ -1,5 +1,6 @@
 //! What the app last showed the person of what agents may do: whether the
-//! server is on, and each connection's access and the tables it hides. A change made outside the
+//! server is on, and each connection's access, the tables it hides and the
+//! columns it masks. A change made outside the
 //! app (a hand, a program, a synced dotfile, a backup) that lets agents do
 //! more than that is held until the person keeps it or puts it back; one
 //! that lets them do less is taken at once.
@@ -13,7 +14,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use tabletist_db::agent::{TableName, Tables};
+use tabletist_db::agent::{ColumnName, TableName, Tables};
 
 use crate::connections::{AgentAccess, ConnectionId, SavedConnection};
 
@@ -28,6 +29,19 @@ pub struct Shown {
     /// The tables each connection hides, by its id. A connection not here
     /// hid none.
     pub tables: BTreeMap<String, ShownTables>,
+    /// The columns each connection masks, by its id, each entry as the
+    /// person writes it. A connection not here masked none.
+    pub masked: BTreeMap<String, Vec<String>>,
+}
+
+/// The columns a connection was shown to mask.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShownMasked {
+    /// The entries that read.
+    pub columns: Vec<ColumnName>,
+    /// Whether an entry did not read, which only a hand could write: what
+    /// it masked cannot be said, so a change against it is held.
+    pub unread: bool,
 }
 
 /// The tables a connection hid, each entry as the person writes it.
@@ -47,6 +61,11 @@ pub enum Raised {
     Access { id: ConnectionId, to: AgentAccess },
     /// A connection hides less: `to`.
     Tables { id: ConnectionId, to: Tables },
+    /// A connection masks less: `to`.
+    Masked {
+        id: ConnectionId,
+        to: Vec<ColumnName>,
+    },
 }
 
 impl Shown {
@@ -84,6 +103,23 @@ impl Shown {
                     .filter_map(|entry| entry.parse().ok())
                     .collect(),
             ),
+        }
+    }
+
+    /// The columns `id` was shown to mask.
+    pub fn masked_of(&self, id: &ConnectionId) -> ShownMasked {
+        let written = self
+            .masked
+            .get(&id.0)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let columns: Vec<ColumnName> = written
+            .iter()
+            .filter_map(|entry| entry.parse().ok())
+            .collect();
+        ShownMasked {
+            unread: columns.len() != written.len(),
+            columns,
         }
     }
 
@@ -135,6 +171,22 @@ impl Shown {
                 }),
             }
         }
+        for saved in connections {
+            let (was, now) = (self.masked_of(&saved.id), &saved.agents.masked);
+            if !was.unread && same_columns(now, &was.columns) {
+                continue;
+            }
+            match masks_no_less(now, &was) {
+                true => {
+                    self.set_masked(&saved.id, now);
+                    lowered = true;
+                }
+                false => raised.push(Raised::Masked {
+                    id: saved.id.clone(),
+                    to: now.clone(),
+                }),
+            }
+        }
         // A connection deleted since lets agents do nothing. What it hid is
         // kept: a start that read no connection at all (a file kept aside,
         // or one of a newer version) deleted nothing, and when it comes
@@ -153,6 +205,19 @@ impl Shown {
                 Raised::Server => self.enabled = true,
                 Raised::Access { id, to } => self.set(id, *to),
                 Raised::Tables { id, to } => self.set_tables(id, to),
+                Raised::Masked { id, to } => self.set_masked(id, to),
+            }
+        }
+    }
+
+    fn set_masked(&mut self, id: &ConnectionId, masked: &[ColumnName]) {
+        match masked.is_empty() {
+            true => {
+                self.masked.remove(&id.0);
+            }
+            false => {
+                let written = masked.iter().map(ToString::to_string).collect();
+                self.masked.insert(id.0.clone(), written);
             }
         }
     }
@@ -184,6 +249,50 @@ impl Shown {
             }
         }
     }
+}
+
+/// Whether `a` and `b` mask the same columns, in any order and case.
+fn same_columns(a: &[ColumnName], b: &[ColumnName]) -> bool {
+    let within = |a: &[ColumnName], b: &[ColumnName]| {
+        a.iter()
+            .all(|entry| b.iter().any(|other| same_column(entry, other)))
+    };
+    within(a, b) && within(b, a)
+}
+
+/// Whether two entries are one, without regard to case.
+fn same_column(a: &ColumnName, b: &ColumnName) -> bool {
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    same(&a.table, &b.table)
+        && same(&a.column, &b.column)
+        && match (&a.schema, &b.schema) {
+            (None, None) => true,
+            (Some(a), Some(b)) => same(a, b),
+            _ => false,
+        }
+}
+
+/// Whether agents get masked under `now` every column they did under
+/// `was`: each entry `was` had is covered by one `now` has. An entry
+/// without a schema is that column in every schema, so it covers one with
+/// a schema, and not the other way round. A shown entry that did not read
+/// masked what nobody can say: nothing then masks no less.
+fn masks_no_less(now: &[ColumnName], was: &ShownMasked) -> bool {
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    let covers = |wide: &ColumnName, narrow: &ColumnName| {
+        same(&wide.table, &narrow.table)
+            && same(&wide.column, &narrow.column)
+            && match (&wide.schema, &narrow.schema) {
+                (None, _) => true,
+                (Some(wide), Some(narrow)) => same(wide, narrow),
+                (Some(_), None) => false,
+            }
+    };
+    !was.unread
+        && was
+            .columns
+            .iter()
+            .all(|masked| now.iter().any(|still| covers(still, masked)))
 }
 
 /// `tables`, an empty "All except" list as "All".
@@ -386,6 +495,73 @@ mod tests {
                 .any(|raise| matches!(raise, Raised::Tables { .. })),
             "{raised:?}"
         );
+    }
+
+    fn masking(id: &str, masked: &[&str]) -> SavedConnection {
+        let mut saved = saved(id, AgentAccess::Read);
+        saved.agents.masked = masked.iter().map(|entry| entry.parse().unwrap()).collect();
+        saved
+    }
+
+    #[test]
+    fn a_change_that_masks_less_is_held_and_one_that_masks_more_is_taken() {
+        let id = || ConnectionId("shop".into());
+        let mut shown = Shown::default();
+        shown.keep(&[Raised::Access {
+            id: id(),
+            to: AgentAccess::Read,
+        }]);
+        // More, from the file: taken at once, and remembered.
+        let (raised, lowered) = shown.compare(false, &[masking("shop", &["orders.email"])]);
+        assert_eq!(raised, []);
+        assert!(lowered);
+        assert_eq!(shown.masked["shop"], ["orders.email"]);
+        // The same in another case is no change.
+        let (raised, lowered) = shown.compare(false, &[masking("shop", &["Orders.EMAIL"])]);
+        assert_eq!((raised, lowered), (Vec::new(), false));
+        // Another entry: more.
+        let (raised, _) = shown.compare(false, &[masking("shop", &["orders.email", "phone.x"])]);
+        assert_eq!(raised, []);
+        // Less: held, with what the file says now.
+        let (raised, lowered) = shown.compare(false, &[masking("shop", &["phone.x"])]);
+        assert_eq!(
+            raised,
+            [Raised::Masked {
+                id: id(),
+                to: vec!["phone.x".parse().unwrap()],
+            }]
+        );
+        assert!(!lowered);
+        // So is a schema's entry in place of one for every schema.
+        shown.keep(&[Raised::Masked {
+            id: id(),
+            to: vec!["orders.email".parse().unwrap()],
+        }]);
+        let (raised, _) = shown.compare(false, &[masking("shop", &["sales.orders.email"])]);
+        assert_eq!(raised.len(), 1);
+        // Kept: what was shown is the file's.
+        shown.keep(&raised);
+        assert_eq!(shown.masked["shop"], ["sales.orders.email"]);
+        assert_eq!(shown.compare(false, &[masking("shop", &[])]).0.len(), 1);
+    }
+
+    #[test]
+    fn a_shown_mask_that_does_not_read_holds_every_change() {
+        let mut shown = Shown::default();
+        shown.keep(&[Raised::Access {
+            id: ConnectionId("shop".into()),
+            to: AgentAccess::Read,
+        }]);
+        shown
+            .masked
+            .insert("shop".into(), vec!["orders.email".into(), "email".into()]);
+        let was = shown.masked_of(&ConnectionId("shop".into()));
+        assert_eq!(was.columns, vec!["orders.email".parse().unwrap()]);
+        assert!(was.unread);
+        // Even the readable entry again, with more.
+        let (raised, _) =
+            shown.compare(false, &[masking("shop", &["orders.email", "orders.phone"])]);
+        assert_eq!(raised.len(), 1);
     }
 
     #[test]

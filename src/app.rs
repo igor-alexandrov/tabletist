@@ -2092,6 +2092,7 @@ impl App {
                     let tables = self.agents_tables(saved);
                     form.agents_tables = crate::model::TablesChoice::of(&tables);
                     form.agents_tables_opened = tables;
+                    form.agents_masked = self.agents_masked(saved);
                     self.dialog = Some(Dialog::Connection(Box::new(form)));
                     self.list_ssh_hosts();
                 }
@@ -2136,17 +2137,19 @@ impl App {
                 }
             }
             Action::DuplicateConnection(id) => {
-                // The copy hides what is in force: where a change made
-                // outside that hides less is held, what was shown.
+                // The copy hides and masks what is in force: where a change
+                // made outside that hides or masks less is held, what was
+                // shown.
                 let in_force = self
                     .connections
                     .get(&id)
-                    .map(|saved| self.agents_tables(saved));
+                    .map(|saved| (self.agents_tables(saved), self.agents_masked(saved)));
                 if let Some(copy) = self.connections.duplicate(&id) {
-                    if let (Some(tables), Some(mut saved)) =
+                    if let (Some((tables, masked)), Some(mut saved)) =
                         (in_force, self.connections.get(&copy).cloned())
                     {
                         saved.agents.tables = tables;
+                        saved.agents.masked = masked;
                         self.connections.upsert(saved);
                     }
                     self.save_connections();
@@ -3463,9 +3466,19 @@ impl App {
     }
 
     /// What agents may do on `saved` now: its access, or what was shown
-    /// where a change made outside the app is held.
+    /// where a change made outside the app is held. A change of its masked
+    /// columns held against a shown entry that does not read leaves it Off
+    /// meanwhile: what that entry masked cannot be said, so it cannot be
+    /// kept masked.
     pub fn agents_access(&self, saved: &SavedConnection) -> crate::connections::AgentAccess {
         use crate::agents_shown::Raised;
+        let masked = self
+            .agents_held
+            .iter()
+            .any(|raise| matches!(raise, Raised::Masked { id, .. } if *id == saved.id));
+        if masked && self.agents_shown.masked_of(&saved.id).unread {
+            return crate::connections::AgentAccess::Off;
+        }
         let held = self
             .agents_held
             .iter()
@@ -3488,6 +3501,27 @@ impl App {
             true => self.agents_shown.tables_of(&saved.id),
             false => saved.agents.tables.clone(),
         }
+    }
+
+    /// The columns agents get masked on `saved` now: its own, and where a
+    /// change made outside the app that masks less is held, what was shown
+    /// with them, so that a column that change also masks is masked at
+    /// once.
+    pub fn agents_masked(&self, saved: &SavedConnection) -> Vec<tabletist_db::agent::ColumnName> {
+        use crate::agents_shown::Raised;
+        let held = self
+            .agents_held
+            .iter()
+            .any(|raise| matches!(raise, Raised::Masked { id, .. } if *id == saved.id));
+        let mut masked = saved.agents.masked.clone();
+        if held {
+            for shown in self.agents_shown.masked_of(&saved.id).columns {
+                if !masked.contains(&shown) {
+                    masked.push(shown);
+                }
+            }
+        }
+        masked
     }
 
     /// Compares what the files let agents do with what was last shown:
@@ -3556,15 +3590,28 @@ impl App {
         }
         let mut changed = false;
         for raise in back {
-            let (id, access) = match raise {
+            let id = match &raise {
                 Raised::Server => continue,
-                Raised::Access { id, .. } => (id, true),
-                Raised::Tables { id, .. } => (id, false),
+                Raised::Access { id, .. }
+                | Raised::Tables { id, .. }
+                | Raised::Masked { id, .. } => id.clone(),
             };
             if let Some(mut saved) = self.connections.get(&id).cloned() {
-                match access {
-                    true => saved.agents.access = self.agents_shown.access_of(&id),
-                    false => saved.agents.tables = self.agents_shown.tables_of(&id),
+                match raise {
+                    Raised::Server => {}
+                    Raised::Access { .. } => saved.agents.access = self.agents_shown.access_of(&id),
+                    Raised::Tables { .. } => saved.agents.tables = self.agents_shown.tables_of(&id),
+                    // What was shown that does not read cannot be written
+                    // back: the rest is, and is what was shown from now on.
+                    Raised::Masked { .. } => {
+                        let columns = self.agents_shown.masked_of(&id).columns;
+                        saved.agents.masked = columns.clone();
+                        self.agents_shown.keep(&[Raised::Masked {
+                            id: id.clone(),
+                            to: columns,
+                        }]);
+                        self.save_agents_shown();
+                    }
                 }
                 self.connections.upsert(saved);
                 changed = true;
@@ -3626,6 +3673,7 @@ impl App {
                 let mut now = saved.clone();
                 now.agents.access = self.agents_access(saved);
                 now.agents.tables = self.agents_tables(saved);
+                now.agents.masked = self.agents_masked(saved);
                 now
             })
             .collect();
@@ -3879,7 +3927,10 @@ impl App {
         // made outside the app stays held, and one put back stays back.
         // The tables likewise: those the person changed are their own and
         // shown, wider or narrower; the same ones keep what the file says.
+        // The masked columns, which the editor does not change yet, keep
+        // what the file says.
         if let Some(was) = self.connections.get(&saved.id) {
+            saved.agents.masked = was.agents.masked.clone();
             let same = crate::model::TablesChoice::of(&saved.agents.tables)
                 == crate::model::TablesChoice::of(&tables_opened);
             if same {
@@ -7321,6 +7372,150 @@ mod tests {
             (saved.name.as_str(), &saved.agents.tables),
             ("Local shop", &only)
         );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_change_outside_that_masks_less_is_held_and_the_editor_keeps_the_files_masks() {
+        use crate::agents_shown::Raised;
+        use crate::connections::AgentAccess;
+        use tabletist_db::agent::ColumnName;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let columns = |written: &[&str]| -> Vec<ColumnName> {
+            written.iter().map(|entry| entry.parse().unwrap()).collect()
+        };
+        // What is in force, which the policy sends.
+        let sent = |app: &App| app.agents_masked(app.connections.get(&conn).unwrap());
+        let file_says = |app: &mut App, masked: Vec<ColumnName>| {
+            let mut saved = app.connections.get(&conn).unwrap().clone();
+            saved.agents.masked = masked;
+            app.connections.upsert(saved);
+            app.check_agents();
+            app.send_agents_policy();
+        };
+        let email = columns(&["orders.email"]);
+        // Masking more, from the file: taken at once.
+        file_says(&mut app, email.clone());
+        assert!(app.agents_held.is_empty());
+        assert_eq!(sent(&app), email);
+        // Masking less: held, and what was shown is in force with what the
+        // file says now.
+        file_says(&mut app, columns(&["orders.phone"]));
+        assert!(matches!(
+            app.agents_held.as_slice(),
+            [Raised::Masked { .. }]
+        ));
+        assert_eq!(sent(&app), columns(&["orders.phone", "orders.email"]));
+        let said = crate::ui::agents_held_said(&app).unwrap();
+        assert!(
+            said.contains("agents may read more of Local · dev"),
+            "{said}"
+        );
+        // A copy made meanwhile masks what is in force.
+        app.apply(Action::DuplicateConnection(conn.clone()));
+        let copy = &app.connections.connections[1];
+        assert_eq!(
+            copy.agents.masked,
+            columns(&["orders.phone", "orders.email"])
+        );
+        let copy = copy.id.clone();
+        app.apply(Action::DeleteConnection(copy));
+        // Put back: the file masks what was shown again.
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert_eq!(app.connections.get(&conn).unwrap().agents.masked, email);
+        // Kept: in force.
+        file_says(&mut app, Vec::new());
+        app.apply(Action::KeepAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty());
+        assert_eq!(sent(&app), Vec::<ColumnName>::new());
+        // The editor has no control for them: its save keeps what the file
+        // says when it saves.
+        app.apply(Action::EditConnection(conn.clone()));
+        file_says(&mut app, email.clone());
+        form(&mut app).name = "Local shop".into();
+        app.apply(Action::SaveConnection { connect: false });
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(
+            (saved.name.as_str(), &saved.agents.masked),
+            ("Local shop", &email)
+        );
+        // And the server is sent them.
+        let sent_masked = match agents_sent(&app).last() {
+            Some(AgentsCommand::Policy { connections, .. }) => connections[0].masked.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(sent_masked, email);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_connection_that_hides_and_masks_less_is_said_once() {
+        use crate::connections::AgentAccess;
+        use tabletist_db::agent::Tables;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let file_says = |app: &mut App, tables: Tables, masked: &[&str]| {
+            let mut saved = app.connections.get(&conn).unwrap().clone();
+            saved.agents.tables = tables;
+            saved.agents.masked = masked.iter().map(|entry| entry.parse().unwrap()).collect();
+            app.connections.upsert(saved);
+            app.check_agents();
+        };
+        file_says(
+            &mut app,
+            Tables::AllExcept(vec!["customers".parse().unwrap()]),
+            &["orders.email"],
+        );
+        file_says(&mut app, Tables::All, &[]);
+        assert_eq!(app.agents_held.len(), 2);
+        let said = crate::ui::agents_held_said(&app).unwrap();
+        assert_eq!(said.matches("Local · dev").count(), 1, "{said}");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_held_change_against_a_shown_mask_that_does_not_read_is_off_until_answered() {
+        use crate::agents_shown::Raised;
+        use crate::connections::AgentAccess;
+        let (mut app, _dir) = app();
+        let conn = with_saved(&mut app);
+        app.serve_agents();
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let mut saved = app.connections.get(&conn).unwrap().clone();
+        saved.agents.masked = vec!["orders.email".parse().unwrap()];
+        app.connections.upsert(saved);
+        app.check_agents();
+        // A hand writes an entry that does not read into what was shown.
+        app.agents_shown
+            .masked
+            .insert(conn.0.clone(), vec!["orders.email".into(), "bad".into()]);
+        app.check_agents();
+        assert!(matches!(
+            app.agents_held.as_slice(),
+            [Raised::Masked { .. }]
+        ));
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(app.agents_access(saved), AgentAccess::Off);
+        // Put back ends it: what was shown is what was written.
+        app.apply(Action::PutBackAgentChanges(app.agents_held.clone()));
+        assert!(app.agents_held.is_empty(), "{:?}", app.agents_held);
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(app.agents_access(saved), AgentAccess::Read);
     }
 
     #[test]

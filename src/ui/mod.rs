@@ -208,13 +208,21 @@ pub fn agents_held_said(app: &App) -> Option<String> {
                 let name = called(id);
                 crate::i18n::gettext(locale, "agents may read {name}").replace("{name}", &name)
             }
-            Raised::Tables { id, .. } => {
+            Raised::Tables { id, .. } | Raised::Masked { id, .. } => {
                 let name = called(id);
                 crate::i18n::gettext(locale, "agents may read more of {name}")
                     .replace("{name}", &name)
             }
         })
         .collect();
+    // A connection that hides and masks less is said once.
+    let mut said: Vec<String> = Vec::new();
+    for part in parts {
+        if !said.contains(&part) {
+            said.push(part);
+        }
+    }
+    let parts = said;
     let changes = match parts.as_slice() {
         [one] => one.clone(),
         // A catalog may join them otherwise, and in another order.
