@@ -255,7 +255,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         _ => None,
     };
     // The columns of the tables the masked columns name, for their mark,
-    // and of the one Add column…'s field names, for its list.
+    // and of the one Add column…'s field names, for its list: asked for
+    // once the frame is drawn.
     let wanted = match (&app.dialog, &loaded) {
         (Some(Dialog::Connection(form)), Some((conn, loaded))) => {
             let mut wanted: Vec<tabletist_db::ObjectRef> = form
@@ -266,13 +267,19 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if let Some(typed) = &form.agents_column_typed {
                 wanted.extend(loaded.offered_columns(typed, &[]).tables);
             }
-            Some((conn.clone(), wanted))
+            // Only what no window has, nor is fetching, nor failed to get.
+            wanted.retain(|object| {
+                !loaded.columns.iter().any(|(known, _)| known == object)
+                    && !loaded.columns_loading.contains(object)
+                    && !loaded.columns_failed.contains(object)
+            });
+            (!wanted.is_empty()).then(|| Action::LoadAgentColumns {
+                conn: conn.clone(),
+                objects: wanted,
+            })
         }
         _ => None,
     };
-    if let Some((conn, wanted)) = wanted {
-        app.load_agent_columns(&conn, &wanted);
-    }
     let Some(Dialog::Connection(form)) = &mut app.dialog else {
         ctx.data_mut(|data| data.remove::<Placement>(placement_id()));
         return;
@@ -287,7 +294,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // it again on each one, and a last time on the first frame shown.
     let focus_name = form.focus_name;
     form.focus_name &= measuring;
-    let mut actions = Vec::new();
+    let mut actions: Vec<Action> = wanted.into_iter().collect();
     // The dialog's own keys are taken before anything draws: a focused
     // button would read the chord that saves and connects as a press of
     // itself. An open list keeps them, as it keeps Escape. A press of its

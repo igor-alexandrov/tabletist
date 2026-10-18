@@ -88,6 +88,12 @@ pub enum Action {
     PickCaFile,
     /// Put this ~/.ssh/config Host alias in the SSH host field.
     PickSshHost(String),
+    /// Ask an open window of the saved connection for the columns of these
+    /// tables, for the editor's Masked columns control.
+    LoadAgentColumns {
+        conn: ConnectionId,
+        objects: Vec<tabletist_db::ObjectRef>,
+    },
     /// Fill the connection dialog from its URL field.
     ApplyUrl,
     TestConnection,

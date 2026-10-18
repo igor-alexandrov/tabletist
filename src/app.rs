@@ -458,7 +458,7 @@ impl App {
     /// Asks an open window of the saved connection `conn` for the columns
     /// of `objects`, for the Masked columns control: each one no window
     /// has, nor asked for, nor failed to get.
-    pub fn load_agent_columns(
+    fn load_agent_columns(
         &mut self,
         conn: &crate::connections::ConnectionId,
         objects: &[ObjectRef],
@@ -2169,6 +2169,7 @@ impl App {
                     self.list_ssh_hosts();
                 }
             }
+            Action::LoadAgentColumns { conn, objects } => self.load_agent_columns(&conn, &objects),
             Action::EditAgents { conn, allow } => {
                 self.apply(Action::EditConnection(conn));
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
