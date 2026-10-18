@@ -12,7 +12,7 @@
 
 ## Where this sits
 
-Step 2 of `docs/superpowers/specs/2026-10-17-settings-general-rows-design.md`. Step 1 (the file and the Data rows) is pull request igor-alexandrov/tabletist#154, which this branch starts from: until it is merged, work on a branch of `claude/settings-general-tab-5d3ef2`, and rebase on `main` once it is. Step 3 (Startup: the session file, Restore tabs and filters, On launch) is its own plan and pull request.
+Step 2 of `docs/superpowers/specs/2026-10-17-settings-general-rows-design.md`. Step 1 (the file and the Data rows) is pull request igor-alexandrov/tabletist#154, merged. Tasks 1 and 2 are pull request igor-alexandrov/tabletist#160, merged (merge commit `660cfd9`); tasks 3 to 5 are a branch of `main` after it. Their diffs were generated again on that `main`, which has Settings › Appearance (#156) and the zones in `src/zones.rs`: General passes its sections, `("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)`, to the sheet's `content` and to the Omarchy screen's `rows()`, so task 5 puts `OptionId::IdleDisconnect` in `OptionId::SAFETY`, and the counts and line numbers of the tests take the Appearance keys. Step 3 (Startup: the session file, Restore tabs and filters, On launch) is its own plan and pull request.
 
 ## Where this departs from the spec or the boards
 
@@ -57,6 +57,8 @@ The spec's own departures were approved with it; the one of this step ("Ask befo
 
 Every task's state was built here and passed `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings` and `cargo test --locked --workspace --all-targets` with the test PostgreSQL, MySQL and SSH servers (3,612 tests after task 1, 3,637 after task 5, none failed). Each task's tests were run alone on the code before it, and failed as its Step 2 says. The last state also passed `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` and `docs/bin/check`. Both Settings screens were rendered headless at the boards' sizes (1440 by 1000 on macOS, 1920 by 1080 on Omarchy) and compared with the "Settings, General" artboards by eye; the pictures were not kept. A reviewer given the draft wrote throwaway tests against it and found four defects (two in the connect again for a use, one in the question off under a dialog, one in the sheet's layout), each fixed in the task it belongs to and covered by a test there (marked "found by the review" below). A second reviewer read the generated plan against its diffs and the spec, and found where the prose said more than the code, and four more defects (a save sent before a connect that asks for a secret, a "Reconnecting" strip on every use, a foreign key's list that did not count as waiting, a doc comment out of place); those were fixed the same way. Every diff in this plan was applied in order to a copy of the base and the result compared with the last state. Not run: CI, macOS and Windows, and the app by hand.
 
+Tasks 3 to 5 were generated again on 2026-10-18, on `main` at `660cfd9` (tasks 1 and 2 merged). Task 3's diffs applied as they were; task 4's took the Appearance keys in `Key::ALL` and the key lines of the file; task 5's put `OptionId::IdleDisconnect` in `OptionId::SAFETY`, where General's sections (`content` in `src/ui/settings/sheet.rs`, `rows()` in `src/ui/settings/terminal.rs`) find it, in place of `group_starting`, and take the Appearance options in every match. Each task's state passed `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings` and `cargo test --locked --workspace --all-targets` with the test PostgreSQL, MySQL and SSH servers (3,680 tests after task 3, 3,698 after task 4, 3,699 after task 5, none failed; `the_agent_opens_the_tunnel` skipped, as `TABLETIST_TEST_SSH_AGENT` needs an agent that holds the test key, which CI loads). Each task's Step 2 failed as it says. The last state also passed `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` and `docs/bin/check`, and the six diffs, applied in order to `main`, give that state.
+
 ## Files
 
 | File | What changes |
@@ -78,6 +80,8 @@ Every task's state was built here and passed `cargo fmt --all --check`, `cargo c
 The Safety group's heading and its first row in both looks, the key `safety.production_read_only`, and the connection dialog's switch for a new production connection. The tab's lead names what the tab now protects, and a row's label wraps in its column in a narrow sheet. The sheet's group headings scroll with the rows: the Data heading moves into the rows' scroll area, where the Safety heading is.
 
 **Files:** Modify `docs/_reference/connections.md`; Modify `docs/_reference/settings-and-files.md`; Modify `src/app.rs`; Modify `src/model.rs`; Modify `src/settings.rs`; Modify `src/ui/mod.rs`; Modify `src/ui/settings/mod.rs`; Modify `src/ui/settings/sheet.rs`; Modify `src/ui/settings/terminal.rs`.
+
+> **Merged as igor-alexandrov/tabletist#160; the merged code supersedes this task's diffs.** They were made before Settings › Appearance (#156): on `main` the General pane passes its sections to the sheet's `content` and the Omarchy screen's `rows()`, and `group_starting` is gone.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -947,6 +951,8 @@ git commit -m "Add the Safety group to Settings › General, and start a new pro
 
 The key `safety.confirm_close_edits` and its row. Off, `App::hold` drops the edits as Discard does and the held action goes ahead; a running save and an open dialog hold as before.
 
+> **Merged as igor-alexandrov/tabletist#160; the merged code supersedes this task's diffs.** Rebased on the delete counts of main, `discard_edits` (`src/app/editing.rs`) also takes each tab's `edits.counts_out()` and stops them with `stop_counts`, as Discard does, and `src/ui/delete_tests.rs` has the test `with_the_question_off_closing_stops_what_the_deletes_were_counting`. Neither is in the diffs below.
+
 **Files:** Modify `docs/_guide/editing-data.md`; Modify `docs/_reference/settings-and-files.md`; Modify `src/app.rs`; Modify `src/app/editing.rs`; Modify `src/model.rs`; Modify `src/settings.rs`; Modify `src/ui/mod.rs`; Modify `src/ui/settings/mod.rs`; Modify `src/ui/settings/sheet.rs`; Modify `src/ui/settings/terminal.rs`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1581,10 +1587,10 @@ The backend's worker holds a command for a session whose connect is under way, a
 
 ````diff
 diff --git a/src/backend.rs b/src/backend.rs
-index ea440fa..f5996e0 100644
+index acbe818..982bfd5 100644
 --- a/src/backend.rs
 +++ b/src/backend.rs
-@@ -3226,6 +3226,163 @@ mod tests {
+@@ -3244,6 +3244,163 @@ mod tests {
      /// would have been sent by the end of it.
      const THIRD_CANCEL: Duration = Duration::from_millis(1500);
  
@@ -1759,10 +1765,10 @@ Expected: FAIL: 3 tests (`backend::tests::a_cancel_of_what_waits_for_the_session
 
 ````diff
 diff --git a/src/backend.rs b/src/backend.rs
-index f5996e0..ace6a1a 100644
+index 982bfd5..ef2de9f 100644
 --- a/src/backend.rs
 +++ b/src/backend.rs
-@@ -1605,6 +1605,12 @@ struct Worker {
+@@ -1613,6 +1613,12 @@ struct Worker {
      /// Sessions closed before they finished connecting.
      closed_early: std::collections::HashSet<SessionId>,
      connecting: std::collections::HashSet<SessionId>,
@@ -1775,7 +1781,7 @@ index f5996e0..ace6a1a 100644
      /// Watches and reads the settings file. Dropping it ends both.
      settings_watch: Option<SettingsReader>,
      /// The MCP server, its gateway and what agents may use.
-@@ -1625,6 +1631,7 @@ impl Worker {
+@@ -1633,6 +1639,7 @@ impl Worker {
              ready,
              closed_early: Default::default(),
              connecting: Default::default(),
@@ -1783,7 +1789,7 @@ index f5996e0..ace6a1a 100644
              settings_watch: None,
              #[cfg(test)]
              watched: Watched::default(),
-@@ -1654,13 +1661,14 @@ impl Worker {
+@@ -1662,13 +1669,14 @@ impl Worker {
      fn adopt(&mut self, done: Ready) {
          self.connecting.remove(&done.session);
          let closed = self.closed_early.remove(&done.session);
@@ -1799,7 +1805,7 @@ index f5996e0..ace6a1a 100644
                  self.outbox.emit(Event::Connected {
                      session: done.session,
                      request: done.request,
-@@ -1668,12 +1676,27 @@ impl Worker {
+@@ -1676,12 +1684,27 @@ impl Worker {
                      encrypted,
                      access,
                  });
@@ -1832,7 +1838,7 @@ index f5996e0..ace6a1a 100644
          }
      }
  
-@@ -1785,12 +1808,23 @@ impl Worker {
+@@ -1793,12 +1816,23 @@ impl Worker {
                      }
                  } else if self.connecting.contains(&session) {
                      self.closed_early.insert(session);
@@ -1856,7 +1862,7 @@ index f5996e0..ace6a1a 100644
                  }
              }
              Command::LoadSecret { request, account } => {
-@@ -1884,6 +1918,11 @@ impl Worker {
+@@ -1898,6 +1932,11 @@ impl Worker {
                              fail(&self.outbox, error.0, lost());
                          }
                      }
@@ -1892,10 +1898,10 @@ The key `safety.idle_disconnect` (`Idle`, default `30m`), `SessionStatus::Idle`,
 
 ````diff
 diff --git a/src/app.rs b/src/app.rs
-index 1c3506e..18f2bbd 100644
+index 7c15355..58fe666 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -13091,6 +13091,582 @@ mod tests {
+@@ -13599,6 +13599,582 @@ mod tests {
  
      /// Editing a table's values: the pending set, the editor, the save and
      /// the guard that keeps a page with pending changes.
@@ -2528,10 +2534,10 @@ index f14caf8..b281b2b 100644
      fn the_desktop_entry_matches_the_app_id() {
          let entry = include_str!("../packaging/linux/dev.tabletist.Tabletist.desktop");
 diff --git a/src/settings.rs b/src/settings.rs
-index 2003644..4dab77d 100644
+index 781082c..89cec9f 100644
 --- a/src/settings.rs
 +++ b/src/settings.rs
-@@ -1322,6 +1322,36 @@ mod tests {
+@@ -1631,6 +1631,36 @@ mod tests {
          assert_eq!(Timestamps::from_name("minute"), None);
      }
  
@@ -2568,7 +2574,7 @@ index 2003644..4dab77d 100644
      #[test]
      fn the_defaults_are_written_as_the_header_alone() {
          assert_eq!(Settings::default().to_toml(), HEADER);
-@@ -1337,6 +1367,7 @@ mod tests {
+@@ -1646,6 +1676,7 @@ mod tests {
              value_tags: false,
              production_read_only: false,
              confirm_close_edits: false,
@@ -2576,7 +2582,7 @@ index 2003644..4dab77d 100644
              show_system_schemas: true,
              custom_theme: Some("My \"Nord\".json".into()),
              sql_limit: 100,
-@@ -1363,6 +1394,7 @@ value_tags = false
+@@ -1677,6 +1708,7 @@ value_tags = false
  [safety]
  production_read_only = false
  confirm_close_edits = false
@@ -2584,7 +2590,7 @@ index 2003644..4dab77d 100644
  
  [sidebar]
  show_system_schemas = true
-@@ -1439,13 +1471,14 @@ theme = \"My \\\"Nord\\\".json\"
+@@ -1764,18 +1796,19 @@ bar = \"label\"  # tint | label
                  (Key::ValueTags, 7),
                  (Key::ProductionReadOnly, 10),
                  (Key::ConfirmCloseEdits, 11),
@@ -2595,6 +2601,11 @@ index 2003644..4dab77d 100644
 -                (Key::McpLogDays, 22),
 -                (Key::McpNotify, 23),
 -                (Key::Theme, 26),
+-                (Key::RowHeight, 29),
+-                (Key::Zebra, 30),
+-                (Key::ColumnTypes, 31),
+-                (Key::TableList, 32),
+-                (Key::EnvBar, 35),
 +                (Key::IdleDisconnect, 12),
 +                (Key::ShowSystemSchemas, 15),
 +                (Key::SqlLimit, 18),
@@ -2603,6 +2614,11 @@ index 2003644..4dab77d 100644
 +                (Key::McpLogDays, 23),
 +                (Key::McpNotify, 24),
 +                (Key::Theme, 27),
++                (Key::RowHeight, 30),
++                (Key::Zebra, 31),
++                (Key::ColumnTypes, 32),
++                (Key::TableList, 33),
++                (Key::EnvBar, 36),
              ]
          );
      }
@@ -2617,10 +2633,10 @@ Expected: FAIL to compile: `` unresolved import `crate::settings::Idle` ``; `` n
 
 ````diff
 diff --git a/docs/_reference/settings-and-files.md b/docs/_reference/settings-and-files.md
-index cf18191..65d269a 100644
+index 4ce215c..8b99727 100644
 --- a/docs/_reference/settings-and-files.md
 +++ b/docs/_reference/settings-and-files.md
-@@ -56,6 +56,7 @@ value_tags = true
+@@ -67,6 +67,7 @@ value_tags = true
  [safety]
  production_read_only = true
  confirm_close_edits = true
@@ -2628,7 +2644,7 @@ index cf18191..65d269a 100644
  
  [sidebar]
  show_system_schemas = false
-@@ -79,6 +80,7 @@ notify = true
+@@ -98,6 +99,7 @@ bar = "tint"
  | `data.value_tags` | `true` or `false` | `true` |
  | `safety.production_read_only` | `true` or `false`. Where the **Open read-only** box of a new production connection starts; the connection is saved with its box set, so a change here changes no saved connection | `true` |
  | `safety.confirm_close_edits` | `true` asks before pending changes are dropped; `false` discards them without asking. While a save runs, what would drop them does nothing until it ends, and closing the window asks either way | `true` |
@@ -2637,10 +2653,10 @@ index cf18191..65d269a 100644
  | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
  | `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |
 diff --git a/src/app.rs b/src/app.rs
-index 18f2bbd..ed77e3c 100644
+index 58fe666..00d6a9c 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -2516,6 +2516,7 @@ impl App {
+@@ -2718,6 +2718,7 @@ impl App {
              let old = std::mem::replace(&mut workspace.session, session);
              workspace.status = SessionStatus::Connecting { request };
              workspace.connect_started = None;
@@ -2648,7 +2664,7 @@ index 18f2bbd..ed77e3c 100644
              workspace.forget_session_requests();
              self.backend.send(Command::Close { session: old });
          }
-@@ -2665,6 +2666,7 @@ impl App {
+@@ -2867,6 +2868,7 @@ impl App {
          let old = std::mem::replace(&mut workspace.session, session);
          workspace.status = SessionStatus::Connecting { request };
          workspace.connect_started = None;
@@ -2656,7 +2672,7 @@ index 18f2bbd..ed77e3c 100644
          workspace.forget_session_requests();
          self.backend.send(Command::Close { session: old });
          // Reuses the secrets this tab already has; asks only for missing ones.
-@@ -2699,7 +2701,17 @@ impl App {
+@@ -2901,7 +2903,17 @@ impl App {
                      Some(tab) => {
                          self.save_accepted_password(tab);
                          self.mark_used(tab);
@@ -2675,7 +2691,7 @@ index 18f2bbd..ed77e3c 100644
                      }
                      // Nobody is waiting for this session any more.
                      None => self.backend.send(Command::Close { session }),
-@@ -2720,6 +2732,21 @@ impl App {
+@@ -2922,6 +2934,21 @@ impl App {
                  {
                      return;
                  }
@@ -2697,7 +2713,7 @@ index 18f2bbd..ed77e3c 100644
                  let rejected = matches!(error, Error::Auth(_))
                      && workspace.password_mode != PasswordMode::None;
                  if rejected {
-@@ -2782,6 +2809,8 @@ impl App {
+@@ -2984,6 +3011,8 @@ impl App {
              Event::Disconnected { session, error } => {
                  if let Some(tab) = self.tab_for_session(session)
                      && let Some(workspace) = self.workspace_mut(tab)
@@ -2706,7 +2722,7 @@ index 18f2bbd..ed77e3c 100644
                  {
                      workspace.status = SessionStatus::Disconnected(error);
                  }
-@@ -3863,6 +3892,25 @@ impl App {
+@@ -4195,6 +4224,25 @@ impl App {
          }
      }
  
@@ -2732,7 +2748,7 @@ index 18f2bbd..ed77e3c 100644
      /// After a (re)connect: load the tree, restart everything that waited on
      /// the old session, and open anything queued for this connection.
      pub fn after_connect(&mut self, tab: ConnTabId) {
-@@ -3881,20 +3929,7 @@ impl App {
+@@ -4213,20 +4261,7 @@ impl App {
                  Driver::MySql | Driver::Sqlite => {}
              }
          }
@@ -2754,7 +2770,7 @@ index 18f2bbd..ed77e3c 100644
          self.refresh_tree(tab);
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -3976,6 +4011,7 @@ fn catalog_of<'a>(
+@@ -4308,6 +4343,7 @@ fn catalog_of<'a>(
  
  impl App {
      pub fn load_schemas(&mut self, tab: ConnTabId) {
@@ -2762,7 +2778,7 @@ index 18f2bbd..ed77e3c 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -3986,6 +4022,7 @@ impl App {
+@@ -4318,6 +4354,7 @@ impl App {
      }
  
      pub fn load_objects(&mut self, tab: ConnTabId, schema: &str) {
@@ -2770,7 +2786,7 @@ index 18f2bbd..ed77e3c 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -4455,6 +4492,7 @@ impl App {
+@@ -4787,6 +4824,7 @@ impl App {
      /// Asks for `object`'s structure, for its columns in the completion
      /// list. Nothing waits for it but the workspace's `columns`.
      fn load_columns(&mut self, tab: ConnTabId, object: ObjectRef) {
@@ -2778,7 +2794,7 @@ index 18f2bbd..ed77e3c 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -4629,7 +4667,8 @@ impl App {
+@@ -4961,7 +4999,8 @@ impl App {
          let Some(workspace) = self.workspace(tab) else {
              return;
          };
@@ -2788,7 +2804,7 @@ index 18f2bbd..ed77e3c 100644
              return;
          }
          let dialect = workspace.driver.dialect();
-@@ -4666,7 +4705,7 @@ impl App {
+@@ -4998,7 +5037,7 @@ impl App {
          let Some(workspace) = self.workspace(tab) else {
              return;
          };
@@ -2797,7 +2813,7 @@ index 18f2bbd..ed77e3c 100644
              return;
          }
          let Some(sql) = workspace.sql_tab(id) else {
-@@ -4697,6 +4736,15 @@ impl App {
+@@ -5029,6 +5068,15 @@ impl App {
          statements: Vec<tabletist_db::sql::Statement>,
          mode: tabletist_db::ScriptMode,
      ) {
@@ -2813,7 +2829,7 @@ index 18f2bbd..ed77e3c 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -4866,6 +4914,7 @@ impl App {
+@@ -5198,6 +5246,7 @@ impl App {
      /// settings' size. Previous asks for the tab's size, or for the rows
      /// before a page that begins less than a page from the start.
      fn fetch_page(&mut self, tab: ConnTabId, id: TabId, limit: u32) {
@@ -2821,7 +2837,7 @@ index 18f2bbd..ed77e3c 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -5044,6 +5093,7 @@ impl App {
+@@ -5376,6 +5425,7 @@ impl App {
      }
  
      pub fn count_rows(&mut self, tab: ConnTabId, id: TabId) {
@@ -2829,7 +2845,7 @@ index 18f2bbd..ed77e3c 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -5064,6 +5114,7 @@ impl App {
+@@ -5396,6 +5446,7 @@ impl App {
      }
  
      pub fn describe(&mut self, tab: ConnTabId, id: TabId) {
@@ -2837,7 +2853,7 @@ index 18f2bbd..ed77e3c 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -5165,6 +5216,101 @@ impl App {
+@@ -5500,6 +5551,101 @@ impl App {
          // A hidden window draws no frame: its close request is answered
          // here, or nothing would hold it back.
          self.hold_close(ctx);
@@ -2939,7 +2955,7 @@ index 18f2bbd..ed77e3c 100644
      }
  
      /// The foreign key picker's searches wait for a pause in the typing:
-@@ -5178,6 +5324,7 @@ impl App {
+@@ -5513,6 +5659,7 @@ impl App {
  
      /// Draws one frame, then applies what the frame asked for.
      pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
@@ -2948,7 +2964,7 @@ index 18f2bbd..ed77e3c 100644
          self.apply_actions();
          self.tick_lookups(ui.ctx());
 diff --git a/src/app/editing.rs b/src/app/editing.rs
-index 9de07e5..eec2bd0 100644
+index 777a1aa..11fab5e 100644
 --- a/src/app/editing.rs
 +++ b/src/app/editing.rs
 @@ -14,7 +14,7 @@ use crate::edit::{
@@ -2960,7 +2976,7 @@ index 9de07e5..eec2bd0 100644
  };
  use crate::review::{Part, Values};
  
-@@ -454,7 +454,8 @@ impl App {
+@@ -461,7 +461,8 @@ impl App {
          if lacking == Some(true) {
              return Some(SaveBlock::Required);
          }
@@ -2970,7 +2986,7 @@ index 9de07e5..eec2bd0 100644
              return Some(SaveBlock::Disconnected);
          }
          if workspace.access == Access::ReadOnly {
-@@ -668,6 +669,18 @@ impl App {
+@@ -675,6 +676,18 @@ impl App {
          sent: Sent,
          then: Option<Held>,
      ) {
@@ -2989,7 +3005,7 @@ index 9de07e5..eec2bd0 100644
          let request = RequestId(self.next_id());
          let Some(workspace) = self.workspace_mut(tab) else {
              return;
-@@ -1940,6 +1953,7 @@ impl App {
+@@ -1949,6 +1962,7 @@ impl App {
          if asked.is_empty() {
              return;
          }
@@ -2997,7 +3013,7 @@ index 9de07e5..eec2bd0 100644
          let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
              return;
          };
-@@ -2327,6 +2341,9 @@ impl App {
+@@ -2336,6 +2350,9 @@ impl App {
              })
              .flatten()
              .unwrap_or_default();
@@ -3049,10 +3065,10 @@ index 6f3dbfd..157d1fe 100644
          };
          // No picker's: serial 0 is nobody's.
 diff --git a/src/model.rs b/src/model.rs
-index 93b8e27..1ebb176 100644
+index 7c235ff..1c63604 100644
 --- a/src/model.rs
 +++ b/src/model.rs
-@@ -959,6 +959,13 @@ pub struct Workspace {
+@@ -967,6 +967,13 @@ pub struct Workspace {
      /// When the session last connected, in seconds since the Unix epoch
      /// (the connection bar's card says how long ago).
      pub connected_at: Option<u64>,
@@ -3066,7 +3082,7 @@ index 93b8e27..1ebb176 100644
  }
  
  /// How many objects the sidebar's Recent section keeps.
-@@ -973,6 +980,10 @@ pub enum SessionStatus {
+@@ -981,6 +988,10 @@ pub enum SessionStatus {
      Disconnected(tabletist_db::Error),
      /// The user cancelled a password or SSH secret prompt.
      Cancelled,
@@ -3077,7 +3093,7 @@ index 93b8e27..1ebb176 100644
  }
  
  #[derive(Debug, Default, PartialEq)]
-@@ -4027,6 +4038,8 @@ impl Workspace {
+@@ -4339,6 +4350,8 @@ impl Workspace {
              label_refused: None,
              fold_documents: None,
              connected_at: None,
@@ -3086,7 +3102,7 @@ index 93b8e27..1ebb176 100644
          }
      }
  
-@@ -4116,6 +4129,39 @@ impl Workspace {
+@@ -4428,6 +4441,39 @@ impl Workspace {
          }
      }
  
@@ -3127,10 +3143,10 @@ index 93b8e27..1ebb176 100644
      pub fn object_tabs(&self) -> impl Iterator<Item = &ObjectTab> {
          self.tabs.iter().filter_map(Tab::as_object)
 diff --git a/src/settings.rs b/src/settings.rs
-index 4dab77d..9244285 100644
+index 89cec9f..c25911e 100644
 --- a/src/settings.rs
 +++ b/src/settings.rs
-@@ -91,6 +91,67 @@ impl From<String> for Zone {
+@@ -201,6 +201,67 @@ impl EnvBar {
      }
  }
  
@@ -3198,9 +3214,9 @@ index 4dab77d..9244285 100644
  /// Everything the user can set. A key the file lacks takes its default and
  /// one this version does not know is ignored, so older and newer files both
  /// load. The serde derive reads the `settings.json` of versions before the
-@@ -120,6 +181,9 @@ pub struct Settings {
-     /// its tab, its connection or the window, or loading another page)
-     /// asks first. Off, the edits are dropped and the action goes ahead.
+@@ -231,6 +292,9 @@ pub struct Settings {
+     /// asks first. Off, the edits are dropped and the action goes ahead,
+     /// except while a save runs or a dialog is open.
      pub confirm_close_edits: bool,
 +    /// How long a connection goes unused before its session is closed. Its
 +    /// tab stays, and connects again when it is next used.
@@ -3208,7 +3224,7 @@ index 4dab77d..9244285 100644
      /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
      pub show_system_schemas: bool,
      /// A palette file name in the themes directory. `None` follows the
-@@ -150,6 +214,7 @@ pub enum Key {
+@@ -273,6 +337,7 @@ pub enum Key {
      ValueTags,
      ProductionReadOnly,
      ConfirmCloseEdits,
@@ -3216,16 +3232,16 @@ index 4dab77d..9244285 100644
      ShowSystemSchemas,
      SqlLimit,
      SqlTimeoutSecs,
-@@ -161,7 +226,7 @@ pub enum Key {
+@@ -289,7 +354,7 @@ pub enum Key {
  
  impl Key {
      /// In the order the file has them: a table's keys together.
--    pub const ALL: [Key; 14] = [
-+    pub const ALL: [Key; 15] = [
+-    pub const ALL: [Key; 19] = [
++    pub const ALL: [Key; 20] = [
          Self::PageSize,
          Self::Timestamps,
          Self::Tz,
-@@ -169,6 +234,7 @@ impl Key {
+@@ -297,6 +362,7 @@ impl Key {
          Self::ValueTags,
          Self::ProductionReadOnly,
          Self::ConfirmCloseEdits,
@@ -3233,7 +3249,7 @@ index 4dab77d..9244285 100644
          Self::ShowSystemSchemas,
          Self::SqlLimit,
          Self::SqlTimeoutSecs,
-@@ -188,6 +254,7 @@ impl Key {
+@@ -321,6 +387,7 @@ impl Key {
              Self::ValueTags => ("data", "value_tags"),
              Self::ProductionReadOnly => ("safety", "production_read_only"),
              Self::ConfirmCloseEdits => ("safety", "confirm_close_edits"),
@@ -3241,15 +3257,15 @@ index 4dab77d..9244285 100644
              Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
              Self::SqlLimit => ("editor", "sql_limit"),
              Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
-@@ -204,6 +271,7 @@ impl Key {
+@@ -342,6 +409,7 @@ impl Key {
          match self {
              Self::Timestamps => Some("second | full"),
              Self::Tz => Some("system | utc | \"Area/City\""),
 +            Self::IdleDisconnect => Some("never | 5m | 15m | 30m | 1h | 4h"),
              Self::SqlTimeoutSecs => Some("0 waits forever"),
-             _ => None,
-         }
-@@ -889,6 +957,7 @@ impl Settings {
+             Self::RowHeight => Some("compact | regular | roomy"),
+             Self::TableList => Some("tree | flat"),
+@@ -1158,6 +1226,7 @@ impl Settings {
              Key::ValueTags => self.value_tags.to_string(),
              Key::ProductionReadOnly => self.production_read_only.to_string(),
              Key::ConfirmCloseEdits => self.confirm_close_edits.to_string(),
@@ -3257,7 +3273,7 @@ index 4dab77d..9244285 100644
              Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
              Key::SqlLimit => self.sql_limit.to_string(),
              // TOML has no null: no timeout is no seconds.
-@@ -1111,6 +1180,9 @@ impl Settings {
+@@ -1392,6 +1461,9 @@ impl Settings {
              Key::ValueTags => flag.map(|flag| self.value_tags = flag),
              Key::ProductionReadOnly => flag.map(|flag| self.production_read_only = flag),
              Key::ConfirmCloseEdits => flag.map(|flag| self.confirm_close_edits = flag),
@@ -3267,7 +3283,7 @@ index 4dab77d..9244285 100644
              Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
              Key::SqlLimit => number.map(|number| self.sql_limit = number),
              Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
-@@ -1221,6 +1293,7 @@ impl Settings {
+@@ -1520,6 +1592,7 @@ impl Settings {
              Key::ValueTags => self.value_tags = other.value_tags,
              Key::ProductionReadOnly => self.production_read_only = other.production_read_only,
              Key::ConfirmCloseEdits => self.confirm_close_edits = other.confirm_close_edits,
@@ -3275,7 +3291,7 @@ index 4dab77d..9244285 100644
              Key::ShowSystemSchemas => self.show_system_schemas = other.show_system_schemas,
              Key::SqlLimit => self.sql_limit = other.sql_limit,
              Key::SqlTimeoutSecs => self.sql_timeout_secs = other.sql_timeout_secs,
-@@ -1280,6 +1353,7 @@ impl Default for Settings {
+@@ -1584,6 +1657,7 @@ impl Default for Settings {
              value_tags: true,
              production_read_only: true,
              confirm_close_edits: true,
@@ -3284,10 +3300,10 @@ index 4dab77d..9244285 100644
              custom_theme: None,
              sql_limit: 1_000,
 diff --git a/src/ui/sql_results.rs b/src/ui/sql_results.rs
-index eb1885b..98764e7 100644
+index 14c9d21..6cc75e8 100644
 --- a/src/ui/sql_results.rs
 +++ b/src/ui/sql_results.rs
-@@ -1323,10 +1323,9 @@ fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>>
+@@ -1327,10 +1327,9 @@ fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>>
          error,
          statement: run.statements.get(index),
          why,
@@ -3302,7 +3318,7 @@ index eb1885b..98764e7 100644
      })
  }
 diff --git a/src/ui/workspace.rs b/src/ui/workspace.rs
-index fb9d90b..c3bf2ad 100644
+index d61231d..09800e7 100644
 --- a/src/ui/workspace.rs
 +++ b/src/ui/workspace.rs
 @@ -67,8 +67,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
@@ -3351,7 +3367,7 @@ index fb9d90b..c3bf2ad 100644
      }
  }
  
-@@ -2735,7 +2740,10 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+@@ -2739,7 +2744,10 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
      let name = display_safe(&workspace.name).into_owned();
      // What happened, the plain sentence when it says more, the exact error.
      let (lead, sentence, raw, reconnecting) = match &workspace.status {
@@ -3379,7 +3395,7 @@ git commit -m "Close a session left unused, and connect it again when it is next
 
 ### Task 5: Disconnect when idle in Settings › General
 
-The row in both looks: a menu on macOS and Windows, a stepper on Omarchy. Reset, which takes every option of `OptionId::GENERAL`, puts it back with the other two Safety options; its test now says so for all three.
+The row in both looks: a menu on macOS and Windows, a stepper on Omarchy. The option is the last of `OptionId::SAFETY`, so both looks draw it under the Safety heading with the other two. Reset, which takes every option of `OptionId::GENERAL`, puts it back with the other two Safety options; its test now says so for all three.
 
 **Files:** Modify `docs/_reference/settings-and-files.md`; Modify `src/app.rs`; Modify `src/model.rs`; Modify `src/settings.rs`; Modify `src/ui/mod.rs`; Modify `src/ui/settings/mod.rs`; Modify `src/ui/settings/sheet.rs`; Modify `src/ui/settings/terminal.rs`.
 
@@ -3387,10 +3403,10 @@ The row in both looks: a menu on macOS and Windows, a stepper on Omarchy. Reset,
 
 ````diff
 diff --git a/src/app.rs b/src/app.rs
-index ed77e3c..c0e0710 100644
+index 00d6a9c..8f05ace 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -7881,6 +7881,9 @@ mod tests {
+@@ -8389,6 +8389,9 @@ mod tests {
              settings.page_size = 500;
              settings.tz = crate::settings::Zone::Utc;
              settings.group_digits = Some(false);
@@ -3400,7 +3416,7 @@ index ed77e3c..c0e0710 100644
              settings.show_system_schemas = true;
              settings.sql_limit = 50;
          });
-@@ -7903,6 +7906,10 @@ mod tests {
+@@ -8411,6 +8414,10 @@ mod tests {
          assert_eq!(app.settings.page_size, defaults.page_size);
          assert_eq!(app.settings.tz, defaults.tz);
          assert_eq!(app.settings.group_digits, defaults.group_digits);
@@ -3412,18 +3428,18 @@ index ed77e3c..c0e0710 100644
          assert_eq!(app.settings.sql_limit, 50);
          assert_eq!(app.settings_file.text, app.settings.to_toml());
 diff --git a/src/settings.rs b/src/settings.rs
-index 9244285..b667d45 100644
+index c25911e..11155dc 100644
 --- a/src/settings.rs
 +++ b/src/settings.rs
-@@ -2504,6 +2504,7 @@ theme = \"My \\\"Nord\\\".json\"
+@@ -2900,6 +2900,7 @@ bar = \"label\"  # tint | label
                  Key::ValueTags,
                  Key::ProductionReadOnly,
                  Key::ConfirmCloseEdits,
 +                Key::IdleDisconnect,
-                 Key::McpEnabled,
-                 Key::McpLogDays,
-                 Key::McpNotify,
-@@ -2538,6 +2539,38 @@ theme = \"My \\\"Nord\\\".json\"
+                 Key::RowHeight,
+                 Key::Zebra,
+                 Key::ColumnTypes,
+@@ -2950,6 +2951,38 @@ bar = \"label\"  # tint | label
          assert_eq!(step(9_000, false), OptionValue::PageSize(5_000));
      }
  
@@ -3463,10 +3479,10 @@ index 9244285..b667d45 100644
      fn the_logs_days_step_through_their_choices_and_stop_at_the_ends() {
          let step = |days: u32, forward: bool| {
 diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index cedc5c4..84eb6f7 100644
+index 9d39af9..48c6a27 100644
 --- a/src/ui/mod.rs
 +++ b/src/ui/mod.rs
-@@ -1366,6 +1366,30 @@ value_tags   = true
+@@ -1376,6 +1376,30 @@ value_tags   = true
              assert!(!harness.app.settings.confirm_close_edits);
              let text = &harness.app.settings_file.text;
              assert!(text.ends_with("confirm_close_edits = false\n"), "{text}");
@@ -3497,7 +3513,7 @@ index cedc5c4..84eb6f7 100644
          }
      }
  
-@@ -1398,6 +1422,9 @@ value_tags   = true
+@@ -1408,6 +1432,9 @@ value_tags   = true
              "production opens read-only",
              "default for new connections",
              "confirm close with edits",
@@ -3507,7 +3523,7 @@ index cedc5c4..84eb6f7 100644
          ] {
              assert!(harness.painted_color(text).is_some(), "{text}");
          }
-@@ -1422,6 +1449,20 @@ value_tags   = true
+@@ -1432,6 +1459,20 @@ value_tags   = true
          assert!(!harness.app.settings.production_read_only);
          harness.press(egui::Key::R, egui::Modifiers::SHIFT);
          assert!(harness.app.settings.production_read_only);
@@ -3528,7 +3544,7 @@ index cedc5c4..84eb6f7 100644
      }
  
      #[test]
-@@ -1625,12 +1666,12 @@ value_tags   = true
+@@ -1635,12 +1676,12 @@ value_tags   = true
              let mut harness = Harness::with_size(size);
              harness.set_look(look());
              harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
@@ -3542,9 +3558,9 @@ index cedc5c4..84eb6f7 100644
 -            let switch = crate::testing::bounds(&tree, last, Role::CheckBox).expect("the switch");
 +            let switch = crate::testing::bounds(&tree, last, Role::ComboBox).expect("the menu");
              // The rows came with the keyboard: the switch is in the
-             // window, between the rows' heading and the footer.
+             // window, between the tab's lead and the footer.
              let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-@@ -1641,7 +1682,7 @@ value_tags   = true
+@@ -1651,7 +1692,7 @@ value_tags   = true
              let lead = harness.painted_rect(lead).expect("the tab's lead");
              assert!(switch.top() > lead.bottom(), "{switch:?} {lead:?}");
              // And back up with it: the first row's menu.
@@ -3564,7 +3580,7 @@ Expected: FAIL to compile: `` no variant, associated function, or constant named
 
 ````diff
 diff --git a/docs/_reference/settings-and-files.md b/docs/_reference/settings-and-files.md
-index 65d269a..668759b 100644
+index 8b99727..a27bacf 100644
 --- a/docs/_reference/settings-and-files.md
 +++ b/docs/_reference/settings-and-files.md
 @@ -19,6 +19,7 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
@@ -3573,25 +3589,25 @@ index 65d269a..668759b 100644
  | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
 +| **Disconnect when idle** | Never, or after 5, 15 or 30 minutes, 1 hour or 4 hours unused. The server session is closed; the tabs stay, and the connection connects again when something next needs it: a refresh, a page, a table opened, a run or a save | After 30 min |
  
- A second pane, **Agents**, sets what the `[mcp]` keys
- hold, and shows how to connect an agent:
+ A second pane, **Appearance**, sets how the grids and the connection bar
+ are drawn. Each change shows in every open window at once.
 diff --git a/src/model.rs b/src/model.rs
-index 1ebb176..a31fccb 100644
+index 1c63604..a489646 100644
 --- a/src/model.rs
 +++ b/src/model.rs
-@@ -2199,6 +2199,7 @@ impl SettingsPane {
+@@ -2493,6 +2493,7 @@ impl SettingsPane {
                  SettingsRow::Option(OptionId::ValueTags),
                  SettingsRow::Option(OptionId::ProductionReadOnly),
                  SettingsRow::Option(OptionId::ConfirmCloseEdits),
 +                SettingsRow::Option(OptionId::IdleDisconnect),
              ],
-             Self::Agents => &[
-                 SettingsRow::Option(OptionId::AgentsOn),
+             Self::Appearance => &[
+                 SettingsRow::Option(OptionId::RowHeight),
 diff --git a/src/settings.rs b/src/settings.rs
-index b667d45..7306ec6 100644
+index 11155dc..fed1ebf 100644
 --- a/src/settings.rs
 +++ b/src/settings.rs
-@@ -292,6 +292,9 @@ pub enum OptionId {
+@@ -433,6 +433,9 @@ pub enum OptionId {
      ProductionReadOnly,
      /// Whether dropping unsaved edits asks first: `safety.confirm_close_edits`.
      ConfirmCloseEdits,
@@ -3601,22 +3617,24 @@ index b667d45..7306ec6 100644
      /// Whether agents can reach the app: `mcp.enabled`.
      AgentsOn,
      /// How long the log of agents' calls keeps one: `mcp.log_days`.
-@@ -302,7 +305,7 @@ pub enum OptionId {
- 
+@@ -449,7 +452,7 @@ pub enum OptionId {
  impl OptionId {
-     /// Every option, the General pane's and then the Agents pane's.
--    pub const ALL: [OptionId; 10] = [
-+    pub const ALL: [OptionId; 11] = [
+     /// Every option, the General pane's, the Appearance pane's and then
+     /// the Agents pane's.
+-    pub const ALL: [OptionId; 15] = [
++    pub const ALL: [OptionId; 16] = [
          Self::PageSize,
          Self::Timestamps,
          Self::Tz,
-@@ -310,12 +313,13 @@ impl OptionId {
+@@ -457,6 +460,7 @@ impl OptionId {
          Self::ValueTags,
          Self::ProductionReadOnly,
          Self::ConfirmCloseEdits,
 +        Self::IdleDisconnect,
-         Self::AgentsOn,
-         Self::LogDays,
+         Self::RowHeight,
+         Self::Zebra,
+         Self::ColumnTypes,
+@@ -467,7 +471,7 @@ impl OptionId {
          Self::AgentsNotify,
      ];
      /// The General pane's, in the order it has them.
@@ -3625,15 +3643,28 @@ index b667d45..7306ec6 100644
          Self::PageSize,
          Self::Timestamps,
          Self::Tz,
-@@ -323,6 +327,7 @@ impl OptionId {
+@@ -475,6 +479,7 @@ impl OptionId {
          Self::ValueTags,
          Self::ProductionReadOnly,
          Self::ConfirmCloseEdits,
 +        Self::IdleDisconnect,
      ];
-     /// The Agents pane's, in the order it has them.
-     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
-@@ -337,6 +342,7 @@ impl OptionId {
+     /// The General pane's sections: Data, then Safety.
+     pub const DATA: [OptionId; 5] = [
+@@ -484,7 +489,11 @@ impl OptionId {
+         Self::GroupDigits,
+         Self::ValueTags,
+     ];
+-    pub const SAFETY: [OptionId; 2] = [Self::ProductionReadOnly, Self::ConfirmCloseEdits];
++    pub const SAFETY: [OptionId; 3] = [
++        Self::ProductionReadOnly,
++        Self::ConfirmCloseEdits,
++        Self::IdleDisconnect,
++    ];
+     /// The Appearance pane's, in the order it has them: its Grid
+     /// section's, then its Environment section's.
+     pub const APPEARANCE: [OptionId; 5] = [
+@@ -514,6 +523,7 @@ impl OptionId {
              Self::ValueTags => Key::ValueTags,
              Self::ProductionReadOnly => Key::ProductionReadOnly,
              Self::ConfirmCloseEdits => Key::ConfirmCloseEdits,
@@ -3641,7 +3672,7 @@ index b667d45..7306ec6 100644
              Self::AgentsOn => Key::McpEnabled,
              Self::LogDays => Key::McpLogDays,
              Self::AgentsNotify => Key::McpNotify,
-@@ -360,6 +366,7 @@ pub enum OptionValue {
+@@ -542,6 +552,7 @@ pub enum OptionValue {
      ValueTags(bool),
      ProductionReadOnly(bool),
      ConfirmCloseEdits(bool),
@@ -3649,7 +3680,7 @@ index b667d45..7306ec6 100644
      AgentsOn(bool),
      LogDays(u32),
      AgentsNotify(bool),
-@@ -375,6 +382,7 @@ impl OptionValue {
+@@ -563,6 +574,7 @@ impl OptionValue {
              Self::ValueTags(_) => OptionId::ValueTags,
              Self::ProductionReadOnly(_) => OptionId::ProductionReadOnly,
              Self::ConfirmCloseEdits(_) => OptionId::ConfirmCloseEdits,
@@ -3657,7 +3688,7 @@ index b667d45..7306ec6 100644
              Self::AgentsOn(_) => OptionId::AgentsOn,
              Self::LogDays(_) => OptionId::LogDays,
              Self::AgentsNotify(_) => OptionId::AgentsNotify,
-@@ -391,6 +399,7 @@ impl OptionValue {
+@@ -584,6 +596,7 @@ impl OptionValue {
              Self::ValueTags(on) => settings.value_tags = on,
              Self::ProductionReadOnly(on) => settings.production_read_only = on,
              Self::ConfirmCloseEdits(on) => settings.confirm_close_edits = on,
@@ -3665,7 +3696,7 @@ index b667d45..7306ec6 100644
              Self::AgentsOn(on) => settings.mcp_enabled = on,
              Self::LogDays(days) => settings.mcp_log_days = days,
              Self::AgentsNotify(on) => settings.mcp_notify = on,
-@@ -849,6 +858,7 @@ impl Settings {
+@@ -1076,6 +1089,7 @@ impl Settings {
                  OptionValue::ProductionReadOnly(self.production_read_only)
              }
              OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(self.confirm_close_edits),
@@ -3673,7 +3704,7 @@ index b667d45..7306ec6 100644
              OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
              OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
              OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
-@@ -886,6 +896,19 @@ impl Settings {
+@@ -1124,6 +1138,19 @@ impl Settings {
              OptionId::ValueTags => OptionValue::ValueTags(forward),
              OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
              OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
@@ -3683,17 +3714,17 @@ index b667d45..7306ec6 100644
 +                    .iter()
 +                    .position(|choice| *choice == self.idle_disconnect)
 +                    .unwrap_or(0);
-+                let to = if forward {
++                let next = if forward {
 +                    (at + 1).min(Idle::ALL.len() - 1)
 +                } else {
 +                    at.saturating_sub(1)
 +                };
-+                OptionValue::IdleDisconnect(Idle::ALL[to])
++                OptionValue::IdleDisconnect(Idle::ALL[next])
 +            }
              OptionId::AgentsOn => OptionValue::AgentsOn(forward),
              OptionId::LogDays => {
                  let days = self.mcp_log_days;
-@@ -925,7 +948,7 @@ impl Settings {
+@@ -1182,7 +1209,7 @@ impl Settings {
      /// The other value of an option that has two; `None` for one with more.
      pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
          match option {
@@ -3703,19 +3734,19 @@ index b667d45..7306ec6 100644
                  Timestamps::Second => Timestamps::Full,
                  Timestamps::Full => Timestamps::Second,
 diff --git a/src/ui/settings/mod.rs b/src/ui/settings/mod.rs
-index 815f761..d276902 100644
+index b818f0a..e85f249 100644
 --- a/src/ui/settings/mod.rs
 +++ b/src/ui/settings/mod.rs
-@@ -16,7 +16,7 @@ use crate::app::App;
- use crate::i18n::{Locale, gettext, ngettext};
+@@ -17,7 +17,7 @@ use crate::i18n::{Locale, gettext, ngettext};
  use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
  use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
--use crate::settings::{OptionId, OptionValue, Settings, Timestamps, Zone};
-+use crate::settings::{Idle, OptionId, OptionValue, Settings, Timestamps, Zone};
+ use crate::settings::{
+-    EnvBar, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
++    EnvBar, Idle, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
+ };
  
  /// The label of an option's row. English: the caller translates, and the
- /// terminal look lower-cases.
-@@ -29,6 +29,7 @@ pub(super) fn label(option: OptionId) -> &'static str {
+@@ -31,6 +31,7 @@ pub(super) fn label(option: OptionId) -> &'static str {
          OptionId::ValueTags => "Value tags",
          OptionId::ProductionReadOnly => "New production connections open read-only",
          OptionId::ConfirmCloseEdits => "Ask before closing with unsaved edits",
@@ -3723,33 +3754,23 @@ index 815f761..d276902 100644
          OptionId::AgentsOn => "Let agents use Tabletist",
          OptionId::LogDays => "Keep the activity log",
          OptionId::AgentsNotify => "Notify when an agent connects",
-@@ -43,7 +44,8 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
-         OptionId::Tz => "timestamptz zone",
-         OptionId::ProductionReadOnly => "production opens read-only",
-         OptionId::ConfirmCloseEdits => "confirm close with edits",
--        OptionId::PageSize
-+        OptionId::IdleDisconnect
-+        | OptionId::PageSize
+@@ -59,6 +60,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
          | OptionId::Timestamps
          | OptionId::GroupDigits
          | OptionId::ValueTags
-@@ -65,6 +67,7 @@ pub(super) fn group_starting(option: OptionId) -> Option<&'static str> {
-         | OptionId::GroupDigits
-         | OptionId::ValueTags
-         | OptionId::ConfirmCloseEdits
 +        | OptionId::IdleDisconnect
          | OptionId::AgentsOn
          | OptionId::LogDays
-         | OptionId::AgentsNotify => None,
-@@ -79,6 +82,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
+         | OptionId::AgentsNotify
+@@ -74,6 +76,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
          OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
          OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
          OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
 +        OptionId::IdleDisconnect => Some("Closes server sessions; tabs stay and reconnect on use"),
-         OptionId::Timestamps
-         | OptionId::GroupDigits
-         | OptionId::ConfirmCloseEdits
-@@ -117,6 +121,19 @@ pub(super) fn zone_text(locale: Locale, zone: &Zone, system: Option<&str>) -> St
+         OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
+         OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
+         OptionId::EnvBar => Some("Production always uses the full tint"),
+@@ -102,6 +105,19 @@ pub(super) fn zone_text(locale: Locale, zone: &Zone, system: Option<&str>) -> St
      }
  }
  
@@ -3769,7 +3790,7 @@ index 815f761..d276902 100644
  /// The days the log keeps a call, as the window writes them.
  pub(super) fn days(locale: Locale, days: u32) -> String {
      ngettext(locale, "{n} day", "{n} days", days).replace("{n}", &days.to_string())
-@@ -226,7 +243,7 @@ pub(super) fn choices(
+@@ -214,7 +230,7 @@ pub(super) fn choices(
              (Word("off"), OptionValue::AgentsOn(false)),
              (Word("on"), OptionValue::AgentsOn(true)),
          ],
@@ -3779,28 +3800,28 @@ index 815f761..d276902 100644
              (Word("more"), settings.stepped(option, true)),
          ],
 diff --git a/src/ui/settings/sheet.rs b/src/ui/settings/sheet.rs
-index 50aefa3..281cde2 100644
+index 4e3bc19..f4bc5f8 100644
 --- a/src/ui/settings/sheet.rs
 +++ b/src/ui/settings/sheet.rs
-@@ -9,7 +9,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2,
- use crate::app::App;
+@@ -10,7 +10,7 @@ use crate::app::App;
  use crate::i18n::{Locale, gettext, ngettext};
  use crate::model::{Action, SettingsDialog, SettingsPane};
--use crate::settings::{OptionId, OptionValue, Settings, Timestamps, Zone};
-+use crate::settings::{Idle, OptionId, OptionValue, Settings, Timestamps, Zone};
+ use crate::settings::{
+-    EnvBar, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
++    EnvBar, Idle, OptionId, OptionValue, RowHeight, Settings, TableList, Timestamps, Zone,
+ };
  use crate::theme::{Look, Palette};
  use crate::typography::{Laid, Text, TextRole};
- use crate::ui::focus::{self, Ring};
-@@ -437,7 +437,7 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
-         | OptionId::ConfirmCloseEdits
-         | OptionId::AgentsOn
-         | OptionId::AgentsNotify => SWITCH,
+@@ -493,7 +493,7 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
+         | OptionId::AgentsNotify
+         | OptionId::Zebra
+         | OptionId::ColumnTypes => SWITCH,
 -        OptionId::LogDays => look.control_height,
 +        OptionId::LogDays | OptionId::IdleDisconnect => look.control_height,
      }
  }
  
-@@ -515,6 +515,28 @@ fn control(
+@@ -616,6 +616,28 @@ fn control(
                  actions.push(Action::SetOption(flipped));
              }
          }
@@ -3829,19 +3850,19 @@ index 50aefa3..281cde2 100644
          OptionId::LogDays => {
              let shown = super::days(skin.locale, settings.mcp_log_days);
              let dropdown = menu::Dropdown::new("log-days", &shown, MENU);
-@@ -666,6 +688,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
-         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
+@@ -773,6 +795,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
+         // What the Appearance pane's rows say is their small print.
          OptionId::ProductionReadOnly
          | OptionId::ConfirmCloseEdits
 +        | OptionId::IdleDisconnect
          | OptionId::AgentsOn
          | OptionId::LogDays
-         | OptionId::AgentsNotify => return,
+         | OptionId::AgentsNotify
 diff --git a/src/ui/settings/terminal.rs b/src/ui/settings/terminal.rs
-index 6e93df8..c7fed8f 100644
+index 5f4875c..cf02f24 100644
 --- a/src/ui/settings/terminal.rs
 +++ b/src/ui/settings/terminal.rs
-@@ -673,7 +673,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
+@@ -713,7 +713,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
      let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
      match option {
          // Between its chevrons, as the cursor's row has it.
@@ -3849,8 +3870,8 @@ index 6e93df8..c7fed8f 100644
 +        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect => {
              width(&format!("‹ {} ›", stepped_text(option, settings, skin)))
          }
-         OptionId::Timestamps | OptionId::GroupDigits => {
-@@ -697,6 +697,8 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
+         OptionId::Timestamps
+@@ -743,6 +743,8 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
          OptionId::LogDays => skin
              .look
              .label(&super::days(skin.locale, settings.mcp_log_days)),
@@ -3859,7 +3880,7 @@ index 6e93df8..c7fed8f 100644
          // As the artboard writes it: `system (america/new_york)`.
          OptionId::Tz => skin.look.label(&match (&settings.tz, skin.system) {
              (crate::settings::Zone::System, Some(name)) => {
-@@ -816,7 +818,7 @@ fn option_row(
+@@ -862,7 +864,7 @@ fn option_row(
      if let Some(button) = button
          && matches!(
              option,
@@ -3868,7 +3889,7 @@ index 6e93df8..c7fed8f 100644
          )
      {
          let name = gettext(locale, terminal_label(option));
-@@ -838,7 +840,7 @@ fn option_row(
+@@ -884,7 +886,7 @@ fn option_row(
          on_cursor,
      };
      match option {
@@ -3876,8 +3897,8 @@ index 6e93df8..c7fed8f 100644
 +        OptionId::PageSize | OptionId::LogDays | OptionId::Tz | OptionId::IdleDisconnect => {
              stepper(ui, cell, option, settings, skin, actions)
          }
-         OptionId::Timestamps | OptionId::GroupDigits => {
-@@ -994,6 +996,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
+         OptionId::Timestamps
+@@ -1046,6 +1048,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
          OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),
          // As drawn: nothing to add.
          OptionId::ConfirmCloseEdits => Text::new(look),
@@ -3901,7 +3922,7 @@ git commit -m "Add Disconnect when idle to Settings › General"
 
 ## Pull request
 
-One pull request for the five commits, on `main` once #154 is merged (until then on its branch). Its description has:
+Tasks 1 and 2 are merged (#160). One pull request for the commits of tasks 3 to 5, on `main`. Its description has:
 
 - a summary;
 - the three rows and what each does, the backend's queue, and the idle close;
