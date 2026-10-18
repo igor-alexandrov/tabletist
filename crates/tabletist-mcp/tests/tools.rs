@@ -839,6 +839,44 @@ async fn describe_schema_marks_a_masked_column_and_a_view_that_reads_one() {
 }
 
 #[tokio::test]
+async fn run_query_answers_a_masked_column_as_dots_and_refuses_a_use_of_it() {
+    let shop = Shop::new();
+    let (server, log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.mask(DEV, &["orders.email", "orders.phone"]);
+    // Its name and its type, `•••` in every row, a NULL too, and marked.
+    let called = query(&agent, "SELECT id, email, phone FROM orders WHERE id = 1").await;
+    let answer = called.answer();
+    assert_eq!(answer["columns"][0].get("masked"), None);
+    assert_eq!(answer["columns"][1]["name"], json!("email"));
+    assert_eq!(answer["columns"][1]["masked"], json!(true));
+    assert_eq!(answer["columns"][2]["masked"], json!(true));
+    assert_eq!(answer["rows"], json!([[1, "•••", "•••"]]));
+    // The log keeps which columns were masked, and no value.
+    let logged = log.latest(1).await.unwrap();
+    assert_eq!(logged[0].masked.as_deref(), Some(r#"["email","phone"]"#));
+    // A use of it is refused, and so is a view that reads it.
+    let called = query(&agent, "SELECT id FROM orders WHERE email LIKE 'a%'").await;
+    assert_eq!(called.refused(), "masked_column_used");
+    assert!(
+        called.text.starts_with("orders.email is masked"),
+        "{}",
+        called.text
+    );
+    let called = query(&agent, "SELECT * FROM recent_orders").await;
+    assert_eq!(called.refused(), "masked_column_used");
+    assert_eq!(
+        called.text,
+        "recent_orders reads orders.email, which is masked on this connection."
+    );
+    // An answer with no masked column logs none.
+    query(&agent, "SELECT id FROM orders WHERE id = 1").await;
+    let logged = log.latest(1).await.unwrap();
+    assert_eq!(logged[0].masked, None);
+    agent.close().await;
+}
+
+#[tokio::test]
 async fn a_masked_columns_default_values_and_what_is_computed_from_it_are_not_told() {
     let shop = Shop::new();
     shop.change(

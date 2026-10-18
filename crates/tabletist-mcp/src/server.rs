@@ -499,6 +499,7 @@ impl<G: Gateway> Server<G> {
             matched: note.matched.map(count),
             columns: note.columns.map(count),
             bytes: bytes.map(|bytes| count(bytes as u64)),
+            masked: note.masked,
             took_ms: Some(millis(took)),
         };
         if let Err(error) = self.inner.log.record(entry).await {
