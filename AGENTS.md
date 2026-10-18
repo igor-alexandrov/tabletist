@@ -103,9 +103,9 @@ requires an approval, take the review step out of the workflow.
   review rewrites. A run dismisses the bot's earlier approval before Claude
   reads anything, so a run that stops short leaves none standing for a head
   nobody reviewed. A fork's push starts no run, so its approval stays until
-  the next `@claude review`. It reads `AGENTS.md` from the base branch, so a rule the
-  review should hold a change to belongs here. `Cargo.lock` and
-  `docs/superpowers/` are not reviewed.
+  the next `@claude review`. The review reads `AGENTS.md` from the base
+  branch, so a rule the review should hold a change to belongs here.
+  `Cargo.lock` and `docs/superpowers/` are not reviewed.
 - Claude has no shell there and reads nothing outside the workspace. The
   pull request's code is never run. Keep it so: do not give the job another
   secret, a tool that runs commands, or a permission beyond

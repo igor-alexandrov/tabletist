@@ -330,8 +330,12 @@ jobs:
             event=REQUEST_CHANGES
             body="Changes requested at \`${WANT:0:7}\`: the blocking findings are inline and in the [summary]($URL)."
           fi
-          if ! gh api --silent -X POST "repos/$GH_REPO/pulls/$PR/reviews" \
-            -f event="$event" -f commit_id="$WANT" -f body="$body"; then
-            echo "::error::The $event review was not accepted. Approving needs \"Allow GitHub Actions to create and approve pull requests\" in the repository's Actions settings."
+          # The error GitHub returns is printed; only a refused approval has
+          # a likely cause worth naming.
+          if ! gh api -X POST "repos/$GH_REPO/pulls/$PR/reviews" \
+            -f event="$event" -f commit_id="$WANT" -f body="$body" --jq .html_url; then
+            if [ "$event" = APPROVE ]; then
+              echo "::error::The approval was not accepted. Approving needs \"Allow GitHub Actions to create and approve pull requests\" in the repository's Actions settings."
+            fi
             exit 1
           fi
