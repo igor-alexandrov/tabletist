@@ -2643,6 +2643,10 @@ pub struct Fetch<T> {
     pub loaded: Option<RequestId>,
     /// When the pending request was sent, for the time a wait shows.
     pub started: Option<std::time::Instant>,
+    /// A read the person asked for while a connect that restarts the tab
+    /// was under way, and not sent (see `App::wake_to_read`):
+    /// `App::after_connect` sends it once the session is up.
+    pub asked: bool,
 }
 
 impl<T> Default for Fetch<T> {
@@ -2653,6 +2657,7 @@ impl<T> Default for Fetch<T> {
             error: None,
             loaded: None,
             started: None,
+            asked: false,
         }
     }
 }
@@ -2662,6 +2667,7 @@ impl<T> Fetch<T> {
         self.pending = Some(request);
         self.error = None;
         self.started = Some(std::time::Instant::now());
+        self.asked = false;
     }
 
     /// Applies a result if it answers the pending request. Returns whether it did.

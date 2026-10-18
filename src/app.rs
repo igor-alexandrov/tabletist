@@ -2297,6 +2297,7 @@ impl App {
                     && let Some(workspace) = self.workspace_mut(prompt.tab)
                 {
                     workspace.status = SessionStatus::Cancelled;
+                    self.send_what_waited(prompt.tab);
                 }
             }
             Action::SwitchDatabase { tab, database } => {
@@ -2766,6 +2767,7 @@ impl App {
                 workspace.status = SessionStatus::Disconnected(Error::Auth(reason.clone()));
                 workspace.needs_prompt = Some(reason);
             }
+            self.send_what_waited(tab);
             return;
         }
         let mode = if kind.is_ssh() {
@@ -3092,6 +3094,7 @@ impl App {
                         })));
                     }
                 }
+                self.send_what_waited(tab);
             }
             Event::Disconnected { session, error } => {
                 if let Some(tab) = self.tab_for_session(session)
@@ -4385,44 +4388,92 @@ impl App {
         // lost connection failed is worth another try.
         for object in workspace.object_tabs_mut() {
             if object.count.is_loading() || lost(&object.count) {
-                // The old session is closed, so its count never runs.
+                // The old session is closed, so its count never runs. One
+                // asked for since is still run, below.
+                let asked = object.count.asked;
                 let _ = object.reset_count();
+                object.count.asked = asked;
             }
         }
-        let stale: Vec<(TabId, bool, bool)> = workspace
+        let stale: Vec<(TabId, bool, bool, bool)> = workspace
             .object_tabs()
             .map(|object| {
+                // What the tab asked for while the connect was under way
+                // was not sent (see `App::wake_to_read`): it is read here,
+                // whether the tab is in front or not.
+                let count = object.count.asked;
                 // A tab that holds edits keeps its page and its structure
                 // as the edits were made on them.
                 if object.edits.holds() {
-                    return (object.id, false, false);
+                    return (object.id, false, false, count);
                 }
                 let is_active = Some(object.id) == active;
-                // What the tab asked for while the connect was under way
-                // was not sent (see `App::wake_to_read`): it is read here.
                 (
                     object.id,
                     is_active
                         || object.rows.is_loading()
                         || lost(&object.rows)
-                        || object.rows.needs_load(),
+                        || object.rows.needs_load()
+                        || object.rows.asked,
                     object.structure.is_loading()
                         || lost(&object.structure)
                         || object.structure.needs_load()
+                        || object.structure.asked
                         || (is_active && object.structure.value.is_some()),
+                    count,
                 )
             })
             .collect();
-        for (id, rows, structure) in stale {
+        for (id, rows, structure, count) in stale {
             if rows {
                 self.fetch_rows(tab, id);
             }
             if structure {
                 self.describe(tab, id);
             }
+            if count {
+                self.count_rows(tab, id);
+            }
         }
         if let Some((object, kind)) = pending {
             self.open_object(tab, object, kind, true);
+        }
+    }
+
+    /// After a connect that would have restarted the tab ended without a
+    /// session (it failed, or its prompt was cancelled or could not be
+    /// shown): the rows and structures that waited for it are asked of the
+    /// lost session, which answers them as lost, so a tab with nothing to
+    /// show says so and offers Retry. A count waits on for the next connect
+    /// that is up: one answered as lost would only show Count again.
+    fn send_what_waited(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        if !matches!(
+            workspace.status,
+            SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+        ) {
+            return;
+        }
+        let waited: Vec<(TabId, bool, bool)> = workspace
+            .object_tabs()
+            .filter(|object| !object.edits.holds())
+            .map(|object| {
+                (
+                    object.id,
+                    object.rows.asked || object.rows.needs_load(),
+                    object.structure.asked || object.structure.needs_load(),
+                )
+            })
+            .collect();
+        for (id, rows, structure) in waited {
+            if rows {
+                self.fetch_rows(tab, id);
+            }
+            if structure {
+                self.describe(tab, id);
+            }
         }
     }
 }
@@ -5416,6 +5467,7 @@ impl App {
             object.query.limit = limit;
         }
         if !reads {
+            object.rows.asked = true;
             return;
         }
         let superseded = object.rows.pending;
@@ -5577,9 +5629,7 @@ impl App {
     }
 
     pub fn count_rows(&mut self, tab: ConnTabId, id: TabId) {
-        if !self.wake_to_read(tab) {
-            return;
-        }
+        let reads = self.wake_to_read(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5588,6 +5638,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        if !reads {
+            object.count.asked = true;
+            return;
+        }
         let superseded = object.count.pending;
         object.count.start(request);
         let query = object.query.clone();
@@ -5600,9 +5654,7 @@ impl App {
     }
 
     pub fn describe(&mut self, tab: ConnTabId, id: TabId) {
-        if !self.wake_to_read(tab) {
-            return;
-        }
+        let reads = self.wake_to_read(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5611,6 +5663,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        if !reads {
+            object.structure.asked = true;
+            return;
+        }
         let superseded = object.structure.pending;
         object.structure.start(request);
         let target = object.object.clone();
@@ -5897,10 +5953,13 @@ impl App {
     /// `Workspace::restarts_once_up`): `App::after_connect` reads what the
     /// tab needs once the session is up, and a read sent before it would
     /// be answered and then read again. The caller still changes what is
-    /// to be read (the page, the sort), and leaves the tab loading
-    /// nothing. Otherwise (connected, a connect again that holds what is
-    /// sent, or a lost session) it is sent, and a lost session answers it
-    /// as lost, which the tab says.
+    /// to be read (the page, the sort), leaves the tab loading nothing,
+    /// and marks the read asked (`Fetch::asked`), so that it is sent
+    /// whether the tab is in front then or not, and sent to the lost
+    /// session if the connect fails (`App::send_what_waited`). Otherwise
+    /// (connected, a connect again that holds what is sent, or a lost
+    /// session) it is sent, and a lost session answers it as lost, which
+    /// the tab says.
     fn wake_to_read(&mut self, tab: ConnTabId) -> bool {
         self.wake(tab);
         !self.workspace(tab).is_some_and(Workspace::restarts_once_up)
@@ -9870,6 +9929,160 @@ mod tests {
         // The structure the users tab had, and the one orders never got.
         assert_eq!(describes, 2);
         assert!(object(&harness, tab, orders).structure.is_loading());
+    }
+
+    /// Reconnects `tab`: the connect it sends, as (session, request).
+    fn reconnect(harness: &mut Harness, tab: ConnTabId) -> (SessionId, RequestId) {
+        harness.app.apply(Action::Reconnect(tab));
+        let Command::Connect {
+            session, request, ..
+        } = *last_sent(&harness.app)
+        else {
+            panic!("expected Connect");
+        };
+        (session, request)
+    }
+
+    fn connected(harness: &mut Harness, session: SessionId, request: RequestId) {
+        harness.app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+            access: crate::testing::asked_access(&harness.app),
+        }));
+    }
+
+    #[test]
+    fn a_count_asked_while_a_reconnect_is_under_way_runs_once_it_is_up() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(page(5, true));
+        let (session, request) = reconnect(&mut harness, tab);
+        harness.app.apply(Action::CountRows {
+            tab,
+            object_tab: id,
+        });
+        assert_eq!(reads_of(&harness.app.backend.sent, session).2, 0);
+        let before = harness.app.backend.sent.len();
+        connected(&mut harness, session, request);
+        assert_eq!(
+            reads_of(&harness.app.backend.sent[before..], session).2,
+            1,
+            "{:?}",
+            &harness.app.backend.sent[before..]
+        );
+        assert!(object(&harness, tab, id).count.is_loading());
+    }
+
+    #[test]
+    fn a_count_asked_while_a_reconnect_fails_runs_once_the_next_is_up() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(page(5, true));
+        let (session, request) = reconnect(&mut harness, tab);
+        harness.app.apply(Action::CountRows {
+            tab,
+            object_tab: id,
+        });
+        harness.app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: Error::ConnectionLost("refused".into()),
+        }));
+        // A count sent now would only be answered as lost: it waits.
+        assert_eq!(reads_of(&harness.app.backend.sent, session).2, 0);
+        let (session, request) = reconnect(&mut harness, tab);
+        let before = harness.app.backend.sent.len();
+        connected(&mut harness, session, request);
+        assert_eq!(reads_of(&harness.app.backend.sent[before..], session).2, 1);
+    }
+
+    #[test]
+    fn a_refresh_of_a_tab_put_behind_while_a_reconnect_is_under_way_is_read_once_it_is_up() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let orders = open(&mut harness, tab, "orders", true);
+        harness.answer_rows(page(5, false));
+        let users = open(&mut harness, tab, "users", true);
+        harness.answer_rows(page(5, false));
+        let (session, request) = reconnect(&mut harness, tab);
+        harness.app.apply(Action::Refresh(tab));
+        harness.app.apply(Action::ActivateTab { tab, id: orders });
+        let before = harness.app.backend.sent.len();
+        connected(&mut harness, session, request);
+        let (fetches, _, _) = reads_of(&harness.app.backend.sent[before..], session);
+        let of = |name: &str| fetches.iter().filter(|q| q.object.name == name).count();
+        // The tab in front, as after any reconnect, and the one refreshed.
+        assert_eq!(of("orders"), 1, "{fetches:?}");
+        assert_eq!(of("users"), 1, "{fetches:?}");
+        assert!(object(&harness, tab, users).rows.is_loading());
+        // What it showed stays until the answer replaces it.
+        assert!(object(&harness, tab, users).rows.value.is_some());
+    }
+
+    #[test]
+    fn rows_that_waited_for_a_reconnect_that_failed_are_asked_of_the_lost_session() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(page(5, true));
+        let (session, request) = reconnect(&mut harness, tab);
+        harness.app.apply(Action::SortBy {
+            tab,
+            object_tab: id,
+            column: "email".into(),
+        });
+        assert!(object(&harness, tab, id).rows.needs_load());
+        let before = harness.app.backend.sent.len();
+        harness.app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: Error::ConnectionLost("refused".into()),
+        }));
+        // Sent, so the lost session answers it as lost and the tab says so.
+        let (fetches, _, _) = reads_of(&harness.app.backend.sent[before..], session);
+        assert_eq!(fetches.len(), 1, "{fetches:?}");
+        assert_eq!(fetches[0].sort[0].column, "email");
+        assert!(object(&harness, tab, id).rows.is_loading());
+    }
+
+    #[test]
+    fn rows_that_waited_for_a_prompt_that_was_cancelled_are_asked_of_the_lost_session() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(page(5, true));
+        let session = harness.app.workspace(tab).unwrap().session;
+        // A reconnect that asks for the password first.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.status = SessionStatus::Connecting {
+            request: RequestId(999),
+        };
+        harness.app.apply(Action::SortBy {
+            tab,
+            object_tab: id,
+            column: "email".into(),
+        });
+        harness.app.dialog = Some(Dialog::Password(Box::new(crate::model::PasswordPrompt {
+            tab,
+            kind: SecretKind::Database,
+            name: "Prod".into(),
+            password: String::new(),
+            save: false,
+            message: None,
+        })));
+        let before = harness.app.backend.sent.len();
+        harness.app.apply(Action::CancelPassword);
+        let (fetches, _, _) = reads_of(&harness.app.backend.sent[before..], session);
+        assert_eq!(fetches.len(), 1, "{fetches:?}");
+        assert!(object(&harness, tab, id).rows.is_loading());
     }
 
     #[test]
