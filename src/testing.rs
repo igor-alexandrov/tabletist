@@ -19,6 +19,9 @@ pub struct Harness {
     pub viewport_commands: Vec<egui::ViewportCommand>,
     /// Whether the window reports itself fullscreen.
     pub fullscreen: bool,
+    /// The system's light or dark, as every frame is told it: unknown
+    /// until a test says.
+    pub system_theme: Option<egui::Theme>,
     /// Asks the window to close in the next frame, as its close button or
     /// the desktop does. Taken by that frame.
     pub close_requested: bool,
@@ -71,6 +74,7 @@ impl Harness {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
             events,
             focused: self.window_focused,
+            system_theme: self.system_theme,
             ..Default::default()
         };
         input
@@ -141,6 +145,7 @@ impl Harness {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
             events,
             focused: self.window_focused,
+            system_theme: self.system_theme,
             ..Default::default()
         };
         input
@@ -1545,6 +1550,7 @@ impl Harness {
             scale: 1.0,
             viewport_commands: Vec::new(),
             fullscreen: false,
+            system_theme: None,
             close_requested: false,
             painted: Vec::new(),
             text_rects: Vec::new(),

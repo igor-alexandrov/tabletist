@@ -201,6 +201,114 @@ impl EnvBar {
     }
 }
 
+/// What `appearance.theme` says. macOS and Windows read `"system"`,
+/// `"light"` and `"dark"`; the terminal look reads `"omarchy"`, a theme's
+/// name and a path. A value meant for the other looks is drawn as the
+/// look's own default, and kept: the file says it as it did until the
+/// theme is changed in this look.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "Option<String>")]
+pub enum Theme {
+    /// No value: each look follows its desktop.
+    #[default]
+    Unset,
+    /// The system's light or dark, as it changes.
+    System,
+    Light,
+    Dark,
+    /// The Omarchy theme of the moment, as `omarchy-theme` switches it.
+    Omarchy,
+    /// A theme by name or path that stays when Omarchy's changes: what the
+    /// file said, as it said it.
+    Pinned(String),
+}
+
+/// What macOS and Windows draw: the system's light or dark, or one of the
+/// two whatever the system says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    System,
+    Light,
+    Dark,
+}
+
+/// A theme as the window sets one: a tile of macOS and Windows, or the
+/// terminal look's follow and pin. Unlike [`Theme`] it holds no name: a
+/// pin set from the window is the theme Omarchy shows, whose name the app
+/// knows and the settings do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Unset,
+    System,
+    Light,
+    Dark,
+    Omarchy,
+    Pinned,
+}
+
+impl Theme {
+    /// What the file's text says. An empty text says nothing.
+    pub fn of(text: &str) -> Self {
+        match text {
+            "" => Self::Unset,
+            "system" => Self::System,
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            "omarchy" => Self::Omarchy,
+            name => Self::Pinned(name.to_owned()),
+        }
+    }
+
+    /// The file's text: `None` for no value.
+    pub fn text(&self) -> Option<&str> {
+        Some(match self {
+            Self::Unset => return None,
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::Omarchy => "omarchy",
+            Self::Pinned(name) => name,
+        })
+    }
+
+    /// What macOS and Windows draw. A value of the terminal look's is the
+    /// system's.
+    pub fn mode(&self) -> Mode {
+        match self {
+            Self::Light => Mode::Light,
+            Self::Dark => Mode::Dark,
+            Self::Unset | Self::System | Self::Omarchy | Self::Pinned(_) => Mode::System,
+        }
+    }
+
+    /// What the window shows as set: a pin without its name.
+    pub fn choice(&self) -> ThemeChoice {
+        match self {
+            Self::Unset => ThemeChoice::Unset,
+            Self::System => ThemeChoice::System,
+            Self::Light => ThemeChoice::Light,
+            Self::Dark => ThemeChoice::Dark,
+            Self::Omarchy => ThemeChoice::Omarchy,
+            Self::Pinned(_) => ThemeChoice::Pinned,
+        }
+    }
+
+    /// The terminal look's pin: `None` follows the desktop. A value of
+    /// macOS and Windows follows it too.
+    pub fn pin(&self) -> Option<&str> {
+        match self {
+            Self::Pinned(name) => Some(name),
+            Self::Unset | Self::System | Self::Light | Self::Dark | Self::Omarchy => None,
+        }
+    }
+}
+
+impl From<Option<String>> for Theme {
+    fn from(text: Option<String>) -> Self {
+        text.map_or(Self::Unset, |text| Self::of(&text))
+    }
+}
+
 /// Everything the user can set. A key the file lacks takes its default and
 /// one this version does not know is ignored, so older and newer files both
 /// load. The serde derive reads the `settings.json` of versions before the
@@ -233,9 +341,10 @@ pub struct Settings {
     pub confirm_close_edits: bool,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
     pub show_system_schemas: bool,
-    /// A palette file name in the themes directory. `None` follows the
-    /// desktop: Omarchy when present, else the OS light/dark setting.
-    pub custom_theme: Option<String>,
+    /// The theme each look draws. Older versions wrote a palette file's
+    /// name here, which the terminal look still reads.
+    #[serde(rename = "custom_theme")]
+    pub theme: Theme,
     /// Rows a SQL editor statement keeps (the Limit menu).
     pub sql_limit: u32,
     /// Seconds before a SQL editor run is cancelled; `None` waits forever.
@@ -346,6 +455,13 @@ impl Key {
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
             Self::EnvBar => Some("tint | label"),
+            // The values of the look the platform draws: Linux has the
+            // terminal look, the others the system's light and dark.
+            Self::Theme => Some(if cfg!(target_os = "linux") {
+                "omarchy | \"Tokyo Night\" | path"
+            } else {
+                "system | light | dark"
+            }),
             _ => None,
         }
     }
@@ -371,6 +487,7 @@ pub enum OptionId {
     LogDays,
     /// Whether a new agent is told of: `mcp.notify`.
     AgentsNotify,
+    Theme,
     RowHeight,
     Zebra,
     ColumnTypes,
@@ -381,7 +498,7 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 15] = [
+    pub const ALL: [OptionId; 16] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -389,6 +506,7 @@ impl OptionId {
         Self::ValueTags,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
+        Self::Theme,
         Self::RowHeight,
         Self::Zebra,
         Self::ColumnTypes,
@@ -417,15 +535,17 @@ impl OptionId {
         Self::ValueTags,
     ];
     pub const SAFETY: [OptionId; 2] = [Self::ProductionReadOnly, Self::ConfirmCloseEdits];
-    /// The Appearance pane's, in the order it has them: its Grid
-    /// section's, then its Environment section's.
-    pub const APPEARANCE: [OptionId; 5] = [
+    /// The Appearance pane's, in the order it has them: its Theme
+    /// section's, its Grid section's, then its Environment section's.
+    pub const APPEARANCE: [OptionId; 6] = [
+        Self::Theme,
         Self::RowHeight,
         Self::Zebra,
         Self::ColumnTypes,
         Self::TableList,
         Self::EnvBar,
     ];
+    pub const THEME: [OptionId; 1] = [Self::Theme];
     pub const GRID: [OptionId; 4] = [
         Self::RowHeight,
         Self::Zebra,
@@ -449,6 +569,7 @@ impl OptionId {
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
+            Self::Theme => Key::Theme,
             Self::RowHeight => Key::RowHeight,
             Self::Zebra => Key::Zebra,
             Self::ColumnTypes => Key::ColumnTypes,
@@ -477,6 +598,7 @@ pub enum OptionValue {
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
+    Theme(ThemeChoice),
     RowHeight(RowHeight),
     /// `None` is the look's default.
     Zebra(Option<bool>),
@@ -498,6 +620,7 @@ impl OptionValue {
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
+            Self::Theme(_) => OptionId::Theme,
             Self::RowHeight(_) => OptionId::RowHeight,
             Self::Zebra(_) => OptionId::Zebra,
             Self::ColumnTypes(_) => OptionId::ColumnTypes,
@@ -519,6 +642,18 @@ impl OptionValue {
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
+            Self::Theme(choice) => {
+                settings.theme = match choice {
+                    ThemeChoice::Unset => Theme::Unset,
+                    ThemeChoice::System => Theme::System,
+                    ThemeChoice::Light => Theme::Light,
+                    ThemeChoice::Dark => Theme::Dark,
+                    ThemeChoice::Omarchy => Theme::Omarchy,
+                    // A pin keeps its name. A new one is named by
+                    // `App::apply`, which knows Omarchy's theme.
+                    ThemeChoice::Pinned => return,
+                }
+            }
             Self::RowHeight(height) => settings.row_height = height,
             Self::Zebra(on) => settings.zebra = on,
             Self::ColumnTypes(on) => settings.column_types = on,
@@ -1011,6 +1146,7 @@ impl Settings {
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
+            OptionId::Theme => OptionValue::Theme(self.theme.choice()),
             OptionId::RowHeight => OptionValue::RowHeight(self.row_height),
             OptionId::Zebra => OptionValue::Zebra(self.zebra),
             OptionId::ColumnTypes => OptionValue::ColumnTypes(self.column_types),
@@ -1070,6 +1206,12 @@ impl Settings {
                 OptionValue::LogDays(next.unwrap_or(days))
             }
             OptionId::AgentsNotify => OptionValue::AgentsNotify(forward),
+            // The terminal look's two: follow at the left, pin at the right.
+            OptionId::Theme => OptionValue::Theme(if forward {
+                ThemeChoice::Pinned
+            } else {
+                ThemeChoice::Omarchy
+            }),
             OptionId::RowHeight => {
                 let at = RowHeight::ALL
                     .iter()
@@ -1132,6 +1274,11 @@ impl Settings {
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
+            // As the terminal look draws it: a pin, or the desktop followed.
+            OptionId::Theme => Some(OptionValue::Theme(match self.theme.pin() {
+                Some(_) => ThemeChoice::Omarchy,
+                None => ThemeChoice::Pinned,
+            })),
             OptionId::RowHeight => None,
             // Unset, it is flipped from off: the window flips the
             // settings as it shows them, with the look's default in.
@@ -1165,7 +1312,7 @@ impl Settings {
             Key::McpEnabled => self.mcp_enabled.to_string(),
             Key::McpLogDays => self.mcp_log_days.to_string(),
             Key::McpNotify => self.mcp_notify.to_string(),
-            Key::Theme => toml_string(self.custom_theme.as_deref()?),
+            Key::Theme => toml_string(self.theme.text()?),
             Key::RowHeight => toml_string(self.row_height.name()),
             Key::Zebra => self.zebra?.to_string(),
             Key::ColumnTypes => self.column_types.to_string(),
@@ -1398,7 +1545,10 @@ impl Settings {
             Key::McpEnabled => flag.map(|flag| self.mcp_enabled = flag),
             Key::McpLogDays => number.map(|number| self.mcp_log_days = number),
             Key::McpNotify => flag.map(|flag| self.mcp_notify = flag),
-            Key::Theme => text.map(|name| self.custom_theme = Some(name.to_owned())),
+            // An empty name names nothing: the line is ignored.
+            Key::Theme => text
+                .filter(|text| !text.is_empty())
+                .map(|text| self.theme = Theme::of(text)),
             Key::RowHeight => text
                 .and_then(RowHeight::from_name)
                 .map(|height| self.row_height = height),
@@ -1526,7 +1676,7 @@ impl Settings {
             Key::McpEnabled => self.mcp_enabled = other.mcp_enabled,
             Key::McpLogDays => self.mcp_log_days = other.mcp_log_days,
             Key::McpNotify => self.mcp_notify = other.mcp_notify,
-            Key::Theme => self.custom_theme = other.custom_theme.clone(),
+            Key::Theme => self.theme = other.theme.clone(),
             Key::RowHeight => self.row_height = other.row_height,
             Key::Zebra => self.zebra = other.zebra,
             Key::ColumnTypes => self.column_types = other.column_types,
@@ -1585,7 +1735,7 @@ impl Default for Settings {
             production_read_only: true,
             confirm_close_edits: true,
             show_system_schemas: false,
-            custom_theme: None,
+            theme: Theme::Unset,
             sql_limit: 1_000,
             sql_timeout_secs: Some(30),
             mcp_enabled: false,
@@ -1612,7 +1762,7 @@ mod tests {
         assert_eq!(settings.group_digits, None);
         assert!(settings.value_tags);
         assert!(!settings.show_system_schemas);
-        assert_eq!(settings.custom_theme, None);
+        assert_eq!(settings.theme, Theme::Unset);
         assert_eq!(settings.sql_limit, 1_000);
         assert_eq!(settings.sql_timeout_secs, Some(30));
         assert!(!settings.mcp_enabled);
@@ -1647,7 +1797,7 @@ mod tests {
             production_read_only: false,
             confirm_close_edits: false,
             show_system_schemas: true,
-            custom_theme: Some("My \"Nord\".json".into()),
+            theme: Theme::Pinned("My \"Nord\".json".into()),
             sql_limit: 100,
             sql_timeout_secs: None,
             mcp_enabled: true,
@@ -1663,9 +1813,12 @@ mod tests {
 
     #[test]
     fn only_what_is_not_the_default_is_written_each_table_in_its_place() {
+        // The theme's note names the values of the look this platform draws.
+        let note = Key::Theme.note().unwrap();
         assert_eq!(
             all_set().to_toml(),
-            "\
+            format!(
+                "\
 # written by tabletist, safe to edit by hand
 [data]
 page_size = 500
@@ -1691,7 +1844,7 @@ log_days = 7
 notify = false
 
 [appearance]
-theme = \"My \\\"Nord\\\".json\"
+theme = \"My \\\"Nord\\\".json\"  # {note}
 
 [appearance.grid]
 row_height = \"roomy\"  # compact | regular | roomy
@@ -1702,13 +1855,14 @@ table_list = \"flat\"  # tree | flat
 [appearance.env]
 bar = \"label\"  # tint | label
 "
+            )
         );
     }
 
     #[test]
     fn a_theme_gets_its_table_and_no_timeout_is_zero() {
         let settings = Settings {
-            custom_theme: Some("My \"Nord\".json".into()),
+            theme: Theme::Pinned("My \"Nord\".json".into()),
             sql_timeout_secs: None,
             timestamps: Timestamps::Full,
             ..Settings::default()
@@ -1723,9 +1877,13 @@ bar = \"label\"  # tint | label
             "{text}"
         );
         // The only key of its table that is not at its default: the grid's
-        // table under it is not written.
+        // table under it is not written. The note names the values of the
+        // look this platform draws.
+        let note = Key::Theme.note().unwrap();
         assert!(
-            text.ends_with("\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n"),
+            text.ends_with(&format!(
+                "\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"  # {note}\n"
+            )),
             "{text}"
         );
     }
@@ -2560,7 +2718,7 @@ bar = \"label\"  # tint | label
                     [editor]\nsql_limit = 100\n";
         let loaded = Settings::from_toml(text);
         assert_eq!(loaded.invalid, vec![4, 5, 6]);
-        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.theme, Theme::Unset);
         assert_eq!(loaded.settings.page_size, 100);
         assert_eq!(loaded.settings.sql_limit, Settings::default().sql_limit);
         assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
@@ -2574,7 +2732,7 @@ bar = \"label\"  # tint | label
         // The same on a last line with no break after it.
         let loaded = Settings::from_toml("[appearance]\ntheme = \"\"\"Nord");
         assert_eq!(loaded.invalid, vec![2]);
-        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.theme, Theme::Unset);
     }
 
     #[test]
@@ -2585,7 +2743,7 @@ bar = \"label\"  # tint | label
              [editor]\r\nsql_limit = 100\r\n\r\n\r\n",
         );
         assert_eq!(loaded.invalid, vec![4, 5, 6]);
-        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.theme, Theme::Unset);
         assert_eq!(loaded.settings.page_size, 100);
         assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
     }
@@ -2655,7 +2813,7 @@ bar = \"label\"  # tint | label
         let expected = Settings {
             page_size: 100,
             show_system_schemas: true,
-            custom_theme: Some("Nord.json".into()),
+            theme: Theme::Pinned("Nord.json".into()),
             sql_limit: 100,
             sql_timeout_secs: None,
             ..Settings::default()
@@ -2793,6 +2951,7 @@ bar = \"label\"  # tint | label
                 Key::ValueTags,
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
+                Key::Theme,
                 Key::RowHeight,
                 Key::Zebra,
                 Key::ColumnTypes,
@@ -2814,7 +2973,12 @@ bar = \"label\"  # tint | label
         // options, in order.
         let sections = [&OptionId::DATA[..], &OptionId::SAFETY[..]].concat();
         assert_eq!(sections, OptionId::GENERAL);
-        let sections = [&OptionId::GRID[..], &OptionId::ENVIRONMENT[..]].concat();
+        let sections = [
+            &OptionId::THEME[..],
+            &OptionId::GRID[..],
+            &OptionId::ENVIRONMENT[..],
+        ]
+        .concat();
         assert_eq!(sections, OptionId::APPEARANCE);
         assert_eq!(panes, OptionId::ALL);
         let defaults = Settings::default();
@@ -3036,5 +3200,72 @@ bar = \"label\"  # tint | label
         );
         // A reset leaves them to the look.
         assert_eq!(OptionId::Zebra.default_value(), OptionValue::Zebra(None));
+    }
+
+    #[test]
+    fn each_theme_value_is_read_and_written_as_it_was() {
+        for (text, theme) in [
+            ("system", Theme::System),
+            ("light", Theme::Light),
+            ("dark", Theme::Dark),
+            ("omarchy", Theme::Omarchy),
+            ("Tokyo Night", Theme::Pinned("Tokyo Night".into())),
+            ("Nord.json", Theme::Pinned("Nord.json".into())),
+            ("~/themes/sunset", Theme::Pinned("~/themes/sunset".into())),
+            // A word in another case is a name, not the word.
+            ("Dark", Theme::Pinned("Dark".into())),
+        ] {
+            let loaded = Settings::from_toml(&format!("[appearance]\ntheme = {text:?}\n"));
+            assert_eq!(loaded.invalid, Vec::<usize>::new(), "{text}");
+            assert_eq!(loaded.settings.theme, theme, "{text}");
+            assert_eq!(theme.text(), Some(text));
+            let written = loaded.settings.to_toml();
+            assert!(
+                written.contains(&format!("theme = {text:?}  #")),
+                "{written}"
+            );
+            assert_eq!(Settings::from_toml(&written).settings.theme, theme);
+        }
+        // Unset, it is not written; an empty name or no text is ignored.
+        assert!(!Settings::default().to_toml().contains("theme"));
+        for line in ["theme = \"\"", "theme = 1"] {
+            let loaded = Settings::from_toml(&format!("[appearance]\n{line}\n"));
+            assert_eq!(loaded.invalid, vec![2], "{line}");
+            assert_eq!(loaded.settings.theme, Theme::Unset);
+        }
+    }
+
+    #[test]
+    fn each_look_reads_its_own_theme_values_and_follows_its_desktop_on_the_others() {
+        let pinned = Theme::Pinned("Tokyo Night".into());
+        // macOS and Windows: the three tiles; anything else is the system's.
+        for (theme, mode) in [
+            (Theme::Unset, Mode::System),
+            (Theme::System, Mode::System),
+            (Theme::Light, Mode::Light),
+            (Theme::Dark, Mode::Dark),
+            (Theme::Omarchy, Mode::System),
+            (pinned.clone(), Mode::System),
+        ] {
+            assert_eq!(theme.mode(), mode, "{theme:?}");
+        }
+        // The terminal look: a pin, or the desktop for anything else.
+        for (theme, pin) in [
+            (Theme::Unset, None),
+            (Theme::System, None),
+            (Theme::Light, None),
+            (Theme::Dark, None),
+            (Theme::Omarchy, None),
+            (pinned.clone(), Some("Tokyo Night")),
+        ] {
+            assert_eq!(theme.pin(), pin, "{theme:?}");
+        }
+        // A value the look does not read is kept through another change.
+        let mut settings = Settings::from_toml("[appearance]\ntheme = \"omarchy\"\n").settings;
+        settings.row_height = RowHeight::Roomy;
+        assert_eq!(
+            Settings::from_toml(&settings.to_toml()).settings.theme,
+            Theme::Omarchy
+        );
     }
 }

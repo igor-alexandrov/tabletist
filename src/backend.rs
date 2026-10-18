@@ -188,6 +188,14 @@ pub enum Command {
         path: PathBuf,
         text: String,
     },
+    /// Reads the name of Omarchy's theme of the moment and the theme
+    /// `pin` names, for the terminal look. Answered with [`Event::Theme`],
+    /// which carries `asked`: reads end in any order.
+    ReadTheme {
+        places: crate::desktop_theme::Places,
+        pin: Option<String>,
+        asked: u64,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -345,6 +353,11 @@ pub enum Event {
     /// a directory that cannot be watched, or such a directory that can be
     /// watched after all.
     SettingsWatch { live: bool },
+    /// What the [`Command::ReadTheme`] numbered `asked` read.
+    Theme {
+        asked: u64,
+        read: crate::desktop_theme::Read,
+    },
     /// The time zone database, read whole ([`Command::LoadZones`]).
     Zones(Arc<crate::zones::Zones>),
     /// The settings file changed on disk: its text. `own` when it is, byte
@@ -1882,6 +1895,17 @@ impl Worker {
                     );
                 });
             }
+            Command::ReadTheme { places, pin, asked } => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    let read = crate::desktop_theme::read(
+                        &places,
+                        pin.as_deref(),
+                        crate::desktop_theme::omarchy_colors,
+                    );
+                    outbox.emit(Event::Theme { asked, read });
+                });
+            }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
                 tokio::spawn(async move {
@@ -1932,6 +1956,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
+        | Command::ReadTheme { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => SessionId(0),
     }
@@ -1961,6 +1986,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
+        | Command::ReadTheme { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => None,
     }
@@ -2048,6 +2074,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
+        | Command::ReadTheme { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => return,
     };
@@ -2331,6 +2358,7 @@ async fn run_session(
             | Command::LoadZones
             | Command::EditSettingsFile { .. }
             | Command::RevealSettingsFile { .. }
+            | Command::ReadTheme { .. }
             | Command::Flush { .. }
             | Command::Agents(_) => None,
         };

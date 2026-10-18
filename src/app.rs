@@ -14,7 +14,7 @@ use crate::backend::{
 use crate::completion::Need;
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::edit::EditorPlace;
-use crate::i18n::Locale;
+use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
@@ -63,6 +63,17 @@ struct PendingStore {
 pub struct TitleBar {
     pub height: f32,
     pub inset: f32,
+}
+
+/// How the terminal look's pinned theme stands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PinState {
+    /// Drawn: what the pin named was found.
+    Drawn(crate::desktop_theme::Pinned),
+    /// Not read yet: the desktop is followed until it is.
+    Reading,
+    /// Nowhere to be found: the desktop is followed instead.
+    Missing,
 }
 
 /// What quick open lists.
@@ -133,6 +144,21 @@ pub struct App {
     follow_desktop: bool,
     /// The settings named another theme since the last `logic`.
     theme_changed: bool,
+    /// The light or dark the window's own parts were last told to take:
+    /// the system's until the settings name one.
+    window_theme: egui::SystemTheme,
+    /// What the backend last read of Omarchy's themes: the name of the
+    /// theme of the moment, and the pinned theme.
+    pub desktop_theme: crate::desktop_theme::Read,
+    /// A read came back since the last `logic`.
+    desktop_read: bool,
+    /// The number of the last read asked for, and of the newest one taken:
+    /// an older one that ends later is dropped.
+    theme_asked: u64,
+    theme_taken: u64,
+    /// The pin the status line last said could not be read: it is said
+    /// once.
+    pin_told: Option<String>,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
     /// What the next frame asks of the window: to come forward, or the
@@ -258,6 +284,12 @@ impl App {
             system_theme: None,
             follow_desktop: false,
             theme_changed: false,
+            window_theme: egui::SystemTheme::SystemDefault,
+            desktop_theme: crate::desktop_theme::Read::default(),
+            desktop_read: false,
+            theme_asked: 0,
+            theme_taken: 0,
+            pin_told: None,
             window_title: "Tabletist".into(),
             window_asks: Vec::new(),
             closed_editors: Vec::new(),
@@ -1978,6 +2010,10 @@ impl App {
                     dialog.row = row;
                 }
             }
+            // A pin set from the window: the settings know no name for it.
+            Action::SetOption(crate::settings::OptionValue::Theme(
+                crate::settings::ThemeChoice::Pinned,
+            )) => self.pin_theme(),
             // The server's switch, turned on: the person's own doing, as
             // Turn on is, which keeps a change made outside that is held.
             Action::SetOption(crate::settings::OptionValue::AgentsOn(true)) => {
@@ -3335,6 +3371,22 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
+            Event::Theme { asked, read } => {
+                // Reads end in any order: one older than the newest taken
+                // saw a theme of Omarchy's that is gone, and one that read
+                // another pin than the one asked for now leaves the last
+                // one's.
+                if asked < self.theme_taken {
+                    return;
+                }
+                self.theme_taken = asked;
+                let asked = read.pin.as_ref().map(|(pin, _)| pin.as_str()) == self.pin_to_read();
+                self.desktop_theme.current = read.current;
+                if asked {
+                    self.desktop_theme.pin = read.pin;
+                }
+                self.desktop_read = true;
+            }
             // A named zone resolves from here on, and one the database does
             // not know is said to be ignored.
             Event::Zones(zones) => {
@@ -3982,6 +4034,18 @@ impl App {
         self.save_settings();
     }
 
+    /// Pins the theme Omarchy shows now, by its name. A pin stays as it
+    /// is. With no theme of Omarchy's to name (another desktop, or none
+    /// read yet), nothing is pinned: the file pins one by name.
+    fn pin_theme(&mut self) {
+        if self.settings.theme.pin().is_some() {
+            return;
+        }
+        if let Some(name) = self.desktop_theme.current.clone() {
+            self.change_settings(|settings| settings.theme = crate::settings::Theme::Pinned(name));
+        }
+    }
+
     /// Replaces the settings and does what the ones that changed ask for.
     /// Every change comes through here, from the app or from the file, and
     /// nothing is written here: saving is [`App::change_settings`]'s.
@@ -4023,7 +4087,7 @@ impl App {
                 }
             }
         }
-        if old.custom_theme != self.settings.custom_theme {
+        if old.theme != self.settings.theme {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
         }
@@ -5495,9 +5559,10 @@ impl App {
             let repaint = ctx.clone();
             self.themes.start(
                 self.dirs.themes_dir(),
-                self.settings.custom_theme.clone(),
+                self.palette_file(),
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
+            self.read_desktop_theme();
             // Not in tests or the demo, which must not watch the user's
             // directories any more than they scan them.
             self.watch_settings();
@@ -5510,10 +5575,96 @@ impl App {
         self.backend.send(Command::LoadZones);
     }
 
+    /// The palette file a pin names, which the themes folder reads first.
+    fn palette_file(&self) -> Option<String> {
+        let pin = self.settings.theme.pin()?;
+        theme::PinFrom::of(pin).file().map(str::to_owned)
+    }
+
+    /// Asks the backend for the name of Omarchy's theme of the moment and
+    /// the theme a pin names by name or path: the terminal look's, where
+    /// the desktop is followed.
+    fn read_desktop_theme(&mut self) {
+        let Some(home) = self.dirs.home.as_deref() else {
+            return;
+        };
+        if !self.look.terminal || !self.follow_desktop {
+            return;
+        }
+        let pin = self.pin_to_read().map(str::to_owned);
+        self.theme_asked += 1;
+        self.backend.send(Command::ReadTheme {
+            places: crate::desktop_theme::Places::of(home),
+            pin,
+            asked: self.theme_asked,
+        });
+    }
+
+    /// The pin the backend reads: one by name or path. A palette file is
+    /// the themes folder's to read.
+    fn pin_to_read(&self) -> Option<&str> {
+        let pin = self.settings.theme.pin()?;
+        theme::PinFrom::of(pin).file().is_none().then_some(pin)
+    }
+
+    /// The pinned theme, where the terminal look has one drawn: a palette
+    /// file from the themes folder; a name or a path as the backend read
+    /// it, and a name no Omarchy theme has from the folder too.
+    fn pinned(&self) -> Option<crate::desktop_theme::Pinned> {
+        if !self.look.terminal {
+            return None;
+        }
+        let pin = self.settings.theme.pin()?;
+        let from_folder = || {
+            let palette = theme::catalog_pin(&self.themes, pin)?;
+            Some(crate::desktop_theme::Pinned {
+                palette,
+                omarchy: false,
+            })
+        };
+        let read = self.desktop_theme.pin.as_ref();
+        let read = read
+            .filter(|(read, _)| read == pin)
+            .map(|(_, theme)| *theme);
+        match (theme::PinFrom::of(pin), read) {
+            (theme::PinFrom::File(_), _) => from_folder(),
+            (_, Some(Some(theme))) => Some(theme),
+            // Only once read: the folder's palette of an Omarchy theme's
+            // name (Tokyo Night has both) would be drawn until then.
+            (theme::PinFrom::Name(_), Some(None)) => from_folder(),
+            (theme::PinFrom::Name(_) | theme::PinFrom::Path(_), _) => None,
+        }
+    }
+
+    /// How the terminal look's pin stands: drawn, still being read, or
+    /// not to be found, when there is one.
+    pub fn pin_state(&self) -> Option<PinState> {
+        let pin = self.settings.theme.pin().filter(|_| self.look.terminal)?;
+        if let Some(pinned) = self.pinned() {
+            return Some(PinState::Drawn(pinned));
+        }
+        // A file waits for the themes folder, a name or a path for the
+        // backend: in tests and the demo they are never read.
+        let read = match theme::PinFrom::of(pin) {
+            theme::PinFrom::File(_) => !self.themes.loading(),
+            theme::PinFrom::Name(_) | theme::PinFrom::Path(_) => {
+                let read = self.desktop_theme.pin.as_ref();
+                read.is_some_and(|(read, _)| read == pin) && !self.themes.loading()
+            }
+        };
+        Some(if read {
+            PinState::Missing
+        } else {
+            PinState::Reading
+        })
+    }
+
     fn resolve_palette(&self) -> Palette {
         theme::resolve(
+            &self.look,
+            &self.settings.theme,
+            self.pinned().map(|pinned| pinned.palette),
             &self.themes,
-            self.settings.custom_theme.as_deref(),
             self.system_theme,
         )
     }
@@ -5524,17 +5675,21 @@ impl App {
         // The settings named another theme: where the desktop is followed
         // the catalog reads that file first, as it does at the start.
         let renamed = std::mem::take(&mut self.theme_changed);
+        // Omarchy switched themes, or the settings pin another: the name
+        // of the moment and the pin are read again with the folder.
         if self.themes.needs_reload() || (renamed && self.follow_desktop) {
             let repaint = ctx.clone();
             self.themes.start(
                 self.dirs.themes_dir(),
-                self.settings.custom_theme.clone(),
+                self.palette_file(),
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
+            self.read_desktop_theme();
         }
         let scanned = self.themes.poll();
+        let read = std::mem::take(&mut self.desktop_read);
         let system = ctx.system_theme();
-        if scanned || renamed || system != self.system_theme {
+        if scanned || renamed || read || system != self.system_theme {
             self.system_theme = system;
             let palette = self.resolve_palette();
             if palette != self.palette {
@@ -5542,9 +5697,50 @@ impl App {
                 theme::apply(ctx, &palette, &self.look);
             }
         }
+        self.tell_missing_pin(ctx);
+        // macOS and Windows: the window's own parts (its title bar, the
+        // menus and panels of the system) in the mode the settings name.
+        let mode = match (self.look.terminal, self.settings.theme.mode()) {
+            (true, _) | (false, crate::settings::Mode::System) => egui::SystemTheme::SystemDefault,
+            (false, crate::settings::Mode::Light) => egui::SystemTheme::Light,
+            (false, crate::settings::Mode::Dark) => egui::SystemTheme::Dark,
+        };
+        if mode != self.window_theme {
+            self.window_theme = mode;
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(mode));
+        }
         // A hidden window draws no frame: its close request is answered
         // here, or nothing would hold it back.
         self.hold_close(ctx);
+    }
+
+    /// Says in the status line, once, that the pinned theme could not be
+    /// found and the desktop is followed instead. It waits for a status
+    /// line to say it in: the terminal look's is a workspace's, under no
+    /// dialog.
+    fn tell_missing_pin(&mut self, ctx: &egui::Context) {
+        let state = self.pin_state();
+        let pin = self.settings.theme.pin();
+        // A pin read again (Omarchy switched) is not found yet: what was
+        // told of it stays told.
+        if state == Some(PinState::Reading) {
+            if self.pin_told.as_deref() != pin {
+                self.pin_told = None;
+            }
+            return;
+        }
+        let Some(pin) = pin.filter(|_| state == Some(PinState::Missing)) else {
+            self.pin_told = None;
+            return;
+        };
+        let seen = self.dialog.is_none() && self.workspace(self.active_tab_id()).is_some();
+        if self.pin_told.as_deref() == Some(pin) || !seen {
+            return;
+        }
+        let said = gettext(self.locale, crate::ui::settings::pin_missing(&self.themes));
+        let said = self.look.label(&said).replace("{name}", pin);
+        crate::ui::toast::say(ctx, &said);
+        self.pin_told = Some(pin.to_owned());
     }
 
     /// The foreign key picker's searches wait for a pause in the typing:
@@ -6127,6 +6323,8 @@ mod tests {
     #[test]
     fn a_new_theme_name_is_resolved_at_the_next_logic_pass() {
         let mut harness = Harness::new();
+        // A pin is the terminal look's, on every platform the tests run on.
+        harness.app.look = crate::theme::Look::omarchy();
         // A catalog that holds the theme already: no directory is read.
         let mut nord = Palette::dark();
         nord.accent = egui::Color32::from_rgb(0x88, 0xc0, 0xd0);
@@ -6138,7 +6336,7 @@ mod tests {
             false,
         );
         let settings = Settings {
-            custom_theme: Some("Nord.json".into()),
+            theme: crate::settings::Theme::Pinned("Nord.json".into()),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
@@ -6149,6 +6347,230 @@ mod tests {
         assert_eq!(harness.app.palette, nord.with_readable_labels());
         // Tests do not follow the desktop: no scan of the themes directory.
         assert!(!harness.app.themes.loading());
+    }
+
+    /// A harness in the terminal look, following an Omarchy palette, with
+    /// Nord among the themes folder's.
+    fn following_omarchy() -> (Harness, Palette, Palette) {
+        let mut harness = Harness::new();
+        harness.app.look = crate::theme::Look::omarchy();
+        let mut nord = Palette::dark();
+        nord.accent = egui::Color32::from_rgb(0x88, 0xc0, 0xd0);
+        let mut omarchy = Palette::dark();
+        omarchy.accent = egui::Color32::from_rgb(0xf3, 0x8d, 0x70);
+        let theme = |filename: &str, palette| crate::theme::CustomTheme {
+            filename: filename.into(),
+            palette,
+        };
+        harness.app.themes = Catalog::preview(
+            vec![
+                theme("Nord.json", nord),
+                theme(fastframe_theme::omarchy::FILENAME, omarchy),
+            ],
+            true,
+        );
+        (harness, nord, omarchy)
+    }
+
+    fn pin(harness: &mut Harness, name: &str) {
+        let settings = Settings {
+            theme: crate::settings::Theme::Pinned(name.into()),
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.app.logic(&harness.ctx.clone());
+    }
+
+    /// What the backend read of the pin `name`.
+    fn read(harness: &mut Harness, name: &str, palette: Option<Palette>) {
+        let read = crate::desktop_theme::Read {
+            current: Some("Ristretto".into()),
+            pin: Some((
+                name.into(),
+                palette.map(|palette| crate::desktop_theme::Pinned {
+                    palette,
+                    omarchy: true,
+                }),
+            )),
+        };
+        harness
+            .app
+            .apply(Action::Backend(Event::Theme { asked: 0, read }));
+        harness.app.logic(&harness.ctx.clone());
+    }
+
+    #[test]
+    fn a_pin_the_backend_read_is_drawn_and_the_desktop_until_then() {
+        let (mut harness, _, omarchy) = following_omarchy();
+        pin(&mut harness, "Tokyo Night");
+        assert_eq!(harness.app.pin_state(), Some(PinState::Reading));
+        assert_eq!(harness.app.palette, omarchy);
+        let mut tokyo = Palette::dark();
+        tokyo.accent = egui::Color32::from_rgb(0x7a, 0xa2, 0xf7);
+        read(&mut harness, "Tokyo Night", Some(tokyo));
+        assert_eq!(harness.app.palette, tokyo.with_readable_labels());
+        assert!(matches!(harness.app.pin_state(), Some(PinState::Drawn(_))));
+        assert_eq!(
+            harness.app.desktop_theme.current.as_deref(),
+            Some("Ristretto")
+        );
+        // A read of an earlier pin is not this one's.
+        pin(&mut harness, "Sunset");
+        assert_eq!(harness.app.palette, omarchy);
+        assert_eq!(harness.app.pin_state(), Some(PinState::Reading));
+        // macOS and Windows have no pin.
+        harness.app.look = crate::theme::Look::macos();
+        assert_eq!(harness.app.pin_state(), None);
+    }
+
+    #[test]
+    fn a_name_no_omarchy_theme_has_is_a_palette_of_the_themes_folder() {
+        let (mut harness, nord, omarchy) = following_omarchy();
+        pin(&mut harness, "nord");
+        // Omarchy may have a theme of that name: the desktop until it is
+        // read.
+        assert_eq!(harness.app.palette, omarchy);
+        read(&mut harness, "nord", None);
+        assert_eq!(harness.app.palette, nord);
+        assert!(
+            matches!(harness.app.pin_state(), Some(PinState::Drawn(pinned)) if !pinned.omarchy)
+        );
+    }
+
+    #[test]
+    fn a_pin_found_nowhere_follows_the_desktop_and_is_said_once() {
+        let (mut harness, _, omarchy) = following_omarchy();
+        pin(&mut harness, "Gone");
+        assert_eq!(
+            crate::ui::toast::said(&harness.ctx),
+            None,
+            "not while it is read"
+        );
+        read(&mut harness, "Gone", None);
+        assert_eq!(harness.app.palette, omarchy);
+        assert_eq!(harness.app.pin_state(), Some(PinState::Missing));
+        // Connections have no status line: it waits for a workspace's.
+        assert_eq!(crate::ui::toast::said(&harness.ctx), None);
+        harness.connect_fake();
+        harness.app.logic(&harness.ctx.clone());
+        assert_eq!(
+            crate::ui::toast::said(&harness.ctx).as_deref(),
+            Some("theme “Gone” not found: following omarchy")
+        );
+        // Read again, it is not said again.
+        crate::ui::toast::say(&harness.ctx, "something else");
+        read(&mut harness, "Gone", None);
+        assert_eq!(
+            crate::ui::toast::said(&harness.ctx).as_deref(),
+            Some("something else")
+        );
+        // A palette file the folder does not have is found nowhere either.
+        pin(&mut harness, "Missing.json");
+        assert_eq!(harness.app.pin_state(), Some(PinState::Missing));
+        assert_eq!(
+            crate::ui::toast::said(&harness.ctx).as_deref(),
+            Some("theme “Missing.json” not found: following omarchy")
+        );
+    }
+
+    #[test]
+    fn a_late_read_of_an_earlier_pin_is_dropped() {
+        let (mut harness, _, _) = following_omarchy();
+        pin(&mut harness, "Tokyo Night");
+        pin(&mut harness, "Gone");
+        read(&mut harness, "Gone", None);
+        assert_eq!(harness.app.pin_state(), Some(PinState::Missing));
+        read(&mut harness, "Tokyo Night", Some(Palette::light()));
+        assert_eq!(harness.app.pin_state(), Some(PinState::Missing));
+        assert_eq!(harness.app.desktop_theme.pin, Some(("Gone".into(), None)));
+    }
+
+    #[test]
+    fn a_read_that_ends_after_a_newer_one_is_dropped() {
+        let (mut harness, _, _) = following_omarchy();
+        // Omarchy switched to Catppuccin, then Nord: the read that saw
+        // Catppuccin ends last.
+        let answer = |harness: &mut Harness, asked, current: &str| {
+            let read = crate::desktop_theme::Read {
+                current: Some(current.into()),
+                pin: None,
+            };
+            harness
+                .app
+                .apply(Action::Backend(Event::Theme { asked, read }));
+        };
+        answer(&mut harness, 2, "Nord");
+        answer(&mut harness, 1, "Catppuccin");
+        assert_eq!(harness.app.desktop_theme.current.as_deref(), Some("Nord"));
+        answer(&mut harness, 3, "Rose Pine");
+        assert_eq!(
+            harness.app.desktop_theme.current.as_deref(),
+            Some("Rose Pine")
+        );
+    }
+
+    #[test]
+    fn a_missing_pin_read_again_while_the_folder_is_read_is_not_said_again() {
+        let (mut harness, _, _) = following_omarchy();
+        harness.connect_fake();
+        pin(&mut harness, "Gone");
+        read(&mut harness, "Gone", None);
+        assert!(crate::ui::toast::said(&harness.ctx).is_some());
+        crate::ui::toast::say(&harness.ctx, "something else");
+        // Omarchy switched: the folder and the pin are read again, the
+        // pin first.
+        let folder = tempfile::tempdir().unwrap();
+        let waker = fastframe_theme::Waker::default();
+        harness
+            .app
+            .themes
+            .start(folder.path().to_owned(), None, &waker);
+        read(&mut harness, "Gone", None);
+        assert_eq!(harness.app.pin_state(), Some(PinState::Reading));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while harness.app.themes.loading() && std::time::Instant::now() < deadline {
+            harness.app.logic(&harness.ctx.clone());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        harness.app.logic(&harness.ctx.clone());
+        assert_eq!(harness.app.pin_state(), Some(PinState::Missing));
+        assert_eq!(
+            crate::ui::toast::said(&harness.ctx).as_deref(),
+            Some("something else")
+        );
+    }
+
+    #[test]
+    fn the_terminal_look_asks_for_a_read_of_the_name_and_the_pin() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut harness, _, _) = following_omarchy();
+        harness.app.follow_desktop = true;
+        harness.app.dirs.home = Some(home.path().to_owned());
+        let asked = |harness: &mut Harness| -> Vec<Option<String>> {
+            std::mem::take(&mut harness.app.backend.sent)
+                .into_iter()
+                .filter_map(|command| match command {
+                    Command::ReadTheme { places, pin, .. } => {
+                        assert_eq!(places.home, home.path());
+                        Some(pin)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        pin(&mut harness, "Tokyo Night");
+        assert_eq!(asked(&mut harness), vec![Some("Tokyo Night".to_owned())]);
+        // The themes folder reads a palette file: the backend only the name.
+        pin(&mut harness, "Nord.json");
+        assert_eq!(asked(&mut harness), vec![None]);
+        // Not where nothing is pinned or followed, nor in the other looks.
+        harness.app.look = crate::theme::Look::macos();
+        pin(&mut harness, "Sunset");
+        assert_eq!(asked(&mut harness), Vec::<Option<String>>::new());
+        harness.app.look = crate::theme::Look::omarchy();
+        harness.app.follow_desktop = false;
+        pin(&mut harness, "Dusk");
+        assert_eq!(asked(&mut harness), Vec::<Option<String>>::new());
     }
 
     fn ids(app: &App) -> Vec<u64> {
