@@ -288,13 +288,15 @@ jobs:
           summary=$(printf '%s' "$OUTPUT" | jq -er .summary)
           verdict=$(printf '%s' "$OUTPUT" | jq -er .verdict)
           case "$verdict" in
-            approve) outcome=approved ;;
-            request_changes) outcome='changes requested' ;;
+            # The heading names the verdict, not the review the next step
+            # submits: that step can still fail.
+            approve) outcome='verdict: approve' ;;
+            request_changes) outcome='verdict: request changes' ;;
             *) echo "::error::Claude returned the verdict \"$verdict\"."; exit 1 ;;
           esac
           {
             echo '<!-- claude-review -->'
-            echo "### Claude review of \`${WANT:0:7}\`: $outcome"
+            echo "### Claude review of \`${WANT:0:7}\` ($outcome)"
             echo
             printf '%s\n' "${summary:0:60000}"
           } > "$RUNNER_TEMP/summary.md"
@@ -334,6 +336,8 @@ jobs:
           # a likely cause worth naming.
           if ! gh api -X POST "repos/$GH_REPO/pulls/$PR/reviews" \
             -f event="$event" -f commit_id="$WANT" -f body="$body" --jq .html_url; then
+            # GitHub's error ends without a newline.
+            echo
             if [ "$event" = APPROVE ]; then
               echo "::error::The approval was not accepted. Approving needs \"Allow GitHub Actions to create and approve pull requests\" in the repository's Actions settings."
             fi
