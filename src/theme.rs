@@ -542,7 +542,8 @@ pub enum PinFrom<'a> {
     /// `Nord.json`: a palette file in the themes folder, as older versions
     /// named one.
     File(&'a str),
-    /// `/…` or `~/…`: a palette file, or an Omarchy theme's folder.
+    /// `/…`, `~/…` or another absolute path of the platform (`C:\…`): a
+    /// palette file, or an Omarchy theme's folder.
     Path(&'a str),
     /// `Tokyo Night`: an Omarchy theme, else a palette of the themes folder
     /// by its name.
@@ -551,7 +552,8 @@ pub enum PinFrom<'a> {
 
 impl<'a> PinFrom<'a> {
     pub fn of(name: &'a str) -> Self {
-        if name.starts_with('/') || name.starts_with("~/") {
+        let absolute = std::path::Path::new(name).is_absolute();
+        if absolute || name.starts_with('/') || name.starts_with("~/") {
             Self::Path(name)
         } else if !name.contains(['/', '\\'])
             && name
@@ -957,6 +959,11 @@ mod tests {
         assert_eq!(
             PinFrom::of("themes/Nord.json"),
             PinFrom::Name("themes/Nord.json")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            PinFrom::of("C:\\themes\\Nord.json"),
+            PinFrom::Path("C:\\themes\\Nord.json")
         );
         assert_eq!(PinFrom::of("Nord.json").file(), Some("Nord.json"));
         assert_eq!(PinFrom::of("Nord").file(), None);
