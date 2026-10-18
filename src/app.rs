@@ -3575,6 +3575,7 @@ impl App {
                 let mut now = saved.clone();
                 now.agents.access = self.agents_access(saved);
                 now.agents.tables = self.agents_tables(saved);
+                now.agents.masked = self.agents_masked(saved);
                 now
             })
             .collect();
@@ -7305,6 +7306,12 @@ mod tests {
             (saved.name.as_str(), &saved.agents.masked),
             ("Local shop", &email)
         );
+        // And the server is sent them.
+        let sent_masked = match agents_sent(&app).last() {
+            Some(AgentsCommand::Policy { connections, .. }) => connections[0].masked.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(sent_masked, email);
     }
 
     #[cfg(any(unix, windows))]
