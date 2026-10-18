@@ -155,6 +155,43 @@ waits for your answer: see [below](#changes-made-outside-tabletist).
 [Settings and Files]({% link _reference/settings-and-files.md %}#the-connections-file)
 has the keys.
 
+## Mask columns
+
+A connection can give agents some columns' names and types, and never
+their values. In its form's **Agents** section, **Masked columns** lists
+them, and **Add column…** takes a table and a column, `orders.email`, or
+with the schema, `sales.orders.email`; one without a schema is that
+column of the table of that name in every schema.
+
+While a window of the connection is open, Add column… lists the tables
+that window's sidebar has loaded as you type. Choose one and it goes into
+the field, `orders.`, and the list shows that table's columns, which
+Tabletist asks the window for. A masked column that the loaded schemas
+and fetched columns show is not in the database is marked **not in this
+database**. What the sidebar has not loaded is not known, and not marked.
+
+What agents get of a masked column:
+
+- `describe_schema` gives its name and type, marked masked, and leaves
+  out its default, its comment and the values it may hold.
+- `run_query` answers `•••` for every value, an empty one too, where a
+  query selects the column as it is.
+- A query that filters, joins, sorts, groups or computes on it is
+  refused, and so is one that does that to any column of the same name in
+  any table. So is a view that reads it.
+
+Its partitions and child tables have it masked too, and so does a
+generated column of its table. If a masked column is renamed or dropped,
+agents may not use the connection at all until you take it out, or put in
+its new name: its new name would be masked by nothing.
+
+A function that comes with an extension can still read a masked column.
+For strict isolation, give the connection a database user without access
+to it.
+
+A change in `connections.toml` that masks less, made outside Tabletist,
+waits for your answer: see [below](#changes-made-outside-tabletist).
+
 ## See what agents do
 
 Each connection window has an Agents tab for its connection. It opens

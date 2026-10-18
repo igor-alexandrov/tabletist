@@ -164,8 +164,8 @@ server is on.
   connection's **Agents** section, and **Show Agents tab** shows its
   Agents tab.
 - In the connection's form, the **Agents** section has the access,
-  **Tables**, **Rows per answer** (1 to 5000, 500 at first) and the
-  **Statement timeout** in seconds (1 to 60, 10 at first).
+  **Tables**, **Masked columns**, **Rows per answer** (1 to 5000, 500 at
+  first) and the **Statement timeout** in seconds (1 to 60, 10 at first).
 - **Tables** is **All**, **All except** or **Only**. With **All except**,
   agents may read every table but the ones listed; with **Only**, the ones
   listed and no others, so that a table made later is hidden too. **Add table…** opens
@@ -183,12 +183,27 @@ server is on.
   never what is in the hidden tables: not their rows, their columns, or
   the views over them. A function from an extension can still read them;
   for strict isolation, use a database user without access.
+- **Masked columns** lists the columns whose values agents get as `•••`.
+  **Add column…** opens a field for a table and a column, `orders.email`
+  or `sales.orders.email`, which works as Add table…'s does: Enter adds
+  it, Escape closes the field, **×** takes one out, and one still in the
+  field when you save is added. While a window of the connection is open,
+  the field lists the tables its sidebar has loaded; Enter or a click on
+  one puts it in the field, and the list then shows its columns, which the
+  window is asked for. A masked column that the loaded schemas and fetched
+  columns show is not in the database is marked **not in this database**,
+  and agents may not use the connection until it is taken out or put
+  right. Agents see a masked column's name and type, and a query that
+  filters, joins, sorts or computes with it is refused, in any table with
+  a column of that name.
 - If `connections.toml` hides more tables while the form is open, saving
   a change of yours to them is refused, and the form shows them as they
   are now, for you to make your change again. A change in the file that
   hides less is held until you answer it, and is not in force: a save that
   changes the tables goes through over it, and one that leaves them as
-  shown keeps it, still held.
+  shown keeps it, still held. Masked columns are kept the same way: if
+  the file masks more while the form is open, saving a change of yours to
+  them is refused and the form shows them as they are now.
 - An Agents tab that says agents can't use a connection has **Allow
   agents…**, which opens that section with **Read** chosen. Nothing
   changes until you save.
