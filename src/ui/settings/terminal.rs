@@ -684,6 +684,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         }
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify => width("[x]"),
     }
@@ -845,6 +846,7 @@ fn option_row(
         }
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify => {
             check(ui, cell, option, settings, skin, actions);
@@ -990,6 +992,8 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .add(role, "ebook", second)
         }
         OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),
+        // As drawn: nothing to add.
+        OptionId::ConfirmCloseEdits => Text::new(look),
         OptionId::AgentsOn => dim(&skin.say("while tabletist is open")),
         // The key that shows the log, from this row, where there is a
         // window to show it in.

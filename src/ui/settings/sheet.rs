@@ -434,6 +434,7 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify => SWITCH,
         OptionId::LogDays => look.control_height,
@@ -504,6 +505,7 @@ fn control(
         }
         OptionId::ValueTags
         | OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify => {
             let on = super::is_on(&settings.value(option));
@@ -663,6 +665,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
         OptionId::ProductionReadOnly
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify => return,

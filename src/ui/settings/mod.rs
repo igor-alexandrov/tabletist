@@ -28,6 +28,7 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
         OptionId::ProductionReadOnly => "New production connections open read-only",
+        OptionId::ConfirmCloseEdits => "Ask before closing with unsaved edits",
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
@@ -41,6 +42,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
     match option {
         OptionId::Tz => "timestamptz zone",
         OptionId::ProductionReadOnly => "production opens read-only",
+        OptionId::ConfirmCloseEdits => "confirm close with edits",
         OptionId::PageSize
         | OptionId::Timestamps
         | OptionId::GroupDigits
@@ -62,6 +64,7 @@ pub(super) fn group_starting(option: OptionId) -> Option<&'static str> {
         | OptionId::Tz
         | OptionId::GroupDigits
         | OptionId::ValueTags
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify => None,
@@ -78,6 +81,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
         OptionId::Timestamps
         | OptionId::GroupDigits
+        | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
         | OptionId::AgentsNotify => None,
     }
@@ -124,6 +128,7 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
         value,
         OptionValue::ValueTags(true)
             | OptionValue::ProductionReadOnly(true)
+            | OptionValue::ConfirmCloseEdits(true)
             | OptionValue::AgentsOn(true)
             | OptionValue::AgentsNotify(true)
     )
@@ -212,6 +217,10 @@ pub(super) fn choices(
         OptionId::ProductionReadOnly => vec![
             (Word("off"), OptionValue::ProductionReadOnly(false)),
             (Word("on"), OptionValue::ProductionReadOnly(true)),
+        ],
+        OptionId::ConfirmCloseEdits => vec![
+            (Word("off"), OptionValue::ConfirmCloseEdits(false)),
+            (Word("on"), OptionValue::ConfirmCloseEdits(true)),
         ],
         OptionId::AgentsOn => vec![
             (Word("off"), OptionValue::AgentsOn(false)),

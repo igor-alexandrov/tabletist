@@ -1294,17 +1294,12 @@ impl App {
             Action::DiscardEdits { tab, id } => {
                 // Not under a save: dropping the set would drop the save
                 // with it, and its answer would find no tab to tell.
-                let mut stale = Vec::new();
-                if let Some(object) = self.object_tab_mut(tab, id)
-                    && object.edits.saving.is_none()
-                {
-                    // The counts of what its deletes take go with them.
-                    stale = object.edits.counts_out();
-                    object.edits.discard();
-                    object.off_new_rows();
-                    object.fields = None;
+                let idle = self
+                    .object_tab_mut(tab, id)
+                    .is_some_and(|object| object.edits.saving.is_none());
+                if idle {
+                    self.discard_edits(&[(tab, id)]);
                 }
-                self.stop_counts(tab, stale);
             }
             Action::DismissNote { tab, id } => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
@@ -1329,15 +1324,7 @@ impl App {
                     return;
                 };
                 let LeavePrompt { held, tabs, .. } = *prompt;
-                // A save one of them runs goes with its set: its answer
-                // finds no tab saving, and tells none.
-                for (tab, id) in tabs {
-                    if let Some(object) = self.object_tab_mut(tab, id) {
-                        object.edits.discard();
-                        object.off_new_rows();
-                        object.fields = None;
-                    }
-                }
+                self.discard_edits(&tabs);
                 self.perform(held);
             }
             Action::LeaveSave => {

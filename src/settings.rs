@@ -116,6 +116,11 @@ pub struct Settings {
     /// switch, which it is saved with. A saved connection whose switch was
     /// never set keeps the built-in rule: production is read-only.
     pub production_read_only: bool,
+    /// Whether an action that would drop a table's unsaved edits (closing
+    /// its tab, its connection or the window, or loading another page)
+    /// asks first. Off, the edits are dropped and the action goes ahead,
+    /// except while a save runs or a dialog is open.
+    pub confirm_close_edits: bool,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
     pub show_system_schemas: bool,
     /// A palette file name in the themes directory. `None` follows the
@@ -145,6 +150,7 @@ pub enum Key {
     GroupDigits,
     ValueTags,
     ProductionReadOnly,
+    ConfirmCloseEdits,
     ShowSystemSchemas,
     SqlLimit,
     SqlTimeoutSecs,
@@ -156,13 +162,14 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 13] = [
+    pub const ALL: [Key; 14] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
         Self::ProductionReadOnly,
+        Self::ConfirmCloseEdits,
         Self::ShowSystemSchemas,
         Self::SqlLimit,
         Self::SqlTimeoutSecs,
@@ -181,6 +188,7 @@ impl Key {
             Self::GroupDigits => ("data", "group_digits"),
             Self::ValueTags => ("data", "value_tags"),
             Self::ProductionReadOnly => ("safety", "production_read_only"),
+            Self::ConfirmCloseEdits => ("safety", "confirm_close_edits"),
             Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
             Self::SqlLimit => ("editor", "sql_limit"),
             Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
@@ -215,6 +223,8 @@ pub enum OptionId {
     /// Where a new production connection's read-only switch starts:
     /// `safety.production_read_only`.
     ProductionReadOnly,
+    /// Whether dropping unsaved edits asks first: `safety.confirm_close_edits`.
+    ConfirmCloseEdits,
     /// Whether agents can reach the app: `mcp.enabled`.
     AgentsOn,
     /// How long the log of agents' calls keeps one: `mcp.log_days`.
@@ -225,25 +235,27 @@ pub enum OptionId {
 
 impl OptionId {
     /// Every option, the General pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 9] = [
+    pub const ALL: [OptionId; 10] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
         Self::ProductionReadOnly,
+        Self::ConfirmCloseEdits,
         Self::AgentsOn,
         Self::LogDays,
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 6] = [
+    pub const GENERAL: [OptionId; 7] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
         Self::ProductionReadOnly,
+        Self::ConfirmCloseEdits,
     ];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
@@ -257,6 +269,7 @@ impl OptionId {
             Self::GroupDigits => Key::GroupDigits,
             Self::ValueTags => Key::ValueTags,
             Self::ProductionReadOnly => Key::ProductionReadOnly,
+            Self::ConfirmCloseEdits => Key::ConfirmCloseEdits,
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
@@ -279,6 +292,7 @@ pub enum OptionValue {
     GroupDigits(Option<bool>),
     ValueTags(bool),
     ProductionReadOnly(bool),
+    ConfirmCloseEdits(bool),
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
@@ -293,6 +307,7 @@ impl OptionValue {
             Self::GroupDigits(_) => OptionId::GroupDigits,
             Self::ValueTags(_) => OptionId::ValueTags,
             Self::ProductionReadOnly(_) => OptionId::ProductionReadOnly,
+            Self::ConfirmCloseEdits(_) => OptionId::ConfirmCloseEdits,
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
@@ -308,6 +323,7 @@ impl OptionValue {
             Self::GroupDigits(on) => settings.group_digits = on,
             Self::ValueTags(on) => settings.value_tags = on,
             Self::ProductionReadOnly(on) => settings.production_read_only = on,
+            Self::ConfirmCloseEdits(on) => settings.confirm_close_edits = on,
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
@@ -765,6 +781,7 @@ impl Settings {
             OptionId::ProductionReadOnly => {
                 OptionValue::ProductionReadOnly(self.production_read_only)
             }
+            OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(self.confirm_close_edits),
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
@@ -801,6 +818,7 @@ impl Settings {
             OptionId::GroupDigits => OptionValue::GroupDigits(Some(!forward)),
             OptionId::ValueTags => OptionValue::ValueTags(forward),
             OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
+            OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
             OptionId::AgentsOn => OptionValue::AgentsOn(forward),
             OptionId::LogDays => {
                 let days = self.mcp_log_days;
@@ -852,6 +870,9 @@ impl Settings {
             OptionId::ProductionReadOnly => {
                 Some(OptionValue::ProductionReadOnly(!self.production_read_only))
             }
+            OptionId::ConfirmCloseEdits => {
+                Some(OptionValue::ConfirmCloseEdits(!self.confirm_close_edits))
+            }
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
@@ -868,6 +889,7 @@ impl Settings {
             Key::GroupDigits => self.group_digits?.to_string(),
             Key::ValueTags => self.value_tags.to_string(),
             Key::ProductionReadOnly => self.production_read_only.to_string(),
+            Key::ConfirmCloseEdits => self.confirm_close_edits.to_string(),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
             Key::SqlLimit => self.sql_limit.to_string(),
             // TOML has no null: no timeout is no seconds.
@@ -1089,6 +1111,7 @@ impl Settings {
             Key::GroupDigits => flag.map(|flag| self.group_digits = Some(flag)),
             Key::ValueTags => flag.map(|flag| self.value_tags = flag),
             Key::ProductionReadOnly => flag.map(|flag| self.production_read_only = flag),
+            Key::ConfirmCloseEdits => flag.map(|flag| self.confirm_close_edits = flag),
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
             Key::SqlLimit => number.map(|number| self.sql_limit = number),
             Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
@@ -1198,6 +1221,7 @@ impl Settings {
             Key::GroupDigits => self.group_digits = other.group_digits,
             Key::ValueTags => self.value_tags = other.value_tags,
             Key::ProductionReadOnly => self.production_read_only = other.production_read_only,
+            Key::ConfirmCloseEdits => self.confirm_close_edits = other.confirm_close_edits,
             Key::ShowSystemSchemas => self.show_system_schemas = other.show_system_schemas,
             Key::SqlLimit => self.sql_limit = other.sql_limit,
             Key::SqlTimeoutSecs => self.sql_timeout_secs = other.sql_timeout_secs,
@@ -1256,6 +1280,7 @@ impl Default for Settings {
             group_digits: None,
             value_tags: true,
             production_read_only: true,
+            confirm_close_edits: true,
             show_system_schemas: false,
             custom_theme: None,
             sql_limit: 1_000,
@@ -1312,6 +1337,7 @@ mod tests {
             group_digits: Some(true),
             value_tags: false,
             production_read_only: false,
+            confirm_close_edits: false,
             show_system_schemas: true,
             custom_theme: Some("My \"Nord\".json".into()),
             sql_limit: 100,
@@ -1337,6 +1363,7 @@ value_tags = false
 
 [safety]
 production_read_only = false
+confirm_close_edits = false
 
 [sidebar]
 show_system_schemas = true
@@ -1412,13 +1439,14 @@ theme = \"My \\\"Nord\\\".json\"
                 (Key::GroupDigits, 6),
                 (Key::ValueTags, 7),
                 (Key::ProductionReadOnly, 10),
-                (Key::ShowSystemSchemas, 13),
-                (Key::SqlLimit, 16),
-                (Key::SqlTimeoutSecs, 17),
-                (Key::McpEnabled, 20),
-                (Key::McpLogDays, 21),
-                (Key::McpNotify, 22),
-                (Key::Theme, 25),
+                (Key::ConfirmCloseEdits, 11),
+                (Key::ShowSystemSchemas, 14),
+                (Key::SqlLimit, 17),
+                (Key::SqlTimeoutSecs, 18),
+                (Key::McpEnabled, 21),
+                (Key::McpLogDays, 22),
+                (Key::McpNotify, 23),
+                (Key::Theme, 26),
             ]
         );
     }
@@ -2369,6 +2397,7 @@ theme = \"My \\\"Nord\\\".json\"
                 Key::GroupDigits,
                 Key::ValueTags,
                 Key::ProductionReadOnly,
+                Key::ConfirmCloseEdits,
                 Key::McpEnabled,
                 Key::McpLogDays,
                 Key::McpNotify,

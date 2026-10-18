@@ -1362,6 +1362,10 @@ value_tags   = true
                 text.ends_with("[safety]\nproduction_read_only = false\n"),
                 "{text}"
             );
+            harness.click("Ask before closing with unsaved edits");
+            assert!(!harness.app.settings.confirm_close_edits);
+            let text = &harness.app.settings_file.text;
+            assert!(text.ends_with("confirm_close_edits = false\n"), "{text}");
         }
     }
 
@@ -1393,6 +1397,7 @@ value_tags   = true
             "safety",
             "production opens read-only",
             "default for new connections",
+            "confirm close with edits",
         ] {
             assert!(harness.painted_color(text).is_some(), "{text}");
         }
@@ -1622,7 +1627,7 @@ value_tags   = true
             harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
             // The last row's switch: the window has room for one row or
             // two, and it is under them.
-            let last = "New production connections open read-only";
+            let last = "Ask before closing with unsaved edits";
             tab_to_settings(&mut harness, last);
             let tree = harness.settle();
             let switch = crate::testing::bounds(&tree, last, Role::CheckBox).expect("the switch");
@@ -1636,7 +1641,7 @@ value_tags   = true
             let lead = harness.painted_rect(lead).expect("the tab's lead");
             assert!(switch.top() > lead.bottom(), "{switch:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..5 {
+            for _ in 0..6 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();
@@ -19341,6 +19346,83 @@ value_tags   = true
             ask_to_close(&mut harness);
             assert!(!sends(&harness, CancelClose), "{}", look.name);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn with_the_question_off_the_edits_go_and_what_was_asked_for_happens() {
+        use egui::ViewportCommand::Close;
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            // A reload of the page: no question, and the page comes again
+            // without the change.
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            let before = fetches(&harness);
+            harness.app.apply(Action::Refresh(tab));
+            assert!(!leaving(&harness), "{}", look.name);
+            assert!(!edits(&harness, tab, id).holds(), "{}", look.name);
+            assert_eq!(fetches(&harness), before + 1, "{}", look.name);
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            // The window: it closes.
+            make_pending(&mut harness, tab, id, (2, 1), "cy@example.com");
+            ask_to_close(&mut harness);
+            assert!(!leaving(&harness), "{}", look.name);
+            assert!(harness.app.closing, "{}", look.name);
+            assert!(sends(&harness, Close), "{}", look.name);
+            // The tab: it closes.
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(!leaving(&harness), "{}", look.name);
+            assert!(!open(&harness, tab, id), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn with_the_question_off_a_dialog_about_the_edits_still_holds_them() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            // The save's confirmation, which a production save asks first.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let confirming = |harness: &Harness| {
+                matches!(
+                    harness.app.dialog,
+                    Some(crate::model::Dialog::ConfirmWrite(_))
+                )
+            };
+            assert!(confirming(&harness), "{}", look.name);
+            // A reload under it, as the key runs while a dialog is open:
+            // the edits the confirmation shows stay, as with the question on.
+            harness.app.apply(Action::Refresh(tab));
+            assert!(confirming(&harness), "{}", look.name);
+            assert!(edits(&harness, tab, id).holds(), "{}", look.name);
+            assert!(harness.app.notice.is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn with_the_question_off_a_save_that_runs_still_holds() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            // The tab stays, with its set, as it does with the question on.
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(open(&harness, tab, id), "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            // The window asks: a save cannot be dropped without a word.
+            ask_to_close(&mut harness);
+            assert!(leaving(&harness), "{}", look.name);
+            assert!(!harness.app.closing, "{}", look.name);
         }
     }
 

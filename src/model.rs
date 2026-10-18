@@ -2187,6 +2187,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::GroupDigits),
                 SettingsRow::Option(OptionId::ValueTags),
                 SettingsRow::Option(OptionId::ProductionReadOnly),
+                SettingsRow::Option(OptionId::ConfirmCloseEdits),
             ],
             Self::Agents => &[
                 SettingsRow::Option(OptionId::AgentsOn),
