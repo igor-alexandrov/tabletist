@@ -664,6 +664,9 @@ pub enum Action {
         tab: ConnTabId,
         open: bool,
     },
+    /// The Log view: its calls that pass its filters, every one, to a file
+    /// the person chooses, as CSV or JSON Lines.
+    ExportAgentsLog(ConnTabId),
     /// The Log view: the statement of a call, by its place in the log, in
     /// a new SQL editor of its connection's window, read-only and not run.
     OpenAgentsLogCall {

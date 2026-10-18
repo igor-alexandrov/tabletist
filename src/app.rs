@@ -1837,6 +1837,20 @@ impl App {
                 }
             }
             Action::OpenAgentsLogCall { tab, id } => self.open_agents_log_call(tab, id),
+            Action::ExportAgentsLog(tab) => {
+                let filter = self.workspace(tab).and_then(|workspace| {
+                    let conn = workspace.conn_id.0.clone();
+                    workspace.tabs.iter().find_map(|open| match open {
+                        Tab::Agents(agents) => Some(agents.log.filter(&conn)),
+                        Tab::Object(_) | Tab::Sql(_) => None,
+                    })
+                });
+                if let Some(filter) = filter {
+                    let file = self.dirs.agents_log_file();
+                    let name = "tabletist-agents-log.csv".to_owned();
+                    self.backend.export_log(file, filter, name);
+                }
+            }
             Action::ShowAgentsLogFilters { tab, open } => {
                 if let Some(agents) = self
                     .workspace_mut(tab)

@@ -1185,7 +1185,7 @@ fn omarchys_enter_shows_the_calls_pane_esc_closes_it_and_o_opens_its_statement()
     harness.settle();
     // The bar names the keys of the call selected, where it has the room;
     // a narrow window leaves them to the footer.
-    let hint = "/ filter · enter details · o open in sql tab";
+    let hint = "/ filter · E export · enter details · o open in sql tab";
     let narrow = harness.size;
     harness.size = egui::vec2(1600.0, narrow.y);
     harness.settle();
@@ -1238,6 +1238,88 @@ fn omarchys_enter_shows_the_calls_pane_esc_closes_it_and_o_opens_its_statement()
             crate::model::RunMode::ReadOnly
         ))
     );
+}
+
+#[test]
+fn export_sends_the_logs_filter_to_the_save_dialog_in_both_looks() {
+    for look in looks() {
+        let (mut harness, tab) = on_the_log(look);
+        let conn = harness.app.workspace(tab).unwrap().conn_id.0.clone();
+        harness.app.apply(Action::FilterAgentsLog {
+            tab,
+            filter: crate::model::AgentsLogFilter::Result(Some("ok".into())),
+        });
+        log_answered(&mut harness);
+        if look.terminal {
+            assert!(harness.painted_rect("E export").is_some(), "{}", look.name);
+            super::tests::type_key(&mut harness, egui::Key::E, "E");
+        } else {
+            harness.click("Export…");
+        }
+        harness.settle();
+        let wanted = tabletist_mcp::LogFilter {
+            connection: Some(conn),
+            result: Some("ok".into()),
+            ..tabletist_mcp::LogFilter::default()
+        };
+        assert_eq!(
+            harness.app.backend.exports.last(),
+            Some(&(wanted, "tabletist-agents-log.csv".to_owned())),
+            "{}",
+            look.name
+        );
+        // With no call to export, nothing is asked.
+        harness.app.apply(Action::FilterAgentsLog {
+            tab,
+            filter: crate::model::AgentsLogFilter::Search("nothing".into()),
+        });
+        log_answered_empty(&mut harness);
+        let asked = harness.app.backend.exports.len();
+        if look.terminal {
+            assert!(harness.painted_rect("E export").is_none(), "{}", look.name);
+            super::tests::type_key(&mut harness, egui::Key::E, "E");
+        } else {
+            harness.click("Export…");
+        }
+        harness.settle();
+        assert_eq!(harness.app.backend.exports.len(), asked, "{}", look.name);
+    }
+}
+
+#[test]
+fn the_logs_bar_keeps_its_filters_count_and_export_apart_as_the_window_narrows() {
+    let (mut harness, _) = on_the_log(Look::macos());
+    let count = "1 call · last 30 days · on this computer";
+    for width in [1400.0, 1100.0, 900.0, 720.0] {
+        harness.size = egui::vec2(width, 700.0);
+        harness.settle();
+        let rect = |label: &str| harness.painted_rect(label);
+        let search = rect("Search requests…").expect("the search");
+        let export = rect("Export…").expect("Export…");
+        let results = rect("All results").expect("the result filter");
+        assert!(
+            results.right() < export.left(),
+            "{width}: {results:?} {export:?}"
+        );
+        assert!(
+            search.right() < export.left(),
+            "{width}: {search:?} {export:?}"
+        );
+        // The count between them, or not at all where it has no room.
+        if let Some(shown) = rect(count) {
+            assert!(
+                search.right() < shown.left(),
+                "{width}: {search:?} {shown:?}"
+            );
+            assert!(
+                shown.right() < export.left(),
+                "{width}: {shown:?} {export:?}"
+            );
+        }
+        if width >= 1400.0 {
+            assert!(rect(count).is_some(), "{width}");
+        }
+    }
 }
 
 #[test]
