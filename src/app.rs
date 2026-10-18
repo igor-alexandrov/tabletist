@@ -2796,6 +2796,7 @@ impl App {
             let old = std::mem::replace(&mut workspace.session, session);
             workspace.status = SessionStatus::Connecting { request };
             workspace.connect_started = None;
+            workspace.woken = false;
             workspace.forget_session_requests();
             self.backend.send(Command::Close { session: old });
         }
@@ -2945,6 +2946,7 @@ impl App {
         let old = std::mem::replace(&mut workspace.session, session);
         workspace.status = SessionStatus::Connecting { request };
         workspace.connect_started = None;
+        workspace.woken = false;
         workspace.forget_session_requests();
         self.backend.send(Command::Close { session: old });
         // Reuses the secrets this tab already has; asks only for missing ones.
@@ -2979,7 +2981,17 @@ impl App {
                     Some(tab) => {
                         self.save_accepted_password(tab);
                         self.mark_used(tab);
-                        self.after_connect(tab);
+                        // Opened again for a use, after it was closed while
+                        // idle: what the use sent is answered by this
+                        // session, and the rest of the tab is as it was.
+                        let woken = self
+                            .workspace_mut(tab)
+                            .is_some_and(|workspace| std::mem::take(&mut workspace.woken));
+                        if woken {
+                            self.ask_server_version(tab);
+                        } else {
+                            self.after_connect(tab);
+                        }
                     }
                     // Nobody is waiting for this session any more.
                     None => self.backend.send(Command::Close { session }),
@@ -2999,6 +3011,21 @@ impl App {
                 if !matches!(workspace.status, SessionStatus::Connecting { request: r } if r == request)
                 {
                     return;
+                }
+                // A connect again for a use that failed: what the use sent
+                // waited for it and never left the app. A save says so; a
+                // run is forgotten, and claims nothing was written. Their
+                // answers, lost, find nothing waiting. The next connect,
+                // whatever brings it, restarts the tab as a reconnect does.
+                if std::mem::take(&mut workspace.woken) {
+                    for sql in workspace.sql_tabs_mut() {
+                        sql.abandon_run();
+                    }
+                    for object in workspace.object_tabs_mut() {
+                        if object.edits.saving.take().is_some() {
+                            object.edits.note = Some(crate::edit::Note::NotSent);
+                        }
+                    }
                 }
                 let rejected = matches!(error, Error::Auth(_))
                     && workspace.password_mode != PasswordMode::None;
@@ -3062,6 +3089,8 @@ impl App {
             Event::Disconnected { session, error } => {
                 if let Some(tab) = self.tab_for_session(session)
                     && let Some(workspace) = self.workspace_mut(tab)
+                    // A session closed while idle was closed on purpose.
+                    && !matches!(workspace.status, SessionStatus::Idle)
                 {
                     workspace.status = SessionStatus::Disconnected(error);
                 }
@@ -4301,6 +4330,25 @@ impl App {
         }
     }
 
+    /// The footer of a SQL editor names the server: asked for once a
+    /// session is up, where an editor is open and it is not known (a new
+    /// session, see `Workspace::forget_session_requests`, or an editor
+    /// opened while the session was closed for being idle).
+    fn ask_server_version(&mut self, tab: ConnTabId) {
+        if let Some(workspace) = self.workspace(tab)
+            && workspace.sql_tabs().next().is_some()
+            && workspace.server_version.needs_load()
+        {
+            let session = workspace.session;
+            let request = RequestId(self.next_id());
+            if let Some(workspace) = self.workspace_mut(tab) {
+                workspace.server_version.start(request);
+            }
+            self.backend
+                .send(Command::ServerVersion { session, request });
+        }
+    }
+
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
@@ -4319,20 +4367,7 @@ impl App {
                 Driver::MySql | Driver::Sqlite => {}
             }
         }
-        // The footer of a SQL editor names the server; ask again when the
-        // session is new (see `Workspace::forget_session_requests`).
-        if let Some(workspace) = self.workspace(tab)
-            && workspace.sql_tabs().next().is_some()
-            && workspace.server_version.needs_load()
-        {
-            let session = workspace.session;
-            let request = RequestId(self.next_id());
-            if let Some(workspace) = self.workspace_mut(tab) {
-                workspace.server_version.start(request);
-            }
-            self.backend
-                .send(Command::ServerVersion { session, request });
-        }
+        self.ask_server_version(tab);
         self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -4414,6 +4449,7 @@ fn catalog_of<'a>(
 
 impl App {
     pub fn load_schemas(&mut self, tab: ConnTabId) {
+        self.wake(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -4424,6 +4460,7 @@ impl App {
     }
 
     pub fn load_objects(&mut self, tab: ConnTabId, schema: &str) {
+        self.wake(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -4896,6 +4933,7 @@ impl App {
     /// Asks for `object`'s structure, for its columns in the completion
     /// list. Nothing waits for it but the workspace's `columns`.
     fn load_columns(&mut self, tab: ConnTabId, object: ObjectRef) {
+        self.wake(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5070,7 +5108,8 @@ impl App {
         let Some(workspace) = self.workspace(tab) else {
             return;
         };
-        if !matches!(workspace.status, SessionStatus::Connected) {
+        // One closed while idle connects again for the run.
+        if !workspace.takes_commands() {
             return;
         }
         let dialect = workspace.driver.dialect();
@@ -5107,7 +5146,7 @@ impl App {
         let Some(workspace) = self.workspace(tab) else {
             return;
         };
-        if !matches!(workspace.status, SessionStatus::Connected) {
+        if !workspace.takes_commands() {
             return;
         }
         let Some(sql) = workspace.sql_tab(id) else {
@@ -5138,6 +5177,15 @@ impl App {
         statements: Vec<tabletist_db::sql::Statement>,
         mode: tabletist_db::ScriptMode,
     ) {
+        self.wake(tab);
+        // A connect again that has to ask for a secret first is not sent
+        // yet: the run is not sent before it, and Run can be pressed again.
+        if self
+            .workspace(tab)
+            .is_some_and(|workspace| !workspace.takes_commands())
+        {
+            return;
+        }
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5307,6 +5355,7 @@ impl App {
     /// settings' size. Previous asks for the tab's size, or for the rows
     /// before a page that begins less than a page from the start.
     fn fetch_page(&mut self, tab: ConnTabId, id: TabId, limit: u32) {
+        self.wake(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5485,6 +5534,7 @@ impl App {
     }
 
     pub fn count_rows(&mut self, tab: ConnTabId, id: TabId) {
+        self.wake(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5505,6 +5555,7 @@ impl App {
     }
 
     pub fn describe(&mut self, tab: ConnTabId, id: TabId) {
+        self.wake(tab);
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5669,8 +5720,8 @@ impl App {
         )
     }
 
-    /// Work that does not draw: theme changes on disk or in the OS, and a
-    /// request to close the window.
+    /// Work that does not draw: theme changes on disk or in the OS, a
+    /// request to close the window, and closing connections left unused.
     pub fn logic(&mut self, ctx: &egui::Context) {
         // The settings named another theme: where the desktop is followed
         // the catalog reads that file first, as it does at the start.
@@ -5712,6 +5763,106 @@ impl App {
         // A hidden window draws no frame: its close request is answered
         // here, or nothing would hold it back.
         self.hold_close(ctx);
+        // Here, before the frame notes the person's input: `logic` also runs
+        // alone while the window is hidden (eframe's logic-only pass), when
+        // the input is the last frame's and must not be counted as a use
+        // again. An input after the due time finds the session closed, as
+        // it would have been on time, and connects it again if it needs it.
+        // The window comes back when the next session is due.
+        if let Some(wait) = self.close_idle(std::time::Instant::now()) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// Closes the session of each connection left unused for longer than
+    /// "Disconnect when idle" gives it: its tab stays as it is, says so,
+    /// and connects again when something needs the session (see
+    /// `App::wake`). Never one whose tables hold edits or that is not
+    /// connected; one that waits for an answer is in use while it waits.
+    /// Returns how long until the next one is due.
+    pub fn close_idle(&mut self, now: std::time::Instant) -> Option<std::time::Duration> {
+        let limit = self.settings.idle_disconnect.after()?;
+        // A foreign key's list waits on its session too.
+        let looking: Vec<SessionId> = self.lookups.iter().map(|sent| sent.session).collect();
+        let mut due = Vec::new();
+        let mut next: Option<std::time::Duration> = None;
+        for tab in &mut self.tabs {
+            let ConnTabContent::Workspace(workspace) = &mut tab.content else {
+                continue;
+            };
+            if !matches!(workspace.status, SessionStatus::Connected) || workspace.holds_edits() {
+                continue;
+            }
+            if workspace.waits() || looking.contains(&workspace.session) {
+                workspace.used = now;
+            }
+            let unused = now.saturating_duration_since(workspace.used);
+            match limit.checked_sub(unused).filter(|left| !left.is_zero()) {
+                Some(left) => next = Some(next.map_or(left, |next| next.min(left))),
+                None => {
+                    workspace.status = SessionStatus::Idle;
+                    due.push(workspace.session);
+                }
+            }
+        }
+        for session in due {
+            self.backend.send(Command::Close { session });
+        }
+        next
+    }
+
+    /// Marks `tab`'s session used, and connects it again where it was
+    /// closed while idle, with the secrets the tab keeps: what is sent for
+    /// it next waits in the backend until the session is up. Everything
+    /// that sends a command a use needs calls it once it has something to
+    /// send; a cancel, a close, the server's version and the databases'
+    /// list are asked only of a session that is up, and do not.
+    fn wake(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        workspace.used = std::time::Instant::now();
+        if !matches!(workspace.status, SessionStatus::Idle) {
+            return;
+        }
+        let session = SessionId(self.next_id());
+        let request = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        workspace.session = session;
+        workspace.status = SessionStatus::Connecting { request };
+        workspace.connect_started = None;
+        self.authenticate(tab);
+        // A connect that has to ask for a secret first is not sent yet:
+        // what is sent meanwhile is lost, and the tab is restarted when
+        // the session is up, as after any reconnect.
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.woken = workspace.connect_started.is_some();
+        }
+    }
+
+    /// The connection in front is in use while the person works in its
+    /// tab: a key, a click or a scroll in this frame.
+    fn note_use(&mut self, ctx: &egui::Context) {
+        let used = ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key { .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::PointerButton { .. }
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Paste(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                )
+            })
+        });
+        let tab = self.active_tab_id();
+        if used && let Some(workspace) = self.workspace_mut(tab) {
+            workspace.used = std::time::Instant::now();
+        }
     }
 
     /// Says in the status line, once, that the pinned theme could not be
@@ -5754,6 +5905,7 @@ impl App {
 
     /// Draws one frame, then applies what the frame asked for.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
+        self.note_use(ui.ctx());
         self.poll_backend();
         self.apply_actions();
         self.tick_lookups(ui.ctx());
@@ -14142,6 +14294,615 @@ mod tests {
                 harness.app.workspace(tab).unwrap().status,
                 SessionStatus::Cancelled
             ));
+        }
+    }
+
+    /// Closing a session left unused, and connecting it again when it is
+    /// next used.
+    mod idle {
+        use super::*;
+        use crate::settings::Idle;
+        use std::time::Instant;
+
+        const MINUTE: Duration = Duration::from_secs(60);
+
+        /// A connection with `users` open and loaded, last used at the
+        /// instant it returns.
+        fn loaded(harness: &mut Harness) -> (ConnTabId, TabId, Instant) {
+            let tab = harness.connect_fake();
+            let id = open(harness, tab, "users", true);
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(page(5, false));
+            let used = harness.app.workspace(tab).unwrap().used;
+            (tab, id, used)
+        }
+
+        fn status(harness: &Harness, tab: ConnTabId) -> &SessionStatus {
+            &harness.app.workspace(tab).unwrap().status
+        }
+
+        fn closed(harness: &Harness, session: SessionId) -> bool {
+            harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .any(|command| matches!(command, Command::Close { session: s } if *s == session))
+        }
+
+        #[test]
+        fn a_session_left_unused_for_the_time_is_closed_and_its_tab_stays() {
+            let mut harness = Harness::new();
+            let (tab, id, used) = loaded(&mut harness);
+            let session = harness.app.workspace(tab).unwrap().session;
+            // Not yet: the frame is asked back when it is due.
+            assert_eq!(harness.app.close_idle(used + 29 * MINUTE), Some(MINUTE));
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+            assert!(!closed(&harness, session));
+            assert_eq!(harness.app.close_idle(used + 30 * MINUTE), None);
+            assert!(matches!(status(&harness, tab), SessionStatus::Idle));
+            assert!(closed(&harness, session));
+            // The tab and its page stay.
+            assert_eq!(object(&harness, tab, id).page().unwrap().rows.len(), 5);
+            // Closed once.
+            let closes = harness.app.backend.sent.len();
+            harness.app.close_idle(used + 60 * MINUTE);
+            assert_eq!(harness.app.backend.sent.len(), closes);
+        }
+
+        #[test]
+        fn the_time_is_the_settings_and_never_is_never() {
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.settings.idle_disconnect = Idle::Minutes5;
+            assert_eq!(harness.app.close_idle(used + 4 * MINUTE), Some(MINUTE));
+            harness.app.settings.idle_disconnect = Idle::Never;
+            assert_eq!(harness.app.close_idle(used + 24 * 60 * MINUTE), None);
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+        }
+
+        #[test]
+        fn a_session_is_never_closed_under_edits_or_while_it_works() {
+            // Edits pending.
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let used = harness.app.workspace(tab).unwrap().used;
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: crate::model::EditStart::Replace("bob@example.com".into()),
+            });
+            harness.app.close_idle(used + 60 * MINUTE);
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+            // A fetch in flight: in use while it waits, so its time starts
+            // again when it is answered.
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.apply(Action::Refresh(tab));
+            let later = used + 60 * MINUTE;
+            assert_eq!(harness.app.close_idle(later), Some(30 * MINUTE));
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(page(5, false));
+            assert_eq!(
+                harness.app.close_idle(later + 10 * MINUTE),
+                Some(20 * MINUTE)
+            );
+            // A run in flight.
+            let mut harness = Harness::new();
+            let tab = harness.connect_fake();
+            let sql = harness.add_sql_tab(tab);
+            harness.app.sql_tab_mut(tab, sql).unwrap().text = "SELECT 1".into();
+            harness.app.apply(Action::RunSql {
+                tab,
+                sql_tab: sql,
+                all: true,
+            });
+            let used = harness.app.workspace(tab).unwrap().used;
+            harness.app.close_idle(used + 60 * MINUTE);
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+            // A session that is not connected has nothing to close.
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.workspace_mut(tab).unwrap().status =
+                SessionStatus::Disconnected(Error::ConnectionLost("gone".into()));
+            let sent = harness.app.backend.sent.len();
+            harness.app.close_idle(used + 60 * MINUTE);
+            assert_eq!(harness.app.backend.sent.len(), sent);
+        }
+
+        #[test]
+        fn the_next_fetch_connects_again_and_is_answered_by_the_new_session() {
+            let mut harness = Harness::new();
+            let (tab, id, used) = loaded(&mut harness);
+            let old = harness.app.workspace(tab).unwrap().session;
+            harness.app.close_idle(used + 30 * MINUTE);
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::Refresh(tab));
+            let sent = &harness.app.backend.sent[before..];
+            // A connect for a new session, then the fetch for it, which
+            // the backend keeps until the session is up.
+            let Some(&Command::Connect {
+                session, request, ..
+            }) = sent.first()
+            else {
+                panic!("a connect first: {sent:?}");
+            };
+            assert_ne!(session, old);
+            assert!(sent.iter().any(
+                |command| matches!(command, Command::FetchRows { session: s, .. } if *s == session)
+            ));
+            assert!(matches!(
+                status(&harness, tab),
+                SessionStatus::Connecting { .. }
+            ));
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::Backend(Event::Connected {
+                session,
+                request,
+                driver: Driver::Sqlite,
+                encrypted: false,
+                access: crate::testing::asked_access(&harness.app),
+            }));
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+            // Nothing is fetched again: the fetch that woke it is answered.
+            let again = harness.app.backend.sent[before..].iter().any(|command| {
+                matches!(
+                    command,
+                    Command::ListSchemas { .. }
+                        | Command::FetchRows { .. }
+                        | Command::Describe { .. }
+                )
+            });
+            assert!(!again, "{:?}", &harness.app.backend.sent[before..]);
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(page(3, false));
+            assert_eq!(object(&harness, tab, id).page().unwrap().rows.len(), 3);
+        }
+
+        #[test]
+        fn a_save_or_a_run_connects_again_too() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let used = harness.app.workspace(tab).unwrap().used;
+            harness.app.close_idle(used + 30 * MINUTE);
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: crate::model::EditStart::Replace("bob@example.com".into()),
+            });
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: crate::model::Advance::Stay,
+            });
+            assert_eq!(harness.app.save_blocked(tab, id), None);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let session = harness.app.workspace(tab).unwrap().session;
+            let sent = &harness.app.backend.sent;
+            let connect = sent
+                .iter()
+                .position(|c| matches!(c, Command::Connect { session: s, .. } if *s == session));
+            let write = sent
+                .iter()
+                .position(|c| matches!(c, Command::Write { session: s, .. } if *s == session));
+            assert!(connect.is_some() && connect < write, "{sent:?}");
+            // A run.
+            let mut harness = Harness::new();
+            let tab = harness.connect_fake();
+            let sql = harness.add_sql_tab(tab);
+            let used = harness.app.workspace(tab).unwrap().used;
+            let old = harness.app.workspace(tab).unwrap().session;
+            harness.app.close_idle(used + 30 * MINUTE);
+            assert!(matches!(status(&harness, tab), SessionStatus::Idle));
+            harness.app.sql_tab_mut(tab, sql).unwrap().text = "SELECT 1".into();
+            harness.app.apply(Action::RunSql {
+                tab,
+                sql_tab: sql,
+                all: true,
+            });
+            let session = harness.app.workspace(tab).unwrap().session;
+            assert_ne!(session, old);
+            let sent = &harness.app.backend.sent;
+            let connect = sent
+                .iter()
+                .position(|c| matches!(c, Command::Connect { session: s, .. } if *s == session));
+            let run = sent
+                .iter()
+                .position(|c| matches!(c, Command::RunSql { session: s, .. } if *s == session));
+            assert!(connect.is_some() && connect < run, "{sent:?}");
+        }
+
+        #[test]
+        fn a_connect_again_that_fails_says_so_and_reconnect_restarts_the_tab() {
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.close_idle(used + 30 * MINUTE);
+            harness.app.apply(Action::Refresh(tab));
+            let Some(&Command::Connect {
+                session, request, ..
+            }) = harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .rev()
+                .find(|c| matches!(c, Command::Connect { .. }))
+            else {
+                panic!("expected Connect");
+            };
+            harness.app.apply(Action::Backend(Event::ConnectFailed {
+                session,
+                request,
+                error: Error::Connect("refused".into()),
+            }));
+            assert!(matches!(
+                status(&harness, tab),
+                SessionStatus::Disconnected(_)
+            ));
+            // Reconnect is a reconnect: the tree and the page come again.
+            harness.app.apply(Action::Reconnect(tab));
+            let Command::Connect {
+                session, request, ..
+            } = *last_sent(&harness.app)
+            else {
+                panic!("expected Connect");
+            };
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::Backend(Event::Connected {
+                session,
+                request,
+                driver: Driver::Sqlite,
+                encrypted: false,
+                access: crate::testing::asked_access(&harness.app),
+            }));
+            let new = &harness.app.backend.sent[before..];
+            assert!(new.iter().any(|c| matches!(c, Command::ListSchemas { .. })));
+            assert!(new.iter().any(|c| matches!(c, Command::FetchRows { .. })));
+        }
+
+        /// The newest connect sent.
+        fn last_connect(harness: &Harness) -> (SessionId, RequestId) {
+            harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .rev()
+                .find_map(|command| match command {
+                    Command::Connect {
+                        session, request, ..
+                    } => Some((*session, *request)),
+                    _ => None,
+                })
+                .expect("a connect")
+        }
+
+        fn type_password(harness: &mut Harness, text: &str) {
+            let Some(Dialog::Password(prompt)) = &mut harness.app.dialog else {
+                panic!("the password is asked for");
+            };
+            prompt.password = text.into();
+            harness.app.apply(Action::SubmitPassword);
+        }
+
+        #[test]
+        fn a_connect_again_the_server_refuses_restarts_the_tab_once_it_is_answered() {
+            let mut harness = Harness::new();
+            // A connection whose password is asked for, and kept by its tab.
+            let mut saved = crate::testing::fixture_connection();
+            saved.password = PasswordMode::Ask;
+            let conn = saved.id.clone();
+            harness.app.connections.upsert(saved);
+            let tab = harness.app.active_tab_id();
+            harness.app.apply(Action::Connect { tab, conn });
+            type_password(&mut harness, "pw");
+            let (session, request) = last_connect(&harness);
+            harness.app.apply(Action::Backend(Event::Connected {
+                session,
+                request,
+                driver: Driver::Sqlite,
+                encrypted: false,
+                access: crate::testing::asked_access(&harness.app),
+            }));
+            // Its tree, answered: nothing waits for the session.
+            let Command::ListSchemas { request, .. } = *last_sent(&harness.app) else {
+                panic!("expected ListSchemas");
+            };
+            harness.app.apply(Action::Backend(Event::Schemas {
+                session,
+                request,
+                result: Ok(vec!["main".into()]),
+            }));
+            let Command::ListObjects { request, .. } = *last_sent(&harness.app) else {
+                panic!("expected ListObjects");
+            };
+            harness.app.apply(Action::Backend(Event::Objects {
+                session,
+                request,
+                schema: "main".into(),
+                result: Ok(Vec::new()),
+            }));
+            let used = harness.app.workspace(tab).unwrap().used;
+            harness.app.close_idle(used + 30 * MINUTE);
+            assert!(matches!(status(&harness, tab), SessionStatus::Idle));
+            harness.app.apply(Action::Refresh(tab));
+            // The password was changed on the server meanwhile.
+            let (session, request) = last_connect(&harness);
+            harness.app.apply(Action::Backend(Event::ConnectFailed {
+                session,
+                request,
+                error: Error::Auth("password authentication failed".into()),
+            }));
+            type_password(&mut harness, "new");
+            let (session, request) = last_connect(&harness);
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::Backend(Event::Connected {
+                session,
+                request,
+                driver: Driver::Sqlite,
+                encrypted: false,
+                access: crate::testing::asked_access(&harness.app),
+            }));
+            // What the use sent was lost with the refused connect: the tab
+            // starts again, as after any reconnect.
+            let new = &harness.app.backend.sent[before..];
+            assert!(
+                new.iter().any(|c| matches!(c, Command::ListSchemas { .. })),
+                "{new:?}"
+            );
+        }
+
+        #[test]
+        fn a_save_or_a_run_that_waited_for_a_connect_that_failed_was_never_sent() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let sql = harness.add_sql_tab(tab);
+            harness.app.workspace_mut(tab).unwrap().active_tab = Some(id);
+            let used = harness.app.workspace(tab).unwrap().used;
+            harness.app.close_idle(used + 30 * MINUTE);
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: crate::model::EditStart::Replace("bob@example.com".into()),
+            });
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: crate::model::Advance::Stay,
+            });
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.app.sql_tab_mut(tab, sql).unwrap().text = "SELECT 1".into();
+            harness.app.apply(Action::RunSql {
+                tab,
+                sql_tab: sql,
+                all: true,
+            });
+            let (session, request) = last_connect(&harness);
+            harness.app.apply(Action::Backend(Event::ConnectFailed {
+                session,
+                request,
+                error: Error::Connect("refused".into()),
+            }));
+            let object = object(&harness, tab, id);
+            assert!(object.edits.saving.is_none());
+            assert_eq!(object.edits.note, Some(crate::edit::Note::NotSent));
+            assert!(object.edits.pending(), "the changes stay");
+            let run = harness.app.workspace(tab).unwrap().sql_tab(sql).unwrap();
+            assert!(!run.is_running());
+            assert!(!run.lost_writing());
+        }
+
+        #[test]
+        fn a_connect_again_that_asks_for_a_secret_first_sends_no_save_before_it() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let used = harness.app.workspace(tab).unwrap().used;
+            harness.app.close_idle(used + 30 * MINUTE);
+            // The password is asked for, not kept.
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.password_mode = PasswordMode::Ask;
+            workspace.secrets.password = None;
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: crate::model::EditStart::Replace("bob@example.com".into()),
+            });
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: crate::model::Advance::Stay,
+            });
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(matches!(harness.app.dialog, Some(Dialog::Password(_))));
+            let sent = &harness.app.backend.sent;
+            assert!(
+                !sent.iter().any(|c| matches!(c, Command::Write { .. })),
+                "{sent:?}"
+            );
+            let object = object(&harness, tab, id);
+            assert_eq!(object.edits.note, Some(crate::edit::Note::NotSent));
+            assert!(object.edits.saving.is_none());
+            assert!(object.edits.pending(), "the changes stay");
+        }
+
+        #[test]
+        fn an_editor_opened_while_idle_learns_the_server_once_it_connects_again() {
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.close_idle(used + 30 * MINUTE);
+            harness.add_sql_tab(tab);
+            assert!(
+                !harness
+                    .app
+                    .backend
+                    .sent
+                    .iter()
+                    .any(|c| matches!(c, Command::ServerVersion { .. }))
+            );
+            harness.app.apply(Action::Refresh(tab));
+            let (session, request) = last_connect(&harness);
+            harness.app.apply(Action::Backend(Event::Connected {
+                session,
+                request,
+                driver: Driver::Sqlite,
+                encrypted: false,
+                access: crate::testing::asked_access(&harness.app),
+            }));
+            assert!(
+                harness.app.backend.sent.iter().any(
+                    |c| matches!(c, Command::ServerVersion { session: s, .. } if *s == session)
+                )
+            );
+        }
+
+        #[test]
+        fn a_list_of_a_foreign_key_that_waits_keeps_the_session_in_use() {
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.lookups.push(key_picker::SentLookup {
+                session,
+                request: RequestId(9_999),
+                picker: 1,
+                matches: true,
+            });
+            let later = used + 60 * MINUTE;
+            assert_eq!(harness.app.close_idle(later), Some(30 * MINUTE));
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+        }
+
+        #[test]
+        fn opening_a_schema_connects_again_too() {
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.close_idle(used + 30 * MINUTE);
+            harness.app.load_objects(tab, "main");
+            let (session, _) = last_connect(&harness);
+            assert!(
+                harness
+                    .app
+                    .backend
+                    .sent
+                    .iter()
+                    .any(|c| matches!(c, Command::ListObjects { session: s, .. } if *s == session))
+            );
+        }
+
+        #[test]
+        fn a_connect_again_for_a_use_shows_no_strip() {
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.close_idle(used + 30 * MINUTE);
+            harness.app.apply(Action::Refresh(tab));
+            assert!(matches!(
+                status(&harness, tab),
+                SessionStatus::Connecting { .. }
+            ));
+            harness.settle();
+            assert!(
+                !harness
+                    .painted
+                    .iter()
+                    .any(|(text, _)| text.starts_with("Reconnecting")),
+                "{:?}",
+                harness.painted
+            );
+            // A reconnect the person asked for shows it.
+            harness.app.apply(Action::Reconnect(tab));
+            harness.settle();
+            assert!(
+                harness
+                    .painted
+                    .iter()
+                    .any(|(text, _)| text.starts_with("Reconnecting"))
+            );
+        }
+
+        #[test]
+        fn the_apps_logic_closes_idle_sessions_and_asks_to_be_run_when_the_next_is_due() {
+            let mut harness = Harness::new();
+            let (tab, _, _) = loaded(&mut harness);
+            harness.app.settings.idle_disconnect = Idle::Minutes5;
+            // Repaints asked for before have run their passes.
+            for _ in 0..3 {
+                let app = &mut harness.app;
+                let _ = harness
+                    .ctx
+                    .run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+            }
+            // The repaint `logic` asks for is when the session is due.
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = asked.clone();
+            harness
+                .ctx
+                .set_request_repaint_callback(move |info| log.lock().unwrap().push(info.delay));
+            let app = &mut harness.app;
+            let _ = harness
+                .ctx
+                .run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+            let delays = asked.lock().unwrap().clone();
+            assert!(
+                delays
+                    .iter()
+                    .any(|delay| *delay > 4 * MINUTE && *delay <= 5 * MINUTE),
+                "{delays:?}"
+            );
+            assert!(matches!(status(&harness, tab), SessionStatus::Connected));
+        }
+
+        #[test]
+        fn a_key_in_the_connections_tab_is_a_use() {
+            let mut harness = Harness::new();
+            let (tab, _, baseline) = loaded(&mut harness);
+            harness.settle();
+            assert_eq!(
+                harness.app.workspace(tab).unwrap().used,
+                baseline,
+                "a frame alone is none"
+            );
+            harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+            assert!(harness.app.workspace(tab).unwrap().used > baseline);
+            // A scroll and a click are uses too.
+            for event in [
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -40.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+                egui::Event::PointerButton {
+                    pos: egui::pos2(600.0, 400.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ] {
+                harness.app.workspace_mut(tab).unwrap().used = baseline;
+                harness.frame(vec![event]);
+                assert!(harness.app.workspace(tab).unwrap().used > baseline);
+            }
+        }
+
+        #[test]
+        fn a_session_closed_while_idle_says_so_and_shows_no_banner() {
+            let mut harness = Harness::new();
+            let (tab, _, used) = loaded(&mut harness);
+            harness.app.close_idle(used + 30 * MINUTE);
+            harness.settle();
+            assert!(!harness.has("Reconnect"));
+            assert!(harness.painted_color("Disconnected while idle").is_some());
+            // A late word from the closed session changes nothing.
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(Action::Backend(Event::Disconnected {
+                session,
+                error: Error::ConnectionLost("closed".into()),
+            }));
+            assert!(matches!(status(&harness, tab), SessionStatus::Idle));
         }
     }
 

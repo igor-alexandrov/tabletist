@@ -979,6 +979,13 @@ pub struct Workspace {
     /// When the session last connected, in seconds since the Unix epoch
     /// (the connection bar's card says how long ago).
     pub connected_at: Option<u64>,
+    /// When the session was last used: a command sent for it, or a key, a
+    /// click or a scroll in the connection's tab while it is in front.
+    pub used: std::time::Instant,
+    /// The connect under way opens again a session closed while idle,
+    /// for a use: what the use sent waits for it in the backend, and what
+    /// the tab shows stays as it is.
+    pub woken: bool,
 }
 
 /// How many objects the sidebar's Recent section keeps.
@@ -993,6 +1000,10 @@ pub enum SessionStatus {
     Disconnected(tabletist_db::Error),
     /// The user cancelled a password or SSH secret prompt.
     Cancelled,
+    /// Closed after it went unused for the time the settings give
+    /// (`safety.idle_disconnect`). The tab stays as it was, and connects
+    /// again when something needs its session.
+    Idle,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -4400,6 +4411,8 @@ impl Workspace {
             label_refused: None,
             fold_documents: None,
             connected_at: None,
+            used: std::time::Instant::now(),
+            woken: false,
         }
     }
 
@@ -4487,6 +4500,39 @@ impl Workspace {
             Tab::Sql(sql) => sql.selected_row().map(|_| sql.id),
             Tab::Agents(_) => None,
         }
+    }
+
+    /// Whether what is sent for the session now is answered: it is up, it
+    /// was closed while idle (sending opens it again), or it is opening
+    /// again for a use, and what is sent waits for it.
+    pub fn takes_commands(&self) -> bool {
+        match self.status {
+            SessionStatus::Connected | SessionStatus::Idle => true,
+            SessionStatus::Connecting { .. } => self.woken,
+            SessionStatus::Disconnected(_) | SessionStatus::Cancelled => false,
+        }
+    }
+
+    /// Whether a table tab holds edits: something pending, an editor open,
+    /// or a save running.
+    pub fn holds_edits(&self) -> bool {
+        self.object_tabs().any(|object| object.edits.holds())
+    }
+
+    /// Whether something waits for the session's answer: a tab's page,
+    /// structure, count, run or save, the tree, the databases, the
+    /// server's version, or a table's columns.
+    pub fn waits(&self) -> bool {
+        self.tabs.iter().any(|tab| !tab.pending().is_empty())
+            || self.tree.schemas.is_loading()
+            || self
+                .tree
+                .nodes
+                .values()
+                .any(|node| node.objects.is_loading())
+            || self.databases.is_loading()
+            || self.server_version.is_loading()
+            || self.columns.values().any(Fetch::is_loading)
     }
 
     /// The object tabs, in strip order.

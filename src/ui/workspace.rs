@@ -67,8 +67,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         return;
     };
     let active = workspace.active_tab;
-    // What a lost connection left on screen reads as old.
-    let stale = !matches!(workspace.status, SessionStatus::Connected);
+    // What a lost connection left on screen reads as old. A session closed
+    // while idle, or opening again for a use, left the page as it was.
+    let stale = !workspace.takes_commands();
     let view = workspace.active_object_tab().map(|object| object.view);
     // The tab the row panel shows a row of: a table's Data view, or a SQL
     // editor with a row of its result selected.
@@ -476,6 +477,8 @@ enum Link {
     Connecting,
     Disconnected,
     Cancelled,
+    /// Closed while idle: it connects again when it is used.
+    Idle,
 }
 
 /// One open connection in the bar.
@@ -545,6 +548,7 @@ fn chips(app: &App, own: ConnTabId) -> Vec<Chip> {
                 SessionStatus::Connecting { .. } => (Link::Connecting, Some("Connecting…")),
                 SessionStatus::Disconnected(_) => (Link::Disconnected, Some("Disconnected")),
                 SessionStatus::Cancelled => (Link::Cancelled, Some("Cancelled")),
+                SessionStatus::Idle => (Link::Idle, Some("Disconnected while idle")),
             };
             let line = match state {
                 Some(state) => app.look.label(&gettext(app.locale, state)),
@@ -629,6 +633,7 @@ fn card_rows(
         SessionStatus::Connecting { .. } => (say("Status"), say("Connecting…")),
         SessionStatus::Disconnected(_) => (say("Status"), say("Disconnected")),
         SessionStatus::Cancelled => (say("Status"), say("Cancelled")),
+        SessionStatus::Idle => (say("Status"), say("Disconnected while idle")),
     };
     rows.push(state);
     rows
@@ -805,7 +810,7 @@ fn link_color(link: Link, env: &crate::env::EnvColors, palette: &Palette) -> egu
         Link::Connected => env.base(),
         Link::Connecting => palette.warning,
         Link::Disconnected => palette.danger,
-        Link::Cancelled => palette.dim,
+        Link::Cancelled | Link::Idle => palette.dim,
     }
 }
 
@@ -2742,7 +2747,10 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let name = display_safe(&workspace.name).into_owned();
     // What happened, the plain sentence when it says more, the exact error.
     let (lead, sentence, raw, reconnecting) = match &workspace.status {
-        SessionStatus::Connected => return,
+        // Closed on purpose: nothing went wrong, and the next use connects,
+        // with no strip of its own.
+        SessionStatus::Connected | SessionStatus::Idle => return,
+        SessionStatus::Connecting { .. } if workspace.woken => return,
         SessionStatus::Connecting { .. } => (
             format!("{} {name}…", say("Reconnecting to")),
             String::new(),
