@@ -1721,7 +1721,9 @@ impl App {
                     self.cancel(session, pending);
                 }
             }
-            Action::NewSqlTab(tab) => self.new_sql_tab(tab),
+            Action::NewSqlTab(tab) => {
+                self.new_sql_tab(tab);
+            }
             Action::ShowAgents(tab) => self.show_agents(tab),
             Action::TurnAgentsOn => self.turn_agents_on(),
             Action::StopAgentSession(id) => self.stop_agent_session(id),
@@ -1763,6 +1765,7 @@ impl App {
                     .map(|agents| {
                         if agents.view != view {
                             agents.log.filters_open = false;
+                            agents.log.details_open = false;
                         }
                         agents.view = view;
                     });
@@ -1802,10 +1805,20 @@ impl App {
                     };
                     if changed {
                         log.selected = None;
+                        log.details_open = false;
                         self.read_agents_log(tab, false);
                     }
                 }
             }
+            Action::ShowAgentsLogDetails { tab, open } => {
+                if let Some(agents) = self
+                    .workspace_mut(tab)
+                    .and_then(crate::model::Workspace::agents_tab_mut)
+                {
+                    agents.log.details_open = open;
+                }
+            }
+            Action::OpenAgentsLogCall { tab, id } => self.open_agents_log_call(tab, id),
             Action::ShowAgentsLogFilters { tab, open } => {
                 if let Some(agents) = self
                     .workspace_mut(tab)
@@ -4841,14 +4854,13 @@ impl App {
     }
 
     /// Opens an empty SQL editor after the workspace's other tabs, with the
-    /// limit and timeout of the settings, and shows it.
-    fn new_sql_tab(&mut self, tab: ConnTabId) {
+    /// limit and timeout of the settings, and shows it: its id, where `tab`
+    /// is a workspace.
+    fn new_sql_tab(&mut self, tab: ConnTabId) -> Option<TabId> {
         let id = TabId(self.next_id());
         let request = RequestId(self.next_id());
         let (limit, timeout) = (self.settings.sql_limit, self.settings.sql_timeout());
-        let Some(workspace) = self.workspace_mut(tab) else {
-            return;
-        };
+        let workspace = self.workspace_mut(tab)?;
         workspace.push_sql_tab(id, limit, timeout);
         workspace.active_tab = Some(id);
         workspace.pane = Pane::Grid;
@@ -4862,6 +4874,79 @@ impl App {
             self.backend
                 .send(Command::ServerVersion { session, request });
         }
+        Some(id)
+    }
+
+    /// The statement of the call `id` of the Log view of `tab`, in a new
+    /// SQL editor of its connection: in this window for a call on this
+    /// connection, else in that connection's, which is opened, and
+    /// connected, where none is. The editor is read-only and nothing is
+    /// run. Its values, where it has any, are in a comment above it. A call
+    /// with no statement, or on a connection deleted since, opens nothing.
+    fn open_agents_log_call(&mut self, tab: ConnTabId, id: i64) {
+        let Some(entry) = self
+            .workspace(tab)
+            .and_then(|workspace| {
+                workspace.tabs.iter().find_map(|open| match open {
+                    Tab::Agents(agents) => Some(agents),
+                    Tab::Object(_) | Tab::Sql(_) => None,
+                })
+            })
+            .and_then(|agents| agents.log.calls.iter().find(|logged| logged.id == id))
+            .map(|logged| logged.entry.clone())
+        else {
+            return;
+        };
+        let (Some(sql), Some(on)) = (entry.sql, entry.connection_id) else {
+            return;
+        };
+        let conn = crate::connections::ConnectionId(on);
+        let Some(saved) = self.connections.get(&conn).cloned() else {
+            return;
+        };
+        // A window of the connection on its saved database, this one first:
+        // one switched to another database is not where the call ran.
+        let on_it = |workspace: &Workspace| {
+            workspace.conn_id == conn && workspace.spec.database == saved.spec.database
+        };
+        let shown = match self.workspace(tab).is_some_and(on_it) {
+            true => Some(tab),
+            false => self
+                .open_connections()
+                .find(|(_, workspace)| on_it(workspace))
+                .map(|(shown, _)| shown),
+        };
+        let target = match shown {
+            Some(shown) => {
+                // One whose session ended, or was never made, connects again.
+                let ended = self.workspace(shown).is_some_and(|workspace| {
+                    matches!(
+                        workspace.status,
+                        SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+                    )
+                });
+                if ended {
+                    self.reconnect(shown);
+                }
+                shown
+            }
+            None => {
+                let picker = self.picker_tab();
+                let id = picker.id;
+                self.tabs.push(picker);
+                self.connect_tab(id, saved.clone(), Secrets::default());
+                id
+            }
+        };
+        let text = logged_statement(saved.spec.driver, &sql, entry.params.as_deref());
+        let Some(id) = self.new_sql_tab(target) else {
+            return;
+        };
+        if let Some(editor) = self.sql_tab_mut(target, id) {
+            editor.text = text;
+            editor.mode = crate::model::RunMode::ReadOnly;
+        }
+        self.apply(Action::ActivateConnTab(target));
     }
 
     /// Asks the backend for the names a completion list needs and the
@@ -6020,6 +6105,42 @@ fn row_fields(
             Vec::new()
         },
     }
+}
+
+/// What Open in SQL editor writes of a call: a comment line for each of
+/// its values, named as `driver` names a statement's parameters, then the
+/// statement as it ran. Each value is written as the log has it, JSON on
+/// its line: a string's line breaks are escapes in it, and a number is
+/// not read and written again. Values the log cut, or that do not read,
+/// are said to be.
+fn logged_statement(driver: Driver, sql: &str, params: Option<&str>) -> String {
+    use crate::model::LoggedValues;
+    let mut text = String::new();
+    match params.map(LoggedValues::of) {
+        Some(LoggedValues::Each(values)) => {
+            for (at, value) in values.iter().enumerate() {
+                let place = at + 1;
+                let named = match driver {
+                    Driver::Postgres => format!("${place}"),
+                    Driver::Sqlite => format!("?{place}"),
+                    Driver::MySql => format!("? #{place}"),
+                };
+                text.push_str(&format!("-- {named} = {value}\n"));
+            }
+        }
+        Some(LoggedValues::Cut(Some(bytes))) => {
+            text.push_str(&format!(
+                "-- Its values, {bytes} bytes of them, were cut in the log.\n"
+            ));
+        }
+        Some(LoggedValues::Cut(None)) => text.push_str("-- Its values were cut in the log.\n"),
+        Some(LoggedValues::Unread) => {
+            text.push_str("-- Its values could not be read from the log.\n");
+        }
+        None => {}
+    }
+    text.push_str(sql);
+    text
 }
 
 #[cfg(test)]
@@ -7715,6 +7836,156 @@ mod tests {
         assert!(log.all);
     }
 
+    #[test]
+    fn a_calls_statement_is_written_after_its_values_as_its_driver_names_them() {
+        let sql = "SELECT * FROM books WHERE id = $1";
+        // Each value on a comment line of its own: a line break in a string
+        // is an escape in it.
+        let params = Some(r#"[7,"a\nb",null]"#);
+        assert_eq!(
+            logged_statement(Driver::Postgres, sql, params),
+            "-- $1 = 7\n-- $2 = \"a\\nb\"\n-- $3 = null\nSELECT * FROM books WHERE id = $1"
+        );
+        assert!(logged_statement(Driver::Sqlite, sql, params).starts_with("-- ?1 = 7\n-- ?2 = "));
+        assert!(
+            logged_statement(Driver::MySql, sql, params).starts_with("-- ? #1 = 7\n-- ? #2 = ")
+        );
+        // None, or none given: the statement alone.
+        assert_eq!(logged_statement(Driver::Postgres, sql, None), sql);
+        assert_eq!(logged_statement(Driver::Postgres, sql, Some("[]")), sql);
+        // A number as the agent wrote it, not read and written again.
+        assert_eq!(
+            logged_statement(
+                Driver::Postgres,
+                sql,
+                Some("[123456789012345678901234567890, 1.10, 1e400]")
+            ),
+            format!("-- $1 = 123456789012345678901234567890\n-- $2 = 1.10\n-- $3 = 1e400\n{sql}")
+        );
+        // Values that do not read are said not to.
+        assert_eq!(
+            logged_statement(Driver::Postgres, sql, Some("[1,")),
+            format!("-- Its values could not be read from the log.\n{sql}")
+        );
+        // Values the log cut are said to be.
+        let cut = Some(r#"{"cut":"[1,2","bytes":204800}"#);
+        assert_eq!(
+            logged_statement(Driver::Postgres, sql, cut),
+            format!("-- Its values, 204800 bytes of them, were cut in the log.\n{sql}")
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_calls_statement_opens_read_only_in_its_connections_window_and_runs_nothing() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let here = app.workspace(tab).unwrap().conn_id.clone();
+        // Another saved connection, with no window open.
+        let other = with_saved(&mut app);
+        app.apply(Action::ShowAgentsView {
+            tab,
+            view: crate::model::AgentsView::Log,
+        });
+        let call = |id: i64, on: &str, sql: Option<&str>| tabletist_mcp::Logged {
+            id,
+            entry: tabletist_mcp::Entry {
+                agent: "Claude Code".into(),
+                connection_id: Some(on.into()),
+                tool: "run_query".into(),
+                sql: sql.map(str::to_owned),
+                params: Some("[3]".into()),
+                result: "ok".into(),
+                ..tabletist_mcp::Entry::default()
+            },
+        };
+        let sql = "SELECT * FROM books WHERE id = ?1";
+        app.workspace_mut(tab)
+            .unwrap()
+            .agents_tab_mut()
+            .unwrap()
+            .log
+            .calls = vec![
+            call(1, &here.0, Some(sql)),
+            call(2, &other.0, Some(sql)),
+            call(3, "deleted", Some(sql)),
+            call(4, &here.0, None),
+        ];
+        let sent = app.backend.sent.len();
+        // On this connection: in this window, in front, read-only.
+        app.apply(Action::OpenAgentsLogCall { tab, id: 1 });
+        let workspace = app.workspace(tab).unwrap();
+        let editor = workspace
+            .active_tab
+            .and_then(|id| workspace.sql_tab(id))
+            .expect("an editor in front");
+        assert_eq!(editor.text, format!("-- ?1 = 3\n{sql}"));
+        assert_eq!(editor.mode, crate::model::RunMode::ReadOnly);
+        assert_eq!(app.active_tab_id(), tab);
+        // Nothing was run.
+        assert!(
+            !app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::RunSql { .. })),
+            "{:?}",
+            &app.backend.sent[sent..]
+        );
+        // On another: in its window, opened and connected for it.
+        let windows = app.tabs.len();
+        app.apply(Action::OpenAgentsLogCall { tab, id: 2 });
+        assert_eq!(app.tabs.len(), windows + 1);
+        let opened = app.active_tab_id();
+        let workspace = app.workspace(opened).unwrap();
+        assert_eq!(workspace.conn_id, other);
+        let editor = workspace
+            .active_tab
+            .and_then(|id| workspace.sql_tab(id))
+            .expect("an editor in its window");
+        assert_eq!(editor.mode, crate::model::RunMode::ReadOnly);
+        assert!(editor.text.ends_with(sql));
+        // Again: in that window, which is open now.
+        app.apply(Action::ActivateConnTab(tab));
+        app.apply(Action::OpenAgentsLogCall { tab, id: 2 });
+        assert_eq!(app.tabs.len(), windows + 1);
+        assert_eq!(app.active_tab_id(), opened);
+        // A window of it whose session ended connects again, and takes it.
+        app.workspace_mut(opened).unwrap().status =
+            SessionStatus::Disconnected(tabletist_db::Error::ConnectionLost("gone".into()));
+        app.apply(Action::ActivateConnTab(tab));
+        let sent = app.backend.sent.len();
+        app.apply(Action::OpenAgentsLogCall { tab, id: 2 });
+        assert_eq!((app.tabs.len(), app.active_tab_id()), (windows + 1, opened));
+        assert!(matches!(
+            app.workspace(opened).unwrap().status,
+            SessionStatus::Connecting { .. }
+        ));
+        assert!(
+            app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. }))
+        );
+        // A window of it switched to another database is not where the call
+        // ran: another window opens, on the saved one.
+        app.workspace_mut(opened).unwrap().spec.database = "other".into();
+        app.apply(Action::ActivateConnTab(tab));
+        app.apply(Action::OpenAgentsLogCall { tab, id: 2 });
+        let windows = windows + 1;
+        assert_eq!(app.tabs.len(), windows + 1);
+        let saved = app.connections.get(&other).unwrap().spec.database.clone();
+        assert_eq!(
+            app.workspace(app.active_tab_id()).unwrap().spec.database,
+            saved
+        );
+        // On a connection deleted since, or with no statement: nothing.
+        app.apply(Action::ActivateConnTab(tab));
+        let editors = |app: &App| app.workspace(tab).unwrap().sql_tabs().count();
+        let before = editors(&app);
+        app.apply(Action::OpenAgentsLogCall { tab, id: 3 });
+        app.apply(Action::OpenAgentsLogCall { tab, id: 4 });
+        assert_eq!((editors(&app), app.tabs.len()), (before, windows + 1));
+        assert_eq!(app.active_tab_id(), tab);
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn a_filter_set_reads_the_logs_first_page_again_with_it() {
@@ -7732,6 +8003,7 @@ mod tests {
         // The agents that called come with the first page.
         assert_eq!(agents_log(&app, tab).agents, ["Claude Code"]);
         app.apply(Action::SelectAgentsLogCall { tab, id: 499 });
+        app.apply(Action::ShowAgentsLogDetails { tab, open: true });
         let filter = |app: &App| {
             agents_sent(app)
                 .into_iter()
@@ -7765,6 +8037,8 @@ mod tests {
         };
         assert_eq!(filter(&app), (wanted.clone(), None));
         assert_eq!(agents_log(&app, tab).selected, None);
+        // And the call's pane, which nothing selected shows, is closed.
+        assert!(!agents_log(&app, tab).details_open);
         // The same again reads nothing.
         let before = reads(&app);
         set(&mut app, AgentsLogFilter::Search("books".into()));
