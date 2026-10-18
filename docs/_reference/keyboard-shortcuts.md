@@ -57,6 +57,7 @@ In the connection dialog:
 | Mod+Shift+[ and ] | Previous and next tab |
 | F6, Shift+F6 | Next and previous part of the window |
 | Mod+, | Settings |
+| Mod+=, Mod+-, Mod+0 | Larger, smaller and default data text, under a dialog too |
 | ? | This list |
 
 ## Tables

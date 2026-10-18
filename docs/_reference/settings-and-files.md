@@ -20,14 +20,19 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 | **New production connections open read-only** | On or off: where the **Open read-only** box of a new production connection starts. A connection you saved keeps its own box | On |
 | **Ask before closing with unsaved edits** | On or off. Off, closing a table, its connection or the window, or loading another page of it, discards its pending changes without asking | On |
 
-A second pane, **Appearance**, sets the theme and how the grids and the
-connection bar are drawn. Each change shows in every open window at once.
+A second pane, **Appearance**, sets the theme, the text, and how the grids
+and the connection bar are drawn. Each change shows in every open window
+at once.
 
 | Option | Choices | Default |
 | --- | --- | --- |
 | **Theme** (macOS and Windows) | System, Light or Dark. System follows the system's light or dark as it changes, Auto on macOS too | System |
 | **Theme** (Omarchy) | Follow Omarchy, or pin the theme it shows now, which then stays when Omarchy switches. The row says the theme drawn, and under it the palette it gave | Follow Omarchy |
-| **Row density** (Omarchy: row height) | Compact, Regular or Roomy. On macOS and Windows a step of 8 points either side of Regular; in the Omarchy look one, one and a half or two lines. The grid keeps the row at its top | Regular |
+| **Interface size** (macOS and Windows) | Small, Default or Large: the sidebar, tabs, buttons and the inspector's labels, from a body text of 12, 13 or 14 points | Default |
+| **Data font** (macOS and Windows) | The face of grid cells, the SQL editor and JSON on macOS, IBM Plex Mono or JetBrains Mono (Windows draws its data in Inter, and offers none), and its size, 11 to 16 points by halves | IBM Plex Mono, 12.5 pt |
+| **Font** (Omarchy) | The system's monospace, as fontconfig resolves it, or a font you name in the file by its fontconfig name. The row says the font drawn; one fontconfig does not have is drawn as the system's monospace, and the row says so | System monospace |
+| **Size** (Omarchy) | 9 to 24 points: everything in the window, which is drawn larger or smaller as a terminal's text is | 13 |
+| **Row density** (Omarchy: row height) | Compact, Regular or Roomy. On macOS and Windows a step of 8 points either side of Regular, and taller where a large data size needs it; in the Omarchy look one, one and a half or two lines. The grid keeps the row at its top | Regular |
 | **Alternate row shading** (Omarchy: alternate rows) | On or off, in the table grid and the SQL editor's results | Off on macOS and Windows, on in the Omarchy look |
 | **Show column types** (Omarchy: column types) | On or off: the second line of the grid's header | On |
 | **Table list** | Grouped by prefix (Omarchy: tree) or Flat. The default for a connection whose list you have not switched; the sidebar's switch (Omarchy: `t`) sets the connection's own | Grouped by prefix |
@@ -56,8 +61,8 @@ Settings are kept in `settings.toml`, which is safe to edit by hand.
 Tabletist watches the file and applies your edits while it runs. The file
 holds only what differs from the defaults. Until you change an option
 there is no file, and one the app writes starts with a header line. Here
-is every key at its default (`group_digits` has none of its own: it
-follows the look):
+is every key at its default (`group_digits`, `theme`, `font`, `font_size`
+and `zebra` have none of their own: they follow the look):
 
 ```toml
 [data]
@@ -82,6 +87,9 @@ enabled = false
 log_days = 30
 notify = true
 
+[appearance]
+interface_size = "default"
+
 [appearance.grid]
 row_height = "regular"
 column_types = true
@@ -103,6 +111,9 @@ bar = "tint"
 | `sidebar.show_system_schemas` | `true` shows schemas such as `pg_catalog` and `information_schema` | `false` |
 | `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
 | `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |
+| `appearance.interface_size` | `"small"`, `"default"` or `"large"`, on macOS and Windows | `"default"` |
+| `appearance.font` | On macOS the data's face, `"IBM Plex Mono"` or `"JetBrains Mono"`; `"monospace"` is IBM Plex Mono too, and any other name is drawn as IBM Plex Mono, which the window says. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |
+| `appearance.font_size` | Points, whole or by halves (`13`, `12.5`). On macOS and Windows the data's, 11 to 16; in the Omarchy look all of it, 9 to 24. A size past a look's range is drawn at its nearest end. Written once you set it | Not set: 12.5 on macOS and Windows, 13 in the Omarchy look |
 | `appearance.theme` | On macOS and Windows `"system"`, `"light"` or `"dark"`. In the Omarchy look `"omarchy"`, or a theme to pin: an Omarchy theme's name (`"Tokyo Night"`), a palette file in the `themes` folder (`"Nord.json"`; its name alone where no Omarchy theme has it), or a path that starts with `/` or `~/` to a palette file or an Omarchy theme's folder. A value meant for the other looks is drawn as not set and stays in the file | Not set: the system's light or dark, or the Omarchy theme |
 | `appearance.grid.row_height` | `"compact"`, `"regular"` or `"roomy"` | `"regular"` |
 | `appearance.grid.zebra` | `true` or `false`. Written once you set it; without it, the look's default | Not set: off on macOS and Windows, on in the Omarchy look |
@@ -114,8 +125,11 @@ bar = "tint"
 | `mcp.notify` | `true` tells you when an agent connects: a notification on Linux, the Dock icon bouncing on macOS, the taskbar button flashing on Windows | `true` |
 
 `show_system_schemas` is set only in the file, and so is a pin by a
-name or a path other than the Omarchy theme of the moment. The SQL
-editor's **Limit** and **Timeout** menus set the two `editor` keys.
+name or a path other than the Omarchy theme of the moment, and a font by
+its fontconfig name. The SQL editor's **Limit** and **Timeout** menus set
+the two `editor` keys, and the text size keys (Cmd+= Cmd+- Cmd+0 on macOS, Ctrl+=
+Ctrl+- Ctrl+0 on Windows, `ctrl+=` `ctrl+-` in the Omarchy look) set
+`font_size`, wherever the keyboard is.
 
 A line that cannot be read is ignored and reported in the Settings window,
 and its key keeps its last good value: the one it had before the edit, or

@@ -27,7 +27,13 @@ launch, are on the
   Appearance setting while it runs. **Settings › Appearance** can keep it
   light or dark whatever the system says.
 - **The app menu has the usual two.** **Tabletist → About Tabletist**
-  shows the version, and **Tabletist → Settings…** opens Settings.
+  shows the version and the licenses of the fonts it bundles, and
+  **Tabletist → Settings…** opens Settings.
+- **Text has two sizes.** **Settings › Appearance** sizes the interface
+  (Small, Default or Large) and the data apart: grid cells, the SQL
+  editor and JSON, in IBM Plex Mono or JetBrains Mono, from 11 to 16
+  points. Cmd+= and Cmd+- change the data's size wherever you are, and
+  Cmd+0 puts back 12.5.
 
 {% include shot.html file="macos-table-dark" alt="The same window in the dark appearance" %}
 
@@ -55,6 +61,7 @@ a Mac keyboard labels Delete.
 | Cmd+Option+A | Show the Agents tab |
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
+| Cmd+=, Cmd+-, Cmd+0 | Larger, smaller and default data text |
 | `?` | The list of keys |
 
 ### Quick open
