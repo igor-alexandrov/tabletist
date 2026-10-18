@@ -774,3 +774,19 @@ async fn a_hidden_table_that_is_gone_closes_the_connection_to_agents() {
     assert_eq!(called.answer()["rows"], json!([[12]]));
     agent.close().await;
 }
+
+#[tokio::test]
+async fn list_connections_names_what_is_masked() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    let called = agent.call("list_connections", json!({})).await;
+    assert!(called.answer()["connections"][0].get("masked").is_none());
+    shop.mask(DEV, &["orders.email", "main.orders.phone"]);
+    let called = agent.call("list_connections", json!({})).await;
+    assert_eq!(
+        called.answer()["connections"][0]["masked"],
+        json!(["orders.email", "main.orders.phone"])
+    );
+    agent.close().await;
+}

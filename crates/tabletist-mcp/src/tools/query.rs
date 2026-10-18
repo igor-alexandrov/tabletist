@@ -86,7 +86,8 @@ async fn run<G: Gateway>(
     let session = settle(gateway.open(&listed.id, stop.token()).await, stop, &listed)?;
     note.ran_as = Some(RAN_AS);
     let limits = listed.limits;
-    let answer = within(stop, limits, session.read(&read, limits, &listed.tables)).await;
+    let reading = session.read(&read, limits, &listed.tables, &listed.masked);
+    let answer = within(stop, limits, reading).await;
     let answer = settle(answer, stop, &listed)?;
     let written = answer::write(&answer, MAX_ANSWER_BYTES).map_err(|_| {
         Refused::new(
