@@ -2708,6 +2708,10 @@ pub struct ObjectTab {
     pub pinned: bool,
     pub view: ObjectView,
     pub query: RowQuery,
+    /// The size the tab pages by: the settings' Rows per page when it last
+    /// loaded from a place (opened, refreshed, sorted, filtered). Next and
+    /// Previous keep it, so a new size never lands while the person pages.
+    pub page_size: u32,
     pub rows: Fetch<RowPage>,
     pub structure: Fetch<Structure>,
     pub selection: Option<CellPos>,
@@ -2942,6 +2946,7 @@ impl ObjectTab {
         Self {
             id,
             query: RowQuery::new(object.clone(), page_size),
+            page_size,
             object,
             kind,
             pinned,

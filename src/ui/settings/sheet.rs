@@ -900,8 +900,8 @@ mod tests {
     fn a_size_that_is_not_in_the_list_takes_its_place_among_the_others() {
         assert_eq!(log_days(30), Settings::LOG_DAYS);
         assert_eq!(log_days(14), [7, 14, 30, 90, 365]);
-        assert_eq!(page_sizes(300), Settings::PAGE_SIZES);
-        assert_eq!(page_sizes(250), [100, 250, 300, 500, 1_000, 5_000]);
-        assert_eq!(page_sizes(9_000), [100, 300, 500, 1_000, 5_000, 9_000]);
+        assert_eq!(page_sizes(1_000), Settings::PAGE_SIZES);
+        assert_eq!(page_sizes(300), [100, 300, 500, 1_000, 5_000, 10_000]);
+        assert_eq!(page_sizes(20), [20, 100, 500, 1_000, 5_000, 10_000]);
     }
 }

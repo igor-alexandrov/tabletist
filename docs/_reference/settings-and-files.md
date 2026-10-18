@@ -12,7 +12,7 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 
 | Option | Choices | Default |
 | --- | --- | --- |
-| **Rows per page** | 100, 300, 500, 1,000 or 5,000 | 300 |
+| **Rows per page** | 100, 500, 1,000, 5,000 or 10,000. A table takes a new size when it next loads, not while you page through it | 1,000 |
 | **Timestamps** | To the second, or full precision | To the second |
 | **Numbers** | `1240.50` or `1,240.50`. Grouping is for display only: a copy gives the raw value | `1240.50` |
 | **Value tags** | Colors for enum, CHECK and boolean columns | On |
@@ -44,7 +44,7 @@ is every key at its default:
 
 ```toml
 [data]
-page_size = 300
+page_size = 1000
 timestamps = "second"
 group_digits = false
 value_tags = true
@@ -64,7 +64,7 @@ notify = true
 
 | Key | Values | Default |
 | --- | --- | --- |
-| `data.page_size` | 10 to 10000 | `300` |
+| `data.page_size` | 10 to 10000. A table takes a new size when it next loads (opened, refreshed, sorted, filtered or reconnected), not while you page through it | `1000` |
 | `data.timestamps` | `"second"` or `"full"` | `"second"` |
 | `data.group_digits` | `true` or `false` | `false` |
 | `data.value_tags` | `true` or `false` | `true` |

@@ -598,11 +598,11 @@ fn own_lines(text: &str, range: std::ops::Range<usize>) -> bool {
 }
 
 impl Settings {
-    pub const DEFAULT_PAGE_SIZE: u32 = 300;
+    pub const DEFAULT_PAGE_SIZE: u32 = 1_000;
     pub const MIN_PAGE_SIZE: u32 = 10;
     pub const MAX_PAGE_SIZE: u32 = 10_000;
     /// The page sizes the Settings window offers.
-    pub const PAGE_SIZES: [u32; 5] = [100, 300, 500, 1_000, 5_000];
+    pub const PAGE_SIZES: [u32; 5] = [100, 500, 1_000, 5_000, 10_000];
     /// The most rows a SQL editor statement keeps.
     pub const MAX_SQL_LIMIT: u32 = 10_000;
     /// The row limits the SQL editor's Limit menu offers.
@@ -1118,7 +1118,7 @@ mod tests {
     #[test]
     fn defaults_match_the_spec() {
         let settings = Settings::default();
-        assert_eq!(settings.page_size, 300);
+        assert_eq!(settings.page_size, 1_000);
         assert_eq!(settings.timestamps, Timestamps::Second);
         assert!(!settings.group_digits);
         assert!(settings.value_tags);
@@ -2117,14 +2117,14 @@ theme = \"My \\\"Nord\\\".json\"
             };
             settings.stepped(OptionId::PageSize, forward)
         };
+        assert_eq!(step(1_000, true), OptionValue::PageSize(5_000));
+        assert_eq!(step(500, false), OptionValue::PageSize(100));
+        assert_eq!(step(100, false), OptionValue::PageSize(100));
+        assert_eq!(step(10_000, true), OptionValue::PageSize(10_000));
+        // A size set by hand is between two choices: it steps to the next.
         assert_eq!(step(300, true), OptionValue::PageSize(500));
         assert_eq!(step(300, false), OptionValue::PageSize(100));
-        assert_eq!(step(100, false), OptionValue::PageSize(100));
-        assert_eq!(step(5_000, true), OptionValue::PageSize(5_000));
-        // A size set by hand is between two choices: it steps to the next.
-        assert_eq!(step(250, true), OptionValue::PageSize(300));
-        assert_eq!(step(250, false), OptionValue::PageSize(100));
-        assert_eq!(step(9_000, true), OptionValue::PageSize(9_000));
+        assert_eq!(step(9_000, true), OptionValue::PageSize(10_000));
         assert_eq!(step(9_000, false), OptionValue::PageSize(5_000));
     }
 

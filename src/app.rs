@@ -931,24 +931,24 @@ impl App {
                     true
                 });
                 if moved {
-                    self.fetch_rows(tab, object_tab);
+                    self.fetch_next_page(tab, object_tab);
                 }
             }
             Action::PrevPage { tab, object_tab } => {
                 // Back by the size of the page about to be fetched, which
                 // must end where the one on screen begins. That one may be
-                // of another size (the size changed while its session was
-                // down): back by its limit, the rows between the two would
-                // be skipped. The page fetched has the settings' size, or
-                // is only the rows before this one when they are fewer (the
-                // size grew on a page near the start): a whole page from
+                // of another size (a short page near the start): back by
+                // its limit, the rows between the two would be skipped. The
+                // page fetched has the tab's size, or is only the rows
+                // before this one when they are fewer (the tab loaded a
+                // larger size on a page near the start): a whole page from
                 // the start would show the first rows of this one a second
                 // time, and Next from it would not come back here.
-                let page_size = self.settings.page_size;
                 let step = self.object_tab_mut(tab, object_tab).and_then(|object| {
                     if object.query.offset == 0 {
                         return None;
                     }
+                    let page_size = object.page_size;
                     let step = u32::try_from(object.query.offset)
                         .map_or(page_size, |before| before.min(page_size));
                     object.query.offset -= u64::from(step);
@@ -3632,9 +3632,6 @@ impl App {
                 }
             }
         }
-        if old.page_size != self.settings.page_size {
-            self.resize_pages();
-        }
         if old.show_system_schemas != self.settings.show_system_schemas {
             // A completion list offers the schemas that are shown, and an
             // open one is worked out again only when its script, its cursor
@@ -3662,37 +3659,6 @@ impl App {
                 }
                 _ => {}
             }
-        }
-    }
-
-    /// Fetches again, at the settings' page size, every table that shows a
-    /// page or waits for one on a session that can answer. `fetch_rows`
-    /// drops the page of the old size as it takes the new one. The others,
-    /// and a table that holds edits, take the size, and lose their page
-    /// the same way, when they next fetch.
-    fn resize_pages(&mut self) {
-        let size = self.settings.page_size;
-        let mut again = Vec::new();
-        for tab in &self.tabs {
-            let ConnTabContent::Workspace(workspace) = &tab.content else {
-                continue;
-            };
-            if !matches!(workspace.status, SessionStatus::Connected) {
-                continue;
-            }
-            again.extend(
-                workspace
-                    .object_tabs()
-                    .filter(|object| object.query.limit != size)
-                    .filter(|object| object.page().is_some() || object.rows.pending.is_some())
-                    // A page with pending changes stays: the tab takes the
-                    // size at its next fetch.
-                    .filter(|object| !object.edits.holds())
-                    .map(|object| (tab.id, object.id)),
-            );
-        }
-        for (tab, id) in again {
-            self.fetch_rows(tab, id);
         }
     }
 
@@ -4814,16 +4780,31 @@ impl App {
         self.cancel(session, running);
     }
 
-    /// Loads the object tab's rows at the settings' page size, replacing
-    /// any load still pending. A page of another size does not stay on
-    /// screen meanwhile, whatever the caller kept.
+    /// Loads the object tab's rows from where it is, at the settings' page
+    /// size, which the tab pages by from then on, replacing any load still
+    /// pending. A page of another size does not stay on screen meanwhile,
+    /// whatever the caller kept. Every load but Next's and Previous's comes
+    /// here: a new Rows per page lands on the next one.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
-        self.fetch_page(tab, id, self.settings.page_size);
+        let size = self.settings.page_size;
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.page_size = size;
+        }
+        self.fetch_page(tab, id, size);
+    }
+
+    /// Loads the page after the one on screen, at the size the tab pages
+    /// by: Next has moved past that page by its limit.
+    fn fetch_next_page(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(size) = self.object_tab_mut(tab, id).map(|object| object.page_size) else {
+            return;
+        };
+        self.fetch_page(tab, id, size);
     }
 
     /// Loads a page of `limit` rows, as [`App::fetch_rows`] does at the
-    /// settings' size. Only Previous asks for another: the rows before a
-    /// page that begins less than a page from the start.
+    /// settings' size. Previous asks for the tab's size, or for the rows
+    /// before a page that begins less than a page from the start.
     fn fetch_page(&mut self, tab: ConnTabId, id: TabId, limit: u32) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
@@ -9996,12 +9977,13 @@ mod tests {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
         let id = open(&mut harness, tab, "users", false);
-        harness.answer_rows(page(300, true));
+        let size = Settings::DEFAULT_PAGE_SIZE;
+        harness.answer_rows(page(size as usize, true));
         harness.app.apply(Action::NextPage {
             tab,
             object_tab: id,
         });
-        assert_eq!(last_query(&harness).offset, 300);
+        assert_eq!(last_query(&harness).offset, u64::from(size));
         assert!(object(&harness, tab, id).pinned);
         harness.answer_rows(page(10, false));
         let sent = harness.app.backend.sent.len();
@@ -14863,21 +14845,17 @@ mod tests {
                 ..harness.app.settings.clone()
             };
             harness.app.apply_settings(settings);
-            // Only the tab without edits is fetched again.
-            let fetched: Vec<&ObjectRef> = harness.app.backend.sent[before..]
-                .iter()
-                .filter_map(|command| match command {
-                    Command::FetchRows { query, .. } => Some(&query.object),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(fetched, [&ObjectRef::new("main", "orders")]);
-            assert_eq!(object(&harness, tab, orders).query.limit, 500);
+            // No tab is fetched again: each takes the size when it loads.
+            assert!(
+                !harness.app.backend.sent[before..]
+                    .iter()
+                    .any(|command| matches!(command, Command::FetchRows { .. }))
+            );
+            assert_ne!(object(&harness, tab, orders).query.limit, 500);
             let users_tab = object(&harness, tab, id);
             assert_eq!(users_tab.edits.cells.len(), 1);
             assert_eq!(users_tab.page().unwrap().rows.len(), 5);
-            assert_ne!(users_tab.query.limit, 500);
-            // It takes the new size at its next fetch.
+            // It takes the new size at its next load.
             harness.app.apply(Action::DiscardEdits { tab, id });
             harness.app.apply(Action::ActivateTab { tab, id });
             harness.app.apply(Action::Refresh(tab));

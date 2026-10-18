@@ -27,7 +27,7 @@ tags.
 
 {% include shot.html file="macos-table" alt="A table's data grid sorted by a column, with a row open in the row panel beside it" %}
 
-- **Pages.** The grid loads 300 rows at a time unless you change
+- **Pages.** The grid loads 1,000 rows at a time unless you change
   [Rows per page]({% link _reference/settings-and-files.md %}#the-settings-window)
   in Settings. Cmd/Ctrl+Alt+Left and Right move between pages.
 - **Sorting.** Click a column's header to sort by it: ascending, then
