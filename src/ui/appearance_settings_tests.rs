@@ -494,6 +494,23 @@ fn the_screen_sets_each_appearance_option_with_its_keys() {
 }
 
 #[test]
+fn the_density_segments_name_the_rows_of_their_look() {
+    // Windows draws the sheet too, with its own rows.
+    for (look, heights) in [
+        (Look::macos(), ["28", "36", "44"]),
+        (Look::standard(), ["17", "25", "33"]),
+    ] {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        on_the_pane(&mut harness);
+        for (word, height) in ["Compact", "Regular", "Roomy"].into_iter().zip(heights) {
+            let name = format!("Row density: {word} · {height}");
+            assert!(harness.has(&name), "{} {name}", look.name);
+        }
+    }
+}
+
+#[test]
 fn reset_to_defaults_puts_the_appearance_options_back() {
     let mut harness = Harness::new();
     harness.set_look(Look::macos());

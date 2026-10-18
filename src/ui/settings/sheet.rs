@@ -538,11 +538,21 @@ fn control(
             }
         }
         OptionId::RowHeight => {
-            let words = [
-                skin.say("Compact · 28"),
-                skin.say("Regular · 36"),
-                skin.say("Roomy · 44"),
-            ];
+            // Each with its rows' height in this look, as the board writes
+            // them: without the rule under a row (28, 36 and 44 on macOS).
+            let words = RowHeight::ALL.map(|height| {
+                let word = match height {
+                    RowHeight::Compact => "Compact",
+                    RowHeight::Regular => "Regular",
+                    RowHeight::Roomy => "Roomy",
+                };
+                let rows = Look {
+                    density: height,
+                    ..*look
+                }
+                .row();
+                format!("{} · {}", skin.say(word), rows - 1.0)
+            });
             let selected = RowHeight::ALL
                 .iter()
                 .position(|height| *height == settings.row_height)
