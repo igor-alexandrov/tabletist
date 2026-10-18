@@ -717,6 +717,7 @@ impl App {
                 self.apply(action);
             }
         }
+        self.read_reopened();
         self.format_rows();
         self.make_reviews();
     }
@@ -2749,6 +2750,17 @@ impl App {
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let zone = self.zone();
         let flat = self.lists_flat(&saved.id);
+        // The tables the connection's window last had, where the settings
+        // reopen them and they are of the database it opens on.
+        let kept = self
+            .session
+            .connections
+            .get(&saved.id.0)
+            .filter(|kept| {
+                self.settings.restore_tabs
+                    && kept.database == crate::session::database_of(&saved.spec)
+            })
+            .cloned();
         // The connection the window had closes in it.
         let replaced = self.keep_tabs(tab);
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
@@ -2759,8 +2771,59 @@ impl App {
         workspace.zone = zone;
         workspace.tree.flat = flat;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
+        if let Some(kept) = kept {
+            self.reopen_tabs(tab, &kept);
+        }
         if replaced {
             self.save_session();
+        }
+    }
+
+    /// Puts the tables `kept` in `tab`'s window, in their order, with
+    /// their sort and filters, the one that was in front in front again
+    /// (the first where none was). Nothing is read here: the one in front
+    /// is read with the connect, and each other when it is first shown.
+    fn reopen_tabs(&mut self, tab: ConnTabId, kept: &crate::session::Kept) {
+        let page_size = self.settings.page_size;
+        let mut opened = Vec::new();
+        for saved in &kept.tabs {
+            let id = TabId(self.next_id());
+            opened.extend(saved.reopen(id, page_size));
+        }
+        let front = kept
+            .active
+            .and_then(|at| kept.tabs.get(at))
+            .map(|front| ObjectRef::new(front.schema.clone(), front.name.clone()));
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let active = opened
+            .iter()
+            .find(|object| Some(&object.object) == front.as_ref())
+            .or(opened.first())
+            .map(|object| object.id);
+        workspace.tabs.extend(
+            opened
+                .into_iter()
+                .map(|object| Tab::Object(Box::new(object))),
+        );
+        workspace.active_tab = active;
+    }
+
+    /// Reads the table in front of each window that was reopened and not
+    /// read yet: its structure and its first page, as when it opened. A
+    /// connect under way reads it once it is up (`App::wake_to_read`).
+    fn read_reopened(&mut self) {
+        let due: Vec<(ConnTabId, TabId)> = self
+            .open_connections()
+            .filter_map(|(tab, workspace)| {
+                let front = workspace.active_object_tab()?;
+                front.reopened.then_some((tab, front.id))
+            })
+            .collect();
+        for (tab, id) in due {
+            self.describe(tab, id);
+            self.fetch_rows(tab, id);
         }
     }
 
@@ -4516,6 +4579,10 @@ impl App {
                     return (object.id, false, false, count);
                 }
                 let is_active = Some(object.id) == active;
+                // Reopened behind another: read when it is first shown.
+                if object.reopened && !is_active {
+                    return (object.id, false, false, count);
+                }
                 (
                     object.id,
                     is_active
@@ -4566,7 +4633,7 @@ impl App {
         }
         let waited: Vec<(TabId, bool, bool)> = workspace
             .object_tabs()
-            .filter(|object| !object.edits.holds())
+            .filter(|object| !object.edits.holds() && !object.reopened)
             .map(|object| {
                 (
                     object.id,
@@ -5609,6 +5676,9 @@ impl App {
         let size = self.settings.page_size;
         if let Some(object) = self.object_tab_mut(tab, id) {
             object.page_size = size;
+            // Read now, whatever asked: a reopened tab is not read again
+            // when it is shown.
+            object.reopened = false;
         }
         self.fetch_page(tab, id, size);
     }
@@ -9439,6 +9509,7 @@ mod tests {
             settings.production_read_only = false;
             settings.confirm_close_edits = false;
             settings.idle_disconnect = crate::settings::Idle::Never;
+            settings.restore_tabs = false;
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
         });
@@ -9465,6 +9536,8 @@ mod tests {
         assert!(app.settings.production_read_only);
         assert!(app.settings.confirm_close_edits);
         assert_eq!(app.settings.idle_disconnect, defaults.idle_disconnect);
+        // And the Startup group's.
+        assert!(app.settings.restore_tabs);
         assert!(app.settings.show_system_schemas);
         assert_eq!(app.settings.sql_limit, 50);
         assert_eq!(app.settings_file.text, app.settings.to_toml());

@@ -282,3 +282,185 @@ fn a_window_switched_to_another_database_keeps_what_its_connection_had() {
         .collect();
     assert_eq!(names, ["books"]);
 }
+
+/// Says the newest connect is up, as the backend does.
+fn connected(app: &mut App) {
+    let (session, request) = app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Connect {
+                session, request, ..
+            } => Some((*session, *request)),
+            _ => None,
+        })
+        .expect("a Connect was sent");
+    app.apply(Action::Backend(crate::backend::Event::Connected {
+        session,
+        request,
+        driver: tabletist_db::Driver::Sqlite,
+        encrypted: false,
+        access: crate::testing::asked_access(app),
+    }));
+}
+
+/// The pages asked for since the `from`th command, by table.
+fn fetched(app: &App, from: usize) -> Vec<tabletist_db::RowQuery> {
+    app.backend.sent[from..]
+        .iter()
+        .filter_map(|command| match command {
+            Command::FetchRows { query, .. } => Some(query.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Bookshop's window with `books` sorted by title and `authors` filtered
+/// to Ireland, `books` in front, closed: what the session keeps of it.
+fn closed_with_tables(app: &mut App) -> crate::connections::ConnectionId {
+    let conn = bookshop(app, "Bookshop");
+    let tab = open_window(app, &conn);
+    connected(app);
+    let titles = books(app, tab, "books");
+    app.apply(Action::SortBy {
+        tab,
+        object_tab: titles,
+        column: "title".into(),
+    });
+    let authors = books(app, tab, "authors");
+    if let Some(object) = app.object_tab_mut(tab, authors) {
+        object.filter.rows.push(crate::model::FilterRow {
+            column: "country".into(),
+            op: FilterOp::Eq,
+            value: "IE".into(),
+        });
+    }
+    app.apply(Action::ApplyFilters {
+        tab,
+        object_tab: authors,
+    });
+    app.apply(Action::ActivateTab { tab, id: titles });
+    app.apply(Action::CloseConnTab(tab));
+    conn
+}
+
+#[test]
+fn a_connection_opened_again_reopens_its_tables_and_reads_the_one_in_front() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = closed_with_tables(&mut app);
+    let tab = open_window(&mut app, &conn);
+    app.apply_actions();
+    let workspace = app.workspace(tab).unwrap();
+    let names: Vec<&str> = workspace
+        .object_tabs()
+        .map(|object| object.object.name.as_str())
+        .collect();
+    assert_eq!(names, ["books", "authors"]);
+    let front = workspace.active_object_tab().unwrap();
+    assert_eq!(front.object.name, "books");
+    let authors = workspace.object_tabs().nth(1).unwrap().id;
+    let before = app.backend.sent.len();
+    connected(&mut app);
+    app.apply_actions();
+    let pages = fetched(&app, before);
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    assert_eq!(pages[0].object.name, "books");
+    assert_eq!(pages[0].sort[0].column, "title");
+    assert_eq!(pages[0].sort[0].dir, SortDir::Asc);
+    // The other is read when it is first shown, with its filter.
+    let before = app.backend.sent.len();
+    app.apply(Action::ActivateTab { tab, id: authors });
+    app.apply_actions();
+    let pages = fetched(&app, before);
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    assert_eq!(pages[0].object.name, "authors");
+    assert_eq!(pages[0].filters[0].column, "country");
+    assert_eq!(pages[0].filters[0].value, "IE");
+    let object = app.workspace(tab).unwrap().object_tab(authors).unwrap();
+    assert_eq!(object.filter.rows.len(), 1);
+    // And only then.
+    let before = app.backend.sent.len();
+    app.apply_actions();
+    assert!(fetched(&app, before).is_empty());
+}
+
+#[test]
+fn with_restore_off_a_connection_opens_with_no_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = closed_with_tables(&mut app);
+    app.apply(Action::SetOption(
+        crate::settings::OptionValue::RestoreTabs(false),
+    ));
+    assert!(
+        app.settings_file
+            .text
+            .contains("[startup]\nrestore_tabs = false\n")
+    );
+    let tab = open_window(&mut app, &conn);
+    assert_eq!(app.workspace(tab).unwrap().tabs.len(), 0);
+    // What it had is still kept, for when the option is on again.
+    assert_eq!(app.session.connections[&conn.0].tabs.len(), 2);
+}
+
+#[test]
+fn tables_of_another_database_are_not_reopened() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = closed_with_tables(&mut app);
+    app.session.connections.get_mut(&conn.0).unwrap().database = "bookshop_preview".into();
+    let tab = open_window(&mut app, &conn);
+    assert_eq!(app.workspace(tab).unwrap().tabs.len(), 0);
+}
+
+#[test]
+fn a_reopened_table_that_is_gone_says_why_as_an_open_one_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = closed_with_tables(&mut app);
+    let tab = open_window(&mut app, &conn);
+    connected(&mut app);
+    app.apply_actions();
+    let (session, request) = app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::FetchRows {
+                session, request, ..
+            } => Some((*session, *request)),
+            _ => None,
+        })
+        .unwrap();
+    app.apply(Action::Backend(crate::backend::Event::Rows {
+        session,
+        request,
+        result: Err(tabletist_db::Error::Query {
+            code: None,
+            message: "no such table: books".into(),
+            detail: None,
+            hint: None,
+            named: Default::default(),
+        }),
+    }));
+    let front = app.workspace(tab).unwrap().active_object_tab().unwrap();
+    assert!(front.rows.shown_error().is_some());
+    // The tab stays, and keeps what it was for the next time.
+    assert_eq!(front.query.sort[0].column, "title");
+}
+
+#[test]
+fn tables_of_another_sqlite_file_are_not_reopened() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = closed_with_tables(&mut app);
+    let mut saved = app.connections.get(&conn).unwrap().clone();
+    saved.spec = tabletist_db::ConnectSpec::sqlite("/tmp/bookshop_archive.db");
+    app.connections.upsert(saved);
+    let tab = open_window(&mut app, &conn);
+    assert_eq!(app.workspace(tab).unwrap().tabs.len(), 0);
+}

@@ -346,7 +346,8 @@ fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &
     );
     let mut index = 0;
     for (heading_text, top, options) in [
-        ("Data", 8.0, &OptionId::DATA[..]),
+        ("Startup", 8.0, &OptionId::STARTUP[..]),
+        ("Data", 12.0, &OptionId::DATA[..]),
         ("Safety", 12.0, &OptionId::SAFETY[..]),
     ] {
         heading(ui, heading_text, top, skin);
@@ -867,7 +868,8 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
             let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
             segments.sum::<f32>() + between
         }
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -1041,7 +1043,8 @@ fn option_row(
         | OptionId::EnvBar => {
             segments(ui, cell, option, settings, skin, actions);
         }
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -1190,6 +1193,7 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .space(role, "  ")
                 .add(role, "ebook", second)
         }
+        OptionId::RestoreTabs => dim(&skin.say("per connection")),
         OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),
         // As drawn: nothing to add.
         OptionId::ConfirmCloseEdits => Text::new(look),

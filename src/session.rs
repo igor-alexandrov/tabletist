@@ -315,6 +315,7 @@ impl KeptTab {
             ..FilterBar::default()
         };
         (tab.query.filters, tab.query.raw_where) = tab.filter.to_query();
+        tab.reopened = true;
         Some(tab)
     }
 }

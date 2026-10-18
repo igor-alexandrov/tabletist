@@ -377,6 +377,9 @@ impl Idle {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Whether a connection that opens reopens the table tabs its window
+    /// last had, with their sort and filters (`session.json`).
+    pub restore_tabs: bool,
     /// Rows fetched per page in the data grid.
     pub page_size: u32,
     /// Timestamps in grid cells: to the second, or as the server sent them.
@@ -439,6 +442,7 @@ pub struct Settings {
 /// A key of the settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
+    RestoreTabs,
     PageSize,
     Timestamps,
     Tz,
@@ -463,7 +467,8 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 20] = [
+    pub const ALL: [Key; 21] = [
+        Self::RestoreTabs,
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -489,6 +494,7 @@ impl Key {
     /// The key's table and its name there.
     pub fn path(self) -> (&'static str, &'static str) {
         match self {
+            Self::RestoreTabs => ("startup", "restore_tabs"),
             Self::PageSize => ("data", "page_size"),
             Self::Timestamps => ("data", "timestamps"),
             Self::Tz => ("data", "tz"),
@@ -538,6 +544,8 @@ impl Key {
 /// An option the Settings window shows: one row of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptionId {
+    /// Whether a connection reopens its tables: `startup.restore_tabs`.
+    RestoreTabs,
     PageSize,
     Timestamps,
     /// The zone a `timestamptz` is shown in: `data.tz`.
@@ -569,7 +577,8 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 17] = [
+    pub const ALL: [OptionId; 18] = [
+        Self::RestoreTabs,
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -589,7 +598,8 @@ impl OptionId {
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 8] = [
+    pub const GENERAL: [OptionId; 9] = [
+        Self::RestoreTabs,
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -599,7 +609,8 @@ impl OptionId {
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
-    /// The General pane's sections: Data, then Safety.
+    /// The General pane's sections: Startup, Data, then Safety.
+    pub const STARTUP: [OptionId; 1] = [Self::RestoreTabs];
     pub const DATA: [OptionId; 5] = [
         Self::PageSize,
         Self::Timestamps,
@@ -636,6 +647,7 @@ impl OptionId {
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
         match self {
+            Self::RestoreTabs => Key::RestoreTabs,
             Self::PageSize => Key::PageSize,
             Self::Timestamps => Key::Timestamps,
             Self::Tz => Key::Tz,
@@ -665,6 +677,7 @@ impl OptionId {
 /// An option with a value: what a key, a click or a reset sets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionValue {
+    RestoreTabs(bool),
     PageSize(u32),
     Timestamps(Timestamps),
     Tz(Zone),
@@ -689,6 +702,7 @@ pub enum OptionValue {
 impl OptionValue {
     pub fn option(&self) -> OptionId {
         match self {
+            Self::RestoreTabs(_) => OptionId::RestoreTabs,
             Self::PageSize(_) => OptionId::PageSize,
             Self::Timestamps(_) => OptionId::Timestamps,
             Self::Tz(_) => OptionId::Tz,
@@ -712,6 +726,7 @@ impl OptionValue {
     /// Puts the value in `settings`.
     pub fn set(&self, settings: &mut Settings) {
         match self.clone() {
+            Self::RestoreTabs(on) => settings.restore_tabs = on,
             Self::PageSize(size) => settings.page_size = size,
             Self::Timestamps(choice) => settings.timestamps = choice,
             Self::Tz(zone) => settings.tz = zone,
@@ -1215,6 +1230,7 @@ impl Settings {
     /// What `option` is set to.
     pub fn value(&self, option: OptionId) -> OptionValue {
         match option {
+            OptionId::RestoreTabs => OptionValue::RestoreTabs(self.restore_tabs),
             OptionId::PageSize => OptionValue::PageSize(self.page_size),
             OptionId::Timestamps => OptionValue::Timestamps(self.timestamps),
             OptionId::Tz => OptionValue::Tz(self.tz.clone()),
@@ -1274,6 +1290,7 @@ impl Settings {
             OptionId::ValueTags => OptionValue::ValueTags(forward),
             OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
+            OptionId::RestoreTabs => OptionValue::RestoreTabs(forward),
             // Never is the first: the shortest wait is one to the right.
             OptionId::IdleDisconnect => {
                 let at = Idle::ALL
@@ -1366,6 +1383,7 @@ impl Settings {
             OptionId::ConfirmCloseEdits => {
                 Some(OptionValue::ConfirmCloseEdits(!self.confirm_close_edits))
             }
+            OptionId::RestoreTabs => Some(OptionValue::RestoreTabs(!self.restore_tabs)),
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
@@ -1393,6 +1411,7 @@ impl Settings {
     /// out: a theme that is not set, and stripes left to the look.
     fn written(&self, key: Key) -> Option<String> {
         Some(match key {
+            Key::RestoreTabs => self.restore_tabs.to_string(),
             Key::PageSize => self.page_size.to_string(),
             Key::Timestamps => toml_string(self.timestamps.name()),
             Key::Tz => toml_string(self.tz.name()),
@@ -1626,6 +1645,7 @@ impl Settings {
         let flag = value.as_bool();
         let text = value.as_str();
         match key {
+            Key::RestoreTabs => flag.map(|flag| self.restore_tabs = flag),
             Key::PageSize => number.map(|number| self.page_size = number),
             Key::Timestamps => text
                 .and_then(Timestamps::from_name)
@@ -1762,6 +1782,7 @@ impl Settings {
     /// Takes `key`'s value from `other`.
     fn keep(&mut self, key: Key, other: &Settings) {
         match key {
+            Key::RestoreTabs => self.restore_tabs = other.restore_tabs,
             Key::PageSize => self.page_size = other.page_size,
             Key::Timestamps => self.timestamps = other.timestamps,
             Key::Tz => self.tz = other.tz.clone(),
@@ -1827,6 +1848,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            restore_tabs: true,
             page_size: Self::DEFAULT_PAGE_SIZE,
             timestamps: Timestamps::Second,
             tz: Zone::System,
@@ -1920,6 +1942,7 @@ mod tests {
     /// Every key away from its default.
     fn all_set() -> Settings {
         Settings {
+            restore_tabs: false,
             page_size: 500,
             timestamps: Timestamps::Full,
             tz: Zone::Named("America/New_York".into()),
@@ -1952,6 +1975,9 @@ mod tests {
             format!(
                 "\
 # written by tabletist, safe to edit by hand
+[startup]
+restore_tabs = false
+
 [data]
 page_size = 500
 timestamps = \"full\"  # second | full
@@ -2048,26 +2074,27 @@ bar = \"label\"  # tint | label
         assert_eq!(
             loaded.lines,
             vec![
-                (Key::PageSize, 3),
-                (Key::Timestamps, 4),
-                (Key::Tz, 5),
-                (Key::GroupDigits, 6),
-                (Key::ValueTags, 7),
-                (Key::ProductionReadOnly, 10),
-                (Key::ConfirmCloseEdits, 11),
-                (Key::IdleDisconnect, 12),
-                (Key::ShowSystemSchemas, 15),
-                (Key::SqlLimit, 18),
-                (Key::SqlTimeoutSecs, 19),
-                (Key::McpEnabled, 22),
-                (Key::McpLogDays, 23),
-                (Key::McpNotify, 24),
-                (Key::Theme, 27),
-                (Key::RowHeight, 30),
-                (Key::Zebra, 31),
-                (Key::ColumnTypes, 32),
-                (Key::TableList, 33),
-                (Key::EnvBar, 36),
+                (Key::RestoreTabs, 3),
+                (Key::PageSize, 6),
+                (Key::Timestamps, 7),
+                (Key::Tz, 8),
+                (Key::GroupDigits, 9),
+                (Key::ValueTags, 10),
+                (Key::ProductionReadOnly, 13),
+                (Key::ConfirmCloseEdits, 14),
+                (Key::IdleDisconnect, 15),
+                (Key::ShowSystemSchemas, 18),
+                (Key::SqlLimit, 21),
+                (Key::SqlTimeoutSecs, 22),
+                (Key::McpEnabled, 25),
+                (Key::McpLogDays, 26),
+                (Key::McpNotify, 27),
+                (Key::Theme, 30),
+                (Key::RowHeight, 33),
+                (Key::Zebra, 34),
+                (Key::ColumnTypes, 35),
+                (Key::TableList, 36),
+                (Key::EnvBar, 39),
             ]
         );
     }
@@ -3078,6 +3105,7 @@ bar = \"label\"  # tint | label
         assert_eq!(
             keys,
             vec![
+                Key::RestoreTabs,
                 Key::PageSize,
                 Key::Timestamps,
                 Key::Tz,
@@ -3106,7 +3134,12 @@ bar = \"label\"  # tint | label
         .concat();
         // The sections of the General and Appearance panes hold their
         // options, in order.
-        let sections = [&OptionId::DATA[..], &OptionId::SAFETY[..]].concat();
+        let sections = [
+            &OptionId::STARTUP[..],
+            &OptionId::DATA[..],
+            &OptionId::SAFETY[..],
+        ]
+        .concat();
         assert_eq!(sections, OptionId::GENERAL);
         let sections = [
             &OptionId::THEME[..],

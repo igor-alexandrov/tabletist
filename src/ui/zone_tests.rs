@@ -23,6 +23,18 @@ fn zone(harness: &mut Harness, zone: Zone) {
     harness.settle();
 }
 
+/// Moves the Settings screen's cursor from the first row to the zone's.
+fn to_the_zone(harness: &mut Harness) {
+    let row = crate::model::SettingsPane::General
+        .rows()
+        .iter()
+        .position(|row| *row == crate::model::SettingsRow::Option(crate::settings::OptionId::Tz))
+        .expect("the zone's row");
+    for _ in 0..row {
+        harness.press(Key::J, Modifiers::NONE);
+    }
+}
+
 fn new_york() -> Zone {
     Zone::Named("America/New_York".into())
 }
@@ -417,9 +429,7 @@ fn the_file_pane_marks_the_zones_line() {
             text: "[data]\npage_size = 500\ntz = \"utc\"\n".into(),
             own: false,
         }));
-    for _ in 0..2 {
-        harness.press(Key::J, Modifiers::NONE);
-    }
+    to_the_zone(&mut harness);
     let selection = harness.app.palette.selection;
     let line = harness.painted_rect("tz = ").expect("the zone's line");
     assert!(harness.fills.iter().any(|(rect, color)| {
@@ -440,9 +450,7 @@ fn a_step_off_the_files_zone_can_step_back_to_it() {
             text: "[data]\ntz = \"America/New_York\"\n".into(),
             own: false,
         }));
-    for _ in 0..2 {
-        harness.press(Key::J, Modifiers::NONE);
-    }
+    to_the_zone(&mut harness);
     harness.press(Key::H, Modifiers::NONE);
     assert_eq!(harness.app.settings.tz, Zone::Utc);
     harness.press(Key::L, Modifiers::NONE);
@@ -594,9 +602,7 @@ fn a_zone_the_database_turned_down_is_no_step_of_the_terminal_screen() {
     assert_eq!(harness.app.settings.tz, Zone::System);
     assert_eq!(harness.app.named_zone, None);
     harness.press(Key::Comma, Modifiers::COMMAND);
-    for _ in 0..2 {
-        harness.press(Key::J, Modifiers::NONE);
-    }
+    to_the_zone(&mut harness);
     harness.press(Key::L, Modifiers::NONE);
     assert_eq!(harness.app.settings.tz, Zone::Utc);
     // From UTC there is no step further: the refused name is not one.

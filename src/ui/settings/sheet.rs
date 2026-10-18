@@ -158,7 +158,11 @@ pub(super) fn show(
                 SettingsPane::General => content(
                     &mut pane,
                     ("General", Some(GENERAL)),
-                    &[("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)],
+                    &[
+                        ("Startup", &OptionId::STARTUP),
+                        ("Data", &OptionId::DATA),
+                        ("Safety", &OptionId::SAFETY),
+                    ],
                     &app.settings,
                     limit,
                     &skin,
@@ -290,7 +294,8 @@ fn nav(
 }
 
 /// What the General pane says under its title.
-const GENERAL: &str = "How Tabletist shows data and protects your work. Changes apply right away.";
+const GENERAL: &str =
+    "How Tabletist starts, shows data and protects your work. Changes apply right away.";
 
 /// The tab: its title, what it is for where it says, and its options under
 /// the heading of each group. The rows end at `limit` at the latest, and
@@ -625,7 +630,8 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -743,7 +749,8 @@ fn control(
                 actions.push(Action::SetOption(OptionValue::EnvBar(bar)));
             }
         }
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -938,6 +945,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         // What the Appearance pane's rows say is their small print, and its
         // tiles have their own line.
         OptionId::Theme
+        | OptionId::RestoreTabs
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::IdleDisconnect

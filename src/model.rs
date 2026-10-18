@@ -2555,6 +2555,7 @@ impl SettingsPane {
         use crate::settings::OptionId;
         match self {
             Self::General => &[
+                SettingsRow::Option(OptionId::RestoreTabs),
                 SettingsRow::Option(OptionId::PageSize),
                 SettingsRow::Option(OptionId::Timestamps),
                 SettingsRow::Option(OptionId::Tz),
@@ -3158,6 +3159,10 @@ pub struct ObjectTab {
     /// the Structure view. A picker's chooser is the picker's own
     /// (`key_picker::Picker::chooser`).
     pub label_chooser: Option<crate::labels::Chooser>,
+    /// Reopened from what the window last had (`session.json`), and not
+    /// read yet: it is read when it is first in front
+    /// (`App::read_reopened`), not with the connect.
+    pub reopened: bool,
 }
 
 /// The row panel's text for one row, formatted once when the selection or
@@ -3378,6 +3383,7 @@ impl ObjectTab {
             yanked: None,
             structure_cursor: 0,
             label_chooser: None,
+            reopened: false,
         }
     }
 

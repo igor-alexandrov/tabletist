@@ -25,6 +25,7 @@ use crate::settings::{
 /// terminal look lower-cases.
 pub(super) fn label(option: OptionId) -> &'static str {
     match option {
+        OptionId::RestoreTabs => "Restore tabs and filters",
         OptionId::PageSize => "Rows per page",
         OptionId::Timestamps => "Timestamps",
         OptionId::Tz => "Time zone for timestamptz",
@@ -58,7 +59,8 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         OptionId::Zebra => "Alternate rows",
         OptionId::ColumnTypes => "Column types",
         OptionId::EnvBar => "Connection bar",
-        OptionId::PageSize
+        OptionId::RestoreTabs
+        | OptionId::PageSize
         | OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::ValueTags
@@ -74,6 +76,9 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
 /// What a row says under its label, where it says something. English.
 pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
     match option {
+        // As the board writes it, though hiding columns is not built: what
+        // the option will cover once it is.
+        OptionId::RestoreTabs => Some("Per connection, including sort and hidden columns"),
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
@@ -141,7 +146,8 @@ pub(super) fn days(locale: Locale, days: u32) -> String {
 pub(super) fn is_on(value: &OptionValue) -> bool {
     matches!(
         value,
-        OptionValue::ValueTags(true)
+        OptionValue::RestoreTabs(true)
+            | OptionValue::ValueTags(true)
             | OptionValue::ProductionReadOnly(true)
             | OptionValue::ConfirmCloseEdits(true)
             | OptionValue::AgentsOn(true)
@@ -260,6 +266,10 @@ pub(super) fn choices(
         OptionId::ConfirmCloseEdits => vec![
             (Word("off"), OptionValue::ConfirmCloseEdits(false)),
             (Word("on"), OptionValue::ConfirmCloseEdits(true)),
+        ],
+        OptionId::RestoreTabs => vec![
+            (Word("off"), OptionValue::RestoreTabs(false)),
+            (Word("on"), OptionValue::RestoreTabs(true)),
         ],
         OptionId::AgentsOn => vec![
             (Word("off"), OptionValue::AgentsOn(false)),
