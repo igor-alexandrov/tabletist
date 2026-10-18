@@ -16,7 +16,7 @@ Step 2 of `docs/superpowers/specs/2026-10-17-settings-general-rows-design.md`. S
 
 ## Where this departs from the spec or the boards
 
-The spec's own departures were approved with it; the one of this step ("Ask before closing, off: the held action goes ahead and the edits are discarded … A save that is still running is still waited for") is built as the app treats a running save today: the action does nothing, and closing the window asks. These are new, and each needs Igor's yes before the task that builds it is run:
+The spec's own departures were approved with it; the one of this step ("Ask before closing, off: the held action goes ahead and the edits are discarded … A save that is still running is still waited for") is built as the app treats a running save today: the action does nothing, and closing the window asks. These are new, and Igor approved them on 2026-10-18:
 
 | What the spec or the board says | What this run builds | Why |
 |---|---|---|
