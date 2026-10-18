@@ -17,8 +17,8 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    EnvBar, InterfaceSize, Mode, OptionId, OptionValue, RowHeight, Settings, TableList, Theme,
-    ThemeChoice, Timestamps, Zone,
+    EnvBar, Idle, InterfaceSize, Mode, OptionId, OptionValue, RowHeight, Settings, TableList,
+    Theme, ThemeChoice, Timestamps, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -32,6 +32,7 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::ValueTags => "Value tags",
         OptionId::ProductionReadOnly => "New production connections open read-only",
         OptionId::ConfirmCloseEdits => "Ask before closing with unsaved edits",
+        OptionId::IdleDisconnect => "Disconnect when idle",
         OptionId::AgentsOn => "Let agents use Tabletist",
         OptionId::LogDays => "Keep the activity log",
         OptionId::AgentsNotify => "Notify when an agent connects",
@@ -67,6 +68,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::ValueTags
+        | OptionId::IdleDisconnect
         | OptionId::AgentsOn
         | OptionId::LogDays
         | OptionId::AgentsNotify
@@ -84,6 +86,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
         OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
         OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
+        OptionId::IdleDisconnect => Some("Closes server sessions; tabs stay and reconnect on use"),
         OptionId::ColumnTypes => Some("Second line in headers: int8, varchar, jsonb"),
         OptionId::TableList => Some("Default for new connections; the sidebar toggle overrides it"),
         OptionId::EnvBar => Some("Production always uses the full tint"),
@@ -128,6 +131,19 @@ pub(super) fn zone_text(locale: Locale, zone: &Zone, system: Option<&str>) -> St
         Zone::Utc => "UTC".to_owned(),
         Zone::Named(name) => name.clone(),
     }
+}
+
+/// How long a connection may go unused, as the menu writes it.
+pub(super) fn idle_text(locale: Locale, choice: Idle) -> String {
+    let (one, many, count) = match choice {
+        Idle::Never => return gettext(locale, "Never").into_owned(),
+        Idle::Minutes5 => ("After {n} min", "After {n} min", 5),
+        Idle::Minutes15 => ("After {n} min", "After {n} min", 15),
+        Idle::Minutes30 => ("After {n} min", "After {n} min", 30),
+        Idle::Hour1 => ("After {n} h", "After {n} h", 1),
+        Idle::Hours4 => ("After {n} h", "After {n} h", 4),
+    };
+    ngettext(locale, one, many, count).replace("{n}", &count.to_string())
 }
 
 /// The days the log keeps a call, as the window writes them.
@@ -264,7 +280,7 @@ pub(super) fn choices(
             (Word("off"), OptionValue::AgentsOn(false)),
             (Word("on"), OptionValue::AgentsOn(true)),
         ],
-        OptionId::LogDays => vec![
+        OptionId::LogDays | OptionId::IdleDisconnect => vec![
             (Word("fewer"), settings.stepped(option, false)),
             (Word("more"), settings.stepped(option, true)),
         ],

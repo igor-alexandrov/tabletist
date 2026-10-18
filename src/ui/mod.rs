@@ -1358,7 +1358,7 @@ value_tags   = true
     }
 
     #[test]
-    fn the_safety_group_of_the_sheet_sets_where_a_new_production_connection_starts() {
+    fn the_safety_group_of_the_sheet_sets_its_three_options() {
         for look in SHEET_LOOKS {
             let mut harness = settings_sheet(look());
             for text in [
@@ -1380,6 +1380,30 @@ value_tags   = true
             assert!(!harness.app.settings.confirm_close_edits);
             let text = &harness.app.settings_file.text;
             assert!(text.ends_with("confirm_close_edits = false\n"), "{text}");
+            // The menu of how long a connection may go unused.
+            assert!(harness.has("Closes server sessions; tabs stay and reconnect on use"));
+            harness.click("Disconnect when idle");
+            for choice in [
+                "Never",
+                "After 5 min",
+                "After 15 min",
+                "After 30 min",
+                "After 1 h",
+                "After 4 h",
+            ] {
+                let entry = format!("Disconnect when idle {choice}");
+                assert!(harness.has(&entry), "{entry}");
+            }
+            harness.click("Disconnect when idle After 1 h");
+            assert_eq!(
+                harness.app.settings.idle_disconnect,
+                crate::settings::Idle::Hour1
+            );
+            let text = &harness.app.settings_file.text;
+            assert!(
+                text.ends_with("idle_disconnect = \"1h\"  # never | 5m | 15m | 30m | 1h | 4h\n"),
+                "{text}"
+            );
         }
     }
 
@@ -1405,13 +1429,17 @@ value_tags   = true
     }
 
     #[test]
-    fn the_safety_group_of_the_screen_has_its_rows_and_space_flips_them() {
+    fn the_safety_group_of_the_screen_has_its_rows_space_flips_them_and_arrows_step_the_idle_time()
+    {
         let mut harness = settings_screen_on_the_artboard();
         for text in [
             "safety",
             "production opens read-only",
             "default for new connections",
             "confirm close with edits",
+            "disconnect when idle",
+            "30m",
+            "tabs reconnect on use",
         ] {
             assert!(harness.painted_color(text).is_some(), "{text}");
         }
@@ -1436,6 +1464,30 @@ value_tags   = true
         assert!(!harness.app.settings.production_read_only);
         harness.press(egui::Key::R, egui::Modifiers::SHIFT);
         assert!(harness.app.settings.production_read_only);
+        // Two rows on: the idle time, stepped.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        assert!(harness.painted_color("▌disconnect when idle").is_some());
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(
+            harness.app.settings.idle_disconnect,
+            crate::settings::Idle::Hour1
+        );
+        assert!(harness.painted_color("‹ 1h ›").is_some());
+        harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+        assert_eq!(
+            harness.app.settings.idle_disconnect,
+            crate::settings::Idle::Minutes30
+        );
+        // And down to the first choice, written in words.
+        for _ in 0..3 {
+            harness.press(egui::Key::H, egui::Modifiers::NONE);
+        }
+        assert_eq!(
+            harness.app.settings.idle_disconnect,
+            crate::settings::Idle::Never
+        );
+        assert!(harness.painted_color("‹ never ›").is_some());
     }
 
     #[test]
@@ -1639,23 +1691,23 @@ value_tags   = true
             let mut harness = Harness::with_size(size);
             harness.set_look(look());
             harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
-            // The last row's switch: the window has room for one row or
+            // The last row's menu: the window has room for one row or
             // two, and it is under them.
-            let last = "Ask before closing with unsaved edits";
+            let last = "Disconnect when idle";
             tab_to_settings(&mut harness, last);
             let tree = harness.settle();
-            let switch = crate::testing::bounds(&tree, last, Role::CheckBox).expect("the switch");
-            // The rows came with the keyboard: the switch is in the
+            let control = crate::testing::bounds(&tree, last, Role::ComboBox).expect("the menu");
+            // The rows came with the keyboard: the menu is in the
             // window, between the tab's lead and the footer.
             let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            assert!(window.contains_rect(switch), "{switch:?}");
+            assert!(window.contains_rect(control), "{control:?}");
             let stored = harness.painted_rect("Stored in").expect("the footer");
-            assert!(switch.bottom() < stored.top(), "{switch:?} {stored:?}");
+            assert!(control.bottom() < stored.top(), "{control:?} {stored:?}");
             let lead = "How Tabletist shows data and protects your work. Changes apply right away.";
             let lead = harness.painted_rect(lead).expect("the tab's lead");
-            assert!(switch.top() > lead.bottom(), "{switch:?} {lead:?}");
+            assert!(control.top() > lead.bottom(), "{control:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..6 {
+            for _ in 0..7 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();

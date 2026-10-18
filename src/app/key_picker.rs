@@ -148,9 +148,15 @@ impl App {
                 key_picker::pinned(key, class, &column.type_name, passes)
             };
             let reads = picker.lookups(label.column.clone(), &text, pin);
-            Some((workspace.session, reads, text, picker.serial))
+            Some((reads, text, picker.serial))
         });
-        let Some((session, (pinned, matching), text, serial)) = planned else {
+        let Some(((pinned, matching), text, serial)) = planned else {
+            return;
+        };
+        // Only now, with something to send: it opens a session closed
+        // while idle.
+        self.wake(tab);
+        let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
             return;
         };
         let pinned = pinned.map(|lookup| self.send_lookup(session, lookup, serial));
@@ -421,12 +427,16 @@ impl App {
                 part: LookupPart::Pinned(value),
                 limit: 1,
             };
-            Some((workspace.session, lookup, text.clone()))
+            Some((lookup, text.clone()))
         });
         if let Some(object) = self.object_tab_mut(tab, id) {
             object.edits.doubts.remove(&(cell.row, cell.col));
         }
-        let Some((session, lookup, text)) = planned else {
+        let Some((lookup, text)) = planned else {
+            return;
+        };
+        self.wake(tab);
+        let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
             return;
         };
         // No picker's: serial 0 is nobody's.

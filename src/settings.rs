@@ -438,6 +438,67 @@ impl From<Option<String>> for Theme {
     }
 }
 
+/// How long a connection may go unused before its session is closed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub enum Idle {
+    #[serde(rename = "never")]
+    Never,
+    #[serde(rename = "5m")]
+    Minutes5,
+    #[serde(rename = "15m")]
+    Minutes15,
+    #[default]
+    #[serde(rename = "30m")]
+    Minutes30,
+    #[serde(rename = "1h")]
+    Hour1,
+    #[serde(rename = "4h")]
+    Hours4,
+}
+
+impl Idle {
+    /// Every choice, as the menu lists them: never first, then from the
+    /// shortest wait.
+    pub const ALL: [Self; 6] = [
+        Self::Never,
+        Self::Minutes5,
+        Self::Minutes15,
+        Self::Minutes30,
+        Self::Hour1,
+        Self::Hours4,
+    ];
+
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Minutes5 => "5m",
+            Self::Minutes15 => "15m",
+            Self::Minutes30 => "30m",
+            Self::Hour1 => "1h",
+            Self::Hours4 => "4h",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.name() == name)
+    }
+
+    /// How long a session goes unused before it is closed; `None` never
+    /// closes it.
+    pub fn after(self) -> Option<std::time::Duration> {
+        let minutes = match self {
+            Self::Never => return None,
+            Self::Minutes5 => 5,
+            Self::Minutes15 => 15,
+            Self::Minutes30 => 30,
+            Self::Hour1 => 60,
+            Self::Hours4 => 240,
+        };
+        Some(std::time::Duration::from_secs(minutes * 60))
+    }
+}
+
 /// Everything the user can set. A key the file lacks takes its default and
 /// one this version does not know is ignored, so older and newer files both
 /// load. The serde derive reads the `settings.json` of versions before the
@@ -468,6 +529,9 @@ pub struct Settings {
     /// asks first. Off, the edits are dropped and the action goes ahead,
     /// except while a save runs or a dialog is open.
     pub confirm_close_edits: bool,
+    /// How long a connection goes unused before its session is closed. Its
+    /// tab stays, and connects again when it is next used.
+    pub idle_disconnect: Idle,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
     pub show_system_schemas: bool,
     /// The theme each look draws. Older versions wrote a palette file's
@@ -525,6 +589,7 @@ pub enum Key {
     ValueTags,
     ProductionReadOnly,
     ConfirmCloseEdits,
+    IdleDisconnect,
     ShowSystemSchemas,
     SqlLimit,
     SqlTimeoutSecs,
@@ -544,7 +609,7 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 22] = [
+    pub const ALL: [Key; 23] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -552,6 +617,7 @@ impl Key {
         Self::ValueTags,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
+        Self::IdleDisconnect,
         Self::ShowSystemSchemas,
         Self::SqlLimit,
         Self::SqlTimeoutSecs,
@@ -579,6 +645,7 @@ impl Key {
             Self::ValueTags => ("data", "value_tags"),
             Self::ProductionReadOnly => ("safety", "production_read_only"),
             Self::ConfirmCloseEdits => ("safety", "confirm_close_edits"),
+            Self::IdleDisconnect => ("safety", "idle_disconnect"),
             Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
             Self::SqlLimit => ("editor", "sql_limit"),
             Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
@@ -603,6 +670,7 @@ impl Key {
         match self {
             Self::Timestamps => Some("second | full"),
             Self::Tz => Some("system | utc | \"Area/City\""),
+            Self::IdleDisconnect => Some("never | 5m | 15m | 30m | 1h | 4h"),
             Self::SqlTimeoutSecs => Some("0 waits forever"),
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
@@ -640,6 +708,9 @@ pub enum OptionId {
     ProductionReadOnly,
     /// Whether dropping unsaved edits asks first: `safety.confirm_close_edits`.
     ConfirmCloseEdits,
+    /// How long a connection goes unused before its session is closed:
+    /// `safety.idle_disconnect`.
+    IdleDisconnect,
     /// Whether agents can reach the app: `mcp.enabled`.
     AgentsOn,
     /// How long the log of agents' calls keeps one: `mcp.log_days`.
@@ -663,7 +734,7 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 19] = [
+    pub const ALL: [OptionId; 20] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -671,6 +742,7 @@ impl OptionId {
         Self::ValueTags,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
+        Self::IdleDisconnect,
         Self::Theme,
         Self::InterfaceSize,
         Self::Font,
@@ -685,7 +757,7 @@ impl OptionId {
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 7] = [
+    pub const GENERAL: [OptionId; 8] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -693,6 +765,7 @@ impl OptionId {
         Self::ValueTags,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
+        Self::IdleDisconnect,
     ];
     /// The General pane's sections: Data, then Safety.
     pub const DATA: [OptionId; 5] = [
@@ -702,7 +775,11 @@ impl OptionId {
         Self::GroupDigits,
         Self::ValueTags,
     ];
-    pub const SAFETY: [OptionId; 2] = [Self::ProductionReadOnly, Self::ConfirmCloseEdits];
+    pub const SAFETY: [OptionId; 3] = [
+        Self::ProductionReadOnly,
+        Self::ConfirmCloseEdits,
+        Self::IdleDisconnect,
+    ];
     /// The Appearance pane's, in the order it has them: its Theme
     /// section's, its Text section's, its Grid section's, then its
     /// Environment section's. Each look shows the Text section's its own
@@ -744,6 +821,7 @@ impl OptionId {
             Self::ValueTags => Key::ValueTags,
             Self::ProductionReadOnly => Key::ProductionReadOnly,
             Self::ConfirmCloseEdits => Key::ConfirmCloseEdits,
+            Self::IdleDisconnect => Key::IdleDisconnect,
             Self::AgentsOn => Key::McpEnabled,
             Self::LogDays => Key::McpLogDays,
             Self::AgentsNotify => Key::McpNotify,
@@ -776,6 +854,7 @@ pub enum OptionValue {
     ValueTags(bool),
     ProductionReadOnly(bool),
     ConfirmCloseEdits(bool),
+    IdleDisconnect(Idle),
     AgentsOn(bool),
     LogDays(u32),
     AgentsNotify(bool),
@@ -803,6 +882,7 @@ impl OptionValue {
             Self::ValueTags(_) => OptionId::ValueTags,
             Self::ProductionReadOnly(_) => OptionId::ProductionReadOnly,
             Self::ConfirmCloseEdits(_) => OptionId::ConfirmCloseEdits,
+            Self::IdleDisconnect(_) => OptionId::IdleDisconnect,
             Self::AgentsOn(_) => OptionId::AgentsOn,
             Self::LogDays(_) => OptionId::LogDays,
             Self::AgentsNotify(_) => OptionId::AgentsNotify,
@@ -828,6 +908,7 @@ impl OptionValue {
             Self::ValueTags(on) => settings.value_tags = on,
             Self::ProductionReadOnly(on) => settings.production_read_only = on,
             Self::ConfirmCloseEdits(on) => settings.confirm_close_edits = on,
+            Self::IdleDisconnect(choice) => settings.idle_disconnect = choice,
             Self::AgentsOn(on) => settings.mcp_enabled = on,
             Self::LogDays(days) => settings.mcp_log_days = days,
             Self::AgentsNotify(on) => settings.mcp_notify = on,
@@ -1335,6 +1416,7 @@ impl Settings {
                 OptionValue::ProductionReadOnly(self.production_read_only)
             }
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(self.confirm_close_edits),
+            OptionId::IdleDisconnect => OptionValue::IdleDisconnect(self.idle_disconnect),
             OptionId::AgentsOn => OptionValue::AgentsOn(self.mcp_enabled),
             OptionId::LogDays => OptionValue::LogDays(self.mcp_log_days),
             OptionId::AgentsNotify => OptionValue::AgentsNotify(self.mcp_notify),
@@ -1371,8 +1453,8 @@ impl Settings {
 
     /// The value one step from `option`'s, towards the right (`forward`)
     /// or the left, as the window draws its choices: the next page size
-    /// (none past the ends), the segment on that side, a check on to the
-    /// right and off to the left.
+    /// or the next choice of a menu (none past the ends), the segment on
+    /// that side, a check on to the right and off to the left.
     pub fn stepped(&self, option: OptionId, forward: bool) -> OptionValue {
         match option {
             OptionId::PageSize => {
@@ -1400,6 +1482,19 @@ impl Settings {
             OptionId::ValueTags => OptionValue::ValueTags(forward),
             OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
+            // Never is the first: the shortest wait is one to the right.
+            OptionId::IdleDisconnect => {
+                let at = Idle::ALL
+                    .iter()
+                    .position(|choice| *choice == self.idle_disconnect)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (at + 1).min(Idle::ALL.len() - 1)
+                } else {
+                    at.saturating_sub(1)
+                };
+                OptionValue::IdleDisconnect(Idle::ALL[next])
+            }
             OptionId::AgentsOn => OptionValue::AgentsOn(forward),
             OptionId::LogDays => {
                 let days = self.mcp_log_days;
@@ -1483,7 +1578,7 @@ impl Settings {
     /// The other value of an option that has two; `None` for one with more.
     pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
         match option {
-            OptionId::PageSize | OptionId::Tz => None,
+            OptionId::PageSize | OptionId::Tz | OptionId::IdleDisconnect => None,
             OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
@@ -1533,6 +1628,7 @@ impl Settings {
             Key::ValueTags => self.value_tags.to_string(),
             Key::ProductionReadOnly => self.production_read_only.to_string(),
             Key::ConfirmCloseEdits => self.confirm_close_edits.to_string(),
+            Key::IdleDisconnect => toml_string(self.idle_disconnect.name()),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
             Key::SqlLimit => self.sql_limit.to_string(),
             // TOML has no null: no timeout is no seconds.
@@ -1779,6 +1875,9 @@ impl Settings {
             Key::ValueTags => flag.map(|flag| self.value_tags = flag),
             Key::ProductionReadOnly => flag.map(|flag| self.production_read_only = flag),
             Key::ConfirmCloseEdits => flag.map(|flag| self.confirm_close_edits = flag),
+            Key::IdleDisconnect => text
+                .and_then(Idle::from_name)
+                .map(|choice| self.idle_disconnect = choice),
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
             Key::SqlLimit => number.map(|number| self.sql_limit = number),
             Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
@@ -1919,6 +2018,7 @@ impl Settings {
             Key::ValueTags => self.value_tags = other.value_tags,
             Key::ProductionReadOnly => self.production_read_only = other.production_read_only,
             Key::ConfirmCloseEdits => self.confirm_close_edits = other.confirm_close_edits,
+            Key::IdleDisconnect => self.idle_disconnect = other.idle_disconnect,
             Key::ShowSystemSchemas => self.show_system_schemas = other.show_system_schemas,
             Key::SqlLimit => self.sql_limit = other.sql_limit,
             Key::SqlTimeoutSecs => self.sql_timeout_secs = other.sql_timeout_secs,
@@ -1986,6 +2086,7 @@ impl Default for Settings {
             value_tags: true,
             production_read_only: true,
             confirm_close_edits: true,
+            idle_disconnect: Idle::default(),
             show_system_schemas: false,
             theme: Theme::Unset,
             interface_size: InterfaceSize::Default,
@@ -2037,6 +2138,36 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_choice_has_a_name_and_a_wait() {
+        for choice in Idle::ALL {
+            assert_eq!(Idle::from_name(choice.name()), Some(choice));
+        }
+        assert_eq!(Idle::from_name("2m"), None);
+        assert_eq!(Idle::Never.after(), None);
+        assert_eq!(
+            Idle::default().after(),
+            Some(std::time::Duration::from_secs(30 * 60))
+        );
+        assert_eq!(
+            Idle::Hours4.after(),
+            Some(std::time::Duration::from_secs(4 * 60 * 60))
+        );
+    }
+
+    #[test]
+    fn an_idle_time_out_of_the_set_is_ignored_and_keeps_the_last_good_one() {
+        let last = Settings {
+            idle_disconnect: Idle::Hour1,
+            ..Settings::default()
+        };
+        let text = "[safety]\nidle_disconnect = \"2m\"\nconfirm_close_edits = false\n";
+        let loaded = Settings::from_toml_over(text, &last);
+        assert_eq!(loaded.invalid, [2]);
+        assert_eq!(loaded.settings.idle_disconnect, Idle::Hour1);
+        assert!(!loaded.settings.confirm_close_edits);
+    }
+
+    #[test]
     fn the_defaults_are_written_as_the_header_alone() {
         assert_eq!(Settings::default().to_toml(), HEADER);
     }
@@ -2051,6 +2182,7 @@ mod tests {
             value_tags: false,
             production_read_only: false,
             confirm_close_edits: false,
+            idle_disconnect: Idle::Hours4,
             show_system_schemas: true,
             theme: Theme::Pinned("My \"Nord\".json".into()),
             interface_size: InterfaceSize::Large,
@@ -2092,6 +2224,7 @@ value_tags = false
 [safety]
 production_read_only = false
 confirm_close_edits = false
+idle_disconnect = \"4h\"  # never | 5m | 15m | 30m | 1h | 4h
 
 [sidebar]
 show_system_schemas = true
@@ -2187,21 +2320,22 @@ bar = \"label\"  # tint | label
                 (Key::ValueTags, 7),
                 (Key::ProductionReadOnly, 10),
                 (Key::ConfirmCloseEdits, 11),
-                (Key::ShowSystemSchemas, 14),
-                (Key::SqlLimit, 17),
-                (Key::SqlTimeoutSecs, 18),
-                (Key::McpEnabled, 21),
-                (Key::McpLogDays, 22),
-                (Key::McpNotify, 23),
-                (Key::Theme, 26),
-                (Key::InterfaceSize, 27),
-                (Key::Font, 28),
-                (Key::FontSize, 29),
-                (Key::RowHeight, 32),
-                (Key::Zebra, 33),
-                (Key::ColumnTypes, 34),
-                (Key::TableList, 35),
-                (Key::EnvBar, 38),
+                (Key::IdleDisconnect, 12),
+                (Key::ShowSystemSchemas, 15),
+                (Key::SqlLimit, 18),
+                (Key::SqlTimeoutSecs, 19),
+                (Key::McpEnabled, 22),
+                (Key::McpLogDays, 23),
+                (Key::McpNotify, 24),
+                (Key::Theme, 27),
+                (Key::InterfaceSize, 28),
+                (Key::Font, 29),
+                (Key::FontSize, 30),
+                (Key::RowHeight, 33),
+                (Key::Zebra, 34),
+                (Key::ColumnTypes, 35),
+                (Key::TableList, 36),
+                (Key::EnvBar, 39),
             ]
         );
     }
@@ -3219,6 +3353,7 @@ bar = \"label\"  # tint | label
                 Key::ValueTags,
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
+                Key::IdleDisconnect,
                 Key::Theme,
                 Key::InterfaceSize,
                 Key::Font,
@@ -3285,6 +3420,38 @@ bar = \"label\"  # tint | label
         assert_eq!(step(300, false), OptionValue::PageSize(100));
         assert_eq!(step(9_000, true), OptionValue::PageSize(10_000));
         assert_eq!(step(9_000, false), OptionValue::PageSize(5_000));
+    }
+
+    #[test]
+    fn the_idle_time_steps_through_its_choices_and_stops_at_the_ends() {
+        let step = |choice: Idle, forward: bool| {
+            let settings = Settings {
+                idle_disconnect: choice,
+                ..Settings::default()
+            };
+            settings.stepped(OptionId::IdleDisconnect, forward)
+        };
+        assert_eq!(
+            step(Idle::Minutes30, true),
+            OptionValue::IdleDisconnect(Idle::Hour1)
+        );
+        assert_eq!(
+            step(Idle::Minutes30, false),
+            OptionValue::IdleDisconnect(Idle::Minutes15)
+        );
+        assert_eq!(
+            step(Idle::Minutes5, false),
+            OptionValue::IdleDisconnect(Idle::Never)
+        );
+        assert_eq!(
+            step(Idle::Never, false),
+            OptionValue::IdleDisconnect(Idle::Never)
+        );
+        assert_eq!(
+            step(Idle::Hours4, true),
+            OptionValue::IdleDisconnect(Idle::Hours4)
+        );
+        assert_eq!(Settings::default().flipped(OptionId::IdleDisconnect), None);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::edit::{
 };
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
-    ObjectTab, ObjectView, Pane, Reach, SaveBlock, SessionStatus, TabId, WritePrompt,
+    ObjectTab, ObjectView, Pane, Reach, SaveBlock, TabId, WritePrompt,
 };
 use crate::review::{Part, Values};
 
@@ -461,7 +461,8 @@ impl App {
         if lacking == Some(true) {
             return Some(SaveBlock::Required);
         }
-        if !matches!(workspace.status, SessionStatus::Connected) {
+        // One closed while idle connects again for the save.
+        if !workspace.takes_commands() {
             return Some(SaveBlock::Disconnected);
         }
         if workspace.access == Access::ReadOnly {
@@ -675,6 +676,20 @@ impl App {
         sent: Sent,
         then: Option<Held>,
     ) {
+        self.wake(tab);
+        // A session that is not up to take the save (a connect again that
+        // has to ask for a secret first, or one that dropped after a
+        // production save was confirmed) is sent nothing, and nothing goes
+        // before it: the tab says nothing was sent.
+        if self
+            .workspace(tab)
+            .is_some_and(|workspace| !workspace.takes_commands())
+        {
+            if let Some(object) = self.object_tab_mut(tab, id) {
+                object.edits.note = Some(Note::NotSent);
+            }
+            return;
+        }
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -1949,6 +1964,7 @@ impl App {
         if asked.is_empty() {
             return;
         }
+        self.wake(tab);
         let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
             return;
         };
@@ -2336,6 +2352,9 @@ impl App {
             })
             .flatten()
             .unwrap_or_default();
+        if !asked.is_empty() {
+            self.wake(tab);
+        }
         let Some(session) = self.workspace(tab).map(|workspace| workspace.session) else {
             return;
         };
