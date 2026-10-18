@@ -199,6 +199,28 @@ pub fn layouter(
     }
 }
 
+/// `text` in `dialect`'s colours, as an editor draws it, wrapped at
+/// `width`: a statement shown and not edited.
+pub fn highlighted(
+    ctx: &egui::Context,
+    look: &Look,
+    palette: &Palette,
+    dialect: Dialect,
+    text: &str,
+    width: f32,
+) -> crate::typography::Laid {
+    let tokens = sql::tokenize(dialect, text);
+    let runs = runs(&tokens, text, palette);
+    Text::in_faces(look.faces)
+        .add_runs(
+            role(look),
+            runs.iter()
+                .map(|(range, color)| (&text[range.clone()], *color)),
+        )
+        .wrap(width)
+        .layout(ctx)
+}
+
 /// The colour of the bar beside the statement Run executes: the accent in
 /// the terminal, the splitter grip's grey elsewhere.
 pub fn bar_color(look: &Look, palette: &Palette) -> Color32 {

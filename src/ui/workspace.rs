@@ -2060,11 +2060,29 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         key(Command::ToggleAgentsLogScope),
         key(Command::FilterAgentsLog),
     );
-    // Its Log view, while it shows, and whether every connection's.
+    let (agents_details_key, agents_open_key) = (
+        key(Command::ShowAgentsLogDetails),
+        key(Command::OpenAgentsLogCall),
+    );
+    // Its Log view, while it shows: whether every connection's, whether a
+    // call is selected, and whether that call's statement opens (it has
+    // one, on a connection still saved).
     let agents_log = app.workspace(tab).and_then(|workspace| {
         workspace.tabs.iter().find_map(|open| match open {
             crate::model::Tab::Agents(agents) if agents.view == crate::model::AgentsView::Log => {
-                Some(agents.log.all)
+                let log = &agents.log;
+                let call = log
+                    .selected
+                    .and_then(|id| log.calls.iter().find(|logged| logged.id == id));
+                let opens = call.is_some_and(|logged| {
+                    logged.entry.sql.is_some()
+                        && logged.entry.connection_id.as_ref().is_some_and(|id| {
+                            app.connections
+                                .get(&crate::connections::ConnectionId(id.clone()))
+                                .is_some()
+                        })
+                });
+                Some((log.all, call.is_some(), opens))
             }
             _ => None,
         })
@@ -2308,10 +2326,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 gettext(locale, "all connections"),
                 gettext(locale, "this connection"),
                 gettext(locale, "filter"),
+                gettext(locale, "details"),
+                gettext(locale, "open"),
             ];
             match agents_log {
                 // The Log view's keys in the place of the activity's.
-                Some(all) => {
+                Some((all, selected, opens)) => {
                     let scope = if all { &*log_words[4] } else { &*log_words[3] };
                     agents_hints = vec![
                         (&agents_log_key, &*log_words[1], true),
@@ -2319,6 +2339,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         (&agents_filter_key, &*log_words[5], true),
                         (&agents_move_key, &*log_words[2], true),
                     ];
+                    if selected {
+                        agents_hints.push((&agents_details_key, &*log_words[6], true));
+                    }
+                    if opens {
+                        agents_hints.push((&agents_open_key, &*log_words[7], true));
+                    }
                 }
                 None => agents_hints.push((&agents_log_key, &*log_words[0], true)),
             }
