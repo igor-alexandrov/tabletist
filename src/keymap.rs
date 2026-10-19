@@ -168,9 +168,9 @@ pub enum When {
     /// The Agents tab shows its Log view: its keys come before the
     /// activity's.
     AgentsLog,
-    /// The start screen's search is on: its field has the keyboard, or
-    /// something is typed in it. The keys that move among the matches,
-    /// open one and clear the search are read then.
+    /// The start screen's search is on: its field has the keyboard. The
+    /// keys that move among the matches, open one and clear the search are
+    /// read then, and only then.
     StartSearch,
 }
 
@@ -1148,11 +1148,11 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SwitchDatabase, START, NONE, keys(&[k("d")])),
         bind(C::EditConnection, START, NONE, keys(&[k("e")])),
         bind(C::ShowAgents, START, NONE, keys(&[k("a")])),
-        // The start screen's search. On macOS the field has the keyboard
-        // as soon as the screen appears, so it has no key of its own;
-        // Omarchy's `/` gives it the keys. The keys that move among the
-        // matches, open one and clear the search hold while the search is
-        // on, in a field as out of one.
+        // The start screen's search. On macOS the field takes the keyboard
+        // when a character is typed on the screen, so it has no key of its
+        // own; Omarchy's `/` gives it the keys. The keys that move among
+        // the matches, open one and clear the search hold while its field
+        // has the keyboard.
         bind(C::StartSearchFocus, START, NONE, keys(&[k("/")])),
         bind(
             C::StartSearchMove,

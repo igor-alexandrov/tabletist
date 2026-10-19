@@ -985,6 +985,24 @@ fn search_field(
     // The accessible name is the placeholder, so a screen reader names
     // the field whether it is empty or holds a query.
     response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, &hint));
+    // Esc is the search's: it clears the search (`keys.rs`), where egui
+    // would take the field's keyboard away first and leave the key unread.
+    // The field set its own filter while it drew (the arrows); egui
+    // replaces the whole filter, so those are named again. Tab still steps
+    // on. It holds from the frame after the field first had the keyboard.
+    if response.has_focus() {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    tab: false,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
+    }
     if focus {
         response.request_focus();
     }
@@ -1299,15 +1317,12 @@ fn status_bar(ui: &mut egui::Ui, skin: Skin<'_>, searching: bool) {
 pub fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (look, palette, locale) = (app.look, app.palette, app.locale);
     let keys = keys(app);
-    // The search is on while its field has the keyboard or something is
-    // typed, as `keys.rs` reads it: the line then names the keys that move
-    // among the matches, open one and go back, in step with those live keys.
+    // The search is on while its field has the keyboard, as `keys.rs` reads
+    // it: the line then names the keys that move among the matches, open
+    // one and go back, in step with those live keys.
     let searching = ui
         .ctx()
-        .memory(|memory| memory.has_focus(search_field_id(tab)))
-        || app
-            .workspace(tab)
-            .is_some_and(|workspace| !workspace.start_search.trim().is_empty());
+        .memory(|memory| memory.has_focus(search_field_id(tab)));
     // Otherwise the line names the ways to start, `/` for the search among
     // them.
     let words = [

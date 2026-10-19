@@ -1455,15 +1455,12 @@ impl App {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.start_search.clear();
                     workspace.start_selected = 0;
+                    // The Omarchy field gives the keys back to the screen,
+                    // so the screen's own keys answer again. The macOS
+                    // field keeps them (it holds Esc), to type afresh.
                     if terminal {
-                        // The Omarchy field gives the keys back to the
-                        // screen, so the screen's own keys answer again.
                         workspace.focus_start_search = false;
                         workspace.blur_start_search = true;
-                    } else {
-                        // egui drops a field's keyboard on Esc; ask for it
-                        // again so the macOS field keeps it, to type afresh.
-                        workspace.focus_start_search = true;
                     }
                 }
             }
@@ -22845,11 +22842,12 @@ masked = ["orders.email"]
     fn start_search_clear_keeps_the_macos_field_and_blurs_the_omarchy_one() {
         let (mut harness, tab) = start_search_window();
         harness.app.workspace_mut(tab).unwrap().start_search = "cov".into();
-        // macOS (the harness's default look): esc would drop a field's
-        // keyboard in egui, so the clear asks for it again.
+        // macOS (the harness's default look): the field holds Esc and keeps
+        // the keyboard by itself, so the clear neither asks for it nor
+        // takes it away.
         harness.app.apply(Action::StartSearchClear(tab));
         let workspace = harness.app.workspace(tab).unwrap();
-        assert!(workspace.focus_start_search);
+        assert!(!workspace.focus_start_search);
         assert!(!workspace.blur_start_search);
         // Omarchy: esc gives the keys back to the screen.
         harness.set_look(crate::theme::Look::omarchy());

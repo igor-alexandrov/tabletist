@@ -523,9 +523,10 @@ fn the_terminal_start_keys_work_only_with_the_start_screen_focused() {
     assert!(harness.has("reviews tab"));
 }
 
-/// Test 5: on macOS the search field has the keyboard when the screen
-/// appears, so a letter typed anywhere lands in it, the matches taking the
-/// recents' place; a chord held with Cmd still runs its shortcut.
+/// Test 5: on macOS the search field takes the keyboard when a character
+/// is typed on the screen, so a letter typed anywhere lands in it, the
+/// matches taking the recents' place; a chord held with Cmd still runs its
+/// shortcut.
 #[test]
 fn a_letter_typed_on_macos_lands_in_the_search_and_cmd_shortcuts_run() {
     let (mut harness, tab) = bookshop(Look::macos());
@@ -595,10 +596,53 @@ fn the_search_groups_the_index_opens_the_first_and_in_an_editor_and_clears() {
     harness.press(Key::Escape, Modifiers::NONE);
     assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
     assert!(harness.has("Recent on this connection"));
-    // The field keeps the keyboard, to search again (egui drops it on esc,
-    // so the clear asks for it back). Typing lands in the search at once.
+    // The field keeps the keyboard, to search again: it holds Esc, where
+    // egui would have taken the keyboard away.
+    assert_eq!(
+        harness.ctx.memory(|memory| memory.focused()),
+        Some(super::start::search_field_id(tab))
+    );
     type_key(&mut harness, Key::A, "a");
     assert_eq!(harness.app.workspace(tab).unwrap().start_search, "a");
+}
+
+/// The search's keys are its field's: with a query left in the field and
+/// the keyboard moved to the tree, the arrows and Enter are the tree's
+/// alone, and one Enter opens one tab.
+#[test]
+fn the_search_keys_answer_only_while_its_field_has_the_keyboard() {
+    let (mut harness, tab) = bookshop(Look::macos());
+    for (key, text) in [(Key::C, "c"), (Key::O, "o"), (Key::V, "v")] {
+        type_key(&mut harness, key, text);
+    }
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "cov");
+    // The keyboard goes to the tree; the query stays in the field.
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: crate::model::TreeNode::Object(ObjectRef::new("main", "authors"), ObjectKind::Table),
+    });
+    for _ in 0..8 {
+        if focused_name(&harness.settle()) == "Objects" {
+            break;
+        }
+        harness.press(Key::F6, Modifiers::NONE);
+    }
+    assert_eq!(focused_name(&harness.settle()), "Objects");
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "cov");
+    // Down moves the tree's cursor, not the search's pick.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(harness.app.workspace(tab).unwrap().start_selected, 0);
+    // One Enter opens the tree's row, and nothing of the search.
+    harness.press(Key::Enter, Modifiers::NONE);
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert_eq!(workspace.tabs.len(), 1, "one Enter, one tab");
+    assert_ne!(
+        workspace
+            .active_object_tab()
+            .map(|object| object.object.name.as_str()),
+        Some("covers"),
+        "the search's pick stayed shut"
+    );
 }
 
 /// The Omarchy `/` search: `/` focuses the field while the screen has the

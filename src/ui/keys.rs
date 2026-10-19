@@ -547,18 +547,17 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .is_some_and(crate::model::Workspace::on_start);
     // The window shows the start screen (whatever pane the keyboard is in:
     // the macOS field keeps the keyboard while the sidebar's pane stays
-    // the tree). Its search is on while the field has the keyboard or
-    // something is typed; the keys that move among the matches, open one
-    // and clear the search are read then.
+    // the tree). Its search is on while its field has the keyboard, and
+    // only then: the keys that move among the matches, open one and clear
+    // the search are the field's. A query left in the field while the
+    // keyboard is in the tree, or in the sidebar's filter, answers none of
+    // them, so one Enter there opens one thing.
     let on_start_screen = !on_picker
         && app
             .workspace(active)
             .is_some_and(crate::model::Workspace::on_start);
     let searching = on_start_screen
-        && (ctx.memory(|memory| memory.has_focus(crate::ui::start::search_field_id(active)))
-            || app
-                .workspace(active)
-                .is_some_and(|workspace| !workspace.start_search.trim().is_empty()));
+        && ctx.memory(|memory| memory.has_focus(crate::ui::start::search_field_id(active)));
     // On macOS the screen's search field takes what is typed, wherever the
     // keyboard is: a character typed with no text field holding the
     // keyboard asks for the search field, and is left in the frame for it
