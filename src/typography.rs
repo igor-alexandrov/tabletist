@@ -18,8 +18,20 @@
 
 pub mod desktop_font;
 mod fonts;
+pub mod installed_font;
 
 pub use fonts::{TerminalFaces, configure};
+
+/// The font the settings name, read from the system: on macOS the data's,
+/// an installed one through CoreText; elsewhere the terminal look's,
+/// through fontconfig.
+pub fn read_font(asked: Option<&str>) -> desktop_font::Read {
+    if cfg!(target_os = "macos") {
+        installed_font::read(asked)
+    } else {
+        desktop_font::read(asked)
+    }
+}
 
 use std::sync::Arc;
 
@@ -417,10 +429,12 @@ impl TextRole {
     }
 
     /// The height of the role's capitals in points, in faces whose line box
-    /// does not centre on them (Plex, and not JetBrains Mono).
+    /// does not centre on them (Plex, and not JetBrains Mono, nor an
+    /// installed face, whose are not known).
     fn capitals(self, faces: Faces) -> Option<f32> {
-        if self.data_face(faces) == Some(DataFace::JetBrainsMono) {
-            return None;
+        match self.data_face(faces) {
+            Some(DataFace::JetBrainsMono | DataFace::Installed) => return None,
+            Some(DataFace::PlexMono) | None => {}
         }
         fonts::capitals(faces.typeface).map(|ems| ems * self.size(faces))
     }
@@ -466,11 +480,13 @@ pub fn family_name(typeface: Typeface, kind: Kind, weight: u16) -> String {
 }
 
 /// The name of the family holding the data face `face` at `weight`: each
-/// is bundled at 400 and 500, as Plex Mono is.
+/// is at 400 and 500, as Plex Mono is. An installed face's hold the one
+/// the settings name, read.
 pub fn data_family_name(face: DataFace, weight: u16) -> String {
     match face {
         DataFace::PlexMono => family_name(Typeface::Plex, Kind::Mono, weight),
         DataFace::JetBrainsMono => format!("jetbrains-mono-{weight}"),
+        DataFace::Installed => format!("installed-mono-{weight}"),
     }
 }
 

@@ -905,16 +905,18 @@ fn font_menu(
 ) {
     let Skin { look, palette, .. } = *skin;
     let drawn = DataFace::of(settings.font.as_deref()).unwrap_or_default();
-    let dropdown = menu::Dropdown::new("data-font", drawn.name(), width);
+    let shown = drawn.name().unwrap_or_default();
+    let dropdown = menu::Dropdown::new("data-font", shown, width);
     let menu = dropdown.show(ui, look, palette, |ui| {
-        for face in DataFace::ALL {
-            let entry_name = format!("{name} {}", face.name());
-            let entry = menu::Item::choice(face.name(), face == drawn)
+        for face in DataFace::BUNDLED {
+            let text = face.name().unwrap_or_default();
+            let entry_name = format!("{name} {text}");
+            let entry = menu::Item::choice(text, face == drawn)
                 .name(&entry_name)
                 .show(ui, look, palette);
             if entry.clicked() {
                 // The default is no value: the file leaves it out.
-                let font = (face != DataFace::default()).then(|| face.name().to_owned());
+                let font = (face != DataFace::default()).then(|| text.to_owned());
                 actions.push(Action::SetOption(OptionValue::Font(font)));
                 ui.close();
             }
@@ -922,7 +924,7 @@ fn font_menu(
     });
     menu.response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
-        info.current_text_value = Some(drawn.name().to_owned());
+        info.current_text_value = Some(shown.to_owned());
         info
     });
 }

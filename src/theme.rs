@@ -339,38 +339,47 @@ pub enum Typeface {
     Terminal,
 }
 
-/// The monospace face macOS draws data in: one of the two it bundles.
+/// The monospace face macOS draws data in: one of the two it bundles, or
+/// the installed font the settings name, once it is read
+/// ([`crate::typography::installed_font`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum DataFace {
     #[default]
     PlexMono,
     JetBrainsMono,
+    Installed,
 }
 
 impl DataFace {
-    /// In the order the menu lists them.
-    pub const ALL: [DataFace; 2] = [Self::PlexMono, Self::JetBrainsMono];
+    /// The bundled faces, in the order the menu lists them, first.
+    pub const BUNDLED: [DataFace; 2] = [Self::PlexMono, Self::JetBrainsMono];
 
-    /// The face's name, as the menu and the file write it.
-    pub fn name(self) -> &'static str {
+    /// A bundled face's name, as the menu and the file write it. An
+    /// installed one has the name the settings give it.
+    pub fn name(self) -> Option<&'static str> {
         match self {
-            Self::PlexMono => "IBM Plex Mono",
-            Self::JetBrainsMono => "JetBrains Mono",
+            Self::PlexMono => Some("IBM Plex Mono"),
+            Self::JetBrainsMono => Some("JetBrains Mono"),
+            Self::Installed => None,
         }
     }
 
-    /// The face `font` names, whatever its case: the default for none, and
-    /// for `monospace`, which names the desktop's own (the terminal
-    /// look's default). A name of no bundled face is given back: it falls
-    /// back to the default, which says so.
+    /// The bundled face `font` names, whatever its case: the default for
+    /// none, and for `monospace`, which names the desktop's own (the
+    /// terminal look's default). A name of no bundled face is given back:
+    /// an installed font, drawn once it is read, else the default, which
+    /// says so.
     pub fn of(font: Option<&str>) -> Result<Self, &str> {
         let font = font.map(str::trim);
         let Some(font) = font.filter(|font| !font.eq_ignore_ascii_case("monospace")) else {
             return Ok(Self::default());
         };
-        Self::ALL
+        Self::BUNDLED
             .into_iter()
-            .find(|face| face.name().eq_ignore_ascii_case(font))
+            .find(|face| {
+                face.name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(font))
+            })
             .ok_or(font)
     }
 }
@@ -402,15 +411,21 @@ impl Faces {
     }
 
     /// The faces at the sizes `settings` give, and the data in the face
-    /// they name. The terminal look's stay as they are.
-    pub fn with_text(self, settings: &Settings) -> Self {
+    /// they name: an installed one where `installed` (it is read), else
+    /// the default. The terminal look's stay as they are.
+    pub fn with_text(self, settings: &Settings, installed: bool) -> Self {
         if self.typeface == Typeface::Terminal {
             return Self::of(self.typeface);
         }
+        let data = match DataFace::of(settings.font.as_deref()) {
+            Ok(face) => face,
+            Err(_) if installed => DataFace::Installed,
+            Err(_) => DataFace::default(),
+        };
         Self {
             typeface: self.typeface,
             interface: settings.interface_size,
-            data: DataFace::of(settings.font.as_deref()).unwrap_or_default(),
+            data,
             data_size: settings.font_size_in(false),
         }
     }
@@ -562,10 +577,11 @@ impl Look {
     }
 
     /// The look with its text as `settings` have it: the interface's size,
-    /// and the data's face and size.
-    pub fn with_text(self, settings: &Settings) -> Self {
+    /// and the data's face and size, the installed face where `installed`
+    /// ([`Faces::with_text`]).
+    pub fn with_text(self, settings: &Settings, installed: bool) -> Self {
         Self {
-            faces: self.faces.with_text(settings),
+            faces: self.faces.with_text(settings, installed),
             ..self
         }
     }
@@ -990,7 +1006,7 @@ mod tests {
         use crate::typography::TextRole;
         for look in [Look::macos(), Look::standard()] {
             let faces = look
-                .with_text(&text(InterfaceSize::Large, None, 16.0))
+                .with_text(&text(InterfaceSize::Large, None, 16.0), false)
                 .faces;
             // The interface's roles keep to the body's 14 as the design's
             // to 13, the data's to 16 as the design's to 12.5.
@@ -1009,7 +1025,7 @@ mod tests {
         for faces in [
             Look::macos().faces,
             Look::omarchy()
-                .with_text(&text(InterfaceSize::Large, Some("Fira Code"), 20.0))
+                .with_text(&text(InterfaceSize::Large, Some("Fira Code"), 20.0), true)
                 .faces,
         ] {
             for role in TextRole::ALL {
@@ -1035,11 +1051,27 @@ mod tests {
             Ok(DataFace::JetBrainsMono)
         );
         assert_eq!(DataFace::of(Some("Fira Code")), Err("Fira Code"));
-        let look = Look::macos().with_text(&text(InterfaceSize::Default, Some("Fira Code"), 12.5));
-        assert_eq!(look.faces.data, DataFace::PlexMono);
-        let look =
-            Look::macos().with_text(&text(InterfaceSize::Default, Some("JetBrains Mono"), 12.5));
-        assert_eq!(look.faces.data, DataFace::JetBrainsMono);
+        // An installed font is drawn once it is read, the default before.
+        let fira = text(InterfaceSize::Default, Some("Fira Code"), 12.5);
+        assert_eq!(
+            Look::macos().with_text(&fira, false).faces.data,
+            DataFace::PlexMono
+        );
+        assert_eq!(
+            Look::macos().with_text(&fira, true).faces.data,
+            DataFace::Installed
+        );
+        // A bundled face's name is the bundled face, read or not.
+        let jetbrains = text(InterfaceSize::Default, Some("JetBrains Mono"), 12.5);
+        for installed in [false, true] {
+            let look = Look::macos().with_text(&jetbrains, installed);
+            assert_eq!(look.faces.data, DataFace::JetBrainsMono);
+        }
+        let plex = text(InterfaceSize::Default, None, 12.5);
+        assert_eq!(
+            Look::macos().with_text(&plex, true).faces.data,
+            DataFace::PlexMono
+        );
     }
 
     fn nord() -> CustomTheme {

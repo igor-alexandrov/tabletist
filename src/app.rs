@@ -270,7 +270,7 @@ impl App {
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
-        let look = crate::theme::Look::for_platform().with_text(&settings);
+        let look = crate::theme::Look::for_platform().with_text(&settings, false);
         let mut app = Self {
             dirs,
             settings,
@@ -4201,7 +4201,7 @@ impl App {
         }
         // The text's sizes and the data's face: every role drawn from here
         // on has them, and egui's own styles are set again in `logic`.
-        let look = self.look.with_text(&self.settings);
+        let look = self.look.with_text(&self.settings, false);
         if look != self.look {
             self.look = look;
             self.restyle = true;

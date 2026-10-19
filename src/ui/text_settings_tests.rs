@@ -92,7 +92,7 @@ fn a_grid_row_holds_a_line_of_its_data_at_every_size() {
                     row_height: density,
                     ..Default::default()
                 };
-                let look = look.with_text(&settings).with_grid(&settings);
+                let look = look.with_text(&settings, false).with_grid(&settings);
                 let line = crate::ui::grid::data_role(&look).row_height(&harness.ctx, look.faces);
                 assert!(line <= look.row(), "{} {halves} {density:?}", look.name);
             }
