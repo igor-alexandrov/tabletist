@@ -60,8 +60,19 @@ which lines were written.
 
 **Results** shows the rows of the statement you ran. Select a row and
 press Cmd/Ctrl+Shift+R (Enter in the Omarchy look) to read every field of
-it in the row panel. When the limit cut a
-result short, the result says so.
+it in the row panel. When the limit cut a result short, it says "Limited
+to 1,000 rows", and **Show all** runs that statement again, alone, with no
+limit (it keeps the timeout). It is offered for a run that only read,
+while the editor holds the text that ran and the tab is on the database
+it ran on.
+
+When the timeout stopped a run, Messages says "Cancelled after 30 s" on
+the statement it stopped, and **Run without timeout** runs the whole run
+again with none (it keeps the row limit). It is offered when nothing of
+the run was written and its transaction was rolled back: a read, or a
+read-write run rolled back whole. A timeout of whole minutes reads
+"1 min", and one set in the file by hand, such as `"90s"`, reads
+"1 min 30 s".
 
 **Messages** has a line for every statement: how many rows it returned or
 changed and how long it took, or the database's error with the
