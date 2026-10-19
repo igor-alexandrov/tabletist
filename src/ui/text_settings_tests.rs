@@ -358,3 +358,98 @@ fn the_screen_says_the_font_fontconfig_drew_and_one_it_has_not() {
     assert_eq!(harness.app.settings.font, None);
     assert!(!file(&harness).contains("font ="));
 }
+
+/// What CoreText would give for `name`: Hack's faces (egui's own), or
+/// none where it is not installed.
+fn installed_read(name: &str, found: bool) -> Read {
+    let hack = egui::FontDefinitions::default().font_data["Hack"].clone();
+    Read {
+        asked: Some(name.into()),
+        faces: found.then(|| [hack.clone(), hack.clone(), hack]),
+        family: found.then(|| name.into()),
+        missing: !found,
+    }
+}
+
+/// The backend's answer to the font read numbered `asked`, then the
+/// logic's pass that draws it.
+fn answer(harness: &mut Harness, asked: u64, read: Read) {
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Font {
+            asked,
+            read: Box::new(read),
+        }));
+    logic(harness);
+}
+
+#[test]
+fn an_installed_font_is_drawn_once_read_and_the_default_where_it_is_not() {
+    let mut harness = sheet(Look::macos());
+    // Where the desktop's fonts are read, as the app does outside tests.
+    harness.app.follow_desktop = true;
+    harness.app.change_settings(|settings| {
+        settings.font = Some("Fira Code".into());
+    });
+    // On its way: the default until it ends.
+    assert_eq!(harness.app.look.faces.data, DataFace::PlexMono);
+    answer(&mut harness, 1, installed_read("Fira Code", true));
+    assert_eq!(harness.app.look.faces.data, DataFace::Installed);
+    // Its faces lead the installed families.
+    let fonts = &harness.app.fonts;
+    for weight in [400, 500] {
+        let family = egui::FontFamily::Name(format!("installed-mono-{weight}").into());
+        assert_eq!(
+            fonts.families[&family][0],
+            format!("installed-mono-{weight}")
+        );
+    }
+    // Another on its way: the one drawn stays until it ends.
+    harness.app.change_settings(|settings| {
+        settings.font = Some("Gone Mono".into());
+    });
+    assert_eq!(harness.app.look.faces.data, DataFace::Installed);
+    // Not installed: the default.
+    answer(&mut harness, 2, installed_read("Gone Mono", false));
+    assert_eq!(harness.app.look.faces.data, DataFace::PlexMono);
+    let fonts = &harness.app.fonts;
+    let family = egui::FontFamily::Name("installed-mono-400".into());
+    assert_eq!(fonts.families[&family][0], "plex-mono-400");
+}
+
+#[test]
+fn a_read_for_a_name_since_changed_does_not_replace_the_face_drawn() {
+    let mut harness = sheet(Look::macos());
+    harness.app.follow_desktop = true;
+    let font = |harness: &mut Harness, name: &str| {
+        harness.app.change_settings(|settings| {
+            settings.font = Some(name.into());
+        });
+    };
+    let leads = |harness: &Harness| {
+        let family = egui::FontFamily::Name("installed-mono-400".into());
+        harness.app.fonts.families[&family][0].clone()
+    };
+    font(&mut harness, "Menlo");
+    answer(&mut harness, 1, installed_read("Menlo", true));
+    // Iosevka, then Menlo again: Iosevka's read ends first, and finds
+    // nothing. Menlo's faces stay drawn until its own read ends.
+    font(&mut harness, "Iosevka");
+    font(&mut harness, "Menlo");
+    answer(&mut harness, 2, installed_read("Iosevka", false));
+    assert_eq!(harness.app.look.faces.data, DataFace::Installed);
+    assert_eq!(leads(&harness), "installed-mono-400");
+    answer(&mut harness, 3, installed_read("Menlo", true));
+    assert_eq!(harness.app.look.faces.data, DataFace::Installed);
+    // The newest read is taken whatever it read.
+    font(&mut harness, "Gone Mono");
+    answer(&mut harness, 4, installed_read("Gone Mono", false));
+    assert_eq!(harness.app.look.faces.data, DataFace::PlexMono);
+    assert_eq!(leads(&harness), "plex-mono-400");
+    // From a bundled face too: it stays until the read ends.
+    font(&mut harness, "JetBrains Mono");
+    font(&mut harness, "Fira Code");
+    assert_eq!(harness.app.look.faces.data, DataFace::JetBrainsMono);
+    answer(&mut harness, 5, installed_read("Fira Code", true));
+    assert_eq!(harness.app.look.faces.data, DataFace::Installed);
+}

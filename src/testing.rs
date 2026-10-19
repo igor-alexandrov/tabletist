@@ -1586,9 +1586,10 @@ impl Harness {
 
     /// Draws with `look` from the next frame on.
     pub fn set_look(&mut self, look: crate::theme::Look) {
-        let look = look.with_text(&self.app.settings, false);
+        let look = look.with_text(&self.app.settings, self.app.installed_drawn());
         self.app.look = look;
-        self.app.fonts = crate::theme::install_with(&self.ctx, false, &look, None);
+        let read = self.app.desktop_font.faces.as_ref();
+        self.app.fonts = crate::theme::install_with(&self.ctx, false, &look, read);
         crate::theme::apply(&self.ctx, &self.app.palette, &look);
     }
 }

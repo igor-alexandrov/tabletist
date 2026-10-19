@@ -301,10 +301,11 @@ pub(crate) fn marks_id(look: &Look) -> Id {
     Id::new(("cell-marks", look.faces))
 }
 
-/// Forgets the marks found for `look`'s faces: the terminal look's face
-/// changed under them (a new font read through fontconfig).
-pub fn forget_marks(ctx: &egui::Context, look: &Look) {
-    ctx.data_mut(|data| data.remove::<Marks>(marks_id(look)));
+/// Forgets the marks found for every look's faces: a face read from the
+/// system changed under them (the terminal look's through fontconfig, or
+/// macOS's installed data font), at every size they were found at.
+pub fn forget_marks(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove_by_type::<Marks>());
 }
 
 /// Paints `text` in `role` at `x` (its left edge, or its right with

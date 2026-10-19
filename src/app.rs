@@ -141,7 +141,7 @@ pub struct App {
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
     /// Whether the desktop's themes are followed (not in tests or the demo).
-    follow_desktop: bool,
+    pub(crate) follow_desktop: bool,
     /// The settings named another theme since the last `logic`.
     theme_changed: bool,
     /// The light or dark the window's own parts were last told to take:
@@ -160,8 +160,13 @@ pub struct App {
     /// once.
     pin_told: Option<String>,
     /// What fontconfig gave the terminal look for the font the settings
-    /// name: nothing in tests, the demo and the other looks.
+    /// name, or CoreText macOS's data: nothing in tests, the demo and
+    /// Windows.
     pub desktop_font: crate::typography::desktop_font::Read,
+    /// The installed monospace families macOS's data font menu lists after
+    /// the bundled faces: read each time Settings opens, none in tests and
+    /// the demo.
+    pub installed_fonts: Vec<String>,
     /// The number of the last font read asked for, and of the newest one
     /// taken, as for the theme's.
     font_asked: u64,
@@ -270,6 +275,7 @@ impl App {
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
+        // An installed data font is read once the window exists (`attach`).
         let look = crate::theme::Look::for_platform().with_text(&settings, false);
         let mut app = Self {
             dirs,
@@ -310,6 +316,7 @@ impl App {
             theme_taken: 0,
             pin_told: None,
             desktop_font: crate::typography::desktop_font::Read::default(),
+            installed_fonts: Vec::new(),
             font_asked: 0,
             font_taken: 0,
             font_read: false,
@@ -2035,6 +2042,7 @@ impl App {
                 // for while it is open, it stays as it is.
                 if matches!(self.dialog, None | Some(Dialog::Help)) {
                     self.dialog = Some(Dialog::Settings(Box::default()));
+                    self.list_fonts();
                 }
             }
             Action::ShowAgentSettings => {
@@ -2045,6 +2053,8 @@ impl App {
                         pane: crate::model::SettingsPane::Agents,
                         ..Default::default()
                     })));
+                    // Appearance is a click away.
+                    self.list_fonts();
                 }
             }
             Action::ShowSettingsPane(pane) => {
@@ -3472,13 +3482,18 @@ impl App {
             Event::SettingsWatch { live } => self.settings_file.live = live,
             Event::Font { asked, read } => {
                 // An older read that ends later read a font since renamed.
-                if asked < self.font_taken {
+                // So did one that ends before a newer read, for a name the
+                // settings no longer hold: the faces drawn stay until the
+                // newer one ends.
+                let renamed = read.asked != self.settings.font;
+                if asked < self.font_taken || (asked < self.font_asked && renamed) {
                     return;
                 }
                 self.font_taken = asked;
                 self.desktop_font = *read;
                 self.font_read = true;
             }
+            Event::Fonts(families) => self.installed_fonts = families,
             Event::Theme { asked, read } => {
                 // Reads end in any order: one older than the newest taken
                 // saw a theme of Omarchy's that is gone, and one that read
@@ -4199,15 +4214,17 @@ impl App {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
         }
+        // Asked for first: an installed face drawn stays while the read of
+        // another is on its way.
+        if old.font != self.settings.font {
+            self.read_desktop_font();
+        }
         // The text's sizes and the data's face: every role drawn from here
         // on has them, and egui's own styles are set again in `logic`.
-        let look = self.look.with_text(&self.settings, false);
+        let look = self.text_look();
         if look != self.look {
             self.look = look;
             self.restyle = true;
-        }
-        if old.font != self.settings.font {
-            self.read_desktop_font();
         }
         // An edit of the file that turns the server on is held.
         self.check_agents();
@@ -5863,9 +5880,10 @@ impl App {
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
         // Read here, before the first frame, as the desktop's monospace
         // always was: a font that arrived later would move every line.
-        if follow_desktop && self.look.terminal {
-            self.desktop_font =
-                crate::typography::desktop_font::read(self.settings.font.as_deref());
+        if self.reads_font() {
+            self.desktop_font = crate::typography::read_font(self.settings.font.as_deref());
+            // macOS: the data in the installed font read.
+            self.look = self.text_look();
         }
         let desktop = self.desktop_font.faces.as_ref();
         self.fonts = theme::install_with(ctx, follow_desktop, &self.look, desktop);
@@ -5915,10 +5933,48 @@ impl App {
         });
     }
 
-    /// Asks the backend for the terminal look's font as the settings name
-    /// it, where the desktop's fonts are read (not in tests or the demo).
+    /// Whether the font the settings name is read from the system: the
+    /// terminal look's, and on macOS an installed one for the data (no
+    /// bundled face's name), where the desktop's fonts are read (not in
+    /// tests or the demo).
+    fn reads_font(&self) -> bool {
+        let installed = self.look.faces.typeface == crate::theme::Typeface::Plex
+            && crate::theme::DataFace::of(self.settings.font.as_deref()).is_err();
+        self.follow_desktop && (self.look.terminal || installed)
+    }
+
+    /// Whether macOS draws its data in an installed font: the one the
+    /// settings name, read.
+    pub(crate) fn installed_drawn(&self) -> bool {
+        self.desktop_font.has(self.settings.font.as_deref())
+    }
+
+    /// The look with its text as the settings have it ([`Look::with_text`]).
+    /// While the read of an installed font is on its way, the data's face
+    /// drawn stays (a bundled one, or the installed one read before) until
+    /// it ends.
+    fn text_look(&self) -> crate::theme::Look {
+        let mut look = self.look.with_text(&self.settings, self.installed_drawn());
+        let reading = self.font_asked > self.font_taken;
+        if reading && crate::theme::DataFace::of(self.settings.font.as_deref()).is_err() {
+            look.faces.data = self.look.faces.data;
+        }
+        look
+    }
+
+    /// Asks the backend for the installed monospace families the data
+    /// font's menu lists, where macOS draws data in a face of its own and
+    /// the desktop's fonts are read (not in tests or the demo).
+    fn list_fonts(&mut self) {
+        if self.follow_desktop && self.look.faces.typeface == crate::theme::Typeface::Plex {
+            self.backend.send(Command::ListFonts);
+        }
+    }
+
+    /// Asks the backend for the font the settings name, where it is read
+    /// from the system ([`Self::reads_font`]).
     fn read_desktop_font(&mut self) {
-        if !self.look.terminal || !self.follow_desktop {
+        if !self.reads_font() {
             return;
         }
         self.font_asked += 1;
@@ -6039,8 +6095,15 @@ impl App {
         self.tell_missing_pin(ctx);
         if std::mem::take(&mut self.font_read) {
             let desktop = self.desktop_font.faces.as_ref();
-            theme::set_terminal_faces(ctx, &mut self.fonts, &self.look, desktop);
-            crate::ui::grid::forget_marks(ctx, &self.look);
+            theme::set_read_faces(ctx, &mut self.fonts, &self.look, desktop);
+            crate::ui::grid::forget_marks(ctx);
+            // macOS: the data in the installed font read, or in the default
+            // where it is missing.
+            let look = self.text_look();
+            if look != self.look {
+                self.look = look;
+                self.restyle = true;
+            }
         }
         if std::mem::take(&mut self.restyle) {
             theme::apply(ctx, &self.palette, &self.look);
@@ -7121,15 +7184,66 @@ mod tests {
             .app
             .change_settings(|settings| settings.page_size = 500);
         assert_eq!(fonts_asked(&mut harness), vec![]);
-        // Not in tests and the demo, nor in the other looks, whose fonts
-        // are bundled.
+        // Not in tests and the demo.
         harness.app.follow_desktop = false;
         font(&mut harness, Some("Iosevka"));
         assert_eq!(fonts_asked(&mut harness), vec![]);
+        // macOS: an installed font for its data, not a bundled face.
         harness.app.follow_desktop = true;
         harness.app.look = crate::theme::Look::macos();
         font(&mut harness, Some("JetBrains Mono"));
+        font(&mut harness, None);
         assert_eq!(fonts_asked(&mut harness), vec![]);
+        font(&mut harness, Some("Menlo"));
+        assert_eq!(fonts_asked(&mut harness), vec![(Some("Menlo".into()), 3)]);
+        // Windows draws its data in Inter, which has no face to read.
+        harness.app.look = crate::theme::Look::standard();
+        font(&mut harness, Some("Consolas"));
+        assert_eq!(fonts_asked(&mut harness), vec![]);
+    }
+
+    #[test]
+    fn the_installed_fonts_are_listed_each_time_settings_opens_on_a_mac() {
+        let listed = |harness: &mut Harness| {
+            std::mem::take(&mut harness.app.backend.sent)
+                .into_iter()
+                .filter(|command| matches!(command, Command::ListFonts))
+                .count()
+        };
+        let mut harness = Harness::new();
+        harness.app.look = crate::theme::Look::macos();
+        harness.app.follow_desktop = true;
+        harness.app.apply(Action::ShowSettings);
+        assert_eq!(listed(&mut harness), 1);
+        // Asked for while it is open, it stays as it is.
+        harness.app.apply(Action::ShowSettings);
+        assert_eq!(listed(&mut harness), 0);
+        harness.app.dialog = None;
+        harness.app.apply(Action::ShowSettings);
+        assert_eq!(listed(&mut harness), 1);
+        // Opened from the Agents tab, where agents can reach the app.
+        harness.app.dialog = None;
+        harness.app.apply(Action::ShowAgentSettings);
+        let agents = usize::from(crate::endpoint::AVAILABLE);
+        assert_eq!(listed(&mut harness), agents);
+        // The answer is the menu's list.
+        harness
+            .app
+            .apply(Action::Backend(Event::Fonts(vec!["Menlo".into()])));
+        assert_eq!(harness.app.installed_fonts, ["Menlo"]);
+        // Not in tests and the demo, nor in the looks that draw no data
+        // in a face of their own.
+        for (look, follow) in [
+            (crate::theme::Look::macos(), false),
+            (crate::theme::Look::omarchy(), true),
+            (crate::theme::Look::standard(), true),
+        ] {
+            harness.app.dialog = None;
+            harness.app.look = look;
+            harness.app.follow_desktop = follow;
+            harness.app.apply(Action::ShowSettings);
+            assert_eq!(listed(&mut harness), 0, "{}", look.name);
+        }
     }
 
     #[test]

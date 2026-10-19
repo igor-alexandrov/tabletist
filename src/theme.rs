@@ -772,7 +772,7 @@ pub fn install(ctx: &egui::Context, system_fallbacks: bool, look: &Look) {
 
 /// [`install`], with `desktop`, the terminal look's font as fontconfig gave
 /// it (never in tests or screenshots): the bundled one is drawn without.
-/// Returns the fonts it set, for [`set_terminal_faces`].
+/// Returns the fonts it set, for [`set_read_faces`].
 pub fn install_with(
     ctx: &egui::Context,
     system_fallbacks: bool,
@@ -790,10 +790,11 @@ pub fn install_with(
     fonts
 }
 
-/// Draws the terminal look in `desktop`, the font fontconfig gave for the
-/// settings' name, or in the bundled one for none: `fonts`, the ones set,
-/// with the terminal's faces put in. Nothing is read from the disk here.
-pub fn set_terminal_faces(
+/// Draws `desktop`, the font read for the settings' name: the terminal
+/// look in the one fontconfig gave, or in the bundled one for none; macOS's
+/// data in an installed one, or in Plex Mono for none. `fonts`, the ones
+/// set, with the faces put in. Nothing is read from the disk here.
+pub fn set_read_faces(
     ctx: &egui::Context,
     fonts: &mut egui::FontDefinitions,
     look: &Look,
@@ -801,9 +802,12 @@ pub fn set_terminal_faces(
 ) {
     crate::typography::configure(fonts, look, desktop);
     // The others have the rendering's hinting already.
-    for weight in [400, 500, 700] {
-        let name = crate::typography::family_name(Typeface::Terminal, Kind::Mono, weight);
-        if let Some(data) = fonts.font_data.get_mut(&name) {
+    let terminal = [400, 500, 700]
+        .map(|weight| crate::typography::family_name(Typeface::Terminal, Kind::Mono, weight));
+    let installed =
+        [400, 500].map(|weight| crate::typography::data_family_name(DataFace::Installed, weight));
+    for name in terminal.iter().chain(&installed) {
+        if let Some(data) = fonts.font_data.get_mut(name) {
             text_rendering().tweak(&mut std::sync::Arc::make_mut(data).tweak);
         }
     }
