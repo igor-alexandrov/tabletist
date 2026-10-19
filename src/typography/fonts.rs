@@ -2,10 +2,12 @@
 //!
 //! - Standard: Inter (fastframe's set-up), with egui's monospace for data.
 //! - macOS: IBM Plex Sans (400, 500, 600) and IBM Plex Mono (400, 500),
-//!   bundled: `plex-sans-400` ... `plex-mono-500`.
-//! - Omarchy: the desktop's monospace font at 400, 500 and 700, or the
-//!   bundled JetBrains Mono when fontconfig finds none: `omarchy-mono-400`
-//!   ... `omarchy-mono-700`.
+//!   bundled: `plex-sans-400` ... `plex-mono-500`; and JetBrains Mono
+//!   (400, 500), the other face data can be drawn in: `jetbrains-mono-400`
+//!   and `jetbrains-mono-500`.
+//! - Omarchy: the desktop's monospace font at 400, 500 and 700 (fontconfig
+//!   reads it, [`super::desktop_font`]), or the bundled JetBrains Mono when
+//!   it found none: `omarchy-mono-400` ... `omarchy-mono-700`.
 //!
 //! egui's own Proportional and Monospace families (and fastframe's Inter
 //! weight families, which the edit connection dialog still names) lead with
@@ -18,7 +20,9 @@ use egui::epaint::text::VariationCoords;
 use egui::{FontData, FontDefinitions, FontFamily};
 
 use super::{Kind, family_name};
-use crate::theme::{Faces, Look};
+use crate::theme::{Look, Typeface};
+#[cfg(any(target_os = "macos", test))]
+use {super::data_family_name, crate::theme::DataFace};
 
 /// IBM Plex Sans, variable in weight and width (SIL OFL 1.1).
 #[cfg(any(target_os = "macos", test))]
@@ -36,8 +40,9 @@ pub(crate) const PLEX_MONO_MEDIUM: &[u8] =
 #[cfg(any(target_os = "macos", test))]
 pub(crate) const KEYS: &[u8] = include_bytes!("../../assets/fonts/NotoSansSymbols2-Keys.ttf");
 /// JetBrains Mono, variable in weight (SIL OFL 1.1): Omarchy's default, for
-/// desktops without a monospace font of their own.
-#[cfg(any(target_os = "linux", test))]
+/// desktops without a monospace font of their own, and the other data face
+/// of macOS.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) const JETBRAINS_MONO: &[u8] =
     include_bytes!("../../assets/fonts/JetBrainsMono-Variable.ttf");
 
@@ -72,12 +77,12 @@ const KEYS_METRICS: Metrics = Metrics {
 /// The height of Plex's capitals in ems, Sans and Mono alike.
 const PLEX_CAPITALS: f32 = 0.698;
 
-/// The height of `faces`' capitals in ems, where the line box does not
+/// The height of `typeface`'s capitals in ems, where the line box does not
 /// centre on them: Plex's centres a little above its capitals. Inter's and
 /// JetBrains Mono's centre on theirs, and a desktop font's are not known.
-pub fn capitals(faces: Faces) -> Option<f32> {
+pub fn capitals(typeface: Typeface) -> Option<f32> {
     // Off macOS the Plex look draws in Inter.
-    (faces == Faces::Plex && cfg!(any(target_os = "macos", test))).then_some(PLEX_CAPITALS)
+    (typeface == Typeface::Plex && cfg!(any(target_os = "macos", test))).then_some(PLEX_CAPITALS)
 }
 
 /// fastframe's families for Inter's named weights.
@@ -123,13 +128,17 @@ fn alias(fonts: &mut FontDefinitions, name: &str, from: &FontFamily) {
     fonts.families.insert(FontFamily::Name(name.into()), list);
 }
 
-/// Replaces the faces fastframe set up with the look's. `desktop` allows
-/// reading the desktop's own monospace font (never in tests or screenshots).
-pub fn configure(fonts: &mut FontDefinitions, look: &Look, desktop: bool) {
-    match look.faces {
-        Faces::Inter => inter(fonts),
-        Faces::Plex => plex(fonts),
-        Faces::Terminal => terminal(fonts, desktop),
+/// The terminal look's monospace at 400, 500 and 700.
+pub type TerminalFaces = [Arc<FontData>; 3];
+
+/// Replaces the faces fastframe set up with the look's. `desktop` is the
+/// desktop's own monospace that fontconfig gave the terminal look (never in
+/// tests or screenshots), which has the bundled one drawn without it.
+pub fn configure(fonts: &mut FontDefinitions, look: &Look, desktop: Option<&TerminalFaces>) {
+    match look.faces.typeface {
+        Typeface::Inter => inter(fonts),
+        Typeface::Plex => plex(fonts),
+        Typeface::Terminal => terminal(fonts, desktop),
     }
 }
 
@@ -141,11 +150,15 @@ fn inter(fonts: &mut FontDefinitions) {
         (600, FontFamily::Name(SEMIBOLD.into())),
         (700, FontFamily::Name(BOLD.into())),
     ] {
-        alias(fonts, &family_name(Faces::Inter, Kind::Sans, weight), &from);
+        alias(
+            fonts,
+            &family_name(Typeface::Inter, Kind::Sans, weight),
+            &from,
+        );
     }
     alias(
         fonts,
-        &family_name(Faces::Inter, Kind::Mono, 400),
+        &family_name(Typeface::Inter, Kind::Mono, 400),
         &FontFamily::Monospace,
     );
 }
@@ -153,20 +166,30 @@ fn inter(fonts: &mut FontDefinitions) {
 #[cfg(any(target_os = "macos", test))]
 fn plex(fonts: &mut FontDefinitions) {
     for weight in [400, 500, 600] {
-        let name = family_name(Faces::Plex, Kind::Sans, weight);
+        let name = family_name(Typeface::Plex, Kind::Sans, weight);
         fonts
             .font_data
             .insert(name.clone(), weighted(PLEX_SANS, f32::from(weight)));
         own(fonts, &name, &name, &FontFamily::Proportional);
     }
     for (weight, bytes) in [(400, PLEX_MONO), (500, PLEX_MONO_MEDIUM)] {
-        let name = family_name(Faces::Plex, Kind::Mono, weight);
+        let name = family_name(Typeface::Plex, Kind::Mono, weight);
         fonts
             .font_data
             .insert(name.clone(), Arc::new(FontData::from_static(bytes)));
         own(fonts, &name, &name, &FontFamily::Monospace);
     }
-    let sans = |weight| family_name(Faces::Plex, Kind::Sans, weight);
+    // The other face data can be drawn in, at the same weights, whichever
+    // the settings name: a change of it lays the text out again, and
+    // loads nothing.
+    for weight in [400, 500] {
+        let name = data_family_name(DataFace::JetBrainsMono, weight);
+        fonts
+            .font_data
+            .insert(name.clone(), weighted(JETBRAINS_MONO, f32::from(weight)));
+        own(fonts, &name, &name, &FontFamily::Monospace);
+    }
+    let sans = |weight| family_name(Typeface::Plex, Kind::Sans, weight);
     lead(fonts, FontFamily::Proportional, &sans(400));
     lead(fonts, FontFamily::Name(MEDIUM.into()), &sans(500));
     lead(fonts, FontFamily::Name(SEMIBOLD.into()), &sans(600));
@@ -175,7 +198,7 @@ fn plex(fonts: &mut FontDefinitions) {
     lead(
         fonts,
         FontFamily::Monospace,
-        &family_name(Faces::Plex, Kind::Mono, 400),
+        &family_name(Typeface::Plex, Kind::Mono, 400),
     );
     // The keyboard symbols right behind each face, ahead of the fallbacks.
     // epaint centres a fallback face's line box on the leading face's
@@ -197,19 +220,8 @@ fn plex(fonts: &mut FontDefinitions) {
     inter(fonts);
 }
 
-/// The desktop's monospace at 400, 500 and 700, when fontconfig has it.
-fn desktop_faces() -> Option<[Arc<FontData>; 3]> {
-    let regular = super::desktop_font::monospace("monospace")?;
-    let medium = super::desktop_font::monospace("monospace:medium");
-    let bold = super::desktop_font::monospace("monospace:bold");
-    let regular = Arc::new(regular);
-    let medium = medium.map_or_else(|| regular.clone(), Arc::new);
-    let bold = bold.map_or_else(|| medium.clone(), Arc::new);
-    Some([regular, medium, bold])
-}
-
 #[cfg(any(target_os = "linux", test))]
-fn bundled_terminal_faces() -> Option<[Arc<FontData>; 3]> {
+fn bundled_terminal_faces() -> Option<TerminalFaces> {
     Some([
         weighted(JETBRAINS_MONO, 400.0),
         weighted(JETBRAINS_MONO, 500.0),
@@ -218,16 +230,13 @@ fn bundled_terminal_faces() -> Option<[Arc<FontData>; 3]> {
 }
 
 #[cfg(not(any(target_os = "linux", test)))]
-fn bundled_terminal_faces() -> Option<[Arc<FontData>; 3]> {
+fn bundled_terminal_faces() -> Option<TerminalFaces> {
     None
 }
 
 /// Omarchy: one monospace face for the interface and the data alike.
-fn terminal(fonts: &mut FontDefinitions, desktop: bool) {
-    let faces = desktop
-        .then(desktop_faces)
-        .flatten()
-        .or_else(bundled_terminal_faces);
+fn terminal(fonts: &mut FontDefinitions, desktop: Option<&TerminalFaces>) {
+    let faces = desktop.cloned().or_else(bundled_terminal_faces);
     let Some(faces) = faces else {
         // No monospace of its own: the families still exist, on Inter.
         for weight in [400, 500, 700] {
@@ -238,18 +247,18 @@ fn terminal(fonts: &mut FontDefinitions, desktop: bool) {
             };
             alias(
                 fonts,
-                &family_name(Faces::Terminal, Kind::Mono, weight),
+                &family_name(Typeface::Terminal, Kind::Mono, weight),
                 &from,
             );
         }
         return;
     };
     for (weight, data) in [400, 500, 700].into_iter().zip(faces) {
-        let name = family_name(Faces::Terminal, Kind::Mono, weight);
+        let name = family_name(Typeface::Terminal, Kind::Mono, weight);
         fonts.font_data.insert(name.clone(), data);
         own(fonts, &name, &name, &FontFamily::Monospace);
     }
-    let face = |weight| family_name(Faces::Terminal, Kind::Mono, weight);
+    let face = |weight| family_name(Typeface::Terminal, Kind::Mono, weight);
     lead(fonts, FontFamily::Monospace, &face(400));
     lead(fonts, FontFamily::Proportional, &face(400));
     lead(fonts, FontFamily::Name(MEDIUM.into()), &face(500));
@@ -260,7 +269,10 @@ fn terminal(fonts: &mut FontDefinitions, desktop: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Faces;
     use crate::typography::{Text, TextRole};
+
+    const PLEX: Faces = Faces::of(Typeface::Plex);
 
     #[test]
     fn macos_draws_the_keys_its_shortcuts_name() {
@@ -271,7 +283,7 @@ mod tests {
             crate::typography::TextRole::Secondary,
             crate::typography::TextRole::Shortcut,
         ] {
-            let font = role.font_id(Faces::Plex);
+            let font = role.font_id(PLEX);
             assert!(
                 harness
                     .ctx
@@ -294,7 +306,7 @@ mod tests {
             crate::typography::TextRole::Secondary,
             crate::typography::TextRole::Shortcut,
         ] {
-            let font = role.font_id(Faces::Plex);
+            let font = role.font_id(PLEX);
             for command in crate::keymap::Command::ALL {
                 let label = keymap.label(crate::keymap::Layout::Mac, *command);
                 assert!(
@@ -346,7 +358,7 @@ mod tests {
                 TextRole::MonoSecondary,
             ] {
                 // Each of these symbols stands on the baseline, like the N.
-                let laid = Text::in_faces(Faces::Plex)
+                let laid = Text::in_faces(PLEX)
                     .add(role, "N⌘⌫⌦", egui::Color32::WHITE)
                     .layout(&ctx);
                 let letter = painted_bottom(&laid.galley, 'N');
@@ -374,7 +386,7 @@ mod tests {
                 .filter(|role| !role.id().starts_with("o-"));
             for role in plex {
                 for text in ["H", "⌘H"] {
-                    let laid = Text::in_faces(Faces::Plex)
+                    let laid = Text::in_faces(PLEX)
                         .add(role, text, egui::Color32::WHITE)
                         .layout(&ctx);
                     for line in [32.0, 100.3] {
@@ -382,7 +394,7 @@ mod tests {
                         let top =
                             ((line - laid.middle()) * pixels_per_point).round() / pixels_per_point;
                         let baseline = top + painted_bottom(&laid.galley, 'H');
-                        let middle = baseline - PLEX_CAPITALS * role.size() / 2.0;
+                        let middle = baseline - PLEX_CAPITALS * role.size(PLEX) / 2.0;
                         let off = (middle - line).abs() * pixels_per_point;
                         assert!(
                             off <= 0.51,
@@ -397,9 +409,9 @@ mod tests {
 
     #[test]
     fn only_plex_centres_text_by_its_capitals() {
-        assert_eq!(capitals(Faces::Plex), Some(PLEX_CAPITALS));
-        assert_eq!(capitals(Faces::Inter), None);
-        assert_eq!(capitals(Faces::Terminal), None);
+        assert_eq!(capitals(Typeface::Plex), Some(PLEX_CAPITALS));
+        assert_eq!(capitals(Typeface::Inter), None);
+        assert_eq!(capitals(Typeface::Terminal), None);
     }
 
     /// The metrics above are the bundled files' own.
@@ -434,12 +446,44 @@ mod tests {
         let mut fonts = fastframe_fonts::FontSetup::default()
             .system_fallbacks(false)
             .definitions();
-        configure(&mut fonts, look, false);
+        configure(&mut fonts, look, None);
         fonts
     }
 
     fn first(fonts: &FontDefinitions, family: FontFamily) -> String {
         fonts.families[&family][0].clone()
+    }
+
+    #[test]
+    fn macos_draws_data_in_the_face_the_settings_name() {
+        use crate::settings::Settings;
+        let fonts = configured(&Look::macos());
+        // Both faces are there, whichever is drawn.
+        for weight in [400, 500] {
+            let name = format!("jetbrains-mono-{weight}");
+            assert_eq!(first(&fonts, FontFamily::Name(name.as_str().into())), name);
+        }
+        let family = |faces: Faces, role: TextRole| match role.font_id(faces).family {
+            FontFamily::Name(name) => name.to_string(),
+            other => format!("{other:?}"),
+        };
+        let settings = Settings {
+            font: Some("JetBrains Mono".into()),
+            ..Settings::default()
+        };
+        let jetbrains = Look::macos().with_text(&settings).faces;
+        assert_eq!(family(jetbrains, TextRole::GridCell), "jetbrains-mono-400");
+        assert_eq!(
+            family(jetbrains, TextRole::CompletionMatch),
+            "jetbrains-mono-500"
+        );
+        assert_eq!(family(jetbrains, TextRole::Code), "jetbrains-mono-400");
+        // The interface's monospace stays Plex.
+        assert_eq!(family(jetbrains, TextRole::MonoSecondary), "plex-mono-400");
+        assert_eq!(family(PLEX, TextRole::GridCell), "plex-mono-400");
+        // JetBrains Mono's line centres on its capitals: no shift for them.
+        let laid = Text::in_faces(jetbrains).add(TextRole::GridCell, "H", egui::Color32::WHITE);
+        assert_eq!(laid.capitals, None);
     }
 
     #[test]

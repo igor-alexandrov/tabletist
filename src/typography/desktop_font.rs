@@ -1,5 +1,8 @@
 //! The desktop's monospace font on Linux, as fontconfig resolves it
-//! (JetBrainsMono Nerd Font on Omarchy; `omarchy font set` changes it).
+//! (JetBrainsMono Nerd Font on Omarchy; `omarchy font set` changes it), or
+//! the font the settings name by its fontconfig name.
+
+use super::fonts::TerminalFaces;
 
 #[cfg(target_os = "linux")]
 use std::{
@@ -12,7 +15,13 @@ use std::{
 #[cfg(target_os = "linux")]
 const FC_MATCH_LIMIT: Duration = Duration::from_millis(500);
 
-/// Reads `fc-match -f '%{file}\n%{index}'`: an absolute path and a face index.
+/// What `fc-match` is asked to write: a file, a face index and the
+/// families' names.
+#[cfg(target_os = "linux")]
+const FORMAT: &str = "%{file}\n%{index}\n%{family}";
+
+/// Reads the first two lines of what `fc-match` is asked to write: an
+/// absolute path and a face index.
 /// Linux only: the path is POSIX, which Windows would not call absolute.
 #[cfg(target_os = "linux")]
 pub fn parse_fc_match(output: &str) -> Option<(PathBuf, u32)> {
@@ -21,6 +30,108 @@ pub fn parse_fc_match(output: &str) -> Option<(PathBuf, u32)> {
     // Variable fonts carry a named-instance number in the upper 16 bits.
     let index = lines.next()?.trim().parse::<u32>().ok()? & 0xFFFF;
     path.is_absolute().then_some((path, index))
+}
+
+/// The family `fc-match`'s third line names, as it is asked to write it:
+/// the first of its names
+/// (`JetBrainsMono Nerd Font,JetBrainsMono NF` is the first).
+pub fn parse_family(output: &str) -> Option<String> {
+    let family = output.lines().nth(2)?.split(',').next()?.trim();
+    (!family.is_empty()).then(|| family.to_owned())
+}
+
+/// Whether `family`, which fontconfig matched, is the font `name` asked
+/// for: the same name, or one that begins with it, whatever the case and
+/// the spaces (`JetBrains Mono` is `JetBrainsMono Nerd Font`). For a name it
+/// does not know, fontconfig gives another font.
+pub fn is_named(family: &str, name: &str) -> bool {
+    let squeeze = |text: &str| {
+        text.chars()
+            .filter(|char| !char.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let name = squeeze(name);
+    !name.is_empty() && squeeze(family).starts_with(&name)
+}
+
+/// `name` as a fontconfig pattern writes a family: with a backslash
+/// before what the pattern reads otherwise (`-` before a size, `:` before
+/// a property, `,` between families).
+pub fn pattern(name: &str) -> String {
+    let mut pattern = String::with_capacity(name.len());
+    for char in name.trim().chars() {
+        if matches!(char, '\\' | '-' | ':' | ',') {
+            pattern.push('\\');
+        }
+        pattern.push(char);
+    }
+    pattern
+}
+
+/// What fontconfig gave the terminal look for the font the settings name.
+#[derive(Clone, Debug, Default)]
+pub struct Read {
+    /// The font asked for, as the settings name it: `None` is the
+    /// system's monospace.
+    pub asked: Option<String>,
+    /// The faces at 400, 500 and 700: `None` where fontconfig gave none
+    /// that can be drawn (the bundled one is drawn then).
+    pub faces: Option<TerminalFaces>,
+    /// The family drawn, as fontconfig names it.
+    pub family: Option<String>,
+    /// Whether the font asked for is not there: the system's monospace is
+    /// drawn in its place.
+    pub missing: bool,
+}
+
+/// The font named `asked` (the system's monospace for `None`), at 400, 500
+/// and 700, or the system's monospace in its place where fontconfig does
+/// not have it. Each `fc-match` is bounded to half a second; a font found
+/// takes three, a name not found four: two seconds at worst. It runs at the
+/// start (as the fonts always did) and on the backend after.
+pub fn read(asked: Option<&str>) -> Read {
+    let named = asked
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("monospace"));
+    // The medium and bold of the font `base` gave as `regular`.
+    let weights = |base: &str, regular: egui::FontData| {
+        let medium = matched(&format!("{base}:medium")).map(|(face, _)| face);
+        let bold = matched(&format!("{base}:bold")).map(|(face, _)| face);
+        let regular = std::sync::Arc::new(regular);
+        let medium = medium.map_or_else(|| regular.clone(), std::sync::Arc::new);
+        let bold = bold.map_or_else(|| medium.clone(), std::sync::Arc::new);
+        [regular, medium, bold]
+    };
+    let faces_of = |base: &str| {
+        let (regular, family) = matched(base)?;
+        Some((weights(base, regular), family))
+    };
+    let mut missing = false;
+    let found = match named {
+        Some(name) => {
+            let base = pattern(name);
+            // The weights are asked for only once the name is found.
+            match matched(&base) {
+                Some((regular, Some(family))) if is_named(&family, name) => {
+                    Some((weights(&base, regular), Some(family)))
+                }
+                _ => {
+                    missing = true;
+                    log::warn!("the font {name:?} is not found: the system's monospace is drawn");
+                    faces_of("monospace")
+                }
+            }
+        }
+        None => faces_of("monospace"),
+    };
+    let (faces, family) = found.map_or((None, None), |(faces, family)| (Some(faces), family));
+    Read {
+        asked: asked.map(str::to_owned),
+        faces,
+        family,
+        missing,
+    }
 }
 
 /// Runs `command` and returns its output, or `None` if it cannot start, fails,
@@ -95,20 +206,20 @@ pub fn load(path: &Path, index: u32) -> Option<egui::FontData> {
     Some(data)
 }
 
-/// The desktop's monospace font for a fontconfig `pattern` (`monospace`,
-/// `monospace:bold`), or `None` (with one logged warning) when fontconfig is
-/// missing or names a file egui could not read.
-pub fn monospace(pattern: &str) -> Option<egui::FontData> {
+/// The font fontconfig gives for `pattern` (`monospace`, `Fira
+/// Code:bold`), with the family it names, or `None` (with one logged
+/// warning) when fontconfig is missing or names a file egui could not read.
+fn matched(pattern: &str) -> Option<(egui::FontData, Option<String>)> {
     #[cfg(target_os = "linux")]
     {
         let output = run_bounded(
-            Command::new("fc-match").args(["-f", "%{file}\n%{index}", pattern]),
+            Command::new("fc-match").args(["-f", FORMAT, pattern]),
             FC_MATCH_LIMIT,
         );
         let output = output?;
         let text = String::from_utf8_lossy(&output.stdout);
         let Some((path, index)) = parse_fc_match(&text) else {
-            log::warn!("fc-match gave no monospace font");
+            log::warn!("fc-match gave no font for {pattern:?}");
             return None;
         };
         let font = load(&path, index);
@@ -118,7 +229,7 @@ pub fn monospace(pattern: &str) -> Option<egui::FontData> {
                 path.display()
             );
         }
-        font
+        font.map(|font| (font, parse_family(&text)))
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -152,6 +263,42 @@ mod parse_tests {
         assert_eq!(parse_fc_match(""), None);
         assert_eq!(parse_fc_match("relative.ttf\n0"), None);
         assert_eq!(parse_fc_match("/x.ttf\nnot-a-number"), None);
+    }
+
+    #[test]
+    fn the_family_is_the_first_name_on_the_third_line() {
+        let output = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf\n0\n\
+                      JetBrainsMono Nerd Font,JetBrainsMono NF\n";
+        assert_eq!(
+            parse_family(output).as_deref(),
+            Some("JetBrainsMono Nerd Font")
+        );
+        assert_eq!(parse_family("/x.ttf\n0\n"), None);
+        assert_eq!(parse_family("/x.ttf\n0"), None);
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn a_family_is_the_font_named_when_it_begins_with_its_name() {
+        assert!(is_named("Fira Code", "fira code"));
+        assert!(is_named("JetBrainsMono Nerd Font", "JetBrains Mono"));
+        assert!(is_named("Iosevka Term", "Iosevka"));
+        // fontconfig's stand-in for a name it does not know.
+        assert!(!is_named("DejaVu Sans Mono", "Fira Code"));
+        assert!(!is_named("Fira Code", ""));
+    }
+
+    #[test]
+    fn a_name_is_written_into_a_pattern_as_a_family() {
+        assert_eq!(pattern("Fira Code"), "Fira Code");
+        assert_eq!(pattern(" Source Code Pro "), "Source Code Pro");
+        // A dash would start a size, a colon a property, a comma another
+        // family.
+        assert_eq!(pattern("Fira-Code:x,y\\z"), "Fira\\-Code\\:x\\,y\\\\z");
     }
 }
 

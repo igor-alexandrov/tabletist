@@ -16,6 +16,26 @@ const ICON_SIZE: f32 = 72.0;
 /// As LICENSE has it.
 const COPYRIGHT: &str = "© 2026 Igor Alexandrov";
 
+/// The fonts this build bundles, each with its licence as the font's
+/// authors give it: the SIL Open Font License has its notice go with the
+/// font. Windows draws in fastframe's fonts, and bundles none of its own.
+const FONT_NOTICES: &[&str] = &[
+    #[cfg(target_os = "macos")]
+    include_str!("../../assets/fonts/IBMPlex-OFL.txt"),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    include_str!("../../assets/fonts/JetBrainsMono-OFL.txt"),
+    #[cfg(target_os = "macos")]
+    include_str!("../../assets/fonts/NotoSansSymbols2-OFL.txt"),
+];
+
+/// Whether the fonts' notices are unfolded, in egui's memory.
+fn notices_id() -> egui::Id {
+    egui::Id::new("about-font-licenses")
+}
+
+/// How tall the fonts' notices are at most: they scroll.
+const NOTICES_HEIGHT: f32 = 140.0;
+
 /// The version and what it was built for: what a bug report needs.
 pub fn version() -> String {
     format!(
@@ -34,6 +54,9 @@ pub fn repository() -> &'static str {
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
     if !matches!(app.dialog, Some(Dialog::About)) {
+        // The next About starts with the notices folded, whatever took
+        // its place.
+        ctx.data_mut(|data| data.remove::<bool>(notices_id()));
         return;
     }
     let locale = app.locale;
@@ -84,6 +107,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 palette.secondary,
                 &look,
             );
+            font_notices(ui, &look, &palette, locale);
         });
         ui.add_space(12.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -98,6 +122,44 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         actions.push(Action::CloseDialog);
     }
     app.actions.extend(actions);
+}
+
+/// The link that shows the bundled fonts' licences, and under it, once it
+/// is pressed, their notices: selectable, to be copied whole. Whether they
+/// show is the dialog's own, kept in egui's memory while it is open.
+fn font_notices(
+    ui: &mut egui::Ui,
+    look: &crate::theme::Look,
+    palette: &crate::theme::Palette,
+    locale: crate::i18n::Locale,
+) {
+    if FONT_NOTICES.is_empty() {
+        return;
+    }
+    let id = notices_id();
+    let mut open = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+    ui.add_space(2.0);
+    let label = gettext(locale, "Font licenses");
+    let link = widgets::ButtonSpec::new(&label).link().padding(6.0);
+    let size = vec2(link.width(ui, look), 24.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    if link.show_at(ui, rect, look, palette).clicked() {
+        open = !open;
+        ui.data_mut(|data| data.insert_temp(id, open));
+    }
+    if !open {
+        return;
+    }
+    ui.add_space(4.0);
+    let notices = FONT_NOTICES.join("\n\n");
+    egui::ScrollArea::vertical()
+        .max_height(NOTICES_HEIGHT)
+        .show(ui, |ui| {
+            let text = Text::one(look, widgets::secondary(look), &notices, palette.secondary)
+                .wrap(ui.available_width())
+                .layout(ui.ctx());
+            ui.add(egui::Label::new(text.galley).selectable(true));
+        });
 }
 
 /// `text` across the dialog, wrapped, with every line centred.
@@ -188,6 +250,38 @@ mod tests {
                 look.name
             );
         }
+    }
+
+    /// Windows bundles no font of its own: it has no link.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn about_shows_the_licenses_of_the_fonts_it_bundles() {
+        let mut harness = Harness::new();
+        open(&mut harness);
+        harness.click("Font licenses");
+        harness.settle();
+        let shown = |harness: &Harness, words: &str| {
+            harness.painted.iter().any(|(text, _)| text.contains(words))
+        };
+        // This build's: JetBrains Mono on Linux, with its notice whole.
+        assert!(shown(&harness, "The JetBrains Mono Project Authors"));
+        assert!(shown(&harness, "SIL OPEN FONT LICENSE Version 1.1"));
+        // A second press folds them, and so does a close.
+        harness.click("Font licenses");
+        harness.settle();
+        assert!(!shown(&harness, "SIL OPEN FONT LICENSE"));
+        harness.click("Font licenses");
+        harness.click("Close");
+        open(&mut harness);
+        harness.settle();
+        assert!(!shown(&harness, "SIL OPEN FONT LICENSE"));
+        // And when it closes another way.
+        harness.click("Font licenses");
+        harness.app.apply(Action::CloseDialog);
+        harness.settle();
+        harness.app.apply(Action::ShowAbout);
+        harness.settle();
+        assert!(!shown(&harness, "SIL OPEN FONT LICENSE"));
     }
 
     #[test]

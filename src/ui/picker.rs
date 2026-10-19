@@ -386,7 +386,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     let secrets = if look.terminal {
         TERMINAL_SECRETS.to_owned()
-    } else if look.faces == theme::Faces::Plex {
+    } else if look.faces.typeface == theme::Typeface::Plex {
         gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
     } else {
         gettext(locale, "Passwords are stored in the system keyring").into_owned()
@@ -414,7 +414,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let found = app.connections.search(&search);
     if app.connections.connections.is_empty() {
         // First launch: why the list is empty, and the one next step.
-        let keyring = if look.faces == theme::Faces::Plex {
+        let keyring = if look.faces.typeface == theme::Typeface::Plex {
             gettext(locale, "Tabletist stores passwords in the macOS Keychain.")
         } else {
             gettext(locale, "Tabletist stores passwords in the system keyring.")

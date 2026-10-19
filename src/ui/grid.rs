@@ -36,9 +36,9 @@ const MAX_INITIAL_WIDTH: f32 = 331.0;
 /// A numeric key column's width, as the design's grids fix it: 64 on
 /// macOS, 56 in the terminal (0 elsewhere: sized to its content).
 fn key_width(look: &crate::theme::Look) -> f32 {
-    match (look.terminal, look.faces) {
+    match (look.terminal, look.faces.typeface) {
         (true, _) => 56.0,
-        (false, crate::theme::Faces::Plex) => 64.0,
+        (false, crate::theme::Typeface::Plex) => 64.0,
         _ => 0.0,
     }
 }
@@ -276,7 +276,8 @@ fn text_width(ui: &Ui, text: &str, role: TextRole, look: &Look) -> f32 {
 /// elsewhere. Row-panel values use it too.
 pub fn data_role(look: &Look) -> TextRole {
     match look.data_font {
-        DataFont::Proportional => TextRole::UiBody,
+        // The interface's sans, at the data's size.
+        DataFont::Proportional => TextRole::DataBody,
         DataFont::Monospace => TextRole::pick(look, TextRole::GridCell, TextRole::OBody),
     }
 }
@@ -285,7 +286,7 @@ pub fn data_role(look: &Look) -> TextRole {
 /// design's when the fonts at hand have them (see [`Marks::pick`]). Found
 /// once for each set of faces, not for every cell.
 pub fn marks(ctx: &egui::Context, look: &Look) -> Marks {
-    let id = Id::new(("cell-marks", look.faces));
+    let id = marks_id(look);
     if let Some(marks) = ctx.data(|data| data.get_temp::<Marks>(id)) {
         return marks;
     }
@@ -293,6 +294,17 @@ pub fn marks(ctx: &egui::Context, look: &Look) -> Marks {
     let marks = ctx.fonts_mut(|fonts| Marks::pick(|character| fonts.has_glyph(&font, character)));
     ctx.data_mut(|data| data.insert_temp(id, marks));
     marks
+}
+
+/// Where the marks found for `look`'s faces are kept.
+pub(crate) fn marks_id(look: &Look) -> Id {
+    Id::new(("cell-marks", look.faces))
+}
+
+/// Forgets the marks found for `look`'s faces: the terminal look's face
+/// changed under them (a new font read through fontconfig).
+pub fn forget_marks(ctx: &egui::Context, look: &Look) {
+    ctx.data_mut(|data| data.remove::<Marks>(marks_id(look)));
 }
 
 /// Paints `text` in `role` at `x` (its left edge, or its right with

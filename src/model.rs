@@ -664,6 +664,9 @@ pub enum Action {
         tab: ConnTabId,
         open: bool,
     },
+    /// The Log view: its calls that pass its filters, every one, to a file
+    /// the person chooses, as CSV or JSON Lines.
+    ExportAgentsLog(ConnTabId),
     /// The Log view: the statement of a call, by its place in the log, in
     /// a new SQL editor of its connection's window, read-only and not run.
     OpenAgentsLogCall {
@@ -812,6 +815,9 @@ pub enum Action {
     ShowAbout,
     /// Show the Settings window.
     ShowSettings,
+    /// The font size a step larger (`Some(true)`), smaller, or back to the
+    /// look's own (`None`), written to the settings.
+    TextSize(Option<bool>),
     /// Show the Settings window on its Agents pane: from the Agents tab.
     ShowAgentSettings,
     /// Show this pane of the Settings window, its cursor on its first row.
@@ -2568,6 +2574,8 @@ impl SettingsPane {
             ],
             Self::Appearance => &[
                 SettingsRow::Option(OptionId::Theme),
+                SettingsRow::Option(OptionId::Font),
+                SettingsRow::Option(OptionId::FontSize),
                 SettingsRow::Option(OptionId::RowHeight),
                 SettingsRow::Option(OptionId::Zebra),
                 SettingsRow::Option(OptionId::ColumnTypes),

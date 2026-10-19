@@ -111,6 +111,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let open_key = app
         .keymap
         .key(layout, crate::keymap::Command::OpenAgentsLogCall);
+    let export_key = app
+        .keymap
+        .key(layout, crate::keymap::Command::ExportAgentsLog);
     // The selected call's connection, as it is saved now: whether its
     // statement opens, and the dialect it is read in.
     let call = log
@@ -257,6 +260,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     close: &close_key,
                     details: &details_key,
                     open: &open_key,
+                    export: &export_key,
                 };
                 let shown = log_view(
                     ui,
@@ -278,6 +282,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     Some(LogAsk::Open(id)) => {
                         actions.push(Action::OpenAgentsLogCall { tab, id });
                     }
+                    Some(LogAsk::Export) => actions.push(Action::ExportAgentsLog(tab)),
                     Some(LogAsk::More) => actions.push(Action::MoreAgentsLog(tab)),
                     Some(LogAsk::Select(id)) => {
                         actions.push(Action::SelectAgentsLogCall { tab, id });
@@ -1054,6 +1059,8 @@ enum LogAsk {
     CloseDetails,
     /// The call's statement opened in a SQL editor, by its place.
     Open(i64),
+    /// The calls that pass the filters, to a file.
+    Export,
 }
 
 /// The Log view's bar at its top (the terminal's, and macOS's, which holds
@@ -1131,6 +1138,16 @@ fn log_view(
                 &format!(" {}", look.label(&gettext(locale, "filter"))),
                 palette.secondary,
             );
+        if log.total > 0 {
+            filter = filter
+                .add(body, " · ", palette.secondary)
+                .add(body, keys.export.as_str(), palette.accent)
+                .add(
+                    body,
+                    &format!(" {}", look.label(&gettext(locale, "export"))),
+                    palette.secondary,
+                );
+        }
         if log.selected.is_some() {
             filter = filter
                 .add(body, " · ", palette.secondary)
@@ -1158,9 +1175,22 @@ fn log_view(
         }
         widgets::announce(ui, bar, &look.label(&format!("{scope} · {count}")));
     } else {
+        // At its right, Export…, off with nothing to export: the filters
+        // keep to the left of it, the search giving up its width first.
+        let label = gettext(locale, "Export…");
+        let reason = gettext(locale, "No calls to export.");
+        let mut export = states::button(&label, look);
+        if log.total == 0 {
+            export = export.disabled(&reason);
+        }
+        let width = export.width(ui, look);
+        let at = Rect::from_center_size(
+            pos2(bar.right() - 16.0 - width / 2.0, bar.center().y),
+            vec2(width, 30.0),
+        );
         let row = Rect::from_min_max(
             pos2(bar.left() + 16.0, bar.center().y - 14.0),
-            pos2(bar.right() - 16.0, bar.center().y + 14.0),
+            pos2(at.left() - 12.0, bar.center().y + 14.0),
         );
         let mut child = ui.new_child(
             egui::UiBuilder::new()
@@ -1173,12 +1203,16 @@ fn log_view(
         {
             ask = Some(LogAsk::Filter(filter));
         }
+        let filters = child.min_rect().right();
+        if export.show_at(ui, at, look, palette).clicked() && log.total > 0 {
+            ask = Some(LogAsk::Export);
+        }
+        // The count between them, where it has the room.
         let laid = Text::one(look, small, &count, palette.secondary).layout(ui.ctx());
-        laid.paint_left(
-            ui.painter(),
-            bar.right() - 16.0 - laid.width(),
-            bar.center().y,
-        );
+        let left = at.left() - 12.0 - laid.width();
+        if left >= filters + 12.0 {
+            laid.paint_left(ui.painter(), left, bar.center().y);
+        }
         widgets::announce(ui, bar, &format!("{scope} · {count}"));
     }
     // The terminal look's filters, under its bar: their rows while open,
@@ -1445,6 +1479,8 @@ pub(crate) struct LogKeys<'a> {
     pub details: &'a crate::keymap::Written,
     /// The selected call's statement, in a SQL editor.
     pub open: &'a crate::keymap::Written,
+    /// The calls that pass the filters, to a file.
+    pub export: &'a crate::keymap::Written,
 }
 
 /// What the Log view is told of the selected call by the app: whether its
@@ -1679,6 +1715,13 @@ fn log_filters(
     use crate::model::AgentsLogFilter;
     use crate::ui::menu;
     let mut set = None;
+    // The board's widths, each one narrower alike where the bar has not
+    // the room: a dropdown clips what it reads.
+    let board = [170.0, 130.0, 120.0, 220.0];
+    let gaps = 3.0 * ui.spacing().item_spacing.x;
+    let share = ((ui.available_width() - gaps) / board.iter().sum::<f32>()).min(1.0);
+    let [scope_width, agent_width, result_width, search_width] =
+        board.map(|width: f32| (width * share).max(40.0).floor());
     let named = |response: &egui::Response, name: &str, value: &str| {
         response.widget_info(|| {
             let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, name);
@@ -1689,7 +1732,7 @@ fn log_filters(
     // Whose calls.
     let this = gettext(locale, "This connection");
     let all = gettext(locale, "All connections");
-    let scopes = menu::Dropdown::new("agents-log-scope", scope, 170.0)
+    let scopes = menu::Dropdown::new("agents-log-scope", scope, scope_width)
         .height(28.0)
         .show(ui, look, palette, |ui| {
             for (every, word) in [(false, &this), (true, &all)] {
@@ -1713,7 +1756,7 @@ fn log_filters(
     {
         agents.push(chosen.clone());
     }
-    let menu = menu::Dropdown::new("agents-log-agent", &agent, 130.0)
+    let menu = menu::Dropdown::new("agents-log-agent", &agent, agent_width)
         .height(28.0)
         .show(ui, look, palette, |ui| {
             let mut choices = vec![(None, every_agent.to_string())];
@@ -1733,7 +1776,7 @@ fn log_filters(
         || every_result.to_string(),
         |result| result_word(result, locale),
     );
-    let menu = menu::Dropdown::new("agents-log-result", &result, 120.0)
+    let menu = menu::Dropdown::new("agents-log-result", &result, result_width)
         .height(28.0)
         .show(ui, look, palette, |ui| {
             let mut choices = vec![(None, every_result.to_string())];
@@ -1756,7 +1799,7 @@ fn log_filters(
     let placeholder = gettext(locale, "Search requests…");
     let role = widgets::body(look);
     let field = ui.add_sized(
-        vec2(220.0, 28.0),
+        vec2(search_width, 28.0),
         widgets::field(ui, &mut text, look, role, 28.0, 8)
             .id(Id::new("agents-log-search"))
             .hint_text(placeholder.as_ref()),

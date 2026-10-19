@@ -212,21 +212,40 @@ The tab shows:
 **Stop agents here** ends every session on the connection and sets its
 access to **Off**, so that an agent that connects again does not see it.
 
-The tab's **Log** view lists every call agents made, on this connection or
-on all of them: the tool, the statement, how many rows it returned and how
-long it took. Rows themselves are never logged. **Settings › Agents ›
-Keep the activity log** says for how many days a call is kept.
+The tab's **Log** view keeps every call: see [below](#the-log).
 
-Its bar narrows the list: **This connection** or **All connections**, one
+When an agent connects, Tabletist tells you: a notification on Linux,
+whose **Review** shows the Agents tab, the Dock icon bouncing on macOS,
+and the taskbar button flashing on Windows.
+**Notify when an agent connects** turns it off.
+
+## The log
+
+The Agents tab's **Log** view lists every call agents made, on this
+connection or on all of them, the newest first: the time, the agent, the
+tool, the statement or the tables asked for, how many rows it returned,
+how long it took, and how it ended. Rows themselves are never logged. The
+log is read from its file, so it shows past calls with the server off and
+with agents' access off. **Settings › Agents › Keep the activity log**
+says for how many days a call is kept. Open it with **Show log** or the
+switch at the tab's top, or `l` in the Omarchy look, and `:agents log`
+from anywhere in the window.
+
+### Filter the calls
+
+The bar narrows the list: **This connection** or **All connections**, one
 agent of those that called or **All agents**, one way a call ended
 (**ok**, **refused**, **failed**, **timed out**, **cancelled**,
 **stopped**) or **All results**, and **Search requests…**, which finds
 the text anywhere in a statement or in the tables `describe_schema` was
 asked for, English letters in either case. The count then says how many
-calls match. In the Omarchy look, `/` opens the same filters over the
-list, with the keyboard in the search: Tab moves to the agents and the
-results, Enter or Space picks one, and Esc closes them and keeps them. A
-line under the bar says what they are set to.
+calls match. In the Omarchy look, `L` switches between this connection
+and all of them, and `/` opens the other filters over the list, with the
+keyboard in the search: Tab moves to the agents and the results, Enter
+or Space picks one, and Esc closes them and keeps them. A line under the
+bar says what they are set to.
+
+### A call's details
 
 A call you select shows its details beside the list: the statement as it
 ran, its values, what it returned, the columns that were masked, how it
@@ -237,14 +256,30 @@ database: this one for a call on this connection, another that is open,
 or one that opens and connects for it. Its values come first, as the log
 keeps them, in a comment line each (`-- $1 = 9100000000000000004` on
 PostgreSQL, `?1` on SQLite, `? #1` on MySQL), for you to put in its
-placeholders. A call on a connection
-deleted since cannot be opened. In the Omarchy look the details show
-with Enter, `o` opens the statement, and Esc closes them.
+placeholders. A call on a connection deleted since cannot be opened. In
+the Omarchy look `j` and `k` move among the calls, Enter shows the
+details, `o` opens the statement, and Esc closes them.
 
-When an agent connects, Tabletist tells you: a notification on Linux,
-whose **Review** shows the Agents tab, the Dock icon bouncing on macOS,
-and the taskbar button flashing on Windows.
-**Notify when an agent connects** turns it off.
+### Export
+
+**Export…**, at the bar's right, or `E` in the Omarchy look, saves every
+call that passes the filters, not only those on the screen, the newest
+first as the list shows them. Name the file `.jsonl` (or `.ndjson`) for
+JSON Lines, one object a line; anything else is CSV, with a line of the
+column names first. Each call has:
+
+| Field | What it is |
+|---|---|
+| `at`, `at_ms` | When the call came, as RFC 3339 in UTC and in milliseconds since 1970 |
+| `session`, `agent`, `project`, `transport` | Who called: the session, the agent as it names itself, its project, and how it connected |
+| `connection_id`, `connection` | The connection, by its id and by its name then |
+| `tool`, `sql`, `params`, `request` | What was asked: the statement and its values (as JSON), or the tables asked for |
+| `result`, `code`, `message` | How it ended, the refusal's code, and its sentence |
+| `ran_as`, `rows`, `matched`, `columns`, `bytes`, `masked`, `took_ms` | How it ran, what it returned, the columns masked (as JSON), and how long it took |
+
+A field a call has not is empty in CSV and `null` in JSON Lines. The file
+is readable by your account alone, as the log is: its statements and
+values can hold data.
 
 ## Changes made outside Tabletist
 

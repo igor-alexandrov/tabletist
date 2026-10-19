@@ -494,6 +494,181 @@ async fn read_log(
     }
 }
 
+/// How an export of the log is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    Csv,
+    JsonLines,
+}
+
+impl LogFormat {
+    /// By the ending of the name chosen: JSON Lines for `.jsonl` (or
+    /// `.ndjson`), in any case, else CSV.
+    pub fn of(path: &std::path::Path) -> Self {
+        let ending = path
+            .extension()
+            .and_then(|ending| ending.to_str())
+            .map(str::to_ascii_lowercase);
+        match ending.as_deref() {
+            Some("jsonl" | "ndjson") => Self::JsonLines,
+            _ => Self::Csv,
+        }
+    }
+}
+
+/// How many calls an export reads of the log at a time: each read is
+/// short, so the server's writes of the calls that end meanwhile are never
+/// kept waiting for long.
+const EXPORT_PAGE: u32 = 1000;
+
+/// The calls of the log at `file` that pass `filter`, every one of them,
+/// written to `to` as its name's ending says, the newest first as the view
+/// lists them. Read a page at a time and written as they are read: a long
+/// log is never held whole. No log yet is a log of no calls.
+pub(super) async fn export_log(
+    file: PathBuf,
+    filter: tabletist_mcp::LogFilter,
+    to: PathBuf,
+) -> Result<(), String> {
+    let opened = tokio::task::spawn_blocking(move || Log::open_to_read(&file))
+        .await
+        .map_err(|_| "opening the log failed".to_owned())?
+        .map_err(|error| error.to_string())?;
+    let format = LogFormat::of(&to);
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        crate::util::write_atomic_with(&to, |out| {
+            use std::io::Write;
+            if format == LogFormat::Csv {
+                out.write_all(csv_head().as_bytes())?;
+            }
+            let Some(log) = opened else {
+                return Ok(());
+            };
+            let mut before = None;
+            loop {
+                let page = runtime
+                    .block_on(log.page(filter.clone(), before, EXPORT_PAGE))
+                    .map_err(std::io::Error::other)?;
+                out.write_all(exported(&page.calls, format).as_bytes())?;
+                match (page.more, page.calls.last()) {
+                    (true, Some(last)) => before = Some(last.id),
+                    _ => return Ok(()),
+                }
+            }
+        })
+    })
+    .await
+    .map_err(|_| "writing the file failed".to_owned())?
+    .map_err(|error| error.to_string())
+}
+
+/// A field of an exported call: text, a number, or nothing.
+enum Field<'a> {
+    Text(Option<&'a str>),
+    Number(Option<i64>),
+}
+
+/// The fields an export holds of each call, by name, in order: every one
+/// the log keeps, its moment also as RFC 3339 in UTC where it can be one.
+fn fields<'a>(
+    entry: &'a tabletist_mcp::Entry,
+    at: Option<&'a str>,
+) -> [(&'static str, Field<'a>); 22] {
+    use Field::{Number, Text};
+    [
+        ("at", Text(at)),
+        ("at_ms", Number(Some(entry.at_ms))),
+        ("session", Text(Some(&entry.session))),
+        ("agent", Text(Some(&entry.agent))),
+        ("project", Text(entry.project.as_deref())),
+        ("transport", Text(Some(&entry.transport))),
+        ("connection_id", Text(entry.connection_id.as_deref())),
+        ("connection", Text(entry.connection.as_deref())),
+        ("tool", Text(Some(&entry.tool))),
+        ("sql", Text(entry.sql.as_deref())),
+        ("params", Text(entry.params.as_deref())),
+        ("request", Text(entry.request.as_deref())),
+        ("result", Text(Some(&entry.result))),
+        ("code", Text(entry.code.as_deref())),
+        ("message", Text(entry.message.as_deref())),
+        ("ran_as", Text(entry.ran_as.as_deref())),
+        ("rows", Number(entry.rows)),
+        ("matched", Number(entry.matched)),
+        ("columns", Number(entry.columns)),
+        ("bytes", Number(entry.bytes)),
+        ("masked", Text(entry.masked.as_deref())),
+        ("took_ms", Number(entry.took_ms)),
+    ]
+}
+
+/// The line of the fields' names a CSV export starts with.
+fn csv_head() -> String {
+    let names: Vec<&str> = fields(&tabletist_mcp::Entry::default(), None)
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    format!("{}\r\n", names.join(","))
+}
+
+/// `calls` as lines of an export of `format`, each line ended: CSV (RFC
+/// 4180: a field with a comma, a quote or a line break quoted, its quotes
+/// doubled, lines ended with CR LF, nothing for a field the call has not;
+/// [`csv_head`] goes first), or JSON Lines, an object a line, its keys in
+/// the fields' order, `null` for nothing. A value is written as the log
+/// keeps it: `params` and `masked` are the log's JSON, as text.
+pub(crate) fn exported(calls: &[tabletist_mcp::Logged], format: LogFormat) -> String {
+    let moment = |at_ms: i64| {
+        jiff::Timestamp::from_millisecond(at_ms)
+            .ok()
+            .map(|at| at.to_string())
+    };
+    let mut out = String::new();
+    for logged in calls {
+        let at = moment(logged.entry.at_ms);
+        let fields = fields(&logged.entry, at.as_deref());
+        match format {
+            LogFormat::Csv => {
+                let cell = |text: &str| match text.contains([',', '"', '\n', '\r']) {
+                    true => format!("\"{}\"", text.replace('"', "\"\"")),
+                    false => text.to_owned(),
+                };
+                let cells: Vec<String> = fields
+                    .into_iter()
+                    .map(|(_, field)| match field {
+                        Field::Text(text) => text.map(cell).unwrap_or_default(),
+                        Field::Number(number) => {
+                            number.map(|number| number.to_string()).unwrap_or_default()
+                        }
+                    })
+                    .collect();
+                out.push_str(&cells.join(","));
+                out.push_str("\r\n");
+            }
+            LogFormat::JsonLines => {
+                let pairs: Vec<String> = fields
+                    .into_iter()
+                    .map(|(name, field)| {
+                        let value = match field {
+                            Field::Text(text) => text.map_or(serde_json::Value::Null, |text| {
+                                serde_json::Value::String(text.to_owned())
+                            }),
+                            Field::Number(number) => {
+                                number.map_or(serde_json::Value::Null, serde_json::Value::from)
+                            }
+                        };
+                        format!("{}:{value}", serde_json::Value::String(name.to_owned()))
+                    })
+                    .collect();
+                out.push('{');
+                out.push_str(&pairs.join(","));
+                out.push_str("}\n");
+            }
+        }
+    }
+    out
+}
+
 /// Tells the app of each call as it ends, until the server stops. One
 /// that falls behind misses the oldest: the log has them all.
 async fn called(mut calls: tokio::sync::broadcast::Receiver<tabletist_mcp::Call>, outbox: Outbox) {
@@ -1693,6 +1868,147 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(!path.exists());
+    }
+
+    /// A call of the log, as an export reads it.
+    fn logged(id: i64, agent: &str, result: &str, sql: Option<&str>) -> tabletist_mcp::Logged {
+        tabletist_mcp::Logged {
+            id,
+            entry: tabletist_mcp::Entry {
+                at_ms: 1_791_880_982_000 + id,
+                session: "s1".into(),
+                agent: agent.into(),
+                transport: "stdio".into(),
+                connection_id: Some("shop".into()),
+                tool: "run_query".into(),
+                sql: sql.map(str::to_owned),
+                params: Some("[7,\"a\"]".into()),
+                result: result.into(),
+                rows: Some(3),
+                took_ms: Some(4),
+                ..tabletist_mcp::Entry::default()
+            },
+        }
+    }
+
+    #[test]
+    fn an_export_is_csv_or_json_lines_by_the_name_chosen() {
+        use std::path::Path;
+        assert_eq!(LogFormat::of(Path::new("log.csv")), LogFormat::Csv);
+        assert_eq!(LogFormat::of(Path::new("log.JSONL")), LogFormat::JsonLines);
+        assert_eq!(LogFormat::of(Path::new("log.ndjson")), LogFormat::JsonLines);
+        assert_eq!(LogFormat::of(Path::new("log")), LogFormat::Csv);
+        // CSV: the names first; a field with a comma, a quote or a line
+        // break quoted, its quotes doubled; nothing for nothing.
+        let calls = [logged(
+            1,
+            "Claude, Code",
+            "ok",
+            Some("SELECT 'a'\n FROM \"t\""),
+        )];
+        assert_eq!(
+            csv_head(),
+            "at,at_ms,session,agent,project,transport,connection_id,connection,tool,sql,params,\
+             request,result,code,message,ran_as,rows,matched,columns,bytes,masked,took_ms\r\n"
+        );
+        assert_eq!(
+            exported(&calls, LogFormat::Csv),
+            "2026-10-13T08:43:02.001Z,1791880982001,s1,\"Claude, Code\",,stdio,shop,,\
+             run_query,\"SELECT 'a'\n FROM \"\"t\"\"\",\"[7,\"\"a\"\"]\",,ok,,,,3,,,,,4\r\n"
+        );
+        // JSON Lines: an object a line, its keys in the fields' order,
+        // `null` for nothing, numbers as numbers, the values as the log
+        // keeps them.
+        let lines = exported(&calls, LogFormat::JsonLines);
+        let start = r#"{"at":"2026-10-13T08:43:02.001Z","at_ms":1791880982001,"session":"s1","#;
+        assert!(lines.starts_with(start), "{lines}");
+        let line: serde_json::Value = serde_json::from_str(lines.trim_end()).unwrap();
+        assert_eq!(line["agent"], "Claude, Code");
+        assert_eq!(line["rows"], 3);
+        assert_eq!(line["project"], serde_json::Value::Null);
+        assert_eq!(line["params"], "[7,\"a\"]");
+        assert_eq!(lines.lines().count(), 1);
+        // A moment no clock can say has no `at`.
+        let mut far = logged(2, "Cursor", "ok", None);
+        far.entry.at_ms = i64::MAX;
+        let lines = exported(std::slice::from_ref(&far), LogFormat::JsonLines);
+        let line: serde_json::Value = serde_json::from_str(lines.trim_end()).unwrap();
+        assert_eq!(line["at"], serde_json::Value::Null);
+        assert!(exported(&[far], LogFormat::Csv).starts_with(&format!(",{},", i64::MAX)));
+    }
+
+    #[test]
+    fn an_export_holds_every_call_the_filter_passes_the_newest_first_and_only_the_user_reads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let log = Log::open(&path).unwrap().log;
+            for (n, (agent, result)) in [
+                ("Claude Code", "ok"),
+                ("Cursor", "refused"),
+                ("Claude Code", "refused"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let call = logged(n as i64, agent, result, Some("SELECT 1"));
+                log.record(call.entry).await.unwrap();
+            }
+            let filter = tabletist_mcp::LogFilter {
+                connection: Some("shop".into()),
+                result: Some("refused".into()),
+                ..tabletist_mcp::LogFilter::default()
+            };
+            // Both formats, of the same calls.
+            for name in ["out.csv", "out.jsonl"] {
+                let to = dir.path().join(name);
+                export_log(path.clone(), filter.clone(), to.clone())
+                    .await
+                    .unwrap();
+                let text = std::fs::read_to_string(&to).unwrap();
+                let agents: Vec<&str> = text
+                    .lines()
+                    .filter_map(|line| {
+                        ["Cursor", "Claude Code"]
+                            .into_iter()
+                            .find(|agent| line.contains(agent))
+                    })
+                    .collect();
+                assert_eq!(agents, ["Claude Code", "Cursor"], "{name}: {text}");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(&to).unwrap().permissions().mode() & 0o777;
+                    assert_eq!(mode, 0o600, "{name}");
+                }
+            }
+            // Past a page: every call, each once, the newest first.
+            for n in 0..2_500 {
+                let call = logged(10 + n, "Claude Code", "error", Some("SELECT 2"));
+                log.record(call.entry).await.unwrap();
+            }
+            let errors = tabletist_mcp::LogFilter {
+                result: Some("error".into()),
+                ..tabletist_mcp::LogFilter::default()
+            };
+            let to = dir.path().join("many.csv");
+            export_log(path.clone(), errors, to.clone()).await.unwrap();
+            let text = std::fs::read_to_string(&to).unwrap();
+            let at: Vec<i64> = text
+                .lines()
+                .skip(1)
+                .map(|line| line.split(',').nth(1).unwrap().parse().unwrap())
+                .collect();
+            assert_eq!(at.len(), 2_500);
+            assert!(at.windows(2).all(|pair| pair[0] > pair[1]));
+            // No log yet: a file of no calls.
+            let to = dir.path().join("none.csv");
+            let none = dir.path().join("none.sqlite3");
+            export_log(none.clone(), filter, to.clone()).await.unwrap();
+            assert_eq!(std::fs::read_to_string(&to).unwrap().lines().count(), 1);
+            assert!(!none.exists());
+        });
     }
 
     #[test]

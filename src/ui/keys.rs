@@ -993,6 +993,31 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     app.actions.extend(actions);
 }
 
+/// The text size keys, wherever the keyboard is: under a dialog too, where
+/// [`handle`] reads no key. The Settings window shows what they change.
+pub fn text_size(app: &mut App, ctx: &egui::Context) {
+    let layout = app.layout();
+    // In a field as out of one: no field takes these chords.
+    let normal = !ctx.text_edit_focused();
+    let scope = if app.dialog.is_some() {
+        Scope::Prompt
+    } else {
+        Scope::Global
+    };
+    for (command, larger) in [
+        (Command::LargerText, Some(true)),
+        (Command::SmallerText, Some(false)),
+        (Command::DefaultTextSize, None),
+    ] {
+        let pressed =
+            ctx.input_mut(|input| asked(input, &app.keymap, layout, command, scope, normal));
+        // Each press a step, its repeats while held too.
+        for _ in 0..pressed.count {
+            app.actions.push(Action::TextSize(larger));
+        }
+    }
+}
+
 /// Whether a copy that comes this frame is Ctrl+C where Ctrl is the command
 /// key, by what is held: Ctrl and nothing else. Not Cmd+C, the copy where
 /// Cmd is the command key; nor Ctrl+Shift+C, a Copy key or a menu's Copy,
@@ -2337,6 +2362,13 @@ fn letters(
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
             {
                 actions.push(Action::ToggleAgentsLogScope(tab));
+            }
+            (Some(Command::ExportAgentsLog), _)
+                if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>
+            {
+                if log.is_some_and(|log| log.total > 0) {
+                    actions.push(Action::ExportAgentsLog(tab));
+                }
             }
             (Some(Command::OpenAgentsLogCall), _)
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>

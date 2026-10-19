@@ -462,8 +462,11 @@ fn the_screen_sets_each_appearance_option_with_its_keys() {
     let key = |harness: &mut Harness, key: egui::Key, text: &str| {
         super::tests::type_key(harness, key, text);
     };
-    // Row height, under the theme: one to the left, compact.
-    key(&mut harness, egui::Key::J, "j");
+    // Row height, under the theme and the text's two: one to the left,
+    // compact.
+    for _ in 0..3 {
+        key(&mut harness, egui::Key::J, "j");
+    }
     key(&mut harness, egui::Key::H, "h");
     // Alternate rows, on in the terminal until set: space turns it off.
     key(&mut harness, egui::Key::J, "j");
@@ -545,7 +548,7 @@ fn a_reset_and_a_toggle_in_one_frame_turn_the_look_s_stripes_off() {
     let mut harness = Harness::new();
     harness.set_look(Look::omarchy());
     on_the_pane(&mut harness);
-    for _ in 0..2 {
+    for _ in 0..4 {
         super::tests::type_key(&mut harness, egui::Key::J, "j");
     }
     change(&mut harness, |settings| settings.zebra = Some(true));

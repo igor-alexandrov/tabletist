@@ -2060,9 +2060,10 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         key(Command::ToggleAgentsLogScope),
         key(Command::FilterAgentsLog),
     );
-    let (agents_details_key, agents_open_key) = (
+    let (agents_details_key, agents_open_key, agents_export_key) = (
         key(Command::ShowAgentsLogDetails),
         key(Command::OpenAgentsLogCall),
+        key(Command::ExportAgentsLog),
     );
     // Its Log view, while it shows: whether every connection's, whether a
     // call is selected, and whether that call's statement opens (it has
@@ -2082,7 +2083,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 .is_some()
                         })
                 });
-                Some((log.all, call.is_some(), opens))
+                Some((log.all, call.is_some(), opens, log.total > 0))
             }
             _ => None,
         })
@@ -2328,10 +2329,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 gettext(locale, "filter"),
                 gettext(locale, "details"),
                 gettext(locale, "open"),
+                gettext(locale, "export"),
             ];
             match agents_log {
                 // The Log view's keys in the place of the activity's.
-                Some((all, selected, opens)) => {
+                Some((all, selected, opens, any)) => {
                     let scope = if all { &*log_words[4] } else { &*log_words[3] };
                     agents_hints = vec![
                         (&agents_log_key, &*log_words[1], true),
@@ -2344,6 +2346,9 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                     if opens {
                         agents_hints.push((&agents_open_key, &*log_words[7], true));
+                    }
+                    if any {
+                        agents_hints.push((&agents_export_key, &*log_words[8], true));
                     }
                 }
                 None => agents_hints.push((&agents_log_key, &*log_words[0], true)),

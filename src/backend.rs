@@ -196,6 +196,13 @@ pub enum Command {
         pin: Option<String>,
         asked: u64,
     },
+    /// Reads the terminal look's font through fontconfig: the one `font`
+    /// names, or the system's monospace. Answered with [`Event::Font`],
+    /// which carries `asked`: reads end in any order.
+    ReadFont {
+        font: Option<String>,
+        asked: u64,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -361,6 +368,11 @@ pub enum Event {
         asked: u64,
         read: crate::desktop_theme::Read,
     },
+    /// What the [`Command::ReadFont`] numbered `asked` read.
+    Font {
+        asked: u64,
+        read: Box<crate::typography::desktop_font::Read>,
+    },
     /// The time zone database, read whole ([`Command::LoadZones`]).
     Zones(Arc<crate::zones::Zones>),
     /// The settings file changed on disk: its text. `own` when it is, byte
@@ -420,6 +432,10 @@ pub struct Backend {
     /// suggests, and the size of what is saved.
     #[cfg(test)]
     pub saves: Vec<(String, String, usize)>,
+    /// What a test asked to export of the agents' log: its filter, and
+    /// the name the dialog suggests.
+    #[cfg(test)]
+    pub exports: Vec<(tabletist_mcp::LogFilter, String)>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -491,6 +507,8 @@ impl Backend {
             #[cfg(test)]
             saves: Vec::new(),
             #[cfg(test)]
+            exports: Vec::new(),
+            #[cfg(test)]
             watched,
         }
     }
@@ -511,6 +529,8 @@ impl Backend {
             sent: Vec::new(),
             #[cfg(test)]
             saves: Vec::new(),
+            #[cfg(test)]
+            exports: Vec::new(),
             #[cfg(test)]
             watched: Watched::default(),
         }
@@ -616,6 +636,42 @@ impl Backend {
             };
             if let Err(error) = &result {
                 log::error!("could not save {}: {error}", path.display());
+            }
+            outbox.emit(Event::Saved { path, result });
+        });
+    }
+
+    /// Asks where to export the agents' log at `file`, `name` suggested,
+    /// and writes there the calls that pass `filter`, every one of them
+    /// and the newest first: as JSON Lines where the name chosen ends in
+    /// `.jsonl`, else as CSV. Read and written off the UI thread, the file
+    /// private to the user, as the log is. A dialog closed without a
+    /// choice exports nothing; one that fails is told as a failed save is.
+    pub fn export_log(&mut self, file: PathBuf, filter: tabletist_mcp::LogFilter, name: String) {
+        #[cfg(test)]
+        self.exports.push((filter.clone(), name.clone()));
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        // No file types to pick: a pick renames nothing on Linux, and rfd
+        // does not say which was picked. The name's ending decides, as the
+        // title says.
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Export the agents' log (.csv, or .jsonl for JSON Lines)")
+            .set_file_name(name)
+            .save_file();
+        let outbox = self.outbox.clone();
+        runtime.spawn(async move {
+            let Some(chosen) = dialog.await else {
+                return;
+            };
+            let path = chosen.path().to_path_buf();
+            let result = agents::export_log(file, filter, path.clone()).await;
+            if let Err(error) = &result {
+                log::error!(
+                    "could not export the agents' log to {}: {error}",
+                    path.display()
+                );
             }
             outbox.emit(Event::Saved { path, result });
         });
@@ -1951,6 +2007,16 @@ impl Worker {
                     outbox.emit(Event::Theme { asked, read });
                 });
             }
+            Command::ReadFont { font, asked } => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    let read = crate::typography::desktop_font::read(font.as_deref());
+                    outbox.emit(Event::Font {
+                        asked,
+                        read: Box::new(read),
+                    });
+                });
+            }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
                 tokio::spawn(async move {
@@ -2007,6 +2073,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
+        | Command::ReadFont { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => SessionId(0),
     }
@@ -2037,6 +2104,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
+        | Command::ReadFont { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => None,
     }
@@ -2125,6 +2193,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
+        | Command::ReadFont { .. }
         | Command::Flush { .. }
         | Command::Agents(_) => return,
     };
@@ -2409,6 +2478,7 @@ async fn run_session(
             | Command::EditSettingsFile { .. }
             | Command::RevealSettingsFile { .. }
             | Command::ReadTheme { .. }
+            | Command::ReadFont { .. }
             | Command::Flush { .. }
             | Command::Agents(_) => None,
         };

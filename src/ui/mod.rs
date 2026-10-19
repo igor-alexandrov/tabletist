@@ -65,6 +65,8 @@ pub mod states;
 pub mod structure;
 pub mod terminal_dialog;
 #[cfg(test)]
+mod text_settings_tests;
+#[cfg(test)]
 mod theme_settings_tests;
 pub mod toast;
 pub mod value_tags;
@@ -8817,7 +8819,7 @@ value_tags   = true
                 saved.password = PasswordMode::Keyring;
                 harness.app.connections.upsert(saved);
                 harness.app.apply(crate::model::Action::EditConnection(id));
-                let hint = look.label(if look.faces == crate::theme::Faces::Plex {
+                let hint = look.label(if look.faces.typeface == crate::theme::Typeface::Plex {
                     "Saved in the keychain"
                 } else {
                     "Saved in the keyring"
@@ -9068,7 +9070,7 @@ value_tags   = true
     fn each_keyring_box_says_which_secret_it_keeps() {
         use crate::connections::PasswordMode;
         for look in crate::theme::Look::ALL {
-            let keyring = if look.faces == crate::theme::Faces::Plex {
+            let keyring = if look.faces.typeface == crate::theme::Typeface::Plex {
                 "Keychain"
             } else {
                 "Keyring"
