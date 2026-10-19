@@ -144,8 +144,9 @@ security-framework = "3.7"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSToolbar", "NSControl", "NSButton", "objc2-core-foundation"] }
-# The app menu's About item: the one AppKit call that needs unsafe code, kept
-# in a crate of its own because this one forbids it.
+# The app menu's About and Settings items, and the installed fonts CoreText
+# lists for the data font: the AppKit and CoreText calls that need unsafe
+# code, kept in a crate of their own because this one forbids it.
 tabletist-appkit = { path = "crates/tabletist-appkit" }
 # Quit (Cmd+Q, the app menu, the Dock) reaches the app as a close request for
 # its window, which a tab with pending changes holds back to ask first

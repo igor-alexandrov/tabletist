@@ -1,17 +1,18 @@
 [package]
 name = "tabletist-appkit"
 version = "0.1.0"
-description = "The AppKit calls Tabletist cannot make without unsafe code"
+description = "The AppKit and CoreText calls Tabletist cannot make without unsafe code"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 # The workspace forbids unsafe code. Giving a menu item a target and an action
 # means defining an Objective-C class and sending messages the compiler cannot
-# check, so this crate carries the workspace's lints with `unsafe_code` lowered
-# to `deny`, allowed only in `about.rs`, `settings.rs`, `target.rs` and the
-# tests, each use with a SAFETY note. The app and the database layer keep
-# `forbid`.
+# check, and listing the installed fonts means reading CoreText's C statics and
+# untyped collections, so this crate carries the workspace's lints with
+# `unsafe_code` lowered to `deny`, allowed only in `about.rs`, `fonts.rs`,
+# `settings.rs`, `target.rs` and the tests, each use with a SAFETY note. The
+# app and the database layer keep `forbid`.
 [lints.rust]
 unsafe_code = "deny"
 
@@ -23,6 +24,11 @@ unwrap_used = "warn"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSMenu", "NSMenuItem"] }
+# CoreText's list of the installed fonts, for the data font's menu
+# (`fonts.rs`), and the CoreFoundation types it answers in. The versions
+# objc2-app-kit builds with; CoreText's crate is the one new crate.
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFSet", "CFString", "CFURL"] }
+objc2-core-text = { version = "0.3", default-features = false, features = ["std", "CTFontCollection", "CTFontDescriptor", "CTFontTraits"] }
 
 # AppKit's menus belong to the main thread, which the test harness keeps for
 # itself: these tests have their own `main`.
