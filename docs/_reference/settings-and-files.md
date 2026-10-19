@@ -25,7 +25,9 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 
 A second pane, **Appearance**, sets the theme, the text, and how the grids
 and the connection bar are drawn. Each change shows in every open window
-at once.
+at once, and in the preview under the options: two rows of a table under
+the bar of a dev connection, drawn as the grid and the bar are. Its rows
+are made in the app, so it needs no connection and reads no database.
 
 | Option | Choices | Default |
 | --- | --- | --- |

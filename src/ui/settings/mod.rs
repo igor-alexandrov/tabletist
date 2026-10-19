@@ -7,6 +7,7 @@
 
 mod agents;
 mod file_pane;
+mod preview;
 mod sheet;
 mod terminal;
 
