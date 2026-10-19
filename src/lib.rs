@@ -18,6 +18,7 @@ pub mod known_hosts;
 pub mod labels;
 #[cfg(target_os = "macos")]
 pub mod macos;
+pub mod managed;
 pub mod model;
 pub mod paths;
 pub mod relay;
