@@ -115,7 +115,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Keys | Do |
 | --- | --- |
 | Mod+T | New SQL editor |
-| Mod+Return | Run the statement at the cursor |
+| Mod+Return | Run the statement at the cursor, the whole script or the selection, as Settings › Editor says |
 | Mod+Shift+Return | Run all |
 | Mod+. | Cancel the run |
 | Mod+Shift+F | Format |
