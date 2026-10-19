@@ -132,6 +132,16 @@ pub enum Action {
     },
     /// Switch the sidebar between prefix groups and one flat list.
     ToggleFlatTree(ConnTabId),
+    /// Open the start screen's recent at `index`, as the screen lists
+    /// them: a table or view of the connection's list, or a SQL editor of
+    /// this window.
+    OpenRecent {
+        tab: ConnTabId,
+        index: usize,
+    },
+    /// Empty the connection's recents, and the window's SQL editors among
+    /// them. Nothing is lost, so nothing asks.
+    ClearRecents(ConnTabId),
     /// Hide or show the sidebar.
     ToggleSidebar(ConnTabId),
     /// Show timestamps in the grid to the microsecond, or to the second.
@@ -963,8 +973,11 @@ pub struct Workspace {
     pub needs_ssh_prompt: Option<String>,
     /// Where the arrow keys go.
     pub pane: Pane,
-    /// Objects opened lately, newest first.
-    pub recent: Vec<(ObjectRef, ObjectKind)>,
+    /// The SQL editors closed in this window that had a script, newest
+    /// first, at most [`crate::recents::KEPT`]: the start screen lists
+    /// them with the tables and views of `recents.json`, which are the
+    /// connection's, and opens one again with its script.
+    pub recent_sql: Vec<ClosedSql>,
     pub sidebar_hidden: bool,
     /// The grid shows timestamps in full rather than to the second.
     pub full_precision: bool,
@@ -1015,9 +1028,6 @@ pub struct Workspace {
     /// session is up.
     pub keep_access: bool,
 }
-
-/// How many objects the sidebar's Recent section keeps.
-pub const RECENT: usize = 5;
 
 #[derive(Debug)]
 pub enum SessionStatus {
@@ -3034,6 +3044,51 @@ impl Tree {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub u64);
 
+/// One row of the start screen's recents: a table or view of the
+/// connection's list (`recents.json`), or a SQL editor closed in this
+/// window with a script in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartRecent {
+    Object {
+        object: ObjectRef,
+        kind: ObjectKind,
+        opened: u64,
+    },
+    Sql {
+        /// Its place in the window's closed editors
+        /// (`Workspace::recent_sql`).
+        closed: usize,
+        /// The editor's number: `Query 1`.
+        number: u32,
+        /// The first comment line of its script, where it has one.
+        comment: Option<String>,
+        opened: u64,
+    },
+}
+
+/// A SQL editor closed with a script in it, as the start screen offers it
+/// again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedSql {
+    /// The number it had: `Query 1`.
+    pub number: u32,
+    pub text: String,
+    /// Whether its runs could write: an agent's statement opened read-only,
+    /// or a choice the person made, comes back as it was.
+    pub mode: RunMode,
+    /// When it was opened, in seconds since the Unix epoch.
+    pub opened: u64,
+}
+
+impl StartRecent {
+    /// When it was opened, in seconds since the Unix epoch.
+    pub fn opened(&self) -> u64 {
+        match self {
+            Self::Object { opened, .. } | Self::Sql { opened, .. } => *opened,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjectView {
     #[default]
@@ -4125,6 +4180,9 @@ pub struct SqlTab {
     pub id: TabId,
     /// "Query 3".
     pub number: u32,
+    /// When it was opened, in seconds since the Unix epoch: what the start
+    /// screen says of it once it is closed.
+    pub opened: u64,
     pub text: String,
     /// Byte offset of the editor's cursor, reported by the view.
     pub cursor: usize,
@@ -4194,6 +4252,7 @@ impl SqlTab {
         Self {
             id,
             number,
+            opened: crate::util::now_secs(),
             text: String::new(),
             cursor: 0,
             limit,
@@ -4505,7 +4564,7 @@ impl Workspace {
             save_ssh: false,
             needs_ssh_prompt: None,
             pane: Pane::Tree,
-            recent: Vec::new(),
+            recent_sql: Vec::new(),
             sidebar_hidden: false,
             full_precision: false,
             zone: None,
@@ -4522,6 +4581,12 @@ impl Workspace {
             woken: false,
             keep_access: false,
         }
+    }
+
+    /// Whether the window shows the start screen: its schema listing has
+    /// answered (listed, or failed), and no tab is open.
+    pub fn on_start(&self) -> bool {
+        self.opened() && self.active_tab.is_none()
     }
 
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
@@ -4680,7 +4745,8 @@ impl Workspace {
                 .values()
                 .any(|node| node.objects.is_loading())
             || self.databases.is_loading()
-            || self.server_version.is_loading()
+            // Not the server's version: asked with every connect for the
+            // start screen's line, and no use of the session.
             || self.columns.values().any(Fetch::is_loading)
     }
 

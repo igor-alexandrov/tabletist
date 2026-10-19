@@ -346,9 +346,24 @@ pub fn under<R>(
     palette: &Palette,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
+    let id = egui::Popup::default_response_id(button);
+    under_id(button, id, min_width, look, palette, add)
+}
+
+/// [`under`] with the pop-up's id given, so a key can open the menu with
+/// [`egui::Popup::open_id`] as a click on `button` does.
+pub fn under_id<R>(
+    button: &Response,
+    id: egui::Id,
+    min_width: f32,
+    look: &Look,
+    palette: &Palette,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
     let frame = frame(look, palette);
     let inside = min_width - frame.total_margin().sum().x;
     egui::Popup::menu(button)
+        .id(id)
         .frame(frame)
         .gap(GAP)
         .show(|ui| rows(ui, inside.max(0.0), add))

@@ -19,7 +19,7 @@ const MAY: [&str; 2] = ["src/keymap.rs", "src/typography/fonts.rs"];
 
 /// The files that are tests and nothing else, or scenes for screenshots: a
 /// test says what the user presses and sees, in its own words.
-const TESTS: [&str; 10] = [
+const TESTS: [&str; 11] = [
     "src/testing.rs",
     "src/shots.rs",
     "src/ui/complete_tests.rs",
@@ -30,6 +30,7 @@ const TESTS: [&str; 10] = [
     "src/ui/insert_audit_tests.rs",
     "src/ui/key_picker_tests.rs",
     "src/ui/label_tests.rs",
+    "src/ui/start_tests.rs",
 ];
 
 /// Every Rust file of the app, by its path from the repository root, with
