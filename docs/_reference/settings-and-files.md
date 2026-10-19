@@ -391,6 +391,13 @@ read_only = true
 access_max = "read"
 rows_max = 500
 timeout_max_secs = 10
+hidden = ["customers"]
+masked = ["orders.email"]
+
+[[rules]]
+name = "Analytics replica"
+match = { driver = "postgres", host = "replica.example.com" }
+visible_only = ["books", "authors", "orders"]
 
 [[rules]]
 name = "Shared files"
@@ -410,7 +417,9 @@ access_max = "off"
 | `rules[].access_max` | `"off"`, `"read"` | No ceiling |
 | `rules[].rows_max` | 1 to 5000 | No ceiling |
 | `rules[].timeout_max_secs` | 1 to 60 | No ceiling |
-| `rules[].hidden`, `rules[].visible_only`, `rules[].masked` | Names, as in `connections.toml` | Nothing hidden or masked |
+| `rules[].hidden` | Tables agents may not read, named as in `connections.toml`: `customers`, or `sales.customers` | Nothing hidden |
+| `rules[].visible_only` | The only tables agents may read, named the same way. Not in a rule that has `hidden` | Every table |
+| `rules[].masked` | Columns whose values agents get as `•••`: `orders.email`, or `sales.orders.email` | Nothing masked |
 
 A rule matches a connection by what it reaches. Each key in `match` must
 match, and `*` in it stands for any run of characters. `host` is compared
@@ -419,11 +428,27 @@ host. `path` is a SQLite file's, with `~` read as your home folder. A key
 the connection has no use for, such as `path` on PostgreSQL, does not
 match. Every rule that matches a connection applies.
 
-`hidden`, `visible_only` and `masked` are read, and are not yet applied
-as a rule's own list: on a connection a rule hides or masks something
-on, agents are Off. The file is read when Tabletist starts. The
-connection editor and Settings show your own settings, not the
-administrator's limits.
+A rule's tables and columns apply beside your own. A table is visible
+to agents only if your Tables setting and every matching rule let it be
+seen, so two `visible_only` lists leave the tables both name. A column
+is masked if you or any matching rule masks it. A view over a hidden
+table is hidden with it, as with your own.
+
+An entry in `hidden` or `masked` that names nothing in the database
+closes the connection to agents, as yours does: a table that was
+renamed is hidden by nothing under its new name. A rule may match
+several databases, and each must have what it names. An entry in
+`visible_only` that names nothing hides more, and stops nothing.
+
+When a rule is why an agent is refused, it is told so, with the same
+code as for your own settings: "customers is hidden for agents by your
+administrator's policy.", or, for a stale entry, "Agents may not use
+this connection until your administrator's policy is fixed.", which
+names no entry. `list_connections` gives each rule's entries apart from
+yours, under `administrator`, without the rule's name.
+
+The file is read when Tabletist starts. The connection editor and
+Settings show your own settings, not the administrator's limits.
 
 Tabletist reads the file strictly. A key it does not know, a value a key
 cannot have, or a version other than 1 makes the whole file unreadable,

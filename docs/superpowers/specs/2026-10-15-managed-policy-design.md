@@ -301,6 +301,15 @@ Phase 1 in five runs (cut on 2026-10-18), each a plan and a pull request:
   refusals and `list_connections` say which entries are the
   administrator's, and a rule's stale entry closes a connection with its
   own sentence.
+  **Built on 2026-10-18** (`2026-10-18-managed-policy-1b-tables-and-columns.md`).
+  Where it went otherwise: the checks take `agent::Sources`, the person's
+  `Source` and one for each matching rule, and `TableHidden` and
+  `MaskedColumnUsed` say whose entry it was (`By`); a rule's stale entry
+  is `Refusal::PolicyNeedsFixing`, told before the person's, and its
+  sentence names no entry; `list_connections` gives the rules' entries
+  under `administrator`, one object for each rule that hides or masks
+  anything, without the rule's name; a column both mask is refused as the
+  administrator's.
 - **1c. Windows.** The folder asked of the system, and the access check.
 - **1d. Watching, and the held change from a file that is not locked.**
 - **1e. The app's controls**, once the canvas has boards for them: the
