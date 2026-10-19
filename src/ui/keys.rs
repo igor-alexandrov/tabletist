@@ -1953,10 +1953,6 @@ pub fn after_frame(ctx: &egui::Context) {
     ctx.data_mut(|data| data.insert_temp(was_editing_id(), editing));
 }
 
-/// Single letters: the picker's keys, and in the terminal look the
-/// workspace's vim keys. Only when no text field has the keyboard. `field`
-/// is the column of the row panel's field that has it: `j` and `k` step
-/// the fields then, and the letters that edit a cell edit that field.
 /// The commands of the letters every look reads before anything else
 /// takes a key: [`letters`] takes such a character from the frame.
 const WINDOW_LETTERS: [Command; 4] = [
@@ -1982,6 +1978,10 @@ fn window_letter(app: &App, scopes: &[Scope], char: char) -> Option<Command> {
     }
 }
 
+/// Single letters: the picker's keys, and in the terminal look the
+/// workspace's vim keys. Only when no text field has the keyboard. `field`
+/// is the column of the row panel's field that has it: `j` and `k` step
+/// the fields then, and the letters that edit a cell edit that field.
 fn letters(
     app: &mut App,
     ctx: &egui::Context,
