@@ -1821,12 +1821,13 @@ holding once a policy file is there:
   (`unmatched = "off"`, the default then).
 - **A change to the policy file is not the person's either.** One that
   lets agents do less is taken at once, as here. One that lets them do
-  more (a rule removed, a ceiling raised, a table no longer hidden) is
+  more (a rule removed, access raised, a table no longer hidden) is
   taken at once only from a file that an administrator alone can change,
   which the spec calls locked. From a file that is not locked it is held
   like a change to the person's files, with its own `Raised` and the same
   bar, and **Put back** keeps the policy as it was shown, since the app
-  cannot write the file.
+  cannot write the file. Rows and timeouts are not compared, as the
+  person's are not.
 
 The floor applies after this check: a raise the person keeps is still
 capped by the rules.

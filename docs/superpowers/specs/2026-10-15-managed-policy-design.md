@@ -65,7 +65,7 @@ Success:
 
 | Question | Decision |
 |---|---|
-| Where | One fixed path per system, never moved by a variable: `/etc/tabletist/managed.toml` on Linux, `/Library/Application Support/Tabletist/managed.toml` on macOS, `%ProgramData%\Tabletist\managed.toml` on Windows, the folder asked of the system (`FOLDERID_ProgramData`), never taken from the variable. That call is unsafe code, so it lives in a small crate of its own, as `tabletist-appkit` does for macOS. |
+| Where | One fixed path per system, never moved by a variable: `/etc/tabletist/managed.toml` on Linux, `/Library/Application Support/Tabletist/managed.toml` on macOS, `%ProgramData%\Tabletist\managed.toml` on Windows, the folder asked of the system (`SHGetKnownFolderPath` with `FOLDERID_ProgramData`), never taken from the variable. That call is unsafe code, so it lives in a small crate of its own, as `tabletist-appkit` does for macOS. |
 | What it is | A floor. Each limit is combined with the person's setting so the stricter wins. Nothing in the person's files can loosen it. |
 | Matching | A rule names connections by what they reach (driver, host, port, database, SQLite path), with `*` globs, not by `id`. Connection ids are random and differ on each machine, and a duplicated connection must still match. |
 | Several rules | Every rule that matches a connection applies. The result is the same in any order. |
@@ -76,7 +76,7 @@ Success:
 | Held changes | `agents_shown.json` and its check stay as they are, on the person's files. The managed floor applies after that, to what the check lets through. A change to the managed file that lets agents do less applies at once. One that lets them do more applies at once from a locked file, and is held, like a change to the person's files, from one that is not. |
 | Reload | Watched while the app runs, like `settings.toml`, when its folder exists. A file that appears in a folder created later applies at the next start. |
 | `--demo` and tests | `AppDirs::at` puts the policy file under its root, so the demo and tests never read the machine's file. |
-| Dependencies | Nothing new is built. `toml` with `serde` is already a dependency, and the Windows folder call can use the `windows` crate already in `Cargo.lock`. Ed25519 for Phase 3 is `ed25519-dalek` 3.0.0, already in `Cargo.lock` through russh. |
+| Dependencies | Nothing new is built. `toml` with `serde` is already a dependency, and the Windows folder call can use `windows-sys` 0.59 with `Win32_UI_Shell` and `Win32_System_Com`, which `dirs-sys` (under `directories`) already builds. Ed25519 for Phase 3 is `ed25519-dalek` 3.0.0, already in `Cargo.lock` through russh. |
 
 Rejected:
 
@@ -175,7 +175,7 @@ For each connection, the effective setting is:
 
 | Setting | Effective |
 |---|---|
-| Read-only | Read-only if the person's setting or any matching rule says so |
+| Read-only | Read-only if the person's setting or any matching rule says so. This is the person's own sessions (`Workspace::new`, `App::send_connect`): an agent's session is read-only whatever the box says |
 | Agent access | The lowest of the person's access and each matching rule's `access_max`. Off when `agents.allowed` is `false`, or when no rule matches and `unmatched` is `"off"` |
 | Rows, timeout | The lowest of the person's value and each rule's ceiling |
 | A table | Visible to agents only if the person's Tables setting and every matching rule (its `hidden` or its `visible_only`) let it be seen |
@@ -210,18 +210,21 @@ person does not take it for more than it is.
 ### Changes to the file
 
 - **Agents may do less**: applied at once, locked or not.
-- **Agents may do more** (a rule removed, a ceiling raised, a table no
-  longer hidden, a column unmasked): applied at once from a locked file,
-  since only an administrator could have made it. From a file that is not
-  locked, held like a change to the person's files (MCP plan C.2), with
-  the same bar. **Keep** takes it. **Put back** keeps the policy as it was
-  last shown, since the app cannot write the file, until the file says
-  that again or the person keeps the change.
+- **Agents may do more** (a rule removed, the server allowed, access
+  raised, a table no longer hidden, a column unmasked): applied at once
+  from a locked file, since only an administrator could have made it.
+  From a file that is not locked, held like a change to the person's files
+  (MCP plan C.2), with the same bar. **Keep** takes it. **Put back** keeps
+  the policy as it was last shown, since the app cannot write the file,
+  until the file says that again or the person keeps the change.
+- **Rows and timeouts** are not held, from either file: the check of the
+  person's files does not compare them (`agents_shown.rs`), so a raised
+  ceiling is taken at once, as a raise of the person's own is.
 
-What was last shown of the policy is kept beside the person's settings in
-`agents_shown.json`. Editing that file can only make a change from an
-unlocked policy look already shown, which is what an unlocked file already
-allows.
+What was last shown of the policy is kept in `agents_shown.json`, in the
+state folder, beside what was shown of the person's settings. Editing that
+file can only make a change from an unlocked policy look already shown,
+which is what an unlocked file already allows.
 
 ### Failure
 
@@ -275,6 +278,27 @@ that hidden tables and masked columns both work in it from the first day.
 The checks take one `Tables` setting (`Connection::run_agent_read`'s
 `tables`, read by `Hidden`), so this phase lets them take several. The
 masked columns are already a list, and the sources' lists are joined.
+
+Phase 1 in five runs (cut on 2026-10-18), each a plan and a pull request:
+
+- **1a. The file and its limits, on Linux and macOS.** The path, the
+  strict reader, matching, the ownership check, failure, and the limits
+  that need no new check: `allowed`, `unmatched`, `access_max`, the rows
+  and timeout ceilings, `log_days_min`, and `read_only` on the person's
+  sessions. The file is read at the start. A rule with `hidden`,
+  `visible_only` or `masked` makes the connections it matches Off for
+  agents until 1b, which is safe and promises nothing. A failure is said in
+  the app's notice, the bar `connections.toml`'s failures use. The editor
+  still shows the person's own values. The reference page says what is
+  built. On Windows nothing is read until 1c.
+- **1b. Tables and columns from rules.** The checks take several `Tables`,
+  refusals and `list_connections` say which entries are the
+  administrator's, and a rule's stale entry closes a connection with its
+  own sentence.
+- **1c. Windows.** The folder asked of the system, and the access check.
+- **1d. Watching, and the held change from a file that is not locked.**
+- **1e. The app's controls**, once the canvas has boards for them: the
+  locked values and their wording, the failure's own bar.
 
 **2. Managed connections.** A locked file's `[[connections]]`, in the same
 shape as `connections.toml`'s, with an `id` the administrator chooses
