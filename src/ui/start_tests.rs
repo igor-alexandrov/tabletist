@@ -668,6 +668,36 @@ fn space_presses_a_focused_start_button_and_starts_no_search() {
     assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
 }
 
+/// A key the window reads as a command, typed on the macOS screen, is that
+/// command's, and moves the keyboard nowhere: `?` with the tree focused
+/// opens the list of keys, and the tree has the keyboard after it.
+#[test]
+fn a_typed_command_key_leaves_the_keyboard_where_it_was() {
+    let (mut harness, tab) = bookshop(Look::macos());
+    for _ in 0..8 {
+        if focused_name(&harness.settle()) == "Objects" {
+            break;
+        }
+        harness.press(Key::F6, Modifiers::NONE);
+    }
+    assert_eq!(focused_name(&harness.settle()), "Objects");
+    // The frame that brings `?` asks for Help and leaves the tree the
+    // keyboard; the search field is not asked for. (The list of keys then
+    // takes the keyboard for itself, as any dialog does.)
+    let tree = harness.frame(vec![
+        crate::testing::key(Key::Questionmark, Modifiers::NONE),
+        egui::Event::Text("?".into()),
+    ]);
+    assert_eq!(focused_name(&tree), "Objects");
+    harness.frame(vec![crate::testing::release(
+        Key::Questionmark,
+        Modifiers::NONE,
+    )]);
+    harness.settle();
+    assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
+}
+
 /// The Omarchy `/` search: `/` focuses the field while the screen has the
 /// keys, ctrl+n/p move among the matches, enter opens, and esc returns to
 /// the start lists.

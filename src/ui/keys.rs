@@ -558,22 +558,6 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .is_some_and(crate::model::Workspace::on_start);
     let searching = on_start_screen
         && ctx.memory(|memory| memory.has_focus(crate::ui::start::search_field_id(active)));
-    // On macOS the screen's search field takes what is typed, wherever the
-    // keyboard is: a character typed with no text field holding the
-    // keyboard asks for the search field, and is left in the frame for it
-    // to read. So the keyboard can stay in the sidebar until a letter is
-    // typed, and the sidebar's own filter keeps what is typed into it.
-    // Keys held with Cmd, Ctrl or Alt are shortcuts, and bring no
-    // character. A space alone is no search: Space presses the focused
-    // button or row, and a real keyboard sends it as text too.
-    if on_start_screen
-        && !app.look.terminal
-        && !ctx.text_edit_focused()
-        && typed_chars(ctx).iter().any(|char| !char.is_whitespace())
-    {
-        let field = crate::ui::start::search_field_id(active);
-        ctx.memory_mut(|memory| memory.request_focus(field));
-    }
     let scopes: &[Scope] = if on_picker {
         &[Scope::Connections]
     } else if open {
@@ -593,6 +577,26 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     } else {
         &[Scope::Grid]
     };
+    // On macOS the screen's search field takes what is typed, wherever the
+    // keyboard is: a character typed with no text field holding the
+    // keyboard asks for the search field, and is left in the frame for it
+    // to read. So the keyboard can stay in the sidebar until a letter is
+    // typed, and the sidebar's own filter keeps what is typed into it.
+    // Keys held with Cmd, Ctrl or Alt are shortcuts, and bring no
+    // character. A space alone is no search: Space presses the focused
+    // button or row, and a real keyboard sends it as text too. Nor is a
+    // letter the window reads as a command (`?`): `letters` takes it, and
+    // the keyboard stays where it was.
+    if on_start_screen
+        && !app.look.terminal
+        && !ctx.text_edit_focused()
+        && typed_chars(ctx)
+            .into_iter()
+            .any(|char| !char.is_whitespace() && window_letter(app, scopes, char).is_none())
+    {
+        let field = crate::ui::start::search_field_id(active);
+        ctx.memory_mut(|memory| memory.request_focus(field));
+    }
     // Normal mode: no text field has the keyboard. A chord the keymap
     // gives to normal mode is the field's own while one has it.
     let normal = !editing;
@@ -1953,6 +1957,31 @@ pub fn after_frame(ctx: &egui::Context) {
 /// workspace's vim keys. Only when no text field has the keyboard. `field`
 /// is the column of the row panel's field that has it: `j` and `k` step
 /// the fields then, and the letters that edit a cell edit that field.
+/// The commands of the letters every look reads before anything else
+/// takes a key: [`letters`] takes such a character from the frame.
+const WINDOW_LETTERS: [Command; 4] = [
+    Command::Reload,
+    Command::FindObject,
+    Command::ToggleTree,
+    Command::Help,
+];
+
+/// The command `char`, typed this frame, stands for among
+/// [`WINDOW_LETTERS`], in the first of `scopes` that reads it (the global
+/// scope's keys with each, so `?` is Help's everywhere).
+fn window_letter(app: &App, scopes: &[Scope], char: char) -> Option<Command> {
+    let nothing = |_: crate::keymap::When| false;
+    let typed = char.to_string();
+    let read = scopes
+        .iter()
+        .map(|scope| app.keymap.typed(app.layout(), *scope, &nothing, &typed))
+        .find(|read| *read != Typed::Nothing);
+    match read {
+        Some(Typed::Command(command)) if WINDOW_LETTERS.contains(&command) => Some(command),
+        _ => None,
+    }
+}
+
 fn letters(
     app: &mut App,
     ctx: &egui::Context,
@@ -1966,27 +1995,10 @@ fn letters(
     // taken from the frame, its key with it; any other is left for the
     // code below.
     let layout = app.layout();
-    let nothing = |_: crate::keymap::When| false;
-    let mine = [
-        Command::Reload,
-        Command::FindObject,
-        Command::ToggleTree,
-        Command::Help,
-    ];
     for char in typed_chars(ctx) {
-        let read = scopes
-            .iter()
-            .map(|scope| {
-                let typed = char.to_string();
-                app.keymap.typed(layout, *scope, &nothing, &typed)
-            })
-            .find(|read| *read != Typed::Nothing);
-        let Some(Typed::Command(command)) = read else {
+        let Some(command) = window_letter(app, scopes, char) else {
             continue;
         };
-        if !mine.contains(&command) {
-            continue;
-        }
         take_char(ctx, char);
         let tab = app.active_tab_id();
         match command {
