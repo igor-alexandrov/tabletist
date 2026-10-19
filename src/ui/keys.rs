@@ -218,6 +218,18 @@ pub(crate) fn asked(
     all
 }
 
+/// Whether `tab`'s server has another database to switch to: the menu of
+/// Switch database has something to show.
+fn switchable(app: &App, tab: ConnTabId) -> bool {
+    app.workspace(tab).is_some_and(|workspace| {
+        workspace
+            .databases
+            .value
+            .as_ref()
+            .is_some_and(|databases| databases.len() > 1)
+    })
+}
+
 /// The digit a command bound to a range (`alt+1..9`) was asked with, from
 /// nought. With Shift held the key reports what the digit types (`!`), so
 /// the key it is on counts too.
@@ -526,6 +538,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let on_tree = app
         .workspace(active)
         .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree);
+    // The start screen has the keys where the rows would: no tab is open,
+    // and the keyboard is not in the tree.
+    let start = !on_picker
+        && !on_tree
+        && app
+            .workspace(active)
+            .is_some_and(crate::model::Workspace::on_start);
     let scopes: &[Scope] = if on_picker {
         &[Scope::Connections]
     } else if open {
@@ -534,6 +553,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         &[Scope::Inspector]
     } else if on_tree {
         &[Scope::Sidebar]
+    } else if start {
+        &[Scope::Start]
     } else if agents {
         &[Scope::Agents]
     } else if sql.is_some() && sql_grid {
@@ -604,6 +625,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     }
     // The place of the tab asked for with its digit.
     let mut tab_asked = None;
+    // Whether the menu of the server's other databases was asked for, by
+    // the chord that opens it under the bar's own chip.
+    let mut menu_asked = false;
     ctx.input_mut(|input| {
         // The keymap says which key: each line asks whether its command's
         // chord went down, in the scope it is read in. The guards say when
@@ -728,6 +752,27 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         let switch = Command::SwitchTab;
         if in_workspace {
             tab_asked = digit_asked(input, keymap, layout, switch, Scope::Global, normal);
+        }
+        // The start screen's numbered rows, while it has the keys.
+        if start
+            && let Some(index) = digit_asked(
+                input,
+                keymap,
+                layout,
+                Command::OpenRecent,
+                Scope::Start,
+                normal,
+            )
+        {
+            actions.push(Action::OpenRecent { tab: active, index });
+        }
+        // Where the server has another database: with one, no menu is
+        // drawn, and an id left open would show it once the list came.
+        if in_workspace
+            && switchable(app, active)
+            && on(input, Command::SwitchDatabase, Scope::Global).count > 0
+        {
+            menu_asked = true;
         }
         if !on_sql && on(input, Command::Reload, Scope::Grid).count > 0 {
             // The tree reloads itself when it has the arrows (spec 5.10).
@@ -870,6 +915,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             }
         }
     });
+    // The menu opens as a click on the chip opens it: a server with one
+    // database has none, and the key does nothing.
+    if menu_asked {
+        let id = crate::ui::workspace::database_menu_id(active, false);
+        egui::Popup::open_id(ctx, id);
+    }
     // The tab at the place its digit named.
     if let Some(index) = tab_asked
         && let Some(workspace) = app.workspace(active)
@@ -887,6 +938,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         use crate::ui::focus::{self, Region};
         let from = match workspace.pane {
             crate::model::Pane::Tree => Region::Tree,
+            crate::model::Pane::Grid if workspace.on_start() => Region::Start,
             crate::model::Pane::Grid => Region::Grid,
         };
         // Which of `commands` was asked for first, by its place.
@@ -1990,6 +2042,8 @@ fn letters(
         return;
     };
     let tree = workspace.pane == crate::model::Pane::Tree;
+    // The start screen's letters are read while it has the keys.
+    let start = !tree && workspace.on_start();
     let panel = workspace.row_panel;
     let shown = workspace.row_panel_tab();
     let object = workspace.active_object_tab();
@@ -2404,6 +2458,20 @@ fn letters(
                     .map_or(0, |workspace| app.agents.here(&workspace.conn_id).len());
                 let name = app.agents_name(tab).unwrap_or_default();
                 crate::ui::agents::stop_here(ctx, tab, here, &name, app.locale, actions);
+            }
+            // The start screen's letters: its actions, by their keys.
+            (Some(Command::NewSqlTab), _) if start => actions.push(Action::NewSqlTab(tab)),
+            (Some(Command::EditConnection), _) if start => {
+                if let Some(conn) = app
+                    .workspace(tab)
+                    .map(|workspace| workspace.conn_id.clone())
+                {
+                    actions.push(Action::EditConnection(conn));
+                }
+            }
+            (Some(Command::SwitchDatabase), _) if start && switchable(app, tab) => {
+                let id = crate::ui::workspace::database_menu_id(tab, true);
+                egui::Popup::open_id(ctx, id);
             }
             (Some(Command::EditCell), _) if edits && alone => {
                 opened = true;

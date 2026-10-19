@@ -62,10 +62,12 @@ pub enum Scope {
     Prompt,
     /// The Agents tab.
     Agents,
+    /// The start screen: a connection's window with no tab open.
+    Start,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 10] = [
+    pub const ALL: [Scope; 11] = [
         Scope::Global,
         Scope::Connections,
         Scope::Sidebar,
@@ -76,6 +78,7 @@ impl Scope {
         Scope::Results,
         Scope::Prompt,
         Scope::Agents,
+        Scope::Start,
     ];
 
     /// The scope's name in `settings.toml` (`[keys.<scope>]`).
@@ -91,6 +94,7 @@ impl Scope {
             Self::Results => "results",
             Self::Prompt => "prompt",
             Self::Agents => "agents",
+            Self::Start => "start",
         }
     }
 
@@ -358,6 +362,7 @@ commands! {
     ChangeAgentAccess,
     MoveInAgentLevels,
     ShowAgentsFromBox,
+    OpenRecent,
     ToggleSidebar,
     PaneLeft,
     PaneDown,
@@ -578,7 +583,7 @@ impl Command {
             C::GoToConnectionWindow => {
                 info("Go to connection window", "Go to connection window", Window)
             }
-            C::SwitchDatabase => info("Switch database", "Switch database", Window).reserved(),
+            C::SwitchDatabase => info("Switch database", "Switch database", Window),
             C::Settings => info("Settings", "Settings", Window),
             C::LargerText => info("Larger text", "", Window),
             C::SmallerText => info("Smaller text", "", Window),
@@ -623,6 +628,7 @@ impl Command {
             )),
             C::MoveInAgentLevels => agents(info("Move among what agents may do", "", Prompts)),
             C::ShowAgentsFromBox => agents(info("Show the connection's Agents tab", "", Prompts)),
+            C::OpenRecent => info("Open a recent object", "", Navigation),
             C::ToggleAgentsLogScope => agents(info(
                 "Show every connection's calls in the log, or this one's",
                 "",
@@ -901,7 +907,8 @@ impl Binding {
                 | Scope::Grid
                 | Scope::Inspector
                 | Scope::Results
-                | Scope::Agents => Mode::Normal,
+                | Scope::Agents
+                | Scope::Start => Mode::Normal,
             },
             set => set,
         }
@@ -938,6 +945,7 @@ const PROMPT: &[Scope] = &[Scope::Prompt];
 const ROWS: &[Scope] = &[Scope::Grid, Scope::Results];
 const AGENTS: &[Scope] = &[Scope::Agents];
 const TREE_AND_GRID: &[Scope] = &[Scope::Sidebar, Scope::Grid];
+const START: &[Scope] = &[Scope::Start];
 const CELLS: &[Scope] = &[Scope::Grid, Scope::Inspector];
 
 /// The keymap. The rows of the settled table first in each part, then the
@@ -1114,6 +1122,14 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("shift+f6")]),
         ),
         bind(C::SwitchTab, GLOBAL, NONE, keys(&[k("alt+1..9")])),
+        // The start screen's own keys, while it has the keyboard: a
+        // numbered recent, and the letters of its actions. On the Mac the
+        // screen's buttons carry the global keys.
+        bind(C::OpenRecent, START, NONE, keys(&[k("1..9")])),
+        bind(C::NewSqlTab, START, NONE, keys(&[k("t")])),
+        bind(C::SwitchDatabase, START, NONE, keys(&[k("d")])),
+        bind(C::EditConnection, START, NONE, keys(&[k("e")])),
+        bind(C::ShowAgents, START, NONE, keys(&[k("a")])),
         bind(
             C::CloseTab,
             GLOBAL,
@@ -2028,6 +2044,10 @@ pub fn spell(keys: &'static str) -> Result<Spelled, Unread> {
     if let Some(key) = named(keys) {
         let mods = Mods::default();
         return Ok(Spelled::Strokes(vec![Stroke::Key { mods, key }]));
+    }
+    // The digits with nothing held: the start screen's rows.
+    if keys == "1..9" {
+        return Ok(Spelled::Digits(Mods::default()));
     }
     let parts: Vec<&str> = keys.split('+').collect();
     let modifier = |part: &str| matches!(part, "cmd" | "ctrl" | "alt" | "shift");

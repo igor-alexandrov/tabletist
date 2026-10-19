@@ -67,6 +67,9 @@ pub mod sql_complete;
 pub mod sql_editor;
 pub mod sql_results;
 pub mod sql_text;
+pub mod start;
+#[cfg(test)]
+mod start_tests;
 pub mod states;
 pub mod structure;
 pub mod terminal_dialog;
@@ -494,22 +497,23 @@ mod tests {
     }
 
     #[test]
-    fn opening_an_object_puts_it_first_in_recent() {
+    fn opening_an_object_puts_it_first_in_the_recents() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.click("orders");
         harness.click("users");
         let recent: Vec<String> = harness
             .app
-            .workspace(tab)
-            .unwrap()
-            .recent
+            .start_recents(tab)
             .iter()
-            .map(|(object, _)| object.name.clone())
+            .map(|recent| match recent {
+                crate::model::StartRecent::Object { object, .. } => object.name.clone(),
+                crate::model::StartRecent::Sql { number, .. } => format!("Query {number}"),
+            })
             .collect();
         assert_eq!(recent, ["users", "orders"]);
         harness.set_look(crate::theme::Look::macos());
-        assert!(harness.has("Recent orders"), "macOS lists them");
+        assert!(!harness.has("Recent orders"), "the sidebar lists none");
     }
 
     #[test]
@@ -2554,6 +2558,7 @@ value_tags   = true
             assert_eq!(harness.app.settings.group_digits, None);
             let tree = harness.settle();
             let selected = |name: &str| {
+                // A segment of the sheet is a radio button of its row's group.
                 let id = crate::testing::node(&tree, name, Role::RadioButton)
                     .unwrap_or_else(|| panic!("{name} is no segment"));
                 let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
@@ -4461,7 +4466,7 @@ value_tags   = true
         harness.click("users");
         harness.click("Close users");
         assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
-        assert!(harness.has("Select a table or view in the sidebar"));
+        assert!(harness.has("No table open"), "the start screen is back");
     }
 
     #[test]

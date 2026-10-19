@@ -151,18 +151,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             }
                         });
                 }
-                None => {
-                    ui.centered_and_justified(|ui| {
-                        Text::one(
-                            &look,
-                            widgets::body(&look),
-                            &gettext(app.locale, "Select a table or view in the sidebar"),
-                            app.palette.secondary,
-                        )
-                        .layout(ui.ctx())
-                        .label(ui);
-                    });
-                }
+                None => super::start::show(app, ui, tab),
             }
         });
 }
@@ -448,12 +437,12 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
 
 /// What the connection bar says: the open connections, and more about the
 /// one the bar belongs to.
-struct BarInfo {
-    env: crate::env::Environment,
+pub(super) struct BarInfo {
+    pub(super) env: crate::env::Environment,
     /// Whether the bar's own connection opens read-only.
-    read_only: bool,
-    database: String,
-    databases: Vec<String>,
+    pub(super) read_only: bool,
+    pub(super) database: String,
+    pub(super) databases: Vec<String>,
     tls: Option<(&'static str, Tone)>,
     ssh_host: Option<String>,
     chips: Vec<Chip>,
@@ -508,7 +497,7 @@ fn is_remote(workspace: &crate::model::Workspace) -> bool {
     }
 }
 
-fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
+pub(super) fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     use tabletist_db::Driver;
     let workspace = app.workspace(tab)?;
     let spec = &workspace.spec;
@@ -842,16 +831,25 @@ fn announce_switcher(
     });
 }
 
-/// The pop-up of the server's other databases, under the bar's own chip.
-fn database_menu(
+/// The id of the pop-up of the server's other databases: the bar's own
+/// chip's, or the start screen's button's. A key opens one with
+/// [`egui::Popup::open_id`].
+pub fn database_menu_id(tab: ConnTabId, start: bool) -> egui::Id {
+    egui::Id::new(("database-menu", tab.0, start))
+}
+
+/// The pop-up of the server's other databases, under the bar's own chip
+/// or the start screen's button (`response`), with `id` its own.
+pub(super) fn database_menu(
     response: &egui::Response,
+    id: egui::Id,
     tab: ConnTabId,
     info: &BarInfo,
     (look, palette): (&Look, &Palette),
     actions: &mut Vec<Action>,
 ) {
     let role = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary);
-    menu::under(response, response.rect.width(), look, palette, |ui| {
+    menu::under_id(response, id, response.rect.width(), look, palette, |ui| {
         for database in &info.databases {
             // Database names come from the server: nothing hidden.
             let name = display_safe(database);
@@ -1175,7 +1173,8 @@ fn mac_bar(
                     ui,
                     Rect::from_center_size(pos2(rect.right() - 16.0, center), vec2(12.0, 12.0)),
                 );
-                database_menu(&response, tab, info, (look, palette), actions);
+                let id = database_menu_id(tab, false);
+                database_menu(&response, id, tab, info, (look, palette), actions);
             }
         } else if response.clicked() {
             actions.push(Action::ActivateConnTab(chip.tab));
@@ -1443,7 +1442,8 @@ fn terminal_bar(
                     center,
                     Text::one(look, TextRole::OBody, "▾", palette.dim),
                 );
-                database_menu(&response, tab, info, (look, palette), actions);
+                let id = database_menu_id(tab, false);
+                database_menu(&response, id, tab, info, (look, palette), actions);
             }
         } else if response.clicked() {
             actions.push(Action::ActivateConnTab(chip.tab));
@@ -2125,6 +2125,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     if workspace.command.is_some() {
         command_line(app, ui, tab);
+        return;
+    }
+    // No tab: the start screen's keys, and that no table is open.
+    if workspace.active_tab.is_none() {
+        super::start::status_line(app, ui, tab);
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;

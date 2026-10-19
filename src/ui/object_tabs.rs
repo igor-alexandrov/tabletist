@@ -75,9 +75,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .collect();
     let active = workspace.active_tab;
     let row_panel = workspace.row_panel;
-    if tabs.is_empty() && !look.terminal {
-        return;
-    }
+    // With no tab the strip is empty, and the start screen stands under
+    // it: nothing of a tab's to toggle.
+    let empty = tabs.is_empty();
     let mut actions = Vec::new();
     let fill = if look.terminal {
         palette.panel
@@ -91,7 +91,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .frame(Frame::new().fill(fill))
         .show(ui, |ui| {
             let full = ui.max_rect();
-            focus::region(ui, focus::Region::Tabs, full);
+            // With no tab there is nothing here to step to.
+            if !empty {
+                focus::region(ui, focus::Region::Tabs, full);
+            }
             let rule = if look.terminal {
                 palette.outline
             } else {
@@ -207,6 +210,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // The row panel's toggle, in every look and on every tab: a SQL
             // editor's result has a row panel too. A closed panel has no
             // button of its own left to open it with.
+            if empty {
+                return;
+            }
             let cell = Rect::from_min_max(pos2(bar.right() - TOGGLE_CELL, bar.top()), bar.max);
             ui.painter().rect_filled(cell, CornerRadius::ZERO, fill);
             widgets::vline(ui, cell.left() + 0.5, bar.y_range(), rule);

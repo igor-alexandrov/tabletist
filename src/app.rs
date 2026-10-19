@@ -19,8 +19,8 @@ use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
-    Reach, ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState,
-    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
+    Reach, ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId,
+    TestState, TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -132,6 +132,8 @@ pub struct App {
     /// not be read, when no window could be open and the file would lose
     /// every connection's tables.
     writes_session: bool,
+    /// What was opened lately on each connection: `recents.json`.
+    pub recents: crate::recents::Recents,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -291,6 +293,7 @@ impl App {
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let session = crate::session::Session::load(&dirs.session_file());
+        let recents = crate::recents::Recents::load(&dirs.recents_file());
         let writes_session = loaded_connections.problem.is_none();
         // An installed data font is read once the window exists (`attach`).
         let look = crate::theme::Look::for_platform().with_text(&settings, false);
@@ -316,6 +319,7 @@ impl App {
             table_lists_unread,
             session,
             writes_session,
+            recents,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -1180,6 +1184,20 @@ impl App {
                     && let Some(index) = workspace.tabs.iter().position(|t| t.id() == id)
                 {
                     let closed = workspace.tabs.remove(index);
+                    // An editor with a script is offered again on the
+                    // start screen; an empty one has nothing to offer.
+                    if let Some(sql) = closed.as_sql().filter(|sql| !sql.text.trim().is_empty()) {
+                        workspace.recent_sql.insert(
+                            0,
+                            crate::model::ClosedSql {
+                                number: sql.number,
+                                text: sql.text.clone(),
+                                mode: sql.mode,
+                                opened: sql.opened,
+                            },
+                        );
+                        workspace.recent_sql.truncate(crate::recents::KEPT);
+                    }
                     let session = workspace.session;
                     let editor = closed.as_sql().map(|sql| (tab, sql.id));
                     if workspace.active_tab == Some(id) {
@@ -1342,6 +1360,45 @@ impl App {
             Action::GridKeys(tab) => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Grid;
+                }
+            }
+            Action::OpenRecent { tab, index } => {
+                // The screen's rows, as it numbers them: the recents, or
+                // on a first visit the largest tables.
+                let recents = self.start_recents(tab);
+                let row = if recents.is_empty() {
+                    self.start_largest(tab)
+                        .get(index)
+                        .map(|(object, _)| StartRecent::Object {
+                            object: object.clone(),
+                            kind: ObjectKind::Table,
+                            opened: 0,
+                        })
+                } else {
+                    recents.get(index).cloned()
+                };
+                match row {
+                    Some(StartRecent::Object { object, kind, .. }) => {
+                        self.apply(Action::OpenObject {
+                            tab,
+                            object,
+                            kind,
+                            pin: true,
+                        });
+                    }
+                    Some(StartRecent::Sql { closed, .. }) => self.reopen_sql(tab, closed),
+                    None => {}
+                }
+            }
+            Action::ClearRecents(tab) => {
+                let Some(conn) = self.workspace_mut(tab).map(|workspace| {
+                    workspace.recent_sql.clear();
+                    workspace.conn_id.0.clone()
+                }) else {
+                    return;
+                };
+                if self.recents.clear(&conn) {
+                    self.save_recents();
                 }
             }
             Action::SelectCell { tab, id, cell } => {
@@ -2428,7 +2485,6 @@ impl App {
                     workspace
                         .tabs
                         .retain(|open| matches!(open, Tab::Sql(_) | Tab::Agents(_)));
-                    workspace.recent.clear();
                     workspace.active_tab = workspace
                         .active_tab
                         .filter(|id| workspace.tab(*id).is_some())
@@ -2543,6 +2599,10 @@ impl App {
                     // And the tables its window last had.
                     if self.session.forget(&id) {
                         self.save_session();
+                    }
+                    // And what was opened lately on it.
+                    if self.recents.clear(&id.0) {
+                        self.save_recents();
                     }
                     // A launch that was to open it shows the connections.
                     let chosen = crate::settings::Launch::Connection {
@@ -3612,6 +3672,8 @@ impl App {
                 schema,
                 result,
             } => {
+                // A listing that failed says nothing of what exists.
+                let listed = result.is_ok();
                 if let Some(tab) = self.tab_for_session(session)
                     && let Some(workspace) = self.workspace_mut(tab)
                     && let Some(node) = workspace.tree.nodes.get_mut(&schema)
@@ -3635,6 +3697,25 @@ impl App {
                         if let Some(object) = workspace.object_tab_mut(id) {
                             object.estimated_rows = Some(estimate);
                         }
+                    }
+                    // A recent of the schema that the list no longer has
+                    // is gone: it is dropped, without a word.
+                    let conn = workspace.conn_id.0.clone();
+                    let database = crate::session::database_of(&workspace.spec);
+                    let listed_names: Vec<String> = workspace
+                        .tree
+                        .nodes
+                        .get(&schema)
+                        .and_then(|node| node.objects.value.as_ref())
+                        .map(|objects| objects.iter().map(|info| info.name.clone()).collect())
+                        .unwrap_or_default();
+                    let present = |name: &str| listed_names.iter().any(|known| known == name);
+                    if listed
+                        && self
+                            .recents
+                            .drop_missing(&conn, &database, &schema, present)
+                    {
+                        self.save_recents();
                     }
                 }
             }
@@ -4172,6 +4253,115 @@ impl App {
             path: self.dirs.table_lists_file(),
             file: StateFile::TableLists(lists),
         });
+    }
+
+    /// Saves what was opened lately on each connection, on the backend.
+    fn save_recents(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.recents_file(),
+            file: StateFile::Recents(self.recents.clone()),
+        });
+    }
+
+    /// What the start screen of `tab` lists as recent, newest first and at
+    /// most [`crate::recents::SHOWN`]: the connection's tables and views of
+    /// the window's database, those whose kind this version knows, and the
+    /// window's SQL editors closed with a script.
+    pub fn start_recents(&self, tab: ConnTabId) -> Vec<StartRecent> {
+        let Some(workspace) = self.workspace(tab) else {
+            return Vec::new();
+        };
+        let database = crate::session::database_of(&workspace.spec);
+        let mut rows: Vec<StartRecent> = self
+            .recents
+            .of(&workspace.conn_id.0, &database)
+            .into_iter()
+            .filter_map(|recent| {
+                Some(StartRecent::Object {
+                    object: recent.object(),
+                    kind: recent.object_kind()?,
+                    opened: recent.opened,
+                })
+            })
+            .collect();
+        rows.extend(
+            workspace
+                .recent_sql
+                .iter()
+                .enumerate()
+                .map(|(closed, sql)| StartRecent::Sql {
+                    closed,
+                    number: sql.number,
+                    comment: crate::recents::first_comment(&sql.text),
+                    opened: sql.opened,
+                }),
+        );
+        rows.sort_by_key(|row| std::cmp::Reverse(row.opened()));
+        rows.truncate(crate::recents::SHOWN);
+        rows
+    }
+
+    /// What the start screen of `tab` lists on a first visit, with no
+    /// recent to show: the shown schema's largest tables by the catalog's
+    /// estimate, at most [`crate::recents::SHOWN`], with that estimate.
+    /// Tables the catalog has no estimate for come last, by name, so a
+    /// SQLite database lists its tables by name. Nothing is queried.
+    pub fn start_largest(&self, tab: ConnTabId) -> Vec<(ObjectRef, Option<u64>)> {
+        let Some(workspace) = self.workspace(tab) else {
+            return Vec::new();
+        };
+        let Some(schema) = self.start_schema(tab) else {
+            return Vec::new();
+        };
+        let schema = schema.as_str();
+        let mut tables: Vec<(ObjectRef, Option<u64>)> = workspace
+            .tree
+            .nodes
+            .get(schema)
+            .and_then(|node| node.objects.value.as_deref())
+            .into_iter()
+            .flatten()
+            .filter(|info| info.kind == ObjectKind::Table)
+            .map(|info| (ObjectRef::new(schema, &info.name), info.estimated_rows))
+            .collect();
+        tables.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
+        tables.truncate(crate::recents::SHOWN);
+        tables
+    }
+
+    /// The schema the start screen counts and lists tables of: the one
+    /// the sidebar shows.
+    pub fn start_schema(&self, tab: ConnTabId) -> Option<String> {
+        let workspace = self.workspace(tab)?;
+        workspace
+            .tree
+            .shown_schema(workspace.driver, self.settings.show_system_schemas)
+    }
+
+    /// Opens the start screen's SQL recent at `closed`: an editor with
+    /// the script the closed one had, which then is no recent any more.
+    fn reopen_sql(&mut self, tab: ConnTabId, closed: usize) {
+        let Some(kept) = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.recent_sql.get(closed).cloned())
+        else {
+            return;
+        };
+        let Some(id) = self.new_sql_tab(tab) else {
+            return;
+        };
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.recent_sql.remove(closed);
+            // It is the editor it was, by its number too: the one the new
+            // editor took goes back.
+            workspace.next_query -= 1;
+            if let Some(sql) = workspace.sql_tab_mut(id) {
+                sql.text = kept.text;
+                sql.opened = kept.opened;
+                sql.number = kept.number;
+                sql.mode = kept.mode;
+            }
+        }
     }
 
     /// Saves when each connection last connected, on the backend. A file
@@ -4853,7 +5043,6 @@ impl App {
     /// opened while the session was closed for being idle).
     fn ask_server_version(&mut self, tab: ConnTabId) {
         if let Some(workspace) = self.workspace(tab)
-            && workspace.sql_tabs().next().is_some()
             && workspace.server_version.needs_load()
         {
             let session = workspace.session;
@@ -5921,12 +6110,23 @@ impl App {
     pub fn open_object(&mut self, tab: ConnTabId, object: ObjectRef, kind: ObjectKind, pin: bool) {
         let page_size = self.settings.page_size;
         let new_id = TabId(self.next_id());
+        // Opened, it is the connection's newest recent, whether its tab
+        // was open already or not. A connection deleted while its window
+        // is open keeps nothing: its entry went with it.
+        if let Some(workspace) = self
+            .workspace(tab)
+            .filter(|workspace| self.connections.get(&workspace.conn_id).is_some())
+        {
+            let database = crate::session::database_of(&workspace.spec);
+            let conn = workspace.conn_id.0.clone();
+            let now = crate::util::now_secs();
+            let recent = crate::recents::Recent::of(&object, kind, &database, now);
+            self.recents.note(&conn, recent);
+            self.save_recents();
+        }
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
-        workspace.recent.retain(|(seen, _)| *seen != object);
-        workspace.recent.insert(0, (object.clone(), kind));
-        workspace.recent.truncate(crate::model::RECENT);
         workspace.tree.reveal(&object);
         let existing = workspace
             .object_tabs_mut()
@@ -6627,6 +6827,9 @@ impl App {
                 Some(left) => next = Some(next.map_or(left, |next| next.min(left))),
                 None => {
                     workspace.status = SessionStatus::Idle;
+                    // The version it was asked for, where it had not
+                    // answered, is asked of the next session.
+                    workspace.server_version.pending = None;
                     due.push(workspace.session);
                 }
             }
@@ -11511,9 +11714,21 @@ masked = ["orders.email"]
         let tab = connect_tab(&mut harness);
         let first = open(&mut harness, tab, "users", true);
         open(&mut harness, tab, "orders", true);
-        let sent = harness.app.backend.sent.len();
+        let sent = fetches(&harness);
         assert_eq!(open(&mut harness, tab, "users", false), first);
-        assert_eq!(harness.app.backend.sent.len(), sent);
+        assert_eq!(fetches(&harness), sent, "the recent's save is no fetch");
+    }
+
+    /// How many commands were sent that are not a state file's save: an
+    /// open writes the recents, which asks nothing of the database.
+    fn fetches(harness: &Harness) -> usize {
+        harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .filter(|command| !matches!(command, Command::Save { .. }))
+            .count()
     }
 
     #[test]
@@ -11655,21 +11870,21 @@ masked = ["orders.email"]
     }
 
     #[test]
-    fn connecting_without_a_sql_editor_does_not_ask_for_the_version() {
+    fn connecting_asks_for_the_version_once_per_session() {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
+        // The start screen's line names the server: asked with the connect,
+        // whether an editor is open or not.
+        assert_eq!(version_requests(&harness, 0).len(), 1);
         open(&mut harness, tab, "users", true);
         harness.app.apply(Action::Reconnect(tab));
-        answer_connect(&mut harness);
-        assert!(version_requests(&harness, 0).is_empty());
+        let sent = harness.app.backend.sent.len();
         assert!(
-            harness
-                .app
-                .workspace(tab)
-                .unwrap()
-                .server_version
-                .needs_load()
+            version_requests(&harness, sent).is_empty(),
+            "not before the session is up"
         );
+        answer_connect(&mut harness);
+        assert_eq!(version_requests(&harness, sent).len(), 1, "once it is");
     }
 
     #[test]
@@ -11809,13 +12024,15 @@ masked = ["orders.email"]
     }
 
     #[test]
-    fn sql_tabs_are_numbered_per_connection_and_ask_for_the_version() {
+    fn sql_tabs_are_numbered_per_connection_and_share_the_version() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         open(&mut harness, tab, "users", true);
         harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
         harness.app.apply(Action::NewSqlTab(tab));
-        assert!(matches!(
+        // Asked with the connect, for the start screen: the editor asks
+        // nothing more.
+        assert!(!matches!(
             last_sent(&harness.app),
             Command::ServerVersion { .. }
         ));
@@ -14382,6 +14599,9 @@ masked = ["orders.email"]
     fn switching_database_keeps_sql_editors_and_drops_object_tabs() {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
+        // A server with databases to switch between: the recents are each
+        // database's own.
+        harness.app.workspace_mut(tab).unwrap().spec.driver = Driver::Postgres;
         let users = open(&mut harness, tab, "users", true);
         let first = harness.add_sql_tab(tab);
         open(&mut harness, tab, "orders", true);
@@ -14392,7 +14612,7 @@ masked = ["orders.email"]
         workspace.active_tab = Some(users);
         workspace.sql_tab_mut(second).unwrap().text = "SELECT 1".into();
         assert!(workspace.sql_tab(second).unwrap().is_running());
-        assert_eq!(workspace.recent.len(), 2);
+        assert_eq!(harness.app.start_recents(tab).len(), 2);
         harness.app.apply(Action::SwitchDatabase {
             tab,
             database: "other".into(),
@@ -14400,7 +14620,10 @@ masked = ["orders.email"]
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(strip(&harness, tab), vec![first, second]);
         assert_eq!(workspace.object_tabs().count(), 0);
-        assert!(workspace.recent.is_empty(), "they are the other database's");
+        assert!(
+            harness.app.start_recents(tab).is_empty(),
+            "they are the other database's"
+        );
         assert_eq!(
             workspace.active_tab,
             Some(first),
@@ -16523,14 +16746,13 @@ masked = ["orders.email"]
             let mut harness = Harness::new();
             let (tab, _, used) = loaded(&mut harness);
             harness.app.close_idle(used + 30 * MINUTE);
+            let closed = harness.app.backend.sent.len();
             harness.add_sql_tab(tab);
             assert!(
-                !harness
-                    .app
-                    .backend
-                    .sent
+                !harness.app.backend.sent[closed..]
                     .iter()
-                    .any(|c| matches!(c, Command::ServerVersion { .. }))
+                    .any(|c| matches!(c, Command::ServerVersion { .. })),
+                "nothing is asked of a closed session"
             );
             harness.app.apply(Action::Refresh(tab));
             let (session, request) = last_connect(&harness);
@@ -19030,7 +19252,7 @@ masked = ["orders.email"]
             harness
                 .app
                 .apply(Action::ActivateTab { tab, id: users_tab });
-            let before = harness.app.backend.sent.len();
+            let before = super::fetches(&harness);
             let follow = || Action::FollowForeignKey {
                 tab,
                 object: ObjectRef::new("main", "orders"),
@@ -19039,7 +19261,7 @@ masked = ["orders.email"]
             };
             harness.app.apply(follow());
             assert_eq!(leave_prompt(&harness), Some(true));
-            assert_eq!(harness.app.backend.sent.len(), before, "nothing ran");
+            assert_eq!(super::fetches(&harness), before, "nothing ran");
             let held = object(&harness, tab, orders);
             assert!(held.filter.rows.is_empty() && held.query.filters.is_empty());
             assert_eq!(held.edits.cells.len(), 1);

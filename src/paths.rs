@@ -135,6 +135,14 @@ impl AppDirs {
         self.state.join("session.json")
     }
 
+    /// What was opened lately on each saved connection, for the start
+    /// screen. Of this computer, and written when something opens, when
+    /// Clear is pressed, when an object listed no more is dropped, and when
+    /// a connection is deleted.
+    pub fn recents_file(&self) -> PathBuf {
+        self.state.join("recents.json")
+    }
+
     /// The note that the connections are kept in `connections.toml`: made
     /// at the first start that finds that file. Once it is there, what an
     /// older version kept in `connections.json` is never read again,

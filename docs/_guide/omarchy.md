@@ -30,6 +30,7 @@ back.
 | Ctrl+Shift+1 to 9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection |
 | Ctrl+Shift+W | Close the connection |
 | Ctrl+T | New SQL editor |
+| Ctrl+Shift+D | Switch database, where the server has another |
 | Alt+1 to 9 | Go to that tab |
 | Ctrl+Shift+[ and ] | Previous and next tab |
 | Ctrl+W | Close the tab. While you type in a field it deletes a word instead |
@@ -88,6 +89,26 @@ list instead.
 | `R` | Reload the list |
 | `ga` | Show the Agents tab |
 | Ctrl+B | Hide the sidebar |
+
+### The start screen
+
+A window with no tab open shows the start screen in the main pane: the
+connection in one line (a production connection gets its red strip there,
+with `read-only` where it is), the five tables, views and SQL editors you
+opened last on this connection, numbered, and under `start` the ways to
+begin. On your first visit it lists the largest tables instead, from the
+database's statistics, so nothing is queried (a SQLite file lists its
+tables by name). The status line says `-- START --` while no tab is open.
+After a connect the keyboard is in the sidebar; Ctrl+L gives it to the
+screen, whose border lights, and Ctrl+H puts it back.
+
+| Keys | Do |
+| --- | --- |
+| `1` to `9` | Open that row |
+| `t` | New SQL editor |
+| `d` | Switch database, where the server has another |
+| `e` | Edit the connection |
+| `a` | Show the Agents tab |
 
 ### A table
 
