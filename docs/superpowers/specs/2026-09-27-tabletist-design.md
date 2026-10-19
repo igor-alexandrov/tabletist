@@ -571,7 +571,9 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
   every look: a closed panel has no button of its own to open it with).
   Follows the grid selection. It takes at most half the
   width beside the sidebar; the width it was dragged to comes back when the
-  window has room again.
+  window has room again. Whether it is shown is kept with the connection's
+  window in `session.json`, and comes back when the connection opens,
+  whether or not its tables are reopened.
 - One entry per field: name, type, and the full value as selectable read-only
   text. JSON up to 256 KiB is a highlighted tree in monospace: keys keep
   their order, objects and arrays fold (all open up to 40 lines, else only
