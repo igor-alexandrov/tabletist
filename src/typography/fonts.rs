@@ -2,9 +2,12 @@
 //!
 //! - Standard: Inter (fastframe's set-up), with egui's monospace for data.
 //! - macOS: IBM Plex Sans (400, 500, 600) and IBM Plex Mono (400, 500),
-//!   bundled: `plex-sans-400` ... `plex-mono-500`; and JetBrains Mono
-//!   (400, 500), the other face data can be drawn in: `jetbrains-mono-400`
-//!   and `jetbrains-mono-500`.
+//!   bundled: `plex-sans-400` ... `plex-mono-500`; JetBrains Mono (400,
+//!   500), the other bundled face data can be drawn in: `jetbrains-mono-400`
+//!   and `jetbrains-mono-500`; and the installed font the settings name for
+//!   the data, where one was read ([`super::installed_font`]):
+//!   `installed-mono-400` and `installed-mono-500`, holding Plex Mono
+//!   without one.
 //! - Omarchy: the desktop's monospace font at 400, 500 and 700 (fontconfig
 //!   reads it, [`super::desktop_font`]), or the bundled JetBrains Mono when
 //!   it found none: `omarchy-mono-400` ... `omarchy-mono-700`.
@@ -128,16 +131,19 @@ fn alias(fonts: &mut FontDefinitions, name: &str, from: &FontFamily) {
     fonts.families.insert(FontFamily::Name(name.into()), list);
 }
 
-/// The terminal look's monospace at 400, 500 and 700.
+/// The terminal look's monospace at 400, 500 and 700, or the installed
+/// font macOS draws data in at the same.
 pub type TerminalFaces = [Arc<FontData>; 3];
 
 /// Replaces the faces fastframe set up with the look's. `desktop` is the
-/// desktop's own monospace that fontconfig gave the terminal look (never in
-/// tests or screenshots), which has the bundled one drawn without it.
+/// font read from the system for the settings' name (never in tests or
+/// screenshots): the desktop's own monospace that fontconfig gave the
+/// terminal look, which has the bundled one drawn without it, or the
+/// installed font macOS draws data in.
 pub fn configure(fonts: &mut FontDefinitions, look: &Look, desktop: Option<&TerminalFaces>) {
     match look.faces.typeface {
         Typeface::Inter => inter(fonts),
-        Typeface::Plex => plex(fonts),
+        Typeface::Plex => plex(fonts, desktop),
         Typeface::Terminal => terminal(fonts, desktop),
     }
 }
@@ -164,7 +170,7 @@ fn inter(fonts: &mut FontDefinitions) {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn plex(fonts: &mut FontDefinitions) {
+fn plex(fonts: &mut FontDefinitions, installed: Option<&TerminalFaces>) {
     for weight in [400, 500, 600] {
         let name = family_name(Typeface::Plex, Kind::Sans, weight);
         fonts
@@ -188,6 +194,22 @@ fn plex(fonts: &mut FontDefinitions) {
             .font_data
             .insert(name.clone(), weighted(JETBRAINS_MONO, f32::from(weight)));
         own(fonts, &name, &name, &FontFamily::Monospace);
+    }
+    // The installed font the settings name, where one was read. Without
+    // one its families hold Plex Mono, so a look that names them draws.
+    for (weight, face) in [(400, 0), (500, 1)] {
+        let name = data_family_name(DataFace::Installed, weight);
+        match installed {
+            Some(faces) => {
+                fonts.font_data.insert(name.clone(), faces[face].clone());
+                own(fonts, &name, &name, &FontFamily::Monospace);
+            }
+            None => {
+                fonts.font_data.remove(&name);
+                let plex = family_name(Typeface::Plex, Kind::Mono, weight);
+                own(fonts, &name, &plex, &FontFamily::Monospace);
+            }
+        }
     }
     let sans = |weight| family_name(Typeface::Plex, Kind::Sans, weight);
     lead(fonts, FontFamily::Proportional, &sans(400));
@@ -216,7 +238,7 @@ fn plex(fonts: &mut FontDefinitions) {
 }
 
 #[cfg(not(any(target_os = "macos", test)))]
-fn plex(fonts: &mut FontDefinitions) {
+fn plex(fonts: &mut FontDefinitions, _installed: Option<&TerminalFaces>) {
     inter(fonts);
 }
 
@@ -471,7 +493,7 @@ mod tests {
             font: Some("JetBrains Mono".into()),
             ..Settings::default()
         };
-        let jetbrains = Look::macos().with_text(&settings).faces;
+        let jetbrains = Look::macos().with_text(&settings, false).faces;
         assert_eq!(family(jetbrains, TextRole::GridCell), "jetbrains-mono-400");
         assert_eq!(
             family(jetbrains, TextRole::CompletionMatch),
@@ -484,6 +506,41 @@ mod tests {
         // JetBrains Mono's line centres on its capitals: no shift for them.
         let laid = Text::in_faces(jetbrains).add(TextRole::GridCell, "H", egui::Color32::WHITE);
         assert_eq!(laid.capitals, None);
+    }
+
+    #[test]
+    fn macos_draws_data_in_the_installed_font_read() {
+        use crate::settings::Settings;
+        let settings = Settings {
+            font: Some("Fira Code".into()),
+            ..Settings::default()
+        };
+        let faces = Look::macos().with_text(&settings, true).faces;
+        let family = |weight: u16| FontFamily::Name(format!("installed-mono-{weight}").into());
+        assert_eq!(TextRole::GridCell.font_id(faces).family, family(400));
+        assert_eq!(TextRole::CompletionMatch.font_id(faces).family, family(500));
+        // Its capitals are not known: no shift for them.
+        let laid = Text::in_faces(faces).add(TextRole::GridCell, "H", egui::Color32::WHITE);
+        assert_eq!(laid.capitals, None);
+        // Before one is read, its families hold Plex Mono.
+        let fonts = configured(&Look::macos());
+        assert_eq!(first(&fonts, family(400)), "plex-mono-400");
+        assert_eq!(first(&fonts, family(500)), "plex-mono-500");
+        // Read: they lead with its faces, the fallbacks behind.
+        let read = |bytes: &'static [u8]| Arc::new(FontData::from_static(bytes));
+        let installed = [read(JETBRAINS_MONO), read(PLEX_MONO_MEDIUM), read(KEYS)];
+        let mut fonts = configured(&Look::macos());
+        configure(&mut fonts, &Look::macos(), Some(&installed));
+        for (weight, bytes) in [(400, JETBRAINS_MONO), (500, PLEX_MONO_MEDIUM)] {
+            let name = first(&fonts, family(weight));
+            assert_eq!(name, format!("installed-mono-{weight}"));
+            assert_eq!(fonts.font_data[&name].font.len(), bytes.len());
+            assert!(fonts.families[&family(weight)].len() > 1);
+        }
+        // And back to Plex Mono when none is.
+        configure(&mut fonts, &Look::macos(), None);
+        assert_eq!(first(&fonts, family(400)), "plex-mono-400");
+        assert!(!fonts.font_data.contains_key("installed-mono-400"));
     }
 
     #[test]

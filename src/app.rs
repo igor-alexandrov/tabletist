@@ -30,6 +30,8 @@ use crate::theme::{self, Catalog, Palette};
 mod editing;
 mod key_picker;
 mod labels;
+#[cfg(test)]
+mod startup_tests;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -123,6 +125,13 @@ pub struct App {
     /// id, as the file had them: a newer version may have written them,
     /// and they are written back with the others.
     table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
+    /// What was open at the last quit, and each connection's tables as
+    /// its window last had them, from session.json.
+    pub session: crate::session::Session,
+    /// Whether session.json is written: not while the connections could
+    /// not be read, when no window could be open and the file would lose
+    /// every connection's tables.
+    writes_session: bool,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -141,7 +150,7 @@ pub struct App {
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
     /// Whether the desktop's themes are followed (not in tests or the demo).
-    follow_desktop: bool,
+    pub(crate) follow_desktop: bool,
     /// The settings named another theme since the last `logic`.
     theme_changed: bool,
     /// The light or dark the window's own parts were last told to take:
@@ -160,8 +169,13 @@ pub struct App {
     /// once.
     pin_told: Option<String>,
     /// What fontconfig gave the terminal look for the font the settings
-    /// name: nothing in tests, the demo and the other looks.
+    /// name, or CoreText macOS's data: nothing in tests, the demo and
+    /// Windows.
     pub desktop_font: crate::typography::desktop_font::Read,
+    /// The installed monospace families macOS's data font menu lists after
+    /// the bundled faces: read each time Settings opens, none in tests and
+    /// the demo.
+    pub installed_fonts: Vec<String>,
     /// The number of the last font read asked for, and of the newest one
     /// taken, as for the theme's.
     font_asked: u64,
@@ -276,7 +290,10 @@ impl App {
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
-        let look = crate::theme::Look::for_platform().with_text(&settings);
+        let session = crate::session::Session::load(&dirs.session_file());
+        let writes_session = loaded_connections.problem.is_none();
+        // An installed data font is read once the window exists (`attach`).
+        let look = crate::theme::Look::for_platform().with_text(&settings, false);
         let mut app = Self {
             dirs,
             settings,
@@ -297,6 +314,8 @@ impl App {
             labels,
             table_lists,
             table_lists_unread,
+            session,
+            writes_session,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -319,6 +338,7 @@ impl App {
             theme_taken: 0,
             pin_told: None,
             desktop_font: crate::typography::desktop_font::Read::default(),
+            installed_fonts: Vec::new(),
             font_asked: 0,
             font_taken: 0,
             font_read: false,
@@ -338,8 +358,7 @@ impl App {
             managed,
             next_id: 1,
         };
-        let tab = app.picker_tab();
-        app.tabs.push(tab);
+        app.launch();
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
         // which a connection had no id yet.
@@ -740,6 +759,7 @@ impl App {
                 self.apply(action);
             }
         }
+        self.read_reopened();
         self.format_rows();
         self.make_reviews();
     }
@@ -868,11 +888,15 @@ impl App {
                         self.close_tab(tab);
                         self.apply(Action::ShowConnections);
                     } else {
-                        self.backend.send(Command::Close { session });
+                        let kept = self.keep_tabs(tab);
                         self.close_editors(tab);
                         if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
                             entry.content = ConnTabContent::Picker(PickerState::default());
                         }
+                        if kept {
+                            self.save_session();
+                        }
+                        self.backend.send(Command::Close { session });
                     }
                 }
             }
@@ -2045,6 +2069,7 @@ impl App {
                 // for while it is open, it stays as it is.
                 if matches!(self.dialog, None | Some(Dialog::Help)) {
                     self.dialog = Some(Dialog::Settings(Box::default()));
+                    self.list_fonts();
                 }
             }
             Action::ShowAgentSettings => {
@@ -2055,6 +2080,8 @@ impl App {
                         pane: crate::model::SettingsPane::Agents,
                         ..Default::default()
                     })));
+                    // Appearance is a click away.
+                    self.list_fonts();
                 }
             }
             Action::ShowSettingsPane(pane) => {
@@ -2371,6 +2398,10 @@ impl App {
                 }
             }
             Action::SwitchDatabase { tab, database } => {
+                // While the window is on its own connection's database
+                // this keeps its tables for the next time; switched once
+                // already, it keeps nothing.
+                let kept = self.keep_tabs(tab);
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.spec.database = database;
                     // The other database's objects, listed as these were.
@@ -2389,6 +2420,11 @@ impl App {
                         .active_tab
                         .filter(|id| workspace.tab(*id).is_some())
                         .or_else(|| workspace.tabs.first().map(Tab::id));
+                }
+                // Written before the reconnect, so that the connect is
+                // the last thing sent.
+                if kept {
+                    self.save_session();
                 }
                 // Which also forgets what the editors asked the old
                 // session for.
@@ -2490,6 +2526,20 @@ impl App {
                     let unread = self.table_lists_unread.remove(&id.0).is_some();
                     if self.table_lists.remove(&id.0).is_some() || unread {
                         self.save_table_lists();
+                    }
+                    // And the tables its window last had.
+                    if self.session.forget(&id) {
+                        self.save_session();
+                    }
+                    // A launch that was to open it shows the connections.
+                    let chosen = crate::settings::Launch::Connection {
+                        id: id.clone(),
+                        name: String::new(),
+                    };
+                    if self.settings.on_launch == chosen {
+                        self.change_settings(|settings| {
+                            settings.on_launch = crate::settings::Launch::Connections;
+                        });
                     }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
@@ -2683,11 +2733,11 @@ impl App {
         let Some(index) = self.tab_index(id) else {
             return;
         };
-        if let ConnTabContent::Workspace(workspace) = &self.tabs[index].content {
-            self.backend.send(Command::Close {
-                session: workspace.session,
-            });
-        }
+        let session = match &self.tabs[index].content {
+            ConnTabContent::Workspace(workspace) => Some(workspace.session),
+            ConnTabContent::Picker(_) => None,
+        };
+        let closes_window = self.keep_tabs(id);
         self.close_editors(id);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
@@ -2699,6 +2749,212 @@ impl App {
         } else {
             self.active = self.active.min(self.tabs.len() - 1);
         }
+        if closes_window {
+            self.save_session();
+        }
+        if let Some(session) = session {
+            self.backend.send(Command::Close { session });
+        }
+    }
+
+    /// Opens what the settings say a launch opens: the windows open at the
+    /// last quit, in their order and the one in front in front again, the
+    /// picker, or the chosen connection. A chosen connection that is
+    /// deleted opens the picker, says so, and sets the option to the
+    /// picker, so that the next launch does what the menu says; with
+    /// connections that could not be read, nothing is known to be
+    /// deleted, and the option stays. Whatever opens nothing opens the
+    /// picker.
+    fn launch(&mut self) {
+        match self.settings.on_launch.clone() {
+            crate::settings::Launch::Restore => self.open_last_session(),
+            crate::settings::Launch::Connections => {}
+            crate::settings::Launch::Connection { id, .. } => {
+                match self.connections.get(&id).cloned() {
+                    Some(saved) => {
+                        let tab = self.picker_tab();
+                        let id = tab.id;
+                        self.tabs.push(tab);
+                        self.connect_tab(id, saved, Secrets::default());
+                    }
+                    None if self.writes_session => {
+                        self.say(
+                            "The connection chosen to open at launch was deleted. \
+                             Tabletist showed Connections instead.",
+                        );
+                        self.change_settings(|settings| {
+                            settings.on_launch = crate::settings::Launch::Connections;
+                        });
+                    }
+                    None => {}
+                }
+            }
+        }
+        if self.tabs.is_empty() {
+            let tab = self.picker_tab();
+            self.tabs.push(tab);
+        }
+    }
+
+    /// The windows open at the last quit, each connecting as a connection
+    /// does, asking for what it needs: the one in front first, so that a
+    /// question it asks at once is asked over it, and the others in their
+    /// order after it. A window behind that asks before the front window
+    /// does (the front one is still reading its password from the
+    /// keyring) takes the question, and the other says so and offers
+    /// Reconnect, as when a connect finds a dialog open. A connection
+    /// deleted since is left out, and the picker is one window at most.
+    fn open_last_session(&mut self) {
+        let open = self.session.open.clone();
+        // The windows are put after any tab there already is.
+        let base = self.tabs.len();
+        let mut windows = Vec::new();
+        let mut active = None;
+        // Every window opens as a picker until it connects, below: the
+        // picker kept is counted here.
+        let mut picker = false;
+        for (index, entry) in open.into_iter().enumerate() {
+            let saved = match entry {
+                Some(id) => match self.connections.get(&id).cloned() {
+                    Some(saved) => Some(saved),
+                    None => continue,
+                },
+                None if picker => continue,
+                None => {
+                    picker = true;
+                    None
+                }
+            };
+            let tab = self.picker_tab();
+            windows.push((tab.id, saved));
+            self.tabs.push(tab);
+            if index <= self.session.active {
+                active = Some(self.tabs.len() - 1 - base);
+            }
+        }
+        let active = active.unwrap_or(0);
+        self.active = base + active;
+        if active < windows.len() {
+            let front = windows.remove(active);
+            windows.insert(0, front);
+        }
+        for (tab, saved) in windows {
+            if let Some(saved) = saved {
+                self.connect_tab(tab, saved, Secrets::default());
+            }
+        }
+    }
+
+    /// Writes the name of `saved` beside it in the settings file, where it
+    /// is the connection a launch opens and its name there is another:
+    /// the comment is the only thing that changes. It runs on every save
+    /// of the chosen connection, and the name it writes replaces any
+    /// comment written by hand there.
+    fn rename_launch(&mut self, saved: &SavedConnection) {
+        let crate::settings::Launch::Connection { id, name } = &self.settings.on_launch else {
+            return;
+        };
+        if *id != saved.id || *name == saved.name {
+            return;
+        }
+        let mut renamed = self.settings.clone();
+        renamed.on_launch = crate::settings::Launch::Connection {
+            id: id.clone(),
+            name: saved.name.clone(),
+        };
+        let text = renamed.write_into(&self.settings_file.text, &[crate::settings::Key::OnLaunch]);
+        self.settings.on_launch = renamed.on_launch;
+        if text != self.settings_file.text {
+            let loaded = Settings::from_toml_over(&text, &self.settings);
+            let live = self.settings_file.live;
+            let saved = self.settings_file.saved.take();
+            let (_, file) = loaded.into_parts();
+            self.settings_file = SettingsFile {
+                live,
+                saved,
+                ..file
+            };
+            self.save_settings();
+        }
+    }
+
+    /// Shows `text` in the notice, after what it says already: a start can
+    /// have more than one thing to say.
+    fn say(&mut self, text: &str) {
+        self.notice = Some(match self.notice.take() {
+            Some(said) => format!("{said} {text}"),
+            None => text.to_owned(),
+        });
+    }
+
+    /// Keeps the table tabs of `tab`'s window in the session, for the
+    /// next time its connection opens: before the window closes, or has
+    /// another connection put in its place. Whether there was a window of
+    /// a saved connection to keep.
+    ///
+    /// A window switched to another database than its connection's keeps
+    /// nothing: the connection opens on its own, where those tables are
+    /// not, and what it kept of that one stays.
+    fn keep_tabs(&mut self, tab: ConnTabId) -> bool {
+        let Some(workspace) = self.workspace(tab) else {
+            return false;
+        };
+        let Some(saved) = self.connections.get(&workspace.conn_id) else {
+            return false;
+        };
+        let database = crate::session::database_of(&workspace.spec);
+        if database != crate::session::database_of(&saved.spec) {
+            return true;
+        }
+        let kept = crate::session::Kept::of(workspace);
+        let id = workspace.conn_id.clone();
+        self.session.keep(&id, kept);
+        true
+    }
+
+    /// Writes session.json on the backend: the connection tabs open now,
+    /// in order, the picker as none, and the tables of every window open,
+    /// with what is kept of the connections closed before. A connection
+    /// that is not saved (deleted while its window is open) is left out.
+    /// The window calls it as the app quits.
+    pub fn save_session(&mut self) {
+        if !self.writes_session {
+            return;
+        }
+        let ids: Vec<ConnTabId> = self.tabs.iter().map(|tab| tab.id).collect();
+        for id in &ids {
+            self.keep_tabs(*id);
+        }
+        let mut open = Vec::new();
+        let mut active = 0;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let entry = match &tab.content {
+                ConnTabContent::Picker(_) => None,
+                ConnTabContent::Workspace(workspace) => {
+                    if self.connections.get(&workspace.conn_id).is_none() {
+                        continue;
+                    }
+                    Some(workspace.conn_id.clone())
+                }
+            };
+            if index == self.active {
+                active = open.len();
+            }
+            open.push(entry);
+        }
+        self.session.open = open;
+        self.session.active = active;
+        // The connections were read, or this would not write: one that is
+        // not among them, deleted from connections.toml by hand, goes.
+        self.session.retain(|id| {
+            self.connections
+                .get(&crate::connections::ConnectionId(id.to_owned()))
+                .is_some()
+        });
+        self.backend.send(Command::Save {
+            path: self.dirs.session_file(),
+            file: StateFile::Session(self.session.clone()),
+        });
     }
 
     /// Opens `saved` in `tab`; `typed` holds secrets typed in the dialog.
@@ -2716,6 +2972,21 @@ impl App {
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let zone = self.zone();
         let flat = self.lists_flat(&saved.id);
+        // The connection the window had closes in it. That comes first, so
+        // that what the window just had is what reopens, if this connection
+        // was it.
+        let replaced = self.keep_tabs(tab);
+        // The tables the connection's window last had, where the settings
+        // reopen them and they are of the database it opens on.
+        let kept = self
+            .session
+            .connections
+            .get(&saved.id.0)
+            .filter(|kept| {
+                self.settings.restore_tabs
+                    && kept.database == crate::session::database_of(&saved.spec)
+            })
+            .cloned();
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -2724,6 +2995,59 @@ impl App {
         workspace.zone = zone;
         workspace.tree.flat = flat;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
+        if let Some(kept) = kept {
+            self.reopen_tabs(tab, &kept);
+        }
+        if replaced {
+            self.save_session();
+        }
+    }
+
+    /// Puts the tables `kept` in `tab`'s window, in their order, with
+    /// their sort and filters, the one that was in front in front again
+    /// (the first where none was). Nothing is read here: the one in front
+    /// is read with the connect, and each other when it is first shown.
+    fn reopen_tabs(&mut self, tab: ConnTabId, kept: &crate::session::Kept) {
+        let page_size = self.settings.page_size;
+        let mut opened = Vec::new();
+        for saved in &kept.tabs {
+            let id = TabId(self.next_id());
+            opened.extend(saved.reopen(id, page_size));
+        }
+        let front = kept
+            .active
+            .and_then(|at| kept.tabs.get(at))
+            .map(|front| ObjectRef::new(front.schema.clone(), front.name.clone()));
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let active = opened
+            .iter()
+            .find(|object| Some(&object.object) == front.as_ref())
+            .or(opened.first())
+            .map(|object| object.id);
+        workspace.tabs.extend(
+            opened
+                .into_iter()
+                .map(|object| Tab::Object(Box::new(object))),
+        );
+        workspace.active_tab = active;
+    }
+
+    /// Reads the table in front of each window that was reopened and not
+    /// read yet: its structure and its first page, as when it opened. A
+    /// connect under way reads it once it is up (`App::wake_to_read`).
+    fn read_reopened(&mut self) {
+        let due: Vec<(ConnTabId, TabId)> = self
+            .open_connections()
+            .filter_map(|(tab, workspace)| {
+                let front = workspace.active_object_tab()?;
+                front.reopened.then_some((tab, front.id))
+            })
+            .collect();
+        for (tab, id) in due {
+            self.fetch_rows(tab, id);
+        }
     }
 
     /// Fills the tab's secrets one at a time (the database password, then
@@ -3280,6 +3604,24 @@ impl App {
                     && node.objects.finish(request, result)
                 {
                     workspace.catalog_changed();
+                    // A table reopened by a connect is open before the tree
+                    // is listed, so it gets here the estimate that one opened
+                    // from the sidebar had when it opened. A count that came
+                    // first is exact and stays.
+                    let estimates: Vec<(TabId, u64)> = workspace
+                        .object_tabs()
+                        .filter(|object| object.object.schema == schema)
+                        .filter(|object| object.estimated_rows.is_none())
+                        .filter_map(|object| {
+                            let info = workspace.tree.object_info(&object.object)?;
+                            Some((object.id, info.estimated_rows?))
+                        })
+                        .collect();
+                    for (id, estimate) in estimates {
+                        if let Some(object) = workspace.object_tab_mut(id) {
+                            object.estimated_rows = Some(estimate);
+                        }
+                    }
                 }
             }
             Event::Rows {
@@ -3491,13 +3833,18 @@ impl App {
             Event::SettingsWatch { live } => self.settings_file.live = live,
             Event::Font { asked, read } => {
                 // An older read that ends later read a font since renamed.
-                if asked < self.font_taken {
+                // So did one that ends before a newer read, for a name the
+                // settings no longer hold: the faces drawn stay until the
+                // newer one ends.
+                let renamed = read.asked != self.settings.font;
+                if asked < self.font_taken || (asked < self.font_asked && renamed) {
                     return;
                 }
                 self.font_taken = asked;
                 self.desktop_font = *read;
                 self.font_read = true;
             }
+            Event::Fonts(families) => self.installed_fonts = families,
             Event::Theme { asked, read } => {
                 // Reads end in any order: one older than the newest taken
                 // saw a theme of Omarchy's that is gone, and one that read
@@ -4233,15 +4580,17 @@ impl App {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
         }
+        // Asked for first: an installed face drawn stays while the read of
+        // another is on its way.
+        if old.font != self.settings.font {
+            self.read_desktop_font();
+        }
         // The text's sizes and the data's face: every role drawn from here
         // on has them, and egui's own styles are set again in `logic`.
-        let look = self.look.with_text(&self.settings);
+        let look = self.text_look();
         if look != self.look {
             self.look = look;
             self.restyle = true;
-        }
-        if old.font != self.settings.font {
-            self.read_desktop_font();
         }
         // An edit of the file that turns the server on is held, and one
         // the administrator's policy forbids does nothing but say so.
@@ -4414,6 +4763,7 @@ impl App {
         }
         self.connections.upsert(saved.clone());
         self.save_connections();
+        self.rename_launch(&saved);
         if saved.password == PasswordMode::Keyring {
             if typed.is_some() || stale {
                 self.store_secret(&saved.id, false, typed.clone().map(SecretString), false);
@@ -4525,6 +4875,13 @@ impl App {
                     return (object.id, false, false, count);
                 }
                 let is_active = Some(object.id) == active;
+                // Reopened behind another: read when it is first shown.
+                if object.reopened && !is_active {
+                    return (object.id, false, false, count);
+                }
+                // Reopened in front and not read yet: its rows are read
+                // here, and that asks for its structure too.
+                let described = object.reopened;
                 (
                     object.id,
                     is_active
@@ -4532,11 +4889,12 @@ impl App {
                         || lost(&object.rows)
                         || object.rows.needs_load()
                         || object.rows.asked,
-                    object.structure.is_loading()
-                        || lost(&object.structure)
-                        || object.structure.needs_load()
-                        || object.structure.asked
-                        || (is_active && object.structure.value.is_some()),
+                    !described
+                        && (object.structure.is_loading()
+                            || lost(&object.structure)
+                            || object.structure.needs_load()
+                            || object.structure.asked
+                            || (is_active && object.structure.value.is_some())),
                     count,
                 )
             })
@@ -4575,7 +4933,7 @@ impl App {
         }
         let waited: Vec<(TabId, bool, bool)> = workspace
             .object_tabs()
-            .filter(|object| !object.edits.holds())
+            .filter(|object| !object.edits.holds() && !object.reopened)
             .map(|object| {
                 (
                     object.id,
@@ -5616,8 +5974,18 @@ impl App {
     /// here: a new Rows per page lands on the next one.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
         let size = self.settings.page_size;
+        let mut reopened = false;
         if let Some(object) = self.object_tab_mut(tab, id) {
             object.page_size = size;
+            // Read now, whatever asked: a reopened tab is not read again
+            // when it is shown.
+            reopened = std::mem::take(&mut object.reopened);
+        }
+        // Nothing else asked for its structure, which a tab opened from the
+        // sidebar gets as it opens, so the first read, from whatever path,
+        // brings it.
+        if reopened {
+            self.describe(tab, id);
         }
         self.fetch_page(tab, id, size);
     }
@@ -5901,9 +6269,10 @@ impl App {
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
         // Read here, before the first frame, as the desktop's monospace
         // always was: a font that arrived later would move every line.
-        if follow_desktop && self.look.terminal {
-            self.desktop_font =
-                crate::typography::desktop_font::read(self.settings.font.as_deref());
+        if self.reads_font() {
+            self.desktop_font = crate::typography::read_font(self.settings.font.as_deref());
+            // macOS: the data in the installed font read.
+            self.look = self.text_look();
         }
         let desktop = self.desktop_font.faces.as_ref();
         self.fonts = theme::install_with(ctx, follow_desktop, &self.look, desktop);
@@ -5953,10 +6322,58 @@ impl App {
         });
     }
 
-    /// Asks the backend for the terminal look's font as the settings name
-    /// it, where the desktop's fonts are read (not in tests or the demo).
+    /// Whether the font the settings name is read from the system: the
+    /// terminal look's, and on macOS an installed one for the data (no
+    /// bundled face's name), where the desktop's fonts are read (not in
+    /// tests or the demo).
+    fn reads_font(&self) -> bool {
+        let installed = self.look.faces.typeface == crate::theme::Typeface::Plex
+            && crate::theme::DataFace::of(self.settings.font.as_deref()).is_err();
+        self.follow_desktop && (self.look.terminal || installed)
+    }
+
+    /// Whether macOS draws its data in an installed font: the one the
+    /// settings name, read.
+    pub(crate) fn installed_drawn(&self) -> bool {
+        self.desktop_font.has(self.settings.font.as_deref())
+    }
+
+    /// The look with its text as the settings have it ([`Look::with_text`]).
+    /// While the read of an installed font is on its way, the data's face
+    /// drawn stays (a bundled one, or the installed one read before) until
+    /// it ends.
+    fn text_look(&self) -> crate::theme::Look {
+        let mut look = self.look.with_text(&self.settings, self.installed_drawn());
+        let reading = self.font_asked > self.font_taken;
+        if reading && crate::theme::DataFace::of(self.settings.font.as_deref()).is_err() {
+            look.faces.data = self.look.faces.data;
+        }
+        look
+    }
+
+    /// The data font the settings name where nothing draws it on macOS: no
+    /// bundled face, and no installed one read, nor on its way. The default
+    /// is drawn in its place.
+    pub(crate) fn data_font_missing(&self) -> Option<&str> {
+        let name = crate::theme::DataFace::of(self.settings.font.as_deref()).err()?;
+        let reading = self.font_asked > self.font_taken;
+        let drawn = self.look.faces.data == crate::theme::DataFace::Installed;
+        (!drawn && !reading).then_some(name)
+    }
+
+    /// Asks the backend for the installed monospace families the data
+    /// font's menu lists, where macOS draws data in a face of its own and
+    /// the desktop's fonts are read (not in tests or the demo).
+    fn list_fonts(&mut self) {
+        if self.follow_desktop && self.look.faces.typeface == crate::theme::Typeface::Plex {
+            self.backend.send(Command::ListFonts);
+        }
+    }
+
+    /// Asks the backend for the font the settings name, where it is read
+    /// from the system ([`Self::reads_font`]).
     fn read_desktop_font(&mut self) {
-        if !self.look.terminal || !self.follow_desktop {
+        if !self.reads_font() {
             return;
         }
         self.font_asked += 1;
@@ -6077,8 +6494,15 @@ impl App {
         self.tell_missing_pin(ctx);
         if std::mem::take(&mut self.font_read) {
             let desktop = self.desktop_font.faces.as_ref();
-            theme::set_terminal_faces(ctx, &mut self.fonts, &self.look, desktop);
-            crate::ui::grid::forget_marks(ctx, &self.look);
+            theme::set_read_faces(ctx, &mut self.fonts, &self.look, desktop);
+            crate::ui::grid::forget_marks(ctx);
+            // macOS: the data in the installed font read, or in the default
+            // where it is missing.
+            let look = self.text_look();
+            if look != self.look {
+                self.look = look;
+                self.restyle = true;
+            }
         }
         if std::mem::take(&mut self.restyle) {
             theme::apply(ctx, &self.palette, &self.look);
@@ -7159,15 +7583,66 @@ mod tests {
             .app
             .change_settings(|settings| settings.page_size = 500);
         assert_eq!(fonts_asked(&mut harness), vec![]);
-        // Not in tests and the demo, nor in the other looks, whose fonts
-        // are bundled.
+        // Not in tests and the demo.
         harness.app.follow_desktop = false;
         font(&mut harness, Some("Iosevka"));
         assert_eq!(fonts_asked(&mut harness), vec![]);
+        // macOS: an installed font for its data, not a bundled face.
         harness.app.follow_desktop = true;
         harness.app.look = crate::theme::Look::macos();
         font(&mut harness, Some("JetBrains Mono"));
+        font(&mut harness, None);
         assert_eq!(fonts_asked(&mut harness), vec![]);
+        font(&mut harness, Some("Menlo"));
+        assert_eq!(fonts_asked(&mut harness), vec![(Some("Menlo".into()), 3)]);
+        // Windows draws its data in Inter, which has no face to read.
+        harness.app.look = crate::theme::Look::standard();
+        font(&mut harness, Some("Consolas"));
+        assert_eq!(fonts_asked(&mut harness), vec![]);
+    }
+
+    #[test]
+    fn the_installed_fonts_are_listed_each_time_settings_opens_on_a_mac() {
+        let listed = |harness: &mut Harness| {
+            std::mem::take(&mut harness.app.backend.sent)
+                .into_iter()
+                .filter(|command| matches!(command, Command::ListFonts))
+                .count()
+        };
+        let mut harness = Harness::new();
+        harness.app.look = crate::theme::Look::macos();
+        harness.app.follow_desktop = true;
+        harness.app.apply(Action::ShowSettings);
+        assert_eq!(listed(&mut harness), 1);
+        // Asked for while it is open, it stays as it is.
+        harness.app.apply(Action::ShowSettings);
+        assert_eq!(listed(&mut harness), 0);
+        harness.app.dialog = None;
+        harness.app.apply(Action::ShowSettings);
+        assert_eq!(listed(&mut harness), 1);
+        // Opened from the Agents tab, where agents can reach the app.
+        harness.app.dialog = None;
+        harness.app.apply(Action::ShowAgentSettings);
+        let agents = usize::from(crate::endpoint::AVAILABLE);
+        assert_eq!(listed(&mut harness), agents);
+        // The answer is the menu's list.
+        harness
+            .app
+            .apply(Action::Backend(Event::Fonts(vec!["Menlo".into()])));
+        assert_eq!(harness.app.installed_fonts, ["Menlo"]);
+        // Not in tests and the demo, nor in the looks that draw no data
+        // in a face of their own.
+        for (look, follow) in [
+            (crate::theme::Look::macos(), false),
+            (crate::theme::Look::omarchy(), true),
+            (crate::theme::Look::standard(), true),
+        ] {
+            harness.app.dialog = None;
+            harness.app.look = look;
+            harness.app.follow_desktop = follow;
+            harness.app.apply(Action::ShowSettings);
+            assert_eq!(listed(&mut harness), 0, "{}", look.name);
+        }
     }
 
     #[test]
@@ -9797,6 +10272,8 @@ masked = ["orders.email"]
             settings.production_read_only = false;
             settings.confirm_close_edits = false;
             settings.idle_disconnect = crate::settings::Idle::Never;
+            settings.restore_tabs = false;
+            settings.on_launch = crate::settings::Launch::Connections;
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
         });
@@ -9823,6 +10300,9 @@ masked = ["orders.email"]
         assert!(app.settings.production_read_only);
         assert!(app.settings.confirm_close_edits);
         assert_eq!(app.settings.idle_disconnect, defaults.idle_disconnect);
+        // And the Startup group's.
+        assert!(app.settings.restore_tabs);
+        assert_eq!(app.settings.on_launch, crate::settings::Launch::Restore);
         assert!(app.settings.show_system_schemas);
         assert_eq!(app.settings.sql_limit, 50);
         assert_eq!(app.settings_file.text, app.settings.to_toml());

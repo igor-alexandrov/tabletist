@@ -395,7 +395,7 @@ fn the_preview_takes_no_tab_pointer_or_wheel() {
 fn the_line_under_a_pane_s_title_wraps_in_the_smallest_sheet() {
     // The sheet ends 40 in from the window's edge.
     for (pane, words) in [
-        (SettingsPane::General, "How Tabletist shows data"),
+        (SettingsPane::General, "How Tabletist starts, shows data"),
         (SettingsPane::Appearance, "Theme, type and how dense"),
     ] {
         let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));

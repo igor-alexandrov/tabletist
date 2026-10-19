@@ -50,6 +50,11 @@ directories = "6"
 # to the headless tests.
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 egui = "0.36"
+# Checks that a font read from the system parses before egui loads it (egui
+# panics on a font it cannot read): the desktop's monospace on Linux, an
+# installed data font on macOS, whose face in a collection it finds by name.
+# The version epaint already uses on every platform.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # SVG loading for the Lucide icons.
 egui_extras = { version = "0.36", features = ["svg"] }
 # Writes --demo-shot screenshots as PNG.
@@ -129,9 +134,6 @@ zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-c
 # before it is read, which the store's read would answer with a prompt to
 # unlock it (`secrets::linux_locked`), for a read an agent's call made.
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
-# Checks that the desktop's monospace font parses before egui loads it (egui
-# panics on a font it cannot read). The version epaint already uses.
-skrifa = { version = "0.44", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
@@ -144,8 +146,9 @@ security-framework = "3.7"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSToolbar", "NSControl", "NSButton", "objc2-core-foundation"] }
-# The app menu's About item: the one AppKit call that needs unsafe code, kept
-# in a crate of its own because this one forbids it.
+# The app menu's About and Settings items, and the installed fonts CoreText
+# lists for the data font: the AppKit and CoreText calls that need unsafe
+# code, kept in a crate of their own because this one forbids it.
 tabletist-appkit = { path = "crates/tabletist-appkit" }
 # Quit (Cmd+Q, the app menu, the Dock) reaches the app as a close request for
 # its window, which a tab with pending changes holds back to ask first
