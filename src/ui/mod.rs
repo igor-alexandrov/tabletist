@@ -28,6 +28,8 @@ mod delete_tests;
 #[cfg(test)]
 mod duplicate_tests;
 #[cfg(test)]
+mod editor_results_tests;
+#[cfg(test)]
 mod editor_settings_tests;
 #[cfg(test)]
 mod env_tests;

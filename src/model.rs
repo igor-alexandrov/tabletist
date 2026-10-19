@@ -750,6 +750,18 @@ pub enum Action {
         tab: ConnTabId,
         sql_tab: TabId,
     },
+    /// The results' Show all: run the statement whose rows the limit cut
+    /// again, alone, with no limit (see `SqlTab::cut_statement`).
+    ShowAllRows {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Run without timeout: run the last run, which the timeout stopped,
+    /// again with no timeout (see `SqlTab::timed_out_run`).
+    RunWithoutTimeout {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// Format the editor's script, or the statements its selection
     /// overlaps.
     FormatSql {
@@ -4113,8 +4125,9 @@ pub struct RunInFlight {
     pub statements: Vec<tabletist_db::sql::Statement>,
     /// The transaction the run was sent in.
     pub mode: tabletist_db::ScriptMode,
-    /// What the run was sent with, and where.
+    /// What the run was sent with.
     pub caps: RunCaps,
+    /// Where the run went; `None` offers no link.
     pub on: Option<RanOn>,
     /// When the run started, for the elapsed time.
     pub started: std::time::Instant,
