@@ -210,16 +210,18 @@ fn limit_text(limit: u32, short: bool, look: &Look, locale: Locale) -> String {
     }
 }
 
-/// A time as macOS and Windows write it, "30 s" and "1 min", or as the
-/// terminal look does (`terminal`), "30s" and "1m". Whole minutes are said
-/// in minutes.
+/// A time as the editor writes it, in the menus and in what a run says:
+/// "45 s", "1 min", "1 min 30 s"; the terminal's (`terminal`) "45s", "1m",
+/// "1m 30s". A time typed into the file by hand reads the same way.
 pub(crate) fn time_words(secs: u32, terminal: bool, locale: Locale) -> String {
-    let minutes = secs >= 60 && secs.is_multiple_of(60);
-    match (terminal, minutes) {
-        (true, true) => format!("{}m", secs / 60),
-        (true, false) => format!("{secs}s"),
-        (false, true) => format!("{} {}", secs / 60, gettext(locale, "min")),
-        (false, false) => format!("{secs} s"),
+    let (minutes, rest) = (secs / 60, secs % 60);
+    match (terminal, minutes, rest) {
+        (true, 0, _) => format!("{secs}s"),
+        (true, _, 0) => format!("{minutes}m"),
+        (true, _, _) => format!("{minutes}m {rest}s"),
+        (false, 0, _) => format!("{secs} s"),
+        (false, _, 0) => format!("{minutes} {}", gettext(locale, "min")),
+        (false, _, _) => format!("{minutes} {} {rest} s", gettext(locale, "min")),
     }
 }
 
@@ -1779,6 +1781,22 @@ mod tests {
         for height in [80.0, 137.0, 300.0, 520.0] {
             let split = split_at(height, 600.0).unwrap();
             assert_eq!(editor_height(split, 600.0), height);
+        }
+    }
+
+    #[test]
+    fn a_time_is_its_minutes_and_its_seconds() {
+        let locale = Locale::default();
+        for (secs, standard, terminal) in [
+            (5, "5 s", "5s"),
+            (45, "45 s", "45s"),
+            (60, "1 min", "1m"),
+            (90, "1 min 30 s", "1m 30s"),
+            (300, "5 min", "5m"),
+            (3_600, "60 min", "60m"),
+        ] {
+            assert_eq!(time_words(secs, false, locale), standard);
+            assert_eq!(time_words(secs, true, locale), terminal);
         }
     }
 }

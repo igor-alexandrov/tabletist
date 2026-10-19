@@ -582,13 +582,26 @@ fn a_value_the_menus_do_not_list_is_shown_in_its_place() {
     harness.press(Key::Escape, Modifiers::NONE);
     harness.click("Timeout");
     assert!(harness.has("Timeout 2 min"));
+    // A time of minutes and seconds ("90s" in the file) reads as both.
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::Timeout(Some(90))));
+    harness.click("Timeout");
+    for entry in ["Timeout 1 min", "Timeout 1 min 30 s", "Timeout 5 min"] {
+        assert!(harness.has(entry), "{entry}");
+    }
     let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
     harness.set_look(Look::omarchy());
     harness
         .app
         .apply(Action::SetOption(OptionValue::RowLimit(300)));
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::Timeout(Some(90))));
     on_the_pane(&mut harness);
     assert!(shows(&mut harness, "300"));
+    assert!(shows(&mut harness, "1m 30s"));
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::L, "l");
     assert_eq!(harness.app.settings.sql_limit, 500);

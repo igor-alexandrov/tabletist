@@ -686,6 +686,60 @@ fn note_at(
     widgets::announce(ui, Rect::from_min_size(at, laid.size()), name);
 }
 
+/// [`note`] with `link` after the words, " · " between them. Where one
+/// row cannot hold both, the link goes under the words.
+fn note_with_link(
+    ui: &mut Ui,
+    rect: Rect,
+    said: &Said,
+    link: Option<Link>,
+    place: &Place<'_>,
+    env: &Env<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let (look, palette) = (env.look, env.palette);
+    let Some(link) = link.map(|link| LinkLaid::new(ui.ctx(), link, env)) else {
+        note(ui, rect, said, palette.warning, env);
+        return;
+    };
+    let role = widgets::body(look);
+    let width = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let (words, dot, link_width) = (
+        width(&said.painted),
+        width(BEFORE_LINK),
+        link.width(ui, look),
+    );
+    let room = (rect.width() - 2.0 * 24.0).max(0.0);
+    let row = role.row_height(ui.ctx(), look.faces).max(LINK_HEIGHT);
+    let center = rect.center().y.max(rect.top() + 8.0 + row / 2.0);
+    if words + dot + link_width <= room {
+        let left = rect.center().x - (words + dot + link_width) / 2.0;
+        let text = Text::one(look, role, &said.painted, palette.warning);
+        let mut x = left + data_view::paint_named(ui, left, center, text, &said.name);
+        let dot = Text::one(look, role, BEFORE_LINK, palette.dim);
+        x += widgets::paint_text(ui, x, center, dot);
+        link.show(ui, (x, center), place, env, actions);
+    } else {
+        // The words as `note` lays them, wrapped to the room, and the
+        // link under however many rows they take.
+        let laid = LaidMessage::new(
+            ui.ctx(),
+            ("", palette.warning),
+            (&said.painted, palette.warning),
+            (role, room, true),
+            look,
+        );
+        let height = laid.size().y + 4.0 + LINK_HEIGHT;
+        let top = (rect.center().y - height / 2.0).max(rect.top() + 8.0);
+        let at = pos2(rect.center().x - laid.size().x / 2.0, top);
+        laid.paint(ui.painter(), at);
+        widgets::announce(ui, Rect::from_min_size(at, laid.size()), &said.name);
+        let left = rect.center().x - link_width / 2.0;
+        let center = top + laid.size().y + 4.0 + LINK_HEIGHT / 2.0;
+        link.show(ui, (left, center), place, env, actions);
+    }
+}
+
 /// An error in its own words, cut as [`format::capped`] cuts.
 fn error_text(error: &Error) -> String {
     match error {
@@ -705,17 +759,21 @@ fn whole(error: &Error) -> Said {
     }
 }
 
-/// "Cancelled", or "Cancelled after 30 s (timeout)" when the timeout
-/// stopped the run. A statement cancelled for no reason of ours (the
-/// server's own `statement_timeout`) is cancelled all the same.
+/// "Cancelled", or "Cancelled after 30 s" when the timeout stopped the
+/// run, its time written as [`super::sql_editor::time_words`] writes it
+/// ("1 min 30 s", the terminal's "30s"). A statement cancelled for no
+/// reason of ours (the server's own `statement_timeout`) is cancelled all
+/// the same.
 fn cancel_text(cancel: Option<CancelReason>, words: Words) -> String {
     match cancel {
-        Some(CancelReason::Timeout(after)) => format!(
-            "{} {} s ({})",
-            words.say("Cancelled after"),
-            after.as_secs(),
-            words.say("timeout")
-        ),
+        Some(CancelReason::Timeout(after)) => {
+            let secs = u32::try_from(after.as_secs()).unwrap_or(u32::MAX);
+            format!(
+                "{} {}",
+                words.say("Cancelled after"),
+                super::sql_editor::time_words(secs, words.lower, words.locale)
+            )
+        }
         Some(CancelReason::User) | None => words.say("Cancelled"),
     }
 }
@@ -1146,6 +1204,22 @@ fn message(line: Line<'_>, run: Option<&SqlRun>, driver: Driver, words: Words) -
     }
 }
 
+/// Whether `line` says the cancel's words: the line of the statement the
+/// run was stopped in or before, or the stop's own line.
+fn says_cancel(line: Line<'_>, run: Option<&SqlRun>) -> bool {
+    let Some(run) = run else {
+        return false;
+    };
+    match line {
+        Line::Stopped => true,
+        Line::Statement(index) => match run.outcome.results.get(index) {
+            Some(result) => result.outcome == StatementOutcome::Cancelled,
+            None => stopped_at(run) == Some(index),
+        },
+        _ => false,
+    }
+}
+
 /// The messages: one line per statement of `run`, or why the run failed
 /// as a whole. Only the lines in view are written and laid out. Over them,
 /// the card of a write a database refused in a read-only run: it scrolls
@@ -1183,13 +1257,32 @@ fn messages(
         }
     };
     let driver = place.driver;
+    let link = place
+        .links
+        .without_timeout
+        .then(|| LinkLaid::new(ui.ctx(), Link::WithoutTimeout, env));
+    let link_room = link.as_ref().map_or(0.0, |link| {
+        role.width(ui.ctx(), look.faces, BEFORE_LINK) + link.width(ui, look)
+    });
+    // The words of the line with the link give way to it.
+    let tail = |line: Line<'_>| {
+        if says_cancel(line, run) {
+            link_room
+        } else {
+            0.0
+        }
+    };
     let lay = |line: Line<'_>| -> LaidMessage {
         let message = message(line, run, driver, painted);
         LaidMessage::new(
             &ctx,
             (&message.place, palette.dim),
             (&message.text, message.tone.color(palette)),
-            (role, (room - indent(line)).max(0.0), line.wraps(run)),
+            (
+                role,
+                (room - indent(line) - tail(line)).max(0.0),
+                line.wraps(run),
+            ),
             look,
         )
     };
@@ -1228,7 +1321,15 @@ fn messages(
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &name));
                 if ui.is_rect_visible(rect) {
                     let at = pos2(rect.left() + pad + indent(line), rect.top() + above);
-                    lay(line).paint(ui.painter(), at);
+                    let laid = lay(line);
+                    laid.paint(ui.painter(), at);
+                    if let Some(link) = link.as_ref().filter(|_| says_cancel(line, run)) {
+                        let center = at.y + laid.size().y / 2.0;
+                        let x = at.x + laid.size().x;
+                        let dot = Text::one(look, role, BEFORE_LINK, palette.dim);
+                        let x = x + widgets::paint_text(ui, x, center, dot);
+                        link.show(ui, (x, center), place, env, actions);
+                    }
                 }
             });
             ui.add_space(8.0);
@@ -1764,7 +1865,8 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         let written = run.mode == ScriptMode::Write && run.outcome.end == ScriptEnd::Committed;
         if run.outcome.was_cancelled() && !written {
             let said = env.said(|words| cancel_text(run.cancel, words));
-            note(ui, rect, &said, palette.warning, env);
+            let link = place.links.without_timeout.then_some(Link::WithoutTimeout);
+            note_with_link(ui, rect, &said, link, place, env, actions);
         } else if let Some(index) = failed {
             // The statement's line, then what the database said of it. A
             // write the database refused reads so here too: its card
@@ -1794,41 +1896,14 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     };
     // Under the grid, when the limit cut the rows off: 28 and a rule.
     let mut area = rect;
-    if truncated {
+    let strip = truncated.then(|| {
         let strip = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 29.0), rect.max);
         area.max.y = strip.top();
         ui.painter()
             .rect_filled(strip, CornerRadius::ZERO, palette.panel);
         widgets::hline(ui, strip.x_range(), strip.top() + 0.5, palette.outline);
-        // The rows there are, not the limit the editor has by now.
-        let said = env.said(|words| {
-            format!(
-                "{} {}",
-                words.say("Limited to"),
-                rows_text(rows.len() as u64, words)
-            )
-        });
-        let role = widgets::secondary(look);
-        let center = strip.top() + 1.0 + (strip.height() - 1.0) / 2.0;
-        let (left, right) = (strip.left() + side(look), strip.right() - side(look));
-        let link = place
-            .links
-            .show_all
-            .then(|| LinkLaid::new(ui.ctx(), Link::ShowAll, env));
-        let width = |text: &str| role.width(ui.ctx(), look.faces, text);
-        let tail = link
-            .as_ref()
-            .map_or(0.0, |link| width(BEFORE_LINK) + link.width(ui, look));
-        // The words give way to the link.
-        let cut = grid::ellipsize(&said.painted, (right - left - tail).max(0.0), false, width);
-        let text = Text::one(look, role, &cut, palette.secondary);
-        let mut x = left + data_view::paint_named(ui, left, center, text, &said.name);
-        if let Some(link) = link {
-            let dot = Text::one(look, role, BEFORE_LINK, palette.dim);
-            x += widgets::paint_text(ui, x, center, dot);
-            link.show(ui, (x, center), place, env, actions);
-        }
-    }
+        strip
+    });
     let grid_columns: Vec<Column<'_>> = columns
         .iter()
         .map(|column| {
@@ -1915,6 +1990,38 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         );
         let said = env.said(|_| gettext(locale, "No rows").into_owned());
         note(ui, under, &said, palette.secondary, env);
+    }
+    // The strip's words and Show all come after the grid, as they stand
+    // below it: the Tab key and a screen reader reach them after its rows.
+    if let Some(strip) = strip {
+        // The rows there are, not the limit the editor has by now.
+        let said = env.said(|words| {
+            format!(
+                "{} {}",
+                words.say("Limited to"),
+                rows_text(rows.len() as u64, words)
+            )
+        });
+        let role = widgets::secondary(look);
+        let center = strip.top() + 1.0 + (strip.height() - 1.0) / 2.0;
+        let (left, right) = (strip.left() + side(look), strip.right() - side(look));
+        let link = place
+            .links
+            .show_all
+            .then(|| LinkLaid::new(ui.ctx(), Link::ShowAll, env));
+        let width = |text: &str| role.width(ui.ctx(), look.faces, text);
+        let tail = link
+            .as_ref()
+            .map_or(0.0, |link| width(BEFORE_LINK) + link.width(ui, look));
+        // The words give way to the link.
+        let cut = grid::ellipsize(&said.painted, (right - left - tail).max(0.0), false, width);
+        let text = Text::one(look, role, &cut, palette.secondary);
+        let mut x = left + data_view::paint_named(ui, left, center, text, &said.name);
+        if let Some(link) = link {
+            let dot = Text::one(look, role, BEFORE_LINK, palette.dim);
+            x += widgets::paint_text(ui, x, center, dot);
+            link.show(ui, (x, center), place, env, actions);
+        }
     }
 }
 
@@ -2287,9 +2394,11 @@ mod tests {
                 other => panic!("{other:?}"),
             };
             assert_eq!(limit, u32::MAX, "{}", look.name);
-            // In flight, the strip has no link: a second press sends nothing.
+            // In flight, the strip stays and has no link: a second press
+            // sends nothing.
             let tree = harness.settle();
             assert!(node(&tree, "Show all", Role::Button).is_none());
+            assert!(harness.has(note), "{}", look.name);
             // A whole result has no strip.
             harness.answer_sql(Ok(script_outcome(vec![rows_outcome(3)])), None);
             assert!(harness.has("Row 3") && !harness.has(note));
@@ -2311,6 +2420,44 @@ mod tests {
                 "{}",
                 look.name
             );
+        }
+    }
+
+    /// Every node's name in the order a screen reader reads them: the tree
+    /// walked depth first from its root.
+    fn reading_order(tree: &egui::accesskit::TreeUpdate) -> Vec<String> {
+        let nodes: std::collections::HashMap<_, _> = tree.nodes.iter().cloned().collect();
+        let mut stack = vec![tree.tree.as_ref().expect("a whole tree").root];
+        let mut names = Vec::new();
+        while let Some(id) = stack.pop() {
+            let Some(node) = nodes.get(&id) else {
+                continue;
+            };
+            if let Some(name) = node.label().or_else(|| node.value()) {
+                names.push(name.to_owned());
+            }
+            stack.extend(node.children().iter().rev());
+        }
+        names
+    }
+
+    #[test]
+    fn the_strip_under_a_cut_result_reads_after_its_rows() {
+        for look in Look::ALL {
+            let (mut harness, _tab) = editor(look, "SELECT 1");
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![cut_outcome(1_000)])), None);
+            let tree = harness.settle();
+            let names = reading_order(&tree);
+            let at = |name: &str| {
+                names
+                    .iter()
+                    .position(|named| named == name)
+                    .unwrap_or_else(|| panic!("{name} in {}: {names:?}", look.name))
+            };
+            let row = at("Row 1");
+            assert!(row < at("Limited to 1,000 rows"), "{}", look.name);
+            assert!(row < at("Show all"), "{}", look.name);
         }
     }
 
@@ -2336,7 +2483,79 @@ mod tests {
     }
 
     #[test]
-    fn a_timeout_reads_as_cancelled_after_its_limit() {
+    fn the_run_without_timeout_link_goes_under_the_words_in_the_narrowest_pane() {
+        for look in Look::ALL {
+            let (mut harness, _tab) = editor(look, "SELECT 1");
+            narrow_to(&mut harness, 320.0);
+            run(&mut harness);
+            let after = Some(CancelReason::Timeout(Duration::from_secs(90)));
+            harness.answer_sql(Ok(script_outcome(vec![StatementOutcome::Cancelled])), after);
+            harness.click("Results");
+            let said = "Cancelled after 1 min 30 s";
+            assert!(harness.has(said), "{}", look.name);
+            let tree = harness.settle();
+            let band = bounds(&tree, "Resize the editor", Role::Unknown).unwrap();
+            let words = bounds(&tree, said, Role::Label)
+                .unwrap_or_else(|| panic!("the words in {}", look.name));
+            let link = bounds(&tree, "Run without timeout", Role::Button)
+                .unwrap_or_else(|| panic!("the link in {}", look.name));
+            assert!(
+                link.left() >= band.left() && link.right() <= band.right() + 0.5,
+                "{link:?} in {band:?} in {}",
+                look.name
+            );
+            // One row cannot hold both: the link stands under the words.
+            assert!(
+                link.top() >= words.bottom(),
+                "{link:?} under {words:?} in {}",
+                look.name
+            );
+            harness.click("Run without timeout");
+            match crate::testing::last_sent(&harness.app) {
+                Command::RunSql { timeout, .. } => assert_eq!(*timeout, None, "{}", look.name),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_stop_after_every_statement_offers_the_link_on_its_own_line() {
+        for look in Look::ALL {
+            let text = "UPDATE users SET email = 'x' WHERE id = 1";
+            let (mut harness, _tab) = writing(look, Driver::Postgres, text);
+            // Every statement finished, and the stop came after them: the
+            // cancel's words stand on a line of their own.
+            let mut outcome = write_outcome(vec![done(Some(1))], ScriptEnd::RolledBack);
+            outcome.stopped = true;
+            let timeout = CancelReason::Timeout(Duration::from_secs(30));
+            harness.answer_sql(Ok(outcome), Some(timeout));
+            harness.click("Messages");
+            let tree = harness.settle();
+            assert!(
+                harness.has("Line 1: 1 row affected · 14 ms · rolled back"),
+                "{}",
+                look.name
+            );
+            let line = bounds(&tree, "Cancelled after 30 s", Role::Label)
+                .unwrap_or_else(|| panic!("the stop's line in {}", look.name));
+            let link = "Run without timeout";
+            let buttons = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == Role::Button && node.label() == Some(link))
+                .count();
+            assert_eq!(buttons, 1, "{}", look.name);
+            let link = bounds(&tree, link, Role::Button).unwrap();
+            assert!(
+                link.center().y >= line.top() && link.center().y <= line.bottom(),
+                "{link:?} beside {line:?} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_timeout_says_when_it_stopped_and_offers_to_run_without_one() {
         for look in Look::ALL {
             let (mut harness, tab) = editor(look, "SELECT 1");
             run(&mut harness);
@@ -2346,24 +2565,56 @@ mod tests {
                 timeout,
             );
             assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
-            assert!(
-                harness.has("Line 1: Cancelled after 30 s (timeout)"),
-                "{}",
-                look.name
-            );
+            assert!(harness.has("Line 1: Cancelled after 30 s"), "{}", look.name);
+            let tree = harness.settle();
+            let link = "Run without timeout";
+            assert!(node(&tree, link, Role::Button).is_some(), "{}", look.name);
             harness.click("Results");
-            assert!(
-                harness.has("Cancelled after 30 s (timeout)"),
-                "{}",
-                look.name
-            );
+            assert!(harness.has("Cancelled after 30 s"), "{}", look.name);
             assert!(!harness.has("Statement ran · no rows returned"));
             let reads = if look.terminal {
-                "cancelled after 30 s (timeout)"
+                "cancelled after 30s"
             } else {
-                "Cancelled after 30 s (timeout)"
+                "Cancelled after 30 s"
             };
             assert!(painted(&harness, reads), "{reads}: {:?}", harness.painted);
+            let tree = harness.settle();
+            assert!(node(&tree, link, Role::Button).is_some(), "{}", look.name);
+            harness.click(link);
+            match crate::testing::last_sent(&harness.app) {
+                Command::RunSql { timeout, .. } => assert_eq!(*timeout, None),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_timeout_says_its_minutes_and_seconds_as_the_menu_does() {
+        // "90s" typed into the file by hand reads as the menu's own do.
+        for (secs, said) in [(45, "45 s"), (60, "1 min"), (90, "1 min 30 s")] {
+            let (mut harness, _tab) = editor(Look::macos(), "SELECT 1");
+            run(&mut harness);
+            let after = Some(CancelReason::Timeout(Duration::from_secs(secs)));
+            harness.answer_sql(Ok(script_outcome(vec![StatementOutcome::Cancelled])), after);
+            let line = format!("Line 1: Cancelled after {said}");
+            assert!(harness.has(&line), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_cancel_by_hand_offers_no_run_without_timeout() {
+        for look in Look::ALL {
+            let (mut harness, _tab) = editor(look, "SELECT 1");
+            run(&mut harness);
+            harness.answer_sql(
+                Ok(script_outcome(vec![StatementOutcome::Cancelled])),
+                Some(CancelReason::User),
+            );
+            let tree = harness.settle();
+            assert!(node(&tree, "Run without timeout", Role::Button).is_none());
+            harness.click("Results");
+            let tree = harness.settle();
+            assert!(node(&tree, "Run without timeout", Role::Button).is_none());
         }
     }
 
@@ -2418,7 +2669,7 @@ mod tests {
         for look in Look::ALL {
             for (cancel, text) in [
                 (Some(CancelReason::User), "Cancelled"),
-                (Some(timeout), "Cancelled after 30 s (timeout)"),
+                (Some(timeout), "Cancelled after 30 s"),
                 (None, "Cancelled"),
             ] {
                 let (mut harness, tab) = editor(look, "SELECT 1;\nSELECT 2");
@@ -2466,7 +2717,7 @@ mod tests {
         let timeout = CancelReason::Timeout(Duration::from_secs(30));
         for (cancel, text) in [
             (Some(CancelReason::User), "Cancelled"),
-            (Some(timeout), "Cancelled after 30 s (timeout)"),
+            (Some(timeout), "Cancelled after 30 s"),
         ] {
             let script = "SELECT 1;\nSELECT 2;\nSELECT 3;\nSELECT 4";
             let (mut harness, _tab) = editor(Look::standard(), script);
@@ -3365,7 +3616,7 @@ mod tests {
         let timeout = CancelReason::Timeout(Duration::from_secs(30));
         for (cancel, text) in [
             (CancelReason::User, "Cancelled"),
-            (timeout, "Cancelled after 30 s (timeout)"),
+            (timeout, "Cancelled after 30 s"),
         ] {
             let (mut harness, tab) = writing(Look::standard(), Driver::Postgres, CHANGES);
             let outcome = write_outcome(

@@ -1055,7 +1055,7 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
         OptionId::RowLimit => {
             crate::ui::sql_editor::limit_words(settings.sql_limit, skin.look, skin.locale)
         }
-        // As the file writes it: `30s`, `1m`, `off`.
+        // As the editor writes a time (`30s`, `1m`, `1m 30s`), or `off`.
         OptionId::Timeout => match settings.sql_timeout_secs {
             Some(secs) => crate::ui::sql_editor::time_words(secs, true, skin.locale),
             None => skin.say("Off"),

@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use tabletist_db::{Driver, ScriptEnd, ScriptMode, StatementOutcome};
 
@@ -11,7 +12,7 @@ use crate::backend::{CancelReason, Command};
 use crate::model::{Action, ConnTabId, ResultPane, SqlTab, TabId};
 use crate::settings::NewTab;
 use crate::testing::{
-    Harness, cut_outcome, done_outcome, rows_outcome, script_outcome, write_outcome,
+    Harness, cut_outcome, done_outcome, node, rows_outcome, script_outcome, write_outcome,
 };
 use crate::theme::Look;
 
@@ -338,4 +339,32 @@ fn a_letter_takes_its_link_only_in_the_pane_that_shows_the_link() {
     harness.press(Key::A, Modifiers::NONE);
     assert_eq!(runs_sent(&harness), before + 1);
     assert_eq!(last_run(&harness).limit, u32::MAX);
+}
+
+#[test]
+fn the_link_stands_on_the_line_of_the_cancel_only() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let text = "SELECT 1;\nSELECT 2;\nSELECT 3";
+        let (mut harness, tab, id) = editor(look, Driver::Sqlite, text);
+        run_all(&mut harness);
+        let outcomes = vec![rows_outcome(2), StatementOutcome::Cancelled];
+        harness.answer_sql(Ok(script_outcome(outcomes)), Some(TIMEOUT));
+        // A timeout opens Messages, rows or not. Results shows the rows,
+        // and says nothing of the cancel.
+        assert_eq!(sql(&harness, tab, id).pane, ResultPane::Messages);
+        harness.click("Results");
+        let tree = harness.settle();
+        assert!(node(&tree, "Run without timeout", Role::Button).is_none());
+        harness.click("Messages");
+        let tree = harness.settle();
+        let line = crate::testing::bounds(&tree, "Line 2: Cancelled after 30 s", Role::Label)
+            .unwrap_or_else(|| panic!("the line in {}", look.name));
+        let link = crate::testing::bounds(&tree, "Run without timeout", Role::Button)
+            .unwrap_or_else(|| panic!("the link in {}", look.name));
+        assert!(
+            link.center().y >= line.top() && link.center().y <= line.bottom(),
+            "{link:?} beside {line:?} in {}",
+            look.name
+        );
+    }
 }
