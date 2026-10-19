@@ -115,7 +115,7 @@ pub struct Sources { pub person: Source, pub administrator: Vec<Source> }
   - A rule's masked `orders.email` refused by the administrator, and answered `•••`.
   - A rule's stale `hidden` entry closing the connection with `PolicyNeedsFixing`, on reads and in `agent_hidden(..).check_settings()`.
   - A rule's stale `visible_only` entry stopping nothing.
-- [ ] **Step 3:** Run `cargo test --locked -p tabletist-db`. Expected: PASS. Then run it with `TABLETIST_TEST_POSTGRES_URL` and `TABLETIST_TEST_MYSQL_URL` set, where the servers are up on 55432 and 53306.
+- [ ] **Step 3:** Run `cargo test --locked -p tabletist-db`. Expected: PASS. Then run it with `TABLETIST_TEST_PG_URL` and `TABLETIST_TEST_MYSQL_URL` set, where the servers are up on 55432 and 53306.
 - [ ] **Step 4:** Commit: "Let the agent checks take a rule's tables and columns beside the person's".
 
 ### Task 3: The server and the app pass the sources
