@@ -33,6 +33,13 @@ launch, are on the
   SQLite file lists its tables by name). Then
   three buttons: New SQL query, Switch database and Edit connection.
   Closing the last tab brings the screen back.
+- **A search field sits under the connection line.** Start typing
+  anywhere on the screen and what you type goes into it; the recents give
+  way to the tables and views that match, grouped, with the first picked
+  and the matched letters marked. It is the same search as Quick open
+  (Cmd+P), which opens it from anywhere. Up and Down move the pick, Return
+  opens it, Option+Return opens it in a new SQL editor reading its first
+  rows, and Esc clears the search and brings the recents back.
 - **Light and dark follow the system.** Tabletist changes with the
   Appearance setting while it runs. **Settings › Appearance** can keep it
   light or dark whatever the system says.

@@ -545,6 +545,35 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && app
             .workspace(active)
             .is_some_and(crate::model::Workspace::on_start);
+    // The window shows the start screen (whatever pane the keyboard is in:
+    // the macOS field keeps the keyboard while the sidebar's pane stays
+    // the tree). Its search is on while the field has the keyboard or
+    // something is typed; the keys that move among the matches, open one
+    // and clear the search are read then.
+    let on_start_screen = !on_picker
+        && app
+            .workspace(active)
+            .is_some_and(crate::model::Workspace::on_start);
+    let searching = on_start_screen
+        && (ctx.memory(|memory| memory.has_focus(crate::ui::start::search_field_id(active)))
+            || app
+                .workspace(active)
+                .is_some_and(|workspace| !workspace.start_search.trim().is_empty()));
+    // On macOS the screen's search field takes what is typed, wherever the
+    // keyboard is: a character typed with no text field holding the
+    // keyboard asks for the search field, and is left in the frame for it
+    // to read. So the keyboard can stay in the sidebar until a letter is
+    // typed, and the sidebar's own filter keeps what is typed into it.
+    // Keys held with Cmd, Ctrl or Alt are shortcuts, and bring no
+    // character.
+    if on_start_screen
+        && !app.look.terminal
+        && !ctx.text_edit_focused()
+        && !typed_chars(ctx).is_empty()
+    {
+        let field = crate::ui::start::search_field_id(active);
+        ctx.memory_mut(|memory| memory.request_focus(field));
+    }
     let scopes: &[Scope] = if on_picker {
         &[Scope::Connections]
     } else if open {
@@ -765,6 +794,69 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             )
         {
             actions.push(Action::OpenRecent { tab: active, index });
+        }
+        // The start screen's search, while it is on: the keys that move
+        // among the matches, open one (in a SQL editor with Alt) and clear
+        // it. Read in a field as out of one, so they answer while the field
+        // has the keyboard.
+        if searching {
+            // The keymap lists the key that moves up first, then the one
+            // that moves down, in each look: the first steps back among the
+            // matches, the rest forward.
+            for (nth, keys) in keymap
+                .chords_now(layout, Command::StartSearchMove, Scope::Start, normal)
+                .enumerate()
+            {
+                let by = if nth == 0 { -1 } else { 1 };
+                let count = presses(input, layout, keys).count;
+                actions.extend((0..count).map(|_| Action::StartSearchMove { tab: active, by }));
+            }
+            if asked(
+                input,
+                keymap,
+                layout,
+                Command::StartSearchOpenInEditor,
+                Scope::Start,
+                normal,
+            )
+            .count
+                > 0
+            {
+                actions.push(Action::StartSearchOpen {
+                    tab: active,
+                    index: None,
+                    in_editor: true,
+                });
+            } else if asked(
+                input,
+                keymap,
+                layout,
+                Command::StartSearchOpen,
+                Scope::Start,
+                normal,
+            )
+            .count
+                > 0
+            {
+                actions.push(Action::StartSearchOpen {
+                    tab: active,
+                    index: None,
+                    in_editor: false,
+                });
+            }
+            if asked(
+                input,
+                keymap,
+                layout,
+                Command::StartSearchClear,
+                Scope::Start,
+                normal,
+            )
+            .count
+                > 0
+            {
+                actions.push(Action::StartSearchClear(active));
+            }
         }
         // Where the server has another database: with one, no menu is
         // drawn, and an id left open would show it once the list came.
@@ -2472,6 +2564,9 @@ fn letters(
             (Some(Command::SwitchDatabase), _) if start && switchable(app, tab) => {
                 let id = crate::ui::workspace::database_menu_id(tab, true);
                 egui::Popup::open_id(ctx, id);
+            }
+            (Some(Command::StartSearchFocus), _) if start => {
+                actions.push(Action::StartSearchFocus(tab));
             }
             (Some(Command::EditCell), _) if edits && alone => {
                 opened = true;
