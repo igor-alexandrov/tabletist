@@ -14,10 +14,9 @@ use crate::settings::{
 use crate::testing::{Harness, bounds};
 use crate::theme::Look;
 
-/// The looks that draw the sheet: Windows draws the macOS one, with its
-/// own grid.
-fn looks() -> [Look; 2] {
-    [Look::standard(), Look::macos()]
+/// Every look: Windows draws the macOS sheet, with its own grid.
+fn looks() -> [Look; 3] {
+    Look::ALL
 }
 
 /// Settings on its Appearance pane, in a window as large as the look's
