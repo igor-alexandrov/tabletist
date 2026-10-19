@@ -142,6 +142,27 @@ pub enum Action {
     /// Empty the connection's recents, and the window's SQL editors among
     /// them. Nothing is lost, so nothing asks.
     ClearRecents(ConnTabId),
+    /// Give the start screen's search field the keyboard: `/` in the
+    /// Omarchy look, where the screen has the keys.
+    StartSearchFocus(ConnTabId),
+    /// What the search field holds changed: pick the first match again.
+    StartSearchChanged(ConnTabId),
+    /// Move the start screen's search by `by` matches, clamped.
+    StartSearchMove {
+        tab: ConnTabId,
+        by: isize,
+    },
+    /// Open a start screen search match: the one picked, or `index` where a
+    /// row was clicked; in a new SQL editor (`SELECT * FROM … LIMIT n`)
+    /// where `in_editor`, else as a table or view tab. Clears the search.
+    StartSearchOpen {
+        tab: ConnTabId,
+        index: Option<usize>,
+        in_editor: bool,
+    },
+    /// Empty the start screen's search and show the recents again. The
+    /// Omarchy field gives the keys back to the screen.
+    StartSearchClear(ConnTabId),
     /// Hide or show the sidebar.
     ToggleSidebar(ConnTabId),
     /// Show timestamps in the grid to the microsecond, or to the second.
@@ -978,6 +999,22 @@ pub struct Workspace {
     /// them with the tables and views of `recents.json`, which are the
     /// connection's, and opens one again with its script.
     pub recent_sql: Vec<ClosedSql>,
+    /// What is typed in the start screen's search, while no tab is open:
+    /// the field edits it. Empty shows the recents; anything else shows
+    /// the tables and views that match (the `⌘P` index), grouped.
+    pub start_search: String,
+    /// Which match the start screen's search has picked, an index into
+    /// [`crate::app::App::start_matches`]. Clamped as it moves; reset to
+    /// the first when what is typed changes.
+    pub start_selected: usize,
+    /// Give the start screen's search field the keyboard on the next
+    /// frame: when `/` asks for it in the Omarchy look. On macOS a letter
+    /// typed on the screen asks for the field directly, in `src/ui/keys.rs`.
+    pub focus_start_search: bool,
+    /// Take the keyboard off the start screen's search field on the next
+    /// frame, so the screen's own keys answer again: when `esc` clears
+    /// the search in the Omarchy look.
+    pub blur_start_search: bool,
     pub sidebar_hidden: bool,
     /// The grid shows timestamps in full rather than to the second.
     pub full_precision: bool,
@@ -4565,6 +4602,10 @@ impl Workspace {
             needs_ssh_prompt: None,
             pane: Pane::Tree,
             recent_sql: Vec::new(),
+            start_search: String::new(),
+            start_selected: 0,
+            focus_start_search: false,
+            blur_start_search: false,
             sidebar_hidden: false,
             full_precision: false,
             zone: None,
