@@ -18,7 +18,7 @@ use crate::ui::focus::{self, Ring};
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::{Said, choices, file_pane, opened, sample_timestamp, terminal_label};
+use super::{Said, choices, file_pane, opened, sample_timestamp, small_print, terminal_label};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -1120,6 +1120,9 @@ fn option_row(
         actions,
     );
     let y = row.center().y;
+    if let Some(button) = &button {
+        describe(ui, button, option, skin);
+    }
     // A stepped option has no button that is its value: its row says it.
     if let Some(button) = button
         && matches!(
@@ -1290,11 +1293,20 @@ fn check(
     // value it is not set to is the button on top.
     let mut values = choices(option, settings, skin.named, skin.launches);
     values.sort_by_key(|(_, value)| *value != current);
+    let mut group = radio_group(ui, cell, option, skin);
     for (word, value) in values {
         let press = Press::Value {
             set: value == current,
         };
-        choice(ui, place, cell.index, (word, value), press, skin, actions);
+        choice(
+            &mut group,
+            place,
+            cell.index,
+            (word, value),
+            press,
+            skin,
+            actions,
+        );
     }
 }
 
@@ -1544,6 +1556,7 @@ fn choice(
     if let Press::Value { set } = press {
         button.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, set, &name));
     }
+    describe(ui, &button, value.option(), skin);
     if button.clicked() {
         actions.push(Action::SelectSettingsRow(index));
         // The theme it shows already: a value of the other looks', shown
@@ -1553,6 +1566,38 @@ fn choice(
             actions.push(Action::SetOption(value));
         }
     }
+}
+
+/// Gives `option`'s small print, where it has one, to `control` as its
+/// description: what a screen reader reads after its name, as the macOS
+/// look's controls have it. In the case its name has, not the look's.
+fn describe(ui: &Ui, control: &egui::Response, option: OptionId, skin: &Skin) {
+    if let Some(print) = small_print(option) {
+        let said = gettext(skin.locale, print);
+        ui.ctx().accesskit_node_builder(control.id, |node| {
+            node.set_description(said.as_ref());
+        });
+    }
+}
+
+/// A Ui over `cell`'s row whose node is a radio group named by `option`:
+/// the parent of the option's values in the accessibility tree. A child
+/// Ui, not a scope: the row's places are painted, nothing is allocated,
+/// and the rows under it stay where they are.
+fn radio_group(ui: &mut Ui, cell: Cell, option: OptionId, skin: &Skin) -> Ui {
+    let label = terminal_label(option);
+    let builder = egui::UiBuilder::new()
+        .id_salt(("values", label))
+        .max_rect(cell.row);
+    let group = ui.new_child(builder);
+    let name = gettext(skin.locale, label);
+    group
+        .ctx()
+        .accesskit_node_builder(group.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::RadioGroup);
+            node.set_label(name.as_ref());
+        });
+    group
 }
 
 /// One of two values as segments, each as tall as its line of text and a
@@ -1571,6 +1616,7 @@ fn segments(
     let current = settings.value(option);
     let line = role.row_height(ui.ctx(), look.faces);
     let gap = role.width(ui.ctx(), look.faces, " ");
+    let mut group = radio_group(ui, cell, option, skin);
     let mut left = cell.left;
     for (word, value) in choices(option, settings, skin.named, skin.launches) {
         let text = skin.written(word);
@@ -1597,7 +1643,15 @@ fn segments(
         let press = Press::Value {
             set: value == current,
         };
-        choice(ui, place, cell.index, (word, value), press, skin, actions);
+        choice(
+            &mut group,
+            place,
+            cell.index,
+            (word, value),
+            press,
+            skin,
+            actions,
+        );
     }
 }
 

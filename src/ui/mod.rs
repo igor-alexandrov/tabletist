@@ -58,6 +58,8 @@ pub mod review;
 pub mod row_form;
 pub mod row_panel;
 pub mod settings;
+#[cfg(test)]
+mod settings_access_tests;
 pub mod sidebar;
 pub mod sql_complete;
 pub mod sql_editor;
@@ -2544,6 +2546,26 @@ value_tags   = true
         ));
         let notice = harness.app.notice.clone().expect("a notice");
         assert!(settings_notice(&mut harness, &notice).is_some(), "{notice}");
+    }
+
+    #[test]
+    fn the_sheet_shows_what_the_look_has_where_the_settings_do_not_say() {
+        use egui::accesskit::{Role, Toggled};
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            assert_eq!(harness.app.settings.group_digits, None);
+            let tree = harness.settle();
+            let selected = |name: &str| {
+                let id = crate::testing::node(&tree, name, Role::Button)
+                    .unwrap_or_else(|| panic!("{name} is no segment"));
+                let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+                node.toggled()
+            };
+            // Grouped is the default of macOS and Windows: that segment is
+            // the one set.
+            assert_eq!(selected("Numbers: 1,240.50"), Some(Toggled::True));
+            assert_eq!(selected("Numbers: 1240.50"), Some(Toggled::False));
+        }
     }
 
     #[test]

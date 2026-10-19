@@ -783,6 +783,7 @@ fn schema_header(
         &segments,
         usize::from(flat),
         segment,
+        None,
         look,
         palette,
     ) && (index == 1) != flat

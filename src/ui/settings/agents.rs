@@ -97,7 +97,8 @@ fn title(ui: &mut Ui, on: bool, skin: &Skin, actions: &mut Vec<Action>) {
     } else {
         "Let coding agents query your databases through Tabletist (MCP). They use your saved connections; passwords stay in the keyring."
     };
-    let what = Text::one(look, TextRole::UiBody, &skin.say(said), palette.dim)
+    let said = skin.say(said);
+    let what = Text::one(look, TextRole::UiBody, &said, palette.dim)
         .wrap(words)
         .layout(ui.ctx());
     let height = name.height() + 2.0 + what.height();
@@ -113,7 +114,9 @@ fn title(ui: &mut Ui, on: bool, skin: &Skin, actions: &mut Vec<Action>) {
     let builder = egui::UiBuilder::new().id_salt("switch").max_rect(place);
     let mut switch = ui.new_child(builder.layout(centred));
     let named = gettext(skin.locale, super::label(OptionId::AgentsOn));
-    if widgets::toggle(&mut switch, on, &named, palette).clicked() {
+    // Described by the words under the title, as a row's switch is by
+    // its small print.
+    if widgets::toggle(&mut switch, on, &named, Some(&said), palette).clicked() {
         actions.push(Action::SetOption(crate::settings::OptionValue::AgentsOn(
             !on,
         )));
@@ -292,9 +295,8 @@ fn connect(ui: &mut Ui, agent: Agent, skin: &Skin, actions: &mut Vec<Action>) {
         .map(|word| role.width(ui.ctx(), look.faces, word))
         .fold(0.0, f32::max);
     let size = vec2((widest + 20.0).ceil(), SEGMENT);
-    let names = words
-        .each_ref()
-        .map(|word| format!("{}: {word}", gettext(locale, "Connect an agent")));
+    let heading = gettext(locale, "Connect an agent");
+    let names = words.each_ref().map(|word| format!("{heading}: {word}"));
     let parts: Vec<Segment<'_>> = words
         .iter()
         .zip(&names)
@@ -305,21 +307,25 @@ fn connect(ui: &mut Ui, agent: Agent, skin: &Skin, actions: &mut Vec<Action>) {
         .position(|shown| *shown == agent)
         .unwrap_or(0);
     let switch = 3.0 * size.x + 4.0;
-    let hint = Text::one(
-        look,
-        TextRole::Secondary,
-        &skin.say(agent_hint(agent)),
-        palette.dim,
-    )
-    .wrap((ui.available_width() - switch - 10.0).max(0.0))
-    .layout(ui.ctx());
+    let said = skin.say(agent_hint(agent));
+    let hint = Text::one(look, TextRole::Secondary, &said, palette.dim)
+        .wrap((ui.available_width() - switch - 10.0).max(0.0))
+        .layout(ui.ctx());
     let height = (SEGMENT + 4.0).max(hint.height());
     let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let place = Rect::from_min_size(line.min, vec2(switch, height));
     let centred = egui::Layout::left_to_right(egui::Align::Center);
     let builder = egui::UiBuilder::new().id_salt("agent").max_rect(place);
     let mut row = ui.new_child(builder.layout(centred));
-    if let Some(picked) = widgets::segmented(&mut row, &parts, selected, size, look, palette) {
+    // A radio group named by the heading over it, described by what the
+    // chosen agent takes, which is written beside it.
+    let group = widgets::Group {
+        name: &heading,
+        description: Some(&said),
+    };
+    if let Some(picked) =
+        widgets::segmented(&mut row, &parts, selected, size, Some(group), look, palette)
+    {
         actions.push(Action::ChooseAgentSetup(Agent::ALL[picked]));
     }
     let at = row.min_rect().right() + 10.0;

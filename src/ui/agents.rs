@@ -215,7 +215,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
                 let segment = vec2(SEGMENT, 24.0);
                 if let Some(index) =
-                    widgets::segmented(&mut child, &parts, chosen, segment, &look, &palette)
+                    widgets::segmented(&mut child, &parts, chosen, segment, None, &look, &palette)
                 {
                     let view = [AgentsView::Activity, AgentsView::Log][index];
                     actions.push(Action::ShowAgentsView { tab, view });
