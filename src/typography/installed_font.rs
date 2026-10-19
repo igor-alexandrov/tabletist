@@ -211,7 +211,8 @@ pub fn read_with(
     let mut family = name.to_owned();
     let mut faces = faces_of(name);
     if faces.is_empty() {
-        // A name written by hand, in another case than CoreText's.
+        // A name written by hand, in another case than CoreText's, where
+        // CoreText's own lookup does not find it whatever the case.
         if let Some(found) = families()
             .into_iter()
             .find(|found| found.eq_ignore_ascii_case(name))
@@ -451,7 +452,9 @@ mod tests {
         for asked in ["Menlo", "menlo"] {
             let read = read(Some(asked));
             assert!(!read.missing, "{asked}");
-            assert_eq!(read.family.as_deref(), Some("Menlo"));
+            // CoreText finds a family whatever the case it is asked in:
+            // the name stays as the settings write it.
+            assert_eq!(read.family.as_deref(), Some(asked));
             let faces = read.faces.expect("Menlo's faces");
             // The regular, found in the collection by its name; Menlo has
             // no medium, so the regular again at 500.
