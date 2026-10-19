@@ -185,19 +185,17 @@ fn load_file(face: &Face) -> Option<FontData> {
 /// (the third face, at 700, which the data is never drawn at, is the
 /// 500's). Nothing is read for none, for `monospace` and for a bundled
 /// face's name. A name that no installed family has is `missing`: the
-/// default is drawn in its place. CoreText's answers, then the font files:
-/// at the start (as the fonts always were) and on the backend after.
+/// default is drawn in its place. CoreText's answer for the one family
+/// (which finds it whatever the case it is written in), then at most two
+/// font files: at the start (as the fonts always were) and on the backend
+/// after. Never every installed font, which the menu's list alone reads,
+/// on the backend.
 pub fn read(asked: Option<&str>) -> Read {
-    read_with(asked, &installed_faces, &installed_families)
+    read_with(asked, &installed_faces)
 }
 
-/// [`read`], with the installed fonts as `faces_of` and `families` give
-/// them.
-pub fn read_with(
-    asked: Option<&str>,
-    faces_of: &dyn Fn(&str) -> Vec<Face>,
-    families: &dyn Fn() -> Vec<String>,
-) -> Read {
+/// [`read`], with a family's faces as `faces_of` gives them.
+pub fn read_with(asked: Option<&str>, faces_of: &dyn Fn(&str) -> Vec<Face>) -> Read {
     let none = Read {
         asked: asked.map(str::to_owned),
         ..Read::default()
@@ -208,19 +206,7 @@ pub fn read_with(
     let Some(name) = named else {
         return none;
     };
-    let mut family = name.to_owned();
-    let mut faces = faces_of(name);
-    if faces.is_empty() {
-        // A name written by hand, in another case than CoreText's, where
-        // CoreText's own lookup does not find it whatever the case.
-        if let Some(found) = families()
-            .into_iter()
-            .find(|found| found.eq_ignore_ascii_case(name))
-        {
-            faces = faces_of(&found);
-            family = found;
-        }
-    }
+    let faces = faces_of(name);
     let loaded = regular_and_medium(&faces).and_then(|(regular, medium)| {
         let drawn = Arc::new(load_file(regular)?);
         let heavier = if medium == regular {
@@ -233,7 +219,7 @@ pub fn read_with(
     match loaded {
         Some(faces) => Read {
             faces: Some(faces),
-            family: Some(family),
+            family: Some(name.to_owned()),
             ..none
         },
         None => {
@@ -412,16 +398,16 @@ mod tests {
 
     #[test]
     fn the_font_the_settings_name_is_read_from_its_files() {
-        let faces_of = |family: &str| match family {
-            "Fira Code" => vec![
+        // CoreText finds a family whatever the case it is written in.
+        let faces_of = |family: &str| match family.to_lowercase().as_str() {
+            "fira code" => vec![
                 bundled("Fira-Regular", "IBMPlexMono-Regular.ttf", 0.0),
                 bundled("Fira-Medium", "IBMPlexMono-Medium.ttf", 0.23),
             ],
-            "Gone" => vec![face("Gone-Regular", 0.0)],
+            "gone" => vec![face("Gone-Regular", 0.0)],
             _ => Vec::new(),
         };
-        let families = || vec!["Fira Code".to_owned(), "Gone".to_owned()];
-        let read = read_with(Some("Fira Code"), &faces_of, &families);
+        let read = read_with(Some("Fira Code"), &faces_of);
         assert_eq!(read.asked.as_deref(), Some("Fira Code"));
         assert_eq!(read.family.as_deref(), Some("Fira Code"));
         assert!(!read.missing);
@@ -430,13 +416,13 @@ mod tests {
         assert_eq!(faces[0].font.len(), super::super::fonts::PLEX_MONO.len());
         assert_eq!(faces[1].font.len(), plex_mono_medium.len());
         assert!(Arc::ptr_eq(&faces[1], &faces[2]));
-        // Written by hand in another case: CoreText's name is drawn.
-        let read = read_with(Some(" fira CODE "), &faces_of, &families);
-        assert_eq!(read.family.as_deref(), Some("Fira Code"));
+        // Written by hand in another case: the name as written.
+        let read = read_with(Some(" fira CODE "), &faces_of);
+        assert_eq!(read.family.as_deref(), Some("fira CODE"));
         assert!(read.faces.is_some());
         // Not installed, or its file not there: the default, said.
         for name in ["Iosevka", "Gone"] {
-            let read = read_with(Some(name), &faces_of, &families);
+            let read = read_with(Some(name), &faces_of);
             assert!(read.missing, "{name}");
             assert!(read.faces.is_none() && read.family.is_none(), "{name}");
             assert_eq!(read.asked.as_deref(), Some(name));
@@ -472,7 +458,6 @@ mod tests {
     #[test]
     fn nothing_is_read_for_the_bundled_faces() {
         let faces_of = |family: &str| -> Vec<Face> { panic!("{family} looked up") };
-        let families = || -> Vec<String> { panic!("families listed") };
         for asked in [
             None,
             Some("JetBrains Mono"),
@@ -480,7 +465,7 @@ mod tests {
             Some("monospace"),
             Some(" "),
         ] {
-            let read = read_with(asked, &faces_of, &families);
+            let read = read_with(asked, &faces_of);
             assert_eq!(read.asked.as_deref(), asked);
             assert!(read.faces.is_none() && !read.missing, "{asked:?}");
         }
