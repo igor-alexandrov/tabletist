@@ -26,6 +26,8 @@ mod delete_many_tests;
 #[cfg(test)]
 mod delete_tests;
 #[cfg(test)]
+mod dialog_focus_tests;
+#[cfg(test)]
 mod duplicate_tests;
 #[cfg(test)]
 mod env_tests;
