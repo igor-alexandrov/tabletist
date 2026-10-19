@@ -261,14 +261,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ui.spacing_mut().item_spacing.y = 0.0;
             connection_line(&mut ui, &shown, skin);
             ui.add_space(gap(&look));
-            search_field(
-                &mut ui,
-                &mut query,
-                &keys,
-                skin,
-                (focus, blur),
-                &mut actions,
-            );
+            search_field(&mut ui, &mut query, &keys, skin, (focus, blur));
             ui.add_space(gap(&look));
             // On macOS the first row, or the first button where there is
             // none, is where F6 brings the keyboard. While searching the
@@ -932,7 +925,6 @@ fn search_field(
     keys: &Keys,
     skin: Skin<'_>,
     (focus, blur): (bool, bool),
-    _actions: &mut [Action],
 ) {
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let id = search_field_id(skin.tab);
