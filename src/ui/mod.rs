@@ -2552,7 +2552,7 @@ value_tags   = true
             assert_eq!(harness.app.settings.group_digits, None);
             let tree = harness.settle();
             let selected = |name: &str| {
-                let id = crate::testing::node(&tree, name, Role::Button)
+                let id = crate::testing::node(&tree, name, Role::RadioButton)
                     .unwrap_or_else(|| panic!("{name} is no segment"));
                 let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
                 node.toggled()
