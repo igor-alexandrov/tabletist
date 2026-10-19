@@ -16,7 +16,7 @@ use mysql_async::prelude::Queryable;
 
 use super::query_error;
 use crate::agent::{
-    Catalog, ColumnName, Hidden, Read, Refusal, Relation, Tables, named_relations, planned,
+    Catalog, ColumnName, Hidden, Read, Refusal, Relation, Sources, named_relations, planned,
 };
 use crate::sql::{self, TokenKind};
 use crate::{Dialect, Error, Result};
@@ -28,8 +28,8 @@ const SYSTEM: &str = "('information_schema', 'mysql', 'performance_schema', 'sys
 /// query's own takes its place, so the catalog is read whole.
 const WHOLE: &str = "LIMIT 18446744073709551615";
 
-/// Checks `read` against what `tables` hides and `masked` masks, in the
-/// open transaction. `Ok(Ok(masked))`: it may run, and `masked` says which
+/// Checks `read` against what `sources` hide and mask, in the open
+/// transaction. `Ok(Ok(masked))`: it may run, and `masked` says which
 /// of its result columns are a masked column's (none where nothing is
 /// masked). `Ok(Err(error))`: it may not, and `error` is why, a refusal or
 /// the server's own error on the plan (the statement would have failed
@@ -37,11 +37,10 @@ const WHOLE: &str = "LIMIT 18446744073709551615";
 pub(super) async fn check(
     conn: &mut mysql_async::Conn,
     read: &Read,
-    tables: &Tables,
-    masked: &[ColumnName],
+    sources: &Sources,
 ) -> Result<std::result::Result<Vec<bool>, Error>> {
-    let catalog = catalog(conn, masked).await?;
-    let hidden = Hidden::masking(Dialect::MySql, &catalog, tables, masked);
+    let catalog = catalog(conn, &sources.masked()).await?;
+    let hidden = Hidden::of(Dialect::MySql, &catalog, sources);
     if let Err(refusal) = hidden.check_statement(read) {
         return Ok(Err(Error::Agent(refusal)));
     }
@@ -326,7 +325,7 @@ pub(super) async fn catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::TableName;
+    use crate::agent::{TableName, Tables};
 
     fn bookshop(tables: Tables) -> Hidden {
         let relation = |name: &str| Relation {
@@ -361,7 +360,8 @@ mod tests {
             rewritten_reads(customers, &hidden),
             Err(Refusal::TableHidden {
                 name: "customers".into(),
-                through: None
+                through: None,
+                by: crate::agent::By::Person,
             })
         );
         // A stored function, as a view that calls it is rewritten.

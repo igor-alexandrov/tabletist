@@ -13,7 +13,7 @@ use tokio_postgres::SimpleQueryMessage;
 
 use super::query_error;
 use crate::agent::{
-    Catalog, ColumnName, ColumnRead, Hidden, Read, Refusal, Relation, Tables,
+    Catalog, ColumnName, ColumnRead, Hidden, Read, Refusal, Relation, Sources,
     calls_a_refused_function, function_allowed, planned,
 };
 use crate::{Dialect, Error, Result};
@@ -152,7 +152,8 @@ ORDER BY 1"
     )
 }
 
-/// Checks `read` against what `tables` hides, in the open transaction.
+/// Checks `read` against what `sources` hide and mask, in the open
+/// transaction.
 /// `Ok(Ok(masked))`: it may run, and `masked` says which of its result
 /// columns are a masked column's (none where nothing is masked).
 /// `Ok(Err(error))`: it may not, and `error` is why, a refusal or the
@@ -161,11 +162,10 @@ ORDER BY 1"
 pub(super) async fn check(
     client: &tokio_postgres::Client,
     read: &Read,
-    tables: &Tables,
-    masked: &[ColumnName],
+    sources: &Sources,
 ) -> Result<std::result::Result<Vec<bool>, Error>> {
-    let catalog = catalog(client, masked).await?;
-    let hidden = Hidden::masking(Dialect::Postgres, &catalog, tables, masked);
+    let catalog = catalog(client, &sources.masked()).await?;
+    let hidden = Hidden::of(Dialect::Postgres, &catalog, sources);
     if let Err(refusal) = hidden.check_statement(read) {
         return Ok(Err(Error::Agent(refusal)));
     }
@@ -367,6 +367,7 @@ fn planned_masks(plan: &serde_json::Value, hidden: &Hidden) -> std::result::Resu
     });
     match found {
         Some(column) => Err(Refusal::MaskedColumnUsed {
+            by: hidden.masked_by(&column),
             column,
             how: crate::agent::MaskedUse::Planned,
         }),
@@ -666,7 +667,7 @@ async fn rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::TableName;
+    use crate::agent::{TableName, Tables};
 
     /// A plan shaped as PostgreSQL 17's for `SELECT * FROM customers JOIN
     /// events ON …`: the parent's scan names its child table too, and a
@@ -727,7 +728,8 @@ mod tests {
             planned_reads(&plan(), &hidden(except("vip"))),
             Err(Refusal::TableHidden {
                 name: "vip".into(),
-                through: None
+                through: None,
+                by: crate::agent::By::Person,
             })
         );
         // A partition of a hidden table.
@@ -735,7 +737,8 @@ mod tests {
             planned_reads(&plan(), &hidden(except("events"))),
             Err(Refusal::TableHidden {
                 name: "events".into(),
-                through: Some("events_2026".into())
+                through: Some("events_2026".into()),
+                by: crate::agent::By::Person,
             })
         );
         // A function in a FROM, the users' own; and the system's catalog.
@@ -810,6 +813,7 @@ mod tests {
             Err(Refusal::MaskedColumnUsed {
                 column: "orders.email".into(),
                 how: crate::agent::MaskedUse::Planned,
+                by: crate::agent::By::Person,
             })
         };
         let output = |items: &[&str]| serde_json::json!({ "Output": items });
@@ -987,6 +991,7 @@ mod tests {
             Err(Refusal::MaskedColumnUsed {
                 column: "city.city".into(),
                 how: crate::agent::MaskedUse::Planned,
+                by: crate::agent::By::Person,
             })
         );
         // Another table's column of the same name is its own.

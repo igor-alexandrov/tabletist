@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value as Json, json};
 use tabletist_db::Dialect;
-use tabletist_db::agent::{TableName, Tables};
+use tabletist_db::agent::{Source, TableName, Tables};
 
 use super::{Done, Invalid, Note, Tool, schema};
 use crate::gateway::{Gateway, Listed};
@@ -24,7 +24,11 @@ pub fn tool() -> Tool {
                       columns you may select but not filter, join, sort or compute on, and \
                       neither may any column of the same name, in any table: each of their \
                       values answers •••, and a view that reads one (on MySQL, any view over \
-                      its table) may not be read.",
+                      its table) may not be read. `administrator` lists the same keys for \
+                      each rule of the person's administrator's policy that hides or masks \
+                      anything here: a table is readable only where the person's lists and \
+                      every rule's let it be, and a column is masked where any masks it. The \
+                      person cannot change the administrator's.",
         input: schema(json!({}), &[]),
     }
 }
@@ -62,11 +66,33 @@ fn entry(listed: &Listed) -> Json {
     entry.insert("access".into(), json!("read"));
     entry.insert("rows".into(), json!(listed.limits.rows));
     entry.insert("timeout_s".into(), seconds(listed.limits.timeout));
-    // What is hidden, by the names the person gave.
+    // What is hidden, by the names the person gave, and by the names each
+    // of the administrator's rules gives, apart.
+    guarded(&listed.sources.person, &mut entry);
+    let rules: Vec<Json> = listed
+        .sources
+        .administrator
+        .iter()
+        .filter(|rule| rule.guards_anything())
+        .map(|rule| {
+            let mut said = Map::new();
+            guarded(rule, &mut said);
+            Json::Object(said)
+        })
+        .collect();
+    if !rules.is_empty() {
+        entry.insert("administrator".into(), Json::Array(rules));
+    }
+    Json::Object(entry)
+}
+
+/// What `source` hides and masks, by the names it gives: `hidden` for an
+/// "All except" list, `only` for an "Only" one, and `masked`.
+fn guarded(source: &Source, entry: &mut Map<String, Json>) {
     let written = |names: &[TableName]| -> Json {
         Json::Array(names.iter().map(|name| json!(name.to_string())).collect())
     };
-    match &listed.tables {
+    match &source.tables {
         Tables::All => {}
         Tables::AllExcept(names) if names.is_empty() => {}
         Tables::AllExcept(names) => {
@@ -76,11 +102,10 @@ fn entry(listed: &Listed) -> Json {
             entry.insert("only".into(), written(names));
         }
     }
-    if !listed.masked.is_empty() {
-        let masked = listed.masked.iter().map(|column| json!(column.to_string()));
+    if !source.masked.is_empty() {
+        let masked = source.masked.iter().map(|column| json!(column.to_string()));
         entry.insert("masked".into(), Json::Array(masked.collect()));
     }
-    Json::Object(entry)
 }
 
 /// Whole seconds as a whole number.

@@ -5,7 +5,7 @@
 
 use std::future::Future;
 
-use tabletist_db::agent::{Answer, ColumnName, Hidden, Limits, Read, Tables};
+use tabletist_db::agent::{Answer, Hidden, Limits, Read, Sources};
 use tabletist_db::{Dialect, ObjectInfo, ObjectRef, Structure};
 use tokio_util::sync::CancellationToken;
 
@@ -21,12 +21,13 @@ pub struct Listed {
     pub dialect: Dialect,
     /// The most rows of an answer, and how long a call may take.
     pub limits: Limits,
-    /// What agents may not read of it. The names are told to an agent
-    /// (the MCP plan's question 8): the rows are what is hidden.
-    pub tables: Tables,
-    /// The columns whose values agents get as `•••`, and may select but
-    /// not filter, join, sort or compute on (B.4). Their names are told.
-    pub masked: Vec<ColumnName>,
+    /// What agents may not read of it: the tables hidden and the columns
+    /// masked, whose values agents get as `•••` and may select but not
+    /// filter, join, sort or compute on (B.4). The person's, and those of
+    /// each rule of the administrator's policy that matches it. The names
+    /// are told to an agent (the MCP plan's question 8): the rows are what
+    /// is hidden.
+    pub sources: Sources,
 }
 
 /// The schemas of a connection.
@@ -100,22 +101,17 @@ pub trait Session: Send + Sync {
         object: &ObjectRef,
     ) -> impl Future<Output = Result<Structure, Failure>> + Send;
 
-    /// What `tables` hides and `masked` masks on the database as it is now
+    /// What `sources` hide and mask on the database as it is now
     /// ([`tabletist_db::Connection::agent_hidden`]).
-    fn hidden(
-        &self,
-        tables: &Tables,
-        masked: &[ColumnName],
-    ) -> impl Future<Output = Result<Hidden, Failure>> + Send;
+    fn hidden(&self, sources: &Sources) -> impl Future<Output = Result<Hidden, Failure>> + Send;
 
-    /// Runs a statement that passed the check, reading nothing `tables`
-    /// hides and answering `masked`'s values as `•••`
+    /// Runs a statement that passed the check, reading nothing `sources`
+    /// hide and answering the values of the columns they mask as `•••`
     /// ([`tabletist_db::Connection::run_agent_read`]).
     fn read(
         &self,
         read: &Read,
         limits: Limits,
-        tables: &Tables,
-        masked: &[ColumnName],
+        sources: &Sources,
     ) -> impl Future<Output = Result<Answer, Failure>> + Send;
 }

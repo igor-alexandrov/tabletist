@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{Piece, Read, Refusal, closing, fold, parts, pieces, read_names, same};
-use crate::agent::MaskedUse;
+use crate::agent::{By, MaskedUse};
 
 /// A column the person masks, as they name it: in its table, and in its
 /// schema where they give one. One without a schema is that column of the
@@ -85,17 +85,22 @@ impl ColumnName {
 
 /// What the reading knows of the masked columns: their names, and the
 /// names of the tables that have one, their parts and their child tables
-/// with them, each with the entry a refusal names.
+/// with them, each with the entry a refusal names, and whose each is.
 pub(super) struct Masks<'a> {
     columns: HashMap<String, &'a ColumnName>,
     tables: HashMap<String, &'a ColumnName>,
+    entries: &'a [ColumnName],
+    by: &'a [By],
 }
 
 impl<'a> Masks<'a> {
-    /// `masked`, and `more`: the other tables that have one of its
-    /// columns, by name, each with its entry.
+    /// `masked`, whose entries `by` says in their order (the person's
+    /// where it says nothing), and `more`: the other tables that have one
+    /// of its columns, by name, each with its entry. The first entry of a
+    /// name is the one a refusal names.
     pub(super) fn new(
         masked: &'a [ColumnName],
+        by: &'a [By],
         more: impl IntoIterator<Item = (String, &'a ColumnName)>,
     ) -> Self {
         let mut columns = HashMap::new();
@@ -107,7 +112,28 @@ impl<'a> Masks<'a> {
         for (table, entry) in more {
             tables.entry(fold(&table)).or_insert(entry);
         }
-        Self { columns, tables }
+        Self {
+            columns,
+            tables,
+            entries: masked,
+            by,
+        }
+    }
+
+    /// The refusal for a use `how` of the masked column `entry`, one of
+    /// these: by whoever masks it.
+    fn used(&self, entry: &ColumnName, how: MaskedUse) -> Refusal {
+        let by = self
+            .entries
+            .iter()
+            .position(|own| std::ptr::eq(own, entry))
+            .and_then(|at| self.by.get(at).copied())
+            .unwrap_or_default();
+        Refusal::MaskedColumnUsed {
+            column: entry.to_string(),
+            how,
+            by,
+        }
     }
 
     fn column(&self, word: &str) -> Option<&'a ColumnName> {
@@ -120,14 +146,6 @@ impl<'a> Masks<'a> {
 
     fn is_empty(&self) -> bool {
         self.columns.is_empty()
-    }
-}
-
-/// The refusal for a use `how` of the masked column `entry`.
-fn used(entry: &ColumnName, how: MaskedUse) -> Refusal {
-    Refusal::MaskedColumnUsed {
-        column: entry.to_string(),
-        how,
     }
 }
 
@@ -334,7 +352,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
         // `orders AS o(a, b, c)` gives its columns other names.
         if place.renames {
             let written = alias.unwrap_or(&place.name.name);
-            return Err(used(entry, MaskedUse::Renamed(written.to_owned())));
+            return Err(masks.used(entry, MaskedUse::Renamed(written.to_owned())));
         }
     }
     // The outermost `SELECT` and its list: what stands bare there is
@@ -377,7 +395,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                     if parts == 1
                         && let Some(entry) = standing.get(&fold(column))
                     {
-                        return Err(used(entry, MaskedUse::Row(column.to_owned())));
+                        return Err(masks.used(entry, MaskedUse::Row(column.to_owned())));
                     }
                     allowed.extend(from..to);
                     let entry = masks
@@ -406,11 +424,11 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
     // Rule 2: beside a masked column, the outermost query is a plain one.
     if let Some(&(_, entry)) = masked_items.first() {
         if distinct {
-            return Err(used(entry, MaskedUse::Clause("DISTINCT")));
+            return Err(masks.used(entry, MaskedUse::Clause("DISTINCT")));
         }
         for at in (0..pieces.len()).filter(|&at| depth[at] == 0) {
             if let Some((_, clause)) = CLAUSES.iter().find(|(word, _)| pieces[at].is(word)) {
-                return Err(used(entry, MaskedUse::Clause(clause)));
+                return Err(masks.used(entry, MaskedUse::Clause(clause)));
             }
         }
         // `ORDER BY` a place, which may be a masked column's: SQLite reads
@@ -434,7 +452,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                     .iter()
                     .find(|piece| !matches!(piece, Piece::Open | Piece::Other));
                 if let Some(Piece::Number(written)) = place {
-                    return Err(used(entry, MaskedUse::Sorted(written.clone())));
+                    return Err(masks.used(entry, MaskedUse::Sorted(written.clone())));
                 }
             }
         }
@@ -453,17 +471,17 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
         match piece {
             Piece::Word { text, .. } => {
                 if let Some(entry) = masks.column(text) {
-                    return Err(used(entry, MaskedUse::Named(entry.column.clone())));
+                    return Err(masks.used(entry, MaskedUse::Named(entry.column.clone())));
                 }
                 // Over a table with a masked column, its integer key's
                 // other name may be the masked column.
                 if let Some(entry) = over
                     && row_id(read.dialect(), text)
                 {
-                    return Err(used(entry, MaskedUse::RowId(text.clone())));
+                    return Err(masks.used(entry, MaskedUse::RowId(text.clone())));
                 }
                 if let Some((alias, entry)) = aliases.iter().find(|(alias, _)| same(alias, text)) {
-                    return Err(used(entry, MaskedUse::Alias((*alias).to_owned())));
+                    return Err(masks.used(entry, MaskedUse::Alias((*alias).to_owned())));
                 }
                 if in_place.contains(&at) {
                     continue;
@@ -471,7 +489,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                 if piece.is("NATURAL")
                     && let Some(entry) = over
                 {
-                    return Err(used(entry, MaskedUse::Natural));
+                    return Err(masks.used(entry, MaskedUse::Natural));
                 }
                 // The table or its alias as a value: its whole row.
                 let qualifies = pieces.get(at + 1) == Some(&Piece::Dot);
@@ -480,7 +498,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                     && !after_dot
                     && let Some(entry) = standing.get(&fold(text))
                 {
-                    return Err(used(entry, MaskedUse::Row(text.clone())));
+                    return Err(masks.used(entry, MaskedUse::Row(text.clone())));
                 }
             }
             // SQLite reads a string as a name where only a name can stand:
@@ -492,7 +510,7 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                         || in_using(&pieces, at)) =>
             {
                 if let Some(entry) = masks.column(text) {
-                    return Err(used(entry, MaskedUse::Named(entry.column.clone())));
+                    return Err(masks.used(entry, MaskedUse::Named(entry.column.clone())));
                 }
             }
             Piece::Star if selects(&pieces, at) => {
@@ -503,12 +521,12 @@ pub(super) fn check(read: &Read, masks: &Masks<'_>) -> Result<(), Refusal> {
                     Some(qualifier) => {
                         if let Some(entry) = standing.get(&fold(qualifier)) {
                             let row = format!("{qualifier}.*");
-                            return Err(used(entry, MaskedUse::Row(row)));
+                            return Err(masks.used(entry, MaskedUse::Row(row)));
                         }
                     }
                     None => {
                         if let Some(entry) = over {
-                            return Err(used(entry, MaskedUse::Star));
+                            return Err(masks.used(entry, MaskedUse::Star));
                         }
                     }
                 }
@@ -616,8 +634,8 @@ mod tests {
     fn on(dialect: Dialect, sql: &str) -> Result<(), MaskedUse> {
         let masked = [column("orders.email")];
         let read = check_read(dialect, sql, &[]).unwrap_or_else(|error| panic!("{sql}: {error:?}"));
-        check(&read, &Masks::new(&masked, [])).map_err(|refusal| match refusal {
-            Refusal::MaskedColumnUsed { column, how } => {
+        check(&read, &Masks::new(&masked, &[], [])).map_err(|refusal| match refusal {
+            Refusal::MaskedColumnUsed { column, how, .. } => {
                 assert_eq!(column, "orders.email", "{sql}");
                 how
             }
@@ -772,11 +790,11 @@ mod tests {
     #[test]
     fn a_refusal_names_the_masked_column_the_statement_selects() {
         let masked = [column("orders.email"), column("orders.phone")];
-        let masks = Masks::new(&masked, []);
+        let masks = Masks::new(&masked, &[], []);
         let refused = |sql: &str| {
             let read = check_read(Dialect::Postgres, sql, &[]).unwrap();
             match check(&read, &masks) {
-                Err(Refusal::MaskedColumnUsed { column, how }) => (column, how),
+                Err(Refusal::MaskedColumnUsed { column, how, .. }) => (column, how),
                 other => panic!("{sql}: {other:?}"),
             }
         };
@@ -929,7 +947,7 @@ mod tests {
     #[test]
     fn a_view_reads_a_whole_row_where_its_definition_writes_one() {
         let masked = [column("orders.email")];
-        let masks = Masks::new(&masked, []);
+        let masks = Masks::new(&masked, &[], []);
         let row =
             |definition: &str| reads_whole_row(Dialect::Postgres, definition, &masks).is_some();
         assert!(row(" SELECT x.*::public.orders AS x\n   FROM orders x;"));

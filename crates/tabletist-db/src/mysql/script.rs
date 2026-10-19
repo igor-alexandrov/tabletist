@@ -66,8 +66,7 @@ impl Conn {
         &self,
         read: &Read,
         limits: Limits,
-        tables: &crate::agent::Tables,
-        masked: &[crate::agent::ColumnName],
+        sources: &crate::agent::Sources,
         stop: &StopFlag,
     ) -> Result<(ScriptOutcome, Vec<bool>)> {
         let mut conn = self.conn.lock().await;
@@ -82,12 +81,9 @@ impl Conn {
             timeout: limits.timeout,
         };
         let access = self.access;
-        let guards = tables.hides_anything() || !masked.is_empty();
-        let hiding = guards.then_some(Hiding {
-            read,
-            tables,
-            masked,
-        });
+        let hiding = sources
+            .guards_anything()
+            .then_some(Hiding { read, sources });
         read_only(
             &mut conn,
             &texts,
@@ -105,8 +101,7 @@ impl Conn {
 #[derive(Clone, Copy)]
 struct Hiding<'a> {
     read: &'a Read,
-    tables: &'a crate::agent::Tables,
-    masked: &'a [crate::agent::ColumnName],
+    sources: &'a crate::agent::Sources,
 }
 
 /// The run that only reads: its transaction, its statements, and the
@@ -173,7 +168,7 @@ async fn refused_for_hiding(
     let Some(hiding) = hiding else {
         return Ok(Ok(Vec::new()));
     };
-    match super::hidden::check(conn, hiding.read, hiding.tables, hiding.masked).await {
+    match super::hidden::check(conn, hiding.read, hiding.sources).await {
         Ok(checked) => Ok(checked),
         Err(error) if error.is_connection_lost() => Err(error),
         Err(error) => Ok(Err(error)),
@@ -705,7 +700,7 @@ mod tests {
             send(&conn.server_version());
         };
         let _agent = |conn: &Conn, read: &Read, limits: Limits, stop: &StopFlag| {
-            send(&conn.run_read(read, limits, &crate::agent::Tables::All, &[], stop));
+            send(&conn.run_read(read, limits, &crate::agent::Sources::default(), stop));
         };
     }
 
