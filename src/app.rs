@@ -5962,6 +5962,16 @@ impl App {
         look
     }
 
+    /// The data font the settings name where nothing draws it on macOS: no
+    /// bundled face, and no installed one read, nor on its way. The default
+    /// is drawn in its place.
+    pub(crate) fn data_font_missing(&self) -> Option<&str> {
+        let name = crate::theme::DataFace::of(self.settings.font.as_deref()).err()?;
+        let reading = self.font_asked > self.font_taken;
+        let drawn = self.look.faces.data == crate::theme::DataFace::Installed;
+        (!drawn && !reading).then_some(name)
+    }
+
     /// Asks the backend for the installed monospace families the data
     /// font's menu lists, where macOS draws data in a face of its own and
     /// the desktop's fonts are read (not in tests or the demo).

@@ -31,9 +31,11 @@ launch, are on the
   **Tabletist → Settings…** opens Settings.
 - **Text has two sizes.** **Settings › Appearance** sizes the interface
   (Small, Default or Large) and the data apart: grid cells, the SQL
-  editor and JSON, in IBM Plex Mono or JetBrains Mono, from 11 to 16
-  points. Cmd+= and Cmd+- change the data's size wherever you are, and
-  Cmd+0 puts back 12.5.
+  editor and JSON, from 11 to 16 points, in IBM Plex Mono or JetBrains
+  Mono, which Tabletist bundles, or in a monospace font installed on the
+  Mac (Menlo, or one of your own), which the menu lists after them.
+  Cmd+= and Cmd+- change the data's size wherever you are, and Cmd+0
+  puts back 12.5.
 
 {% include shot.html file="macos-table-dark" alt="The same window in the dark appearance" %}
 

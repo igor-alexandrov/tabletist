@@ -230,7 +230,7 @@ fn a_data_font_that_is_not_bundled_is_drawn_as_the_default_and_said() {
     on_the_pane(&mut harness);
     assert!(shows(
         &mut harness,
-        "“Fira Code” is not bundled: IBM Plex Mono is used"
+        "“Fira Code” is not installed: IBM Plex Mono is used"
     ));
     assert!(!shows(&mut harness, "Grid cells, SQL editor, JSON"));
     // The menu shows the face drawn.
@@ -359,6 +359,23 @@ fn the_screen_says_the_font_fontconfig_drew_and_one_it_has_not() {
     assert!(!file(&harness).contains("font ="));
 }
 
+/// Whether the entry called `label` is told to a screen reader as the
+/// one in use.
+fn current(harness: &mut Harness, label: &str) -> Option<bool> {
+    let tree = harness.settle();
+    let node = crate::testing::node(&tree, label, egui::accesskit::Role::Button)?;
+    let (_, node) = tree.nodes.iter().find(|(id, _)| *id == node)?;
+    Some(node.toggled() == Some(egui::accesskit::Toggled::True))
+}
+
+/// What the data font's field reads.
+fn data_font_shown(harness: &mut Harness) -> Option<String> {
+    let tree = harness.settle();
+    let id = crate::testing::node(&tree, "Data font", egui::accesskit::Role::ComboBox)?;
+    let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id)?;
+    node.value().map(str::to_owned)
+}
+
 /// What CoreText would give for `name`: Hack's faces (egui's own), or
 /// none where it is not installed.
 fn installed_read(name: &str, found: bool) -> Read {
@@ -384,15 +401,74 @@ fn answer(harness: &mut Harness, asked: u64, read: Read) {
 }
 
 #[test]
-fn an_installed_font_is_drawn_once_read_and_the_default_where_it_is_not() {
+fn the_mac_menu_lists_the_installed_fonts_after_the_bundled_ones() {
+    let mut harness = sheet(Look::macos());
+    // CoreText's list, as the backend gives it: a list of the test's.
+    harness.app.installed_fonts = vec!["Fira Code".into(), "Menlo".into()];
+    on_the_pane(&mut harness);
+    harness.click("Data font");
+    let tree = harness.settle();
+    let place = |name| crate::testing::bounds(&tree, name, egui::accesskit::Role::Button);
+    let names = [
+        "Data font IBM Plex Mono",
+        "Data font JetBrains Mono",
+        "Data font Fira Code",
+        "Data font Menlo",
+    ];
+    let tops: Vec<f32> = names
+        .iter()
+        .map(|name| place(name).unwrap_or_else(|| panic!("{name}")).top())
+        .collect();
+    assert!(tops.is_sorted() && tops[0] < tops[3], "{tops:?}");
+    assert!(shows(&mut harness, "Installed"));
+    assert_eq!(current(&mut harness, "Data font IBM Plex Mono"), Some(true));
+    assert_eq!(current(&mut harness, "Data font Menlo"), Some(false));
+    let saves = settings_saves(&harness);
+    harness.click("Data font Menlo");
+    harness.settle();
+    assert_eq!(harness.app.settings.font.as_deref(), Some("Menlo"));
+    assert!(file(&harness).contains("font = \"Menlo\""));
+    assert_eq!(settings_saves(&harness), saves + 1);
+    // Read, it is drawn: the field reads it, and the menu has it in use.
+    answer(&mut harness, 1, installed_read("Menlo", true));
+    assert_eq!(harness.app.look.faces.data, DataFace::Installed);
+    assert_eq!(data_font_shown(&mut harness).as_deref(), Some("Menlo"));
+    assert!(shows(&mut harness, "Grid cells, SQL editor, JSON"));
+    harness.click("Data font");
+    assert_eq!(current(&mut harness, "Data font Menlo"), Some(true));
+    assert_eq!(
+        current(&mut harness, "Data font IBM Plex Mono"),
+        Some(false)
+    );
+    // A bundled face again: drawn as it always was.
+    harness.click("Data font JetBrains Mono");
+    harness.settle();
+    assert_eq!(harness.app.settings.font.as_deref(), Some("JetBrains Mono"));
+    assert_eq!(harness.app.look.faces.data, DataFace::JetBrainsMono);
+}
+
+#[test]
+fn without_installed_fonts_the_menu_has_the_bundled_ones_alone() {
+    let mut harness = sheet(Look::macos());
+    on_the_pane(&mut harness);
+    harness.click("Data font");
+    assert!(harness.has("Data font JetBrains Mono"));
+    assert!(!shows(&mut harness, "Installed"));
+}
+
+#[test]
+fn an_installed_font_is_drawn_once_read_and_said_where_it_is_not_installed() {
     let mut harness = sheet(Look::macos());
     // Where the desktop's fonts are read, as the app does outside tests.
     harness.app.follow_desktop = true;
     harness.app.change_settings(|settings| {
         settings.font = Some("Fira Code".into());
     });
-    // On its way: the default until it ends.
+    on_the_pane(&mut harness);
+    // On its way: the field reads the name, and nothing is said.
     assert_eq!(harness.app.look.faces.data, DataFace::PlexMono);
+    assert_eq!(data_font_shown(&mut harness).as_deref(), Some("Fira Code"));
+    assert!(shows(&mut harness, "Grid cells, SQL editor, JSON"));
     answer(&mut harness, 1, installed_read("Fira Code", true));
     assert_eq!(harness.app.look.faces.data, DataFace::Installed);
     // Its faces lead the installed families.
@@ -409,9 +485,18 @@ fn an_installed_font_is_drawn_once_read_and_the_default_where_it_is_not() {
         settings.font = Some("Gone Mono".into());
     });
     assert_eq!(harness.app.look.faces.data, DataFace::Installed);
-    // Not installed: the default.
+    assert_eq!(data_font_shown(&mut harness).as_deref(), Some("Gone Mono"));
+    // Not installed: the default, said, and the field reads the default.
     answer(&mut harness, 2, installed_read("Gone Mono", false));
     assert_eq!(harness.app.look.faces.data, DataFace::PlexMono);
+    assert!(shows(
+        &mut harness,
+        "“Gone Mono” is not installed: IBM Plex Mono is used"
+    ));
+    assert_eq!(
+        data_font_shown(&mut harness).as_deref(),
+        Some("IBM Plex Mono")
+    );
     let fonts = &harness.app.fonts;
     let family = egui::FontFamily::Name("installed-mono-400".into());
     assert_eq!(fonts.families[&family][0], "plex-mono-400");
