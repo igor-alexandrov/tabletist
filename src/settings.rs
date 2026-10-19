@@ -926,12 +926,36 @@ pub enum OptionId {
     ColumnTypes,
     TableList,
     EnvBar,
+    /// The mode a new SQL tab opens in: `editor.run.new_tab`.
+    NewTab,
+    /// Rows a statement keeps: `editor.run.limit`.
+    RowLimit,
+    /// How long a run may take: `editor.run.timeout`.
+    Timeout,
+    /// What the run key runs: `editor.run.run`.
+    RunScope,
+    ConfirmUnsafeWrites,
+    /// The editor's keys: `editor.typing.keys`.
+    EditorKeys,
+    Indent,
+    Autocomplete,
+    /// Close brackets and quotes: `editor.typing.close_pairs`.
+    ClosePairs,
+    LineNumbers,
+    /// The cursor's line filled: `editor.typing.highlight_line`.
+    HighlightLine,
+    Wrap,
+    /// The case Format writes keywords in: `editor.format.keywords`.
+    Keywords,
+    Commas,
+    /// Queries the history keeps: `editor.history.keep`.
+    HistoryKeep,
 }
 
 impl OptionId {
-    /// Every option, the General pane's, the Appearance pane's and then
-    /// the Agents pane's.
-    pub const ALL: [OptionId; 22] = [
+    /// Every option, the General pane's, the Appearance pane's, the Editor
+    /// pane's and then the Agents pane's.
+    pub const ALL: [OptionId; 37] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -951,6 +975,21 @@ impl OptionId {
         Self::ColumnTypes,
         Self::TableList,
         Self::EnvBar,
+        Self::NewTab,
+        Self::RowLimit,
+        Self::Timeout,
+        Self::RunScope,
+        Self::ConfirmUnsafeWrites,
+        Self::EditorKeys,
+        Self::Indent,
+        Self::Autocomplete,
+        Self::ClosePairs,
+        Self::LineNumbers,
+        Self::HighlightLine,
+        Self::Wrap,
+        Self::Keywords,
+        Self::Commas,
+        Self::HistoryKeep,
         Self::AgentsOn,
         Self::LogDays,
         Self::AgentsNotify,
@@ -1010,6 +1049,46 @@ impl OptionId {
         Self::TableList,
     ];
     pub const ENVIRONMENT: [OptionId; 1] = [Self::EnvBar];
+    /// Every option of the Editor pane, the ones it does not show yet
+    /// among them: what its Reset to defaults puts back.
+    pub const EDITOR: [OptionId; 15] = [
+        Self::NewTab,
+        Self::RowLimit,
+        Self::Timeout,
+        Self::RunScope,
+        Self::ConfirmUnsafeWrites,
+        Self::EditorKeys,
+        Self::Indent,
+        Self::Autocomplete,
+        Self::ClosePairs,
+        Self::LineNumbers,
+        Self::HighlightLine,
+        Self::Wrap,
+        Self::Keywords,
+        Self::Commas,
+        Self::HistoryKeep,
+    ];
+    /// The Editor pane's options whose features are not built yet: no row
+    /// draws them, and their keys are read, kept and reset.
+    pub const EDITOR_LATER: [OptionId; 8] = [
+        Self::ConfirmUnsafeWrites,
+        Self::EditorKeys,
+        Self::Indent,
+        Self::ClosePairs,
+        Self::Wrap,
+        Self::Keywords,
+        Self::Commas,
+        Self::HistoryKeep,
+    ];
+    /// The Editor pane's Running queries section, as far as its options
+    /// are built.
+    pub const RUNNING: [OptionId; 4] =
+        [Self::NewTab, Self::RowLimit, Self::Timeout, Self::RunScope];
+    /// Its Typing section on macOS and Windows.
+    pub const TYPING: [OptionId; 3] = [Self::Autocomplete, Self::LineNumbers, Self::HighlightLine];
+    /// The terminal look's, as its board orders them, with no row for the
+    /// cursor's line.
+    pub const TERMINAL_TYPING: [OptionId; 2] = [Self::LineNumbers, Self::Autocomplete];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
 
@@ -1038,6 +1117,21 @@ impl OptionId {
             Self::ColumnTypes => Key::ColumnTypes,
             Self::TableList => Key::TableList,
             Self::EnvBar => Key::EnvBar,
+            Self::NewTab => Key::NewTab,
+            Self::RowLimit => Key::SqlLimit,
+            Self::Timeout => Key::SqlTimeoutSecs,
+            Self::RunScope => Key::RunScope,
+            Self::ConfirmUnsafeWrites => Key::ConfirmUnsafeWrites,
+            Self::EditorKeys => Key::EditorKeys,
+            Self::Indent => Key::Indent,
+            Self::Autocomplete => Key::Autocomplete,
+            Self::ClosePairs => Key::ClosePairs,
+            Self::LineNumbers => Key::LineNumbers,
+            Self::HighlightLine => Key::HighlightLine,
+            Self::Wrap => Key::Wrap,
+            Self::Keywords => Key::Keywords,
+            Self::Commas => Key::Commas,
+            Self::HistoryKeep => Key::HistoryKeep,
         }
     }
 
@@ -1076,9 +1170,55 @@ pub enum OptionValue {
     ColumnTypes(bool),
     TableList(TableList),
     EnvBar(EnvBar),
+    NewTab(NewTab),
+    /// 0 keeps every row.
+    RowLimit(u32),
+    /// Seconds; `None` is no timeout.
+    Timeout(Option<u32>),
+    RunScope(RunScope),
+    ConfirmUnsafeWrites(bool),
+    /// `None` is the look's.
+    EditorKeys(Option<EditorKeys>),
+    Indent(Indent),
+    Autocomplete(Autocomplete),
+    ClosePairs(bool),
+    /// `None` is the look's.
+    LineNumbers(Option<LineNumbers>),
+    HighlightLine(bool),
+    Wrap(bool),
+    /// `None` is the look's.
+    Keywords(Option<KeywordCase>),
+    Commas(Commas),
+    /// 0 keeps none.
+    HistoryKeep(u32),
 }
 
 impl OptionValue {
+    /// The value as it is set from a look that is the terminal's
+    /// (`terminal`) or not, over `settings`: a look's own default picked
+    /// while nothing is set stays not set, and is not written. Once
+    /// written, a value is every look's.
+    pub fn for_look(self, settings: &Settings, terminal: bool) -> Self {
+        match self {
+            Self::EditorKeys(Some(keys))
+                if settings.editor_keys.is_none() && keys == EditorKeys::of_look(terminal) =>
+            {
+                Self::EditorKeys(None)
+            }
+            Self::LineNumbers(Some(numbers))
+                if settings.line_numbers.is_none() && numbers == LineNumbers::of_look(terminal) =>
+            {
+                Self::LineNumbers(None)
+            }
+            Self::Keywords(Some(case))
+                if settings.keywords.is_none() && case == KeywordCase::of_look(terminal) =>
+            {
+                Self::Keywords(None)
+            }
+            other => other,
+        }
+    }
+
     pub fn option(&self) -> OptionId {
         match self {
             Self::OnLaunch(_) => OptionId::OnLaunch,
@@ -1103,6 +1243,21 @@ impl OptionValue {
             Self::ColumnTypes(_) => OptionId::ColumnTypes,
             Self::TableList(_) => OptionId::TableList,
             Self::EnvBar(_) => OptionId::EnvBar,
+            Self::NewTab(_) => OptionId::NewTab,
+            Self::RowLimit(_) => OptionId::RowLimit,
+            Self::Timeout(_) => OptionId::Timeout,
+            Self::RunScope(_) => OptionId::RunScope,
+            Self::ConfirmUnsafeWrites(_) => OptionId::ConfirmUnsafeWrites,
+            Self::EditorKeys(_) => OptionId::EditorKeys,
+            Self::Indent(_) => OptionId::Indent,
+            Self::Autocomplete(_) => OptionId::Autocomplete,
+            Self::ClosePairs(_) => OptionId::ClosePairs,
+            Self::LineNumbers(_) => OptionId::LineNumbers,
+            Self::HighlightLine(_) => OptionId::HighlightLine,
+            Self::Wrap(_) => OptionId::Wrap,
+            Self::Keywords(_) => OptionId::Keywords,
+            Self::Commas(_) => OptionId::Commas,
+            Self::HistoryKeep(_) => OptionId::HistoryKeep,
         }
     }
 
@@ -1142,8 +1297,50 @@ impl OptionValue {
             Self::ColumnTypes(on) => settings.column_types = on,
             Self::TableList(list) => settings.table_list = list,
             Self::EnvBar(bar) => settings.env_bar = bar,
+            Self::NewTab(choice) => settings.new_tab = choice,
+            Self::RowLimit(limit) => settings.sql_limit = Settings::valid_sql_limit(limit),
+            Self::Timeout(secs) => settings.sql_timeout_secs = Settings::valid_sql_timeout(secs),
+            Self::RunScope(scope) => settings.run_scope = scope,
+            Self::ConfirmUnsafeWrites(on) => settings.confirm_unsafe_writes = on,
+            Self::EditorKeys(keys) => settings.editor_keys = keys,
+            Self::Indent(indent) => settings.indent = indent,
+            Self::Autocomplete(choice) => settings.autocomplete = choice,
+            Self::ClosePairs(on) => settings.close_pairs = on,
+            Self::LineNumbers(numbers) => settings.line_numbers = numbers,
+            Self::HighlightLine(on) => settings.highlight_line = on,
+            Self::Wrap(on) => settings.wrap = on,
+            Self::Keywords(case) => settings.keywords = case,
+            Self::Commas(commas) => settings.commas = commas,
+            Self::HistoryKeep(keep) => settings.history_keep = keep.min(Settings::MAX_HISTORY),
         }
     }
+}
+
+/// The value one step from `current` among `choices`, which are in the
+/// order of `rank`: the next larger (`forward`) or smaller one, or
+/// `current` past the ends. A value not among them steps from its place.
+fn stepped_in<T: Copy>(choices: &[T], current: T, rank: impl Fn(&T) -> u64, forward: bool) -> T {
+    let at = rank(&current);
+    let next = if forward {
+        choices.iter().find(|choice| rank(choice) > at)
+    } else {
+        choices.iter().rev().find(|choice| rank(choice) < at)
+    };
+    next.copied().unwrap_or(current)
+}
+
+/// The choice one step from `current` in `choices`, none past the ends.
+fn stepped_among<T: Copy + PartialEq>(choices: &[T], current: T, forward: bool) -> T {
+    let at = choices
+        .iter()
+        .position(|choice| *choice == current)
+        .unwrap_or(0);
+    let next = if forward {
+        (at + 1).min(choices.len() - 1)
+    } else {
+        at.saturating_sub(1)
+    };
+    choices[next]
 }
 
 /// The file's first line.
@@ -1750,6 +1947,23 @@ impl Settings {
             OptionId::ColumnTypes => OptionValue::ColumnTypes(self.column_types),
             OptionId::TableList => OptionValue::TableList(self.table_list),
             OptionId::EnvBar => OptionValue::EnvBar(self.env_bar),
+            OptionId::NewTab => OptionValue::NewTab(self.new_tab),
+            OptionId::RowLimit => OptionValue::RowLimit(self.sql_limit),
+            OptionId::Timeout => OptionValue::Timeout(self.sql_timeout_secs),
+            OptionId::RunScope => OptionValue::RunScope(self.run_scope),
+            OptionId::ConfirmUnsafeWrites => {
+                OptionValue::ConfirmUnsafeWrites(self.confirm_unsafe_writes)
+            }
+            OptionId::EditorKeys => OptionValue::EditorKeys(self.editor_keys),
+            OptionId::Indent => OptionValue::Indent(self.indent),
+            OptionId::Autocomplete => OptionValue::Autocomplete(self.autocomplete),
+            OptionId::ClosePairs => OptionValue::ClosePairs(self.close_pairs),
+            OptionId::LineNumbers => OptionValue::LineNumbers(self.line_numbers),
+            OptionId::HighlightLine => OptionValue::HighlightLine(self.highlight_line),
+            OptionId::Wrap => OptionValue::Wrap(self.wrap),
+            OptionId::Keywords => OptionValue::Keywords(self.keywords),
+            OptionId::Commas => OptionValue::Commas(self.commas),
+            OptionId::HistoryKeep => OptionValue::HistoryKeep(self.history_keep),
         }
     }
 
@@ -1880,6 +2094,83 @@ impl Settings {
             OptionId::EnvBar => {
                 OptionValue::EnvBar(if forward { EnvBar::Label } else { EnvBar::Tint })
             }
+            // Read-only is the left of the two, and so is the statement.
+            OptionId::NewTab => OptionValue::NewTab(if forward {
+                NewTab::Connection
+            } else {
+                NewTab::ReadOnly
+            }),
+            // No limit is past the largest: 0 is the right end.
+            OptionId::RowLimit => OptionValue::RowLimit(stepped_in(
+                &Self::SQL_LIMITS,
+                self.sql_limit,
+                |limit| {
+                    if *limit == 0 {
+                        u64::MAX
+                    } else {
+                        u64::from(*limit)
+                    }
+                },
+                forward,
+            )),
+            OptionId::Timeout => OptionValue::Timeout(stepped_in(
+                &Self::SQL_TIMEOUTS,
+                self.sql_timeout_secs,
+                |secs| secs.map_or(u64::MAX, u64::from),
+                forward,
+            )),
+            OptionId::RunScope => OptionValue::RunScope(if forward {
+                RunScope::All
+            } else {
+                RunScope::Statement
+            }),
+            OptionId::ConfirmUnsafeWrites => OptionValue::ConfirmUnsafeWrites(forward),
+            // The terminal look's board has vim at the left.
+            OptionId::EditorKeys => OptionValue::EditorKeys(Some(if forward {
+                EditorKeys::Standard
+            } else {
+                EditorKeys::Vim
+            })),
+            OptionId::Indent => {
+                OptionValue::Indent(stepped_among(&Indent::ALL, self.indent, forward))
+            }
+            OptionId::Autocomplete => OptionValue::Autocomplete(stepped_among(
+                &Autocomplete::ALL,
+                self.autocomplete,
+                forward,
+            )),
+            OptionId::ClosePairs => OptionValue::ClosePairs(forward),
+            // As the terminal look orders them: relative, absolute, off.
+            OptionId::LineNumbers => OptionValue::LineNumbers(Some(stepped_among(
+                &LineNumbers::TERMINAL,
+                self.line_numbers_in(true),
+                forward,
+            ))),
+            OptionId::HighlightLine => OptionValue::HighlightLine(forward),
+            OptionId::Wrap => OptionValue::Wrap(forward),
+            OptionId::Keywords => OptionValue::Keywords(Some(stepped_among(
+                &KeywordCase::ALL,
+                self.keywords_in(true),
+                forward,
+            ))),
+            OptionId::Commas => OptionValue::Commas(if forward {
+                Commas::Leading
+            } else {
+                Commas::Trailing
+            }),
+            // Don't keep is past the most: 0 is the right end.
+            OptionId::HistoryKeep => OptionValue::HistoryKeep(stepped_in(
+                &Self::HISTORY_KEEPS,
+                self.history_keep,
+                |keep| {
+                    if *keep == 0 {
+                        u64::MAX
+                    } else {
+                        u64::from(*keep)
+                    }
+                },
+                forward,
+            )),
         }
     }
 
@@ -2006,6 +2297,39 @@ impl Settings {
                 EnvBar::Tint => EnvBar::Label,
                 EnvBar::Label => EnvBar::Tint,
             })),
+            OptionId::NewTab => Some(OptionValue::NewTab(match self.new_tab {
+                NewTab::ReadOnly => NewTab::Connection,
+                NewTab::Connection => NewTab::ReadOnly,
+            })),
+            OptionId::RunScope => Some(OptionValue::RunScope(match self.run_scope {
+                RunScope::Statement => RunScope::All,
+                RunScope::All => RunScope::Statement,
+            })),
+            OptionId::ConfirmUnsafeWrites => Some(OptionValue::ConfirmUnsafeWrites(
+                !self.confirm_unsafe_writes,
+            )),
+            // Unset, it is flipped from the terminal look's: the window
+            // flips the settings as it shows them, with the look's in.
+            OptionId::EditorKeys => Some(OptionValue::EditorKeys(Some(
+                match self.editor_keys_in(true) {
+                    EditorKeys::Standard => EditorKeys::Vim,
+                    EditorKeys::Vim => EditorKeys::Standard,
+                },
+            ))),
+            OptionId::Commas => Some(OptionValue::Commas(match self.commas {
+                Commas::Trailing => Commas::Leading,
+                Commas::Leading => Commas::Trailing,
+            })),
+            OptionId::ClosePairs => Some(OptionValue::ClosePairs(!self.close_pairs)),
+            OptionId::HighlightLine => Some(OptionValue::HighlightLine(!self.highlight_line)),
+            OptionId::Wrap => Some(OptionValue::Wrap(!self.wrap)),
+            OptionId::RowLimit
+            | OptionId::Timeout
+            | OptionId::Indent
+            | OptionId::Autocomplete
+            | OptionId::LineNumbers
+            | OptionId::Keywords
+            | OptionId::HistoryKeep => None,
         }
     }
 
@@ -4210,6 +4534,21 @@ bar = \"label\"  # tint | label
                 Key::ColumnTypes,
                 Key::TableList,
                 Key::EnvBar,
+                Key::NewTab,
+                Key::SqlLimit,
+                Key::SqlTimeoutSecs,
+                Key::RunScope,
+                Key::ConfirmUnsafeWrites,
+                Key::EditorKeys,
+                Key::Indent,
+                Key::Autocomplete,
+                Key::ClosePairs,
+                Key::LineNumbers,
+                Key::HighlightLine,
+                Key::Wrap,
+                Key::Keywords,
+                Key::Commas,
+                Key::HistoryKeep,
                 Key::McpEnabled,
                 Key::McpLogDays,
                 Key::McpNotify,
@@ -4219,6 +4558,7 @@ bar = \"label\"  # tint | label
         let panes = [
             &OptionId::GENERAL[..],
             &OptionId::APPEARANCE[..],
+            &OptionId::EDITOR[..],
             &OptionId::AGENTS[..],
         ]
         .concat();
@@ -4247,6 +4587,28 @@ bar = \"label\"  # tint | label
             OptionId::TERMINAL_TEXT,
             [OptionId::Font, OptionId::FontSize]
         );
+        // The Editor pane's: every option is in a section of each look, or
+        // waits for its feature; the terminal look has no row for the
+        // cursor's line.
+        for (sections, without) in [
+            (&OptionId::TYPING[..], None),
+            (
+                &OptionId::TERMINAL_TYPING[..],
+                Some(OptionId::HighlightLine),
+            ),
+        ] {
+            let mut shown = [
+                &OptionId::RUNNING[..],
+                sections,
+                &OptionId::EDITOR_LATER[..],
+            ]
+            .concat()
+            .into_iter()
+            .chain(without)
+            .collect::<Vec<_>>();
+            shown.sort_by_key(|option| OptionId::EDITOR.iter().position(|all| all == option));
+            assert_eq!(shown, OptionId::EDITOR);
+        }
         assert_eq!(panes, OptionId::ALL);
         let defaults = Settings::default();
         for option in OptionId::ALL {

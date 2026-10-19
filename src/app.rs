@@ -2134,7 +2134,10 @@ impl App {
             Action::SetOption(crate::settings::OptionValue::AgentsOn(true)) => {
                 self.turn_agents_on();
             }
-            Action::SetOption(value) => self.change_settings(|settings| value.set(settings)),
+            Action::SetOption(value) => {
+                let value = value.for_look(&self.settings, self.look.terminal);
+                self.change_settings(|settings| value.set(settings))
+            }
             Action::EditSettingsFile => {
                 let text = self.offer_settings_text();
                 self.backend.send(Command::EditSettingsFile {

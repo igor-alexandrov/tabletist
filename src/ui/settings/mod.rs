@@ -19,8 +19,9 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    EnvBar, Idle, InterfaceSize, Launch, Mode, OptionId, OptionValue, RowHeight, Settings,
-    TableList, Theme, ThemeChoice, Timestamps, Zone,
+    Autocomplete, Commas, EditorKeys, EnvBar, Idle, InterfaceSize, KeywordCase, Launch,
+    LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings, TableList,
+    Theme, ThemeChoice, Timestamps, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
@@ -49,7 +50,39 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::ColumnTypes => "Show column types",
         OptionId::TableList => "Table list",
         OptionId::EnvBar => "Window header",
+        OptionId::NewTab => "New tabs run in",
+        OptionId::RowLimit => "Row limit",
+        OptionId::Timeout => "Timeout",
+        // `{run}` is the run key, as the keymap writes it: see `said`.
+        OptionId::RunScope => "{run} runs",
+        OptionId::ConfirmUnsafeWrites => "Confirm UPDATE or DELETE without WHERE",
+        OptionId::EditorKeys => "Keybindings",
+        OptionId::Indent => "Indent",
+        OptionId::Autocomplete => "Autocomplete",
+        OptionId::ClosePairs => "Close brackets and quotes",
+        OptionId::LineNumbers => "Line numbers",
+        OptionId::HighlightLine => "Current line highlight",
+        OptionId::Wrap => "Wrap",
+        OptionId::Keywords => "Keywords",
+        OptionId::Commas => "Commas",
+        OptionId::HistoryKeep => "Keep query history",
     }
+}
+
+/// A row's label as the window writes it, translated: with the run key in
+/// place of `{run}`, as the keymap writes it for the look.
+pub(super) fn said(
+    ctx: &egui::Context,
+    look: &crate::theme::Look,
+    locale: Locale,
+    text: &'static str,
+) -> String {
+    let said = gettext(locale, text);
+    if !said.contains("{run}") {
+        return said.into_owned();
+    }
+    let key = crate::ui::keys::written(ctx, look, Command::RunStatement);
+    said.replace("{run}", key.as_str())
 }
 
 /// The label of an option's row in the terminal look, which names some
@@ -65,6 +98,9 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         OptionId::Zebra => "Alternate rows",
         OptionId::ColumnTypes => "Column types",
         OptionId::EnvBar => "Connection bar",
+        OptionId::ConfirmUnsafeWrites => "Confirm write without where",
+        OptionId::ClosePairs => "Close brackets",
+        OptionId::HistoryKeep => "Keep",
         // One font and one size for everything.
         OptionId::Font => "Font",
         OptionId::FontSize => "Size",
@@ -80,7 +116,19 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         | OptionId::AgentsNotify
         | OptionId::Theme
         | OptionId::InterfaceSize
-        | OptionId::TableList => label(option),
+        | OptionId::TableList
+        | OptionId::NewTab
+        | OptionId::RowLimit
+        | OptionId::Timeout
+        | OptionId::RunScope
+        | OptionId::EditorKeys
+        | OptionId::Indent
+        | OptionId::Autocomplete
+        | OptionId::LineNumbers
+        | OptionId::HighlightLine
+        | OptionId::Wrap
+        | OptionId::Keywords
+        | OptionId::Commas => label(option),
     }
 }
 
@@ -103,7 +151,25 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::EnvBar => Some("Production always uses the full tint"),
         OptionId::InterfaceSize => Some("Sidebar, tabs, buttons, inspector labels"),
         OptionId::Font => Some("Grid cells, SQL editor, JSON"),
-        OptionId::Timestamps
+        OptionId::NewTab => Some("The badge in each tab can still switch it"),
+        // Not the board's "Adds LIMIT to results you browse; exports get
+        // everything": the rows are capped as they come, and the editor's
+        // results have no export.
+        OptionId::RowLimit => Some("Caps the rows of results you browse"),
+        OptionId::ConfirmUnsafeWrites => Some("On every connection that allows writes"),
+        OptionId::Autocomplete => Some("Tables, views, columns and functions from the schema"),
+        OptionId::HistoryKeep => Some("Per connection, on this Mac; results are never stored"),
+        OptionId::Timeout
+        | OptionId::RunScope
+        | OptionId::EditorKeys
+        | OptionId::Indent
+        | OptionId::ClosePairs
+        | OptionId::LineNumbers
+        | OptionId::HighlightLine
+        | OptionId::Wrap
+        | OptionId::Keywords
+        | OptionId::Commas
+        | OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -113,6 +179,15 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         | OptionId::RowHeight
         | OptionId::Zebra => None,
     }
+}
+
+/// What describes `option`'s controls to a screen reader: its small print,
+/// or what is written beside its control where it has none. English.
+pub(super) fn helper(option: OptionId) -> Option<&'static str> {
+    small_print(option).or(match option {
+        OptionId::RunScope => Some("A selection always wins"),
+        _ => None,
+    })
 }
 
 /// What is said of a data font the settings name that is neither bundled
@@ -213,6 +288,11 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
             | OptionValue::AgentsNotify(true)
             | OptionValue::Zebra(Some(true))
             | OptionValue::ColumnTypes(true)
+            | OptionValue::ConfirmUnsafeWrites(true)
+            | OptionValue::ClosePairs(true)
+            | OptionValue::HighlightLine(true)
+            | OptionValue::Wrap(true)
+            | OptionValue::LineNumbers(Some(LineNumbers::Absolute | LineNumbers::Relative))
     )
 }
 
@@ -228,6 +308,9 @@ pub(super) fn shown(app: &App) -> Settings {
     settings.group_digits = Some(app.settings.grouped(app.layout()));
     settings.zebra = Some(settings.zebra_in(app.look.terminal));
     settings.font_size = Some(settings.font_size_in(app.look.terminal));
+    settings.editor_keys = Some(settings.editor_keys_in(app.look.terminal));
+    settings.line_numbers = Some(settings.line_numbers_in(app.look.terminal));
+    settings.keywords = Some(settings.keywords_in(app.look.terminal));
     settings.theme = match (app.look.terminal, settings.theme.mode()) {
         (true, _) if settings.theme.pin().is_some() => settings.theme,
         (true, _) => Theme::Omarchy,
@@ -273,14 +356,26 @@ pub(super) enum Said {
     /// A value as the app shows one, the same in every language: put into
     /// another, it would say something the app does not show.
     Sample(&'static str),
+    /// A command's first key, as the keymap writes it for the look.
+    Key(Command),
 }
 
 impl Said {
     /// What a screen reader and the tests call the choice.
-    pub(super) fn name(self, locale: Locale) -> Cow<'static, str> {
+    pub(super) fn name(
+        self,
+        ctx: &egui::Context,
+        look: &crate::theme::Look,
+        locale: Locale,
+    ) -> Cow<'static, str> {
         match self {
             Self::Word(word) => gettext(locale, word),
             Self::Sample(sample) => Cow::Borrowed(sample),
+            Self::Key(command) => Cow::Owned(
+                crate::ui::keys::written(ctx, look, command)
+                    .as_str()
+                    .to_owned(),
+            ),
         }
     }
 }
@@ -296,7 +391,7 @@ pub(super) fn choices(
     named: Option<&str>,
     launches: &[Launch],
 ) -> Vec<(Said, OptionValue)> {
-    use Said::{Sample, Word};
+    use Said::{Key, Sample, Word};
     match option {
         OptionId::OnLaunch => vec![
             (Word("fewer"), settings.stepped_launch(launches, false)),
@@ -396,6 +491,88 @@ pub(super) fn choices(
         OptionId::EnvBar => vec![
             (Word("tint + label"), OptionValue::EnvBar(EnvBar::Tint)),
             (Word("label only"), OptionValue::EnvBar(EnvBar::Label)),
+        ],
+        OptionId::NewTab => vec![
+            (Word("read-only"), OptionValue::NewTab(NewTab::ReadOnly)),
+            (
+                Word("follow connection"),
+                OptionValue::NewTab(NewTab::Connection),
+            ),
+        ],
+        OptionId::RowLimit | OptionId::Timeout | OptionId::Indent | OptionId::HistoryKeep => {
+            vec![
+                (Word("fewer"), settings.stepped(option, false)),
+                (Word("more"), settings.stepped(option, true)),
+            ]
+        }
+        OptionId::RunScope => vec![
+            (
+                Word("statement"),
+                OptionValue::RunScope(RunScope::Statement),
+            ),
+            (Word("whole tab"), OptionValue::RunScope(RunScope::All)),
+        ],
+        OptionId::ConfirmUnsafeWrites => vec![
+            (Word("off"), OptionValue::ConfirmUnsafeWrites(false)),
+            (Word("on"), OptionValue::ConfirmUnsafeWrites(true)),
+        ],
+        // As the terminal look's board draws them: vim first.
+        OptionId::EditorKeys => vec![
+            (Word("vim"), OptionValue::EditorKeys(Some(EditorKeys::Vim))),
+            (
+                Word("standard"),
+                OptionValue::EditorKeys(Some(EditorKeys::Standard)),
+            ),
+        ],
+        OptionId::Autocomplete => vec![
+            (
+                Word("as you type"),
+                OptionValue::Autocomplete(Autocomplete::Typing),
+            ),
+            (
+                Key(Command::Complete),
+                OptionValue::Autocomplete(Autocomplete::Manual),
+            ),
+            (Word("off"), OptionValue::Autocomplete(Autocomplete::Off)),
+        ],
+        OptionId::ClosePairs => vec![
+            (Word("off"), OptionValue::ClosePairs(false)),
+            (Word("on"), OptionValue::ClosePairs(true)),
+        ],
+        OptionId::LineNumbers => LineNumbers::TERMINAL
+            .into_iter()
+            .map(|numbers| {
+                let word = match numbers {
+                    LineNumbers::Relative => "relative",
+                    LineNumbers::Absolute => "absolute",
+                    LineNumbers::Off => "off",
+                };
+                (Word(word), OptionValue::LineNumbers(Some(numbers)))
+            })
+            .collect(),
+        OptionId::HighlightLine => vec![
+            (Word("off"), OptionValue::HighlightLine(false)),
+            (Word("on"), OptionValue::HighlightLine(true)),
+        ],
+        OptionId::Wrap => vec![
+            (Word("off"), OptionValue::Wrap(false)),
+            (Word("on"), OptionValue::Wrap(true)),
+        ],
+        // The case is the choice: the look does not lower-case it.
+        OptionId::Keywords => vec![
+            (
+                Sample("UPPER"),
+                OptionValue::Keywords(Some(KeywordCase::Upper)),
+            ),
+            (
+                Sample("lower"),
+                OptionValue::Keywords(Some(KeywordCase::Lower)),
+            ),
+            (Word("keep"), OptionValue::Keywords(Some(KeywordCase::Keep))),
+        ],
+        OptionId::Commas => vec![
+            (Word("trailing"), OptionValue::Commas(Commas::Trailing)),
+            (Word("leading"), OptionValue::Commas(Commas::Leading)),
         ],
     }
 }

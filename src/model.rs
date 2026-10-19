@@ -2512,6 +2512,8 @@ pub enum SettingsPane {
     General,
     /// How the grid and the connection bar are drawn.
     Appearance,
+    /// How the SQL editor runs, types and formats.
+    Editor,
     /// How agents reach the app. Listed where they can.
     Agents,
 }
@@ -2520,9 +2522,9 @@ impl SettingsPane {
     /// The panes the window lists, in order.
     pub fn listed() -> &'static [SettingsPane] {
         if crate::endpoint::AVAILABLE {
-            &[Self::General, Self::Appearance, Self::Agents]
+            &[Self::General, Self::Appearance, Self::Editor, Self::Agents]
         } else {
-            &[Self::General, Self::Appearance]
+            &[Self::General, Self::Appearance, Self::Editor]
         }
     }
 
@@ -2531,6 +2533,7 @@ impl SettingsPane {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
             Self::Agents => "Agents",
         }
     }
@@ -2540,18 +2543,21 @@ impl SettingsPane {
         match self {
             Self::General => &crate::settings::OptionId::GENERAL,
             Self::Appearance => &crate::settings::OptionId::APPEARANCE,
+            Self::Editor => &crate::settings::OptionId::EDITOR,
             Self::Agents => &crate::settings::OptionId::AGENTS,
         }
     }
 
     /// What Reset to defaults puts back: the pane's options but the
     /// server's switch, which turned off would end every agent's session
-    /// for a question about defaults.
+    /// for a question about defaults. The Editor pane's are all of its
+    /// keys, the ones it has no row for yet among them.
     pub fn reset_options(self) -> &'static [crate::settings::OptionId] {
         use crate::settings::OptionId;
         match self {
             Self::General => &OptionId::GENERAL,
             Self::Appearance => &OptionId::APPEARANCE,
+            Self::Editor => &OptionId::EDITOR,
             Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
         }
     }
@@ -2581,6 +2587,15 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::ColumnTypes),
                 SettingsRow::Option(OptionId::TableList),
                 SettingsRow::Option(OptionId::EnvBar),
+            ],
+            // As the terminal look's board orders them.
+            Self::Editor => &[
+                SettingsRow::Option(OptionId::NewTab),
+                SettingsRow::Option(OptionId::RowLimit),
+                SettingsRow::Option(OptionId::Timeout),
+                SettingsRow::Option(OptionId::RunScope),
+                SettingsRow::Option(OptionId::LineNumbers),
+                SettingsRow::Option(OptionId::Autocomplete),
             ],
             Self::Agents => &[
                 SettingsRow::Option(OptionId::AgentsOn),
