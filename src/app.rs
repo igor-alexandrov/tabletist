@@ -2722,11 +2722,16 @@ impl App {
 
     /// The windows open at the last quit, each connecting as a connection
     /// does, asking for what it needs: the one in front first, so that a
-    /// password it asks for is asked over it, and the others in their
-    /// order after it. A connection deleted since is left out, and the
-    /// picker is one window at most.
+    /// question it asks at once is asked over it, and the others in their
+    /// order after it. A window behind that asks before the front window
+    /// does (the front one is still reading its password from the
+    /// keyring) takes the question, and the other says so and offers
+    /// Reconnect, as when a connect finds a dialog open. A connection
+    /// deleted since is left out, and the picker is one window at most.
     fn open_last_session(&mut self) {
         let open = self.session.open.clone();
+        // The windows are put after any tab there already is.
+        let base = self.tabs.len();
         let mut windows = Vec::new();
         let mut active = None;
         // Every window opens as a picker until it connects, below: the
@@ -2748,11 +2753,11 @@ impl App {
             windows.push((tab.id, saved));
             self.tabs.push(tab);
             if index <= self.session.active {
-                active = Some(self.tabs.len() - 1);
+                active = Some(self.tabs.len() - 1 - base);
             }
         }
         let active = active.unwrap_or(0);
-        self.active = active;
+        self.active = base + active;
         if active < windows.len() {
             let front = windows.remove(active);
             windows.insert(0, front);
@@ -2766,7 +2771,9 @@ impl App {
 
     /// Writes the name of `saved` beside it in the settings file, where it
     /// is the connection a launch opens and its name there is another:
-    /// the comment is the only thing that changes.
+    /// the comment is the only thing that changes. It runs on every save
+    /// of the chosen connection, and the name it writes replaces any
+    /// comment written by hand there.
     fn rename_launch(&mut self, saved: &SavedConnection) {
         let crate::settings::Launch::Connection { id, name } = &self.settings.on_launch else {
             return;

@@ -883,6 +883,21 @@ fn launch_menu(
 ) {
     let Skin { look, palette, .. } = *skin;
     let shown = super::launch_text(skin.locale, &settings.on_launch, skin.connections);
+    // Closed, the menu tells two connections of one name apart by where
+    // each points, as the open one does.
+    let place = match &settings.on_launch {
+        Launch::Connection { id, .. } => skin
+            .connections
+            .iter()
+            .find(|saved| saved.id == *id)
+            .map(super::place)
+            .filter(|place| !place.is_empty()),
+        Launch::Restore | Launch::Connections => None,
+    };
+    let value = match place {
+        Some(place) => format!("{shown}, {place}"),
+        None => shown.clone(),
+    };
     let dropdown = menu::Dropdown::new("launch", &shown, ZONE_MENU);
     let menu = dropdown.show(ui, look, palette, |ui| {
         for launch in super::launch_choices(skin.connections) {
@@ -910,7 +925,7 @@ fn launch_menu(
     });
     menu.response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
-        info.current_text_value = Some(shown.clone());
+        info.current_text_value = Some(value.clone());
         info
     });
 }

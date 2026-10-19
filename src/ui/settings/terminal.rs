@@ -913,9 +913,13 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
             match &settings.on_launch {
                 crate::settings::Launch::Connection { id, .. } => {
                     let saved = skin.connections.iter().find(|saved| saved.id == *id);
-                    match saved.map(super::place).filter(|place| !place.is_empty()) {
-                        Some(place) => format!("{text} ({place})"),
-                        None => text,
+                    match saved {
+                        // The name as it is saved, not set in the screen's case.
+                        Some(saved) => match Some(super::place(saved)).filter(|p| !p.is_empty()) {
+                            Some(place) => format!("{text} ({place})"),
+                            None => text,
+                        },
+                        None => skin.look.label(&text),
                     }
                 }
                 crate::settings::Launch::Restore | crate::settings::Launch::Connections => {

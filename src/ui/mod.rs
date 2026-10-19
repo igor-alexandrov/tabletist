@@ -1440,6 +1440,15 @@ value_tags   = true
             let text = &harness.app.settings_file.text;
             let line = format!("on_launch = \"conn:{}\"  # Bookshop\n", preview.0);
             assert!(text.contains(&line), "{text}");
+            // Closed, the menu says which of the two Bookshops it holds.
+            let tree = harness.settle();
+            let menu = crate::testing::node(&tree, "On launch", egui::accesskit::Role::ComboBox)
+                .expect("the menu");
+            let (_, menu) = tree.nodes.iter().find(|(node, _)| *node == menu).unwrap();
+            assert_eq!(
+                menu.value(),
+                Some("Bookshop, localhost:5432/bookshop_preview")
+            );
             harness.click("On launch");
             harness.click("On launch Show Connections");
             assert_eq!(harness.app.settings.on_launch, Launch::Connections);

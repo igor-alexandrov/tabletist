@@ -632,13 +632,27 @@ fn a_launch_restores_the_windows_open_at_the_last_quit() {
     assert_eq!(workspace.conn_id, second);
     assert!(matches!(workspace.status, SessionStatus::Connecting { .. }));
     assert_eq!(workspace.object_tabs().count(), 1);
-    let connects = app
+    // The one in front connects first, then the other, each matched to its
+    // window by the session and the request it holds.
+    let connects: Vec<(SessionId, RequestId)> = app
         .backend
         .sent
         .iter()
-        .filter(|command| matches!(command, Command::Connect { .. }))
-        .count();
-    assert_eq!(connects, 2);
+        .filter_map(|command| match command {
+            Command::Connect {
+                session, request, ..
+            } => Some((*session, *request)),
+            _ => None,
+        })
+        .collect();
+    let held = |index: usize| {
+        let workspace = app.workspace(app.tabs[index].id).unwrap();
+        match workspace.status {
+            SessionStatus::Connecting { request } => (workspace.session, request),
+            _ => panic!("window {index} is not connecting"),
+        }
+    };
+    assert_eq!(connects, vec![held(1), held(0)]);
 }
 
 #[test]
@@ -787,6 +801,13 @@ fn deleting_the_chosen_connection_sets_the_launch_to_connections() {
     )));
     app.apply(Action::DeleteConnection(conn));
     assert_eq!(app.settings.on_launch, crate::settings::Launch::Connections);
+    assert!(
+        app.settings_file
+            .text
+            .contains("on_launch = \"connections\"  # restore | connections | \"conn:<id>\"\n"),
+        "{}",
+        app.settings_file.text
+    );
     assert!(app.notice.is_none());
 }
 
@@ -830,6 +851,60 @@ fn a_restore_asks_first_for_the_window_in_front() {
         Some(crate::model::Dialog::Password(prompt)) => assert_eq!(prompt.tab, front),
         other => panic!("{other:?}"),
     }
+    // The window behind found the dialog open: it waits for Reconnect,
+    // which asks then.
+    let behind = app.workspace(app.tabs[0].id).unwrap();
+    assert!(behind.needs_prompt.is_some());
+    assert!(matches!(behind.status, SessionStatus::Disconnected(_)));
+}
+
+#[test]
+fn a_window_behind_that_asks_before_the_front_one_takes_the_question() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let first = bookshop_at(
+        &mut app,
+        "postgres://demo@localhost:5432/bookshop_development",
+    );
+    let second = bookshop_at(&mut app, "postgres://demo@localhost:5432/bookshop_preview");
+    // The front window reads its password from the keyring, which takes
+    // a while; the one behind asks at once.
+    for (id, mode) in [
+        (&first, crate::connections::PasswordMode::Ask),
+        (&second, crate::connections::PasswordMode::Keyring),
+    ] {
+        let mut saved = app.connections.get(id).unwrap().clone();
+        saved.password = mode;
+        app.connections.upsert(saved);
+    }
+    write_files(&app);
+    let mut session = Session::default();
+    session.open = vec![Some(first.clone()), Some(second.clone())];
+    session.active = 1;
+    session.save(&app.dirs.session_file()).unwrap();
+    let app = start(dir.path());
+    assert_eq!(app.active, 1);
+    let (behind, front) = (app.tabs[0].id, app.tabs[1].id);
+    match &app.dialog {
+        Some(crate::model::Dialog::Password(prompt)) => assert_eq!(prompt.tab, behind),
+        other => panic!("{other:?}"),
+    }
+    // The front window is waiting for the keyring.
+    let front_session = app.workspace(front).unwrap().session;
+    assert!(app.pending_secrets.values().any(|purpose| matches!(
+        purpose,
+        SecretPurpose::Connect { tab, .. } if *tab == front
+    )));
+    assert!(
+        app.backend
+            .sent
+            .iter()
+            .any(|command| matches!(command, Command::LoadSecret { .. }))
+    );
+    assert!(app.backend.sent.iter().all(|command| !matches!(
+        command,
+        Command::Connect { session, .. } if *session == front_session
+    )));
 }
 
 #[test]

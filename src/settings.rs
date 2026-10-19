@@ -1621,7 +1621,9 @@ impl Settings {
     /// tables this version does not know, and the lines the reader ignored
     /// all stay. A key at its default is taken out, with its line, and a
     /// table left with nothing in it goes too. A key the file has gets its
-    /// new value in place, the comment beside it kept; one it lacks goes at
+    /// new value in place, the comment beside it kept (On launch's comment is
+    /// the app's, naming the connection or the values, and is replaced: see
+    /// `launch_edit`); one it lacks goes at
     /// the end of its table, with its note, and a table it lacks at the end
     /// of the file. An empty text starts as the header line.
     ///
@@ -2182,6 +2184,24 @@ mod tests {
         // And Restore, the default, takes the line out.
         let text = written(&text, |settings| settings.on_launch = Launch::Restore);
         assert_eq!(text, HEADER);
+    }
+
+    #[test]
+    fn a_chosen_connection_replaces_the_comment_of_a_crlf_line_and_keeps_its_endings() {
+        let text = written(
+            "[startup]\r\non_launch = \"connections\"  # mine\r\n",
+            |settings| {
+                settings.on_launch = chosen("6a0c", "Bookshop");
+            },
+        );
+        assert_eq!(
+            text,
+            "[startup]\r\non_launch = \"conn:6a0c\"  # Bookshop\r\n"
+        );
+        match Settings::from_toml(&text).settings.on_launch {
+            Launch::Connection { name, .. } => assert_eq!(name, "Bookshop"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

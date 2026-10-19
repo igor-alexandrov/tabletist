@@ -27,8 +27,9 @@ pub struct Session {
     /// its id. Changed through [`Session::keep`] and [`Session::forget`].
     pub connections: BTreeMap<String, Kept>,
     /// The number of the newest version that wrote the file, where newer
-    /// than this one (0 where not), written back: a newer reader that branches on it
-    /// would misread what is kept for it under an older number.
+    /// than this one (0 where not), written back: a newer reader that
+    /// branches on it would misread what is kept for it under an older
+    /// number.
     version: u32,
     /// The connections' parts this version could not read, by id, as the
     /// file had them: a newer version may have written them, and they are
@@ -152,12 +153,7 @@ impl Session {
                 Ok(kept) => drop(session.connections.insert(id, kept)),
                 Err(error) => {
                     // Not the error's text: it can quote a stored filter value.
-                    log::warn!(
-                        "the tabs of {id} were not read: {:?} at line {}, column {}",
-                        error.classify(),
-                        error.line(),
-                        error.column()
-                    );
+                    log::warn!("the tabs of {id} were not read: {:?}", error.classify());
                     session.unread.insert(id, kept);
                 }
             }
@@ -473,7 +469,8 @@ mod tests {
         let session = Session::load(&path);
         assert_eq!(session.open, vec![Some(ConnectionId("a".into())), None]);
         assert_eq!(session.active, 1);
-        std::fs::write(&path, r#"{"open":[7,"a",null],"active":0}"#).unwrap();
+        // Past the end is the first.
+        std::fs::write(&path, r#"{"open":[7,"a",null],"active":5}"#).unwrap();
         assert_eq!(Session::load(&path).active, 0);
     }
 
