@@ -62,10 +62,10 @@ pub(super) struct Read {
 
 /// Why a file's text could not be read: the line, where the parser gives
 /// one, and what is wrong there.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct Problem {
-    pub line: Option<usize>,
-    pub what: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Problem {
+    pub(crate) line: Option<usize>,
+    pub(crate) what: String,
 }
 
 impl std::fmt::Display for Problem {
@@ -153,7 +153,7 @@ enum Auth {
 }
 
 /// The line `offset` is on in `text`, counted from 1.
-fn line_of(text: &str, offset: usize) -> usize {
+pub(crate) fn line_of(text: &str, offset: usize) -> usize {
     let before = &text.as_bytes()[..offset.min(text.len())];
     before.iter().filter(|byte| **byte == b'\n').count() + 1
 }
@@ -162,7 +162,7 @@ fn line_of(text: &str, offset: usize) -> usize {
 /// problem is logged and shown, and a person may have written a password
 /// where the file asks how the password is kept (`password = "hunter2"`).
 /// The line says where to look. A key's name is no value, and stays.
-fn without_values(message: &str) -> String {
+pub(crate) fn without_values(message: &str) -> String {
     let said = if message.starts_with("unknown variant ") || message.starts_with("invalid value: ")
     {
         "a value the key cannot have"

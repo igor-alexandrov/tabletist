@@ -21,6 +21,12 @@ pub struct AppDirs {
     /// `/run/user/<id>`): what lives as long as the session, the agents'
     /// endpoint. Elsewhere, and in tests, that is in `state`.
     pub runtime: Option<PathBuf>,
+    /// The administrator's policy (`managed.toml`), at one fixed path on
+    /// each system and never moved by a variable: an agent may start
+    /// Tabletist with variables of its choosing. Under the root in tests
+    /// and the demo, so that neither reads the machine's. None where it is
+    /// not read yet (Windows).
+    pub managed: Option<PathBuf>,
 }
 
 impl AppDirs {
@@ -38,12 +44,16 @@ impl AppDirs {
                     .unwrap_or_else(|| project.data_local_dir().to_path_buf()),
                 home,
                 runtime,
+                managed: managed_file(),
             },
-            None => Self::at(
-                &std::env::current_dir()
-                    .unwrap_or_default()
-                    .join("tabletist"),
-            ),
+            None => Self {
+                managed: managed_file(),
+                ..Self::at(
+                    &std::env::current_dir()
+                        .unwrap_or_default()
+                        .join("tabletist"),
+                )
+            },
         }
     }
 
@@ -55,6 +65,7 @@ impl AppDirs {
             state: root.join("state"),
             home: None,
             runtime: None,
+            managed: Some(root.join("managed.toml")),
         }
     }
 
@@ -192,6 +203,22 @@ fn runtime_dir() -> Option<PathBuf> {
     None
 }
 
+/// Where an administrator's policy is kept on this system: a folder only
+/// an administrator can write to, as each system has it. Windows asks the
+/// system for its folder, which takes code of its own (run 1c of the
+/// policy), so nothing is read there yet.
+fn managed_file() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let file = Some(PathBuf::from(
+        "/Library/Application Support/Tabletist/managed.toml",
+    ));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let file = Some(PathBuf::from("/etc/tabletist/managed.toml"));
+    #[cfg(not(unix))]
+    let file = None;
+    file
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +284,23 @@ mod tests {
             .agents_dir(),
             PathBuf::from("/home/ada/.local/state/tabletist")
         );
+    }
+
+    #[test]
+    fn the_managed_policy_is_under_a_root_and_at_a_fixed_path_otherwise() {
+        assert_eq!(
+            AppDirs::at(Path::new("/root")).managed,
+            Some(PathBuf::from("/root/managed.toml"))
+        );
+        #[cfg(target_os = "macos")]
+        let fixed = Some(PathBuf::from(
+            "/Library/Application Support/Tabletist/managed.toml",
+        ));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let fixed = Some(PathBuf::from("/etc/tabletist/managed.toml"));
+        #[cfg(not(unix))]
+        let fixed = None;
+        assert_eq!(AppDirs::discover().managed, fixed);
     }
 
     #[test]
