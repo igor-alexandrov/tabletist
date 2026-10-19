@@ -2887,14 +2887,15 @@ impl App {
         });
     }
 
-    /// Keeps the table tabs of `tab`'s window in the session, for the
-    /// next time its connection opens: before the window closes, or has
-    /// another connection put in its place. Whether there was a window of
-    /// a saved connection to keep.
+    /// Keeps the table tabs of `tab`'s window, and whether its row panel
+    /// is shown, in the session, for the next time its connection opens:
+    /// before the window closes, or has another connection put in its
+    /// place. Whether there was a window of a saved connection to keep.
     ///
     /// A window switched to another database than its connection's keeps
-    /// nothing: the connection opens on its own, where those tables are
-    /// not, and what it kept of that one stays.
+    /// no table: the connection opens on its own, where those tables are
+    /// not, and what it kept of that one stays. Its row panel is the
+    /// window's, not the database's, and is kept.
     fn keep_tabs(&mut self, tab: ConnTabId) -> bool {
         let Some(workspace) = self.workspace(tab) else {
             return false;
@@ -2902,12 +2903,14 @@ impl App {
         let Some(saved) = self.connections.get(&workspace.conn_id) else {
             return false;
         };
-        let database = crate::session::database_of(&workspace.spec);
-        if database != crate::session::database_of(&saved.spec) {
+        let id = workspace.conn_id.clone();
+        let own = crate::session::database_of(&saved.spec);
+        if crate::session::database_of(&workspace.spec) != own {
+            let row_panel = workspace.row_panel;
+            self.session.keep_row_panel(&id, own, row_panel);
             return true;
         }
         let kept = crate::session::Kept::of(workspace);
-        let id = workspace.conn_id.clone();
         self.session.keep(&id, kept);
         true
     }
@@ -2976,17 +2979,14 @@ impl App {
         // that what the window just had is what reopens, if this connection
         // was it.
         let replaced = self.keep_tabs(tab);
-        // The tables the connection's window last had, where the settings
-        // reopen them and they are of the database it opens on.
-        let kept = self
-            .session
-            .connections
-            .get(&saved.id.0)
-            .filter(|kept| {
-                self.settings.restore_tabs
-                    && kept.database == crate::session::database_of(&saved.spec)
-            })
-            .cloned();
+        // What the connection's window last had: its row panel as it was
+        // left, and its tables, where the settings reopen them and they
+        // are of the database it opens on.
+        let kept = self.session.connections.get(&saved.id.0).cloned();
+        let row_panel = kept.as_ref().is_none_or(|kept| kept.row_panel);
+        let tables = kept.filter(|kept| {
+            self.settings.restore_tabs && kept.database == crate::session::database_of(&saved.spec)
+        });
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -2994,8 +2994,9 @@ impl App {
         workspace.full_precision = full_precision;
         workspace.zone = zone;
         workspace.tree.flat = flat;
+        workspace.row_panel = row_panel;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
-        if let Some(kept) = kept {
+        if let Some(kept) = tables {
             self.reopen_tabs(tab, &kept);
         }
         if replaced {

@@ -40,8 +40,9 @@ pub struct Session {
     rest: BTreeMap<String, serde_json::Value>,
 }
 
-/// One connection's tables, as its window had them when it closed.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// One connection's window as it was when it closed: its tables, and
+/// whether its row panel was shown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Kept {
     /// The database the tables are of ([`database_of`]): the one the
@@ -52,10 +53,27 @@ pub struct Kept {
     /// or the Agents tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<usize>,
+    /// Whether the row panel was shown. Left out where it was, as a file
+    /// from before it was kept leaves it: a window opens with it.
+    #[serde(skip_serializing_if = "is_on")]
+    pub row_panel: bool,
     /// What a newer version wrote of the connection that this one does
     /// not know: written back until the connection's window closes here.
     #[serde(flatten)]
     pub rest: BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for Kept {
+    /// A window as it opens: no tables, and the row panel shown.
+    fn default() -> Self {
+        Self {
+            database: String::new(),
+            tabs: Vec::new(),
+            active: None,
+            row_panel: true,
+            rest: BTreeMap::new(),
+        }
+    }
 }
 
 /// A table or a view, with its sort and its filter bar.
@@ -72,7 +90,7 @@ pub struct KeptTab {
     #[serde(default, skip_serializing_if = "KeptFilter::is_empty")]
     pub filter: KeptFilter,
     /// A preview tab is not pinned: the next single click replaces it.
-    #[serde(default = "pinned", skip_serializing_if = "is_pinned")]
+    #[serde(default = "on", skip_serializing_if = "is_on")]
     pub pinned: bool,
     /// What a newer version wrote of the tab that this one does not know.
     #[serde(flatten)]
@@ -98,12 +116,12 @@ pub struct KeptFilter {
     pub rest: BTreeMap<String, serde_json::Value>,
 }
 
-fn pinned() -> bool {
+fn on() -> bool {
     true
 }
 
-fn is_pinned(pinned: &bool) -> bool {
-    *pinned
+fn is_on(on: &bool) -> bool {
+    *on
 }
 
 fn is_off(on: &bool) -> bool {
@@ -194,6 +212,23 @@ impl Session {
         self.connections.insert(id.0.clone(), kept);
     }
 
+    /// Keeps whether the row panel of the connection `id`'s window is
+    /// shown, and leaves its tables as they are kept: for a window whose
+    /// tables are not kept (switched to another database). A part a
+    /// newer version wrote stays as it is.
+    pub fn keep_row_panel(&mut self, id: &ConnectionId, database: String, shown: bool) {
+        if self.unread.contains_key(&id.0) {
+            return;
+        }
+        self.connections
+            .entry(id.0.clone())
+            .or_insert_with(|| Kept {
+                database,
+                ..Kept::default()
+            })
+            .row_panel = shown;
+    }
+
     /// Forgets what is kept of the connection `id`. Whether there was
     /// anything.
     pub fn forget(&mut self, id: &ConnectionId) -> bool {
@@ -244,6 +279,7 @@ impl Kept {
             active: objects
                 .iter()
                 .position(|object| Some(object.id) == workspace.active_tab),
+            row_panel: workspace.row_panel,
             rest: BTreeMap::new(),
         }
     }
@@ -412,6 +448,7 @@ mod tests {
                     database: "bookshop".into(),
                     tabs: vec![books()],
                     active: Some(0),
+                    row_panel: false,
                     rest: BTreeMap::new(),
                 },
             )]),
@@ -423,11 +460,73 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(json["version"], 1);
         assert_eq!(json["open"][1], serde_json::Value::Null);
+        assert_eq!(json["connections"][&bookshop.0]["row_panel"], false);
         let tab = &json["connections"][&bookshop.0]["tabs"][0];
         assert_eq!(tab["sort"], serde_json::json!([["title", "asc"]]));
         assert_eq!(tab["filter"]["rows"][0][1], "eq");
         // What is as a new tab has it is left out.
         assert!(tab.get("pinned").is_none(), "{text}");
+    }
+
+    #[test]
+    fn a_window_whose_row_panel_was_shown_says_nothing_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let mut session = Session::default();
+        session.keep(&ConnectionId("a".into()), Kept::default());
+        session.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("row_panel"), "{text}");
+        // A file from before the panel was kept opens with it.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"connections":{"a":{"database":"","tabs":[]}}}"#,
+        )
+        .unwrap();
+        assert!(Session::load(&path).connections["a"].row_panel);
+    }
+
+    #[test]
+    fn the_row_panel_is_kept_on_its_own_with_the_tables_left_as_they_are() {
+        let mut session = Session::default();
+        let id = ConnectionId("a".into());
+        // Nothing kept yet: an entry of the connection's own database,
+        // with no table.
+        session.keep_row_panel(&id, "bookshop".into(), false);
+        assert_eq!(
+            session.connections["a"],
+            Kept {
+                database: "bookshop".into(),
+                row_panel: false,
+                ..Kept::default()
+            }
+        );
+        // With tables kept, they stay.
+        let kept = Kept {
+            database: "bookshop".into(),
+            tabs: vec![books()],
+            active: Some(0),
+            row_panel: false,
+            rest: BTreeMap::new(),
+        };
+        session.keep(&id, kept.clone());
+        session.keep_row_panel(&id, "archive".into(), true);
+        assert_eq!(
+            session.connections["a"],
+            Kept {
+                row_panel: true,
+                ..kept
+            }
+        );
+        // A part a newer version wrote is not touched.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let text = serde_json::json!({"version": 2, "connections": {"b": {"tabs": "not a list"}}});
+        std::fs::write(&path, text.to_string()).unwrap();
+        let mut session = Session::load(&path);
+        session.keep_row_panel(&ConnectionId("b".into()), "bookshop".into(), false);
+        assert!(session.connections.is_empty());
+        assert_eq!(session.unread["b"]["tabs"], "not a list");
     }
 
     #[test]

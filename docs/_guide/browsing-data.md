@@ -71,7 +71,8 @@ On MySQL, a raw WHERE reads `"..."` as a string, and names take backticks.
 
 Select a row and the panel on the right shows every one of its fields,
 with long text and JSON documents laid out to read. Cmd/Ctrl+Shift+R
-shows or hides it.
+shows or hides it, and a connection opens with it as its window last
+left it.
 
 A very large value is shown up to 256 KiB. Copying it gives the whole
 value.

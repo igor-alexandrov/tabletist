@@ -358,6 +358,101 @@ fn a_window_switched_to_another_database_keeps_the_tables_of_its_own_first() {
     assert_eq!(names, ["books"]);
 }
 
+#[test]
+fn a_window_whose_row_panel_is_hidden_keeps_that_and_opens_without_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    books(&mut app, tab, "books");
+    app.apply(Action::ToggleRowPanel(tab));
+    assert!(!app.workspace(tab).unwrap().row_panel);
+    app.apply(Action::CloseConnTab(tab));
+    let session = written(&app).expect("written as the window closed");
+    assert!(!session.connections[&conn.0].row_panel);
+    // Opened again, the window is as it was left.
+    let tab = open_window(&mut app, &conn);
+    let workspace = app.workspace(tab).unwrap();
+    assert!(!workspace.row_panel);
+    assert_eq!(workspace.active_object_tab().unwrap().object.name, "books");
+    // Shown again, it opens shown, as a window does.
+    app.apply(Action::ToggleRowPanel(tab));
+    app.apply(Action::CloseConnTab(tab));
+    let session = written(&app).unwrap();
+    assert!(session.connections[&conn.0].row_panel);
+    let tab = open_window(&mut app, &conn);
+    assert!(app.workspace(tab).unwrap().row_panel);
+}
+
+#[test]
+fn the_row_panel_comes_back_as_it_was_at_quit_whether_or_not_the_tables_do() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    books(&mut app, tab, "books");
+    app.apply(Action::ToggleRowPanel(tab));
+    app.save_session();
+    // As the backend writes it, read at the next launch.
+    let session = written(&app).expect("written at quit");
+    assert!(!session.connections[&conn.0].row_panel);
+    session.save(&app.dirs.session_file()).unwrap();
+    let mut app = app_in(dir.path());
+    app.settings.restore_tabs = false;
+    // The connection, as connections.toml would have it.
+    let mut saved = crate::testing::fixture_connection();
+    saved.id = conn.clone();
+    saved.spec = tabletist_db::ConnectSpec::sqlite("/tmp/bookshop.db");
+    app.connections.upsert(saved);
+    let tab = open_window(&mut app, &conn);
+    let workspace = app.workspace(tab).unwrap();
+    assert!(!workspace.row_panel, "hidden, as it was");
+    assert!(workspace.tabs.is_empty(), "the tables are not reopened");
+}
+
+#[test]
+fn a_window_switched_to_another_database_keeps_whether_its_row_panel_is_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    books(&mut app, tab, "books");
+    app.apply(Action::CloseConnTab(tab));
+    let tab = open_window(&mut app, &conn);
+    // As a switch of database leaves it: another database, its tables.
+    if let Some(workspace) = app.workspace_mut(tab) {
+        workspace.spec = tabletist_db::ConnectSpec::sqlite("/tmp/bookshop_archive.db");
+    }
+    books(&mut app, tab, "archived_books");
+    app.apply(Action::ToggleRowPanel(tab));
+    app.apply(Action::CloseConnTab(tab));
+    let session = written(&app).unwrap();
+    let kept = &session.connections[&conn.0];
+    assert!(!kept.row_panel);
+    let names: Vec<&str> = kept.tabs.iter().map(|tab| tab.name.as_str()).collect();
+    assert_eq!(names, ["books"], "its own database's tables stay");
+    // Opened again: its own tables, and the panel as the window left it.
+    let tab = open_window(&mut app, &conn);
+    let workspace = app.workspace(tab).unwrap();
+    assert!(!workspace.row_panel);
+    assert_eq!(workspace.active_object_tab().unwrap().object.name, "books");
+    // A window of which no table was ever kept keeps the panel too.
+    let other = bookshop(&mut app, "Archive");
+    let tab = open_window(&mut app, &other);
+    if let Some(workspace) = app.workspace_mut(tab) {
+        workspace.spec = tabletist_db::ConnectSpec::sqlite("/tmp/bookshop_archive.db");
+    }
+    app.apply(Action::ToggleRowPanel(tab));
+    app.apply(Action::CloseConnTab(tab));
+    let session = written(&app).unwrap();
+    let kept = &session.connections[&other.0];
+    assert!(!kept.row_panel);
+    assert_eq!(kept.database, "/tmp/bookshop.db", "the connection's own");
+    assert!(kept.tabs.is_empty());
+    let tab = open_window(&mut app, &other);
+    assert!(!app.workspace(tab).unwrap().row_panel);
+}
+
 /// Says the newest connect is up, as the backend does.
 fn connected(app: &mut App) {
     connected_to(app, tabletist_db::Driver::Sqlite);
