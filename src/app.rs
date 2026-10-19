@@ -1959,15 +1959,22 @@ impl App {
             }
             Action::RunSqlAgain { tab, sql_tab } => self.run_sql_again(tab, sql_tab),
             Action::SqlTyped { tab, sql_tab } => {
+                // Off, or on the key alone, typing opens no list. One open
+                // goes on as the word is typed (`refresh_completion`).
+                let opens = self.settings.autocomplete.as_you_type();
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    let open = sql.completion.is_some();
                     // A list asked for by hand in the same frame stays so.
-                    if sql.completion_wanted.is_none() {
+                    if sql.completion_wanted.is_none() && (opens || open) {
                         sql.completion_wanted = Some(Wanted::Typed);
                     }
                 }
             }
             Action::OpenCompletion { tab, sql_tab } => {
-                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                let opens = self.settings.autocomplete.on_key();
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab)
+                    && opens
+                {
                     sql.completion_wanted = Some(Wanted::Manual);
                 }
             }
@@ -2002,6 +2009,9 @@ impl App {
                     sql.focus_editor = true;
                 }
             }
+            // The toolbar's menus set the setting, which every open editor
+            // follows (`apply_settings`). The tab picked from takes it
+            // too, where the setting was already so.
             Action::SetSqlLimit {
                 tab,
                 sql_tab,
@@ -4569,6 +4579,32 @@ impl App {
                 }
             }
         }
+        if (old.sql_limit, old.sql_timeout_secs)
+            != (self.settings.sql_limit, self.settings.sql_timeout_secs)
+        {
+            // Every open editor runs with the limit and the timeout set:
+            // a run on its way keeps the ones it was sent with.
+            let (limit, timeout) = (self.settings.sql_limit, self.settings.sql_timeout());
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    for sql in workspace.sql_tabs_mut() {
+                        sql.limit = limit;
+                        sql.timeout = timeout;
+                    }
+                }
+            }
+        }
+        if old.autocomplete != self.settings.autocomplete && !self.settings.autocomplete.on_key() {
+            // Off, no list stays open either.
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    for sql in workspace.sql_tabs_mut() {
+                        sql.completion = None;
+                        sql.completion_wanted = None;
+                    }
+                }
+            }
+        }
         if old.table_list != self.settings.table_list {
             // Every open connection with no list of its own follows.
             let flat = self.settings.table_list.flat();
@@ -5445,13 +5481,19 @@ impl App {
 
     /// Opens an empty SQL editor after the workspace's other tabs, with the
     /// limit and timeout of the settings, and shows it: its id, where `tab`
-    /// is a workspace.
+    /// is a workspace. It opens read-only, or as the connection has it
+    /// where the settings say so (`editor.run.new_tab`).
     fn new_sql_tab(&mut self, tab: ConnTabId) -> Option<TabId> {
         let id = TabId(self.next_id());
         let request = RequestId(self.next_id());
         let (limit, timeout) = (self.settings.sql_limit, self.settings.sql_timeout());
+        let new_tab = self.settings.new_tab;
         let workspace = self.workspace_mut(tab)?;
-        workspace.push_sql_tab(id, limit, timeout);
+        let sql = workspace.push_sql_tab(id, limit, timeout);
+        match new_tab {
+            crate::settings::NewTab::ReadOnly => sql.mode = RunMode::ReadOnly,
+            crate::settings::NewTab::Connection => {}
+        }
         workspace.active_tab = Some(id);
         workspace.pane = Pane::Grid;
         // The editor's footer names the server. A session still connecting
@@ -5606,6 +5648,7 @@ impl App {
     /// is tokenized once per change.
     pub fn refresh_completion(&mut self, ctx: &egui::Context) -> bool {
         let active = self.active_sql();
+        let as_you_type = self.settings.autocomplete.as_you_type();
         let mut changed = false;
         for conn in &mut self.tabs {
             let ConnTabContent::Workspace(workspace) = &mut conn.content else {
@@ -5671,9 +5714,10 @@ impl App {
             }
         };
         // Opening, by typing: a word of two characters or more, or right
-        // after a dot, and not where a new name goes. Told before any row
-        // is looked for.
-        if !going && !crate::completion::may_open(&site, &typed, manual) {
+        // after a dot, and not where a new name goes, where typing opens
+        // lists at all. Told before any row is looked for.
+        let opens = manual || as_you_type;
+        if !going && !(opens && crate::completion::may_open(&site, &typed, manual)) {
             sql.completion = None;
             return changed | was_open;
         }
@@ -5747,6 +5791,8 @@ impl App {
     /// `Workspace::run_mode`) and one of the statements looks like a
     /// write. Every other run is the read-only one.
     fn run_sql(&mut self, tab: ConnTabId, id: TabId, all: bool) {
+        // The run key runs the whole tab where the settings say so.
+        let all = all || self.settings.run_scope == crate::settings::RunScope::All;
         let Some(workspace) = self.workspace(tab) else {
             return;
         };
@@ -5761,8 +5807,20 @@ impl App {
         if sql.is_writing() {
             return;
         }
-        let mut statements = tabletist_db::sql::statements(dialect, &sql.text);
-        if !all {
+        // A selection runs what it covers, exactly: the text around it is
+        // blanked, so each statement keeps its line and its offset.
+        let selected = sql
+            .selected
+            .clone()
+            .filter(|range| sql.text.get(range.clone()).is_some());
+        let whole = all || selected.is_some();
+        let mut statements = match selected {
+            Some(range) => {
+                tabletist_db::sql::statements(dialect, &selection_only(&sql.text, range))
+            }
+            None => tabletist_db::sql::statements(dialect, &sql.text),
+        };
+        if !whole {
             statements = tabletist_db::sql::statement_at(&statements, sql.cursor)
                 .cloned()
                 .into_iter()
@@ -6822,6 +6880,21 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
     form.message = None;
     form.url_mode = false;
     Ok(())
+}
+
+/// `text` with every byte outside `range` blanked, but its line breaks: the
+/// text a selection runs, each of its statements where it is in the
+/// editor. A character of several bytes is as many spaces.
+pub(crate) fn selection_only(text: &str, range: std::ops::Range<usize>) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (at, c) in text.char_indices() {
+        if range.contains(&at) || c == '\n' {
+            out.push(c);
+        } else {
+            out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+        }
+    }
+    out
 }
 
 /// The transaction a run of `statements` is sent in, in an editor whose
@@ -12288,8 +12361,11 @@ masked = ["orders.email"]
         assert_eq!(cancels_since(&harness, sent), loading);
     }
 
-    /// A SQL editor on a connection that takes writes.
+    /// A SQL editor on a connection that takes writes, where new tabs
+    /// follow the connection (`editor.run.new_tab = "connection"`): it
+    /// opens read-write.
     fn writable_sql(harness: &mut Harness) -> (ConnTabId, TabId) {
+        harness.app.settings.new_tab = crate::settings::NewTab::Connection;
         let tab = harness.connect_fake_as(false);
         harness.app.apply(Action::NewSqlTab(tab));
         let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
@@ -12327,6 +12403,7 @@ masked = ["orders.email"]
         // opened there still does once the session takes writes. Only an
         // editor opened from then on writes.
         let mut harness = Harness::new();
+        harness.app.settings.new_tab = crate::settings::NewTab::Connection;
         let (tab, id) = new_sql(&mut harness);
         assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadOnly);
         harness.reconnect_fake_as(tab, false);
@@ -12337,6 +12414,7 @@ masked = ["orders.email"]
         // A writable connection to production: an editor there opens in
         // Read-only, as production's connections do.
         let mut harness = Harness::new();
+        harness.app.settings.new_tab = crate::settings::NewTab::Connection;
         let tab = harness.connect_fake_as(false);
         harness.app.workspace_mut(tab).unwrap().environment = Environment::Production;
         harness.app.apply(Action::NewSqlTab(tab));
@@ -12688,8 +12766,8 @@ masked = ["orders.email"]
         ));
         assert_eq!(harness.app.settings.sql_limit, 100);
         assert_eq!(harness.app.settings.sql_timeout_secs, None);
-        // The next editor starts from them; the menus of one editor leave
-        // the others as they are.
+        // The next editor starts from them; the menus of one editor set
+        // the settings, which every open editor follows.
         harness.app.apply(Action::NewSqlTab(tab));
         let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         assert_eq!(sql(&harness, tab, second).limit, 100);
@@ -12699,11 +12777,12 @@ masked = ["orders.email"]
             sql_tab: second,
             secs: Some(60),
         });
-        assert_eq!(
-            sql(&harness, tab, second).timeout,
-            Some(Duration::from_secs(60))
-        );
-        assert_eq!(sql(&harness, tab, id).timeout, None);
+        for editor in [second, id] {
+            assert_eq!(
+                sql(&harness, tab, editor).timeout,
+                Some(Duration::from_secs(60))
+            );
+        }
         assert_eq!(harness.app.settings.sql_timeout_secs, Some(60));
     }
 

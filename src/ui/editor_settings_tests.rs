@@ -5,12 +5,13 @@
 use egui::accesskit::{Role, Toggled};
 use egui::{Key, Modifiers};
 
+use crate::backend::Command;
 use crate::keymap::Command as Keyed;
-use crate::model::{Action, SettingsPane};
+use crate::model::{Action, ConnTabId, RunMode, SettingsPane, SqlTab, TabId};
 use crate::settings::{
     Autocomplete, EditorKeys, KeywordCase, LineNumbers, NewTab, OptionValue, RunScope, Settings,
 };
-use crate::testing::Harness;
+use crate::testing::{Harness, bounds};
 use crate::theme::Look;
 
 use super::appearance_settings_tests::{settings_saves, shows};
@@ -19,12 +20,71 @@ fn looks() -> [Look; 2] {
     [Look::macos(), Look::omarchy()]
 }
 
+/// A connection that takes writes (`writable`) or not, in `look`, with a
+/// new SQL editor that has the keyboard and holds `text`.
+fn editor(look: Look, writable: bool, text: &str) -> (Harness, ConnTabId, TabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let tab = harness.connect_fake_as(!writable);
+    harness.press(Key::T, Modifiers::COMMAND);
+    if !text.is_empty() {
+        harness.frame(vec![egui::Event::Paste(text.into())]);
+    }
+    harness.settle();
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    (harness, tab, id)
+}
+
+fn sql(harness: &Harness, tab: ConnTabId, id: TabId) -> &SqlTab {
+    harness.app.workspace(tab).unwrap().sql_tab(id).unwrap()
+}
+
+/// The mode a run of the editor would have now.
+fn run_mode(harness: &Harness, tab: ConnTabId, id: TabId) -> RunMode {
+    let workspace = harness.app.workspace(tab).unwrap();
+    workspace.run_mode(workspace.sql_tab(id).unwrap())
+}
+
+/// A new editor of `tab`, shown.
+fn new_editor(harness: &mut Harness, tab: ConnTabId) -> TabId {
+    harness.app.apply(Action::NewSqlTab(tab));
+    harness.settle();
+    harness.app.workspace(tab).unwrap().active_tab.unwrap()
+}
+
+/// The statements, limit and timeout of the last run sent.
+fn last_run(harness: &Harness) -> (Vec<String>, u32, Option<std::time::Duration>) {
+    let mut sent = harness.app.backend.sent.iter().rev();
+    sent.find_map(|command| match command {
+        Command::RunSql {
+            statements,
+            limit,
+            timeout,
+            ..
+        } => Some((
+            statements.iter().map(|s| s.text.clone()).collect(),
+            *limit,
+            *timeout,
+        )),
+        _ => None,
+    })
+    .expect("a run was sent")
+}
+
 /// Settings on its Editor pane.
 fn on_the_pane(harness: &mut Harness) {
     harness.app.apply(Action::ShowSettings);
     harness
         .app
         .apply(Action::ShowSettingsPane(SettingsPane::Editor));
+    harness.settle();
+}
+
+/// The settings changed by `change`, as an edit of the file changes them.
+fn change(harness: &mut Harness, change: impl FnOnce(&mut Settings)) {
+    let mut settings = harness.app.settings.clone();
+    change(&mut settings);
+    harness.app.apply_settings(settings);
     harness.settle();
 }
 
@@ -128,6 +188,316 @@ fn a_value_an_editor_key_cannot_have_is_ignored_by_its_line() {
         Settings::from_toml("[editor.typing]\nindent = \"4\"\n").invalid,
         [2]
     );
+}
+
+#[test]
+fn a_new_tab_opens_read_only_unless_the_settings_follow_the_connection() {
+    for look in looks() {
+        // A dev connection that takes writes: read-only all the same.
+        let (mut harness, tab, id) = editor(look, true, "");
+        assert_eq!(
+            sql(&harness, tab, id).mode,
+            RunMode::ReadOnly,
+            "{}",
+            look.name
+        );
+        // The badge still switches it.
+        harness.app.apply(Action::SetSqlMode {
+            tab,
+            sql_tab: id,
+            mode: RunMode::ReadWrite,
+        });
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+        // Follow connection: a new tab writes where its connection does,
+        // and the tabs open keep their mode.
+        harness
+            .app
+            .apply(Action::SetOption(OptionValue::NewTab(NewTab::Connection)));
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+        let follows = new_editor(&mut harness, tab);
+        assert_eq!(run_mode(&harness, tab, follows), RunMode::ReadWrite);
+        harness
+            .app
+            .apply(Action::SetOption(OptionValue::NewTab(NewTab::ReadOnly)));
+        assert_eq!(run_mode(&harness, tab, follows), RunMode::ReadWrite);
+        let read = new_editor(&mut harness, tab);
+        assert_eq!(run_mode(&harness, tab, read), RunMode::ReadOnly);
+        // A read-only connection caps its tabs, whatever the setting.
+        let (mut harness, tab, _) = editor(look, false, "");
+        harness
+            .app
+            .apply(Action::SetOption(OptionValue::NewTab(NewTab::Connection)));
+        let capped = new_editor(&mut harness, tab);
+        assert_eq!(
+            run_mode(&harness, tab, capped),
+            RunMode::ReadOnly,
+            "{}",
+            look.name
+        );
+    }
+}
+
+#[test]
+fn every_open_tab_follows_the_limit_and_the_timeout() {
+    let (mut harness, tab, first) = editor(Look::macos(), false, "SELECT 1");
+    let second = new_editor(&mut harness, tab);
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::RowLimit(5_000)));
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::Timeout(Some(300))));
+    for id in [first, second] {
+        assert_eq!(sql(&harness, tab, id).limit, 5_000);
+        assert_eq!(
+            sql(&harness, tab, id).timeout,
+            Some(std::time::Duration::from_secs(300))
+        );
+    }
+    // No limit asks for every row; Off sets no timer.
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::RowLimit(0)));
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::Timeout(None)));
+    harness.app.apply(Action::ActivateTab { tab, id: first });
+    harness.settle();
+    harness.press(Key::Enter, Modifiers::COMMAND);
+    let (statements, limit, timeout) = last_run(&harness);
+    assert_eq!(statements, ["SELECT 1"]);
+    assert_eq!(limit, u32::MAX);
+    assert_eq!(timeout, None);
+    // The toolbar's menus offer the setting's values and say No limit.
+    harness.click("Limit");
+    assert!(harness.has("No limit"));
+    assert!(harness.has("Limit 5,000"));
+}
+
+#[test]
+fn the_run_key_runs_the_statement_the_whole_tab_or_the_selection() {
+    let text = "SELECT 1;\nSELECT 2;\nSELECT 3";
+    for look in looks() {
+        let (mut harness, _, _) = editor(look, false, text);
+        // The cursor is at the end, in the last statement.
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert_eq!(last_run(&harness).0, ["SELECT 3"], "{}", look.name);
+        harness
+            .app
+            .apply(Action::SetOption(OptionValue::RunScope(RunScope::All)));
+        harness.settle();
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert_eq!(
+            last_run(&harness).0,
+            ["SELECT 1", "SELECT 2", "SELECT 3"],
+            "{}",
+            look.name
+        );
+    }
+    // A selection wins either way: what it covers, exactly.
+    for look in looks() {
+        for scope in [RunScope::All, RunScope::Statement] {
+            let (mut harness, _, _) = editor(look, false, text);
+            harness
+                .app
+                .apply(Action::SetOption(OptionValue::RunScope(scope)));
+            harness.settle();
+            // From the end back to the `2`: "2;\nSELECT 3".
+            for _ in 0..11 {
+                harness.press(Key::ArrowLeft, Modifiers::SHIFT);
+            }
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            assert_eq!(
+                last_run(&harness).0,
+                ["2", "SELECT 3"],
+                "{} {scope:?}",
+                look.name
+            );
+        }
+    }
+}
+
+#[test]
+fn the_run_button_says_what_it_runs() {
+    let (mut harness, _, _) = editor(Look::macos(), false, "SELECT 1;\nSELECT 2");
+    let hovered = |harness: &mut Harness| {
+        let tree = harness.settle();
+        let at = bounds(&tree, "Run", Role::Button).expect("the Run button");
+        let shown = super::tests::hover(harness, at.center());
+        harness.frame(vec![egui::Event::PointerGone]);
+        harness.settle();
+        shown
+    };
+    assert!(hovered(&mut harness).contains(&"Run the statement at the cursor".to_owned()));
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::RunScope(RunScope::All)));
+    assert!(hovered(&mut harness).contains(&"Run every statement".to_owned()));
+    // The editor still has the keyboard.
+    for _ in 0..3 {
+        harness.press(Key::ArrowLeft, Modifiers::SHIFT);
+    }
+    assert!(hovered(&mut harness).contains(&"Run the selection".to_owned()));
+}
+
+#[test]
+fn a_selection_keeps_its_statements_lines_and_splits_where_the_sql_does() {
+    let text = "SELECT 'a;b';\n-- one; two\nSELECT 2;\nSELECT 3";
+    // The lines of the statements of the last run sent.
+    let lines = |harness: &Harness| -> Vec<(String, usize)> {
+        let mut sent = harness.app.backend.sent.iter().rev();
+        sent.find_map(|command| match command {
+            Command::RunSql { statements, .. } => Some(
+                statements
+                    .iter()
+                    .map(|s| (s.text.clone(), s.first_line))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .expect("a run was sent")
+    };
+    // From the end back to the comment: each statement where the editor
+    // has it, so that an error marks the line it shows.
+    let (mut harness, _, _) = editor(Look::macos(), false, text);
+    for _ in 0.."-- one; two\nSELECT 2;\nSELECT 3".chars().count() {
+        harness.press(Key::ArrowLeft, Modifiers::SHIFT);
+    }
+    harness.press(Key::Enter, Modifiers::COMMAND);
+    assert_eq!(
+        lines(&harness),
+        [
+            ("-- one; two\nSELECT 2".to_owned(), 3),
+            ("SELECT 3".to_owned(), 4)
+        ]
+    );
+    // The whole tab splits on neither the string's `;` nor the comment's.
+    let (mut harness, _, _) = editor(Look::macos(), false, text);
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::RunScope(RunScope::All)));
+    harness.settle();
+    harness.press(Key::Enter, Modifiers::COMMAND);
+    let texts: Vec<String> = lines(&harness).into_iter().map(|(text, _)| text).collect();
+    assert_eq!(texts, ["SELECT 'a;b'", "-- one; two\nSELECT 2", "SELECT 3"]);
+    // Nor on PostgreSQL's dollar quote, which the run takes from the same
+    // splitting (the fixture's database is SQLite).
+    let quoted =
+        tabletist_db::sql::statements(tabletist_db::Dialect::Postgres, "SELECT $$x;y$$; SELECT 3");
+    assert_eq!(quoted.len(), 2);
+}
+
+#[test]
+fn autocomplete_opens_as_set_and_typing_asks_the_database_nothing() {
+    let typed = |harness: &mut Harness, text: &str| {
+        harness.frame(vec![egui::Event::Text(text.into())]);
+        harness.settle();
+    };
+    let open = |harness: &Harness, tab, id| sql(harness, tab, id).completion.is_some();
+    // As you type, with the schema loaded: a list, and nothing sent.
+    let (mut harness, tab, id) = editor(Look::macos(), false, "");
+    let sent = harness.app.backend.sent.len();
+    typed(&mut harness, "SELECT * FROM us");
+    assert!(open(&harness, tab, id));
+    assert_eq!(harness.app.backend.sent.len(), sent, "typing sent nothing");
+    // On the key alone: typing opens nothing, the key does, and the list
+    // goes on as the word is typed.
+    let (mut harness, tab, id) = editor(Look::macos(), false, "");
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::Autocomplete(
+            Autocomplete::Manual,
+        )));
+    typed(&mut harness, "SELECT * FROM us");
+    assert!(!open(&harness, tab, id));
+    harness.press(Key::Space, Modifiers::CTRL);
+    assert!(open(&harness, tab, id));
+    typed(&mut harness, "e");
+    assert!(open(&harness, tab, id));
+    // Off: neither.
+    harness
+        .app
+        .apply(Action::SetOption(OptionValue::Autocomplete(
+            Autocomplete::Off,
+        )));
+    harness.settle();
+    assert!(!open(&harness, tab, id), "turned off, the open list closes");
+    typed(&mut harness, "r");
+    harness.press(Key::Space, Modifiers::CTRL);
+    assert!(!open(&harness, tab, id));
+}
+
+/// The numbers the gutter painted, top to bottom.
+fn gutter(harness: &mut Harness) -> Vec<String> {
+    let tree = harness.settle();
+    let field = bounds(&tree, "SQL", Role::MultilineTextInput).expect("the editor");
+    let mut numbers: Vec<(f32, String)> = harness
+        .text_rects
+        .iter()
+        .filter(|(text, rect)| {
+            rect.right() <= field.left()
+                && rect.top() >= field.top()
+                && text.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        .map(|(text, rect)| (rect.top(), text.clone()))
+        .collect();
+    numbers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    numbers.into_iter().map(|(_, text)| text).collect()
+}
+
+#[test]
+fn the_gutter_numbers_the_lines_as_set_in_either_look() {
+    for look in looks() {
+        // The cursor is on the last of three lines.
+        let (mut harness, _, _) = editor(look, false, "SELECT 1\nFROM t\nWHERE x");
+        let own = if look.terminal {
+            ["2", "1", "3"]
+        } else {
+            ["1", "2", "3"]
+        };
+        assert_eq!(gutter(&mut harness), own, "{}", look.name);
+        change(&mut harness, |settings| {
+            settings.line_numbers = Some(LineNumbers::Relative)
+        });
+        assert_eq!(gutter(&mut harness), ["2", "1", "3"], "{}", look.name);
+        change(&mut harness, |settings| {
+            settings.line_numbers = Some(LineNumbers::Absolute)
+        });
+        assert_eq!(gutter(&mut harness), ["1", "2", "3"], "{}", look.name);
+        change(&mut harness, |settings| {
+            settings.line_numbers = Some(LineNumbers::Off)
+        });
+        assert_eq!(gutter(&mut harness), Vec::<String>::new(), "{}", look.name);
+    }
+}
+
+#[test]
+fn the_cursors_line_is_filled_unless_the_settings_turn_it_off() {
+    for look in looks() {
+        let (mut harness, _, _) = editor(look, false, "SELECT 1\nFROM t");
+        let palette = harness.app.palette;
+        let fill = if look.terminal {
+            palette.selection
+        } else {
+            palette.window.lerp_to_gamma(palette.selection, 0.45)
+        };
+        // The cursor's line, across the editor: wider than any other fill
+        // of that colour a fixture draws.
+        let field = bounds(&harness.settle(), "SQL", Role::MultilineTextInput).expect("the editor");
+        let filled = |harness: &mut Harness| {
+            harness.settle();
+            harness
+                .fills
+                .iter()
+                .any(|(rect, color)| *color == fill && rect.width() >= field.width())
+        };
+        assert!(filled(&mut harness), "{}", look.name);
+        change(&mut harness, |settings| settings.highlight_line = false);
+        assert!(!filled(&mut harness), "{}", look.name);
+        // The editor kept the keyboard: on again, the line is filled again.
+        change(&mut harness, |settings| settings.highlight_line = true);
+        assert!(filled(&mut harness), "{}", look.name);
+    }
 }
 
 #[test]

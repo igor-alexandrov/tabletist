@@ -4143,10 +4143,15 @@ pub struct SqlTab {
     pub text: String,
     /// Byte offset of the editor's cursor, reported by the view.
     pub cursor: usize,
+    /// The bytes the editor's selection covers, where it covers any,
+    /// reported by the view: what Run runs in place of a statement.
+    pub selected: Option<std::ops::Range<usize>>,
+    /// The rows a statement keeps; 0 keeps every one.
     pub limit: u32,
     pub timeout: Option<Duration>,
-    /// What the switch was set to: by `Workspace::push_sql_tab` when the
-    /// tab opened, and by the user since. It counts only while the session
+    /// What the switch was set to: when the tab opened (by
+    /// `Workspace::push_sql_tab`, then `App::new_sql_tab` as the settings
+    /// say), and by the user since. It counts only while the session
     /// can write: ask `Workspace::run_mode` for the mode a run has.
     pub mode: RunMode,
     /// The last run, or the one running (a whole-run failure is its error).
@@ -4211,6 +4216,7 @@ impl SqlTab {
             number,
             text: String::new(),
             cursor: 0,
+            selected: None,
             limit,
             timeout,
             mode: RunMode::default(),
@@ -4739,8 +4745,10 @@ impl Workspace {
     }
 
     /// Adds an empty SQL editor at the end of the strip, numbered after the
-    /// last one, without showing it, in the mode a new editor of this
-    /// workspace opens in now (see `RunMode::of_new_tab`).
+    /// last one, without showing it, in the mode the connection gives a new
+    /// editor of this workspace now (see `RunMode::of_new_tab`): Follow
+    /// connection's. `App::new_sql_tab` makes it read-only where the
+    /// settings say so.
     pub fn push_sql_tab(
         &mut self,
         id: TabId,

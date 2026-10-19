@@ -295,6 +295,10 @@ struct Bar<'a> {
     timeout_label: &'a MenuLabel,
     /// The editor's read-write run is in flight: Run and Run all wait.
     writing: bool,
+    /// What Run runs: the selection, the whole tab (the settings' Whole
+    /// tab), or the statement at the cursor. Run all runs the selection
+    /// too where there is one.
+    runs: Runs,
     /// The transaction the editor's runs are in now.
     mode: RunMode,
     /// Whether the switch changes that, or why the editor cannot write.
@@ -341,6 +345,14 @@ fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         limit_label: &limit_label,
         timeout_label: &timeout_label,
         writing: sql.is_writing(),
+        runs: if sql.selected.is_some() {
+            Runs::Selection
+        } else {
+            match app.settings.run_scope {
+                crate::settings::RunScope::Statement => Runs::Statement,
+                crate::settings::RunScope::All => Runs::All,
+            }
+        },
         mode,
         writes,
         locale,
@@ -702,6 +714,14 @@ fn switch(ui: &mut Ui, rect: Rect, bar: &Bar<'_>) -> Option<RunMode> {
     picked.filter(|picked| *picked != mode)
 }
 
+/// What Run runs now.
+#[derive(Clone, Copy)]
+enum Runs {
+    Statement,
+    All,
+    Selection,
+}
+
 /// Run or Run all in `rect`, with what it does on hover. Neither can be
 /// pressed while the editor's read-write run is in flight, and says so: a
 /// new run would cancel a transaction that may be about to commit.
@@ -715,10 +735,10 @@ fn run_button(
 ) {
     let explained = gettext(
         bar.locale,
-        if all {
-            "Run every statement"
-        } else {
-            "Run the statement at the cursor"
+        match (bar.runs, all) {
+            (Runs::Selection, _) => "Run the selection",
+            (Runs::All, _) | (Runs::Statement, true) => "Run every statement",
+            (Runs::Statement, false) => "Run the statement at the cursor",
         },
     );
     if bar.writing {
@@ -1266,10 +1286,12 @@ mod tests {
     use crate::testing::{Harness, bounds, done_outcome, node, write_outcome};
 
     /// A SQL editor on a connection that takes writes, drawn in `look`,
-    /// with `text` typed into it.
+    /// with `text` typed into it, opened as the connection has it
+    /// (`editor.run.new_tab = "connection"`): read-write.
     fn editor(look: Look, text: &str) -> (Harness, ConnTabId, TabId) {
         let mut harness = Harness::new();
         harness.set_look(look);
+        harness.app.settings.new_tab = crate::settings::NewTab::Connection;
         let tab = harness.connect_fake_as(false);
         harness.press(Key::T, Modifiers::COMMAND);
         harness.frame(vec![egui::Event::Paste(text.into())]);

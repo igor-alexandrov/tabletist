@@ -5982,10 +5982,11 @@ value_tags   = true
             // The switch is one stop, on the segment it has chosen: the
             // arrows choose inside it. The terminal's toolbar leads with
             // it, the others' meet it after Format.
+            // A new tab opens read-only: that segment is chosen.
             let order: &[&str] = if look.terminal {
-                &["Read-write", "Limit", "Timeout", "Run"]
+                &["Read-only", "Limit", "Timeout", "Run"]
             } else {
-                &["Format", "Read-write", "Limit", "Timeout"]
+                &["Format", "Read-only", "Limit", "Timeout"]
             };
             focus(&mut harness, order[0], egui::accesskit::Role::Button);
             let mut reached = vec![focused_name(&harness.settle())];
