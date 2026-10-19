@@ -291,6 +291,12 @@ Phase 1 in five runs (cut on 2026-10-18), each a plan and a pull request:
   the app's notice, the bar `connections.toml`'s failures use. The editor
   still shows the person's own values. The reference page says what is
   built. On Windows nothing is read until 1c.
+  **Built on 2026-10-18** (`2026-10-18-managed-policy-1a-file-and-limits.md`).
+  Where it went otherwise: an unreadable policy keeps the problem's words
+  only (`Managed::Unreadable`), and `read` is the crate's own; **Turn on**
+  and the Settings switch, with agents forbidden, write nothing and say so
+  in the notice; a policy's notice comes before one about
+  `connections.toml`, which the bar has room for one of.
 - **1b. Tables and columns from rules.** The checks take several `Tables`,
   refusals and `list_connections` say which entries are the
   administrator's, and a rule's stale entry closes a connection with its
