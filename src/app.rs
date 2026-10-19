@@ -2331,6 +2331,10 @@ impl App {
                 }
             }
             Action::SwitchDatabase { tab, database } => {
+                // While the window is on its own connection's database
+                // this keeps its tables for the next time; switched once
+                // already, it keeps nothing.
+                let kept = self.keep_tabs(tab);
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.spec.database = database;
                     // The other database's objects, listed as these were.
@@ -2349,6 +2353,11 @@ impl App {
                         .active_tab
                         .filter(|id| workspace.tab(*id).is_some())
                         .or_else(|| workspace.tabs.first().map(Tab::id));
+                }
+                // Written before the reconnect, so that the connect is
+                // the last thing sent.
+                if kept {
+                    self.save_session();
                 }
                 // Which also forgets what the editors asked the old
                 // session for.
@@ -2868,6 +2877,13 @@ impl App {
         }
         self.session.open = open;
         self.session.active = active;
+        // The connections were read, or this would not write: one that is
+        // not among them, deleted from connections.toml by hand, goes.
+        self.session.retain(|id| {
+            self.connections
+                .get(&crate::connections::ConnectionId(id.to_owned()))
+                .is_some()
+        });
         self.backend.send(Command::Save {
             path: self.dirs.session_file(),
             file: StateFile::Session(self.session.clone()),

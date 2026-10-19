@@ -221,6 +221,38 @@ fn a_connection_deleted_while_its_window_is_open_is_in_no_part_of_the_file() {
 }
 
 #[test]
+fn a_connection_deleted_from_the_file_by_hand_is_taken_out_of_the_session_at_the_next_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let kept = bookshop(&mut app, "Bookshop");
+    write_files(&app);
+    let entry = serde_json::json!({
+        "database": "/tmp/bookshop.db",
+        "tabs": [{"schema": "main", "name": "books", "kind": "table"}]
+    });
+    // One that connections.toml has, one it lacks, and one of a newer
+    // version that this one cannot read.
+    let text = serde_json::json!({
+        "open": [kept.0],
+        "connections": {
+            kept.0.clone(): entry.clone(),
+            "gone": entry,
+            "gone-too": {"tabs": "not a list"},
+        }
+    });
+    std::fs::write(app.dirs.session_file(), text.to_string()).unwrap();
+    let mut app = start(dir.path());
+    app.save_session();
+    let session = written(&app).unwrap();
+    assert!(session.connections.contains_key(&kept.0));
+    assert!(!session.connections.contains_key("gone"));
+    let path = dir.path().join("written.json");
+    session.save(&path).unwrap();
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(!file.contains("gone"), "{file}");
+}
+
+#[test]
 fn the_file_is_read_at_the_start() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_in(dir.path());
@@ -302,8 +334,37 @@ fn a_window_switched_to_another_database_keeps_what_its_connection_had() {
     assert_eq!(names, ["books"]);
 }
 
+#[test]
+fn a_window_switched_to_another_database_keeps_the_tables_of_its_own_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop_at(
+        &mut app,
+        "postgres://demo@localhost:5432/bookshop_development",
+    );
+    let tab = open_window(&mut app, &conn);
+    connected_to(&mut app, tabletist_db::Driver::Postgres);
+    books(&mut app, tab, "books");
+    app.apply(Action::SwitchDatabase {
+        tab,
+        database: "bookshop_preview".into(),
+    });
+    assert_eq!(app.workspace(tab).unwrap().tabs.len(), 0);
+    app.apply(Action::CloseConnTab(tab));
+    let session = written(&app).unwrap();
+    let kept = &session.connections[&conn.0];
+    assert_eq!(kept.database, "bookshop_development");
+    let names: Vec<&str> = kept.tabs.iter().map(|tab| tab.name.as_str()).collect();
+    assert_eq!(names, ["books"]);
+}
+
 /// Says the newest connect is up, as the backend does.
 fn connected(app: &mut App) {
+    connected_to(app, tabletist_db::Driver::Sqlite);
+}
+
+/// Says the newest connect is up, to a server of `driver`.
+fn connected_to(app: &mut App, driver: tabletist_db::Driver) {
     let (session, request) = app
         .backend
         .sent
@@ -319,7 +380,7 @@ fn connected(app: &mut App) {
     app.apply(Action::Backend(crate::backend::Event::Connected {
         session,
         request,
-        driver: tabletist_db::Driver::Sqlite,
+        driver,
         encrypted: false,
         access: crate::testing::asked_access(app),
     }));

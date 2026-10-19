@@ -915,10 +915,14 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
                     let saved = skin.connections.iter().find(|saved| saved.id == *id);
                     match saved {
                         // The name as it is saved, not set in the screen's case.
-                        Some(saved) => match Some(super::place(saved)).filter(|p| !p.is_empty()) {
-                            Some(place) => format!("{text} ({place})"),
-                            None => text,
-                        },
+                        Some(saved) => {
+                            let place = super::place(saved);
+                            if place.is_empty() {
+                                text
+                            } else {
+                                format!("{text} ({place})")
+                            }
+                        }
                         None => skin.look.label(&text),
                     }
                 }

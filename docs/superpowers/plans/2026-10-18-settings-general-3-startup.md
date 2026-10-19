@@ -4059,6 +4059,14 @@ git add docs/_reference/settings-and-files.md src/app.rs src/app/startup_tests.r
 git commit -m "Add On launch to Settings › General"
 ```
 
+## After the tasks: what the reviews of the run found
+
+Each task was reviewed for the plan and for the code as it was run, and the three together once more; the fixes are commits of their own after each task, each with its tests, and every commit passes the three checks. The diffs above do not have them.
+
+- **After task 1** (`4b1a09f`): a file a newer version wrote keeps its `version` when it is written back, so a newer reader that goes by it does not misread what was kept for it; `active` counts among the windows read, so a window of the wrong kind left out does not move the one in front; the log line for an entry that cannot be read names what kind of error it is and quotes no stored value.
+- **After task 2** (`6201969`): a reopened table read first by another way than coming to the front (following a foreign key into it) gets its structure too: the first `fetch_rows` of a reopened tab describes it, and `after_connect` does not describe it a second time. A reopened table gets the row estimate of the tree once the tree's list arrives (`Event::Objects`), as one opened from the sidebar has it. Connecting a connection into its own window reopens what that window had just now.
+- **After task 3** (the last commits): the window in front connects first, but a question is asked of the first window that asks one: a window behind whose password is asked for at once is asked before a front window still reading the keyring, and the other says so and offers Reconnect. This replaces the row above that says the front window is always asked first. The closed On launch menu names the chosen connection's server and database too, so a screen reader tells two Bookshops apart; "connection not found" is lower case on Omarchy. Switching database keeps the window's tables of its own database first (they were dropped), and a connection taken out of `connections.toml` by hand is taken out of `session.json` at its next write. The website says that the comment beside `startup.on_launch` is Tabletist's, and when `session.json` is not written.
+
 ## Pull request
 
 One pull request for the three commits, on `main`. Its description has:

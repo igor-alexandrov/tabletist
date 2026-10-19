@@ -201,6 +201,13 @@ impl Session {
         self.connections.remove(&id.0).is_some() || unread
     }
 
+    /// Keeps what is kept, read or not, of the connections `keep` says yes
+    /// to by id, and forgets the rest.
+    pub fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        self.connections.retain(|id, _| keep(id));
+        self.unread.retain(|id, _| keep(id));
+    }
+
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut connections = self.unread.clone();
         connections.extend(
@@ -499,6 +506,35 @@ mod tests {
         let mut session = Session::load(&path);
         assert!(session.forget(&ConnectionId("a".into())));
         assert!(!session.forget(&ConnectionId("a".into())));
+    }
+
+    #[test]
+    fn retain_forgets_the_connections_not_kept_read_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let text = serde_json::json!({
+            "version": 2,
+            "connections": {
+                "a": {"database": "", "tabs": []},
+                "b": {"database": "", "tabs": []},
+                "c": {"tabs": "not a list"},
+                "d": {"tabs": "not a list"},
+            }
+        });
+        std::fs::write(&path, text.to_string()).unwrap();
+        let mut session = Session::load(&path);
+        session.retain(|id| id == "a" || id == "c");
+        assert_eq!(
+            session.connections.keys().collect::<Vec<_>>(),
+            [&"a".to_owned()]
+        );
+        assert_eq!(session.unread.keys().collect::<Vec<_>>(), [&"c".to_owned()]);
+        // And so is what the file has written.
+        session.save(&path).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let ids: Vec<&String> = written["connections"].as_object().unwrap().keys().collect();
+        assert_eq!(ids, [&"a".to_owned(), &"c".to_owned()]);
     }
 
     #[test]
