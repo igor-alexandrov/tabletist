@@ -195,7 +195,9 @@ pub(super) fn show(
                         ],
                         false,
                     ),
-                    &app.settings,
+                    // As the window shows them: what the look has where the
+                    // settings do not say (the grouping of numbers).
+                    &super::shown(app),
                     limit,
                     &skin,
                     actions,

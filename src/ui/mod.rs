@@ -2543,6 +2543,26 @@ value_tags   = true
     }
 
     #[test]
+    fn the_sheet_shows_what_the_look_has_where_the_settings_do_not_say() {
+        use egui::accesskit::{Role, Toggled};
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            assert_eq!(harness.app.settings.group_digits, None);
+            let tree = harness.settle();
+            let selected = |name: &str| {
+                let id = crate::testing::node(&tree, name, Role::Button)
+                    .unwrap_or_else(|| panic!("{name} is no segment"));
+                let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+                node.toggled()
+            };
+            // Grouped is the default of macOS and Windows: that segment is
+            // the one set.
+            assert_eq!(selected("Numbers: 1,240.50"), Some(Toggled::True));
+            assert_eq!(selected("Numbers: 1240.50"), Some(Toggled::False));
+        }
+    }
+
+    #[test]
     fn a_screen_reader_hears_which_value_of_an_option_is_set() {
         use egui::accesskit::{Role, Toggled};
         let mut harness = settings_screen();
