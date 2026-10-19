@@ -2,6 +2,15 @@
 
 Date: 2026-10-15. Status: draft, for review.
 
+**Amended on 2026-10-17 against the MCP plan as built** (Phase 1c, hidden
+tables, and Phase 3a, masked columns). A rule's hidden tables and masked
+columns are names, as the person's are, and a stale one stops agents as
+the person's does; a rule may list the tables agents may see instead
+(`visible_only`); with any rule in the file a connection no rule matches is
+Off for agents; and a loosening from a file that is not locked is held.
+The floor is built after 3a. The MCP plan's B.8, C.2, C.3, E and G say what
+this changes there.
+
 ## Intent
 
 What agents may do on a connection is kept in `connections.toml` and
@@ -18,10 +27,10 @@ only an administrator can write. It is a floor. It can lower what agents may
 do and force connections read-only. Nothing in the person's files can lift
 what it sets.
 
-Hidden tables (Phase 1c) and masked columns (Phase 3a) are what the person
-most wants an agent unable to undo. They are not built yet. The policy file
-names them from its first version, and a connection that a rule hides or
-masks something on is Off for agents until the app can enforce it.
+Hidden tables (Phase 1c) and masked columns (Phase 3a), both built,
+are what the person most wants an agent unable to undo. The floor is built
+after 3a, so a rule can hide and mask from its first day, with the checks
+those phases built.
 
 The same document, signed, is what a paid service would hand out later to
 everyone in a company. The file's shape is chosen for that now so the
@@ -56,17 +65,18 @@ Success:
 
 | Question | Decision |
 |---|---|
-| Where | One fixed path per system, never moved by a variable: `/etc/tabletist/managed.toml` on Linux, `/Library/Application Support/Tabletist/managed.toml` on macOS, `%ProgramData%\Tabletist\managed.toml` on Windows, the folder asked of the system (`FOLDERID_ProgramData`), never taken from the variable. That call is unsafe code, so it lives in a small crate of its own, as `tabletist-appkit` does for macOS. |
+| Where | One fixed path per system, never moved by a variable: `/etc/tabletist/managed.toml` on Linux, `/Library/Application Support/Tabletist/managed.toml` on macOS, `%ProgramData%\Tabletist\managed.toml` on Windows, the folder asked of the system (`SHGetKnownFolderPath` with `FOLDERID_ProgramData`), never taken from the variable. That call is unsafe code, so it lives in a small crate of its own, as `tabletist-appkit` does for macOS. |
 | What it is | A floor. Each limit is combined with the person's setting so the stricter wins. Nothing in the person's files can loosen it. |
 | Matching | A rule names connections by what they reach (driver, host, port, database, SQLite path), with `*` globs, not by `id`. Connection ids are random and differ on each machine, and a duplicated connection must still match. |
 | Several rules | Every rule that matches a connection applies. The result is the same in any order. |
 | Ownership | Limits always apply, whoever owns the file: a floor written by anyone can only restrict. The app calls the policy **locked** only when the file and its folder can be changed by an administrator alone. Anything the file *grants* (Phase 2's connections, Phase 3's enrollment) is used only from a locked file. |
 | Unreadable file | Read strictly, like `connections.toml`. A file that is there but cannot be read, or fails its version check, fails closed (see Failure). |
-| Not yet enforceable | `hidden` and `masked` are accepted from version 1. Until Phase 1c (hidden) or Phase 3a (masked) ships, a connection a rule hides or masks something on is Off for agents, and the editor says why. |
-| Held changes | `agents_shown.json` and its check stay as they are, on the person's files. The managed floor applies after that, to what the check lets through. A change to the managed file applies at once in both directions: an administrator wrote it. |
+| Tables and columns | A rule's `hidden`, `visible_only` and `masked` entries are names written as the person's are (`customers`, `sales.customers`, `orders.email`), read by the checks 1c and 3a built. No patterns: a pattern matching nothing cannot be told from a renamed table. |
+| Stale entries | A rule's `hidden` or `masked` entry that names nothing in a database it matches closes that connection to agents, as the person's does (MCP plan C.3). A `visible_only` entry that names nothing hides more and stops nothing. |
+| Held changes | `agents_shown.json` and its check stay as they are, on the person's files. The managed floor applies after that, to what the check lets through. A change to the managed file that lets agents do less applies at once. One that lets them do more applies at once from a locked file, and is held, like a change to the person's files, from one that is not. |
 | Reload | Watched while the app runs, like `settings.toml`, when its folder exists. A file that appears in a folder created later applies at the next start. |
 | `--demo` and tests | `AppDirs::at` puts the policy file under its root, so the demo and tests never read the machine's file. |
-| Dependencies | Nothing new is built. `toml` with `serde` is already a dependency, and the Windows folder call can use the `windows` crate already in `Cargo.lock`. Ed25519 for Phase 3 is `ed25519-dalek` 3.0.0, already in `Cargo.lock` through russh. |
+| Dependencies | Nothing new is built. `toml` with `serde` is already a dependency, and the Windows folder call can use `windows-sys` 0.59 with `Win32_UI_Shell` and `Win32_System_Com`, which `dirs-sys` (under `directories`) already builds. Ed25519 for Phase 3 is `ed25519-dalek` 3.0.0, already in `Cargo.lock` through russh. |
 
 Rejected:
 
@@ -94,7 +104,7 @@ version = 1
 # The agent server, on this machine.
 [agents]
 allowed = true           # false: the server cannot be turned on
-unmatched = "off"        # "off": agents are Off on a connection no rule matches
+unmatched = "off"        # the default once there is a rule: Off where no rule matches
 log_days_min = 90        # the activity log keeps a call at least this long
 
 [[rules]]
@@ -104,8 +114,13 @@ read_only = true
 access_max = "read"
 rows_max = 500
 timeout_max_secs = 10
-hidden = ["customers", "billing.*"]
-masked = ["orders.email", "orders.phone", "*.ssn"]
+hidden = ["customers", "billing.invoices"]
+masked = ["orders.email", "orders.phone"]
+
+[[rules]]
+name = "Analytics replica"
+match = { driver = "postgres", host = "replica.example.com" }
+visible_only = ["books", "authors", "sales.orders"]
 
 [[rules]]
 name = "Local SQLite files"
@@ -117,7 +132,7 @@ access_max = "off"
 |---|---|---|
 | `version` | `1` | Required. A higher version fails closed: an older app cannot know what a newer key forbids |
 | `agents.allowed` | `true`, `false` | `true` |
-| `agents.unmatched` | `"off"`, `"as_set"` | `"as_set"`: no change to connections no rule matches |
+| `agents.unmatched` | `"off"`, `"as_set"` | `"off"` when the file has any rule: a connection no rule matches is Off for agents. `"as_set"` leaves such a connection as the person set it |
 | `agents.log_days_min` | 1 to 3650 | No minimum |
 | `rules[].name` | Text | Required. Shown in the editor and in refusals |
 | `rules[].match` | A table of `driver`, `host`, `port`, `database`, `path`, each optional, `*` globs on text | Required, and not empty. A rule that matches everything is `match = { driver = "*" }`, written out |
@@ -125,8 +140,9 @@ access_max = "off"
 | `rules[].access_max` | `"off"`, `"read"` (and `"read_and_write"` once Phase 2 of the MCP plan has it) | No ceiling |
 | `rules[].rows_max` | 1 to 5000 | No ceiling |
 | `rules[].timeout_max_secs` | 1 to 60 | No ceiling |
-| `rules[].hidden` | Table names, `schema.table` or a bare `table` (every schema, as B.3 has it), `*` globs | Nothing hidden |
-| `rules[].masked` | `table.column` or `schema.table.column`, `*` globs | Nothing masked |
+| `rules[].hidden` | Table names, `schema.table` or a bare `table` (every schema, as B.3 has it). Agents may read every other table ("All except") | Nothing hidden |
+| `rules[].visible_only` | Table names, as `hidden`. Agents may read these and no other ("Only"). Not beside `hidden` in one rule | Every table |
+| `rules[].masked` | `table.column` or `schema.table.column`, as the person's masked columns are written | Nothing masked |
 
 A key the app does not know is an error, as in `connections.toml`.
 
@@ -147,8 +163,11 @@ closed rather than ignoring a grant it cannot apply.
 
 A person can point a connection at the same server by another name: an IP
 address, `localhost` and a port forwarded by hand. A rule cannot see that.
-`agents.unmatched = "off"` is the answer: then a connection that escapes
-every rule is Off for agents, and evading a rule gains nothing.
+`agents.unmatched = "off"` is the answer, and the default once the file has
+a rule: a connection that escapes every rule is Off for agents, so evading
+a rule gains nothing. The held-change check cannot do this instead (MCP
+plan C.2): the program that changes the host can change
+`agents_shown.json` too.
 
 ### Combining with the person's settings
 
@@ -156,11 +175,12 @@ For each connection, the effective setting is:
 
 | Setting | Effective |
 |---|---|
-| Read-only | Read-only if the person's setting or any matching rule says so |
-| Agent access | The lowest of the person's access and each matching rule's `access_max`. Off when `agents.allowed` is `false`, or when no rule matches and `unmatched = "off"`, or when a rule hides or masks something the app cannot yet enforce |
+| Read-only | Read-only if the person's setting or any matching rule says so. This is the person's own sessions (`Workspace::new`, `App::send_connect`): an agent's session is read-only whatever the box says |
+| Agent access | The lowest of the person's access and each matching rule's `access_max`. Off when `agents.allowed` is `false`, or when no rule matches and `unmatched` is `"off"` |
 | Rows, timeout | The lowest of the person's value and each rule's ceiling |
-| A table | Visible to agents only if the person's Tables setting and every matching rule's `hidden` let it be seen |
+| A table | Visible to agents only if the person's Tables setting and every matching rule (its `hidden` or its `visible_only`) let it be seen |
 | A column | Masked if the person or any matching rule masks it |
+| A stale entry | A `hidden` or `masked` entry, the person's or a rule's, that names nothing in the database closes the connection to agents, as MCP plan C.3 has it. A rule may match many databases, and each must have what it names: an administrator whose databases differ writes a rule for each shape, or uses `visible_only` |
 | The server | Can be turned on only when `agents.allowed` is `true` |
 | Log retention | The larger of the person's `mcp.log_days` and `agents.log_days_min` |
 
@@ -186,6 +206,25 @@ Locked means only an administrator can change or replace the file:
 A file that is not locked still applies as a floor. The editor and Settings
 › Agents say that it can be changed without administrator rights, so the
 person does not take it for more than it is.
+
+### Changes to the file
+
+- **Agents may do less**: applied at once, locked or not.
+- **Agents may do more** (a rule removed, the server allowed, access
+  raised, a table no longer hidden, a column unmasked): applied at once
+  from a locked file, since only an administrator could have made it.
+  From a file that is not locked, held like a change to the person's files
+  (MCP plan C.2), with the same bar. **Keep** takes it. **Put back** keeps
+  the policy as it was last shown, since the app cannot write the file,
+  until the file says that again or the person keeps the change.
+- **Rows and timeouts** are not held, from either file: the check of the
+  person's files does not compare them (`agents_shown.rs`), so a raised
+  ceiling is taken at once, as a raise of the person's own is.
+
+What was last shown of the policy is kept in `agents_shown.json`, in the
+state folder, beside what was shown of the person's settings. Editing that
+file can only make a change from an unlocked policy look already shown,
+which is what an unlocked file already allows.
 
 ### Failure
 
@@ -216,9 +255,15 @@ copy).
   menu.
 - **The read-only box** of a connection a rule makes read-only is checked and
   locked.
-- **Refusals to agents.** A refusal caused by the policy says so (for example
-  "customers is hidden by your administrator's policy") so the agent does not
-  ask the person to change a setting they cannot change.
+- **The editor's Tables and Masked columns controls** show a rule's entries
+  beside the person's, locked, and mark a rule's stale entry as the person's
+  is marked, with "Ask your administrator" in place of removing it.
+- **Refusals to agents.** A refusal caused by the policy says so, with the
+  same codes and the sentences in MCP plan B.8 ("customers is hidden for
+  agents by your administrator's policy."), so the agent does not ask the
+  person to change a setting they cannot change. `list_connections` gives a
+  rule's entries beside the person's and says which are the
+  administrator's.
 - **Settings and Files** (`docs/_reference/settings-and-files.md`) gains the
   file, its paths, its keys and the failure rules.
 
@@ -227,10 +272,33 @@ copy).
 Each phase is its own plan and pull request.
 
 **1. The floor.** The file, its reader, matching, combining, ownership,
-failure, watching, the locked controls and the reference page. Before Phase
-1c of the MCP plan, `hidden` and `masked` turn agents Off on the
-connections they name. Shippable on its own: an administrator can already
-cap access, rows and timeouts, force read-only and forbid the server.
+failure, watching, the held change from an unlocked file, the locked
+controls and the reference page. Built after Phase 3a of the MCP plan, so
+that hidden tables and masked columns both work in it from the first day.
+The checks take one `Tables` setting (`Connection::run_agent_read`'s
+`tables`, read by `Hidden`), so this phase lets them take several. The
+masked columns are already a list, and the sources' lists are joined.
+
+Phase 1 in five runs (cut on 2026-10-18), each a plan and a pull request:
+
+- **1a. The file and its limits, on Linux and macOS.** The path, the
+  strict reader, matching, the ownership check, failure, and the limits
+  that need no new check: `allowed`, `unmatched`, `access_max`, the rows
+  and timeout ceilings, `log_days_min`, and `read_only` on the person's
+  sessions. The file is read at the start. A rule with `hidden`,
+  `visible_only` or `masked` makes the connections it matches Off for
+  agents until 1b, which is safe and promises nothing. A failure is said in
+  the app's notice, the bar `connections.toml`'s failures use. The editor
+  still shows the person's own values. The reference page says what is
+  built. On Windows nothing is read until 1c.
+- **1b. Tables and columns from rules.** The checks take several `Tables`,
+  refusals and `list_connections` say which entries are the
+  administrator's, and a rule's stale entry closes a connection with its
+  own sentence.
+- **1c. Windows.** The folder asked of the system, and the access check.
+- **1d. Watching, and the held change from a file that is not locked.**
+- **1e. The app's controls**, once the canvas has boards for them: the
+  locked values and their wording, the failure's own bar.
 
 **2. Managed connections.** A locked file's `[[connections]]`, in the same
 shape as `connections.toml`'s, with an `id` the administrator chooses
@@ -264,7 +332,11 @@ exactly as another locked layer of the floor.
   through the person's single sign-on are a later idea, not part of this
   spec.
 - The activity log can be sent to the service for audit. Its design is
-  separate, because it carries statements and their values.
+  separate, because it carries statements and their values, and the MCP
+  plan's E calls the log private to the account.
+- Fetching the bundle is the app's first HTTP request. `rustls` is in
+  `Cargo.lock`, but no HTTP client is, so this phase adds one, unlike
+  Phases 1 and 2, which build nothing new.
 
 Rejected for Phase 3: a privileged helper that fetches the bundle and
 writes `managed.toml` itself. It needs a root service on each system, and
@@ -280,7 +352,13 @@ administrator's: enrollment and anything set by hand.
 - Combining: each row of the table above, several rules, `unmatched`,
   `allowed`, a rule removed giving back the person's values exactly.
 - The held-change check and the floor together: a raise in
-  `connections.toml` that the person keeps is still capped by a rule.
+  `connections.toml` that the person keeps is still capped by a rule. A
+  rule removed from an unlocked file is held, and from a locked one (the
+  verdict injected) is taken at once.
+- Tables and columns: a rule's `hidden`, `visible_only` and `masked` beside
+  the person's, on each driver; a rule's stale `hidden` or `masked` entry
+  closing the connection with the administrator's sentence; a stale
+  `visible_only` entry stopping nothing.
 - Ownership: Unix through files the test creates (owned by the test user,
   so not locked) and the verdict injected for the locked case. Windows: the
   access check type-checked for Windows as the other platform code is, and
@@ -295,10 +373,11 @@ administrator's: enrollment and anything set by hand.
    read-only, not only the matched ones (it cannot tell which those are).
    That is the safe reading, and it also stops a person's work over an
    administrator's typo. Is that right, or should failure only stop agents?
-2. **`unmatched` by default.** Version 1 leaves connections no rule matches
-   as they are unless the file says `unmatched = "off"`. Should `"off"` be
-   the default whenever the file has any rule?
-3. **The name.** `managed.toml`, or `policy.toml`?
-4. **Order against the MCP plan.** Phase 1 here can ship before Phase 1c
-   there. Should it, or should it wait so that `hidden` works on day one
-   instead of turning agents Off?
+2. **The name.** `managed.toml`, or `policy.toml`?
+
+Settled on 2026-10-17:
+
+- **`unmatched` by default.** `"off"` whenever the file has a rule
+  (Matching).
+- **Order against the MCP plan.** After Phase 3a, so that `hidden` and
+  `masked` work from the first day (Phases).
