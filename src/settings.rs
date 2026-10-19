@@ -499,6 +499,65 @@ impl Idle {
     }
 }
 
+/// What a launch opens.
+#[derive(Clone, Debug, Default)]
+pub enum Launch {
+    /// The connection windows open at the last quit (`session.json`).
+    #[default]
+    Restore,
+    /// The saved connections, to choose from.
+    Connections,
+    /// A saved connection, by its id: `conn:<id>`. `name` is what the file
+    /// writes beside it, so a person reading it knows which: it is no part
+    /// of the value, and two of one name are told apart by their ids.
+    Connection {
+        id: crate::connections::ConnectionId,
+        name: String,
+    },
+}
+
+/// By the value alone: a connection's name is the comment beside it.
+impl PartialEq for Launch {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Restore, Self::Restore) | (Self::Connections, Self::Connections) => true,
+            (Self::Connection { id, .. }, Self::Connection { id: other, .. }) => id == other,
+            (Self::Restore | Self::Connections | Self::Connection { .. }, _) => false,
+        }
+    }
+}
+
+impl Eq for Launch {}
+
+impl Launch {
+    /// What a chosen connection's id follows in the file.
+    const CONNECTION: &str = "conn:";
+
+    /// As the file says it.
+    pub fn name(&self) -> String {
+        match self {
+            Self::Restore => "restore".into(),
+            Self::Connections => "connections".into(),
+            Self::Connection { id, .. } => format!("{}{}", Self::CONNECTION, id.0),
+        }
+    }
+
+    /// The value the file's text names: `conn:` names no connection.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "restore" => Some(Self::Restore),
+            "connections" => Some(Self::Connections),
+            _ => name
+                .strip_prefix(Self::CONNECTION)
+                .filter(|id| !id.trim().is_empty())
+                .map(|id| Self::Connection {
+                    id: crate::connections::ConnectionId(id.to_owned()),
+                    name: String::new(),
+                }),
+        }
+    }
+}
+
 /// Everything the user can set. A key the file lacks takes its default and
 /// one this version does not know is ignored, so older and newer files both
 /// load. The serde derive reads the `settings.json` of versions before the
@@ -506,6 +565,14 @@ impl Idle {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// What a launch opens: the windows open at the last quit, the
+    /// saved connections, or one of them. Not in an older version's
+    /// `settings.json`, which had none.
+    #[serde(skip)]
+    pub on_launch: Launch,
+    /// Whether a connection that opens reopens the table tabs its window
+    /// last had, with their sort and filters (`session.json`).
+    pub restore_tabs: bool,
     /// Rows fetched per page in the data grid.
     pub page_size: u32,
     /// Timestamps in grid cells: to the second, or as the server sent them.
@@ -582,6 +649,8 @@ pub struct Settings {
 /// A key of the settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
+    OnLaunch,
+    RestoreTabs,
     PageSize,
     Timestamps,
     Tz,
@@ -609,7 +678,9 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 23] = [
+    pub const ALL: [Key; 25] = [
+        Self::OnLaunch,
+        Self::RestoreTabs,
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -638,6 +709,8 @@ impl Key {
     /// The key's table and its name there.
     pub fn path(self) -> (&'static str, &'static str) {
         match self {
+            Self::OnLaunch => ("startup", "on_launch"),
+            Self::RestoreTabs => ("startup", "restore_tabs"),
             Self::PageSize => ("data", "page_size"),
             Self::Timestamps => ("data", "timestamps"),
             Self::Tz => ("data", "tz"),
@@ -665,9 +738,11 @@ impl Key {
     }
 
     /// What the file says beside the key: the values of a closed set, or
-    /// what a value that reads oddly means.
+    /// what a value that reads oddly means. On launch's depends on its
+    /// value: see [`Settings::note`].
     fn note(self) -> Option<&'static str> {
         match self {
+            Self::OnLaunch => Some("restore | connections | \"conn:<id>\""),
             Self::Timestamps => Some("second | full"),
             Self::Tz => Some("system | utc | \"Area/City\""),
             Self::IdleDisconnect => Some("never | 5m | 15m | 30m | 1h | 4h"),
@@ -697,6 +772,10 @@ impl Key {
 /// An option the Settings window shows: one row of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptionId {
+    /// What a launch opens: `startup.on_launch`.
+    OnLaunch,
+    /// Whether a connection reopens its tables: `startup.restore_tabs`.
+    RestoreTabs,
     PageSize,
     Timestamps,
     /// The zone a `timestamptz` is shown in: `data.tz`.
@@ -734,7 +813,9 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's and then
     /// the Agents pane's.
-    pub const ALL: [OptionId; 20] = [
+    pub const ALL: [OptionId; 22] = [
+        Self::OnLaunch,
+        Self::RestoreTabs,
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -757,7 +838,9 @@ impl OptionId {
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 8] = [
+    pub const GENERAL: [OptionId; 10] = [
+        Self::OnLaunch,
+        Self::RestoreTabs,
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
@@ -767,7 +850,8 @@ impl OptionId {
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
-    /// The General pane's sections: Data, then Safety.
+    /// The General pane's sections, in order: Startup, Data and Safety.
+    pub const STARTUP: [OptionId; 2] = [Self::OnLaunch, Self::RestoreTabs];
     pub const DATA: [OptionId; 5] = [
         Self::PageSize,
         Self::Timestamps,
@@ -814,6 +898,8 @@ impl OptionId {
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
         match self {
+            Self::OnLaunch => Key::OnLaunch,
+            Self::RestoreTabs => Key::RestoreTabs,
             Self::PageSize => Key::PageSize,
             Self::Timestamps => Key::Timestamps,
             Self::Tz => Key::Tz,
@@ -846,6 +932,8 @@ impl OptionId {
 /// An option with a value: what a key, a click or a reset sets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionValue {
+    OnLaunch(Launch),
+    RestoreTabs(bool),
     PageSize(u32),
     Timestamps(Timestamps),
     Tz(Zone),
@@ -875,6 +963,8 @@ pub enum OptionValue {
 impl OptionValue {
     pub fn option(&self) -> OptionId {
         match self {
+            Self::OnLaunch(_) => OptionId::OnLaunch,
+            Self::RestoreTabs(_) => OptionId::RestoreTabs,
             Self::PageSize(_) => OptionId::PageSize,
             Self::Timestamps(_) => OptionId::Timestamps,
             Self::Tz(_) => OptionId::Tz,
@@ -901,6 +991,8 @@ impl OptionValue {
     /// Puts the value in `settings`.
     pub fn set(&self, settings: &mut Settings) {
         match self.clone() {
+            Self::OnLaunch(launch) => settings.on_launch = launch,
+            Self::RestoreTabs(on) => settings.restore_tabs = on,
             Self::PageSize(size) => settings.page_size = size,
             Self::Timestamps(choice) => settings.timestamps = choice,
             Self::Tz(zone) => settings.tz = zone,
@@ -1319,6 +1411,15 @@ fn line_start(text: &str, offset: usize) -> usize {
     text[..offset].rfind('\n').map_or(0, |at| at + 1)
 }
 
+/// The comment after `offset` on its line, without its `#`: empty where
+/// there is none.
+fn comment_after(text: &str, offset: usize) -> String {
+    let rest = &text[offset..line_end(text, offset)];
+    rest.trim_start_matches([' ', '\t'])
+        .strip_prefix('#')
+        .map_or_else(String::new, |comment| comment.trim().to_owned())
+}
+
 /// Where the line after the one `offset` is on begins: past its break, or
 /// the end of the text.
 fn line_end(text: &str, offset: usize) -> usize {
@@ -1407,6 +1508,8 @@ impl Settings {
     /// What `option` is set to.
     pub fn value(&self, option: OptionId) -> OptionValue {
         match option {
+            OptionId::OnLaunch => OptionValue::OnLaunch(self.on_launch.clone()),
+            OptionId::RestoreTabs => OptionValue::RestoreTabs(self.restore_tabs),
             OptionId::PageSize => OptionValue::PageSize(self.page_size),
             OptionId::Timestamps => OptionValue::Timestamps(self.timestamps),
             OptionId::Tz => OptionValue::Tz(self.tz.clone()),
@@ -1482,6 +1585,12 @@ impl Settings {
             OptionId::ValueTags => OptionValue::ValueTags(forward),
             OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
+            OptionId::RestoreTabs => OptionValue::RestoreTabs(forward),
+            // Without the connections to step through: the two that are
+            // not one. The screen steps with them (`stepped_launch`).
+            OptionId::OnLaunch => {
+                self.stepped_launch(&[Launch::Restore, Launch::Connections], forward)
+            }
             // Never is the first: the shortest wait is one to the right.
             OptionId::IdleDisconnect => {
                 let at = Idle::ALL
@@ -1575,10 +1684,74 @@ impl Settings {
         OptionValue::Tz(zones.swap_remove(to))
     }
 
+    /// What a launch opens one step from this, among `choices`: Restore,
+    /// Show Connections, then each saved connection. A connection that is
+    /// not among them steps as Show Connections does.
+    pub fn stepped_launch(&self, choices: &[Launch], forward: bool) -> OptionValue {
+        let at = choices
+            .iter()
+            .position(|choice| *choice == self.on_launch)
+            .unwrap_or(1)
+            .min(choices.len().saturating_sub(1));
+        let to = if forward {
+            (at + 1).min(choices.len().saturating_sub(1))
+        } else {
+            at.saturating_sub(1)
+        };
+        choices.get(to).cloned().map_or(
+            OptionValue::OnLaunch(self.on_launch.clone()),
+            OptionValue::OnLaunch,
+        )
+    }
+
+    /// What the file writes beside `key`: for a chosen connection to open
+    /// at launch, its name on one line, and nothing where none is known.
+    fn note(&self, key: Key) -> Option<std::borrow::Cow<'static, str>> {
+        match (key, &self.on_launch) {
+            (Key::OnLaunch, Launch::Connection { name, .. }) => {
+                // A name is the person's text: a break in it would start
+                // a line of the file.
+                let name: String = name
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                let name = name.trim();
+                (!name.is_empty()).then(|| name.to_owned().into())
+            }
+            _ => key.note().map(Into::into),
+        }
+    }
+
+    /// The edit that sets On launch's value, at `span` of `working`, to
+    /// `literal`: with its note beside it, in place of the comment there,
+    /// where the value ends its line. In an inline table, where more of
+    /// the table follows, the value alone.
+    fn launch_edit(
+        &self,
+        working: &str,
+        span: std::ops::Range<usize>,
+        literal: String,
+    ) -> (std::ops::Range<usize>, String) {
+        let end = working[span.end..]
+            .find(['\r', '\n'])
+            .map_or(working.len(), |at| span.end + at);
+        let rest = working[span.end..end].trim_start_matches([' ', '\t']);
+        if !(rest.is_empty() || rest.starts_with('#')) {
+            return (span, literal);
+        }
+        let with = match self.note(Key::OnLaunch) {
+            Some(note) => format!("{literal}  # {note}"),
+            None => literal,
+        };
+        (span.start..end, with)
+    }
+
     /// The other value of an option that has two; `None` for one with more.
     pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
         match option {
-            OptionId::PageSize | OptionId::Tz | OptionId::IdleDisconnect => None,
+            OptionId::PageSize | OptionId::Tz | OptionId::IdleDisconnect | OptionId::OnLaunch => {
+                None
+            }
             OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
                 Timestamps::Second => Timestamps::Full,
                 Timestamps::Full => Timestamps::Second,
@@ -1593,6 +1766,7 @@ impl Settings {
             OptionId::ConfirmCloseEdits => {
                 Some(OptionValue::ConfirmCloseEdits(!self.confirm_close_edits))
             }
+            OptionId::RestoreTabs => Some(OptionValue::RestoreTabs(!self.restore_tabs)),
             OptionId::AgentsOn => Some(OptionValue::AgentsOn(!self.mcp_enabled)),
             OptionId::LogDays => None,
             OptionId::AgentsNotify => Some(OptionValue::AgentsNotify(!self.mcp_notify)),
@@ -1621,6 +1795,8 @@ impl Settings {
     /// out: a theme that is not set, and stripes left to the look.
     fn written(&self, key: Key) -> Option<String> {
         Some(match key {
+            Key::OnLaunch => toml_string(&self.on_launch.name()),
+            Key::RestoreTabs => self.restore_tabs.to_string(),
             Key::PageSize => self.page_size.to_string(),
             Key::Timestamps => toml_string(self.timestamps.name()),
             Key::Tz => toml_string(self.tz.name()),
@@ -1676,7 +1852,9 @@ impl Settings {
     /// tables this version does not know, and the lines the reader ignored
     /// all stay. A key at its default is taken out, with its line, and a
     /// table left with nothing in it goes too. A key the file has gets its
-    /// new value in place, the comment beside it kept; one it lacks goes at
+    /// new value in place, the comment beside it kept (On launch's comment is
+    /// the app's, naming the connection or the values, and is replaced: see
+    /// `launch_edit`); one it lacks goes at
     /// the end of its table, with its note, and a table it lacks at the end
     /// of the file. An empty text starts as the header line.
     ///
@@ -1710,7 +1888,7 @@ impl Settings {
         let mut emptied: Vec<&str> = Vec::new();
         let line = |key: Key, literal: &str| {
             let name = key.path().1;
-            match key.note() {
+            match self.note(key) {
                 Some(note) => format!("{name} = {literal}  # {note}{newline}"),
                 None => format!("{name} = {literal}{newline}"),
             }
@@ -1750,12 +1928,20 @@ impl Settings {
                     .iter()
                     .all(|(_, item)| is_subtable(&working, item.get_ref(), item.span()));
             match (items.get_key_value(name), literal) {
+                // The comment beside On launch is the app's: it names the
+                // connection, or the values there are.
+                (Some((_, value)), Some(literal)) if key == Key::OnLaunch => {
+                    edits.push(self.launch_edit(&working, value.span(), literal));
+                }
                 (Some((_, value)), Some(literal)) => edits.push((value.span(), literal)),
                 // The default in place: taken out, the rejected line of
                 // the same key would be the one read.
                 (Some((_, value)), None) if shadowed.contains(&key) => {
                     if let Some(default) = Settings::default().written(key) {
-                        edits.push((value.span(), default));
+                        edits.push(match key {
+                            Key::OnLaunch => self.launch_edit(&working, value.span(), default),
+                            _ => (value.span(), default),
+                        });
                     }
                 }
                 (Some((found, value)), None) => {
@@ -1866,6 +2052,10 @@ impl Settings {
             float.parse::<f64>().ok()
         });
         match key {
+            Key::OnLaunch => text
+                .and_then(Launch::from_name)
+                .map(|launch| self.on_launch = launch),
+            Key::RestoreTabs => flag.map(|flag| self.restore_tabs = flag),
             Key::PageSize => number.map(|number| self.page_size = number),
             Key::Timestamps => text
                 .and_then(Timestamps::from_name)
@@ -1987,6 +2177,16 @@ impl Settings {
             // in `working` as in `text`.
             let line = line_of(&working, found.span().start);
             if settings.take(key, value.get_ref()) {
+                // A chosen connection's name is the comment beside it.
+                if let Launch::Connection { name, .. } = &mut settings.on_launch
+                    && key == Key::OnLaunch
+                {
+                    let comment = comment_after(&working, value.span().end);
+                    // The note of the other values names no connection.
+                    if Some(comment.as_str()) != Key::OnLaunch.note() {
+                        *name = comment;
+                    }
+                }
                 lines.push((key, line));
                 kept.retain(|other| *other != key);
             } else {
@@ -2011,6 +2211,8 @@ impl Settings {
     /// Takes `key`'s value from `other`.
     fn keep(&mut self, key: Key, other: &Settings) {
         match key {
+            Key::OnLaunch => self.on_launch = other.on_launch.clone(),
+            Key::RestoreTabs => self.restore_tabs = other.restore_tabs,
             Key::PageSize => self.page_size = other.page_size,
             Key::Timestamps => self.timestamps = other.timestamps,
             Key::Tz => self.tz = other.tz.clone(),
@@ -2079,6 +2281,8 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            on_launch: Launch::Restore,
+            restore_tabs: true,
             page_size: Self::DEFAULT_PAGE_SIZE,
             timestamps: Timestamps::Second,
             tz: Zone::System,
@@ -2167,6 +2371,187 @@ mod tests {
         assert!(!loaded.settings.confirm_close_edits);
     }
 
+    fn chosen(id: &str, name: &str) -> Launch {
+        Launch::Connection {
+            id: crate::connections::ConnectionId(id.into()),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn a_launch_is_restore_connections_or_a_connection_by_its_id() {
+        for launch in [Launch::Restore, Launch::Connections, chosen("6a0c", "")] {
+            assert_eq!(Launch::from_name(&launch.name()), Some(launch));
+        }
+        assert_eq!(chosen("6a0c", "").name(), "conn:6a0c");
+        for wrong in ["conn:", "conn:  ", "Bookshop", "Restore"] {
+            assert_eq!(Launch::from_name(wrong), None, "{wrong}");
+        }
+        // The name is the comment beside the id, no part of the value.
+        assert_eq!(chosen("6a0c", "Bookshop"), chosen("6a0c", "Bookshop copy"));
+        assert_ne!(chosen("6a0c", "Bookshop"), chosen("9f1e", "Bookshop"));
+    }
+
+    #[test]
+    fn a_launch_out_of_the_set_is_ignored_and_keeps_the_last_good_one() {
+        let last = Settings {
+            on_launch: Launch::Connections,
+            ..Settings::default()
+        };
+        let text = "[startup]\non_launch = \"conn:\"\nrestore_tabs = false\n";
+        let loaded = Settings::from_toml_over(text, &last);
+        assert_eq!(loaded.invalid, [2]);
+        assert_eq!(loaded.settings.on_launch, Launch::Connections);
+        assert!(!loaded.settings.restore_tabs);
+    }
+
+    #[test]
+    fn a_chosen_connection_is_written_with_its_name_beside_it_and_read_back_so() {
+        let text = written("", |settings| {
+            settings.on_launch = chosen("6a0c", "Bookshop");
+        });
+        assert_eq!(
+            text,
+            format!("{HEADER}[startup]\non_launch = \"conn:6a0c\"  # Bookshop\n")
+        );
+        match Settings::from_toml(&text).settings.on_launch {
+            Launch::Connection { name, .. } => assert_eq!(name, "Bookshop"),
+            other => panic!("{other:?}"),
+        }
+        // Another one: the comment names it.
+        let text = written(&text, |settings| {
+            settings.on_launch = chosen("9f1e", "Bookshop preview");
+        });
+        assert!(
+            text.ends_with("on_launch = \"conn:9f1e\"  # Bookshop preview\n"),
+            "{text}"
+        );
+        // Connections: the comment says the values there are.
+        let text = written(&text, |settings| {
+            settings.on_launch = Launch::Connections;
+        });
+        assert!(
+            text.ends_with(
+                "on_launch = \"connections\"  # restore | connections | \"conn:<id>\"\n"
+            ),
+            "{text}"
+        );
+        // And Restore, the default, takes the line out.
+        let text = written(&text, |settings| settings.on_launch = Launch::Restore);
+        assert_eq!(text, HEADER);
+    }
+
+    #[test]
+    fn a_chosen_connection_replaces_the_comment_of_a_crlf_line_and_keeps_its_endings() {
+        let text = written(
+            "[startup]\r\non_launch = \"connections\"  # mine\r\n",
+            |settings| {
+                settings.on_launch = chosen("6a0c", "Bookshop");
+            },
+        );
+        assert_eq!(
+            text,
+            "[startup]\r\non_launch = \"conn:6a0c\"  # Bookshop\r\n"
+        );
+        match Settings::from_toml(&text).settings.on_launch {
+            Launch::Connection { name, .. } => assert_eq!(name, "Bookshop"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_chosen_connection_in_an_inline_table_is_set_in_place_and_the_table_kept() {
+        let text = "startup = { on_launch = \"connections\", restore_tabs = false }\n";
+        let text = written(text, |settings| {
+            settings.on_launch = chosen("6a0c", "Bookshop");
+        });
+        let loaded = Settings::from_toml(&text);
+        assert!(loaded.invalid.is_empty(), "{text}");
+        assert_eq!(loaded.settings.on_launch, chosen("6a0c", ""));
+        assert!(!loaded.settings.restore_tabs, "{text}");
+    }
+
+    #[test]
+    fn a_name_with_a_line_break_is_written_on_one_line() {
+        let settings = Settings {
+            on_launch: chosen("6a0c", "Bookshop\n[data]\npage_size = 5"),
+            ..Settings::default()
+        };
+        let text = settings.to_toml();
+        let loaded = Settings::from_toml(&text);
+        assert_eq!(
+            loaded.settings.page_size,
+            Settings::DEFAULT_PAGE_SIZE,
+            "{text}"
+        );
+        assert!(
+            text.contains("on_launch = \"conn:6a0c\"  # Bookshop [data] page_size = 5\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_launch_set_back_to_restore_over_a_rejected_twin_gets_the_note_of_the_values() {
+        let text = "[startup]\non_launch = \"conn:6a0c\"  # Bookshop\non_launch = 5\n";
+        let text = written(text, |settings| settings.on_launch = Launch::Restore);
+        assert!(
+            text.contains("on_launch = \"restore\"  # restore | connections | \"conn:<id>\"\n"),
+            "{text}"
+        );
+        // That note names no connection when a value is written by hand
+        // in front of it.
+        let text =
+            "[startup]\non_launch = \"conn:6a0c\"  # restore | connections | \"conn:<id>\"\n";
+        match Settings::from_toml(text).settings.on_launch {
+            Launch::Connection { name, .. } => assert_eq!(name, ""),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_launch_steps_through_restore_connections_and_each_connection() {
+        let choices = [
+            Launch::Restore,
+            Launch::Connections,
+            chosen("6a0c", "Bookshop"),
+            chosen("9f1e", "Bookshop"),
+        ];
+        let step = |launch: Launch, forward: bool| {
+            let settings = Settings {
+                on_launch: launch,
+                ..Settings::default()
+            };
+            settings.stepped_launch(&choices, forward)
+        };
+        assert_eq!(
+            step(Launch::Restore, true),
+            OptionValue::OnLaunch(Launch::Connections)
+        );
+        assert_eq!(
+            step(Launch::Connections, true),
+            OptionValue::OnLaunch(chosen("6a0c", ""))
+        );
+        assert_eq!(
+            step(chosen("9f1e", ""), true),
+            OptionValue::OnLaunch(chosen("9f1e", ""))
+        );
+        assert_eq!(
+            step(Launch::Restore, false),
+            OptionValue::OnLaunch(Launch::Restore)
+        );
+        // A connection that is not saved steps as Connections does.
+        assert_eq!(
+            step(chosen("gone", ""), false),
+            OptionValue::OnLaunch(Launch::Restore)
+        );
+        // Without the connections, the two others.
+        assert_eq!(
+            Settings::default().stepped(OptionId::OnLaunch, true),
+            OptionValue::OnLaunch(Launch::Connections)
+        );
+        assert_eq!(Settings::default().flipped(OptionId::OnLaunch), None);
+    }
+
     #[test]
     fn the_defaults_are_written_as_the_header_alone() {
         assert_eq!(Settings::default().to_toml(), HEADER);
@@ -2175,6 +2560,11 @@ mod tests {
     /// Every key away from its default.
     fn all_set() -> Settings {
         Settings {
+            on_launch: Launch::Connection {
+                id: crate::connections::ConnectionId("6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11".into()),
+                name: "Bookshop".into(),
+            },
+            restore_tabs: false,
             page_size: 500,
             timestamps: Timestamps::Full,
             tz: Zone::Named("America/New_York".into()),
@@ -2214,6 +2604,10 @@ mod tests {
             format!(
                 "\
 # written by tabletist, safe to edit by hand
+[startup]
+on_launch = \"conn:6a0c1f0e-5a52-4b7b-9c56-3f0c8f2f7a11\"  # Bookshop
+restore_tabs = false
+
 [data]
 page_size = 500
 timestamps = \"full\"  # second | full
@@ -2313,29 +2707,31 @@ bar = \"label\"  # tint | label
         assert_eq!(
             loaded.lines,
             vec![
-                (Key::PageSize, 3),
-                (Key::Timestamps, 4),
-                (Key::Tz, 5),
-                (Key::GroupDigits, 6),
-                (Key::ValueTags, 7),
-                (Key::ProductionReadOnly, 10),
-                (Key::ConfirmCloseEdits, 11),
-                (Key::IdleDisconnect, 12),
-                (Key::ShowSystemSchemas, 15),
-                (Key::SqlLimit, 18),
-                (Key::SqlTimeoutSecs, 19),
-                (Key::McpEnabled, 22),
-                (Key::McpLogDays, 23),
-                (Key::McpNotify, 24),
-                (Key::Theme, 27),
-                (Key::InterfaceSize, 28),
-                (Key::Font, 29),
-                (Key::FontSize, 30),
-                (Key::RowHeight, 33),
-                (Key::Zebra, 34),
-                (Key::ColumnTypes, 35),
-                (Key::TableList, 36),
-                (Key::EnvBar, 39),
+                (Key::OnLaunch, 3),
+                (Key::RestoreTabs, 4),
+                (Key::PageSize, 7),
+                (Key::Timestamps, 8),
+                (Key::Tz, 9),
+                (Key::GroupDigits, 10),
+                (Key::ValueTags, 11),
+                (Key::ProductionReadOnly, 14),
+                (Key::ConfirmCloseEdits, 15),
+                (Key::IdleDisconnect, 16),
+                (Key::ShowSystemSchemas, 19),
+                (Key::SqlLimit, 22),
+                (Key::SqlTimeoutSecs, 23),
+                (Key::McpEnabled, 26),
+                (Key::McpLogDays, 27),
+                (Key::McpNotify, 28),
+                (Key::Theme, 31),
+                (Key::InterfaceSize, 32),
+                (Key::Font, 33),
+                (Key::FontSize, 34),
+                (Key::RowHeight, 37),
+                (Key::Zebra, 38),
+                (Key::ColumnTypes, 39),
+                (Key::TableList, 40),
+                (Key::EnvBar, 43),
             ]
         );
     }
@@ -3346,6 +3742,8 @@ bar = \"label\"  # tint | label
         assert_eq!(
             keys,
             vec![
+                Key::OnLaunch,
+                Key::RestoreTabs,
                 Key::PageSize,
                 Key::Timestamps,
                 Key::Tz,
@@ -3377,7 +3775,12 @@ bar = \"label\"  # tint | label
         .concat();
         // The sections of the General and Appearance panes hold their
         // options, in order.
-        let sections = [&OptionId::DATA[..], &OptionId::SAFETY[..]].concat();
+        let sections = [
+            &OptionId::STARTUP[..],
+            &OptionId::DATA[..],
+            &OptionId::SAFETY[..],
+        ]
+        .concat();
         assert_eq!(sections, OptionId::GENERAL);
         // The sheet's Text section has the size beside the font, on its
         // row; the terminal look's has a row for each, and no interface

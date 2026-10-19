@@ -12,6 +12,8 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 
 | Option | Choices | Default |
 | --- | --- | --- |
+| **On launch** | Restore last session, Show Connections, or a saved connection, each listed with its server and database. Restore opens again the connection windows open when Tabletist last quit, in their order, each connecting and asking for what it needs; with nothing kept, it shows Connections. If the chosen connection was deleted outside Tabletist, Tabletist shows Connections, says so once, and sets this back to Show Connections; deleting it in Tabletist sets it back at once. `--demo` starts as it always does | Restore last session |
+| **Restore tabs and filters** | On or off. On, a connection that opens, at launch or from Connections, opens again the table and view tabs its window had when it last closed on that database (or SQLite file), each with its sort and filters; the one in front loads, and each other when you first show it. SQL editors are not opened again. Off, a connection opens with its tables in the sidebar and no tab | On |
 | **Rows per page** | 100, 500, 1,000, 5,000 or 10,000. A table takes a new size when it next loads, not while you page through it | 1,000 |
 | **Timestamps** | To the second, or full precision | To the second |
 | **Time zone for timestamptz** | System, UTC or any zone. A PostgreSQL `timestamptz` is shown in this zone, a copy gives the value as the server sent it, and a value you type without an offset is sent with this zone's. In the Omarchy look `h`/`l` choose System, UTC or the last zone the file named; any other zone is set in the file | System |
@@ -68,6 +70,10 @@ is every key at its default (`group_digits`, `theme`, `font`, `font_size`
 and `zebra` have none of their own: they follow the look):
 
 ```toml
+[startup]
+on_launch = "restore"
+restore_tabs = true
+
 [data]
 page_size = 1000
 timestamps = "second"
@@ -105,6 +111,8 @@ bar = "tint"
 
 | Key | Values | Default |
 | --- | --- | --- |
+| `startup.on_launch` | `"restore"`, `"connections"` or `"conn:<id>"`, a saved connection's `id` from `connections.toml`. Tabletist writes the connection's name in a comment beside it, `on_launch = "conn:6a0c…"  # Bookshop`, and replaces whatever comment is beside it each time it sets the key, and again when that connection is renamed | `"restore"` |
+| `startup.restore_tabs` | `true` or `false`. Whether a connection opens again the table tabs, sorts and filters its window last had, kept in `session.json` | `true` |
 | `data.page_size` | 10 to 10000. A table takes a new size when it next loads (opened, refreshed, sorted, filtered or reconnected), not while you page through it | `1000` |
 | `data.timestamps` | `"second"` or `"full"` | `"second"` |
 | `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read. A PostgreSQL `timestamptz` value is shown and edited in this zone, a copy gives it as the server sent it, and one you type without an offset is sent with this zone's | `"system"` |
@@ -141,7 +149,8 @@ and its key keeps its last good value: the one it had before the edit, or
 its default when Tabletist starts. When you change an option in the app,
 only its key is written: set back to its default, the key is taken out of
 the file, and otherwise it gets the new value where it is, or goes at the
-end of its table. Your comments, the order of your keys, the lines that
+end of its table. Your comments (but not the one beside `startup.on_launch`, which is
+Tabletist's), the order of your keys, the lines that
 could not be read and keys Tabletist does not know all stay as you wrote
 them. The one exception is a table written inline (`data = { … }`) or
 with dotted keys (`data.page_size = 500`): a key added to it or taken out
@@ -174,6 +183,7 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `last_used.json` | State | When each saved connection last connected |
 | `table_lists.json` | State | How each saved connection lists its tables, where you switched it in the sidebar |
 | `connections.moved` | State | A note that your connections are kept in `connections.toml` |
+| `session.json` | State | The connection windows open when Tabletist last quit, and each saved connection's table tabs, with their sort and filters, as its window last had them. Written at quit, when a connection's window closes or gets another connection, when a database switch drops its tables, and when a connection is deleted. Not written while `connections.toml` cannot be read. A connection deleted from `connections.toml` by hand is taken out of it at the next write |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
