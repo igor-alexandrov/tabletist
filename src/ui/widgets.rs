@@ -1007,14 +1007,53 @@ pub enum Segment<'a> {
     },
 }
 
+/// What a screen reader hears of a [`segmented`] control as a whole: the
+/// radio group's name, and what the control is for, which each segment
+/// carries as its description (a screen reader reads the help of the one
+/// it is on, not its group's).
+#[derive(Clone, Copy)]
+pub struct Group<'a> {
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+}
+
 /// A segmented control; returns the index of a clicked segment. macOS: a
 /// sunken track with the chosen segment raised in white; the terminal
 /// look: a bordered row with the chosen segment in the selection colour.
+/// To a screen reader its segments are radio buttons, the chosen one
+/// selected, in a radio group named by `group` where there is one.
 pub fn segmented(
     ui: &mut Ui,
     segments: &[Segment<'_>],
     selected: usize,
     segment: egui::Vec2,
+    group: Option<Group<'_>>,
+    look: &Look,
+    palette: &Palette,
+) -> Option<usize> {
+    // In a Ui of its own, whose node is the segments' parent in the
+    // accessibility tree. It takes the space the control takes, so the
+    // layout around it is as without it.
+    let builder = egui::UiBuilder::new().id_salt("segmented");
+    ui.scope_builder(builder, |ui| {
+        if let Some(group) = group {
+            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                node.set_role(egui::accesskit::Role::RadioGroup);
+                node.set_label(group.name);
+            });
+        }
+        let description = group.and_then(|group| group.description);
+        segments_in(ui, segments, selected, segment, description, look, palette)
+    })
+    .inner
+}
+
+fn segments_in(
+    ui: &mut Ui,
+    segments: &[Segment<'_>],
+    selected: usize,
+    segment: egui::Vec2,
+    description: Option<&str>,
     look: &Look,
     palette: &Palette,
 ) -> Option<usize> {
@@ -1075,8 +1114,13 @@ pub fn segmented(
             index == selected,
         );
         response.widget_info(|| {
-            WidgetInfo::selected(WidgetType::Button, true, index == selected, name)
+            WidgetInfo::selected(WidgetType::RadioButton, true, index == selected, name)
         });
+        if let Some(description) = description {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(description);
+            });
+        }
         if response.clicked() {
             clicked = Some(index);
         }
@@ -1625,11 +1669,23 @@ const TOGGLE: egui::Vec2 = vec2(30.0, 18.0);
 const TOGGLE_KNOB: f32 = 14.0;
 
 /// A switch: off or `on`, flipped by a click, by Space or by Enter. To a
-/// screen reader it is a checkbox named `name`. The caller flips what it
-/// shows when the response says it was clicked.
-pub fn toggle(ui: &mut Ui, on: bool, name: &str, palette: &Palette) -> Response {
+/// screen reader it is a checkbox named `name`, described by
+/// `description` where it has one. The caller flips what it shows when
+/// the response says it was clicked.
+pub fn toggle(
+    ui: &mut Ui,
+    on: bool,
+    name: &str,
+    description: Option<&str>,
+    palette: &Palette,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(TOGGLE, Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, name));
+    if let Some(description) = description {
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_description(description);
+        });
+    }
     if ui.is_rect_visible(rect) {
         let track = if on {
             palette.accent
@@ -2012,7 +2068,7 @@ mod tests {
         let palette = harness.app.palette;
         for on in [false, true] {
             let tree = harness.frame_with(|ui| {
-                toggle(ui, on, "Value tags", &palette);
+                toggle(ui, on, "Value tags", None, &palette);
             });
             let id = crate::testing::node(&tree, "Value tags", Role::CheckBox).expect("the toggle");
             let node = tree
@@ -2032,7 +2088,7 @@ mod tests {
             });
             let mut clicked = false;
             harness.frame_with_events(vec![click], |ui| {
-                clicked = toggle(ui, on, "Value tags", &palette).clicked();
+                clicked = toggle(ui, on, "Value tags", None, &palette).clicked();
             });
             assert!(clicked);
         }
@@ -2221,17 +2277,17 @@ mod tests {
         for key in [egui::Key::Space, egui::Key::Enter] {
             // The keyboard comes to it, as Tab would bring it.
             harness.frame_with(|ui| {
-                toggle(ui, false, "Value tags", &palette).request_focus();
+                toggle(ui, false, "Value tags", None, &palette).request_focus();
             });
             let mut clicked = false;
             harness.frame_with_events(vec![press(key)], |ui| {
-                clicked = toggle(ui, false, "Value tags", &palette).clicked();
+                clicked = toggle(ui, false, "Value tags", None, &palette).clicked();
             });
             assert!(clicked, "{key:?}");
             // And a key that is not one of its two does nothing.
             let mut clicked = false;
             harness.frame_with_events(vec![press(egui::Key::A)], |ui| {
-                clicked = toggle(ui, false, "Value tags", &palette).clicked();
+                clicked = toggle(ui, false, "Value tags", None, &palette).clicked();
             });
             assert!(!clicked, "{key:?}");
         }

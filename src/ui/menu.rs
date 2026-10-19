@@ -479,6 +479,7 @@ pub struct Dropdown<'a> {
     width: f32,
     height: Option<f32>,
     fill: Option<Color32>,
+    description: Option<&'a str>,
 }
 
 impl<'a> Dropdown<'a> {
@@ -491,7 +492,15 @@ impl<'a> Dropdown<'a> {
             width,
             height: None,
             fill: None,
+            description: None,
         }
+    }
+
+    /// What the choice is for, which a screen reader reads after the
+    /// field's name: the words under a settings row's label.
+    pub fn description(mut self, description: Option<&'a str>) -> Self {
+        self.description = description;
+        self
     }
 
     /// As tall as the fields beside it, where they are not the look's
@@ -526,6 +535,12 @@ impl<'a> Dropdown<'a> {
             info.current_text_value = Some(self.text.to_owned());
             info
         });
+        // Kept by a caller's own `widget_info`, which sets no description.
+        if let Some(description) = self.description {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(description);
+            });
+        }
         // The terminal: an outline with corners of 3. Elsewhere a field's
         // box, corners one tighter than a button's.
         let (fill, border, radius, line) = if look.terminal {
