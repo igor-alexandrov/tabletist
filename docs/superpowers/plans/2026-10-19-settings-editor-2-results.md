@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** When the row limit cut a SQL editor result, the results say "Limited to 1,000 rows · Show all", and Show all runs that one statement again with no limit. When the timeout stopped a run, they say "Cancelled after 30 s · Run without timeout", and the link runs it again with no timeout. The Row limit row of Settings › Editor gains "Show all fetches the rest".
+**Goal:** When the row limit cut a SQL editor result, the results say "Limited to 1,000 rows · Show all", and Show all runs that one statement again with no limit. When the timeout stopped a run, they say "Cancelled after 30 s · Run without timeout", and the link runs it again with no timeout. The Row limit row of Settings › Editor says "Caps results you browse. Show all and exports get every row."
 
-**Architecture:** A run remembers what it was sent with (`RunCaps`: the fetch cap and the timeout). `SqlTab` says what each link would send (`cut_statement`, `timed_out_run`), so the view and `App` agree on when a link is offered. Two new actions, `ShowAllRows` and `RunWithoutTimeout`, send through `App::send_run`, which now takes the caps; each link lifts its own cap and keeps the run's other one. In `src/ui/sql_results.rs` a `Link` is drawn after our words in three places: the strip under a cut result, the Results note of a stopped run, and the Messages line that says the cancel. In the terminal look each link is a key hint, and its letter (`a`, `t`) is a keymap command read as the refused-write card's letters are.
+**Architecture:** A run remembers what it was sent with (`RunCaps`: the fetch cap and the timeout) and where (`RanOn`: the connection and database, as `ConnectSpec`). `SqlTab` says what each link would send (`cut_statement`, `timed_out_run`, given where the tab is now), so the view and `App` agree on when a link is offered. Two new actions, `ShowAllRows` and `RunWithoutTimeout`, send through `App::send_run`, which now takes the caps; each link lifts its own cap and keeps the run's other one. In `src/ui/sql_results.rs` a `Link` is drawn after our words in three places: the strip under a cut result, the Results note of a stopped run, and the Messages line that says the cancel. In the terminal look each link is a key hint, and its letter (`a`, `t`) is a keymap command read as the refused-write card's letters are.
 
 **Tech Stack:** Rust, egui (crmne fork) with AccessKit, headless tests through `src/testing.rs`.
 
@@ -19,23 +19,27 @@ Read again on 2026-10-19: the "SQL editor" boards (`macOS – SQL editor`, `Omar
 - macOS: a link in the accent colour after our words, as "Show all · open in viewer" (Awkward values), "Remove last filter" and "Cancel" (Empty and loading states). In the app that is `ButtonSpec::link()`, as the start screen's Clear has it.
 - Omarchy: an action is its words with its key, `[enter] view all`, `[R] reload`, `[a] apply` (States). In the app that is `states::key_button`, as the refused-write card's `e` and `w` are, with a letter of the keymap that takes it while the link is on screen.
 
-## Where this departs from the prompt and the boards
+## Decided
 
-For a yes or a no before code:
+Igor answered the draft's nine questions on 2026-10-19: all nine agreed, three with a case added and one with new words. (He put the answers in `settings-editor-prompt.md`, section "Decisions on the limit and timeout messages"; that file is not in this repository, so they are copied here.) He will draw the two states on the SQL editor boards after the build.
 
-| The prompt or a board asks | Step 2 builds | Why |
+| What was asked | What is built | Why |
 |---|---|---|
-| "Both looks (macOS sheet and Omarchy status line)" from the SQL editor boards | The strip under a cut result and the cancel's words, where the app says them today, in each look's way (above). The Omarchy status line keeps its run summary (`ln 12:21 · 1,000 rows · 14 ms · rolled back`) | No board draws either state, and the status line is one line of the run's facts with no room for an action. Say if the words belong in the status line instead. |
+| "Both looks (macOS sheet and Omarchy status line)" | The strip under a cut result and the cancel's words, where the app says them today, in each look's way (above). The Omarchy status line keeps its run summary (`ln 12:21 · 1,000 rows · 14 ms · rolled back`) | No board draws either state; the status line is one line of the run's facts. |
 | Omarchy: a link to click | A key hint, `show all a` and `run without timeout t`, which a click also takes. The letters are the keymap's (`ShowAllRows`, `RunWithoutTimeout`), read with the keyboard out of the editor's text, as the card's are | Every action on the Omarchy boards names its key. `a` for all, `t` for timeout; neither is taken where the results are. |
-| Show all "runs again, with no limit, the statement that was cut" | Offered only for a run that only read. A run sent to write says "Limited to 1,000 rows" with no link | The prompt: "a write run must not be repeated". A run sent to write ran in a transaction a lone SELECT would not see. |
-| (when the links are offered) | While the editor holds the text that ran and no run is in flight, on a session that takes commands: as the card's Run again | What would be sent is then what the editor shows, and a statement's line still names the editor's line. A link goes away as you type, and comes back if you undo. |
-| "Run without timeout runs the cancelled run again (it was rolled back)" | Offered only where nothing of the run was written: a read-only run, or one sent to write whose transaction rolled back whole. Not a MySQL run that committed part of itself (`CREATE` and the like), nor one the database could not roll back fully. Sent in the transaction the tab's mode gives now, as Run is | Sending again what is written would write it twice. |
-| (a link of a link) | Each link lifts its own cap and keeps the run's other one: Show all keeps the run's timeout; Run without timeout keeps the run's row limit. A Show all that timed out runs again with no limit and no timeout | Otherwise Run without timeout on a Show all would cut the rows again, and Show all on that would bring the timeout back: the case Show all is most likely to meet. |
-| "Cancelled after 30 s" | `Settings`' words for a time, as the toolbar's Timeout menu writes it: "Cancelled after 30 s", "Cancelled after 1 min"; the terminal's "cancelled after 30s", "cancelled after 1m". "(timeout)" goes | One way of writing a time in the editor. |
-| (rows of an earlier statement show over a timeout) | A timeout opens Messages, as today, and the link is on the cancelled statement's line. Results, when you switch to it, shows those rows with no link | Results says nothing of a cancel today when it has rows to show. Say if the strip under them should offer it too. |
-| (Messages for a cut result) | Keeps "Line 1: 1,000 rows (limit reached) · 14 ms", with no link | The prompt names the strip. One Show all, under the rows it shows. |
-| macOS small print "…; exports get everything", Omarchy "exports get everything" | "Caps the rows of results you browse; Show all fetches the rest" and "caps results you browse · show all fetches the rest" | The spec: "The row limit's words gain 'Show all fetches the rest'". There is still no export. |
-| (a narrow pane) | The words give way first (cut with "…"), the link stays whole; in the Results note the link goes under the words when one row cannot hold both | The link is what is done; the words are said in full to screen readers anyway. |
+| Show all "runs again, with no limit, the statement that was cut" | Offered only after a run that only read. After a run sent to write the strip says "Limited to 1,000 rows" with no link | Show all would run that statement again, and a write run is never repeated. |
+| When the links are offered | While the editor holds the text that ran, no run is in flight, the session takes commands, **and the tab is on the connection and database the run ran on** (Igor's addition). A link goes away as you type or switch database, and comes back if you undo or switch back | What would be sent is then what the editor shows, on the database that answered it. |
+| "Run without timeout runs the cancelled run again (it was rolled back)" | Offered only where nothing of the run was written **and its transaction is known to be rolled back** (Igor's addition: on PostgreSQL a cancel aborts the transaction, so the link waits for the rollback). A read-only run, or one sent to write whose transaction rolled back whole; not a MySQL run that committed part of itself, not one the database could not roll back fully, and not one whose session could not be put back (`broken`). Sent in the transaction the tab's mode gives now, as Run is | Sending again what is written would write it twice. Every run is its own transaction today and the backend ends it before it answers, so a run that has an outcome has had its rollback; `broken` is the one case where that rollback is not confirmed. When the open-transaction mode of the boards is built, its runs must not offer the link before the transaction is rolled back. |
+| A link of a link | Each link lifts its own cap and keeps the run's other one: Show all keeps the run's timeout; Run without timeout keeps the run's row limit | Otherwise a Show all that timed out would be cut again by Run without timeout. |
+| "Cancelled after 30 s" | One way of writing a time in the editor, a timeout typed into the file by hand included (Igor's addition): "45 s", "1 min", "1 min 30 s"; the terminal's "45s", "1m", "1m 30s". `sql_editor::time_words` changes, so the toolbar's Timeout menu, the Settings sheet and the Omarchy row write an off-menu value the same way. "(timeout)" goes | The terminal's "1m 30s" is this plan's spelling of the rule for that look; the file still takes `"90s"`. |
+| Rows of an earlier statement over a timeout | A timeout opens Messages, as today, and the link is on the cancelled statement's line only. Results, when you switch to it, shows those rows with no link | Results says nothing of a cancel when it has rows to show. |
+| Messages for a cut result | Keeps "Line 1: 1,000 rows (limit reached) · 14 ms", with no link | Messages is a log; actions stay in the strip. |
+| Row limit small print | macOS "Caps results you browse. Show all and exports get every row."; Omarchy "caps results you browse · show all and exports get every row". It replaces the board's helper text | Igor's words: they keep that exports get every row. |
+| A narrow pane | The words give way first (cut with "…"), the link stays whole; in the Results note the link goes under the words when one row cannot hold both | The link is what is done; the words are said in full to screen readers anyway. |
+
+## Not in the app: exports
+
+The Row limit row's words say "Show all and exports get every row". The app has no export of a result or a table (the only export is the Agents log's), so until one is built the second half describes nothing. These are Igor's words, kept as he chose them; the pull request says so.
 
 ## Review of this plan
 
@@ -45,10 +49,11 @@ A reviewer read the draft against the code (2026-10-19). Its three points that w
 
 | File | What it does after this plan |
 |---|---|
-| `src/model.rs` | `RunCaps`; `RunInFlight::caps` and `SqlRun::caps`; `SqlRun::nothing_written`; `SqlTab::caps`, `start_run_with`, `cut_statement`, `timed_out_run`; `Action::ShowAllRows` and `Action::RunWithoutTimeout`. |
-| `src/app.rs` | `send_run` takes the caps; `show_all_rows` and `run_without_timeout`. |
+| `src/model.rs` | `RunCaps`, `RanOn`; `RunInFlight` and `SqlRun` keep both; `SqlRun::nothing_written`, `SqlRun::ran_on`; `SqlTab::caps`, `start_run_with`, `cut_statement`, `timed_out_run`; `Action::ShowAllRows` and `Action::RunWithoutTimeout`. |
+| `src/app.rs` | `send_run` takes the caps and keeps where the run went; `show_all_rows` and `run_without_timeout`. |
 | `src/keymap.rs` | `Command::ShowAllRows` (`a`) and `Command::RunWithoutTimeout` (`t`), under `When::RowsCut` and `When::TimedOut`, Omarchy only. |
 | `src/ui/keys.rs` | Reads the two letters while their links are on screen. |
+| `src/ui/sql_editor.rs` | `time_words` writes minutes and seconds: "1 min 30 s", "1m 30s". |
 | `src/ui/sql_results.rs` | `Link`, `Links`, `link_keys`; the strip's words and Show all; `cancel_text` without "(timeout)"; Run without timeout in the Results note and on the Messages line. |
 | `src/ui/settings/mod.rs`, `src/ui/settings/terminal.rs` | The Row limit row's small print and hint. |
 | `src/testing.rs` | `cut_outcome`. |
@@ -68,7 +73,7 @@ Every task ends with the repository's checks passing:
 
 ---
 
-### Task 1: A run remembers its caps, and says what each link would send
+### Task 1: A run remembers its caps and where it went, and says what each link would send
 
 **Files:**
 - Modify: `src/model.rs` (`RunInFlight`, `SqlRun`, `SqlTab`, near 3917 to 4440)
@@ -96,8 +101,13 @@ pub fn cut_outcome(rows: usize) -> tabletist_db::StatementOutcome {
 In `src/model.rs`'s `mod tests`:
 
 ```rust
-    /// An editor that ran `text` (split as SQLite does) read-only and got
-    /// `outcomes`, stopped by `cancel`, sent with `caps`.
+    /// Where the tests' runs go.
+    fn here() -> tabletist_db::ConnectSpec {
+        tabletist_db::ConnectSpec::sqlite("/tmp/bookshop.db")
+    }
+
+    /// An editor that ran `text` (split as SQLite does) in `mode` on
+    /// [`here`] and got `outcomes`, stopped by `cancel`, sent with `caps`.
     fn ran(
         text: &str,
         outcomes: Vec<tabletist_db::StatementOutcome>,
@@ -109,7 +119,8 @@ In `src/model.rs`'s `mod tests`:
         let statements =
             tabletist_db::sql::statements(tabletist_db::Driver::Sqlite.dialect(), text);
         let request = crate::backend::RequestId(9);
-        let _ = sql.start_run_with(request, statements, mode, caps);
+        let on = Some(RanOn(here()));
+        let _ = sql.start_run_with(request, statements, mode, caps, on);
         let outcome = crate::testing::script_outcome(outcomes);
         assert!(sql.finish_run(request, Ok(outcome), cancel));
         sql
@@ -151,21 +162,31 @@ In `src/model.rs`'s `mod tests`:
         // The Results show the last statement that returned rows.
         let outcomes = vec![rows_outcome(1), cut_outcome(1_000), done_outcome(None)];
         let mut sql = ran(text, outcomes.clone(), None, (ReadOnly, caps));
-        let cut = sql.cut_statement().expect("the cut statement");
+        let cut = sql.cut_statement(&here()).expect("the cut statement");
         assert_eq!(cut.first_line, 2);
+        // Not on another database, nor on another connection.
+        let mut other = here();
+        other.database = "main2".into();
+        assert!(sql.cut_statement(&other).is_none());
+        let elsewhere = tabletist_db::ConnectSpec::sqlite("/tmp/elsewhere.db");
+        assert!(sql.cut_statement(&elsewhere).is_none());
         // Not once the text is another, and again when it is that text.
         sql.text.push(' ');
-        assert!(sql.cut_statement().is_none());
+        assert!(sql.cut_statement(&here()).is_none());
         sql.text.pop();
-        assert!(sql.cut_statement().is_some());
+        assert!(sql.cut_statement(&here()).is_some());
         // Not while a run is in flight.
         let _ = sql.start_run(crate::backend::RequestId(10), Vec::new(), ReadOnly);
-        assert!(sql.cut_statement().is_none());
+        assert!(sql.cut_statement(&here()).is_none());
         // Not for a run sent to write, nor for a whole result.
         let sql = ran(text, outcomes, None, (Write, caps));
-        assert!(sql.cut_statement().is_none());
+        assert!(sql.cut_statement(&here()).is_none());
         let sql = ran(text, vec![rows_outcome(3)], None, (ReadOnly, caps));
-        assert!(sql.cut_statement().is_none());
+        assert!(sql.cut_statement(&here()).is_none());
+        // A run started without saying where (`start_run`) offers nothing.
+        let mut sql = SqlTab::new(TabId(1), 1, 1_000, None);
+        crate::testing::run_script(&mut sql, text, vec![cut_outcome(1_000)]);
+        assert!(sql.cut_statement(&here()).is_none());
     }
 
     #[test]
@@ -179,13 +200,16 @@ In `src/model.rs`'s `mod tests`:
         let text = "SELECT 1;\nSELECT 2";
         let outcomes = vec![rows_outcome(1), Cancelled];
         let mut sql = ran(text, outcomes.clone(), timeout, read);
-        assert!(sql.timed_out_run().is_some());
+        assert!(sql.timed_out_run(&here()).is_some());
+        let mut other = here();
+        other.database = "main2".into();
+        assert!(sql.timed_out_run(&other).is_none());
         sql.text.push(' ');
-        assert!(sql.timed_out_run().is_none());
+        assert!(sql.timed_out_run(&here()).is_none());
         // Cancelled by hand, or stopped for no reason of ours: no.
         for cancel in [Some(CancelReason::User), None] {
             let sql = ran(text, outcomes.clone(), cancel, read);
-            assert!(sql.timed_out_run().is_none(), "{cancel:?}");
+            assert!(sql.timed_out_run(&here()).is_none(), "{cancel:?}");
         }
     }
 
@@ -203,6 +227,7 @@ In `src/model.rs`'s `mod tests`:
             cancel: None,
             error_mark: None,
             caps: RunCaps::default(),
+            on: None,
         };
         let partly = |committed| ScriptEnd::Partly { committed };
         assert!(run(ScriptMode::ReadOnly, ScriptEnd::RolledBack, None).nothing_written());
@@ -212,6 +237,11 @@ In `src/model.rs`'s `mod tests`:
         assert!(!run(ScriptMode::Write, ScriptEnd::Committed, None).nothing_written());
         let kept = Some("could not roll back");
         assert!(!run(ScriptMode::Write, ScriptEnd::RolledBack, kept).nothing_written());
+        // A session that could not be put back was closed: its rollback
+        // is not known to have run.
+        let mut closed = run(ScriptMode::Write, ScriptEnd::RolledBack, None);
+        closed.outcome.broken = Some(tabletist_db::Error::ConnectionLost("closed".into()));
+        assert!(!closed.nothing_written());
     }
 ```
 
@@ -220,9 +250,9 @@ If the tests module does not import `Duration`, `TabId` or `SqlRun`, add them to
 - [ ] **Step 3: Run them to see them fail**
 
 Run: `cargo test --locked --lib -- model::tests::a_run_keeps model::tests::show_all model::tests::run_without_timeout model::tests::nothing_is_written`
-Expected: FAIL to compile: no `RunCaps`, `start_run_with`, `caps`, `cut_statement`, `timed_out_run`, `nothing_written`.
+Expected: FAIL to compile: no `RunCaps`, `RanOn`, `start_run_with`, `caps`, `cut_statement`, `timed_out_run`, `nothing_written`.
 
-- [ ] **Step 4: Add `RunCaps`, and keep it with the run**
+- [ ] **Step 4: Add `RunCaps` and `RanOn`, and keep them with the run**
 
 In `src/model.rs`, before `pub struct SqlRun`:
 
@@ -245,39 +275,69 @@ impl Default for RunCaps {
         }
     }
 }
+
+/// The connection and database a run went to: the workspace's
+/// `ConnectSpec` when it was sent. A link of the results is offered only
+/// while the tab is still there. Its `Debug` names none of it, as
+/// `SqlTab`'s names none of the text.
+#[derive(Clone, PartialEq)]
+pub struct RanOn(pub tabletist_db::ConnectSpec);
+
+impl std::fmt::Debug for RanOn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RanOn").finish_non_exhaustive()
+    }
+}
 ```
 
-`SqlRun` gains a field after `error_mark`:
+`SqlRun` gains two fields after `error_mark`:
 
 ```rust
     /// What the run was sent with. Show all and Run without timeout each
     /// lift one of the two and keep the other.
     pub caps: RunCaps,
+    /// Where the run went; `None` for a run started without saying
+    /// (`SqlTab::start_run`), which offers no link.
+    pub on: Option<RanOn>,
 ```
 
-`SqlRun::new` takes it with the statements and the mode:
+`SqlRun::new` takes them with the statements and the mode:
 
 ```rust
     fn new(
-        (statements, mode, caps): (
+        (statements, mode, caps, on): (
             Vec<tabletist_db::sql::Statement>,
             tabletist_db::ScriptMode,
             RunCaps,
+            Option<RanOn>,
         ),
         outcome: tabletist_db::ScriptOutcome,
         cancel: Option<crate::backend::CancelReason>,
     ) -> Self {
 ```
 
-and sets `caps` in `Self { … }`. After `new`, in the same `impl SqlRun`:
+and sets `caps` and `on` in `Self { … }`. After `new`, in the same `impl SqlRun`:
 
 ```rust
-    /// Whether nothing of the run stayed written: a read-only run, or one
-    /// sent to write whose transaction rolled back whole. Not one MySQL
-    /// committed part of by itself, nor one the database could not roll
-    /// back fully.
+    /// Whether the run went to `spec`: the connection and database a tab
+    /// is on now.
+    pub fn ran_on(&self, spec: &tabletist_db::ConnectSpec) -> bool {
+        self.on.as_ref().is_some_and(|on| on.0 == *spec)
+    }
+
+    /// Whether nothing of the run stayed written, its transaction known to
+    /// be rolled back: a read-only run, or one sent to write whose
+    /// transaction rolled back whole. Not one MySQL committed part of by
+    /// itself, nor one the database could not roll back fully, nor one
+    /// whose session could not be put back and was closed. (Every run is
+    /// its own transaction, which the backend ends before it answers. A
+    /// PostgreSQL cancel aborts it, and the rollback has run by the time
+    /// the run has an outcome.)
     pub fn nothing_written(&self) -> bool {
         use tabletist_db::ScriptEnd;
+        if self.outcome.broken.is_some() {
+            return false;
+        }
         match self.mode {
             tabletist_db::ScriptMode::ReadOnly => true,
             tabletist_db::ScriptMode::Write => {
@@ -294,8 +354,9 @@ and sets `caps` in `Self { … }`. After `new`, in the same `impl SqlRun`:
 `RunInFlight` gains, after `mode`:
 
 ```rust
-    /// What the run was sent with.
+    /// What the run was sent with, and where.
     pub caps: RunCaps,
+    pub on: Option<RanOn>,
 ```
 
 - [ ] **Step 5: Start a run with caps, and say what each link sends**
@@ -323,10 +384,11 @@ In `impl SqlTab`, replace `start_run` with the two below, and add the three afte
         mode: tabletist_db::ScriptMode,
     ) -> Option<RequestId> {
         let caps = self.caps();
-        self.start_run_with(request, statements, mode, caps)
+        self.start_run_with(request, statements, mode, caps, None)
     }
 
-    /// [`Self::start_run`], sent with `caps` in place of the editor's.
+    /// [`Self::start_run`], sent with `caps` in place of the editor's, to
+    /// `on`: what the results' links need to be offered.
     #[must_use]
     pub fn start_run_with(
         &mut self,
@@ -334,6 +396,7 @@ In `impl SqlTab`, replace `start_run` with the two below, and add the three afte
         statements: Vec<tabletist_db::sql::Statement>,
         mode: tabletist_db::ScriptMode,
         caps: RunCaps,
+        on: Option<RanOn>,
     ) -> Option<RequestId> {
         let superseded = self.run.pending;
         self.run.start(request);
@@ -341,6 +404,7 @@ In `impl SqlTab`, replace `start_run` with the two below, and add the three afte
             statements,
             mode,
             caps,
+            on,
             started: std::time::Instant::now(),
             text: TextPrint::of(&self.text),
         });
@@ -348,11 +412,11 @@ In `impl SqlTab`, replace `start_run` with the two below, and add the three afte
     }
 ```
 
-In `finish_run`, carry the caps:
+In `finish_run`, carry them:
 
 ```rust
         let ran = in_flight
-            .map(|run| (run.statements, run.mode, run.caps))
+            .map(|run| (run.statements, run.mode, run.caps, run.on))
             .unwrap_or_default();
 ```
 
@@ -361,10 +425,16 @@ After `shown_rows`:
 ```rust
     /// The statement Show all sends again: the one whose rows the Results
     /// show, where the limit cut them, in a run that only read. Only while
-    /// the editor holds the text that ran and no run is in flight, as the
-    /// card's Run again: what would be sent is then what the editor shows.
-    pub fn cut_statement(&self) -> Option<&tabletist_db::sql::Statement> {
-        let run = self.last_run().filter(|_| self.ran_this_text())?;
+    /// the editor holds the text that ran, no run is in flight and the tab
+    /// is on `on`, the connection and database the run went to: what
+    /// would be sent is then what the editor shows, where it was answered.
+    pub fn cut_statement(
+        &self,
+        on: &tabletist_db::ConnectSpec,
+    ) -> Option<&tabletist_db::sql::Statement> {
+        let run = self
+            .last_run()
+            .filter(|run| self.ran_this_text() && run.ran_on(on))?;
         if run.mode != tabletist_db::ScriptMode::ReadOnly {
             return None;
         }
@@ -381,10 +451,11 @@ After `shown_rows`:
 
     /// The run Run without timeout sends again: the last one, where the
     /// timeout stopped it and nothing of it was written. Only while the
-    /// editor holds the text that ran and no run is in flight.
-    pub fn timed_out_run(&self) -> Option<&SqlRun> {
+    /// editor holds the text that ran, no run is in flight and the tab is
+    /// on `on`, as [`Self::cut_statement`].
+    pub fn timed_out_run(&self, on: &tabletist_db::ConnectSpec) -> Option<&SqlRun> {
         self.last_run()
-            .filter(|_| self.ran_this_text())
+            .filter(|run| self.ran_this_text() && run.ran_on(on))
             .filter(|run| matches!(run.cancel, Some(crate::backend::CancelReason::Timeout(_))))
             .filter(|run| run.nothing_written())
     }
@@ -399,7 +470,7 @@ Expected: PASS. Then the four checks.
 
 ```bash
 git add src/model.rs src/testing.rs
-git commit -m "Keep what a SQL run was sent with, and say what Show all and Run without timeout would send"
+git commit -m "Keep what a SQL run was sent with and where, and say what Show all and Run without timeout would send"
 ```
 
 ---
@@ -626,6 +697,51 @@ fn run_without_timeout_sends_a_write_again_only_where_nothing_was_written() {
     let sent = last_run(&harness);
     assert_eq!((sent.mode, sent.timeout), (ScriptMode::Write, None));
 }
+
+/// Answers the connect a switch of database sent.
+fn connected(harness: &mut Harness) {
+    let crate::backend::Command::Connect {
+        session, request, ..
+    } = *crate::testing::last_sent(&harness.app)
+    else {
+        panic!("expected Connect");
+    };
+    harness
+        .app
+        .apply(Action::Backend(crate::backend::Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+            access: crate::testing::asked_access(&harness.app),
+        }));
+}
+
+#[test]
+fn the_links_send_nothing_once_the_tab_is_on_another_database() {
+    for timed_out in [false, true] {
+        let text = "SELECT * FROM users";
+        let (mut harness, tab, id) = editor(Look::macos(), Driver::Sqlite, text);
+        run(&mut harness);
+        if timed_out {
+            let stopped = script_outcome(vec![StatementOutcome::Cancelled]);
+            harness.answer_sql(Ok(stopped), Some(TIMEOUT));
+        } else {
+            harness.answer_sql(Ok(script_outcome(vec![cut_outcome(1_000)])), None);
+        }
+        // The SQL tab and its last run stay over a switch of database.
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        connected(&mut harness);
+        assert!(sql_mut(&mut harness, tab, id).last_run().is_some());
+        let before = runs_sent(&harness);
+        show_all(&mut harness, tab, id);
+        without_timeout(&mut harness, tab, id);
+        assert_eq!(runs_sent(&harness), before, "timed out: {timed_out}");
+    }
+}
 ```
 
 In `src/ui/mod.rs`, after `mod editor_settings_tests;`:
@@ -666,9 +782,9 @@ In `src/app.rs`'s `apply`, after the `RunSqlAgain` arm:
             Action::RunWithoutTimeout { tab, sql_tab } => self.run_without_timeout(tab, sql_tab),
 ```
 
-- [ ] **Step 4: `send_run` takes the caps**
+- [ ] **Step 4: `send_run` takes the caps, and keeps where the run went**
 
-In `src/app.rs`, `send_run` gains `caps: crate::model::RunCaps` after `mode`, and sends them:
+In `src/app.rs`, `send_run` gains `caps: crate::model::RunCaps` after `mode`, sends them, and gives the run the workspace's `ConnectSpec` as where it went:
 
 ```rust
     /// Sends `statements` to the editor's session as its run, in a
@@ -683,7 +799,15 @@ In `src/app.rs`, `send_run` gains `caps: crate::model::RunCaps` after `mode`, an
     ) {
 ```
 
-and in its body replace
+and in its body, after `let session = workspace.session;`, add
+
+```rust
+        // Where the run goes: its links are offered only while the tab is
+        // still there.
+        let on = Some(crate::model::RanOn(workspace.spec.clone()));
+```
+
+and replace
 
 ```rust
         // No limit keeps as many rows as there are.
@@ -694,7 +818,7 @@ and in its body replace
 with
 
 ```rust
-        let superseded = sql.start_run_with(request, statements.clone(), mode, caps);
+        let superseded = sql.start_run_with(request, statements.clone(), mode, caps, on);
 ```
 
 and the command's fields with `limit: caps.limit, timeout: caps.timeout,`.
@@ -722,7 +846,8 @@ In `src/app.rs`, after `run_sql_again`:
     /// The results' Show all: the statement whose rows the limit cut, sent
     /// again alone and read-only, with no limit and the timeout its run
     /// had. Only what `SqlTab::cut_statement` offers: never a run that was
-    /// sent to write, nor a statement of a text the editor no longer holds.
+    /// sent to write, nor a statement of a text the editor no longer holds,
+    /// nor one that ran on another connection or database than the tab's.
     fn show_all_rows(&mut self, tab: ConnTabId, id: TabId) {
         let Some(workspace) = self.workspace(tab) else {
             return;
@@ -733,7 +858,7 @@ In `src/app.rs`, after `run_sql_again`:
         let Some(sql) = workspace.sql_tab(id) else {
             return;
         };
-        let (Some(statement), Some(run)) = (sql.cut_statement(), sql.last_run()) else {
+        let (Some(statement), Some(run)) = (sql.cut_statement(&workspace.spec), sql.last_run()) else {
             return;
         };
         let caps = crate::model::RunCaps {
@@ -759,7 +884,7 @@ In `src/app.rs`, after `run_sql_again`:
         let Some(sql) = workspace.sql_tab(id) else {
             return;
         };
-        let Some(run) = sql.timed_out_run() else {
+        let Some(run) = sql.timed_out_run(&workspace.spec) else {
             return;
         };
         let statements = run.statements.clone();
@@ -924,10 +1049,10 @@ struct Links {
 
 impl Links {
     fn of(workspace: &Workspace, sql: &SqlTab) -> Self {
-        let takes = workspace.takes_commands();
+        let (takes, on) = (workspace.takes_commands(), &workspace.spec);
         Self {
-            show_all: takes && sql.cut_statement().is_some(),
-            without_timeout: takes && sql.timed_out_run().is_some(),
+            show_all: takes && sql.cut_statement(on).is_some(),
+            without_timeout: takes && sql.timed_out_run(on).is_some(),
         }
     }
 
@@ -1252,6 +1377,7 @@ git commit -m "Say a cut result is limited, and offer Show all under it"
 ### Task 5: "Cancelled after 30 s · Run without timeout"
 
 **Files:**
+- Modify: `src/ui/sql_editor.rs` (`time_words` near 216, tests)
 - Modify: `src/ui/sql_results.rs` (`cancel_text` near 708, `note` near 658, `messages` near 1150, `results` near 1603, tests)
 - Test: `src/ui/sql_results.rs` (`mod tests`), `src/ui/editor_results_tests.rs`
 
@@ -1295,15 +1421,19 @@ In `src/ui/sql_results.rs`'s tests, replace `a_timeout_reads_as_cancelled_after_
     }
 
     #[test]
-    fn a_timeout_of_whole_minutes_says_them_as_the_menu_does() {
-        let (mut harness, _tab) = editor(Look::macos(), "SELECT 1");
-        run(&mut harness);
-        let minute = Some(CancelReason::Timeout(Duration::from_secs(60)));
-        harness.answer_sql(
-            Ok(script_outcome(vec![StatementOutcome::Cancelled])),
-            minute,
-        );
-        assert!(harness.has("Line 1: Cancelled after 1 min"));
+    fn a_timeout_says_its_minutes_and_seconds_as_the_menu_does() {
+        // "90s" typed into the file by hand reads as the menu's own do.
+        for (secs, said) in [(45, "45 s"), (60, "1 min"), (90, "1 min 30 s")] {
+            let (mut harness, _tab) = editor(Look::macos(), "SELECT 1");
+            run(&mut harness);
+            let after = Some(CancelReason::Timeout(Duration::from_secs(secs)));
+            harness.answer_sql(
+                Ok(script_outcome(vec![StatementOutcome::Cancelled])),
+                after,
+            );
+            let line = format!("Line 1: Cancelled after {said}");
+            assert!(harness.has(&line), "{line}");
+        }
     }
 
     #[test]
@@ -1363,14 +1493,60 @@ fn the_link_stands_on_the_line_of_the_cancel_only() {
 Run: `cargo test --locked --lib -- ui::sql_results::tests::a_timeout ui::sql_results::tests::a_cancel_by_hand ui::editor_results_tests::the_link_stands`
 Expected: FAIL: the words still end with "(timeout)", and no "Run without timeout" button.
 
-- [ ] **Step 3: The cancel's words**
+- [ ] **Step 3: One way of writing a time**
+
+In `src/ui/sql_editor.rs`'s tests, add:
+
+```rust
+    #[test]
+    fn a_time_is_its_minutes_and_its_seconds() {
+        let locale = Locale::default();
+        for (secs, standard, terminal) in [
+            (5, "5 s", "5s"),
+            (45, "45 s", "45s"),
+            (60, "1 min", "1m"),
+            (90, "1 min 30 s", "1m 30s"),
+            (300, "5 min", "5m"),
+            (3_600, "60 min", "60m"),
+        ] {
+            assert_eq!(time_words(secs, false, locale), standard);
+            assert_eq!(time_words(secs, true, locale), terminal);
+        }
+    }
+```
+
+Run: `cargo test --locked --lib -- ui::sql_editor::tests::a_time_is`
+Expected: FAIL on 90 ("90 s").
+
+Replace `time_words` (its doc comment too: whatever it said of whole minutes):
+
+```rust
+/// A time as the editor writes it, in the menus and in what a run says:
+/// "45 s", "1 min", "1 min 30 s"; the terminal's "45s", "1m", "1m 30s". A
+/// time typed into the file by hand reads the same way.
+pub(crate) fn time_words(secs: u32, terminal: bool, locale: Locale) -> String {
+    let (minutes, rest) = (secs / 60, secs % 60);
+    match (terminal, minutes, rest) {
+        (true, 0, _) => format!("{secs}s"),
+        (true, _, 0) => format!("{minutes}m"),
+        (true, _, _) => format!("{minutes}m {rest}s"),
+        (false, 0, _) => format!("{secs} s"),
+        (false, _, 0) => format!("{minutes} {}", gettext(locale, "min")),
+        (false, _, _) => format!("{minutes} {} {rest} s", gettext(locale, "min")),
+    }
+}
+```
+
+Run the test again: PASS. The toolbar's menu, the Settings sheet (`sheet.rs:873`) and the Omarchy row (`terminal.rs:1060`) call it, so a `timeout = "90s"` in the file reads "1 min 30 s" there too. Run `cargo test --locked --lib -- ui::sql_editor ui::editor_settings_tests settings` and fix any test that meets an off-menu time the old way. The file's own spelling (`timeout_name`, `"90s"`) does not change.
+
+- [ ] **Step 4: The cancel's words**
 
 Replace `cancel_text`:
 
 ```rust
 /// "Cancelled", or "Cancelled after 30 s" when the timeout stopped the
-/// run, its time written as the Timeout menu writes it ("1 min", the
-/// terminal's "30s"). A statement cancelled for no reason of ours (the
+/// run, its time written as [`super::sql_editor::time_words`] writes it
+/// ("1 min 30 s", the terminal's "30s"). A statement cancelled for no reason of ours (the
 /// server's own `statement_timeout`) is cancelled all the same.
 fn cancel_text(cancel: Option<CancelReason>, words: Words) -> String {
     match cancel {
@@ -1387,7 +1563,7 @@ fn cancel_text(cancel: Option<CancelReason>, words: Words) -> String {
 }
 ```
 
-- [ ] **Step 4: The Results note**
+- [ ] **Step 5: The Results note**
 
 After `note_at`:
 
@@ -1456,7 +1632,7 @@ In `results`, the stopped branch becomes:
         } else if let Some(index) = failed {
 ```
 
-- [ ] **Step 5: The Messages line**
+- [ ] **Step 6: The Messages line**
 
 After `message`:
 
@@ -1509,21 +1685,21 @@ In `messages`, before `let lay = …`, lay the link out once and keep room for i
 
 (Lay the line once into a local and paint and measure that, rather than calling `lay` twice.) `messages` already takes `actions`; the row closure borrows it mutably, and `lay` only reads.
 
-- [ ] **Step 6: Run the tests to see them pass**
+- [ ] **Step 7: Run the tests to see them pass**
 
-Run: `cargo test --locked --lib -- ui::sql_results ui::editor_results_tests`
+Run: `cargo test --locked --lib -- ui::sql_results ui::sql_editor ui::editor_results_tests`
 Expected: PASS, the narrow-pane tests too. Then the four checks.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/ui/sql_results.rs src/ui/editor_results_tests.rs
+git add src/ui/sql_editor.rs src/ui/sql_results.rs src/ui/editor_results_tests.rs
 git commit -m "Say when the timeout stopped a run, and offer to run it without one"
 ```
 
 ---
 
-### Task 6: The Row limit row says Show all fetches the rest
+### Task 6: The Row limit row says Show all and exports get every row
 
 **Files:**
 - Modify: `src/ui/settings/mod.rs:158`
@@ -1532,7 +1708,7 @@ git commit -m "Say when the timeout stopped a run, and offer to run it without o
 
 - [ ] **Step 1: Write the failing test**
 
-In `src/ui/editor_settings_tests.rs`, in the macOS list replace `"Caps the rows of results you browse"` with `"Caps the rows of results you browse; Show all fetches the rest"`, and in the Omarchy list `"caps results you browse"` with `"caps results you browse · show all fetches the rest"`.
+In `src/ui/editor_settings_tests.rs`, in the macOS list replace `"Caps the rows of results you browse"` with `"Caps results you browse. Show all and exports get every row."`, and in the Omarchy list `"caps results you browse"` with `"caps results you browse · show all and exports get every row"`. These are Igor's words, and they replace the board's helper text.
 
 - [ ] **Step 2: Run it to see it fail**
 
@@ -1544,17 +1720,17 @@ Expected: FAIL on the macOS words.
 `src/ui/settings/mod.rs`, its comment too:
 
 ```rust
-        // Not the board's "Adds LIMIT to results you browse; exports get
-        // everything": the rows are capped as they come, the editor's
-        // results have no export, and Show all under a cut result runs it
-        // again with no limit.
-        OptionId::RowLimit => Some("Caps the rows of results you browse; Show all fetches the rest"),
+        // Igor's words (2026-10-19), in place of the board's "Adds LIMIT to
+        // results you browse; exports get everything": the rows are capped
+        // as they come, nothing is added to the SQL, and Show all under a
+        // cut result runs it again with no limit.
+        OptionId::RowLimit => Some("Caps results you browse. Show all and exports get every row."),
 ```
 
 `src/ui/settings/terminal.rs`:
 
 ```rust
-        OptionId::RowLimit => dim(&skin.say("caps results you browse · show all fetches the rest")),
+        OptionId::RowLimit => dim(&skin.say("caps results you browse · show all and exports get every row")),
 ```
 
 Run `cargo fmt --all`: the terminal line is over 100 columns.
@@ -1568,7 +1744,7 @@ Expected: PASS. The macOS small print fits its row at the board's 1440 by 1100 (
 
 ```bash
 git add src/ui/settings/mod.rs src/ui/settings/terminal.rs src/ui/editor_settings_tests.rs
-git commit -m "Say in Settings › Editor that Show all fetches the rest"
+git commit -m "Say in Settings › Editor that Show all and exports get every row"
 ```
 
 ---
@@ -1588,12 +1764,15 @@ In `docs/_guide/sql-editor.md`, replace the sentence "When the limit cut a resul
 When the limit cut a result short, it says "Limited to 1,000 rows", and
 **Show all** runs that statement again, alone, with no limit (it keeps
 the timeout). It is offered for a run that only read, while the editor
-holds the text that ran.
+holds the text that ran and the tab is on the database it ran on.
 
 When the timeout stopped a run, Messages says "Cancelled after 30 s" on
 the statement it stopped, and **Run without timeout** runs the whole run
 again with none (it keeps the row limit). It is offered when nothing of
-the run was written: a read, or a read-write run that was rolled back.
+the run was written and its transaction was rolled back: a read, or a
+read-write run rolled back whole. A timeout of whole minutes reads
+"1 min", and one set in the file by hand, such as `"90s"`, reads
+"1 min 30 s".
 ```
 
 - [ ] **Step 2: The Omarchy guide**
@@ -1631,7 +1810,7 @@ Run: `gh pr view 181 --json state,mergedAt`. When it is merged: `git fetch origi
 
 - [ ] **Step 2: Push and open the pull request**
 
-Title: "Settings › Editor, step 2: Show all and Run without timeout". The body lists what was built; that a timeout which comes back as a whole run's error (nothing ran, no last run) offers no link; the table "Where this departs from the prompt and the boards" with each row's answer, and the tests. End it with the attribution lines the session gives.
+Title: "Settings › Editor, step 2: Show all and Run without timeout". The body lists what was built; that the Row limit words name exports the app does not have yet; that a timeout which comes back as a whole run's error (nothing ran, no last run) offers no link; the table "Where this departs from the prompt and the boards" with each row's answer, and the tests. End it with the attribution lines the session gives.
 
 - [ ] **Step 3: Bind it and read CI**
 
