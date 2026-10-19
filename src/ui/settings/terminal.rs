@@ -391,7 +391,8 @@ fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &
 }
 
 /// The Appearance pane's options, a row each, under the headings of their
-/// groups. Their columns line up across the groups.
+/// groups, and the preview under them. Their columns line up across the
+/// groups.
 fn appearance_rows(
     ui: &mut Ui,
     settings: &Settings,
@@ -431,6 +432,13 @@ fn appearance_rows(
             palette_row(ui, columns, skin, actions);
         }
     }
+    // Under the options, the preview, no row of the cursor's either: 4
+    // over and under it, as far in as the rows' words.
+    heading(ui, "Preview", 12.0, skin);
+    ui.add_space(4.0);
+    let name = skin.say("Preview");
+    super::preview::show(ui, (&name, ROW_SIDE), settings, skin.look, skin.palette);
+    ui.add_space(4.0);
 }
 
 /// The colours the theme gave, eight of them as the board has them, and

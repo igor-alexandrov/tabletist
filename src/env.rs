@@ -890,6 +890,7 @@ mod tests {
             "src/ui/picker.rs",
             "src/ui/connect_dialog/mod.rs",
             "src/ui/env_tests.rs",
+            "src/ui/settings/preview.rs",
         ];
         let mut found = Vec::new();
         for (path, text) in sources() {

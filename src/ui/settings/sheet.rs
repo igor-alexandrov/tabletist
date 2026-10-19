@@ -165,23 +165,27 @@ pub(super) fn show(
                 SettingsPane::General => content(
                     &mut pane,
                     ("General", Some(GENERAL)),
-                    &[("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)],
+                    (
+                        &[("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)],
+                        false,
+                    ),
                     &app.settings,
                     limit,
                     &skin,
                     actions,
                 ),
-                // The board's line under the title names the preview, which
-                // the pane does not have yet: the title stands alone.
                 SettingsPane::Appearance => content(
                     &mut pane,
-                    ("Appearance", None),
-                    &[
-                        ("Theme", &OptionId::THEME),
-                        ("Text", &OptionId::TEXT),
-                        ("Grid", &OptionId::GRID),
-                        ("Environment color", &OptionId::ENVIRONMENT),
-                    ],
+                    ("Appearance", Some(APPEARANCE)),
+                    (
+                        &[
+                            ("Theme", &OptionId::THEME),
+                            ("Text", &OptionId::TEXT),
+                            ("Grid", &OptionId::GRID),
+                            ("Environment color", &OptionId::ENVIRONMENT),
+                        ],
+                        true,
+                    ),
                     &super::shown(app),
                     limit,
                     &skin,
@@ -196,8 +200,9 @@ pub(super) fn show(
             // `ROWS_MIN` of them leaves the sheet shorter than that.
             let bottom = limit.max(rows) + foot;
             // The last row leaves its rule to the footer's: where there is
-            // room between them, it has one of its own.
-            if rows < limit - 0.5 {
+            // room between them, it has one of its own. The preview, which
+            // ends the Appearance pane, has its border.
+            if rows < limit - 0.5 && dialog.pane != SettingsPane::Appearance {
                 let across = egui::Rangef::new(room.left() + NAV + SIDE, room.right() - SIDE);
                 widgets::hline(ui, across, rows - 0.5, skin.palette.surface);
             }
@@ -299,15 +304,19 @@ fn nav(
 
 /// What the General pane says under its title.
 const GENERAL: &str = "How Tabletist shows data and protects your work. Changes apply right away.";
+/// What the Appearance pane says under its title.
+const APPEARANCE: &str =
+    "Theme, type and how dense the grid is. The preview updates as you change things.";
 
 /// The tab: its title, what it is for where it says, and its options under
-/// the heading of each group. The rows end at `limit` at the latest, and
-/// scroll when they are taller than that leaves them.
+/// the heading of each group, then the preview where it has one. The rows
+/// end at `limit` at the latest, and scroll when they are taller than that
+/// leaves them.
 #[allow(clippy::too_many_arguments)] // one pane: what it says, what it shows, what it pushes
 fn content(
     ui: &mut Ui,
     (title, about): (&'static str, Option<&'static str>),
-    sections: &[(&'static str, &[OptionId])],
+    (sections, preview): (&[(&'static str, &[OptionId])], bool),
     settings: &Settings,
     limit: f32,
     skin: &Skin,
@@ -323,7 +332,12 @@ fn content(
     );
     if let Some(about) = about {
         ui.add_space(2.0);
-        widgets::label(ui, TextRole::UiBody, &skin.say(about), palette.dim, look);
+        // Wrapped to the pane: a narrow sheet would otherwise grow as wide
+        // as the line, and its rows with it.
+        Text::one(look, TextRole::UiBody, &skin.say(about), palette.dim)
+            .wrap(ui.available_width())
+            .layout(ui.ctx())
+            .label(ui);
     }
     ui.add_space(6.0 + 14.0);
     let Some((first, _)) = sections.first() else {
@@ -375,6 +389,18 @@ fn content(
                     }
                     index += 1;
                 }
+            }
+            // Under the options, 14 under the last of them, the preview,
+            // and 14 under it.
+            if preview {
+                let name = skin.say("Preview");
+                ui.add_space(14.0);
+                widgets::section_label(&name, look, palette)
+                    .layout(ui.ctx())
+                    .label(ui);
+                ui.add_space(2.0);
+                super::preview::show(ui, (&name, 0.0), settings, look, palette);
+                ui.add_space(14.0);
             }
         });
 }

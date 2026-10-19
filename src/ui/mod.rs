@@ -51,6 +51,8 @@ pub mod object_tabs;
 pub mod password_prompt;
 pub mod pending_bar;
 pub mod picker;
+#[cfg(test)]
+mod preview_settings_tests;
 pub mod quick_open;
 pub mod review;
 pub mod row_form;
