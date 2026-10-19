@@ -297,6 +297,60 @@ pub fn begin_frame(ctx: &egui::Context) {
     });
 }
 
+fn behind_id() -> Id {
+    Id::new("focus-behind")
+}
+
+/// What had the keyboard when a dialog opened.
+#[derive(Clone, Copy, Default)]
+struct Behind {
+    /// A dialog was up when [`dialog`] was last called.
+    open: bool,
+    /// The widget, and where the app's keys went then.
+    had: Option<(Id, Id)>,
+}
+
+/// Gives the keyboard back to what had it before a dialog opened, once
+/// the dialog has gone: egui takes it from everything drawn behind a
+/// dialog and gives nothing back. Call before anything is drawn, with
+/// whether a dialog is up and `place`, where the app's keys go (its tab,
+/// its pane). A dialog whose answer moved them (quick open opening a
+/// table) leaves the keyboard where the answer put it. It goes back only
+/// to a widget the frame before drew, and only while nothing has it.
+pub fn dialog(ctx: &egui::Context, open: bool, place: Id) {
+    let focused = ctx.memory(|memory| memory.focused());
+    // egui keeps a closed dialog's layer for a frame, and in that one
+    // nothing behind it takes the keyboard.
+    let modal = ctx.memory(|memory| memory.top_modal_layer()).is_some();
+    let (back, waiting) = ctx.data_mut(|data| {
+        let behind: &mut Behind = data.get_temp_mut_or_default(behind_id());
+        let was_open = std::mem::replace(&mut behind.open, open);
+        if open {
+            // The dialog is not drawn yet: the keyboard is where it was.
+            if !was_open {
+                behind.had = focused.map(|id| (id, place));
+            }
+            (None, false)
+        } else if modal {
+            (None, behind.had.is_some())
+        } else {
+            (behind.had.take(), false)
+        }
+    });
+    // The frame that gives it back comes without waiting for a key.
+    if waiting {
+        ctx.request_repaint();
+    }
+    // Before anything is drawn a response is the frame before's.
+    if let Some((id, then)) = back
+        && then == place
+        && focused.is_none()
+        && ctx.read_response(id).is_some()
+    {
+        ctx.memory_mut(|memory| memory.request_focus(id));
+    }
+}
+
 /// Whether focus is shown: the keyboard was used last, not the pointer.
 pub fn visible(ctx: &egui::Context) -> bool {
     ctx.data(|data| data.get_temp(visible_id()))
@@ -615,6 +669,92 @@ mod tests {
                 look.name
             );
         }
+    }
+
+    /// One frame: the button `Behind` where `drawn`, `Other` asking for
+    /// the keyboard where `takes`, and over them a dialog while `open`.
+    /// The app's keys go to `place`. Returns Behind's and Other's ids.
+    fn scene(
+        ctx: &egui::Context,
+        open: bool,
+        (drawn, takes): (bool, bool),
+        place: &str,
+    ) -> (Id, Id) {
+        let (mut behind, mut other) = (Id::NULL, Id::NULL);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            dialog(ui.ctx(), open, Id::new(place));
+            egui::CentralPanel::default().show(ui, |ui| {
+                if drawn {
+                    behind = ui.push_id("behind", |ui| ui.button("Behind")).inner.id;
+                }
+                other = ui.push_id("other", |ui| ui.button("Other")).inner.id;
+                if takes {
+                    ui.memory_mut(|memory| memory.request_focus(other));
+                }
+            });
+            if open {
+                egui::Modal::new(Id::new("dialog")).show(ui.ctx(), |ui| {
+                    let _ = ui.button("Inside");
+                });
+            }
+        });
+        output.textures_delta.clear();
+        (behind, other)
+    }
+
+    /// `Behind` has the keyboard, a dialog opens over it, then closes.
+    /// `after` is what each frame without the dialog draws (`Other` asks
+    /// for the keyboard in the first of them only), and `place` where its
+    /// keys go. Returns Behind's and Other's ids, and what had the
+    /// keyboard after each frame without the dialog.
+    fn across_a_dialog(
+        ctx: &egui::Context,
+        (drawn, takes): (bool, bool),
+        place: &str,
+    ) -> (Id, Id, Vec<Option<Id>>) {
+        let (button, _) = scene(ctx, false, (true, false), "tree");
+        ctx.memory_mut(|memory| memory.request_focus(button));
+        scene(ctx, false, (true, false), "tree");
+        for _ in 0..3 {
+            scene(ctx, true, (true, false), "tree");
+        }
+        // egui's doing: nothing behind a dialog keeps the keyboard.
+        assert_eq!(ctx.memory(|memory| memory.focused()), None);
+        let mut other = Id::NULL;
+        let mut had = Vec::new();
+        for frame in 0..4 {
+            other = scene(ctx, false, (drawn, takes && frame == 0), place).1;
+            had.push(ctx.memory(|memory| memory.focused()));
+        }
+        (button, other, had)
+    }
+
+    #[test]
+    fn a_closed_dialog_gives_the_keyboard_back() {
+        let ctx = egui::Context::default();
+        let (button, _, had) = across_a_dialog(&ctx, (true, false), "tree");
+        assert_eq!(had.last(), Some(&Some(button)), "{had:?}");
+    }
+
+    #[test]
+    fn the_keyboard_goes_back_only_to_a_widget_still_drawn() {
+        let ctx = egui::Context::default();
+        let (_, _, had) = across_a_dialog(&ctx, (false, false), "tree");
+        assert!(had.iter().all(Option::is_none), "{had:?}");
+    }
+
+    #[test]
+    fn a_widget_that_took_the_keyboard_keeps_it() {
+        let ctx = egui::Context::default();
+        let (_, other, had) = across_a_dialog(&ctx, (true, true), "tree");
+        assert!(had.iter().all(|had| *had == Some(other)), "{had:?}");
+    }
+
+    #[test]
+    fn a_dialog_that_moved_the_keys_leaves_the_keyboard_alone() {
+        let ctx = egui::Context::default();
+        let (_, _, had) = across_a_dialog(&ctx, (true, false), "grid");
+        assert!(had.iter().all(Option::is_none), "{had:?}");
     }
 
     #[test]

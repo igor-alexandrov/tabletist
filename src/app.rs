@@ -7061,6 +7061,17 @@ impl App {
         }
     }
 
+    /// Where the keys go: the window's tab, and in its workspace the tab in
+    /// front and whether the tree has them. A dialog whose answer changes
+    /// it moved the keyboard on purpose.
+    fn keys_place(&self) -> egui::Id {
+        let tab = self.active_tab_id();
+        let workspace = self
+            .workspace(tab)
+            .map(|workspace| (workspace.active_tab, workspace.pane == Pane::Tree));
+        egui::Id::new((tab, workspace))
+    }
+
     /// Draws one frame, then applies what the frame asked for.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         self.note_use(ui.ctx());
@@ -7074,6 +7085,9 @@ impl App {
         crate::ui::keys::publish(ui.ctx(), &self.keymap);
         // Before the shortcuts take their keys: what the user works with.
         crate::ui::focus::begin_frame(ui.ctx());
+        // Before anything is drawn: what had the keyboard as a dialog
+        // opened has it back once the dialog has gone.
+        crate::ui::focus::dialog(ui.ctx(), self.dialog.is_some(), self.keys_place());
         // Before the keys and the view, which read the list: it is the one
         // the last frame's actions left, after anything the backend
         // delivered just now.
