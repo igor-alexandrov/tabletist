@@ -11,7 +11,7 @@ use tabletist_db::ConnectSpec;
 use crate::env::Environment;
 use crate::paths::AppDirs;
 
-mod file;
+pub(crate) mod file;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub String);

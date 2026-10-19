@@ -173,6 +173,8 @@ Tabletist keeps settings and state in two folders.
 | Windows | `%APPDATA%\tabletist\Tabletist\config` | `%LOCALAPPDATA%\tabletist\Tabletist\data` |
 
 On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
+An administrator's policy, `managed.toml`, is in a third place of its own:
+[The administrator's policy](#the-administrators-policy).
 
 | File | Folder | Holds |
 | --- | --- | --- |
@@ -365,6 +367,80 @@ then on `connections.json` is not read again, whatever becomes of the new
 file: the connections of the day they moved do not come back in place of a
 `connections.toml` that was kept aside or removed. To have the old file
 read once more, remove `connections.moved` as well.
+
+## The administrator's policy
+
+An administrator can set limits that nobody else on the computer can
+raise, in `managed.toml`. It is kept where only an administrator can
+write, and no variable moves it:
+
+| System | File |
+| --- | --- |
+| Linux | `/etc/tabletist/managed.toml` |
+| macOS | `/Library/Application Support/Tabletist/managed.toml` |
+| Windows | Not read yet |
+
+The file is a floor under your own settings. Each of its limits is
+combined with yours, and the stricter one is in force. Nothing in
+`settings.toml` or `connections.toml` can lift it, and nothing of it is
+written into them: when a rule is removed, you have your own settings
+back. A coding agent runs as you and can edit your files, so this is the
+one limit it cannot undo, as long as it cannot act as an administrator.
+
+```toml
+version = 1
+
+[agents]
+allowed = true           # false: agents cannot be turned on
+log_days_min = 90        # the log of agents' calls keeps a call at least this long
+
+[[rules]]
+name = "Bookshop production"
+match = { driver = "postgres", host = "db.example.com", database = "bookshop_*" }
+read_only = true
+access_max = "read"
+rows_max = 500
+timeout_max_secs = 10
+
+[[rules]]
+name = "Shared files"
+match = { driver = "sqlite", path = "/srv/shared/*.db" }
+access_max = "off"
+```
+
+| Key | Values | Without it |
+| --- | --- | --- |
+| `version` | `1` | Required |
+| `agents.allowed` | `true`, `false` | `true` |
+| `agents.unmatched` | `"off"`: agents are Off on a connection no rule matches. `"as_set"`: such a connection is as you set it | `"off"` when the file has a rule, `"as_set"` when it has none |
+| `agents.log_days_min` | 1 to 3650 | No least |
+| `rules[].name` | Text | Required |
+| `rules[].match` | `driver`, `host`, `port`, `database`, `path`, each optional, at least one | Required |
+| `rules[].read_only` | `true`: your own sessions on the connection are read-only | As the connection's box says |
+| `rules[].access_max` | `"off"`, `"read"` | No ceiling |
+| `rules[].rows_max` | 1 to 5000 | No ceiling |
+| `rules[].timeout_max_secs` | 1 to 60 | No ceiling |
+| `rules[].hidden`, `rules[].visible_only`, `rules[].masked` | Names, as in `connections.toml` | Nothing hidden or masked |
+
+A rule matches a connection by what it reaches. Each key in `match` must
+match, and `*` in it stands for any run of characters. `host` is compared
+without regard to case, and through an SSH tunnel it is the database's
+host. `path` is a SQLite file's, with `~` read as your home folder. A key
+the connection has no use for, such as `path` on PostgreSQL, does not
+match. Every rule that matches a connection applies.
+
+`hidden`, `visible_only` and `masked` are read, and are not yet applied
+as a rule's own list: on a connection a rule hides or masks something
+on, agents are Off. The file is read when Tabletist starts. The
+connection editor and Settings show your own settings, not the
+administrator's limits.
+
+Tabletist reads the file strictly. A key it does not know, a value a key
+cannot have, or a version other than 1 makes the whole file unreadable,
+and then, until it is mended, agents are off and every connection is
+read-only. Tabletist says so under the top of the window, with the line,
+and never repeats a value written on it. A file that is not there is no
+policy.
 
 ## Command-line options
 
