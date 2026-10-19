@@ -4075,7 +4075,12 @@ impl App {
                 now
             })
             .collect();
-        let connections = crate::backend::agentable(&shown);
+        let mut connections = crate::backend::agentable(&shown);
+        // A rule's tables and columns, which the checks take beside the
+        // person's.
+        for agentable in &mut connections {
+            agentable.sources.administrator = self.managed.sources(&agentable.spec, home);
+        }
         self.backend.send(Command::Agents(AgentsCommand::Policy {
             connections,
             host_keys: self.host_keys.clone(),
@@ -8811,8 +8816,6 @@ timeout_max_secs = 5
             // No rule matches: off.
             "version = 1\n[[rules]]\nname = \"Elsewhere\"\nmatch = { driver = \"postgres\" }\n",
             "version = 1\n[[rules]]\nname = \"Off\"\nmatch = { driver = \"sqlite\" }\naccess_max = \"off\"\n",
-            // A rule's tables, until the checks take them.
-            "version = 1\n[[rules]]\nname = \"Hides\"\nmatch = { driver = \"*\" }\nhidden = [\"customers\"]\n",
         ] {
             let (mut app, _dir) = app_under(policy);
             app.serve_agents();
@@ -8828,6 +8831,44 @@ timeout_max_secs = 5
                 "the person's choice is kept: {policy}"
             );
         }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_rules_tables_and_columns_reach_the_gateway_beside_the_persons() {
+        use crate::connections::AgentAccess;
+        use tabletist_db::agent::{Source, Tables};
+        let (mut app, _dir) = app_under(
+            r#"version = 1
+[[rules]]
+name = "Local files"
+match = { driver = "sqlite" }
+hidden = ["customers"]
+masked = ["orders.email"]
+"#,
+        );
+        app.serve_agents();
+        let conn = with_saved(&mut app);
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let sent = agentable_sent(&app);
+        assert_eq!(sent.len(), 1, "agents keep the person's access");
+        assert_eq!(
+            sent[0].sources.administrator,
+            vec![Source {
+                tables: Tables::AllExcept(vec!["customers".parse().unwrap()]),
+                masked: vec!["orders.email".parse().unwrap()],
+            }]
+        );
+        assert_eq!(sent[0].sources.person, Source::default());
+        // Nothing of the rule is written into the person's settings.
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(
+            (&saved.agents.tables, saved.agents.masked.len()),
+            (&Tables::All, 0)
+        );
     }
 
     #[cfg(any(unix, windows))]

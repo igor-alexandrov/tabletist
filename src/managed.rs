@@ -9,15 +9,15 @@
 //! Tabletist keeps for them, `agents_shown.json` included. It cannot edit
 //! this one unless it can act as an administrator.
 //! `docs/superpowers/specs/2026-10-15-managed-policy-design.md` is the
-//! design. This is its run 1a: the file and the limits the existing checks
-//! enforce. A rule's tables and columns keep agents off its connections
-//! until the checks take them (run 1b).
+//! design. Its runs 1a and 1b: the file, the limits, and a rule's tables
+//! and columns, which the agent checks enforce beside the person's own
+//! ([`Managed::sources`]).
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde::de::IgnoredAny;
-use tabletist_db::agent::{ColumnName, TableName};
+use tabletist_db::agent::{ColumnName, Source, TableName, Tables};
 use tabletist_db::{ConnectSpec, Driver};
 
 use crate::connections::file::{Problem, line_of, without_values};
@@ -66,10 +66,19 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Whether the rule hides or masks anything, which the checks cannot
-    /// yet take from a rule.
-    fn names_tables_or_columns(&self) -> bool {
-        !self.hidden.is_empty() || self.visible_only.is_some() || !self.masked.is_empty()
+    /// What the rule hides and masks, as the agent checks take it: its
+    /// `visible_only` as an "Only" list (empty, no table), else its
+    /// `hidden` as an "All except" one.
+    fn source(&self) -> Source {
+        let tables = match &self.visible_only {
+            Some(only) => Tables::Only(only.clone()),
+            None if self.hidden.is_empty() => Tables::All,
+            None => Tables::AllExcept(self.hidden.clone()),
+        };
+        Source {
+            tables,
+            masked: self.masked.clone(),
+        }
     }
 }
 
@@ -540,15 +549,27 @@ impl Managed {
             if let Some(most) = rule.timeout_max_secs {
                 agents.timeout_secs = agents.timeout_secs.min(most);
             }
-            // Until the checks take a rule's tables and columns beside the
-            // person's (run 1b), agents stay off what a rule hides or masks
-            // something on: that is safe, and promises nothing.
-            if rule.names_tables_or_columns() {
-                agents.access = AgentAccess::Off;
-            }
         }
         if !matched && policy.unmatched_off {
             agents.access = AgentAccess::Off;
+        }
+    }
+
+    /// What each rule that matches `spec` hides and masks, for the agent
+    /// checks to take beside the person's own: a table is visible only
+    /// where each lets it be seen, and a column is masked where any masks
+    /// it. A rule that hides and masks nothing is left out. An unreadable
+    /// policy has none: [`Self::floor`] keeps agents off.
+    pub fn sources(&self, spec: &ConnectSpec, home: Option<&Path>) -> Vec<Source> {
+        match self {
+            Self::None | Self::Unreadable { .. } => Vec::new(),
+            Self::Read { policy, .. } => policy
+                .rules
+                .iter()
+                .filter(|rule| rule.matches.matches(spec, home))
+                .map(Rule::source)
+                .filter(Source::guards_anything)
+                .collect(),
         }
     }
 
@@ -951,27 +972,83 @@ access_max = "off"
     }
 
     #[test]
-    fn a_rule_that_hides_or_masks_keeps_agents_off_until_the_checks_take_it() {
-        for lists in [
-            "hidden = [\"customers\"]",
-            "visible_only = []",
-            "visible_only = [\"books\"]",
-            "masked = [\"orders.email\"]",
+    fn a_rules_tables_and_columns_go_to_the_checks_and_leave_access_as_it_is() {
+        let named = |name: &str| name.parse::<TableName>().unwrap();
+        for (lists, tables, masked) in [
+            (
+                "hidden = [\"customers\"]",
+                Tables::AllExcept(vec![named("customers")]),
+                Vec::new(),
+            ),
+            ("visible_only = []", Tables::Only(Vec::new()), Vec::new()),
+            (
+                "visible_only = [\"books\"]",
+                Tables::Only(vec![named("books")]),
+                Vec::new(),
+            ),
+            (
+                "masked = [\"orders.email\"]",
+                Tables::All,
+                vec!["orders.email".parse::<ColumnName>().unwrap()],
+            ),
         ] {
             let managed = policy(&format!(
                 "version = 1\n[[rules]]\nname = \"a\"\nmatch = {{ driver = \"*\" }}\n{lists}\n"
             ));
             let mut agents = read_agents(500, 10);
             managed.floor(&postgres("db", "x"), None, &mut agents);
-            assert_eq!(agents.access, AgentAccess::Off, "{lists}");
+            assert_eq!(agents.access, AgentAccess::Read, "{lists}");
+            assert_eq!(
+                managed.sources(&postgres("db", "x"), None),
+                vec![Source { tables, masked }],
+                "{lists}"
+            );
         }
-        // An empty list hides nothing.
+        // Each matching rule is its own source; one that matches not, or
+        // hides and masks nothing, is none.
         let managed = policy(
-            "version = 1\n[[rules]]\nname = \"a\"\nmatch = { driver = \"*\" }\nhidden = []\nmasked = []\n",
+            "version = 1
+[[rules]]
+name = \"a\"
+match = { driver = \"*\" }
+hidden = [\"customers\"]
+[[rules]]
+name = \"b\"
+match = { host = \"db\" }
+visible_only = [\"books\"]
+[[rules]]
+name = \"c\"
+match = { host = \"elsewhere\" }
+hidden = [\"orders\"]
+[[rules]]
+name = \"d\"
+match = { driver = \"*\" }
+hidden = []
+masked = []
+",
         );
-        let mut agents = read_agents(500, 10);
-        managed.floor(&postgres("db", "x"), None, &mut agents);
-        assert_eq!(agents.access, AgentAccess::Read);
+        assert_eq!(
+            managed.sources(&postgres("db", "x"), None),
+            vec![
+                Source {
+                    tables: Tables::AllExcept(vec![named("customers")]),
+                    masked: Vec::new(),
+                },
+                Source {
+                    tables: Tables::Only(vec![named("books")]),
+                    masked: Vec::new(),
+                },
+            ]
+        );
+        assert_eq!(
+            Managed::None.sources(&postgres("db", "x"), None),
+            Vec::new()
+        );
+        let unreadable = Managed::Unreadable {
+            path: PathBuf::from("/m"),
+            problem: "bad".into(),
+        };
+        assert_eq!(unreadable.sources(&postgres("db", "x"), None), Vec::new());
     }
 
     #[test]
