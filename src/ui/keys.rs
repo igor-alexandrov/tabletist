@@ -564,11 +564,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // to read. So the keyboard can stay in the sidebar until a letter is
     // typed, and the sidebar's own filter keeps what is typed into it.
     // Keys held with Cmd, Ctrl or Alt are shortcuts, and bring no
-    // character.
+    // character. A space alone is no search: Space presses the focused
+    // button or row, and a real keyboard sends it as text too.
     if on_start_screen
         && !app.look.terminal
         && !ctx.text_edit_focused()
-        && !typed_chars(ctx).is_empty()
+        && typed_chars(ctx).iter().any(|char| !char.is_whitespace())
     {
         let field = crate::ui::start::search_field_id(active);
         ctx.memory_mut(|memory| memory.request_focus(field));

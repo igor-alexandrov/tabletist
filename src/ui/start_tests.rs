@@ -645,6 +645,29 @@ fn the_search_keys_answer_only_while_its_field_has_the_keyboard() {
     );
 }
 
+/// Space on a focused control of the macOS screen presses it, as Space
+/// does everywhere: a space alone starts no search. A real keyboard sends
+/// the space as text beside the key, which a test sends by hand.
+#[test]
+fn space_presses_a_focused_start_button_and_starts_no_search() {
+    let (mut harness, tab) = bookshop(Look::macos());
+    for _ in 0..40 {
+        if focused_name(&harness.settle()) == "New SQL query" {
+            break;
+        }
+        harness.press(Key::Tab, Modifiers::NONE);
+    }
+    assert_eq!(focused_name(&harness.settle()), "New SQL query");
+    harness.frame(vec![
+        crate::testing::key(Key::Space, Modifiers::NONE),
+        egui::Event::Text(" ".into()),
+    ]);
+    harness.frame(vec![crate::testing::release(Key::Space, Modifiers::NONE)]);
+    harness.settle();
+    assert!(harness.has("Query 1 tab"), "the button was pressed");
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
+}
+
 /// The Omarchy `/` search: `/` focuses the field while the screen has the
 /// keys, ctrl+n/p move among the matches, enter opens, and esc returns to
 /// the start lists.
