@@ -193,6 +193,8 @@ struct Place<'a> {
     /// The write a database refused in the last run, when that run was
     /// read-only: the Messages lead with its card.
     blocked: Option<Blocked<'a>>,
+    /// The links the results offer now.
+    links: Links,
     /// Whether the arrow keys move in the result's grid.
     keys: bool,
     /// The look the result's grid is drawn in: the rows as dense, as
@@ -221,6 +223,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         zone: workspace.zone_shown(),
         driver: workspace.driver,
         blocked: blocked(workspace, sql),
+        links: Links::of(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
         grid: look.with_grid(&app.settings),
     };
@@ -1530,6 +1533,79 @@ impl Links {
     }
 }
 
+/// How tall a link is: inside the strip's 28 and a line of the Messages.
+const LINK_HEIGHT: f32 = 22.0;
+
+/// A link laid out in the look: its name, its words as painted and the
+/// key that takes it in the terminal look.
+struct LinkLaid {
+    link: Link,
+    name: String,
+    painted: String,
+    keys: crate::keymap::Written,
+}
+
+impl LinkLaid {
+    fn new(ctx: &egui::Context, link: Link, env: &Env<'_>) -> Self {
+        let (name, command) = link.names();
+        let name = gettext(env.locale, name).into_owned();
+        Self {
+            link,
+            painted: env.look.label(&name),
+            keys: crate::ui::keys::written(ctx, env.look, command),
+            name,
+        }
+    }
+
+    /// A link in the accent colour; in the terminal look a key hint that
+    /// names the letter that takes it, as the card's buttons do.
+    fn spec(&self, look: &Look) -> ButtonSpec<'_> {
+        let spec = if look.terminal {
+            states::key_button(&self.painted, &self.keys, look)
+        } else {
+            ButtonSpec::new(&self.painted)
+                .link()
+                .role(widgets::secondary(look))
+                .padding(6.0)
+        };
+        spec.label(&self.name)
+    }
+
+    fn width(&self, ui: &Ui, look: &Look) -> f32 {
+        self.spec(look).width(ui, look)
+    }
+
+    /// Draws the link from `left`, centred on `center`, and says what it
+    /// does when it is pressed.
+    fn show(
+        &self,
+        ui: &mut Ui,
+        (left, center): (f32, f32),
+        place: &Place<'_>,
+        env: &Env<'_>,
+        actions: &mut Vec<Action>,
+    ) {
+        let width = self.width(ui, env.look);
+        let rect = Rect::from_min_size(
+            pos2(left, center - LINK_HEIGHT / 2.0),
+            vec2(width, LINK_HEIGHT),
+        );
+        if self
+            .spec(env.look)
+            .show_at(ui, rect, env.look, env.palette)
+            .clicked()
+        {
+            actions.push(self.link.action(place.tab, place.sql.id));
+        }
+    }
+}
+
+/// What stands between our words and a link: " · ". Painted with
+/// `widgets::paint_text`, never `paint_label`: a screen reader has the
+/// words and the button, and the Messages' tests read every label as a
+/// line.
+const BEFORE_LINK: &str = " · ";
+
 /// The links on screen in the SQL editor in front, with the command whose
 /// letter takes each and what it does. Only in the terminal look, whose
 /// links name their letters, as [`card_key`].
@@ -1727,20 +1803,31 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         // The rows there are, not the limit the editor has by now.
         let said = env.said(|words| {
             format!(
-                "{} {} ({})",
-                words.say("First"),
-                rows_text(rows.len() as u64, words),
-                words.say("limit reached")
+                "{} {}",
+                words.say("Limited to"),
+                rows_text(rows.len() as u64, words)
             )
         });
-        let text = Text::one(
-            look,
-            widgets::secondary(look),
-            &said.painted,
-            palette.secondary,
-        );
+        let role = widgets::secondary(look);
         let center = strip.top() + 1.0 + (strip.height() - 1.0) / 2.0;
-        data_view::paint_named(ui, strip.left() + side(look), center, text, &said.name);
+        let (left, right) = (strip.left() + side(look), strip.right() - side(look));
+        let link = place
+            .links
+            .show_all
+            .then(|| LinkLaid::new(ui.ctx(), Link::ShowAll, env));
+        let width = |text: &str| role.width(ui.ctx(), look.faces, text);
+        let tail = link
+            .as_ref()
+            .map_or(0.0, |link| width(BEFORE_LINK) + link.width(ui, look));
+        // The words give way to the link.
+        let cut = grid::ellipsize(&said.painted, (right - left - tail).max(0.0), false, width);
+        let text = Text::one(look, role, &cut, palette.secondary);
+        let mut x = left + data_view::paint_named(ui, left, center, text, &said.name);
+        if let Some(link) = link {
+            let dot = Text::one(look, role, BEFORE_LINK, palette.dim);
+            x += widgets::paint_text(ui, x, center, dot);
+            link.show(ui, (x, center), place, env, actions);
+        }
     }
     let grid_columns: Vec<Column<'_>> = columns
         .iter()
@@ -1843,8 +1930,8 @@ mod tests {
     use crate::backend::{CancelReason, Command};
     use crate::model::{Action, CellPos, ResultPane, SqlTab};
     use crate::testing::{
-        Harness, bounds, error_outcome, labels, node, refused_write, rows_outcome, script_outcome,
-        stopped_before_it_began, write_outcome,
+        Harness, bounds, cut_outcome, error_outcome, labels, node, refused_write, rows_outcome,
+        script_outcome, stopped_before_it_began, write_outcome,
     };
     use crate::theme::Look;
 
@@ -2168,21 +2255,22 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_result_says_the_limit_was_reached() {
+    fn a_cut_result_says_its_limit_and_offers_show_all() {
         for look in Look::ALL {
             let (mut harness, tab) = editor(look, "SELECT 1");
             run(&mut harness);
-            let page = crate::testing::page(1_000, false);
-            let cut = StatementOutcome::Rows {
-                columns: page.columns,
-                rows: page.rows,
-                truncated: true,
-            };
-            harness.answer_sql(Ok(script_outcome(vec![cut])), None);
-            let note = "First 1,000 rows (limit reached)";
+            harness.answer_sql(Ok(script_outcome(vec![cut_outcome(1_000)])), None);
+            let note = "Limited to 1,000 rows";
             assert!(harness.has(note), "{}", look.name);
-            // The limit the editor has now is the next run's, not this
-            // result's.
+            let reads = look.label(note);
+            assert!(painted(&harness, &reads), "{reads}: {:?}", harness.painted);
+            let tree = harness.settle();
+            assert!(
+                node(&tree, "Show all", Role::Button).is_some(),
+                "{}",
+                look.name
+            );
+            // The rows there are, not the limit the editor has by now.
             let sql_tab = sql(&harness, tab).id;
             harness.app.apply(Action::SetSqlLimit {
                 tab,
@@ -2192,11 +2280,58 @@ mod tests {
             assert!(harness.has(note), "{}", look.name);
             harness.click("Messages");
             assert!(harness.has("Line 1: 1,000 rows (limit reached) · 14 ms"));
-            // A whole result has no note.
             harness.click("Results");
-            run(&mut harness);
+            harness.click("Show all");
+            let limit = match crate::testing::last_sent(&harness.app) {
+                Command::RunSql { limit, .. } => *limit,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(limit, u32::MAX, "{}", look.name);
+            // In flight, the strip has no link: a second press sends nothing.
+            let tree = harness.settle();
+            assert!(node(&tree, "Show all", Role::Button).is_none());
+            // A whole result has no strip.
             harness.answer_sql(Ok(script_outcome(vec![rows_outcome(3)])), None);
             assert!(harness.has("Row 3") && !harness.has(note));
+        }
+    }
+
+    #[test]
+    fn a_cut_result_of_a_run_sent_to_write_offers_no_show_all() {
+        for look in Look::ALL {
+            let text = "UPDATE users SET email = 'x' WHERE id = 1 RETURNING id";
+            let (mut harness, _tab) = writing(look, Driver::Sqlite, text);
+            let outcome = write_outcome(vec![cut_outcome(1_000)], ScriptEnd::Committed);
+            harness.answer_sql(Ok(outcome), None);
+            harness.click("Results");
+            assert!(harness.has("Limited to 1,000 rows"), "{}", look.name);
+            let tree = harness.settle();
+            assert!(
+                node(&tree, "Show all", Role::Button).is_none(),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn show_all_stays_whole_in_the_narrowest_pane() {
+        for look in Look::ALL {
+            let (mut harness, _tab) = editor(look, "SELECT 1");
+            narrow_to(&mut harness, 240.0);
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![cut_outcome(1_000)])), None);
+            let tree = harness.settle();
+            let band = bounds(&tree, "Resize the editor", Role::Unknown).unwrap();
+            let link = bounds(&tree, "Show all", Role::Button)
+                .unwrap_or_else(|| panic!("Show all in {}", look.name));
+            assert!(
+                link.left() >= band.left() && link.right() <= band.right() + 0.5,
+                "{link:?} in {band:?} in {}",
+                look.name
+            );
+            // The words give way, and are named in full.
+            assert!(harness.has("Limited to 1,000 rows"), "{}", look.name);
         }
     }
 
