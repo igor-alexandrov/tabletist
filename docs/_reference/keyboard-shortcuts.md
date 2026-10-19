@@ -60,6 +60,16 @@ In the connection dialog:
 | Mod+=, Mod+-, Mod+0 | Larger, smaller and default data text, under a dialog too |
 | ? | This list |
 
+With no tab open the window shows the start screen, whose search field
+takes what you type (Mod+P opens the same search from anywhere):
+
+| Keys | Do |
+| --- | --- |
+| Up, Down | Move among the matches |
+| Return | Open the one picked |
+| Alt+Return | Open it in a new SQL editor |
+| Esc | Clear the search |
+
 ## Tables
 
 | Keys | Do |

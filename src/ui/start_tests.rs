@@ -523,17 +523,214 @@ fn the_terminal_start_keys_work_only_with_the_start_screen_focused() {
     assert!(harness.has("reviews tab"));
 }
 
-/// The other looks leave the screen's letters and numbers alone: typed,
-/// they open nothing.
+/// Test 5: on macOS the search field takes the keyboard when a character
+/// is typed on the screen, so a letter typed anywhere lands in it, the
+/// matches taking the recents' place; a chord held with Cmd still runs its
+/// shortcut.
 #[test]
-fn the_mac_look_has_no_start_letters() {
+fn a_letter_typed_on_macos_lands_in_the_search_and_cmd_shortcuts_run() {
     let (mut harness, tab) = bookshop(Look::macos());
-    type_key(&mut harness, Key::Num1, "1");
-    type_key(&mut harness, Key::T, "t");
+    harness.settle();
+    assert!(harness.has("Find a table or view"));
+    // A letter goes into the search: the recents give way to the matches.
+    for (key, text) in [(Key::C, "c"), (Key::O, "o"), (Key::V, "v")] {
+        type_key(&mut harness, key, text);
+    }
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "cov");
+    assert!(harness.has("Tables"));
+    assert!(!harness.has("Recent on this connection"));
     assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
-    // Its buttons do the same work.
-    harness.click("New SQL query");
+    // A Cmd shortcut still runs: ⌘T opens a SQL editor, past the field.
+    harness.press(Key::T, Modifiers::COMMAND);
     assert!(harness.has("Query 1 tab"));
+}
+
+/// Test 6: the matches are the `⌘P` index's, grouped by kind; `↩` opens the
+/// first, `⌥↩` opens it in a SQL editor with its `SELECT`, and `esc` clears
+/// the search and brings the recents back.
+#[test]
+fn the_search_groups_the_index_opens_the_first_and_in_an_editor_and_clears() {
+    let (mut harness, tab) = bookshop(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().driver = Driver::Postgres;
+    let search = |harness: &mut Harness| {
+        for (key, text) in [(Key::C, "c"), (Key::O, "o"), (Key::V, "v")] {
+            type_key(harness, key, text);
+        }
+    };
+    search(&mut harness);
+    // Grouped Tables then Views; the index's order inside each group.
+    assert!(harness.has("Tables") && harness.has("Views"));
+    assert_eq!(
+        harness.app.start_matches(tab).first().unwrap().0.name,
+        "covers"
+    );
+    // ↩ opens the first match.
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(harness.has("covers tab"));
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::CloseTab { tab, id });
+    // ⌥↩ opens the first match in a SQL editor that reads its first rows.
+    search(&mut harness);
+    harness.press(Key::Enter, Modifiers::ALT);
+    let sql = harness
+        .app
+        .workspace(tab)
+        .unwrap()
+        .active_sql_tab()
+        .expect("a SQL editor")
+        .text
+        .clone();
+    assert_eq!(
+        sql,
+        format!(
+            "SELECT * FROM main.covers LIMIT {}",
+            harness.app.settings.sql_limit
+        )
+    );
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::CloseTab { tab, id });
+    // esc clears the search: the recents are back.
+    search(&mut harness);
+    assert!(!harness.has("Recent on this connection"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
+    assert!(harness.has("Recent on this connection"));
+    // The field keeps the keyboard, to search again: it holds Esc, where
+    // egui would have taken the keyboard away.
+    assert_eq!(
+        harness.ctx.memory(|memory| memory.focused()),
+        Some(super::start::search_field_id(tab))
+    );
+    type_key(&mut harness, Key::A, "a");
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "a");
+}
+
+/// The search's keys are its field's: with a query left in the field and
+/// the keyboard moved to the tree, the arrows and Enter are the tree's
+/// alone, and one Enter opens one tab.
+#[test]
+fn the_search_keys_answer_only_while_its_field_has_the_keyboard() {
+    let (mut harness, tab) = bookshop(Look::macos());
+    for (key, text) in [(Key::C, "c"), (Key::O, "o"), (Key::V, "v")] {
+        type_key(&mut harness, key, text);
+    }
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "cov");
+    // The keyboard goes to the tree; the query stays in the field.
+    harness.app.apply(Action::SetTreeCursor {
+        tab,
+        node: crate::model::TreeNode::Object(ObjectRef::new("main", "authors"), ObjectKind::Table),
+    });
+    for _ in 0..8 {
+        if focused_name(&harness.settle()) == "Objects" {
+            break;
+        }
+        harness.press(Key::F6, Modifiers::NONE);
+    }
+    assert_eq!(focused_name(&harness.settle()), "Objects");
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "cov");
+    // Down moves the tree's cursor, not the search's pick.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(harness.app.workspace(tab).unwrap().start_selected, 0);
+    // One Enter opens the tree's row, and nothing of the search.
+    harness.press(Key::Enter, Modifiers::NONE);
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert_eq!(workspace.tabs.len(), 1, "one Enter, one tab");
+    assert_ne!(
+        workspace
+            .active_object_tab()
+            .map(|object| object.object.name.as_str()),
+        Some("covers"),
+        "the search's pick stayed shut"
+    );
+}
+
+/// Space on a focused control of the macOS screen presses it, as Space
+/// does everywhere: a space alone starts no search. A real keyboard sends
+/// the space as text beside the key, which a test sends by hand.
+#[test]
+fn space_presses_a_focused_start_button_and_starts_no_search() {
+    let (mut harness, tab) = bookshop(Look::macos());
+    for _ in 0..40 {
+        if focused_name(&harness.settle()) == "New SQL query" {
+            break;
+        }
+        harness.press(Key::Tab, Modifiers::NONE);
+    }
+    assert_eq!(focused_name(&harness.settle()), "New SQL query");
+    harness.frame(vec![
+        crate::testing::key(Key::Space, Modifiers::NONE),
+        egui::Event::Text(" ".into()),
+    ]);
+    harness.frame(vec![crate::testing::release(Key::Space, Modifiers::NONE)]);
+    harness.settle();
+    assert!(harness.has("Query 1 tab"), "the button was pressed");
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
+}
+
+/// A key the window reads as a command, typed on the macOS screen, is that
+/// command's, and moves the keyboard nowhere: `?` with the tree focused
+/// opens the list of keys, and the tree has the keyboard after it.
+#[test]
+fn a_typed_command_key_leaves_the_keyboard_where_it_was() {
+    let (mut harness, tab) = bookshop(Look::macos());
+    for _ in 0..8 {
+        if focused_name(&harness.settle()) == "Objects" {
+            break;
+        }
+        harness.press(Key::F6, Modifiers::NONE);
+    }
+    assert_eq!(focused_name(&harness.settle()), "Objects");
+    // The frame that brings `?` asks for Help and leaves the tree the
+    // keyboard; the search field is not asked for. (The list of keys then
+    // takes the keyboard for itself, as any dialog does.)
+    let tree = harness.frame(vec![
+        crate::testing::key(Key::Questionmark, Modifiers::NONE),
+        egui::Event::Text("?".into()),
+    ]);
+    assert_eq!(focused_name(&tree), "Objects");
+    harness.frame(vec![crate::testing::release(
+        Key::Questionmark,
+        Modifiers::NONE,
+    )]);
+    harness.settle();
+    assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
+}
+
+/// The Omarchy `/` search: `/` focuses the field while the screen has the
+/// keys, ctrl+n/p move among the matches, enter opens, and esc returns to
+/// the start lists.
+#[test]
+fn the_omarchy_slash_search_moves_opens_and_returns() {
+    let (mut harness, tab) = bookshop(Look::omarchy());
+    let pane = |harness: &Harness| harness.app.workspace(tab).unwrap().pane;
+    harness.press(Key::L, Modifiers::CTRL);
+    assert_eq!(pane(&harness), Pane::Grid);
+    // `/` focuses the field; then what is typed lands in it.
+    type_key(&mut harness, Key::Slash, "/");
+    for (key, text) in [(Key::C, "c"), (Key::O, "o"), (Key::V, "v")] {
+        type_key(&mut harness, key, text);
+    }
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "cov");
+    assert!(harness.has("matches"));
+    // The first match is picked; ctrl+n moves to the second, enter opens it.
+    assert_eq!(harness.app.start_matches(tab)[0].0.name, "covers");
+    assert_eq!(harness.app.start_matches(tab)[1].0.name, "book_covers");
+    harness.press(Key::N, Modifiers::CTRL);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(harness.has("book_covers tab"));
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::CloseTab { tab, id });
+    // Searching again, esc returns to the start lists and the screen's keys.
+    type_key(&mut harness, Key::Slash, "/");
+    type_key(&mut harness, Key::C, "c");
+    assert!(!harness.has("recent"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert_eq!(harness.app.workspace(tab).unwrap().start_search, "");
+    // The screen's own keys answer again: a number opens a recent.
+    type_key(&mut harness, Key::Num1, "1");
+    assert!(harness.has("book_covers tab"));
 }
 
 /// The name a screen reader would read for the focused node.

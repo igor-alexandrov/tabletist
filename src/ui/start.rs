@@ -5,7 +5,7 @@
 //! look a dashboard whose keys the status line lists: while the screen has
 //! the keyboard, a number opens a row and a letter starts something.
 
-use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, WidgetInfo, WidgetType};
+use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType};
 use egui::{pos2, vec2};
 use tabletist_db::{Driver, ObjectKind, ObjectRef};
 
@@ -129,6 +129,22 @@ struct Keys {
     recent: Written,
     sidebar: Written,
     help: Written,
+    /// Quick open's key, written at the macOS field's end: search goes on
+    /// from anywhere with it. Empty in the Omarchy look, which has none.
+    quick_open: Written,
+    /// The search: the keys that move among the matches (`↑↓`, `ctrl+n/p`),
+    /// open one, open one in a SQL editor, clear the search, and (Omarchy)
+    /// focus the field.
+    search_focus: Written,
+    search_move: Written,
+    search_open: Written,
+    search_editor: Written,
+    search_clear: Written,
+}
+
+/// Where the start screen's search field keeps the keyboard, by window.
+pub(crate) fn search_field_id(tab: ConnTabId) -> egui::Id {
+    egui::Id::new(("start-search", tab.0))
 }
 
 fn keys(app: &App) -> Keys {
@@ -148,6 +164,12 @@ fn keys(app: &App) -> Keys {
         recent: here(Command::OpenRecent),
         sidebar: key(Command::ToggleSidebar),
         help: key(Command::Help),
+        quick_open: key(Command::FindObject),
+        search_focus: here(Command::StartSearchFocus),
+        search_move: app.keymap.label(layout, Command::StartSearchMove),
+        search_open: here(Command::StartSearchOpen),
+        search_editor: here(Command::StartSearchOpenInEditor),
+        search_clear: here(Command::StartSearchClear),
     }
 }
 
@@ -176,6 +198,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         return;
     };
     let keys = keys(app);
+    // The matches of what is typed, grouped (tables, then views); empty
+    // where nothing is typed. The window left the field two one-shot
+    // flags, and holds what is typed and which match is picked.
+    let matches = app.start_matches(tab);
+    let (focus, blur, mut query, selected) = app
+        .workspace_mut(tab)
+        .map(|workspace| {
+            let focus = std::mem::take(&mut workspace.focus_start_search);
+            let blur = std::mem::take(&mut workspace.blur_start_search);
+            let selected = workspace
+                .start_selected
+                .min(matches.len().saturating_sub(1));
+            (focus, blur, workspace.start_search.clone(), selected)
+        })
+        .unwrap_or_default();
+    let searching = !query.trim().is_empty();
     let skin = Skin {
         look: &look,
         palette: &palette,
@@ -186,7 +224,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let mut actions = Vec::new();
     if !look.terminal {
-        status_bar(ui, skin);
+        status_bar(ui, skin, searching);
     }
     egui::CentralPanel::default()
         .frame(Frame::new().fill(palette.surface))
@@ -223,13 +261,32 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ui.spacing_mut().item_spacing.y = 0.0;
             connection_line(&mut ui, &shown, skin);
             ui.add_space(gap(&look));
-            // On macOS the first row, or the first button where there is
-            // none, is where F6 brings the keyboard.
-            let mut claimed = look.terminal;
-            lists(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
+            search_field(&mut ui, &mut query, &keys, skin, (focus, blur));
             ui.add_space(gap(&look));
-            starts(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
+            // On macOS the first row, or the first button where there is
+            // none, is where F6 brings the keyboard. While searching the
+            // matches replace the recents, and the footer of keys the
+            // three ways to start.
+            let mut claimed = look.terminal;
+            if searching {
+                results(&mut ui, &matches, selected, &query, skin, &mut actions);
+                if !look.terminal {
+                    ui.add_space(gap(&look));
+                    search_footer(&mut ui, &keys, skin);
+                }
+            } else {
+                lists(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
+                ui.add_space(gap(&look));
+                starts(&mut ui, &shown, &keys, skin, &mut claimed, &mut actions);
+            }
         });
+    // What the field edited goes back; a change picks the first match anew.
+    if let Some(workspace) = app.workspace_mut(tab)
+        && workspace.start_search != query
+    {
+        workspace.start_search = query;
+        actions.push(Action::StartSearchChanged(tab));
+    }
     app.actions.extend(actions);
 }
 
@@ -855,8 +912,360 @@ fn starts(
     }
 }
 
+/// The search field under the connection line. macOS: a 44 pt capsule
+/// with a magnifier, the placeholder, and the `⌘P` key written at its end
+/// (quick open is where search goes on from anywhere). Omarchy: a `/`-led
+/// line, as the sidebar's filter. It edits what is typed; `focus` gives it
+/// the keyboard when `/` asks (the Omarchy look), `blur` takes it off (esc
+/// there). On macOS a letter typed asks for it in `keys.rs`. Its accessible
+/// name is the placeholder.
+fn search_field(
+    ui: &mut egui::Ui,
+    query: &mut String,
+    keys: &Keys,
+    skin: Skin<'_>,
+    (focus, blur): (bool, bool),
+) {
+    let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
+    let id = search_field_id(skin.tab);
+    // What the search finds, and no more: the index has no functions and
+    // the app no saved queries, which the brief's words named too.
+    let hint = look.label(&gettext(locale, "Find a table or view"));
+    let full = ui.available_width();
+    let height = if look.terminal { 30.0 } else { 44.0 };
+    let (rect, _) = ui.allocate_exact_size(vec2(full, height), Sense::hover());
+    let corner = if look.terminal {
+        CornerRadius::same(3)
+    } else {
+        CornerRadius::same((height / 2.0) as u8)
+    };
+    let role = TextRole::pick(look, TextRole::UiBody, TextRole::OField);
+    let pad = if look.terminal { 8.0 } else { 14.0 };
+    // The lead mark: an accent `/` in the terminal look, a magnifier on
+    // macOS. The `⌘P` hint stands at the right on macOS; the Omarchy look
+    // has no quick open, so its line carries none.
+    let slash = Text::one(look, TextRole::OGroup, "/", palette.accent).layout(ui.ctx());
+    let mark = if look.terminal { slash.width() } else { 14.0 };
+    let shortcut = (!look.terminal && !keys.quick_open.as_str().is_empty()).then(|| {
+        let text = format!(
+            "{} {}",
+            keys.quick_open.as_str(),
+            gettext(locale, "from anywhere")
+        );
+        Text::one(look, widgets::secondary(look), &text, palette.dim).layout(ui.ctx())
+    });
+    let right_room = shortcut.as_ref().map_or(0.0, |laid| laid.width() + 10.0);
+    let left = rect.left() + pad + mark + 8.0;
+    let right = rect.right() - pad - right_room;
+    let line = role.row_height(ui.ctx(), look.faces);
+    let top = rect.center().y - role.middle(ui.ctx(), look.faces);
+    let inner = Rect::from_min_max(pos2(left, top), pos2(right.max(left), top + line));
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    let placeholder = Text::one(look, role, &hint, palette.dim).layout(child.ctx());
+    let response = child.add(
+        egui::TextEdit::singleline(query)
+            .id(id)
+            .font(role.font_id(look.faces))
+            .frame(Frame::NONE)
+            .margin(Margin::ZERO)
+            .desired_width(inner.width())
+            .text_color(palette.text)
+            .hint_text(placeholder.galley),
+    );
+    // The accessible name is the placeholder, so a screen reader names
+    // the field whether it is empty or holds a query.
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, &hint));
+    // Esc is the search's: it clears the search (`keys.rs`), where egui
+    // would take the field's keyboard away first and leave the key unread.
+    // The field set its own filter while it drew (the arrows); egui
+    // replaces the whole filter, so those are named again. Tab still steps
+    // on. It holds from the frame after the field first had the keyboard.
+    if response.has_focus() {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    tab: false,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
+    }
+    if focus {
+        response.request_focus();
+    }
+    if blur {
+        response.surrender_focus();
+    }
+    // The ring of the keyboard is `focus.rs`'s to draw, round the whole
+    // box rather than the line of text inside it: the accent border and,
+    // on macOS, the halo, while the keyboard put the focus there.
+    focus::hint(
+        ui,
+        &response,
+        rect,
+        focus::Ring::Field { radius: corner.nw },
+    );
+    let fill = if look.terminal {
+        palette.window
+    } else {
+        palette.surface
+    };
+    ui.painter().set(
+        backdrop,
+        egui::epaint::RectShape::filled(rect, corner, fill),
+    );
+    let border = if look.terminal {
+        palette.outline
+    } else {
+        palette.border
+    };
+    ui.painter()
+        .rect_stroke(rect, corner, Stroke::new(1.0, border), StrokeKind::Inside);
+    let y = rect.center().y;
+    if look.terminal {
+        slash.paint_left(ui.painter(), rect.left() + pad, y);
+    } else {
+        Icon::Search.image(palette.dim, 14.0).paint_at(
+            ui,
+            Rect::from_center_size(pos2(rect.left() + pad + 7.0, y), vec2(14.0, 14.0)),
+        );
+    }
+    if let Some(shortcut) = shortcut {
+        shortcut.paint_right(ui.painter(), rect.right() - pad, y);
+    }
+}
+
+/// The matches of what is typed, in the place of the recents: the tables
+/// first and the views after, each under its heading, the picked match on
+/// the selection's ground and the run of the name that matched in the
+/// accent. Opening a row opens its object.
+fn results(
+    ui: &mut egui::Ui,
+    matches: &[(ObjectRef, ObjectKind)],
+    selected: usize,
+    query: &str,
+    skin: Skin<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
+    if matches.is_empty() {
+        let text = gettext(locale, "No matches");
+        let laid = Text::one(look, widgets::secondary(look), &text, palette.dim);
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
+        let inset = if look.terminal { 2.0 } else { INSET };
+        widgets::paint_label(ui, rect.left() + inset, rect.center().y, laid);
+        widgets::announce(ui, rect, &look.label(&text));
+        return;
+    }
+    if look.terminal {
+        // One list, headed `matches`, the kind of each in a column of its
+        // own: the terminal board's dashboard, not the Mac's sections.
+        group_header(ui, &gettext(locale, "matches"), skin);
+        for (index, entry) in matches.iter().enumerate() {
+            result_row(ui, index, entry, query, index == selected, skin, actions);
+        }
+    } else {
+        // The matches under the kind they are, tables first, then views,
+        // as `start_matches` already orders them.
+        let tables = matches
+            .iter()
+            .take_while(|(_, k)| *k == ObjectKind::Table)
+            .count();
+        for (title, range) in [("Tables", 0..tables), ("Views", tables..matches.len())] {
+            if range.is_empty() {
+                continue;
+            }
+            group_header(ui, &gettext(locale, title), skin);
+            for index in range {
+                result_row(
+                    ui,
+                    index,
+                    &matches[index],
+                    query,
+                    index == selected,
+                    skin,
+                    actions,
+                );
+            }
+        }
+    }
+}
+
+/// A plain section heading over a group of matches: "Tables" or "Views",
+/// as the look writes a section label.
+fn group_header(ui: &mut egui::Ui, title: &str, skin: Skin<'_>) {
+    let (look, palette) = (skin.look, skin.palette);
+    let laid = widgets::section_label(title, look, palette).layout(ui.ctx());
+    let head_height = laid.height() + if look.terminal { 2.0 } else { 6.0 };
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), head_height), Sense::hover());
+    let inset = if look.terminal { 2.0 } else { INSET };
+    let y = head.top() + laid.height() / 2.0;
+    let width = laid.paint_left(ui.painter(), head.left() + inset, y);
+    widgets::announce(
+        ui,
+        Rect::from_min_size(head.min, vec2(width, head_height)),
+        title,
+    );
+}
+
+/// One match: on macOS its kind's icon, the name with the matched run in
+/// the accent, and its schema; in the terminal look a cursor bar on the
+/// picked one, the name and the kind. A click opens it.
+fn result_row(
+    ui: &mut egui::Ui,
+    index: usize,
+    entry: &(ObjectRef, ObjectKind),
+    query: &str,
+    picked: bool,
+    skin: Skin<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let (object, kind) = (&entry.0, entry.1);
+    let (look, palette) = (skin.look, skin.palette);
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, row_height(look)), Sense::click());
+    let name = display_safe(&object.name).into_owned();
+    let schema = display_safe(&object.schema).into_owned();
+    let kind_word = skin.say(match kind {
+        ObjectKind::Table => "table",
+        ObjectKind::View | ObjectKind::MaterializedView => "view",
+    });
+    let label = format!("{name}, {kind_word}, {schema}");
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, picked, &label));
+    widgets::selection(ui, rect, picked, response.hovered(), look, palette);
+    if !look.terminal {
+        focus::hint(
+            ui,
+            &response,
+            widgets::selection_rect(rect, look),
+            focus::Ring::Inset {
+                radius: look.radius.saturating_sub(2),
+            },
+        );
+    }
+    let [before, hit, after] = highlight(&name, query);
+    let y = rect.center().y;
+    let left = rect.left() + INSET;
+    let right = rect.right() - INSET;
+    if look.terminal {
+        let marker = if picked { "▌" } else { "" };
+        widgets::paint_text(
+            ui,
+            left,
+            y,
+            Text::one(look, TextRole::OGroup, marker, palette.accent),
+        );
+        let detail_x = right - 120.0;
+        widgets::paint_text(
+            ui,
+            detail_x,
+            y,
+            Text::one(look, TextRole::OBody, &kind_word, palette.dim),
+        );
+        let room = (detail_x - 10.0 - (left + 28.0)).max(0.0);
+        let name = Text::new(look)
+            .add(TextRole::OBody, &before, palette.text)
+            .add(TextRole::OGroup, &hit, palette.accent)
+            .add(TextRole::OBody, &after, palette.text);
+        name.wrap(room)
+            .layout(ui.ctx())
+            .paint_left(ui.painter(), left + 28.0, y);
+    } else {
+        let icon = match kind {
+            ObjectKind::Table => Icon::Table,
+            ObjectKind::View | ObjectKind::MaterializedView => Icon::Eye,
+        };
+        let ink = if picked { palette.accent } else { palette.dim };
+        icon.image(ink, 14.0).paint_at(
+            ui,
+            Rect::from_center_size(pos2(left + 7.0, y), vec2(14.0, 14.0)),
+        );
+        let x = left + 18.0 + INSET;
+        let name_ink = if picked {
+            palette.accent_hover
+        } else {
+            palette.text
+        };
+        let name = Text::new(look)
+            .add(TextRole::UiBodyStrong, &before, name_ink)
+            .add(TextRole::UiBodyStrong, &hit, palette.accent)
+            .add(TextRole::UiBodyStrong, &after, name_ink);
+        let laid = name.layout(ui.ctx());
+        let after_name = x + laid.width() + 8.0;
+        laid.paint_left(ui.painter(), x, y);
+        widgets::paint_text(
+            ui,
+            after_name,
+            y,
+            Text::one(look, widgets::secondary(look), &schema, palette.dim),
+        );
+    }
+    if response.clicked() {
+        actions.push(Action::StartSearchOpen {
+            tab: skin.tab,
+            index: Some(index),
+            in_editor: false,
+        });
+    }
+}
+
+/// Splits `name` into what stands before the run of it that matched
+/// `query`, that run, and what stands after. A contiguous, case-ignoring
+/// run only, and only where lowercasing leaves the bytes in place (ASCII
+/// names); a scattered or qualified query highlights nothing.
+fn highlight(name: &str, query: &str) -> [String; 3] {
+    let needle = query.trim();
+    let nothing = || [name.to_owned(), String::new(), String::new()];
+    if needle.is_empty() {
+        return nothing();
+    }
+    let lower = name.to_lowercase();
+    let found = lower.find(&needle.to_lowercase());
+    if lower.len() == name.len()
+        && let Some(at) = found
+    {
+        let end = at + needle.to_lowercase().len();
+        if name.is_char_boundary(at) && name.is_char_boundary(end) {
+            return [
+                name[..at].to_owned(),
+                name[at..end].to_owned(),
+                name[end..].to_owned(),
+            ];
+        }
+    }
+    nothing()
+}
+
+/// The macOS footer under the matches: the keys that move among them, open
+/// one, open one in a SQL editor, and clear the search.
+fn search_footer(ui: &mut egui::Ui, keys: &Keys, skin: Skin<'_>) {
+    let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
+    let words = ["move", "open", "open in SQL editor", "clear"].map(|word| gettext(locale, word));
+    let hints: Vec<widgets::Hint<'_>> = vec![
+        (&keys.search_move, &*words[0], true),
+        (&keys.search_open, &*words[1], true),
+        (&keys.search_editor, &*words[2], true),
+        (&keys.search_clear, &*words[3], true),
+    ];
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
+    widgets::key_hints(
+        ui,
+        (rect.left() + INSET, rect.center().y),
+        &hints,
+        14.0,
+        look,
+        palette,
+    );
+}
+
 /// The macOS status bar under the screen: that no table is open.
-fn status_bar(ui: &mut egui::Ui, skin: Skin<'_>) {
+fn status_bar(ui: &mut egui::Ui, skin: Skin<'_>, searching: bool) {
     let (look, palette) = (skin.look, skin.palette);
     egui::Panel::bottom(egui::Id::new(("start-status", skin.tab.0)))
         .exact_size(STATUS_BAR)
@@ -874,12 +1283,23 @@ fn status_bar(ui: &mut egui::Ui, skin: Skin<'_>) {
             let status = palette.secondary.lerp_to_gamma(palette.dim, 0.5);
             let text = gettext(skin.locale, "No table open");
             let rect = ui.max_rect();
+            let y = rect.center().y + 0.5;
             widgets::paint_label(
                 ui,
                 rect.left(),
-                rect.center().y + 0.5,
+                y,
                 Text::one(look, widgets::secondary(look), &text, status),
             );
+            // The right side invites a search, while nothing is typed.
+            if !searching {
+                let invite = gettext(skin.locale, "Start typing to search");
+                widgets::paint_text_right(
+                    ui,
+                    rect.right(),
+                    y,
+                    Text::one(look, widgets::secondary(look), &invite, status),
+                );
+            }
         });
 }
 
@@ -888,23 +1308,44 @@ fn status_bar(ui: &mut egui::Ui, skin: Skin<'_>) {
 pub fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (look, palette, locale) = (app.look, app.palette, app.locale);
     let keys = keys(app);
+    // The search is on while its field has the keyboard, as `keys.rs` reads
+    // it: the line then names the keys that move among the matches, open
+    // one and go back, in step with those live keys.
+    let searching = ui
+        .ctx()
+        .memory(|memory| memory.has_focus(search_field_id(tab)));
+    // Otherwise the line names the ways to start, `/` for the search among
+    // them.
     let words = [
         "open recent",
+        "search",
         "new sql",
         "database",
         "edit connection",
         "tables",
         "all keys",
+        "move",
+        "open",
+        "back",
     ]
     .map(|word| gettext(locale, word));
-    let hints: Vec<widgets::Hint<'_>> = vec![
-        (&keys.recent, &*words[0], true),
-        (&keys.sql_here, &*words[1], true),
-        (&keys.database_here, &*words[2], true),
-        (&keys.edit_here, &*words[3], true),
-        (&keys.sidebar, &*words[4], true),
-        (&keys.help, &*words[5], true),
-    ];
+    let hints: Vec<widgets::Hint<'_>> = if searching {
+        vec![
+            (&keys.search_move, &*words[7], true),
+            (&keys.search_open, &*words[8], true),
+            (&keys.search_clear, &*words[9], true),
+        ]
+    } else {
+        vec![
+            (&keys.recent, &*words[0], true),
+            (&keys.search_focus, &*words[1], true),
+            (&keys.sql_here, &*words[2], true),
+            (&keys.database_here, &*words[3], true),
+            (&keys.edit_here, &*words[4], true),
+            (&keys.sidebar, &*words[5], true),
+            (&keys.help, &*words[6], true),
+        ]
+    };
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(STATUS_LINE)
         .resizable(false)

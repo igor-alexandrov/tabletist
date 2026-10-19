@@ -168,6 +168,10 @@ pub enum When {
     /// The Agents tab shows its Log view: its keys come before the
     /// activity's.
     AgentsLog,
+    /// The start screen's search is on: its field has the keyboard. The
+    /// keys that move among the matches, open one and clear the search are
+    /// read then, and only then.
+    StartSearch,
 }
 
 /// The mode a chord holds in: with the keyboard in a text field (insert),
@@ -363,6 +367,11 @@ commands! {
     MoveInAgentLevels,
     ShowAgentsFromBox,
     OpenRecent,
+    StartSearchFocus,
+    StartSearchMove,
+    StartSearchOpen,
+    StartSearchOpenInEditor,
+    StartSearchClear,
     ToggleSidebar,
     PaneLeft,
     PaneDown,
@@ -629,6 +638,15 @@ impl Command {
             C::MoveInAgentLevels => agents(info("Move among what agents may do", "", Prompts)),
             C::ShowAgentsFromBox => agents(info("Show the connection's Agents tab", "", Prompts)),
             C::OpenRecent => info("Open a recent object", "", Navigation),
+            C::StartSearchFocus => info("Search the start screen", "", Navigation),
+            C::StartSearchMove => info("Move in the start screen's search", "", Navigation),
+            C::StartSearchOpen => info("Open the start screen's search match", "", Navigation),
+            C::StartSearchOpenInEditor => info(
+                "Open the start screen's search match in a SQL editor",
+                "",
+                Navigation,
+            ),
+            C::StartSearchClear => info("Clear the start screen's search", "", Navigation),
             C::ToggleAgentsLogScope => agents(info(
                 "Show every connection's calls in the log, or this one's",
                 "",
@@ -1130,6 +1148,40 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SwitchDatabase, START, NONE, keys(&[k("d")])),
         bind(C::EditConnection, START, NONE, keys(&[k("e")])),
         bind(C::ShowAgents, START, NONE, keys(&[k("a")])),
+        // The start screen's search. On macOS the field takes the keyboard
+        // when a character is typed on the screen, so it has no key of its
+        // own; Omarchy's `/` gives it the keys. The keys that move among
+        // the matches, open one and clear the search hold while its field
+        // has the keyboard.
+        bind(C::StartSearchFocus, START, NONE, keys(&[k("/")])),
+        bind(
+            C::StartSearchMove,
+            START,
+            keys(&[k("up"), k("down")]).shown("↑↓").any(),
+            keys(&[k("ctrl+p"), k("ctrl+n")]).shown("ctrl+n/p").any(),
+        )
+        .when(When::StartSearch),
+        bind(
+            C::StartSearchOpen,
+            START,
+            keys(&[k("enter")]).any(),
+            keys(&[k("enter")]).any(),
+        )
+        .when(When::StartSearch),
+        bind(
+            C::StartSearchOpenInEditor,
+            START,
+            keys(&[k("alt+enter")]).any(),
+            NONE,
+        )
+        .when(When::StartSearch),
+        bind(
+            C::StartSearchClear,
+            START,
+            keys(&[k("esc")]).any(),
+            keys(&[k("esc")]).any(),
+        )
+        .when(When::StartSearch),
         bind(
             C::CloseTab,
             GLOBAL,

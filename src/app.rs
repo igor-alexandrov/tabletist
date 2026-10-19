@@ -1401,6 +1401,69 @@ impl App {
                     self.save_recents();
                 }
             }
+            Action::StartSearchFocus(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.focus_start_search = true;
+                }
+            }
+            Action::StartSearchChanged(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.start_selected = 0;
+                }
+            }
+            Action::StartSearchMove { tab, by } => {
+                let count = self.start_matches(tab).len();
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.start_selected = (workspace.start_selected as isize + by)
+                        .clamp(0, count.saturating_sub(1) as isize)
+                        as usize;
+                }
+            }
+            Action::StartSearchOpen {
+                tab,
+                index,
+                in_editor,
+            } => {
+                let matches = self.start_matches(tab);
+                let selected = self
+                    .workspace(tab)
+                    .map_or(0, |workspace| workspace.start_selected);
+                // A clicked row names its own index; the picked one is
+                // clamped, as the matches may have shrunk since it moved
+                // (a relist, a database switched under a typed query).
+                let picked = index.unwrap_or_else(|| selected.min(matches.len().saturating_sub(1)));
+                let Some((object, kind)) = matches.get(picked).cloned() else {
+                    return;
+                };
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.start_search.clear();
+                    workspace.start_selected = 0;
+                }
+                if in_editor {
+                    self.open_sql_for(tab, &object);
+                } else {
+                    self.apply(Action::OpenObject {
+                        tab,
+                        object,
+                        kind,
+                        pin: true,
+                    });
+                }
+            }
+            Action::StartSearchClear(tab) => {
+                let terminal = self.look.terminal;
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.start_search.clear();
+                    workspace.start_selected = 0;
+                    // The Omarchy field gives the keys back to the screen,
+                    // so the screen's own keys answer again. The macOS
+                    // field keeps them (it holds Esc), to type afresh.
+                    if terminal {
+                        workspace.focus_start_search = false;
+                        workspace.blur_start_search = true;
+                    }
+                }
+            }
             Action::SelectCell { tab, id, cell } => {
                 // The editor's text is kept, and the note of a locked cell
                 // was about the cell the selection leaves.
@@ -4338,6 +4401,27 @@ impl App {
             .shown_schema(workspace.driver, self.settings.show_system_schemas)
     }
 
+    /// What the start screen's search lists for `tab`, in the order it
+    /// draws them: the `⌘P` index's matches (`quick_open_matches`, the
+    /// same index and ranking), grouped with the tables first and the
+    /// views after, each group in the index's order. Empty where nothing
+    /// is typed. Materialized views go with the views. The picked match
+    /// ([`Workspace::start_selected`]) is an index into this.
+    pub fn start_matches(&self, tab: ConnTabId) -> Vec<(ObjectRef, ObjectKind)> {
+        let query = self
+            .workspace(tab)
+            .map(|workspace| workspace.start_search.trim())
+            .unwrap_or_default();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let matched = self.quick_open_matches(tab, query);
+        let (tables, views): (Vec<_>, Vec<_>) = matched
+            .into_iter()
+            .partition(|(_, kind)| *kind == ObjectKind::Table);
+        tables.into_iter().chain(views).collect()
+    }
+
     /// Opens the start screen's SQL recent at `closed`: an editor with
     /// the script the closed one had, which then is no recent any more.
     fn reopen_sql(&mut self, tab: ConnTabId, closed: usize) {
@@ -4360,6 +4444,29 @@ impl App {
                 sql.opened = kept.opened;
                 sql.number = kept.number;
                 sql.mode = kept.mode;
+            }
+        }
+    }
+
+    /// Opens a new SQL editor on `tab` that reads `object`'s first rows:
+    /// `SELECT * FROM <object> LIMIT <n>`, with the names quoted as the
+    /// dialect needs and `n` the editor limit of the settings. Nothing is
+    /// run; the editor is the user's to change and run. The start screen's
+    /// `⌥↩` opens one.
+    fn open_sql_for(&mut self, tab: ConnTabId, object: &ObjectRef) {
+        let Some(id) = self.new_sql_tab(tab) else {
+            return;
+        };
+        let limit = self.settings.sql_limit;
+        if let Some(workspace) = self.workspace_mut(tab) {
+            let dialect = workspace.driver.dialect();
+            let name = format!(
+                "{}.{}",
+                dialect.ident(&object.schema),
+                dialect.ident(&object.name)
+            );
+            if let Some(sql) = workspace.sql_tab_mut(id) {
+                sql.text = format!("SELECT * FROM {name} LIMIT {limit}");
             }
         }
     }
@@ -22691,5 +22798,190 @@ masked = ["orders.email"]
             assert!(editor(&harness, tab, id).is_none());
             assert_eq!(object(&harness, tab, id).focus_field, None);
         }
+    }
+
+    /// A Bookshop development window, listed, for the start screen's search.
+    fn start_search_window() -> (Harness, ConnTabId) {
+        let mut harness = Harness::new();
+        let tab = harness.connect_with(
+            crate::testing::fixture_connection(),
+            crate::testing::bookshop_objects(),
+        );
+        (harness, tab)
+    }
+
+    #[test]
+    fn start_matches_are_the_quick_open_index_grouped_tables_then_views() {
+        let (mut harness, tab) = start_search_window();
+        harness.app.workspace_mut(tab).unwrap().start_search = "cov".into();
+        let matched: Vec<(String, ObjectKind)> = harness
+            .app
+            .start_matches(tab)
+            .into_iter()
+            .map(|(object, kind)| (object.name, kind))
+            .collect();
+        // The `⌘P` index ranks `covers` and `cover_counts` first; grouped,
+        // the tables come before the views, each in that order.
+        assert_eq!(
+            matched,
+            vec![
+                ("covers".into(), ObjectKind::Table),
+                ("book_covers".into(), ObjectKind::Table),
+                ("cover_counts".into(), ObjectKind::View),
+                ("missing_covers".into(), ObjectKind::View),
+            ]
+        );
+        // Nothing typed lists nothing.
+        harness.app.workspace_mut(tab).unwrap().start_search = "   ".into();
+        assert!(harness.app.start_matches(tab).is_empty());
+    }
+
+    #[test]
+    fn start_search_open_opens_the_picked_match_and_clears_the_search() {
+        let (mut harness, tab) = start_search_window();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.start_search = "cov".into();
+        workspace.start_selected = 1;
+        harness.app.apply(Action::StartSearchOpen {
+            tab,
+            index: None,
+            in_editor: false,
+        });
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.active_object_tab().unwrap().object.name,
+            "book_covers"
+        );
+        assert_eq!(workspace.start_search, "");
+        assert_eq!(workspace.start_selected, 0);
+        // A clicked row names its own index, whatever is picked.
+        harness.app.apply(Action::CloseTab {
+            tab,
+            id: harness.app.workspace(tab).unwrap().active_tab.unwrap(),
+        });
+        harness.app.workspace_mut(tab).unwrap().start_search = "cov".into();
+        harness.app.apply(Action::StartSearchOpen {
+            tab,
+            index: Some(2),
+            in_editor: false,
+        });
+        assert_eq!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .active_object_tab()
+                .unwrap()
+                .object
+                .name,
+            "cover_counts"
+        );
+    }
+
+    #[test]
+    fn start_search_open_in_editor_writes_a_select_of_the_match() {
+        let (mut harness, tab) = start_search_window();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.driver = Driver::Postgres;
+        workspace.start_search = "cov".into();
+        harness.app.apply(Action::StartSearchOpen {
+            tab,
+            index: None,
+            in_editor: true,
+        });
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.active_sql_tab().unwrap().text,
+            format!(
+                "SELECT * FROM main.covers LIMIT {}",
+                harness.app.settings.sql_limit
+            )
+        );
+        assert_eq!(workspace.start_search, "");
+    }
+
+    #[test]
+    fn start_search_move_clamps_and_changed_and_clear_reset() {
+        let (mut harness, tab) = start_search_window();
+        harness.app.workspace_mut(tab).unwrap().start_search = "cov".into();
+        // Up at the first match stays there; down past the last stops there.
+        harness.app.apply(Action::StartSearchMove { tab, by: -1 });
+        assert_eq!(harness.app.workspace(tab).unwrap().start_selected, 0);
+        for _ in 0..9 {
+            harness.app.apply(Action::StartSearchMove { tab, by: 1 });
+        }
+        assert_eq!(harness.app.workspace(tab).unwrap().start_selected, 3);
+        // What is typed changing picks the first again.
+        harness.app.apply(Action::StartSearchChanged(tab));
+        assert_eq!(harness.app.workspace(tab).unwrap().start_selected, 0);
+        // Clear empties the search and the pick.
+        harness.app.workspace_mut(tab).unwrap().start_selected = 2;
+        harness.app.apply(Action::StartSearchClear(tab));
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.start_search, "");
+        assert_eq!(workspace.start_selected, 0);
+    }
+
+    #[test]
+    fn start_search_clear_keeps_the_macos_field_and_blurs_the_omarchy_one() {
+        let (mut harness, tab) = start_search_window();
+        harness.app.workspace_mut(tab).unwrap().start_search = "cov".into();
+        // macOS (the harness's default look): the field holds Esc and keeps
+        // the keyboard by itself, so the clear neither asks for it nor
+        // takes it away.
+        harness.app.apply(Action::StartSearchClear(tab));
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(!workspace.focus_start_search);
+        assert!(!workspace.blur_start_search);
+        // Omarchy: esc gives the keys back to the screen.
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().start_search = "cov".into();
+        harness.app.apply(Action::StartSearchClear(tab));
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.blur_start_search);
+        assert!(!workspace.focus_start_search);
+    }
+
+    #[test]
+    fn start_search_open_clamps_a_pick_left_past_the_matches() {
+        let (mut harness, tab) = start_search_window();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.start_search = "cov".into();
+        workspace.start_selected = 3;
+        // The matches shrink under the same query, with no arrow or edit to
+        // reset the pick: only `covers` is left, so `start_selected` is
+        // stale at 3.
+        harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .tree
+            .nodes
+            .get_mut("main")
+            .unwrap()
+            .objects
+            .value = Some(vec![tabletist_db::ObjectInfo {
+            name: "covers".into(),
+            kind: ObjectKind::Table,
+            estimated_rows: None,
+        }]);
+        assert_eq!(harness.app.start_matches(tab).len(), 1);
+        harness.app.apply(Action::StartSearchOpen {
+            tab,
+            index: None,
+            in_editor: false,
+        });
+        // It opens the match that is left, not nothing.
+        assert_eq!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .active_object_tab()
+                .unwrap()
+                .object
+                .name,
+            "covers"
+        );
     }
 }

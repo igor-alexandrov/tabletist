@@ -98,17 +98,27 @@ with `read-only` where it is), the five tables, views and SQL editors you
 opened last on this connection, numbered, and under `start` the ways to
 begin. On your first visit it lists the largest tables instead, from the
 database's statistics, so nothing is queried (a SQLite file lists its
-tables by name). The status line says `-- START --` while no tab is open.
-After a connect the keyboard is in the sidebar; Ctrl+L gives it to the
-screen, whose border lights, and Ctrl+H puts it back.
+tables by name). A `/` line under the connection holds the search. The
+status line says `-- START --` while no tab is open. After a connect the
+keyboard is in the sidebar; Ctrl+L gives it to the screen, whose border
+lights, and Ctrl+H puts it back.
 
 | Keys | Do |
 | --- | --- |
 | `1` to `9` | Open that row |
+| `/` | Search the tables and views; type to filter |
 | `t` | New SQL editor |
 | `d` | Switch database, where the server has another |
 | `e` | Edit the connection |
 | `a` | Show the Agents tab |
+
+With the search open, the matches replace the start lists:
+
+| Keys | Do |
+| --- | --- |
+| `Ctrl+N`, `Ctrl+P` | Move down and up the matches |
+| `Enter` | Open the one picked |
+| `Esc` | Clear the search and go back |
 
 ### A table
 
