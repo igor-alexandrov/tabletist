@@ -928,10 +928,9 @@ fn search_field(
 ) {
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let id = search_field_id(skin.tab);
-    let hint = look.label(&gettext(
-        locale,
-        "Find a table, view, function or saved query",
-    ));
+    // What the search finds, and no more: the index has no functions and
+    // the app no saved queries, which the brief's words named too.
+    let hint = look.label(&gettext(locale, "Find a table or view"));
     let full = ui.available_width();
     let height = if look.terminal { 30.0 } else { 44.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(full, height), Sense::hover());

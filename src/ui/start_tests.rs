@@ -531,7 +531,7 @@ fn the_terminal_start_keys_work_only_with_the_start_screen_focused() {
 fn a_letter_typed_on_macos_lands_in_the_search_and_cmd_shortcuts_run() {
     let (mut harness, tab) = bookshop(Look::macos());
     harness.settle();
-    assert!(harness.has("Find a table, view, function or saved query"));
+    assert!(harness.has("Find a table or view"));
     // A letter goes into the search: the recents give way to the matches.
     for (key, text) in [(Key::C, "c"), (Key::O, "o"), (Key::V, "v")] {
         type_key(&mut harness, key, text);
