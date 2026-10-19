@@ -63,6 +63,9 @@ pub mod sql_complete;
 pub mod sql_editor;
 pub mod sql_results;
 pub mod sql_text;
+pub mod start;
+#[cfg(test)]
+mod start_tests;
 pub mod states;
 pub mod structure;
 pub mod terminal_dialog;
@@ -4438,7 +4441,7 @@ value_tags   = true
         harness.click("users");
         harness.click("Close users");
         assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
-        assert!(harness.has("Select a table or view in the sidebar"));
+        assert!(harness.has("No table open"), "the start screen is back");
     }
 
     #[test]

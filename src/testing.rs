@@ -535,6 +535,33 @@ pub(crate) fn fixture_objects() -> Vec<ObjectInfo> {
     ]
 }
 
+/// The Bookshop's objects as a catalog lists them, with the planner's
+/// estimate of each table's rows: what a start screen's first visit sorts
+/// by. In schema `main`, as the fake session's are.
+pub(crate) fn bookshop_objects() -> Vec<ObjectInfo> {
+    let table = |name: &str, rows: u64| ObjectInfo {
+        name: name.into(),
+        kind: ObjectKind::Table,
+        estimated_rows: Some(rows),
+    };
+    let view = |name: &str| ObjectInfo {
+        name: name.into(),
+        kind: ObjectKind::View,
+        estimated_rows: None,
+    };
+    vec![
+        table("authors", 3_700),
+        table("book_covers", 13),
+        view("cover_counts"),
+        table("covers", 13),
+        table("editions", 9_400),
+        view("missing_covers"),
+        table("publishers", 6),
+        table("ratings", 31_900),
+        table("reviews", 48_200),
+    ]
+}
+
 /// The saved connection the fake session stands for.
 pub(crate) fn fixture_connection() -> SavedConnection {
     SavedConnection {

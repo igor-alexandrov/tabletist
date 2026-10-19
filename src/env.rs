@@ -93,6 +93,15 @@ impl Environment {
         }
     }
 
+    /// Whether this is production: the one environment whose surfaces are
+    /// always drawn in its colours, whatever the settings say.
+    pub fn is_production(self) -> bool {
+        match self {
+            Self::Production => true,
+            Self::Local | Self::Dev | Self::Staging | Self::None => false,
+        }
+    }
+
     /// The badge text: the lower-case name in a macOS or Windows pill, the
     /// terminal's upper-case tag on Omarchy.
     pub fn label(self, platform: Platform) -> &'static str {
@@ -891,6 +900,8 @@ mod tests {
             "src/ui/connect_dialog/mod.rs",
             "src/ui/env_tests.rs",
             "src/ui/settings/preview.rs",
+            "src/ui/start.rs",
+            "src/ui/start_tests.rs",
         ];
         let mut found = Vec::new();
         for (path, text) in sources() {

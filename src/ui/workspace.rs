@@ -151,18 +151,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             }
                         });
                 }
-                None => {
-                    ui.centered_and_justified(|ui| {
-                        Text::one(
-                            &look,
-                            widgets::body(&look),
-                            &gettext(app.locale, "Select a table or view in the sidebar"),
-                            app.palette.secondary,
-                        )
-                        .layout(ui.ctx())
-                        .label(ui);
-                    });
-                }
+                None => super::start::show(app, ui, tab),
             }
         });
 }
@@ -2136,6 +2125,11 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     if workspace.command.is_some() {
         command_line(app, ui, tab);
+        return;
+    }
+    // No tab: the start screen's keys, and that no table is open.
+    if workspace.active_tab.is_none() {
+        super::start::status_line(app, ui, tab);
         return;
     }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;

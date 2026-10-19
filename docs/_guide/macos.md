@@ -23,6 +23,16 @@ launch, are on the
   the chips of the open connections sit beside the window's buttons, as
   tabs do in Safari. In full screen the window's buttons are hidden and
   the bar takes the whole width.
+- **A window with no tab open shows the start screen.** One line says
+  which database you are on, which server serves it and how many tables
+  and views it lists (a production connection gets its red strip there,
+  with Read-only where it is). Under it, the five tables, views and SQL
+  editors you opened last on this connection, newest first; Clear empties
+  the list. On your first visit the screen lists the largest tables
+  instead, from the database's own statistics, so nothing is queried (a
+  SQLite file lists its tables by name). Then
+  three buttons: New SQL query, Switch database and Edit connection.
+  Closing the last tab brings the screen back.
 - **Light and dark follow the system.** Tabletist changes with the
   Appearance setting while it runs. **Settings › Appearance** can keep it
   light or dark whatever the system says.
