@@ -8,20 +8,23 @@ use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, 
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
+use crate::keymap::Command;
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    EnvBar, FontSizes, Idle, InterfaceSize, Launch, Mode, OptionId, OptionValue, RowHeight,
-    Settings, TableList, ThemeChoice, Timestamps, Zone,
+    Autocomplete, Commas, EditorKeys, EnvBar, FontSizes, Idle, Indent, InterfaceSize, KeywordCase,
+    Launch, LineNumbers, Mode, NewTab, OptionId, OptionValue, RowHeight, RunScope, Settings,
+    TableList, ThemeChoice, Timestamps, Zone,
 };
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format::group_digits;
 use crate::ui::menu;
+use crate::ui::sql_editor;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
-use super::{label, path_shown, sample_timestamp, small_print, zone_text};
+use super::{label, path_shown, said, sample_timestamp, small_print, zone_text};
 
 /// The sheet at its widest and at its tallest, and what it leaves of the
 /// window at each side.
@@ -213,6 +216,23 @@ pub(super) fn show(
                             ("Environment color", &OptionId::ENVIRONMENT),
                         ],
                         true,
+                    ),
+                    &super::shown(app),
+                    limit,
+                    &skin,
+                    actions,
+                ),
+                // The title alone: the board's line under it speaks of the
+                // history, which is not built yet.
+                SettingsPane::Editor => content(
+                    &mut pane,
+                    ("Editor", None),
+                    (
+                        &[
+                            ("Running queries", &OptionId::RUNNING),
+                            ("Typing", &OptionId::TYPING),
+                        ],
+                        false,
                     ),
                     &super::shown(app),
                     limit,
@@ -608,7 +628,7 @@ pub(super) fn row(
     let name = Text::one(
         look,
         TextRole::UiBody,
-        &skin.say(label(option)),
+        &said(ui.ctx(), look, skin.locale, label(option)),
         palette.text,
     )
     .wrap(column)
@@ -624,9 +644,13 @@ pub(super) fn row(
         }
         None => small_print(option).map(|print| (skin.say(print), palette.dim)),
     };
-    // What the row says under its label is what its controls are for: a
-    // screen reader reads it as their description.
-    let description = print.as_ref().map(|(print, _)| print.clone());
+    // What the row says under its label, or beside its control where it
+    // says nothing under it, is what its controls are for: a screen reader
+    // reads it as their description.
+    let description = print
+        .as_ref()
+        .map(|(print, _)| print.clone())
+        .or_else(|| super::helper(option).map(|words| skin.say(words)));
     let print = print.map(|(print, color)| {
         Text::one(look, TextRole::Secondary, &print, color)
             .wrap(column)
@@ -714,6 +738,19 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
         OptionId::InterfaceSize => SEGMENT + 4.0,
         OptionId::Font | OptionId::FontSize => look.control_height,
+        OptionId::NewTab
+        | OptionId::RunScope
+        | OptionId::EditorKeys
+        | OptionId::Indent
+        | OptionId::Autocomplete
+        | OptionId::Keywords
+        | OptionId::Commas => SEGMENT + 4.0,
+        OptionId::RowLimit | OptionId::Timeout | OptionId::HistoryKeep => look.control_height,
+        OptionId::ConfirmUnsafeWrites
+        | OptionId::ClosePairs
+        | OptionId::LineNumbers
+        | OptionId::HighlightLine
+        | OptionId::Wrap => SWITCH,
         OptionId::RestoreTabs
         | OptionId::ValueTags
         | OptionId::ProductionReadOnly
@@ -739,8 +776,151 @@ fn control(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let name = skin.say(label(option));
+    let name = said(ui.ctx(), look, skin.locale, label(option));
+    // Two or three words of segments, picked into a value.
+    let mut segmented = |words: &[&'static str], selected: usize| {
+        let words: Vec<String> = words.iter().map(|word| skin.say(word)).collect();
+        segments(ui, (&name, description), &words, selected, skin)
+    };
     match option {
+        OptionId::NewTab => {
+            let selected = usize::from(settings.new_tab == NewTab::Connection);
+            let words = ["Read-only transaction", "Follow connection"];
+            if let Some(picked) = segmented(&words, selected) {
+                let choice = [NewTab::ReadOnly, NewTab::Connection][picked];
+                actions.push(Action::SetOption(OptionValue::NewTab(choice)));
+            }
+        }
+        OptionId::RunScope => {
+            let selected = usize::from(settings.run_scope == RunScope::All);
+            if let Some(picked) = segmented(&["Statement at cursor", "Whole tab"], selected) {
+                let scope = [RunScope::Statement, RunScope::All][picked];
+                actions.push(Action::SetOption(OptionValue::RunScope(scope)));
+            }
+        }
+        OptionId::EditorKeys => {
+            let keys = settings.editor_keys_in(look.terminal);
+            let selected = usize::from(keys == EditorKeys::Vim);
+            if let Some(picked) = segmented(&["Standard", "Vim"], selected) {
+                let keys = [EditorKeys::Standard, EditorKeys::Vim][picked];
+                actions.push(Action::SetOption(OptionValue::EditorKeys(Some(keys))));
+            }
+        }
+        OptionId::Indent => {
+            let selected = Indent::ALL
+                .iter()
+                .position(|indent| *indent == settings.indent)
+                .unwrap_or(0);
+            if let Some(picked) = segmented(&["2 spaces", "4 spaces", "Tab"], selected) {
+                actions.push(Action::SetOption(OptionValue::Indent(Indent::ALL[picked])));
+            }
+        }
+        OptionId::Autocomplete => {
+            // The middle one names the key that asks for a list.
+            let complete = crate::ui::keys::written(ui.ctx(), look, Command::Complete);
+            let manual = skin.say("On {key}").replace("{key}", complete.as_str());
+            let words = [skin.say("As you type"), manual, skin.say("Off")];
+            let selected = Autocomplete::ALL
+                .iter()
+                .position(|choice| *choice == settings.autocomplete)
+                .unwrap_or(0);
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
+                let choice = Autocomplete::ALL[picked];
+                actions.push(Action::SetOption(OptionValue::Autocomplete(choice)));
+            }
+        }
+        OptionId::Keywords => {
+            let case = settings.keywords_in(look.terminal);
+            let selected = KeywordCase::ALL
+                .iter()
+                .position(|choice| *choice == case)
+                .unwrap_or(0);
+            if let Some(picked) = segmented(&["UPPERCASE", "lowercase", "Keep"], selected) {
+                let case = KeywordCase::ALL[picked];
+                actions.push(Action::SetOption(OptionValue::Keywords(Some(case))));
+            }
+        }
+        OptionId::Commas => {
+            let selected = usize::from(settings.commas == Commas::Leading);
+            if let Some(picked) = segmented(&["Trailing", "Leading"], selected) {
+                let commas = [Commas::Trailing, Commas::Leading][picked];
+                actions.push(Action::SetOption(OptionValue::Commas(commas)));
+            }
+        }
+        OptionId::RowLimit => {
+            let shown = sql_editor::limit_words(settings.sql_limit, look, skin.locale);
+            let choices = Settings::sql_limits_with(settings.sql_limit)
+                .into_iter()
+                .map(|limit| {
+                    let text = sql_editor::limit_words(limit, look, skin.locale);
+                    (
+                        text,
+                        limit == settings.sql_limit,
+                        OptionValue::RowLimit(limit),
+                    )
+                });
+            choice_menu(
+                ui,
+                ("row-limit", &name, description),
+                &shown,
+                choices,
+                skin,
+                actions,
+            );
+        }
+        OptionId::Timeout => {
+            let words = |secs: Option<u32>| match secs {
+                Some(secs) => sql_editor::time_words(secs, false, skin.locale),
+                None => skin.say("Off"),
+            };
+            let current = settings.sql_timeout_secs;
+            let choices = Settings::sql_timeouts_with(current)
+                .into_iter()
+                .map(|secs| (words(secs), secs == current, OptionValue::Timeout(secs)));
+            let shown = words(current);
+            choice_menu(
+                ui,
+                ("timeout", &name, description),
+                &shown,
+                choices,
+                skin,
+                actions,
+            );
+        }
+        OptionId::HistoryKeep => {
+            let words = |keep: u32| match keep {
+                0 => skin.say("Don't keep"),
+                keep => skin
+                    .say("Last {n} queries")
+                    .replace("{n}", &group_digits(u64::from(keep))),
+            };
+            let current = settings.history_keep;
+            let choices = Settings::history_keeps_with(current)
+                .into_iter()
+                .map(|keep| (words(keep), keep == current, OptionValue::HistoryKeep(keep)));
+            let shown = words(current);
+            choice_menu(
+                ui,
+                ("history", &name, description),
+                &shown,
+                choices,
+                skin,
+                actions,
+            );
+        }
+        // On is a number on each line: as they are, or absolute where
+        // they were off. A stored `relative` shows on and stays.
+        OptionId::LineNumbers => {
+            let numbers = settings.line_numbers_in(look.terminal);
+            if widgets::toggle(ui, numbers.shown(), &name, description, palette).clicked() {
+                let to = if numbers.shown() {
+                    LineNumbers::Off
+                } else {
+                    LineNumbers::Absolute
+                };
+                actions.push(Action::SetOption(OptionValue::LineNumbers(Some(to))));
+            }
+        }
         OptionId::PageSize => {
             let written = |size: u32| group_digits(u64::from(size));
             let size = written(settings.page_size);
@@ -876,7 +1056,11 @@ fn control(
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
         | OptionId::Zebra
-        | OptionId::ColumnTypes => {
+        | OptionId::ColumnTypes
+        | OptionId::ConfirmUnsafeWrites
+        | OptionId::ClosePairs
+        | OptionId::HighlightLine
+        | OptionId::Wrap => {
             let on = super::is_on(&settings.value(option));
             if widgets::toggle(ui, on, &name, description, palette).clicked()
                 && let Some(flipped) = settings.flipped(option)
@@ -1216,6 +1400,12 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
             palette.dim,
         ),
         OptionId::ValueTags => return tags(ui, at, right, settings.value_tags, skin),
+        OptionId::RunScope => Text::one(
+            look,
+            TextRole::Secondary,
+            &skin.say("A selection always wins"),
+            palette.dim,
+        ),
         // What the Appearance pane's rows say is their small print, and its
         // tiles have their own line.
         OptionId::Theme
@@ -1234,12 +1424,60 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         | OptionId::Zebra
         | OptionId::ColumnTypes
         | OptionId::TableList
-        | OptionId::EnvBar => return,
+        | OptionId::EnvBar
+        | OptionId::NewTab
+        | OptionId::RowLimit
+        | OptionId::Timeout
+        | OptionId::ConfirmUnsafeWrites
+        | OptionId::EditorKeys
+        | OptionId::Indent
+        | OptionId::Autocomplete
+        | OptionId::ClosePairs
+        | OptionId::LineNumbers
+        | OptionId::HighlightLine
+        | OptionId::Wrap
+        | OptionId::Keywords
+        | OptionId::Commas
+        | OptionId::HistoryKeep => return,
     };
     let text = text.layout(ui.ctx());
     if at.x + text.width() <= right {
         write(ui, at.x, at.y, &text);
     }
+}
+
+/// A menu of `choices` (what each says, whether it is the one set, and the
+/// value it sets) named `name`, `shown` closed, with `description` for
+/// screen readers. `id` tells it from the pane's other menus.
+fn choice_menu(
+    ui: &mut Ui,
+    (id, name, description): (&str, &str, Option<&str>),
+    shown: &str,
+    choices: impl Iterator<Item = (String, bool, OptionValue)>,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let dropdown = menu::Dropdown::new(id, shown, MENU).description(description);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for (text, chosen, value) in choices {
+            let entry_name = format!("{name} {text}");
+            let entry = menu::Item::choice(&text, chosen)
+                .name(&entry_name)
+                .show(ui, look, palette);
+            if entry.clicked() {
+                actions.push(Action::SetOption(value));
+                // egui closes the menu on a pointer's click; a pick by key
+                // or by a screen reader closes it here.
+                ui.close();
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(shown.to_owned());
+        info
+    });
 }
 
 /// Paints `text` from `x` on, centred on `y`, and names it for screen
@@ -1324,6 +1562,7 @@ fn footer_height(ui: &Ui, ignored: Option<&Laid>, skin: &Skin) -> f32 {
 fn reset_question(pane: SettingsPane) -> &'static str {
     match pane {
         SettingsPane::General => "Reset all General settings to their defaults?",
+        SettingsPane::Editor => "Reset all Editor settings to their defaults?",
         SettingsPane::Appearance | SettingsPane::Agents => "Reset every option on this tab?",
     }
 }

@@ -18,7 +18,7 @@ use crate::ui::focus::{self, Ring};
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::{Said, choices, file_pane, opened, sample_timestamp, small_print, terminal_label};
+use super::{Said, choices, file_pane, opened, sample_timestamp, terminal_label};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -120,12 +120,22 @@ impl Skin<'_> {
         self.look.label(&gettext(self.locale, text))
     }
 
+    /// A row's label as the screen writes it: as [`Self::say`] has it,
+    /// with the run key in it where it names one.
+    fn label(&self, ctx: &egui::Context, text: &'static str) -> String {
+        self.look
+            .label(&super::said(ctx, self.look, self.locale, text))
+    }
+
     /// A choice as the screen writes it: a word as [`Self::say`] has it, a
-    /// sample as it is.
-    fn written(&self, choice: Said) -> String {
+    /// sample as it is, a key as the keymap writes it.
+    fn written(&self, ctx: &egui::Context, choice: Said) -> String {
         match choice {
             Said::Word(word) => self.say(word),
             Said::Sample(sample) => sample.to_owned(),
+            Said::Key(command) => crate::ui::keys::written(ctx, self.look, command)
+                .as_str()
+                .to_owned(),
         }
     }
 }
@@ -210,6 +220,7 @@ pub(super) fn show(
                 .show(&mut list, |ui| match pane {
                     SettingsPane::General => rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Appearance => appearance_rows(ui, &settings, row, &skin, actions),
+                    SettingsPane::Editor => editor_rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Agents => agent_rows(ui, app, &settings, row, &skin, actions),
                 });
             if let Some(beside) = beside {
@@ -446,6 +457,40 @@ fn appearance_rows(
     let name = skin.say("Preview");
     super::preview::show(ui, (&name, ROW_SIDE), settings, skin.look, skin.palette);
     ui.add_space(4.0);
+}
+
+/// The Editor pane's options, a row each, under the headings of their
+/// groups, as far as they are built. Their columns line up across the
+/// groups.
+fn editor_rows(
+    ui: &mut Ui,
+    settings: &Settings,
+    cursor: usize,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let room = ui.available_width() - 2.0 * ROW_SIDE;
+    let shown: Vec<OptionId> = [&OptionId::RUNNING[..], &OptionId::TERMINAL_TYPING[..]].concat();
+    let columns = columns(ui, room, widths(ui, &shown, settings, skin), skin);
+    let mut index = 0;
+    for (heading_text, top, options) in [
+        ("Running queries", 8.0, &OptionId::RUNNING[..]),
+        ("Typing", 12.0, &OptionId::TERMINAL_TYPING[..]),
+    ] {
+        heading(ui, heading_text, top, skin);
+        for option in options.iter().copied() {
+            option_row(
+                ui,
+                (index, option),
+                index == cursor,
+                columns,
+                settings,
+                skin,
+                actions,
+            );
+            index += 1;
+        }
+    }
 }
 
 /// The colours the theme gave, eight of them as the board has them, and
@@ -884,7 +929,12 @@ fn widths(ui: &Ui, options: &[OptionId], settings: &Settings, skin: &Skin) -> (f
     let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
     let labels = options
         .iter()
-        .map(|option| width(&format!("▌{}", skin.say(terminal_label(*option)))))
+        .map(|option| {
+            width(&format!(
+                "▌{}",
+                skin.label(ui.ctx(), terminal_label(*option))
+            ))
+        })
         .fold(0.0, f32::max);
     let values = options
         .iter()
@@ -942,7 +992,11 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::Tz
         | OptionId::IdleDisconnect
         | OptionId::OnLaunch
-        | OptionId::FontSize => width(&format!("‹ {} ›", stepped_text(option, settings, skin))),
+        | OptionId::FontSize
+        | OptionId::RowLimit
+        | OptionId::Timeout
+        | OptionId::Indent
+        | OptionId::HistoryKeep => width(&format!("‹ {} ›", stepped_text(option, settings, skin))),
         OptionId::Font => width(&font_value(settings, skin)),
         OptionId::Timestamps
         | OptionId::GroupDigits
@@ -950,7 +1004,14 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::InterfaceSize
         | OptionId::RowHeight
         | OptionId::TableList
-        | OptionId::EnvBar => {
+        | OptionId::EnvBar
+        | OptionId::NewTab
+        | OptionId::RunScope
+        | OptionId::EditorKeys
+        | OptionId::Autocomplete
+        | OptionId::LineNumbers
+        | OptionId::Keywords
+        | OptionId::Commas => {
             let words = choices(option, settings, skin.named, skin.launches);
             let between = width(" ") * words.len().saturating_sub(1) as f32;
             let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
@@ -963,7 +1024,11 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
         | OptionId::Zebra
-        | OptionId::ColumnTypes => width("[x]"),
+        | OptionId::ColumnTypes
+        | OptionId::ConfirmUnsafeWrites
+        | OptionId::ClosePairs
+        | OptionId::HighlightLine
+        | OptionId::Wrap => width("[x]"),
     }
 }
 
@@ -987,6 +1052,25 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
             (zone, system) => super::zone_text(skin.locale, zone, system),
         }),
         OptionId::FontSize => settings.font_size_in(true).text(),
+        OptionId::RowLimit => {
+            crate::ui::sql_editor::limit_words(settings.sql_limit, skin.look, skin.locale)
+        }
+        // As the file writes it: `30s`, `1m`, `off`.
+        OptionId::Timeout => match settings.sql_timeout_secs {
+            Some(secs) => crate::ui::sql_editor::time_words(secs, true, skin.locale),
+            None => skin.say("Off"),
+        },
+        OptionId::Indent => skin.say(match settings.indent {
+            crate::settings::Indent::Two => "2 spaces",
+            crate::settings::Indent::Four => "4 spaces",
+            crate::settings::Indent::Tab => "Tab",
+        }),
+        OptionId::HistoryKeep => match settings.history_keep {
+            0 => skin.say("Don't keep"),
+            keep => skin
+                .say("{n} per connection")
+                .replace("{n}", &keep.to_string()),
+        },
         // A connection by its name as it is saved, and where it points:
         // three of one name are told apart.
         OptionId::OnLaunch => {
@@ -1018,7 +1102,7 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
 
 /// How wide the segment of the choice `word` is.
 fn segment(ui: &Ui, word: Said, skin: &Skin) -> f32 {
-    let text = skin.written(word);
+    let text = skin.written(ui.ctx(), word);
     TextRole::OBody.width(ui.ctx(), skin.look.faces, &text) + 2.0 * SEGMENT_PAD
 }
 
@@ -1041,7 +1125,7 @@ fn row_frame(
     let role = TextRole::OBody;
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
     let button = (index != usize::MAX).then(|| {
-        let said = gettext(locale, name);
+        let said = super::said(ui.ctx(), look, locale, name);
         let button = ButtonSpec::new(&said).hidden_at(ui, row);
         // A row of a list: a ring outside it would be cut where the list
         // ends.
@@ -1058,7 +1142,7 @@ fn row_frame(
     let right = (row.right() - ROW_SIDE).max(left);
     // The cursor's mark stands where a label starts, so the label under
     // the cursor is a cell further in than the others.
-    let text = skin.say(name);
+    let text = skin.label(ui.ctx(), name);
     let text = if on_cursor {
         Text::one(look, role, &format!("▌{text}"), palette.accent)
     } else {
@@ -1133,9 +1217,13 @@ fn option_row(
                 | OptionId::IdleDisconnect
                 | OptionId::OnLaunch
                 | OptionId::FontSize
+                | OptionId::RowLimit
+                | OptionId::Timeout
+                | OptionId::Indent
+                | OptionId::HistoryKeep
         )
     {
-        let name = gettext(locale, terminal_label(option));
+        let name = super::said(ui.ctx(), skin.look, locale, terminal_label(option));
         let value = stepped_text(option, settings, skin);
         button.widget_info(|| {
             let mut info = WidgetInfo::labeled(WidgetType::Button, true, &name);
@@ -1159,7 +1247,11 @@ fn option_row(
         | OptionId::Tz
         | OptionId::IdleDisconnect
         | OptionId::OnLaunch
-        | OptionId::FontSize => stepper(ui, cell, option, settings, skin, actions),
+        | OptionId::FontSize
+        | OptionId::RowLimit
+        | OptionId::Timeout
+        | OptionId::Indent
+        | OptionId::HistoryKeep => stepper(ui, cell, option, settings, skin, actions),
         // Nothing to step to: a name is set in the file.
         OptionId::Font => {
             let value = Text::one(
@@ -1176,7 +1268,14 @@ fn option_row(
         | OptionId::InterfaceSize
         | OptionId::RowHeight
         | OptionId::TableList
-        | OptionId::EnvBar => {
+        | OptionId::EnvBar
+        | OptionId::NewTab
+        | OptionId::RunScope
+        | OptionId::EditorKeys
+        | OptionId::Autocomplete
+        | OptionId::LineNumbers
+        | OptionId::Keywords
+        | OptionId::Commas => {
             segments(ui, cell, option, settings, skin, actions);
         }
         OptionId::RestoreTabs
@@ -1186,7 +1285,11 @@ fn option_row(
         | OptionId::AgentsOn
         | OptionId::AgentsNotify
         | OptionId::Zebra
-        | OptionId::ColumnTypes => {
+        | OptionId::ColumnTypes
+        | OptionId::ConfirmUnsafeWrites
+        | OptionId::ClosePairs
+        | OptionId::HighlightLine
+        | OptionId::Wrap => {
             check(ui, cell, option, settings, skin, actions);
         }
     }
@@ -1377,6 +1480,27 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             .add(role, &format!("{} ", skin.say("default;")), palette.dim)
             .add(role, &key(ui, look, Command::ToggleTree), palette.accent)
             .add(role, &format!(" {}", skin.say("toggles")), palette.dim),
+        // Not the board's "ctrl+w toggles per tab": ctrl+w closes the tab.
+        // The commands that switch it, from the keymap.
+        OptionId::NewTab => Text::new(look)
+            .add(role, &key(ui, look, Command::ReadOnlyTab), palette.accent)
+            .add(role, " / ", palette.dim)
+            .add(role, &key(ui, look, Command::ReadWriteTab), palette.accent)
+            .add(role, &format!(" {}", skin.say("per tab")), palette.dim),
+        OptionId::RowLimit => dim(&skin.say("caps results you browse")),
+        OptionId::RunScope => dim(&skin.say("a selection always wins")),
+        OptionId::ConfirmUnsafeWrites => dim(&skin.say("connections that allow writes")),
+        OptionId::EditorKeys => dim(&skin.say("-- INSERT -- shown in the status line")),
+        OptionId::Autocomplete => dim(&skin.say("schema objects")),
+        OptionId::HistoryKeep => dim(&skin.say("text only, no results")),
+        OptionId::Timeout
+        | OptionId::Indent
+        | OptionId::ClosePairs
+        | OptionId::LineNumbers
+        | OptionId::HighlightLine
+        | OptionId::Wrap
+        | OptionId::Keywords
+        | OptionId::Commas => Text::new(look),
         // Production as the bar's label writes it, in its own case.
         OptionId::EnvBar => Text::new(look)
             .add(
@@ -1545,8 +1669,13 @@ fn choice(
 ) {
     let name = format!(
         "{}: {}",
-        gettext(skin.locale, terminal_label(value.option())),
-        word.name(skin.locale)
+        super::said(
+            ui.ctx(),
+            skin.look,
+            skin.locale,
+            terminal_label(value.option())
+        ),
+        word.name(ui.ctx(), skin.look, skin.locale)
     );
     let button = ButtonSpec::new(&name);
     let button = match press {
@@ -1572,7 +1701,7 @@ fn choice(
 /// description: what a screen reader reads after its name, as the macOS
 /// look's controls have it. In the case its name has, not the look's.
 fn describe(ui: &Ui, control: &egui::Response, option: OptionId, skin: &Skin) {
-    if let Some(print) = small_print(option) {
+    if let Some(print) = super::helper(option) {
         let said = gettext(skin.locale, print);
         ui.ctx().accesskit_node_builder(control.id, |node| {
             node.set_description(said.as_ref());
@@ -1590,7 +1719,7 @@ fn radio_group(ui: &mut Ui, cell: Cell, option: OptionId, skin: &Skin) -> Ui {
         .id_salt(("values", label))
         .max_rect(cell.row);
     let group = ui.new_child(builder);
-    let name = gettext(skin.locale, label);
+    let name = super::said(ui.ctx(), skin.look, skin.locale, label);
     group
         .ctx()
         .accesskit_node_builder(group.unique_id(), |node| {
@@ -1619,7 +1748,7 @@ fn segments(
     let mut group = radio_group(ui, cell, option, skin);
     let mut left = cell.left;
     for (word, value) in choices(option, settings, skin.named, skin.launches) {
-        let text = skin.written(word);
+        let text = skin.written(ui.ctx(), word);
         let width = segment(ui, word, skin);
         let place = Rect::from_min_size(
             pos2(left, cell.row.center().y - line / 2.0),

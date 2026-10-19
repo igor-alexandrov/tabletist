@@ -167,7 +167,7 @@ column's line, or come to them with Tab or F6.
 
 | Keys | Do |
 | --- | --- |
-| Cmd+Return | Run the statement at the cursor |
+| Cmd+Return | Run the statement at the cursor, the whole script or the selection, as Settings › Editor says |
 | Cmd+Shift+Return | Run all |
 | Cmd+. | Cancel the run |
 | Cmd+Shift+F | Format |

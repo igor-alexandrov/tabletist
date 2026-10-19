@@ -243,7 +243,17 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
     );
 
     let marked = option.and_then(|option| {
-        let line = file.lines.iter().find(|(key, _)| *key == option.key());
+        // The new key's line, else the old key's it took the place of,
+        // which sets it while the file has no new one.
+        let key = option.key();
+        let line = file
+            .lines
+            .iter()
+            .find(|(read, _)| *read == key)
+            .or_else(|| {
+                let old = key.replaced()?;
+                file.lines.iter().find(|(read, _)| *read == old)
+            });
         line.map(|(_, line)| *line)
     });
     let line = role.row_height(ui.ctx(), look.faces);

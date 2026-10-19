@@ -357,9 +357,8 @@ fn format_script(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     true
 }
 
-/// The number the gutter shows for `line`: its own, or (the terminal's
-/// relative numbers) how far it is from the cursor's line, which keeps
-/// its own.
+/// The number the gutter shows for `line`: its own, or (relative numbers)
+/// how far it is from the cursor's line, which keeps its own.
 fn gutter_number(line: usize, cursor_line: usize, relative: bool) -> usize {
     if relative && line != cursor_line {
         line.abs_diff(cursor_line)
@@ -390,8 +389,9 @@ struct Gutter {
 impl Gutter {
     /// macOS: 52 pt of numbers ending 12 pt before a 4 pt bar, then 14 pt.
     /// The terminal: 48, 10, a 3 pt bar and 12. The numbers' column grows
-    /// with the digits of `lines`.
-    fn new(ui: &Ui, look: &Look, lines: usize) -> Self {
+    /// with the digits of `lines`. Without numbers (`numbered` false), the
+    /// bar is that 12 or 10 in.
+    fn new(ui: &Ui, look: &Look, lines: usize, numbered: bool) -> Self {
         let (column, pad, bar, text_left) = if look.terminal {
             (48.0, 10.0, 3.0, 12)
         } else {
@@ -399,7 +399,11 @@ impl Gutter {
         };
         let digits = lines.max(1).ilog10() as usize + 1;
         let digit = role(look).width(ui.ctx(), look.faces, "0");
-        let column = (digits as f32 * digit + pad + 8.0).ceil().max(column);
+        let column = if numbered {
+            (digits as f32 * digit + pad + 8.0).ceil().max(column)
+        } else {
+            pad
+        };
         Self {
             numbers_right: column - pad,
             bar: egui::Rangef::new(column, column + bar),
@@ -439,6 +443,8 @@ impl Edited {
 
 pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let (look, palette, locale) = (app.look, app.palette, app.locale);
+    let numbering = app.settings.line_numbers_in(look.terminal);
+    let highlight = app.settings.highlight_line;
     let Some(workspace) = app.workspace_mut(tab) else {
         return;
     };
@@ -449,7 +455,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     };
     let pane = ui.max_rect();
     let lines = sql_tab.text.bytes().filter(|b| *b == b'\n').count() + 1;
-    let gutter = Gutter::new(ui, &look, lines);
+    let gutter = Gutter::new(ui, &look, lines, numbering.shown());
     let editor = editor_id(tab, id);
     // Behind the text: filled in once the rows are laid out.
     let backdrop = ui.painter().add(Shape::Noop);
@@ -538,8 +544,10 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     {
         behind.push(fill(across(pane.x_range(), y), palette.panel));
     }
-    // The cursor's line, over the band, while the editor has the keys.
+    // The cursor's line, over the band, while the editor has the keys,
+    // unless the settings turn it off.
     if edited.focused
+        && highlight
         && let Some(y) = edited.span(&(cursor_line..=cursor_line))
     {
         let color = if look.terminal {
@@ -554,7 +562,10 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         behind.push(fill(across(bar, y), bar_color(&look, &palette)));
     }
     ui.painter().set(backdrop, Shape::Vec(behind));
-    // The numbers of the rows in sight.
+    // The numbers of the rows in sight, where the gutter has numbers.
+    if !numbering.shown() {
+        return;
+    }
     let clip = ui.clip_rect();
     let rows = &edited.galley.rows;
     let first = rows.partition_point(|row| edited.origin.y + row.max_y() < clip.top());
@@ -578,7 +589,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         } else {
             palette.faint
         };
-        let number = gutter_number(line, cursor_line, look.terminal);
+        let relative = numbering == crate::settings::LineNumbers::Relative;
+        let number = gutter_number(line, cursor_line, relative);
         widgets::paint_text_right(
             ui,
             pane.left() + gutter.numbers_right,
@@ -787,6 +799,9 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     // (egui draws one after any event).
     if let Some(range) = output.state.cursor.range(&output.galley) {
         sql_tab.cursor = byte_offset(&sql_tab.text, range.primary.index.0);
+        let [start, end] = range.sorted_cursors();
+        let byte = |cursor: CCursor| byte_offset(&sql_tab.text, cursor.index.0);
+        sql_tab.selected = (start != end).then(|| byte(start)..byte(end));
     }
     let typed = output.response.changed() && ui.input(|input| input.events.iter().any(is_typed));
     Edited {

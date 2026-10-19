@@ -238,7 +238,7 @@ A save can ask you something first. Each question has its own keys:
 
 | Keys | Do |
 | --- | --- |
-| Ctrl+Enter | Run the statement at the cursor |
+| Ctrl+Enter | Run the statement at the cursor, the whole script or the selection, as Settings › Editor says |
 | Ctrl+Shift+Enter | Run all |
 | Ctrl+C | Cancel the run, while one runs. With none running it copies |
 | Esc | Leave the editor: the letters below are read from then on |
@@ -278,7 +278,7 @@ offers.
 | `j` `k` | Move |
 | `h` `l` | Change the option |
 | Space | Toggle the option |
-| Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Agents |
+| Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Editor, Agents |
 | Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row |
 | `y` | On the Agents pane: copy the command that connects Claude Code |
 | Ctrl+E | Open `settings.toml` in your editor |

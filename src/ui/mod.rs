@@ -28,6 +28,8 @@ mod delete_tests;
 #[cfg(test)]
 mod duplicate_tests;
 #[cfg(test)]
+mod editor_settings_tests;
+#[cfg(test)]
 mod env_tests;
 pub mod filter_bar;
 pub mod focus;
@@ -5891,7 +5893,7 @@ value_tags   = true
             harness.click("No timeout");
             assert_eq!(active_sql(&harness, tab).timeout, None, "{}", look.name);
             harness.click("Timeout");
-            harness.click("Timeout 60 s");
+            harness.click("Timeout 1 min");
             assert_eq!(
                 active_sql(&harness, tab).timeout,
                 Some(std::time::Duration::from_secs(60)),
@@ -5985,10 +5987,11 @@ value_tags   = true
             // The switch is one stop, on the segment it has chosen: the
             // arrows choose inside it. The terminal's toolbar leads with
             // it, the others' meet it after Format.
+            // A new tab opens read-only: that segment is chosen.
             let order: &[&str] = if look.terminal {
-                &["Read-write", "Limit", "Timeout", "Run"]
+                &["Read-only", "Limit", "Timeout", "Run"]
             } else {
-                &["Format", "Read-write", "Limit", "Timeout"]
+                &["Format", "Read-only", "Limit", "Timeout"]
             };
             focus(&mut harness, order[0], egui::accesskit::Role::Button);
             let mut reached = vec![focused_name(&harness.settle())];

@@ -43,7 +43,23 @@ are made in the app, so it needs no connection and reads no database.
 | **Table list** | Grouped by prefix (Omarchy: tree) or Flat. The default for a connection whose list you have not switched; the sidebar's switch (Omarchy: `t`) sets the connection's own | Grouped by prefix |
 | **Window header** (Omarchy: connection bar) | Tint + stripe (Omarchy: tint + label), or Stripe only (Omarchy: label only). Production keeps its tint either way | Tint + stripe |
 
-A third pane, **Agents**, sets what the `[mcp]` keys
+A third pane, **Editor**, sets how the SQL editor runs and types. Every
+open SQL editor follows each change at once.
+
+| Option | Choices | Default |
+| --- | --- | --- |
+| **New tabs run in** | Read-only transaction, or Follow connection. Read-only: a new SQL editor opens in Read-only on every connection, and its switch can still set it to Read-write. Follow connection: it opens in Read-write on a writable connection that is not production, as the [SQL Editor guide]({% link _guide/sql-editor.md %}#read-only-and-read-write) says. A connection that opens read-only keeps every editor read-only either way. A change is for the tabs opened after it | Read-only transaction |
+| **Row limit** | 100, 500, 1,000, 5,000 or 10,000 rows for each statement, or No limit. The rows past the limit are not fetched; nothing is added to your SQL | 1,000 |
+| **Timeout** | 5, 15 or 30 seconds, 1 or 5 minutes, or Off. A run still going then is cancelled and rolled back; Cancel works either way | 30 s |
+| **⌘↩ runs** (Omarchy: ctrl+enter runs) | Statement at cursor, or Whole tab: every statement in order, stopping at the first error. A selection always runs what it selects, whichever is set | Statement at cursor |
+| **Autocomplete** | As you type, On Ctrl+Space (the list opens only when you ask), or Off | As you type |
+| **Line numbers** | On or off on macOS and Windows; relative, absolute or off in the Omarchy look. On writes `absolute`; a `relative` set in the file shows as on and stays | On (absolute) on macOS and Windows, relative in the Omarchy look |
+| **Current line highlight** (macOS and Windows) | On or off: the line the cursor is on is filled while the editor has the keyboard. The Omarchy look has no row: it follows the key, set in the file | On |
+
+The other keys of the four `[editor.…]` tables are read and kept now, and
+take effect in a later version.
+
+A fourth pane, **Agents**, sets what the `[mcp]` keys
 hold, and shows how to connect an agent:
 [Agents]({% link _guide/agents.md %}) is the guide.
 
@@ -55,7 +71,7 @@ hold, and shows how to connect an agent:
 
 On macOS and Windows the window shows where the settings file is, and can
 reveal it in your file manager, export it, or reset the options of the
-pane it shows. On the Agents pane, a reset leaves the server's switch as
+pane it shows (on the Editor pane, every key of the `[editor.…]` tables). On the Agents pane, a reset leaves the server's switch as
 it is. In the Omarchy look the file is shown beside the options.
 
 {% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look, with settings.toml beside the options" width="2880" height="1800" %}
@@ -66,8 +82,9 @@ Settings are kept in `settings.toml`, which is safe to edit by hand.
 Tabletist watches the file and applies your edits while it runs. The file
 holds only what differs from the defaults. Until you change an option
 there is no file, and one the app writes starts with a header line. Here
-is every key at its default (`group_digits`, `theme`, `font`, `font_size`
-and `zebra` have none of their own: they follow the look):
+is every key at its default (`group_digits`, `theme`, `font`, `font_size`,
+`zebra`, `keys`, `line_numbers` and `keywords` have none of their own:
+they follow the look):
 
 ```toml
 [startup]
@@ -88,9 +105,25 @@ idle_disconnect = "30m"
 [sidebar]
 show_system_schemas = false
 
-[editor]
-sql_limit = 1000
-sql_timeout_secs = 30
+[editor.run]
+new_tab = "read-only"
+limit = 1000
+timeout = "30s"
+run = "statement"
+confirm_unsafe_writes = true
+
+[editor.typing]
+indent = 2
+autocomplete = "typing"
+close_pairs = true
+highlight_line = true
+wrap = false
+
+[editor.format]
+commas = "trailing"
+
+[editor.history]
+keep = 1000
 
 [mcp]
 enabled = false
@@ -122,8 +155,21 @@ bar = "tint"
 | `safety.confirm_close_edits` | `true` asks before pending changes are dropped; `false` discards them without asking. While a save runs, what would drop them does nothing until it ends, and closing the window asks either way | `true` |
 | `safety.idle_disconnect` | `"never"`, `"5m"`, `"15m"`, `"30m"`, `"1h"` or `"4h"`. A connection left unused that long has its server session closed; its tabs stay as they were, and it connects again when you next refresh, page, open a table, run or save. Never while changes are pending or something is still loading, running or saving | `"30m"` |
 | `sidebar.show_system_schemas` | `true` shows schemas such as `pg_catalog` and `information_schema` | `false` |
-| `editor.sql_limit` | 1 to 10000 rows for each statement | `1000` |
-| `editor.sql_timeout_secs` | Seconds. `0` waits forever | `30` |
+| `editor.run.new_tab` | `"read-only"` or `"connection"` | `"read-only"` |
+| `editor.run.limit` | 1 to 10000 rows for each statement, or `0` for no limit | `1000` |
+| `editor.run.timeout` | `"1s"` … `"3600s"` or `"1m"` … `"60m"`, or `"off"`. A longer one is a line that cannot be read | `"30s"` |
+| `editor.run.run` | `"statement"` or `"all"`: what Cmd/Ctrl+Return runs | `"statement"` |
+| `editor.run.confirm_unsafe_writes` | `true` or `false`. Read and kept; not acted on yet | `true` |
+| `editor.typing.keys` | `"standard"` or `"vim"`. Read and kept; not acted on yet | Not set: standard on macOS and Windows, vim in the Omarchy look |
+| `editor.typing.indent` | `2`, `4` or `"tab"`. Read and kept; not acted on yet | `2` |
+| `editor.typing.autocomplete` | `"typing"`, `"manual"` or `"off"` | `"typing"` |
+| `editor.typing.close_pairs` | `true` or `false`. Read and kept; not acted on yet | `true` |
+| `editor.typing.line_numbers` | `"absolute"`, `"relative"` or `"off"` | Not set: absolute on macOS and Windows, relative in the Omarchy look |
+| `editor.typing.highlight_line` | `true` or `false` | `true` |
+| `editor.typing.wrap` | `true` or `false`. Read and kept; not acted on yet | `false` |
+| `editor.format.keywords` | `"upper"`, `"lower"` or `"keep"`. Read and kept; not acted on yet | Not set: upper on macOS and Windows, lower in the Omarchy look |
+| `editor.format.commas` | `"trailing"` or `"leading"`. Read and kept; not acted on yet | `"trailing"` |
+| `editor.history.keep` | 0 to 100000 queries for each connection. Read and kept; not acted on yet | `1000` |
 | `appearance.interface_size` | `"small"`, `"default"` or `"large"`, on macOS and Windows | `"default"` |
 | `appearance.font` | On macOS the data's face, `"IBM Plex Mono"`, `"JetBrains Mono"` or the family name of an installed font (`"Menlo"`); `"monospace"` is IBM Plex Mono too, and a name no installed font has is drawn as IBM Plex Mono, which the window says. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |
 | `appearance.font_size` | Points, whole or by halves (`13`, `12.5`). On macOS and Windows the data's, 11 to 16; in the Omarchy look all of it, 9 to 24. A size past a look's range is drawn at its nearest end. Written once you set it | Not set: 12.5 on macOS and Windows, 13 in the Omarchy look |
@@ -140,7 +186,8 @@ bar = "tint"
 `show_system_schemas` is set only in the file, and so is a pin by a
 name or a path other than the Omarchy theme of the moment, and a font by
 its fontconfig name. The SQL editor's **Limit** and **Timeout** menus set
-the two `editor` keys, and the text size keys (Cmd+= Cmd+- Cmd+0 on macOS, Ctrl+=
+`editor.run.limit` and `editor.run.timeout`, which every open SQL editor
+follows, and the text size keys (Cmd+= Cmd+- Cmd+0 on macOS, Ctrl+=
 Ctrl+- Ctrl+0 on Windows, `ctrl+=` `ctrl+-` in the Omarchy look) set
 `font_size`, wherever the keyboard is.
 
@@ -160,7 +207,11 @@ saves a copy of the file as it is.
 A file an older version wrote holds every key, at the values it had then,
 the defaults of that time too (`page_size = 300`, `group_digits = false`).
 Those stay until you change them: take a key out of the file, or reset the
-tab, to have today's default.
+tab, to have today's default. An older file's `editor.sql_limit` and
+`editor.sql_timeout_secs` are read while the file has no
+`editor.run.limit` and `editor.run.timeout` (a timeout over an hour as an
+hour), and give way to them the first time you set the limit or the
+timeout.
 
 ## Files
 

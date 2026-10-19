@@ -10,8 +10,11 @@ opened on.
 
 ## Run
 
-- **Run** (Cmd/Ctrl+Return) runs the statement the cursor is in.
-- **Run all** (Cmd/Ctrl+Shift+Return) runs the whole script.
+- **Run** (Cmd/Ctrl+Return) runs the statement the cursor is in, or the
+  whole script where **Settings › Editor** says so. With text selected,
+  it runs what you selected, exactly.
+- **Run all** (Cmd/Ctrl+Shift+Return) runs the whole script, or what you
+  selected.
 - Cmd/Ctrl+. cancels a run. In the Omarchy look the key is Ctrl+C.
 
 {% include shot.html file="macos-sql" alt="A SQL editor with two statements, the result of the one at the cursor under it" %}
@@ -20,10 +23,11 @@ Two menus in the toolbar bound every run:
 
 | Menu | Choices | Default |
 | --- | --- | --- |
-| **Limit** | 100, 1,000 or 10,000 rows for each statement | 1,000 |
-| **Timeout** | 10, 30, 60 or 300 seconds, or no timeout | 30 seconds |
+| **Limit** | 100, 500, 1,000, 5,000 or 10,000 rows for each statement, or no limit | 1,000 |
+| **Timeout** | 5, 15 or 30 seconds, 1 or 5 minutes, or no timeout | 30 seconds |
 
-Your choice is remembered for new tabs.
+Your choice is the one of **Settings › Editor**, and every open tab
+follows it.
 
 ## Read-only and read-write
 
@@ -39,9 +43,10 @@ look) sets what a run may do.
 
 {% include shot.html file="macos-sql-committed" alt="A read-write run of two statements, with Messages saying how many rows each changed and that the run was committed" %}
 
-A new tab opens in Read-write only on a writable connection that is not
-production. On a connection that opens read-only, and on any production
-connection, every run is read-only.
+A new tab opens in Read-only. With **New tabs run in** set to Follow
+connection in **Settings › Editor**, it opens in Read-write on a writable
+connection that is not production. On a connection that opens read-only,
+and on any production connection, every run is read-only.
 
 Because Tabletist runs your script in its own transaction, statements that
 would leave it are refused, and then nothing runs. `BEGIN`, `COMMIT`,
@@ -75,7 +80,8 @@ keywords change.
 
 Keywords, schemas, tables, views and the columns of the tables in your
 statement are offered while you type. Ctrl+Space asks for the list
-anywhere, and so does Cmd/Ctrl+I on macOS and Windows.
+anywhere, and so does Cmd/Ctrl+I on macOS and Windows. **Settings ›
+Editor** can have the list open only when you ask, or never.
 
 {% include shot.html file="macos-sql-complete" alt="The completion list under a table name being typed, offering the tables that match" %}
 
