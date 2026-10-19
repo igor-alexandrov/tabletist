@@ -511,7 +511,7 @@ fn lists(
     let (head, _) = ui.allocate_exact_size(vec2(width, head_height), Sense::hover());
     let inset = if look.terminal { 2.0 } else { INSET };
     let y = head.top() + laid.height() / 2.0;
-    let mut x = head.left() + inset + laid.paint_left(ui.painter(), head.left() + inset, y);
+    let x = head.left() + inset + laid.paint_left(ui.painter(), head.left() + inset, y);
     // Said as the title is written, whatever case the look paints it in.
     widgets::announce(
         ui,
@@ -522,7 +522,7 @@ fn lists(
         let role = TextRole::pick(look, TextRole::Secondary, TextRole::OCaption);
         if look.terminal {
             let note = Text::one(look, role, &format!(" · {note}"), palette.dim);
-            x += widgets::paint_label(ui, x, y, note);
+            widgets::paint_label(ui, x, y, note);
         } else {
             let right = head.right() - inset;
             let text = || Text::one(look, role, &note, palette.dim);
@@ -548,7 +548,6 @@ fn lists(
             actions.push(Action::ClearRecents(skin.tab));
         }
     }
-    let _ = x;
     for (index, row) in rows.into_iter().enumerate() {
         let response = list_row(ui, index, row, keys, skin, actions);
         if !*claimed {
