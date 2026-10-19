@@ -308,8 +308,8 @@ Phase 1 in five runs (cut on 2026-10-18), each a plan and a pull request:
   is `Refusal::PolicyNeedsFixing`, told before the person's, and its
   sentence names no entry; `list_connections` gives the rules' entries
   under `administrator`, one object for each rule that hides or masks
-  anything, without the rule's name; a column both mask is refused as the
-  administrator's.
+  anything; neither it nor a refusal gives the rule's name; a column both
+  mask is refused as the administrator's.
 - **1c. Windows.** The folder asked of the system, and the access check.
 - **1d. Watching, and the held change from a file that is not locked.**
 - **1e. The app's controls**, once the canvas has boards for them: the
