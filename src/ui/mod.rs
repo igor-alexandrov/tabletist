@@ -5886,7 +5886,7 @@ value_tags   = true
             harness.click("No timeout");
             assert_eq!(active_sql(&harness, tab).timeout, None, "{}", look.name);
             harness.click("Timeout");
-            harness.click("Timeout 60 s");
+            harness.click("Timeout 1 min");
             assert_eq!(
                 active_sql(&harness, tab).timeout,
                 Some(std::time::Duration::from_secs(60)),

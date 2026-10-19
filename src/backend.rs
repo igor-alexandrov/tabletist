@@ -146,7 +146,8 @@ pub enum Command {
         session: SessionId,
         request: RequestId,
         statements: Vec<tabletist_db::sql::Statement>,
-        /// The most rows kept per statement.
+        /// The most rows kept per statement: `u32::MAX` keeps every one
+        /// (see `Settings::fetch_cap`).
         limit: u32,
         /// How long the script may run before it is stopped; `None` lets
         /// it run until it ends or the user cancels it.

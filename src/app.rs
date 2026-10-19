@@ -5833,7 +5833,8 @@ impl App {
         let Some(sql) = workspace.sql_tab_mut(id) else {
             return;
         };
-        let (limit, timeout) = (sql.limit, sql.timeout);
+        // No limit keeps as many rows as there are.
+        let (limit, timeout) = (Settings::fetch_cap(sql.limit), sql.timeout);
         let superseded = sql.start_run(request, statements.clone(), mode);
         // The session runs one thing at a time: the run still going must
         // stop before this one can start.
@@ -9881,7 +9882,7 @@ masked = ["orders.email"]
         // ignored.
         assert_eq!(
             app.settings_file.text,
-            "[data]\npage_size = 100\ngroup_digits = \"yes\"\n\n[editor]\nsql_limit = 100\n"
+            "[data]\npage_size = 100\ngroup_digits = \"yes\"\n\n[editor.run]\nlimit = 100  # 0 is no limit\n"
         );
         assert_eq!(app.settings_file.invalid, [3]);
         assert_eq!(
@@ -12764,16 +12765,17 @@ masked = ["orders.email"]
     }
 
     #[test]
-    fn a_limit_or_timeout_that_cannot_work_is_not_taken() {
+    fn no_limit_is_every_row_and_a_limit_or_timeout_out_of_range_is_brought_in() {
         let mut harness = Harness::new();
         let (tab, id) = new_sql(&mut harness);
+        // No limit is 0: every row.
         harness.app.apply(Action::SetSqlLimit {
             tab,
             sql_tab: id,
             limit: 0,
         });
-        assert_eq!(sql(&harness, tab, id).limit, 1);
-        assert_eq!(harness.app.settings.sql_limit, 1);
+        assert_eq!(sql(&harness, tab, id).limit, 0);
+        assert_eq!(harness.app.settings.sql_limit, 0);
         harness.app.apply(Action::SetSqlLimit {
             tab,
             sql_tab: id,

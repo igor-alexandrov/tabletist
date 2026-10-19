@@ -699,7 +699,7 @@ mod tests {
         for look in Look::ALL {
             let mut harness = limit_menu(look);
             let rows =
-                ["Limit 100", "Limit 1,000", "Limit 10,000"].map(|name| row(&mut harness, name));
+                ["Limit 100", "Limit 500", "Limit 1,000"].map(|name| row(&mut harness, name));
             for pair in rows.windows(2) {
                 assert!(
                     (pair[0].bottom() - pair[1].top()).abs() < 0.5,
@@ -743,7 +743,7 @@ mod tests {
             give_keyboard(&mut harness, "Limit 100");
             harness.press(Key::ArrowDown, Modifiers::NONE);
             let name = focused_name(&harness.settle());
-            assert_eq!(name, "Limit 1,000", "{}", look.name);
+            assert_eq!(name, "Limit 500", "{}", look.name);
             let lit = row(&mut harness, &name);
             assert_eq!(
                 fill(&harness, lit),

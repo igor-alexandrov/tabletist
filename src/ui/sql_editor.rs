@@ -179,6 +179,9 @@ fn splitter(
 
 /// "Limit 1,000": a limit's name, the same in every look.
 fn limit_name(limit: u32, locale: Locale) -> String {
+    if limit == 0 {
+        return gettext(locale, "No limit").into_owned();
+    }
     format!(
         "{} {}",
         gettext(locale, "Limit"),
@@ -186,18 +189,37 @@ fn limit_name(limit: u32, locale: Locale) -> String {
     )
 }
 
+/// A limit's rows as the look writes them: "1,000", the terminal's
+/// "1000", or "No limit" for 0.
+pub(crate) fn limit_words(limit: u32, look: &Look, locale: Locale) -> String {
+    match limit {
+        0 => look.label(&gettext(locale, "No limit")),
+        _ if look.terminal => limit.to_string(),
+        _ => format::group_digits(u64::from(limit)),
+    }
+}
+
 /// A limit as the look reads it: "Limit 1,000", or the terminal's "limit
-/// 1000". Where room is `short`, the number alone.
+/// 1000", or "No limit". Where room is `short`, the number alone.
 fn limit_text(limit: u32, short: bool, look: &Look, locale: Locale) -> String {
-    let number = if look.terminal {
-        limit.to_string()
-    } else {
-        format::group_digits(u64::from(limit))
-    };
-    if short {
+    let number = limit_words(limit, look, locale);
+    if short || limit == 0 {
         number
     } else {
         format!("{} {number}", look.label(&gettext(locale, "Limit")))
+    }
+}
+
+/// A time as macOS and Windows write it, "30 s" and "1 min", or as the
+/// terminal look does (`terminal`), "30s" and "1m". Whole minutes are said
+/// in minutes.
+pub(crate) fn time_words(secs: u32, terminal: bool, locale: Locale) -> String {
+    let minutes = secs >= 60 && secs.is_multiple_of(60);
+    match (terminal, minutes) {
+        (true, true) => format!("{}m", secs / 60),
+        (true, false) => format!("{secs}s"),
+        (false, true) => format!("{} {}", secs / 60, gettext(locale, "min")),
+        (false, false) => format!("{secs} s"),
     }
 }
 
@@ -206,7 +228,11 @@ fn limit_text(limit: u32, short: bool, look: &Look, locale: Locale) -> String {
 fn timeout_name(secs: Option<u32>, locale: Locale) -> String {
     match secs {
         None => gettext(locale, "No timeout").into_owned(),
-        Some(secs) => format!("{} {secs} s", gettext(locale, "Timeout")),
+        Some(secs) => format!(
+            "{} {}",
+            gettext(locale, "Timeout"),
+            time_words(secs, false, locale)
+        ),
     }
 }
 
@@ -218,11 +244,7 @@ fn timeout_text(secs: Option<u32>, short: bool, look: &Look, locale: Locale) -> 
         let none = if short { "Off" } else { "No timeout" };
         return look.label(&gettext(locale, none));
     };
-    let time = if look.terminal {
-        format!("{secs}s")
-    } else {
-        format!("{secs} s")
-    };
+    let time = time_words(secs, look.terminal, locale);
     if short {
         time
     } else {
@@ -380,6 +402,9 @@ fn menus(
         palette,
         ..
     } = *bar;
+    // The settings' choices, and the tab's own in its place where the file
+    // set another.
+    let limits = Settings::sql_limits_with(bar.limit);
     let picked = menu(
         ui,
         rects[0],
@@ -387,7 +412,7 @@ fn menus(
         shape,
         (look, palette),
         || {
-            Settings::SQL_LIMITS
+            limits
                 .iter()
                 .map(|choice| menu::Choice {
                     text: limit_text(*choice, false, look, locale),
@@ -398,7 +423,7 @@ fn menus(
                 .collect()
         },
     );
-    if let Some(limit) = picked.and_then(|index| Settings::SQL_LIMITS.get(index))
+    if let Some(limit) = picked.and_then(|index| limits.get(index))
         && *limit != bar.limit
     {
         actions.push(Action::SetSqlLimit {
@@ -407,6 +432,7 @@ fn menus(
             limit: *limit,
         });
     }
+    let timeouts = Settings::sql_timeouts_with(bar.secs);
     let picked = menu(
         ui,
         rects[1],
@@ -414,7 +440,7 @@ fn menus(
         shape,
         (look, palette),
         || {
-            Settings::SQL_TIMEOUTS
+            timeouts
                 .iter()
                 .map(|choice| menu::Choice {
                     text: timeout_text(*choice, false, look, locale),
@@ -425,7 +451,7 @@ fn menus(
                 .collect()
         },
     );
-    if let Some(secs) = picked.and_then(|index| Settings::SQL_TIMEOUTS.get(index))
+    if let Some(secs) = picked.and_then(|index| timeouts.get(index))
         && *secs != bar.secs
     {
         actions.push(Action::SetSqlTimeout {

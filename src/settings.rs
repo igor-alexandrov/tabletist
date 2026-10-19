@@ -8,6 +8,11 @@ use crate::keymap::Layout;
 use crate::paths::AppDirs;
 use crate::util::toml_string;
 
+mod editor;
+pub use editor::{
+    Autocomplete, Commas, EditorKeys, Indent, KeywordCase, LineNumbers, NewTab, RunScope,
+};
+
 /// How much of a timestamp the grid shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -619,10 +624,53 @@ pub struct Settings {
     /// ([`FontSizes::default`]).
     #[serde(skip)]
     pub font_size: Option<FontSize>,
-    /// Rows a SQL editor statement keeps (the Limit menu).
+    /// Rows a SQL editor statement keeps (the Limit menu); 0 keeps every
+    /// row.
     pub sql_limit: u32,
     /// Seconds before a SQL editor run is cancelled; `None` waits forever.
     pub sql_timeout_secs: Option<u32>,
+    /// The mode a new SQL tab opens in.
+    #[serde(skip)]
+    pub new_tab: NewTab,
+    /// What the run key runs without a selection.
+    #[serde(skip)]
+    pub run_scope: RunScope,
+    /// Whether an `UPDATE` or `DELETE` without `WHERE` asks first.
+    #[serde(skip)]
+    pub confirm_unsafe_writes: bool,
+    /// The editor's keys. `None` until the user sets them: the look's own
+    /// ([`Settings::editor_keys_in`]).
+    #[serde(skip)]
+    pub editor_keys: Option<EditorKeys>,
+    /// What an indent is, for the Tab key and Format.
+    #[serde(skip)]
+    pub indent: Indent,
+    /// When the completion list opens.
+    #[serde(skip)]
+    pub autocomplete: Autocomplete,
+    /// Whether a bracket or a quote typed gets its closing one.
+    #[serde(skip)]
+    pub close_pairs: bool,
+    /// How the gutter numbers the lines. `None` until the user sets it:
+    /// the look's own ([`Settings::line_numbers_in`]).
+    #[serde(skip)]
+    pub line_numbers: Option<LineNumbers>,
+    /// Whether the cursor's line is filled.
+    #[serde(skip)]
+    pub highlight_line: bool,
+    /// Whether a long line wraps.
+    #[serde(skip)]
+    pub wrap: bool,
+    /// The case Format writes keywords in. `None` until the user sets it:
+    /// the look's own ([`Settings::keywords_in`]).
+    #[serde(skip)]
+    pub keywords: Option<KeywordCase>,
+    /// Where Format puts commas.
+    #[serde(skip)]
+    pub commas: Commas,
+    /// Queries the history keeps per connection; 0 keeps none.
+    #[serde(skip)]
+    pub history_keep: u32,
     /// The MCP server agents use the saved connections through. Off until
     /// the person turns it on: nothing listens before.
     pub mcp_enabled: bool,
@@ -660,8 +708,27 @@ pub enum Key {
     ConfirmCloseEdits,
     IdleDisconnect,
     ShowSystemSchemas,
+    /// `editor.sql_limit`, which versions before the Editor tab wrote:
+    /// read where `editor.run.limit` is not, and taken out when that is
+    /// written.
+    OldSqlLimit,
+    /// `editor.sql_timeout_secs`, as `OldSqlLimit` is.
+    OldSqlTimeoutSecs,
     SqlLimit,
     SqlTimeoutSecs,
+    NewTab,
+    RunScope,
+    ConfirmUnsafeWrites,
+    EditorKeys,
+    Indent,
+    Autocomplete,
+    ClosePairs,
+    LineNumbers,
+    HighlightLine,
+    Wrap,
+    Keywords,
+    Commas,
+    HistoryKeep,
     McpEnabled,
     McpLogDays,
     McpNotify,
@@ -678,7 +745,9 @@ pub enum Key {
 
 impl Key {
     /// In the order the file has them: a table's keys together.
-    pub const ALL: [Key; 25] = [
+    /// An old key comes before the one that took its place: the new one
+    /// is read over it.
+    pub const ALL: [Key; 40] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -690,8 +759,23 @@ impl Key {
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
         Self::ShowSystemSchemas,
+        Self::OldSqlLimit,
+        Self::OldSqlTimeoutSecs,
+        Self::NewTab,
         Self::SqlLimit,
         Self::SqlTimeoutSecs,
+        Self::RunScope,
+        Self::ConfirmUnsafeWrites,
+        Self::EditorKeys,
+        Self::Indent,
+        Self::Autocomplete,
+        Self::ClosePairs,
+        Self::LineNumbers,
+        Self::HighlightLine,
+        Self::Wrap,
+        Self::Keywords,
+        Self::Commas,
+        Self::HistoryKeep,
         Self::McpEnabled,
         Self::McpLogDays,
         Self::McpNotify,
@@ -720,8 +804,23 @@ impl Key {
             Self::ConfirmCloseEdits => ("safety", "confirm_close_edits"),
             Self::IdleDisconnect => ("safety", "idle_disconnect"),
             Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
-            Self::SqlLimit => ("editor", "sql_limit"),
-            Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
+            Self::OldSqlLimit => ("editor", "sql_limit"),
+            Self::OldSqlTimeoutSecs => ("editor", "sql_timeout_secs"),
+            Self::NewTab => ("editor.run", "new_tab"),
+            Self::SqlLimit => ("editor.run", "limit"),
+            Self::SqlTimeoutSecs => ("editor.run", "timeout"),
+            Self::RunScope => ("editor.run", "run"),
+            Self::ConfirmUnsafeWrites => ("editor.run", "confirm_unsafe_writes"),
+            Self::EditorKeys => ("editor.typing", "keys"),
+            Self::Indent => ("editor.typing", "indent"),
+            Self::Autocomplete => ("editor.typing", "autocomplete"),
+            Self::ClosePairs => ("editor.typing", "close_pairs"),
+            Self::LineNumbers => ("editor.typing", "line_numbers"),
+            Self::HighlightLine => ("editor.typing", "highlight_line"),
+            Self::Wrap => ("editor.typing", "wrap"),
+            Self::Keywords => ("editor.format", "keywords"),
+            Self::Commas => ("editor.format", "commas"),
+            Self::HistoryKeep => ("editor.history", "keep"),
             Self::McpEnabled => ("mcp", "enabled"),
             Self::McpLogDays => ("mcp", "log_days"),
             Self::McpNotify => ("mcp", "notify"),
@@ -737,6 +836,15 @@ impl Key {
         }
     }
 
+    /// The key of older versions this one took the place of.
+    pub fn replaced(self) -> Option<Key> {
+        match self {
+            Self::SqlLimit => Some(Self::OldSqlLimit),
+            Self::SqlTimeoutSecs => Some(Self::OldSqlTimeoutSecs),
+            _ => None,
+        }
+    }
+
     /// What the file says beside the key: the values of a closed set, or
     /// what a value that reads oddly means. On launch's depends on its
     /// value: see [`Settings::note`].
@@ -746,7 +854,17 @@ impl Key {
             Self::Timestamps => Some("second | full"),
             Self::Tz => Some("system | utc | \"Area/City\""),
             Self::IdleDisconnect => Some("never | 5m | 15m | 30m | 1h | 4h"),
-            Self::SqlTimeoutSecs => Some("0 waits forever"),
+            Self::NewTab => Some("read-only | connection"),
+            Self::SqlLimit => Some("0 is no limit"),
+            Self::SqlTimeoutSecs => Some("5s | 15s | 30s | 1m | 5m | off"),
+            Self::RunScope => Some("statement | all"),
+            Self::EditorKeys => Some("standard | vim"),
+            Self::Indent => Some("2 | 4 | \"tab\""),
+            Self::Autocomplete => Some("typing | manual | off"),
+            Self::LineNumbers => Some("absolute | relative | off"),
+            Self::Keywords => Some("upper | lower | keep"),
+            Self::Commas => Some("trailing | leading"),
+            Self::HistoryKeep => Some("0 keeps none"),
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
             Self::EnvBar => Some("tint | label"),
@@ -1389,6 +1507,26 @@ fn item_at<'d, 'i>(
     Ok(Some(item))
 }
 
+/// Whether every table the dotted `path` is under that `document` has
+/// (`editor` for `editor.run`) has a header of its own, or is there only
+/// because a table under it is: a table with a header can follow them.
+fn headed_parents(document: &toml::de::DeTable<'_>, working: &str, path: &str) -> bool {
+    let parts: Vec<&str> = path.split('.').collect();
+    (1..parts.len()).all(|end| match item_at(document, &parts[..end].join(".")) {
+        Ok(Some(item)) => {
+            let headed = working[item.span()].starts_with('[');
+            let implicit = item.get_ref().as_table().is_some_and(|items| {
+                !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|(_, item)| is_subtable(working, item.get_ref(), item.span()))
+            });
+            headed || implicit
+        }
+        Ok(None) | Err(NotATable) => true,
+    })
+}
+
 /// Whether an item of a table is a table with a header of its own under
 /// it (`[data.more]`, `[[data.list]]`), and not a value of it: an array
 /// is written with a bracket too.
@@ -1439,19 +1577,41 @@ fn own_lines(text: &str, range: std::ops::Range<usize>) -> bool {
         && (after.starts_with('#') || after.trim_matches(['\r', '\n']).is_empty())
 }
 
+/// `choices`, in the order of `rank`, with `current` among them.
+fn with_current<T: Copy + PartialEq>(
+    choices: &[T],
+    current: T,
+    rank: impl Fn(&T) -> u64,
+) -> Vec<T> {
+    let mut all = choices.to_vec();
+    if !all.contains(&current) {
+        all.push(current);
+        all.sort_by_key(|choice| rank(choice));
+    }
+    all
+}
+
 impl Settings {
     pub const DEFAULT_PAGE_SIZE: u32 = 1_000;
     pub const MIN_PAGE_SIZE: u32 = 10;
     pub const MAX_PAGE_SIZE: u32 = 10_000;
     /// The page sizes the Settings window offers.
     pub const PAGE_SIZES: [u32; 5] = [100, 500, 1_000, 5_000, 10_000];
-    /// The most rows a SQL editor statement keeps.
+    /// The most rows a SQL editor statement keeps, where it keeps fewer
+    /// than all.
     pub const MAX_SQL_LIMIT: u32 = 10_000;
-    /// The row limits the SQL editor's Limit menu offers.
-    pub const SQL_LIMITS: [u32; 3] = [100, 1_000, 10_000];
-    /// The timeouts (seconds) the SQL editor's Timeout menu offers; `None`
-    /// is no timeout.
-    pub const SQL_TIMEOUTS: [Option<u32>; 5] = [Some(10), Some(30), Some(60), Some(300), None];
+    /// The row limits the Editor pane and the SQL editor's Limit menu
+    /// offer; 0 keeps every row.
+    pub const SQL_LIMITS: [u32; 6] = [100, 500, 1_000, 5_000, 10_000, 0];
+    /// The timeouts (seconds) the Editor pane and the SQL editor's Timeout
+    /// menu offer; `None` is no timeout.
+    pub const SQL_TIMEOUTS: [Option<u32>; 6] =
+        [Some(5), Some(15), Some(30), Some(60), Some(300), None];
+    /// The queries the history keeps that the Editor pane offers; 0 keeps
+    /// none.
+    pub const HISTORY_KEEPS: [u32; 4] = [100, 1_000, 10_000, 0];
+    /// The most queries the history keeps per connection.
+    pub const MAX_HISTORY: u32 = 100_000;
     /// Days the log of agents' calls keeps a call, at least and at most: a
     /// day, and ten years.
     pub const MIN_MCP_LOG_DAYS: u32 = 1;
@@ -1494,15 +1654,73 @@ impl Settings {
         secs.map(|secs| std::time::Duration::from_secs(u64::from(secs)))
     }
 
-    /// A row limit the SQL editor can run with.
+    /// A row limit the SQL editor can run with: 0, every row, or up to
+    /// [`Settings::MAX_SQL_LIMIT`].
     pub fn valid_sql_limit(limit: u32) -> u32 {
-        limit.clamp(1, Self::MAX_SQL_LIMIT)
+        limit.min(Self::MAX_SQL_LIMIT)
     }
 
-    /// A timeout the SQL editor can run with. One of no seconds would
-    /// cancel every run at once, so it counts as no timeout.
+    /// The rows a run of `limit` asks the backend for: as many as there
+    /// are for no limit.
+    pub fn fetch_cap(limit: u32) -> u32 {
+        if limit == 0 { u32::MAX } else { limit }
+    }
+
+    /// A timeout the SQL editor can run with, up to an hour. One of no
+    /// seconds would cancel every run at once, so it counts as no timeout.
     pub fn valid_sql_timeout(secs: Option<u32>) -> Option<u32> {
         secs.filter(|secs| *secs > 0)
+            .map(|secs| secs.min(editor::MAX_TIMEOUT_SECS))
+    }
+
+    /// The row limits a menu offers: the list, with `current` in its
+    /// place when the file set one that is not in it.
+    pub fn sql_limits_with(current: u32) -> Vec<u32> {
+        let rank = |limit: &u32| {
+            if *limit == 0 {
+                u64::MAX
+            } else {
+                u64::from(*limit)
+            }
+        };
+        with_current(&Self::SQL_LIMITS, current, rank)
+    }
+
+    /// The timeouts a menu offers, as [`Settings::sql_limits_with`].
+    pub fn sql_timeouts_with(current: Option<u32>) -> Vec<Option<u32>> {
+        let rank = |secs: &Option<u32>| secs.map_or(u64::MAX, u64::from);
+        with_current(&Self::SQL_TIMEOUTS, current, rank)
+    }
+
+    /// The history's sizes a menu offers, as [`Settings::sql_limits_with`].
+    pub fn history_keeps_with(current: u32) -> Vec<u32> {
+        let rank = |keep: &u32| {
+            if *keep == 0 {
+                u64::MAX
+            } else {
+                u64::from(*keep)
+            }
+        };
+        with_current(&Self::HISTORY_KEEPS, current, rank)
+    }
+
+    /// The editor's keys in a look that is the terminal's (`terminal`) or
+    /// not: as set, else the look's own.
+    pub fn editor_keys_in(&self, terminal: bool) -> EditorKeys {
+        self.editor_keys
+            .unwrap_or_else(|| EditorKeys::of_look(terminal))
+    }
+
+    /// The gutter's numbers in a look, as [`Settings::editor_keys_in`].
+    pub fn line_numbers_in(&self, terminal: bool) -> LineNumbers {
+        self.line_numbers
+            .unwrap_or_else(|| LineNumbers::of_look(terminal))
+    }
+
+    /// Format's keyword case in a look, as [`Settings::editor_keys_in`].
+    pub fn keywords_in(&self, terminal: bool) -> KeywordCase {
+        self.keywords
+            .unwrap_or_else(|| KeywordCase::of_look(terminal))
     }
 
     /// What `option` is set to.
@@ -1806,9 +2024,23 @@ impl Settings {
             Key::ConfirmCloseEdits => self.confirm_close_edits.to_string(),
             Key::IdleDisconnect => toml_string(self.idle_disconnect.name()),
             Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
+            // Read, never written: the new key is.
+            Key::OldSqlLimit | Key::OldSqlTimeoutSecs => return None,
             Key::SqlLimit => self.sql_limit.to_string(),
-            // TOML has no null: no timeout is no seconds.
-            Key::SqlTimeoutSecs => self.sql_timeout_secs.unwrap_or(0).to_string(),
+            Key::SqlTimeoutSecs => toml_string(&editor::timeout_name(self.sql_timeout_secs)),
+            Key::NewTab => toml_string(self.new_tab.name()),
+            Key::RunScope => toml_string(self.run_scope.name()),
+            Key::ConfirmUnsafeWrites => self.confirm_unsafe_writes.to_string(),
+            Key::EditorKeys => toml_string(self.editor_keys?.name()),
+            Key::Indent => self.indent.written().to_owned(),
+            Key::Autocomplete => toml_string(self.autocomplete.name()),
+            Key::ClosePairs => self.close_pairs.to_string(),
+            Key::LineNumbers => toml_string(self.line_numbers?.name()),
+            Key::HighlightLine => self.highlight_line.to_string(),
+            Key::Wrap => self.wrap.to_string(),
+            Key::Keywords => toml_string(self.keywords?.name()),
+            Key::Commas => toml_string(self.commas.name()),
+            Key::HistoryKeep => self.history_keep.to_string(),
             Key::McpEnabled => self.mcp_enabled.to_string(),
             Key::McpLogDays => self.mcp_log_days.to_string(),
             Key::McpNotify => self.mcp_notify.to_string(),
@@ -1872,6 +2104,18 @@ impl Settings {
             text
         };
         let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        // A key written takes the old key it replaced out with it: the old
+        // one comes first, as the reader reads it.
+        let mut keys: Vec<Key> = keys
+            .iter()
+            .flat_map(|key| key.replaced().into_iter().chain([*key]))
+            .collect();
+        let mut seen = Vec::new();
+        keys.retain(|key| {
+            let new = !seen.contains(key);
+            seen.push(*key);
+            new
+        });
         let (working, rejected) = readable(text);
         // The keys the rejected lines would set: one of them taken out of
         // the file would leave the rejected line to be read in its place.
@@ -1893,13 +2137,19 @@ impl Settings {
                 None => format!("{name} = {literal}{newline}"),
             }
         };
-        for &key in keys {
+        for &key in &keys {
             let (table_name, name) = key.path();
             let literal = self.literal(key);
             let table = match item_at(&document, table_name) {
                 Ok(Some(table)) => table,
                 Ok(None) => {
                     if let Some(literal) = literal {
+                        // Under a table written inline (`editor = { … }`)
+                        // or with dotted keys, a header of its own would
+                        // define it again: the file is written whole.
+                        if !headed_parents(&document, &working, table_name) {
+                            return self.to_toml();
+                        }
                         new_tables.push((table_name, line(key, &literal)));
                     }
                     continue;
@@ -2003,10 +2253,12 @@ impl Settings {
         let mut open: Option<&str> = None;
         for (table, added) in new_tables {
             if open != Some(table) {
-                if !out.ends_with('\n') {
+                // A text left empty (its one table taken out) starts with
+                // the table.
+                if !out.is_empty() && !out.ends_with('\n') {
                     out.push_str(newline);
                 }
-                if out != HEADER {
+                if !out.is_empty() && out != HEADER {
                     out.push_str(newline);
                 }
                 out.push_str(&format!("[{table}]{newline}"));
@@ -2024,6 +2276,7 @@ impl Settings {
             .clamp(Self::MIN_PAGE_SIZE, Self::MAX_PAGE_SIZE);
         self.sql_limit = Self::valid_sql_limit(self.sql_limit);
         self.sql_timeout_secs = Self::valid_sql_timeout(self.sql_timeout_secs);
+        self.history_keep = self.history_keep.min(Self::MAX_HISTORY);
         self.mcp_log_days = self
             .mcp_log_days
             .clamp(Self::MIN_MCP_LOG_DAYS, Self::MAX_MCP_LOG_DAYS);
@@ -2069,8 +2322,46 @@ impl Settings {
                 .and_then(Idle::from_name)
                 .map(|choice| self.idle_disconnect = choice),
             Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
+            // The old key kept at least a row, and 0 seconds waited forever.
+            Key::OldSqlLimit => number.map(|number| self.sql_limit = number.max(1)),
+            Key::OldSqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
             Key::SqlLimit => number.map(|number| self.sql_limit = number),
-            Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
+            Key::SqlTimeoutSecs => text
+                .and_then(editor::timeout_from_name)
+                .map(|secs| self.sql_timeout_secs = secs),
+            Key::NewTab => text
+                .and_then(NewTab::from_name)
+                .map(|choice| self.new_tab = choice),
+            Key::RunScope => text
+                .and_then(RunScope::from_name)
+                .map(|scope| self.run_scope = scope),
+            Key::ConfirmUnsafeWrites => flag.map(|flag| self.confirm_unsafe_writes = flag),
+            Key::EditorKeys => text
+                .and_then(EditorKeys::from_name)
+                .map(|keys| self.editor_keys = Some(keys)),
+            Key::Indent => match (number, text) {
+                (Some(2), _) => Some(Indent::Two),
+                (Some(4), _) => Some(Indent::Four),
+                (_, Some("tab")) => Some(Indent::Tab),
+                _ => None,
+            }
+            .map(|indent| self.indent = indent),
+            Key::Autocomplete => text
+                .and_then(Autocomplete::from_name)
+                .map(|choice| self.autocomplete = choice),
+            Key::ClosePairs => flag.map(|flag| self.close_pairs = flag),
+            Key::LineNumbers => text
+                .and_then(LineNumbers::from_name)
+                .map(|numbers| self.line_numbers = Some(numbers)),
+            Key::HighlightLine => flag.map(|flag| self.highlight_line = flag),
+            Key::Wrap => flag.map(|flag| self.wrap = flag),
+            Key::Keywords => text
+                .and_then(KeywordCase::from_name)
+                .map(|case| self.keywords = Some(case)),
+            Key::Commas => text
+                .and_then(Commas::from_name)
+                .map(|commas| self.commas = commas),
+            Key::HistoryKeep => number.map(|number| self.history_keep = number),
             Key::McpEnabled => flag.map(|flag| self.mcp_enabled = flag),
             Key::McpLogDays => number.map(|number| self.mcp_log_days = number),
             Key::McpNotify => flag.map(|flag| self.mcp_notify = flag),
@@ -2188,10 +2479,19 @@ impl Settings {
                     }
                 }
                 lines.push((key, line));
-                kept.retain(|other| *other != key);
+                // A key read is read over the old key it took the place
+                // of, whether that was read, ignored or rejected.
+                kept.retain(|other| *other != key && Some(*other) != key.replaced());
             } else {
                 invalid.push(line);
-                kept.push(key);
+                // A new key that cannot be read is as good as absent: the
+                // old key it took the place of, read, stands.
+                let old_read = key
+                    .replaced()
+                    .is_some_and(|old| lines.iter().any(|(read, _)| *read == old));
+                if !old_read {
+                    kept.push(key);
+                }
             }
         }
         for key in kept {
@@ -2222,8 +2522,23 @@ impl Settings {
             Key::ConfirmCloseEdits => self.confirm_close_edits = other.confirm_close_edits,
             Key::IdleDisconnect => self.idle_disconnect = other.idle_disconnect,
             Key::ShowSystemSchemas => self.show_system_schemas = other.show_system_schemas,
-            Key::SqlLimit => self.sql_limit = other.sql_limit,
-            Key::SqlTimeoutSecs => self.sql_timeout_secs = other.sql_timeout_secs,
+            Key::OldSqlLimit | Key::SqlLimit => self.sql_limit = other.sql_limit,
+            Key::OldSqlTimeoutSecs | Key::SqlTimeoutSecs => {
+                self.sql_timeout_secs = other.sql_timeout_secs
+            }
+            Key::NewTab => self.new_tab = other.new_tab,
+            Key::RunScope => self.run_scope = other.run_scope,
+            Key::ConfirmUnsafeWrites => self.confirm_unsafe_writes = other.confirm_unsafe_writes,
+            Key::EditorKeys => self.editor_keys = other.editor_keys,
+            Key::Indent => self.indent = other.indent,
+            Key::Autocomplete => self.autocomplete = other.autocomplete,
+            Key::ClosePairs => self.close_pairs = other.close_pairs,
+            Key::LineNumbers => self.line_numbers = other.line_numbers,
+            Key::HighlightLine => self.highlight_line = other.highlight_line,
+            Key::Wrap => self.wrap = other.wrap,
+            Key::Keywords => self.keywords = other.keywords,
+            Key::Commas => self.commas = other.commas,
+            Key::HistoryKeep => self.history_keep = other.history_keep,
             Key::McpEnabled => self.mcp_enabled = other.mcp_enabled,
             Key::McpLogDays => self.mcp_log_days = other.mcp_log_days,
             Key::McpNotify => self.mcp_notify = other.mcp_notify,
@@ -2298,6 +2613,19 @@ impl Default for Settings {
             font_size: None,
             sql_limit: 1_000,
             sql_timeout_secs: Some(30),
+            new_tab: NewTab::ReadOnly,
+            run_scope: RunScope::Statement,
+            confirm_unsafe_writes: true,
+            editor_keys: None,
+            indent: Indent::Two,
+            autocomplete: Autocomplete::Typing,
+            close_pairs: true,
+            line_numbers: None,
+            highlight_line: true,
+            wrap: false,
+            keywords: None,
+            commas: Commas::Trailing,
+            history_keep: 1_000,
             mcp_enabled: false,
             mcp_log_days: 30,
             mcp_notify: true,
@@ -2578,8 +2906,21 @@ mod tests {
             interface_size: InterfaceSize::Large,
             font: Some("JetBrains Mono".into()),
             font_size: FontSize::of(14.5),
-            sql_limit: 100,
+            sql_limit: 0,
             sql_timeout_secs: None,
+            new_tab: NewTab::Connection,
+            run_scope: RunScope::All,
+            confirm_unsafe_writes: false,
+            editor_keys: Some(EditorKeys::Vim),
+            indent: Indent::Tab,
+            autocomplete: Autocomplete::Manual,
+            close_pairs: false,
+            line_numbers: Some(LineNumbers::Relative),
+            highlight_line: false,
+            wrap: true,
+            keywords: Some(KeywordCase::Keep),
+            commas: Commas::Leading,
+            history_keep: 0,
             mcp_enabled: true,
             mcp_log_days: 7,
             mcp_notify: false,
@@ -2623,9 +2964,28 @@ idle_disconnect = \"4h\"  # never | 5m | 15m | 30m | 1h | 4h
 [sidebar]
 show_system_schemas = true
 
-[editor]
-sql_limit = 100
-sql_timeout_secs = 0  # 0 waits forever
+[editor.run]
+new_tab = \"connection\"  # read-only | connection
+limit = 0  # 0 is no limit
+timeout = \"off\"  # 5s | 15s | 30s | 1m | 5m | off
+run = \"all\"  # statement | all
+confirm_unsafe_writes = false
+
+[editor.typing]
+keys = \"vim\"  # standard | vim
+indent = \"tab\"  # 2 | 4 | \"tab\"
+autocomplete = \"manual\"  # typing | manual | off
+close_pairs = false
+line_numbers = \"relative\"  # absolute | relative | off
+highlight_line = false
+wrap = true
+
+[editor.format]
+keywords = \"keep\"  # upper | lower | keep
+commas = \"leading\"  # trailing | leading
+
+[editor.history]
+keep = 0  # 0 keeps none
 
 [mcp]
 enabled = true
@@ -2665,7 +3025,7 @@ bar = \"label\"  # tint | label
             "{text}"
         );
         assert!(
-            text.contains("sql_timeout_secs = 0  # 0 waits forever\n"),
+            text.contains("timeout = \"off\"  # 5s | 15s | 30s | 1m | 5m | off\n"),
             "{text}"
         );
         // The only key of its table that is not at its default: the grid's
@@ -2718,20 +3078,33 @@ bar = \"label\"  # tint | label
                 (Key::ConfirmCloseEdits, 15),
                 (Key::IdleDisconnect, 16),
                 (Key::ShowSystemSchemas, 19),
-                (Key::SqlLimit, 22),
-                (Key::SqlTimeoutSecs, 23),
-                (Key::McpEnabled, 26),
-                (Key::McpLogDays, 27),
-                (Key::McpNotify, 28),
-                (Key::Theme, 31),
-                (Key::InterfaceSize, 32),
-                (Key::Font, 33),
-                (Key::FontSize, 34),
-                (Key::RowHeight, 37),
-                (Key::Zebra, 38),
-                (Key::ColumnTypes, 39),
-                (Key::TableList, 40),
-                (Key::EnvBar, 43),
+                (Key::NewTab, 22),
+                (Key::SqlLimit, 23),
+                (Key::SqlTimeoutSecs, 24),
+                (Key::RunScope, 25),
+                (Key::ConfirmUnsafeWrites, 26),
+                (Key::EditorKeys, 29),
+                (Key::Indent, 30),
+                (Key::Autocomplete, 31),
+                (Key::ClosePairs, 32),
+                (Key::LineNumbers, 33),
+                (Key::HighlightLine, 34),
+                (Key::Wrap, 35),
+                (Key::Keywords, 38),
+                (Key::Commas, 39),
+                (Key::HistoryKeep, 42),
+                (Key::McpEnabled, 45),
+                (Key::McpLogDays, 46),
+                (Key::McpNotify, 47),
+                (Key::Theme, 50),
+                (Key::InterfaceSize, 51),
+                (Key::Font, 52),
+                (Key::FontSize, 53),
+                (Key::RowHeight, 56),
+                (Key::Zebra, 57),
+                (Key::ColumnTypes, 58),
+                (Key::TableList, 59),
+                (Key::EnvBar, 62),
             ]
         );
     }
@@ -2804,11 +3177,86 @@ bar = \"label\"  # tint | label
     }
 
     #[test]
+    fn a_new_key_is_read_over_its_old_one_whatever_the_old_one_says() {
+        for old in ["sql_limit = \"x\"", "sql_limit = 1 00", "sql_limit = 300"] {
+            let text = format!("[editor]\n{old}\n\n[editor.run]\nlimit = 500\n");
+            assert_eq!(Settings::from_toml(&text).settings.sql_limit, 500, "{old}");
+            let last = Settings {
+                sql_limit: 5_000,
+                ..Settings::default()
+            };
+            let reloaded = Settings::from_toml_over(&text, &last).settings;
+            assert_eq!(reloaded.sql_limit, 500, "{old}");
+        }
+        let text = "[editor]\nsql_timeout_secs = \"x\"\n\n[editor.run]\ntimeout = \"5m\"\n";
+        assert_eq!(
+            Settings::from_toml(text).settings.sql_timeout_secs,
+            Some(300)
+        );
+        // A new key that cannot be read leaves the old one standing.
+        let text = "[editor]\nsql_limit = 300\n\n[editor.run]\nlimit = \"x\"\n";
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.settings.sql_limit, 300);
+        assert_eq!(loaded.invalid, [5]);
+        // The limit set over a rejected old line is read back at the next
+        // start.
+        let text = "[editor]\nsql_limit = 1 00\n";
+        let set = written(text, |settings| settings.sql_limit = 500);
+        assert_eq!(Settings::from_toml(&set).settings.sql_limit, 500, "{set}");
+    }
+
+    #[test]
+    fn a_new_table_under_one_written_inline_writes_the_file_whole() {
+        for text in [
+            "editor = { sql_timeout_secs = 10 }\n",
+            "editor.sql_timeout_secs = 10\n",
+        ] {
+            let set = written(text, |settings| settings.sql_limit = 500);
+            let loaded = Settings::from_toml(&set);
+            assert_eq!(loaded.invalid, Vec::<usize>::new(), "{set}");
+            assert_eq!(loaded.settings.sql_limit, 500, "{set}");
+            assert_eq!(loaded.settings.sql_timeout_secs, Some(10), "{set}");
+        }
+        // Appearance's grid under an inline `appearance` too.
+        let set = written(
+            "appearance = { interface_size = \"large\" }\n",
+            |settings| settings.row_height = RowHeight::Roomy,
+        );
+        let loaded = Settings::from_toml(&set);
+        assert_eq!(loaded.invalid, Vec::<usize>::new(), "{set}");
+        assert_eq!(loaded.settings.row_height, RowHeight::Roomy, "{set}");
+        assert_eq!(loaded.settings.interface_size, InterfaceSize::Large);
+    }
+
+    #[test]
+    fn a_timeout_over_an_hour_is_an_hour() {
+        let old = Settings::from_toml("[editor]\nsql_timeout_secs = 7200\n").settings;
+        assert_eq!(old.sql_timeout_secs, Some(3_600));
+        assert_eq!(
+            Settings::from_toml(&old.to_toml())
+                .settings
+                .sql_timeout_secs,
+            Some(3_600)
+        );
+        assert!(old.to_toml().contains("timeout = \"60m\""));
+        assert_eq!(Settings::valid_sql_timeout(Some(7_200)), Some(3_600));
+    }
+
+    #[test]
+    fn a_file_of_the_old_key_alone_becomes_the_new_table_alone() {
+        let text = "[editor]\nsql_limit = 300\n";
+        assert_eq!(
+            written(text, |settings| settings.sql_limit = 500),
+            "[editor.run]\nlimit = 500  # 0 is no limit\n"
+        );
+    }
+
+    #[test]
     fn a_new_table_goes_at_the_end_of_the_file() {
         let text = "[data]\npage_size = 500\n# the end";
         assert_eq!(
             written(text, |settings| settings.sql_limit = 100),
-            "[data]\npage_size = 500\n# the end\n\n[editor]\nsql_limit = 100\n"
+            "[data]\npage_size = 500\n# the end\n\n[editor.run]\nlimit = 100  # 0 is no limit\n"
         );
     }
 
@@ -3287,12 +3735,13 @@ bar = \"label\"  # tint | label
         // The lines and the tables under the bad one are still read.
         assert_eq!(loaded.settings.group_digits, Some(true));
         assert_eq!(loaded.settings.sql_limit, 100);
+        // The old key of the limit, which still sets it.
         assert_eq!(
             loaded.lines,
             vec![
                 (Key::PageSize, 2),
                 (Key::GroupDigits, 4),
-                (Key::SqlLimit, 7)
+                (Key::OldSqlLimit, 7)
             ]
         );
         // What the pane will show is the file, not what was parsed.
@@ -3640,7 +4089,7 @@ bar = \"label\"  # tint | label
         assert!(
             Settings::SQL_LIMITS
                 .iter()
-                .all(|limit| (1..=Settings::MAX_SQL_LIMIT).contains(limit)),
+                .all(|limit| Settings::valid_sql_limit(*limit) == *limit),
             "every choice of the Limit menu loads as it was saved"
         );
     }
