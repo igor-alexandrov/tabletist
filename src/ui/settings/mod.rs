@@ -152,10 +152,11 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::InterfaceSize => Some("Sidebar, tabs, buttons, inspector labels"),
         OptionId::Font => Some("Grid cells, SQL editor, JSON"),
         OptionId::NewTab => Some("The badge in each tab can still switch it"),
-        // Not the board's "Adds LIMIT to results you browse; exports get
-        // everything": the rows are capped as they come, and the editor's
-        // results have no export.
-        OptionId::RowLimit => Some("Caps the rows of results you browse"),
+        // Igor's words (2026-10-19), in place of the board's "Adds LIMIT to
+        // results you browse; exports get everything": the rows are capped
+        // as they come, nothing is added to the SQL, and Show all under a
+        // cut result runs it again with no limit.
+        OptionId::RowLimit => Some("Caps results you browse. Show all and exports get every row."),
         OptionId::ConfirmUnsafeWrites => Some("On every connection that allows writes"),
         OptionId::Autocomplete => Some("Tables, views, columns and functions from the schema"),
         OptionId::HistoryKeep => Some("Per connection, on this Mac; results are never stored"),

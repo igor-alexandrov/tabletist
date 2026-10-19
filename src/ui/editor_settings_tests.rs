@@ -514,7 +514,7 @@ fn the_sheet_sets_each_editor_option_with_a_click() {
         "RUNNING QUERIES",
         "TYPING",
         "The badge in each tab can still switch it",
-        "Caps the rows of results you browse",
+        "Caps results you browse. Show all and exports get every row.",
         &runs,
         "A selection always wins",
         "Tables, views, columns and functions from the schema",
@@ -643,7 +643,7 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
         "typing",
         read_only.as_str(),
         "per tab",
-        "caps results you browse",
+        "caps results you browse · show all and exports get every row",
         "a selection always wins",
         "schema objects",
     ] {

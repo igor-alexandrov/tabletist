@@ -1487,7 +1487,9 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             .add(role, " / ", palette.dim)
             .add(role, &key(ui, look, Command::ReadWriteTab), palette.accent)
             .add(role, &format!(" {}", skin.say("per tab")), palette.dim),
-        OptionId::RowLimit => dim(&skin.say("caps results you browse")),
+        OptionId::RowLimit => {
+            dim(&skin.say("caps results you browse · show all and exports get every row"))
+        }
         OptionId::RunScope => dim(&skin.say("a selection always wins")),
         OptionId::ConfirmUnsafeWrites => dim(&skin.say("connections that allow writes")),
         OptionId::EditorKeys => dim(&skin.say("-- INSERT -- shown in the status line")),
