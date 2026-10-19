@@ -181,7 +181,7 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the two folders.
 | `last_used.json` | State | When each saved connection last connected |
 | `table_lists.json` | State | How each saved connection lists its tables, where you switched it in the sidebar |
 | `connections.moved` | State | A note that your connections are kept in `connections.toml` |
-| `session.json` | State | The connection windows open when Tabletist last quit, and each saved connection's table tabs, with their sort and filters, as its window last had them. Written at quit, when a connection's window closes, and when a connection is deleted. Not written while `connections.toml` cannot be read. A connection deleted from `connections.toml` by hand is taken out of it at the next write |
+| `session.json` | State | The connection windows open when Tabletist last quit, and each saved connection's table tabs, with their sort and filters, as its window last had them. Written at quit, when a connection's window closes or gets another connection, when a database switch drops its tables, and when a connection is deleted. Not written while `connections.toml` cannot be read. A connection deleted from `connections.toml` by hand is taken out of it at the next write |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
