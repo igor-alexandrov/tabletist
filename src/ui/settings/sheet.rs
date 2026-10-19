@@ -622,6 +622,9 @@ pub(super) fn row(
         }
         None => small_print(option).map(|print| (skin.say(print), palette.dim)),
     };
+    // What the row says under its label is what its controls are for: a
+    // screen reader reads it as their description.
+    let description = print.as_ref().map(|(print, _)| print.clone());
     let print = print.map(|(print, color)| {
         Text::one(look, TextRole::Secondary, &print, color)
             .wrap(column)
@@ -653,7 +656,8 @@ pub(super) fn row(
         .id_salt(label(option))
         .max_rect(place);
     let mut line = ui.new_child(builder.layout(centred));
-    control(&mut line, option, settings, skin, actions);
+    let described = description.as_deref();
+    control(&mut line, (option, described), settings, skin, actions);
     if let Some(after) = after {
         line.add_space(HINT_GAP);
         let mut button = widgets::ButtonSpec::new(after.text);
@@ -723,10 +727,11 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
 }
 
 /// What changes `option`: a menu of the page sizes, two segments, or a
-/// switch.
+/// switch, each with `description` (the row's small print) for screen
+/// readers.
 fn control(
     ui: &mut Ui,
-    option: OptionId,
+    (option, description): (OptionId, Option<&str>),
     settings: &Settings,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -737,7 +742,7 @@ fn control(
         OptionId::PageSize => {
             let written = |size: u32| group_digits(u64::from(size));
             let size = written(settings.page_size);
-            let dropdown = menu::Dropdown::new("page-size", &size, MENU);
+            let dropdown = menu::Dropdown::new("page-size", &size, MENU).description(description);
             let menu = dropdown.show(ui, look, palette, |ui| {
                 for size in page_sizes(settings.page_size) {
                     let chosen = size == settings.page_size;
@@ -765,12 +770,12 @@ fn control(
                 info
             });
         }
-        OptionId::Tz => zone_menu(ui, &name, settings, skin, actions),
-        OptionId::OnLaunch => launch_menu(ui, &name, settings, skin, actions),
+        OptionId::Tz => zone_menu(ui, (&name, description), settings, skin, actions),
+        OptionId::OnLaunch => launch_menu(ui, (&name, description), settings, skin, actions),
         OptionId::Timestamps => {
             let words = [skin.say("To the second"), skin.say("Full precision")];
             let selected = usize::from(settings.timestamps == Timestamps::Full);
-            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 let value = [Timestamps::Second, Timestamps::Full][picked];
                 actions.push(Action::SetOption(OptionValue::Timestamps(value)));
             }
@@ -779,7 +784,7 @@ fn control(
             // A number as each value writes it: no language has others.
             let words = ["1,240.50".to_owned(), "1240.50".to_owned()];
             let selected = usize::from(!settings.group_digits.unwrap_or_default());
-            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::GroupDigits(Some(
                     picked == 0,
                 ))));
@@ -805,7 +810,7 @@ fn control(
                 .iter()
                 .position(|height| *height == settings.row_height)
                 .unwrap_or(1);
-            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::RowHeight(
                     RowHeight::ALL[picked],
                 )));
@@ -826,7 +831,7 @@ fn control(
                 .iter()
                 .position(|size| *size == settings.interface_size)
                 .unwrap_or(1);
-            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::InterfaceSize(
                     InterfaceSize::ALL[picked],
                 )));
@@ -839,16 +844,16 @@ fn control(
             if look.faces.typeface == Typeface::Plex {
                 let width =
                     (ui.available_width() - MENU_GAP - SIZE_MENU).clamp(FONT_MENU_MIN, FONT_MENU);
-                font_menu(ui, (&name, width), settings, skin, actions);
+                font_menu(ui, (&name, width, description), settings, skin, actions);
                 ui.add_space(MENU_GAP);
             }
-            size_menu(ui, settings, skin, actions);
+            size_menu(ui, description, settings, skin, actions);
         }
-        OptionId::FontSize => size_menu(ui, settings, skin, actions),
+        OptionId::FontSize => size_menu(ui, description, settings, skin, actions),
         OptionId::TableList => {
             let words = [skin.say("Grouped by prefix"), skin.say("Flat")];
             let selected = usize::from(settings.table_list.flat());
-            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::TableList(TableList::of(
                     picked == 1,
                 ))));
@@ -857,7 +862,7 @@ fn control(
         OptionId::EnvBar => {
             let words = [skin.say("Tint + stripe"), skin.say("Stripe only")];
             let selected = usize::from(settings.env_bar == EnvBar::Label);
-            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
+            if let Some(picked) = segments(ui, (&name, description), &words, selected, skin) {
                 let bar = [EnvBar::Tint, EnvBar::Label][picked];
                 actions.push(Action::SetOption(OptionValue::EnvBar(bar)));
             }
@@ -871,7 +876,7 @@ fn control(
         | OptionId::Zebra
         | OptionId::ColumnTypes => {
             let on = super::is_on(&settings.value(option));
-            if widgets::toggle(ui, on, &name, palette).clicked()
+            if widgets::toggle(ui, on, &name, description, palette).clicked()
                 && let Some(flipped) = settings.flipped(option)
             {
                 actions.push(Action::SetOption(flipped));
@@ -879,7 +884,7 @@ fn control(
         }
         OptionId::IdleDisconnect => {
             let shown = super::idle_text(skin.locale, settings.idle_disconnect);
-            let dropdown = menu::Dropdown::new("idle", &shown, MENU);
+            let dropdown = menu::Dropdown::new("idle", &shown, MENU).description(description);
             let menu = dropdown.show(ui, look, palette, |ui| {
                 for choice in Idle::ALL {
                     let text = super::idle_text(skin.locale, choice);
@@ -901,7 +906,7 @@ fn control(
         }
         OptionId::LogDays => {
             let shown = super::days(skin.locale, settings.mcp_log_days);
-            let dropdown = menu::Dropdown::new("log-days", &shown, MENU);
+            let dropdown = menu::Dropdown::new("log-days", &shown, MENU).description(description);
             let menu = dropdown.show(ui, look, palette, |ui| {
                 for days in log_days(settings.mcp_log_days) {
                     let text = super::days(skin.locale, days);
@@ -932,7 +937,7 @@ fn control(
 /// place, which the row's small print says.
 fn font_menu(
     ui: &mut Ui,
-    (name, width): (&str, f32),
+    (name, width, description): (&str, f32, Option<&str>),
     settings: &Settings,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -942,7 +947,7 @@ fn font_menu(
     let installed = named.err().filter(|_| skin.fonts.missing.is_none());
     let bundled = named.unwrap_or_default();
     let shown = installed.or(bundled.name()).unwrap_or_default();
-    let dropdown = menu::Dropdown::new("data-font", shown, width);
+    let dropdown = menu::Dropdown::new("data-font", shown, width).description(description);
     let menu = dropdown.show(ui, look, palette, |ui| {
         let mut pick = |ui: &mut Ui, text: &str, current: bool, font: Option<String>| {
             let entry_name = format!("{name} {text}");
@@ -977,13 +982,20 @@ fn font_menu(
 
 /// The data's size: a menu of every size macOS and Windows draw, by half
 /// points.
-fn size_menu(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+fn size_menu(
+    ui: &mut Ui,
+    description: Option<&str>,
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin { look, palette, .. } = *skin;
     let name = skin.say(label(OptionId::FontSize));
     let points = |size: crate::settings::FontSize| format!("{} pt", size.text());
     let drawn = settings.font_size_in(false);
     let shown = points(drawn);
-    let dropdown = menu::Dropdown::new("data-font-size", &shown, SIZE_MENU);
+    let dropdown =
+        menu::Dropdown::new("data-font-size", &shown, SIZE_MENU).description(description);
     let menu = dropdown.show(ui, look, palette, |ui| {
         for size in FontSizes::of(false).all() {
             let text = points(size);
@@ -1016,11 +1028,12 @@ fn log_days(current: u32) -> Vec<u32> {
 }
 
 /// A segmented control of `words` for the option called `option`, the one
-/// at `selected` chosen. Returns the index of a segment picked this frame.
+/// at `selected` chosen: a radio group named by the option and described
+/// by `description`. Returns the index of a segment picked this frame.
 /// The segments are of one width: the widest word's, with 10 at each side.
 fn segments(
     ui: &mut Ui,
-    option: &str,
+    (option, description): (&str, Option<&str>),
     words: &[String],
     selected: usize,
     skin: &Skin,
@@ -1045,7 +1058,11 @@ fn segments(
         .zip(&names)
         .map(|(text, name)| Segment::Named { text, name })
         .collect();
-    widgets::segmented(ui, &parts, selected, size, look, palette)
+    let group = widgets::Group {
+        name: option,
+        description,
+    };
+    widgets::segmented(ui, &parts, selected, size, Some(group), look, palette)
 }
 
 /// The sizes the menu offers: the list, with the size in use in its place
@@ -1063,7 +1080,7 @@ fn page_sizes(current: u32) -> Vec<u32> {
 /// connection, each with where it points beside its name.
 fn launch_menu(
     ui: &mut Ui,
-    name: &str,
+    (name, description): (&str, Option<&str>),
     settings: &Settings,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -1085,7 +1102,7 @@ fn launch_menu(
         Some(place) => format!("{shown}, {place}"),
         None => shown.clone(),
     };
-    let dropdown = menu::Dropdown::new("launch", &shown, ZONE_MENU);
+    let dropdown = menu::Dropdown::new("launch", &shown, ZONE_MENU).description(description);
     let menu = dropdown.show(ui, look, palette, |ui| {
         for launch in super::launch_choices(skin.connections) {
             let text = super::launch_text(skin.locale, &launch, skin.connections);
@@ -1120,11 +1137,17 @@ fn launch_menu(
 /// The zone's menu: the computer's zone and UTC, then every zone of the
 /// database, which a search field over them narrows. What was typed there
 /// is the field's own, kept in egui's memory while the menu is open.
-fn zone_menu(ui: &mut Ui, name: &str, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+fn zone_menu(
+    ui: &mut Ui,
+    (name, description): (&str, Option<&str>),
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin { look, palette, .. } = *skin;
     let shown = zone_text(skin.locale, &settings.tz, skin.system);
     let search_id = ui.id().with("zone-search");
-    let dropdown = menu::Dropdown::new("zone", &shown, ZONE_MENU);
+    let dropdown = menu::Dropdown::new("zone", &shown, ZONE_MENU).description(description);
     let menu = dropdown.show(ui, look, palette, |ui| {
         let mut pick = |ui: &mut Ui, zone: Zone| {
             let text = zone_text(skin.locale, &zone, skin.system);

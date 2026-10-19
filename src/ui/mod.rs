@@ -58,6 +58,8 @@ pub mod review;
 pub mod row_form;
 pub mod row_panel;
 pub mod settings;
+#[cfg(test)]
+mod settings_access_tests;
 pub mod sidebar;
 pub mod sql_complete;
 pub mod sql_editor;
