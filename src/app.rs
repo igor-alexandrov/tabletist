@@ -207,6 +207,11 @@ pub struct App {
     /// held, the narrower setting in force, until the person keeps it or
     /// puts it back.
     pub agents_held: Vec<crate::agents_shown::Raised>,
+    /// The administrator's policy (`managed.toml`), as found at the start:
+    /// a floor under what agents may do and under every read-only box,
+    /// which nothing in the person's files lifts. It is applied where the
+    /// app tells the backend what to do, never written into those files.
+    pub managed: crate::managed::Managed,
     next_id: u64,
 }
 
@@ -265,6 +270,7 @@ impl App {
             Some(crate::labels::database_key(spec.driver, &spec.database))
         });
         let agents_shown = crate::agents_shown::Shown::load(&dirs.agents_shown_file());
+        let managed = crate::managed::Managed::load(dirs.managed.as_deref());
         let named_zone = match &settings.tz {
             crate::settings::Zone::Named(name) => Some(name.clone()),
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
@@ -296,7 +302,10 @@ impl App {
             pending_stores: HashMap::new(),
             // A file that could not be read, or one that was read for
             // the last time: either is said once the window is up.
-            notice: loaded_connections.problem.or(loaded_connections.moved),
+            notice: managed
+                .notice()
+                .or(loaded_connections.problem)
+                .or(loaded_connections.moved),
             host_keys,
             host_keys_error,
             titlebar: TitleBar::default(),
@@ -326,6 +335,7 @@ impl App {
             agents: crate::model::AgentsState::default(),
             agents_shown,
             agents_held: Vec::new(),
+            managed,
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -2774,6 +2784,12 @@ impl App {
             .filter(|workspace| !workspace.keep_access)
             .and_then(|workspace| self.connections.get(&workspace.conn_id))
             .map(|saved| saved.read_only);
+        // The administrator's policy makes it read-only whatever the box
+        // says, a session that keeps its access too.
+        let forced = self.workspace(tab).is_some_and(|workspace| {
+            self.managed
+                .forces_read_only(&workspace.spec, self.dirs.home.as_deref())
+        });
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -2782,6 +2798,9 @@ impl App {
         };
         if let Some(read_only) = boxed {
             workspace.access = crate::connections::access(read_only, workspace.environment);
+        }
+        if forced {
+            workspace.access = tabletist_db::Access::ReadOnly;
         }
         workspace.secrets = secrets.clone();
         workspace.connect_started = Some(std::time::Instant::now());
@@ -3827,11 +3846,13 @@ impl App {
         }
     }
 
-    /// Whether the agent server is on: the settings say so, and that is not
-    /// held.
+    /// Whether the agent server is on: the settings say so, that is not
+    /// held, and the administrator's policy allows it.
     pub fn agents_on(&self) -> bool {
         use crate::agents_shown::Raised;
-        self.settings.mcp_enabled && !self.agents_held.contains(&Raised::Server)
+        self.settings.mcp_enabled
+            && !self.agents_held.contains(&Raised::Server)
+            && self.managed.server_allowed()
     }
 
     /// What agents may do on `saved` now: its access, or what was shown
@@ -4001,6 +4022,11 @@ impl App {
         if self.agents_on() {
             return;
         }
+        // Nothing to turn on: the administrator's policy forbids it.
+        if !self.managed.server_allowed() {
+            self.notice = Some(crate::managed::AGENTS_NOT_ALLOWED.into());
+            return;
+        }
         if !self.settings.mcp_enabled {
             self.change_settings(|settings| settings.mcp_enabled = true);
             return;
@@ -4033,7 +4059,9 @@ impl App {
         if !self.serves_agents {
             return;
         }
-        // What a change made outside the app holds back is not sent.
+        // What a change made outside the app holds back is not sent, and
+        // nothing above the administrator's policy.
+        let home = self.dirs.home.as_deref();
         let shown: Vec<SavedConnection> = self
             .connections
             .connections
@@ -4043,6 +4071,7 @@ impl App {
                 now.agents.access = self.agents_access(saved);
                 now.agents.tables = self.agents_tables(saved);
                 now.agents.masked = self.agents_masked(saved);
+                self.managed.floor(&saved.spec, home, &mut now.agents);
                 now
             })
             .collect();
@@ -4061,7 +4090,7 @@ impl App {
         }
         self.backend.send(Command::Agents(AgentsCommand::Start {
             log: self.dirs.agents_log_file(),
-            log_days: self.settings.mcp_log_days,
+            log_days: self.managed.log_days(self.settings.mcp_log_days),
             endpoint: Some(self.dirs.agents_dir()),
         }));
     }
@@ -4209,14 +4238,18 @@ impl App {
         if old.font != self.settings.font {
             self.read_desktop_font();
         }
-        // An edit of the file that turns the server on is held.
+        // An edit of the file that turns the server on is held, and one
+        // the administrator's policy forbids does nothing but say so.
+        if self.settings.mcp_enabled && !old.mcp_enabled && !self.managed.server_allowed() {
+            self.notice = Some(crate::managed::AGENTS_NOT_ALLOWED.into());
+        }
         self.check_agents();
         if self.serves_agents {
             match (was_on, self.agents_on()) {
                 (false, true) => self.start_agents(),
                 (true, false) => self.backend.send(Command::Agents(AgentsCommand::Stop)),
                 (true, true) if old.mcp_log_days != self.settings.mcp_log_days => {
-                    let days = self.settings.mcp_log_days;
+                    let days = self.managed.log_days(self.settings.mcp_log_days);
                     self.backend
                         .send(Command::Agents(AgentsCommand::LogDays(days)));
                 }
@@ -8707,6 +8740,178 @@ mod tests {
             agents_sent(&app).last(),
             Some(AgentsCommand::Policy { connections, .. }) if connections.len() == 1
         ));
+    }
+
+    /// An app whose administrator's policy, `managed.toml` under its root,
+    /// says `policy`.
+    fn app_under(policy: &str) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("managed.toml"), policy).unwrap();
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default().into(),
+            Backend::recording(),
+        );
+        (app, dir)
+    }
+
+    /// The connections the last policy sent to the gateway let agents use.
+    fn agentable_sent(app: &App) -> Vec<crate::backend::Agentable> {
+        match agents_sent(app)
+            .into_iter()
+            .rev()
+            .find(|sent| matches!(sent, AgentsCommand::Policy { .. }))
+        {
+            Some(AgentsCommand::Policy { connections, .. }) => connections.clone(),
+            _ => panic!("no policy was sent"),
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_policy_caps_the_access_rows_and_timeout_sent_to_the_gateway() {
+        use crate::connections::AgentAccess;
+        let (mut app, _dir) = app_under(
+            r#"version = 1
+[[rules]]
+name = "Local files"
+match = { driver = "sqlite" }
+access_max = "read"
+rows_max = 100
+timeout_max_secs = 5
+"#,
+        );
+        app.serve_agents();
+        let conn = with_saved(&mut app);
+        app.apply(Action::SetAgentAccess {
+            conn: conn.clone(),
+            access: AgentAccess::Read,
+        });
+        let sent = agentable_sent(&app);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].limits.rows, 100);
+        assert_eq!(sent[0].limits.timeout, std::time::Duration::from_secs(5));
+        // The person's own settings are kept as they set them.
+        let saved = app.connections.get(&conn).unwrap();
+        assert_eq!(
+            (
+                saved.agents.access,
+                saved.agents.rows,
+                saved.agents.timeout_secs
+            ),
+            (AgentAccess::Read, 500, 10)
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_policy_turns_agents_off_where_its_rules_say_or_no_rule_matches() {
+        use crate::connections::AgentAccess;
+        for policy in [
+            // No rule matches: off.
+            "version = 1\n[[rules]]\nname = \"Elsewhere\"\nmatch = { driver = \"postgres\" }\n",
+            "version = 1\n[[rules]]\nname = \"Off\"\nmatch = { driver = \"sqlite\" }\naccess_max = \"off\"\n",
+            // A rule's tables, until the checks take them.
+            "version = 1\n[[rules]]\nname = \"Hides\"\nmatch = { driver = \"*\" }\nhidden = [\"customers\"]\n",
+        ] {
+            let (mut app, _dir) = app_under(policy);
+            app.serve_agents();
+            let conn = with_saved(&mut app);
+            app.apply(Action::SetAgentAccess {
+                conn: conn.clone(),
+                access: AgentAccess::Read,
+            });
+            assert!(agentable_sent(&app).is_empty(), "{policy}");
+            assert_eq!(
+                app.connections.get(&conn).unwrap().agents.access,
+                AgentAccess::Read,
+                "the person's choice is kept: {policy}"
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_policy_that_forbids_agents_keeps_the_server_off_and_says_so() {
+        let (mut app, _dir) = app_under("version = 1\n[agents]\nallowed = false\n");
+        app.serve_agents();
+        app.apply(Action::TurnAgentsOn);
+        assert!(!app.settings.mcp_enabled, "nothing is written");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some(crate::managed::AGENTS_NOT_ALLOWED)
+        );
+        app.notice = None;
+        // Turned on in the settings: not started, and said.
+        app.change_settings(|settings| settings.mcp_enabled = true);
+        assert!(!app.agents_on());
+        assert!(
+            !agents_sent(&app)
+                .iter()
+                .any(|sent| matches!(sent, AgentsCommand::Start { .. }))
+        );
+        assert_eq!(
+            app.notice.as_deref(),
+            Some(crate::managed::AGENTS_NOT_ALLOWED)
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_policys_least_log_days_are_what_the_server_keeps_calls_for() {
+        let (mut app, _dir) = app_under("version = 1\n[agents]\nlog_days_min = 90\n");
+        app.serve_agents();
+        app.change_settings(|settings| settings.mcp_enabled = true);
+        assert!(
+            agents_sent(&app)
+                .iter()
+                .any(|sent| matches!(sent, AgentsCommand::Start { log_days: 90, .. }))
+        );
+        app.change_settings(|settings| settings.mcp_log_days = 365);
+        assert!(matches!(
+            agents_sent(&app).last(),
+            Some(AgentsCommand::LogDays(365))
+        ));
+    }
+
+    #[test]
+    fn a_rule_makes_the_persons_sessions_read_only_whatever_the_box_says() {
+        use tabletist_db::Access;
+        let connect = |app: &mut App| {
+            let conn = with_saved(app);
+            let tab = app.active_tab_id();
+            app.apply(Action::Connect { tab, conn });
+            crate::testing::asked_access(app)
+        };
+        let (mut app, _dir) = app_under(
+            "version = 1\n[[rules]]\nname = \"Local\"\nmatch = { driver = \"sqlite\" }\nread_only = true\n",
+        );
+        assert_eq!(connect(&mut app), Access::ReadOnly);
+        // Without the rule, its box: a dev connection never set is writable.
+        let (mut app, _dir) = app_under("version = 1\n");
+        assert_eq!(connect(&mut app), Access::Writable);
+    }
+
+    #[test]
+    fn an_unreadable_policy_stops_agents_makes_every_connection_read_only_and_says_so() {
+        use tabletist_db::Access;
+        let (mut app, _dir) = app_under("version = 1\n[agents]\nallowd = true\n");
+        let notice = app.notice.clone().unwrap();
+        assert!(
+            notice.starts_with("Your administrator's policy could not be read ("),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("line 3: unknown field `allowd`"),
+            "{notice}"
+        );
+        assert!(!app.managed.server_allowed());
+        app.change_settings(|settings| settings.mcp_enabled = true);
+        assert!(!app.agents_on());
+        let conn = with_saved(&mut app);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect { tab, conn });
+        assert_eq!(crate::testing::asked_access(&app), Access::ReadOnly);
     }
 
     #[cfg(any(unix, windows))]
