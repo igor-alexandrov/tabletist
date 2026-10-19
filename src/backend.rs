@@ -196,13 +196,18 @@ pub enum Command {
         pin: Option<String>,
         asked: u64,
     },
-    /// Reads the terminal look's font through fontconfig: the one `font`
-    /// names, or the system's monospace. Answered with [`Event::Font`],
-    /// which carries `asked`: reads end in any order.
+    /// Reads the font `font` names ([`crate::typography::read_font`]): the
+    /// terminal look's through fontconfig, or the system's monospace; on
+    /// macOS an installed one the data is drawn in, through CoreText.
+    /// Answered with [`Event::Font`], which carries `asked`: reads end in
+    /// any order.
     ReadFont {
         font: Option<String>,
         asked: u64,
     },
+    /// Lists the installed monospace families the data font's menu offers
+    /// on macOS. Answered with [`Event::Fonts`].
+    ListFonts,
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -373,6 +378,9 @@ pub enum Event {
         asked: u64,
         read: Box<crate::typography::desktop_font::Read>,
     },
+    /// The installed monospace families ([`Command::ListFonts`]), as the
+    /// menu lists them.
+    Fonts(Vec<String>),
     /// The time zone database, read whole ([`Command::LoadZones`]).
     Zones(Arc<crate::zones::Zones>),
     /// The settings file changed on disk: its text. `own` when it is, byte
@@ -2010,11 +2018,17 @@ impl Worker {
             Command::ReadFont { font, asked } => {
                 let outbox = self.outbox.clone();
                 tokio::task::spawn_blocking(move || {
-                    let read = crate::typography::desktop_font::read(font.as_deref());
+                    let read = crate::typography::read_font(font.as_deref());
                     outbox.emit(Event::Font {
                         asked,
                         read: Box::new(read),
                     });
+                });
+            }
+            Command::ListFonts => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    outbox.emit(Event::Fonts(crate::typography::installed_font::families()));
                 });
             }
             Command::Flush { done } => {
@@ -2074,6 +2088,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
         | Command::ReadFont { .. }
+        | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_) => SessionId(0),
     }
@@ -2105,6 +2120,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
         | Command::ReadFont { .. }
+        | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_) => None,
     }
@@ -2194,6 +2210,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::RevealSettingsFile { .. }
         | Command::ReadTheme { .. }
         | Command::ReadFont { .. }
+        | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_) => return,
     };
@@ -2479,6 +2496,7 @@ async fn run_session(
             | Command::RevealSettingsFile { .. }
             | Command::ReadTheme { .. }
             | Command::ReadFont { .. }
+            | Command::ListFonts
             | Command::Flush { .. }
             | Command::Agents(_) => None,
         };

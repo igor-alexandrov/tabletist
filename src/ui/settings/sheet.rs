@@ -90,6 +90,21 @@ pub(super) struct Skin<'a> {
     pub(super) zones: &'a [String],
     /// The saved connections, which On launch lists.
     pub(super) connections: &'a [crate::connections::SavedConnection],
+    /// The data fonts beyond the bundled faces, on macOS.
+    pub(super) fonts: DataFonts<'a>,
+}
+
+/// The installed fonts macOS's data font menu lists after the bundled
+/// faces, and the one the settings name where nothing draws it.
+#[derive(Clone, Copy)]
+pub(super) struct DataFonts<'a> {
+    /// The installed monospace families: none until the backend has
+    /// listed them.
+    pub(super) installed: &'a [String],
+    /// The font the settings name, where it is no bundled face and no
+    /// installed one is read or on its way ([`App::data_font_missing`]):
+    /// the default is drawn in its place.
+    pub(super) missing: Option<&'a str>,
 }
 
 impl Skin<'_> {
@@ -113,6 +128,10 @@ pub(super) fn show(
         system: app.system_zone.iana_name(),
         zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
         connections: &app.connections.connections,
+        fonts: DataFonts {
+            installed: &app.installed_fonts,
+            missing: app.data_font_missing(),
+        },
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
@@ -592,11 +611,13 @@ pub(super) fn row(
     )
     .wrap(column)
     .layout(ui.ctx());
-    // A data font that is not bundled is said in place of the small
+    // A data font that is not installed is said in place of the small
     // print, where the row has the room for it.
-    let print = match not_bundled(option, settings, look) {
+    let print = match missing_font(option, skin) {
         Some(missing) => {
-            let said = skin.say(super::FONT_NOT_BUNDLED).replace("{name}", missing);
+            let said = skin
+                .say(super::FONT_NOT_INSTALLED)
+                .replace("{name}", missing);
             Some((said, palette.warning))
         }
         None => small_print(option).map(|print| (skin.say(print), palette.dim)),
@@ -658,11 +679,11 @@ pub(super) fn row(
 
 /// The data font the settings name, on its row, where it is no face the
 /// look has: the default is drawn in its place.
-fn not_bundled<'a>(option: OptionId, settings: &'a Settings, look: &Look) -> Option<&'a str> {
-    let plex = look.faces.typeface == Typeface::Plex;
-    (option == OptionId::Font && plex)
-        .then(|| DataFace::of(settings.font.as_deref()).err())
-        .flatten()
+fn missing_font<'a>(option: OptionId, skin: &Skin<'a>) -> Option<&'a str> {
+    let plex = skin.look.faces.typeface == Typeface::Plex;
+    skin.fonts
+        .missing
+        .filter(|_| option == OptionId::Font && plex)
 }
 
 /// Whether the keyboard came in this frame to a control in `place`, on the
@@ -905,8 +926,10 @@ fn control(
     }
 }
 
-/// The data font's menu: the bundled faces. A name that is none of them
-/// is drawn as the default, which the row's hint says.
+/// The data font's menu: the bundled faces, then the installed monospace
+/// families. An installed font reads as the settings name it, drawn or on
+/// its way; a name that nothing draws reads as the default drawn in its
+/// place, which the row's small print says.
 fn font_menu(
     ui: &mut Ui,
     (name, width): (&str, f32),
@@ -915,25 +938,39 @@ fn font_menu(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let drawn = DataFace::of(settings.font.as_deref()).unwrap_or_default();
-    let dropdown = menu::Dropdown::new("data-font", drawn.name(), width);
+    let named = DataFace::of(settings.font.as_deref());
+    let installed = named.err().filter(|_| skin.fonts.missing.is_none());
+    let bundled = named.unwrap_or_default();
+    let shown = installed.or(bundled.name()).unwrap_or_default();
+    let dropdown = menu::Dropdown::new("data-font", shown, width);
     let menu = dropdown.show(ui, look, palette, |ui| {
-        for face in DataFace::ALL {
-            let entry_name = format!("{name} {}", face.name());
-            let entry = menu::Item::choice(face.name(), face == drawn)
+        let mut pick = |ui: &mut Ui, text: &str, current: bool, font: Option<String>| {
+            let entry_name = format!("{name} {text}");
+            let entry = menu::Item::choice(text, current)
                 .name(&entry_name)
                 .show(ui, look, palette);
             if entry.clicked() {
-                // The default is no value: the file leaves it out.
-                let font = (face != DataFace::default()).then(|| face.name().to_owned());
                 actions.push(Action::SetOption(OptionValue::Font(font)));
                 ui.close();
             }
+        };
+        for face in DataFace::BUNDLED {
+            let text = face.name().unwrap_or_default();
+            // The default is no value: the file leaves it out.
+            let font = (face != DataFace::default()).then(|| text.to_owned());
+            pick(ui, text, installed.is_none() && face == bundled, font);
+        }
+        if !skin.fonts.installed.is_empty() {
+            menu::heading(ui, &skin.say("Installed"), look, palette);
+        }
+        for family in skin.fonts.installed {
+            let current = installed.is_some_and(|name| name.eq_ignore_ascii_case(family));
+            pick(ui, family, current, Some(family.clone()));
         }
     });
     menu.response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
-        info.current_text_value = Some(drawn.name().to_owned());
+        info.current_text_value = Some(shown.to_owned());
         info
     });
 }

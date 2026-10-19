@@ -115,9 +115,10 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
     }
 }
 
-/// What is said of a data font the settings name that is not bundled,
-/// `{name}` for its name: the default is drawn instead. English.
-pub const FONT_NOT_BUNDLED: &str = "“{name}” is not bundled: IBM Plex Mono is used";
+/// What is said of a data font the settings name that is neither bundled
+/// nor installed, `{name}` for its name: the default is drawn instead.
+/// English.
+pub const FONT_NOT_INSTALLED: &str = "“{name}” is not installed: IBM Plex Mono is used";
 
 /// What is said of a pinned theme that is nowhere to be found, `{name}`
 /// for its name: what is drawn instead. English.

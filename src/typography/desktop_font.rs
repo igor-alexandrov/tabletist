@@ -1,6 +1,7 @@
 //! The desktop's monospace font on Linux, as fontconfig resolves it
 //! (JetBrainsMono Nerd Font on Omarchy; `omarchy font set` changes it), or
-//! the font the settings name by its fontconfig name.
+//! the font the settings name by its fontconfig name. macOS reads the data
+//! font it names into the same [`Read`] ([`super::installed_font`]).
 
 use super::fonts::TerminalFaces;
 
@@ -69,20 +70,29 @@ pub fn pattern(name: &str) -> String {
     pattern
 }
 
-/// What fontconfig gave the terminal look for the font the settings name.
+/// What fontconfig gave the terminal look for the font the settings name,
+/// or CoreText macOS's data for it.
 #[derive(Clone, Debug, Default)]
 pub struct Read {
     /// The font asked for, as the settings name it: `None` is the
     /// system's monospace.
     pub asked: Option<String>,
     /// The faces at 400, 500 and 700: `None` where fontconfig gave none
-    /// that can be drawn (the bundled one is drawn then).
+    /// that can be drawn (the bundled one is drawn then), and on macOS
+    /// where nothing was read (a bundled face is drawn).
     pub faces: Option<TerminalFaces>,
-    /// The family drawn, as fontconfig names it.
+    /// The family drawn, as fontconfig or CoreText names it.
     pub family: Option<String>,
     /// Whether the font asked for is not there: the system's monospace is
-    /// drawn in its place.
+    /// drawn in its place, or on macOS the default data face.
     pub missing: bool,
+}
+
+impl Read {
+    /// Whether the faces read are those of `font`, as the settings name it.
+    pub fn has(&self, font: Option<&str>) -> bool {
+        self.faces.is_some() && self.asked.as_deref() == font
+    }
 }
 
 /// The font named `asked` (the system's monospace for `None`), at 400, 500
@@ -195,10 +205,7 @@ fn stop(child: &mut std::process::Child) {
 pub fn load(path: &Path, index: u32) -> Option<egui::FontData> {
     let bytes = std::fs::read(path).ok()?;
     let face = skrifa::FontRef::from_index(&bytes, index).ok()?;
-    let outlined = [b"glyf", b"CFF ", b"CFF2"]
-        .into_iter()
-        .any(|tag| face.table_data(skrifa::Tag::new(tag)).is_some());
-    if !outlined {
+    if !super::installed_font::outlined(&face) {
         return None;
     }
     let mut data = egui::FontData::from_owned(bytes);
