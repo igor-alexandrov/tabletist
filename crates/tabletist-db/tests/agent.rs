@@ -750,7 +750,6 @@ async fn a_column_computed_from_a_masked_one_is_masked(connection: &Connection, 
     );
 }
 
-/// What every engine is asked.
 /// What the connection's database answers an agent that sends `sql` on a
 /// connection with the settings `sources`.
 async fn sourced(connection: &Connection, sources: &Sources, sql: &str) -> Result<Answer, Error> {
@@ -895,6 +894,7 @@ async fn a_rule_hides_and_masks_beside_the_person(connection: &Connection, on: &
     the_bookshop_is_stocked(connection, on).await;
 }
 
+/// What every engine is asked.
 async fn an_agent_reads_the_bookshop(connection: &Connection, on: &str) {
     a_read_answers_its_rows(connection, on).await;
     values_are_bound_to_their_placeholders(connection, on).await;
