@@ -84,6 +84,8 @@ pub enum Region {
     Toolbar,
     /// A SQL editor's script.
     Editor,
+    /// The start screen, where the rows would be with no tab open.
+    Start,
     /// The rows.
     Grid,
     /// The row panel.
@@ -92,7 +94,7 @@ pub enum Region {
 
 impl Region {
     /// The panes the terminal look steps between with ctrl+h and ctrl+l.
-    pub const PANES: [Region; 3] = [Region::Tree, Region::Grid, Region::Panel];
+    pub const PANES: [Region; 4] = [Region::Tree, Region::Start, Region::Grid, Region::Panel];
 }
 
 /// Where the regions are, and which one F6 asked for.

@@ -490,22 +490,23 @@ mod tests {
     }
 
     #[test]
-    fn opening_an_object_puts_it_first_in_recent() {
+    fn opening_an_object_puts_it_first_in_the_recents() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.click("orders");
         harness.click("users");
         let recent: Vec<String> = harness
             .app
-            .workspace(tab)
-            .unwrap()
-            .recent
+            .start_recents(tab)
             .iter()
-            .map(|(object, _)| object.name.clone())
+            .map(|recent| match recent {
+                crate::model::StartRecent::Object { object, .. } => object.name.clone(),
+                crate::model::StartRecent::Sql { number, .. } => format!("Query {number}"),
+            })
             .collect();
         assert_eq!(recent, ["users", "orders"]);
         harness.set_look(crate::theme::Look::macos());
-        assert!(harness.has("Recent orders"), "macOS lists them");
+        assert!(!harness.has("Recent orders"), "the sidebar lists none");
     }
 
     #[test]

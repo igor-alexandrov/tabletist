@@ -1,4 +1,4 @@
-//! The sidebar: filter, recent objects, the schema picker, the shown
+//! The sidebar: filter, the schema picker, the shown
 //! schema's objects in prefix groups or one flat list, and the button that
 //! opens a SQL editor.
 
@@ -32,9 +32,6 @@ fn margin(look: &Look) -> f32 {
 fn field_height(look: &Look) -> f32 {
     if look.terminal { 32.0 } else { 36.0 }
 }
-
-/// Recent rows (macOS only).
-const RECENT_ROW: f32 = 28.0;
 
 /// The Reload button's spinner, and a loading row's.
 const RELOAD_SPINNER: f32 = 14.0;
@@ -126,11 +123,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let active = workspace
         .active_object_tab()
         .map(|object| object.object.clone());
-    let recent: Vec<(ObjectRef, ObjectKind)> = if look.terminal {
-        Vec::new()
-    } else {
-        workspace.recent.clone()
-    };
+
     // The keyboard cursor, drawn only while the tree has the arrows.
     let cursor = workspace
         .tree
@@ -213,17 +206,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
             });
             ui.add_space(if look.terminal { 6.0 } else { 8.0 });
-            if !recent.is_empty() {
-                recent_section(
-                    ui,
-                    &recent,
-                    active.as_ref(),
-                    tab,
-                    &look,
-                    &palette,
-                    &mut actions,
-                );
-            }
             schema_header(
                 ui,
                 tab,
@@ -463,7 +445,7 @@ fn footer_height(look: &Look, agents: bool) -> f32 {
 
 /// What the Agents entry says of the connection, in which colour, and
 /// whether a dot leads it: an agent is here.
-fn agents_said(
+pub(super) fn agents_said(
     here: &crate::model::AgentsHere,
     look: &Look,
     palette: &Palette,
@@ -645,58 +627,6 @@ fn sql_button(
     }
 }
 
-/// The Recent section: the objects opened lately, newest first.
-fn recent_section(
-    ui: &mut egui::Ui,
-    recent: &[(ObjectRef, ObjectKind)],
-    active: Option<&ObjectRef>,
-    tab: ConnTabId,
-    look: &Look,
-    palette: &Palette,
-    actions: &mut Vec<Action>,
-) {
-    let width = ui.available_width();
-    // The label: 4 above and below, 16 in.
-    let label_text = widgets::section_label("Recent", look, palette).layout(ui.ctx());
-    let label_height = label_text.height() + 8.0;
-    let (label, _) = ui.allocate_exact_size(vec2(width, label_height), Sense::hover());
-    label_text.paint_left(ui.painter(), label.left() + 16.0, label.center().y);
-    for (object, kind) in recent {
-        let (row, response) = ui.allocate_exact_size(vec2(width, RECENT_ROW), Sense::click());
-        let name = display_safe(&object.name);
-        response.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Button, true, format!("Recent {name}"))
-        });
-        let selected = Some(object) == active;
-        widgets::selection(ui, row, selected, response.hovered(), look, palette);
-        row_ring(ui, &response, widgets::selection_rect(row, look), look);
-        let (role, color) = if selected {
-            (TextRole::UiBodyStrong, palette.accent_hover)
-        } else {
-            (TextRole::UiBody, palette.text)
-        };
-        let room = row.width() - 32.0;
-        let shown = crate::ui::grid::ellipsize(&name, room, false, |text| {
-            role.width(ui.ctx(), look.faces, text)
-        });
-        widgets::paint_text(
-            ui,
-            row.left() + 16.0,
-            row.center().y,
-            Text::one(look, role, &shown, color),
-        );
-        if response.clicked() {
-            actions.push(Action::OpenObject {
-                tab,
-                object: object.clone(),
-                kind: *kind,
-                pin: true,
-            });
-        }
-    }
-    ui.add_space(8.0);
-}
-
 /// What the schema header draws with.
 #[derive(Clone, Copy)]
 struct SchemaHeader<'a> {
@@ -870,13 +800,6 @@ struct Marks<'a> {
     keys: bool,
     /// And the keyboard is in use: the cursor shows.
     lit: bool,
-}
-
-/// A row with the keyboard is ringed inside its highlight: a ring outside
-/// it would be cut by the list it scrolls in.
-fn row_ring(ui: &egui::Ui, response: &egui::Response, highlight: Rect, look: &Look) {
-    let radius = look.radius.saturating_sub(2);
-    focus::hint(ui, response, highlight, focus::Ring::Inset { radius });
 }
 
 /// How rows are drawn: the platform look and the colour palette.

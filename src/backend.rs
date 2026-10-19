@@ -235,6 +235,8 @@ pub enum StateFile {
     TableLists(std::collections::BTreeMap<String, serde_json::Value>),
     /// The connection tabs open, and each connection's tables.
     Session(crate::session::Session),
+    /// What was opened lately on each connection.
+    Recents(crate::recents::Recents),
 }
 
 impl StateFile {
@@ -251,6 +253,7 @@ impl StateFile {
             Self::AgentsShown(shown) => shown.save(path),
             Self::TableLists(lists) => crate::util::save_json(path, lists),
             Self::Session(session) => session.save(path),
+            Self::Recents(recents) => recents.save(path),
         }
     }
 }

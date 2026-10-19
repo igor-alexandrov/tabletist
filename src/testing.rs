@@ -513,6 +513,28 @@ impl Harness {
     }
 }
 
+/// What the fake session lists in schema `main`: `users`, `orders` and
+/// the view `active_users`.
+pub(crate) fn fixture_objects() -> Vec<ObjectInfo> {
+    vec![
+        ObjectInfo {
+            name: "active_users".into(),
+            kind: ObjectKind::View,
+            estimated_rows: None,
+        },
+        ObjectInfo {
+            name: "orders".into(),
+            kind: ObjectKind::Table,
+            estimated_rows: Some(3),
+        },
+        ObjectInfo {
+            name: "users".into(),
+            kind: ObjectKind::Table,
+            estimated_rows: Some(1_200_000),
+        },
+    ]
+}
+
 /// The saved connection the fake session stands for.
 pub(crate) fn fixture_connection() -> SavedConnection {
     SavedConnection {
@@ -566,6 +588,13 @@ impl Harness {
     pub fn connect_fake_as(&mut self, read_only: bool) -> ConnTabId {
         let mut saved = fixture_connection();
         saved.read_only = Some(read_only);
+        self.connect_with(saved, fixture_objects())
+    }
+
+    /// Connects `saved` in the active tab through the recording backend
+    /// and answers the tree's first requests: schema `main` with
+    /// `objects`, as [`Self::connect_fake`] does with its own.
+    pub fn connect_with(&mut self, saved: SavedConnection, objects: Vec<ObjectInfo>) -> ConnTabId {
         let conn = saved.id.clone();
         self.app.connections.upsert(saved);
         let tab = self.app.active_tab_id();
@@ -594,23 +623,6 @@ impl Harness {
         let Command::ListObjects { request, .. } = *last_sent(&self.app) else {
             panic!("expected ListObjects for the default schema");
         };
-        let objects = vec![
-            ObjectInfo {
-                name: "active_users".into(),
-                kind: ObjectKind::View,
-                estimated_rows: None,
-            },
-            ObjectInfo {
-                name: "orders".into(),
-                kind: ObjectKind::Table,
-                estimated_rows: Some(3),
-            },
-            ObjectInfo {
-                name: "users".into(),
-                kind: ObjectKind::Table,
-                estimated_rows: Some(1_200_000),
-            },
-        ];
         self.app.apply(Action::Backend(Event::Objects {
             session,
             request,
