@@ -244,14 +244,16 @@ impl Connection {
     /// [`Error::Cancelled`]. A `read` that was checked for another
     /// dialect than this session's is refused, with nothing sent.
     ///
-    /// Where `tables` hides anything, the read is refused
+    /// `sources` are the person's settings and the administrator's rules
+    /// that match the connection ([`agent::Sources`]). Where any of them
+    /// hides anything, the read is refused
     /// ([`Error::Agent`]) when its text names what is hidden, or when the
     /// database says it would read it: SQLite's authorizer as it prepares
     /// the statement, and the statement's plan on PostgreSQL and MySQL,
     /// asked for in the run's own transaction. Nothing hidden is read
     /// (the MCP plan's B.3).
     ///
-    /// Where `masked` names a column, the read is refused when its text
+    /// Where any of them masks a column, the read is refused when its text
     /// uses one otherwise than selecting it as it is, or reads one through
     /// a view; and a renamed or dropped one refuses every read (B.4, C.3).
     /// Each engine stops what the reading of the text misses: SQLite reads
@@ -265,8 +267,7 @@ impl Connection {
         &self,
         read: &agent::Read,
         limits: agent::Limits,
-        tables: &agent::Tables,
-        masked: &[agent::ColumnName],
+        sources: &agent::Sources,
         stop: &StopFlag,
     ) -> Result<agent::Answer> {
         if read.dialect() != self.dialect() {
@@ -275,36 +276,30 @@ impl Connection {
             ));
         }
         let (outcome, masked) = match &self.inner {
-            Inner::Sqlite(conn) => conn.run_read(read, limits, tables, masked, stop).await,
-            Inner::Postgres(conn) => conn.run_read(read, limits, tables, masked, stop).await,
-            Inner::MySql(conn) => conn.run_read(read, limits, tables, masked, stop).await,
+            Inner::Sqlite(conn) => conn.run_read(read, limits, sources, stop).await,
+            Inner::Postgres(conn) => conn.run_read(read, limits, sources, stop).await,
+            Inner::MySql(conn) => conn.run_read(read, limits, sources, stop).await,
         }?;
         agent::answer(outcome, stop).map(|answer| agent::masked(answer, masked))
     }
 
-    /// What `tables` hides and `masked` masks on this connection's
-    /// database as it is now: for what the server tells an agent of the
-    /// schema, which leaves the hidden out. The catalog is read only where
-    /// something is hidden or masked.
-    pub async fn agent_hidden(
-        &self,
-        tables: &agent::Tables,
-        masked: &[agent::ColumnName],
-    ) -> Result<agent::Hidden> {
-        let catalog = match tables.hides_anything() || !masked.is_empty() {
-            true => match &self.inner {
-                Inner::Sqlite(conn) => conn.agents_catalog(masked).await?,
-                Inner::Postgres(conn) => conn.agents_catalog(masked).await?,
-                Inner::MySql(conn) => conn.agents_catalog(masked).await?,
-            },
+    /// What `sources` hide and mask on this connection's database as it
+    /// is now: for what the server tells an agent of the schema, which
+    /// leaves the hidden out. The catalog is read only where something is
+    /// hidden or masked.
+    pub async fn agent_hidden(&self, sources: &agent::Sources) -> Result<agent::Hidden> {
+        let catalog = match sources.guards_anything() {
+            true => {
+                let masked = sources.masked();
+                match &self.inner {
+                    Inner::Sqlite(conn) => conn.agents_catalog(&masked).await?,
+                    Inner::Postgres(conn) => conn.agents_catalog(&masked).await?,
+                    Inner::MySql(conn) => conn.agents_catalog(&masked).await?,
+                }
+            }
             false => agent::Catalog::default(),
         };
-        Ok(agent::Hidden::masking(
-            self.dialect(),
-            &catalog,
-            tables,
-            masked,
-        ))
+        Ok(agent::Hidden::of(self.dialect(), &catalog, sources))
     }
 
     /// The server's name and version for the footer: `PostgreSQL 17.2`,

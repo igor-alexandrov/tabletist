@@ -20,7 +20,7 @@ use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOp
 use mysql_common::named_params::ParsedNamedParams;
 
 use crate::adapter::Adapter;
-use crate::agent::{Catalog, ColumnName, Limits, Read, Tables};
+use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::script::retry_cancelled;
 use crate::{
     Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, ConnectSpec,
@@ -517,11 +517,10 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
-        tables: &Tables,
-        masked: &[ColumnName],
+        sources: &Sources,
         stop: &StopFlag,
     ) -> Result<(ScriptOutcome, Vec<bool>)> {
-        self.agent_read(read, limits, tables, masked, stop).await
+        self.agent_read(read, limits, sources, stop).await
     }
 
     async fn agents_catalog(&self, masked: &[ColumnName]) -> Result<Catalog> {

@@ -106,7 +106,7 @@ async fn run<G: Gateway>(
     }
     let session = settle(gateway.open(&listed.id, stop.token()).await, stop, &listed)?;
     let work = async {
-        let hidden = session.hidden(&listed.tables, &listed.masked).await?;
+        let hidden = session.hidden(&listed.sources).await?;
         hidden
             .check_settings()
             .map_err(|refusal| Failure::Database(Error::Agent(refusal)))?;

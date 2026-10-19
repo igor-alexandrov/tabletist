@@ -923,3 +923,125 @@ async fn a_masked_columns_default_values_and_what_is_computed_from_it_are_not_to
     assert_eq!(called.refused(), "masked_column_used");
     agent.close().await;
 }
+
+#[tokio::test]
+async fn list_connections_gives_the_administrators_entries_apart() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.hide(DEV, customers());
+    shop.rule(
+        DEV,
+        Tables::AllExcept(vec![TableName {
+            schema: None,
+            name: "orders".into(),
+        }]),
+        &[],
+    );
+    // A rule with nothing hidden or masked is not told.
+    shop.rule(DEV, Tables::All, &[]);
+    shop.rule(
+        DEV,
+        Tables::Only(vec![TableName {
+            schema: None,
+            name: "books".into(),
+        }]),
+        &["books.price"],
+    );
+    let called = agent.call("list_connections", json!({})).await;
+    let listed = &called.answer()["connections"][0];
+    assert_eq!(listed["hidden"], json!(["customers"]));
+    assert_eq!(
+        listed["administrator"],
+        json!([
+            { "hidden": ["orders"] },
+            { "only": ["books"], "masked": ["books.price"] },
+        ])
+    );
+    // Without a rule that says anything, there is none.
+    shop.list(DEV, &shop.bookshop(), LIMITS);
+    let called = agent.call("list_connections", json!({})).await;
+    assert!(
+        called.answer()["connections"][0]
+            .get("administrator")
+            .is_none()
+    );
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn a_rules_hidden_table_is_refused_as_the_administrators() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.rule(DEV, customers(), &["orders.email"]);
+    let called = agent
+        .call(
+            "run_query",
+            json!({ "connection": DEV, "sql": "SELECT * FROM customers" }),
+        )
+        .await;
+    assert_eq!(called.refused(), "table_hidden");
+    assert_eq!(
+        called.text,
+        "customers is hidden for agents by your administrator's policy."
+    );
+    let called = agent
+        .call(
+            "run_query",
+            json!({ "connection": DEV, "sql": "SELECT id FROM orders ORDER BY email" }),
+        )
+        .await;
+    assert_eq!(called.refused(), "masked_column_used");
+    assert!(
+        called
+            .text
+            .starts_with("orders.email is masked by your administrator's policy."),
+        "{}",
+        called.text
+    );
+    // Left out of the schema, as the person's are.
+    let called = agent
+        .call("describe_schema", json!({ "connection": DEV }))
+        .await;
+    let names: Vec<&str> = called.answer()["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|table| table["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"customers"), "{names:?}");
+    assert!(names.contains(&"books"), "{names:?}");
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn a_rules_stale_entry_closes_the_connection_until_the_policy_is_fixed() {
+    let shop = Shop::new();
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    shop.rule(
+        DEV,
+        Tables::AllExcept(vec![TableName {
+            schema: None,
+            name: "ledger".into(),
+        }]),
+        &[],
+    );
+    for (tool, arguments) in [
+        (
+            "run_query",
+            json!({ "connection": DEV, "sql": "SELECT count(*) FROM books" }),
+        ),
+        ("describe_schema", json!({ "connection": DEV })),
+    ] {
+        let called = agent.call(tool, arguments).await;
+        assert_eq!(called.refused(), "connection_unavailable", "{tool}");
+        assert_eq!(
+            called.text,
+            "Agents may not use this connection until your administrator's policy is fixed.",
+            "{tool}"
+        );
+    }
+    agent.close().await;
+}

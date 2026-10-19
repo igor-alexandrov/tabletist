@@ -25,6 +25,12 @@
 //! connection that masks a column closes the system catalogs and the
 //! users' functions as one that hides a table does, and a view that reads
 //! a masked column is refused.
+//!
+//! The person is not the only one with a say. An administrator's policy
+//! may hide tables and mask columns too, a rule at a time ([`Sources`]):
+//! a table is visible only where each lets it be seen, a column is masked
+//! where any masks it, and each refusal says whose entry caused it ([`By`]),
+//! so that an agent does not ask the person for a change they cannot make.
 
 mod masked;
 
@@ -47,6 +53,94 @@ pub enum Tables {
     AllExcept(Vec<TableName>),
     /// These tables and no others, the ones made later included.
     Only(Vec<TableName>),
+}
+
+/// Whose setting hides a table or masks a column.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum By {
+    /// The person's own, in their connection's settings.
+    #[default]
+    Person,
+    /// A rule of the administrator's policy, which the person cannot change.
+    Administrator,
+}
+
+impl By {
+    /// Where a refusal's sentence says the setting is.
+    pub(crate) fn whose(self) -> &'static str {
+        match self {
+            Self::Person => "on this connection",
+            Self::Administrator => "by your administrator's policy",
+        }
+    }
+}
+
+/// One place's say on what agents may read of a connection: the person's
+/// own settings, or one rule of the administrator's policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Source {
+    pub tables: Tables,
+    pub masked: Vec<ColumnName>,
+}
+
+impl Source {
+    /// Whether it hides a table or masks a column.
+    pub fn guards_anything(&self) -> bool {
+        self.tables.hides_anything() || !self.masked.is_empty()
+    }
+}
+
+/// Every place's say on what agents may read of a connection: the
+/// person's, and each rule of the administrator's policy that matches it.
+/// A table is visible only where each lets it be seen; a column is masked
+/// where any masks it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sources {
+    pub person: Source,
+    pub administrator: Vec<Source>,
+}
+
+impl Sources {
+    /// The person's own settings, and no rule.
+    pub fn person(tables: Tables, masked: Vec<ColumnName>) -> Self {
+        Self {
+            person: Source { tables, masked },
+            administrator: Vec::new(),
+        }
+    }
+
+    /// Whether any source hides a table.
+    pub fn hides_anything(&self) -> bool {
+        self.each()
+            .any(|(_, source)| source.tables.hides_anything())
+    }
+
+    /// Whether any source hides a table or masks a column: then the
+    /// catalog is read, and the statements are checked.
+    pub fn guards_anything(&self) -> bool {
+        self.each().any(|(_, source)| source.guards_anything())
+    }
+
+    /// Every source's masked columns, joined: the administrator's first,
+    /// so that a column both mask is refused as theirs.
+    pub fn masked(&self) -> Vec<ColumnName> {
+        self.masked_by().map(|(_, entry)| entry.clone()).collect()
+    }
+
+    /// Each masked column's entry, with whose it is, in [`Self::masked`]'s
+    /// order.
+    fn masked_by(&self) -> impl Iterator<Item = (By, &ColumnName)> {
+        self.each()
+            .flat_map(|(by, source)| source.masked.iter().map(move |entry| (by, entry)))
+    }
+
+    /// Each source with whose it is, the administrator's first.
+    fn each(&self) -> impl Iterator<Item = (By, &Source)> {
+        self.administrator
+            .iter()
+            .map(|source| (By::Administrator, source))
+            .chain([(By::Person, &self.person)])
+    }
 }
 
 /// A table as the person names it: in its schema, or by its name alone,
@@ -269,27 +363,28 @@ struct Listed {
     schema: String,
     name: String,
     why: Option<Why>,
-    /// For a view that reads a masked column, the column, as the person
-    /// writes it.
-    masks: Option<String>,
+    /// For a view that reads a masked column, the column, as its entry is
+    /// written, and whose the entry is.
+    masks: Option<(String, By)>,
 }
 
-/// Why a relation is hidden.
+/// Why a relation is hidden, and whose setting hides it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Why {
-    /// The person hides it.
-    Named,
+    /// A setting hides it by its name, or it is opaque.
+    Named(By),
     /// It depends on this hidden relation, by its name.
-    DependsOn(String),
+    DependsOn(String, By),
 }
 
-/// What [`Tables`] comes to on one database: each relation that is hidden
+/// What [`Sources`] come to on one database: each relation that is hidden
 /// and why, and the functions its users wrote, which are refused while
 /// anything is hidden (B.2).
 #[derive(Debug, Clone)]
 pub struct Hidden {
     dialect: Dialect,
-    tables: Tables,
+    /// Each source's Tables setting, the administrator's first.
+    tables: Vec<(By, Tables)>,
     /// Every listed relation, by its name folded to lower case: its schema
     /// and its name as the catalog writes them, and why it is hidden where
     /// it is.
@@ -300,35 +395,63 @@ pub struct Hidden {
     unnamed_calls: Vec<String>,
     /// [`Catalog::table_functions`], folded.
     table_functions: HashSet<String>,
-    /// The entries of an "All except" list that name no relation of the
-    /// catalog, as the person writes them.
+    /// The entries of the person's "All except" list that name no
+    /// relation of the catalog, as the person writes them.
     missing: Vec<String>,
-    /// The columns the person masks.
+    /// The masked columns, every source's, the administrator's first.
     masked: Vec<ColumnName>,
+    /// Whose each of `masked` is, in its order.
+    masked_by: Vec<By>,
     /// The tables that have a masked column, by schema and name, with the
     /// entry's place in `masked`: the entries' own, and the partitions and
     /// child tables of those.
     masked_tables: Vec<(String, String, usize)>,
-    /// The masked columns' entries that name no column of the catalog, as
-    /// the person writes them.
+    /// The person's masked columns' entries that name no column of the
+    /// catalog, as the person writes them.
     masked_missing: Vec<String>,
+    /// Whether an entry of a rule's "All except" list or masked columns
+    /// names nothing in the catalog.
+    policy_stale: bool,
 }
 
 impl Hidden {
-    /// What `tables` hides of `catalog`, on a database that speaks
-    /// `dialect`.
+    /// What the person's `tables` hide of `catalog`, on a database that
+    /// speaks `dialect`.
     pub fn new(dialect: Dialect, catalog: &Catalog, tables: &Tables) -> Self {
         Self::masking(dialect, catalog, tables, &[])
     }
 
-    /// What `tables` hides of `catalog`, and what `masked` masks.
+    /// What the person's `tables` hide of `catalog`, and what their
+    /// `masked` mask.
     pub fn masking(
         dialect: Dialect,
         catalog: &Catalog,
         tables: &Tables,
         masked: &[ColumnName],
     ) -> Self {
-        let guards = tables.hides_anything() || !masked.is_empty();
+        let sources = Sources::person(tables.clone(), masked.to_vec());
+        Self::of(dialect, catalog, &sources)
+    }
+
+    /// What `sources` hide and mask of `catalog`, on a database that
+    /// speaks `dialect`.
+    pub fn of(dialect: Dialect, catalog: &Catalog, sources: &Sources) -> Self {
+        let guards = sources.guards_anything();
+        let tables: Vec<(By, Tables)> = sources
+            .each()
+            .map(|(by, source)| (by, source.tables.clone()))
+            .collect();
+        let (masked_by, masked): (Vec<By>, Vec<ColumnName>) = sources
+            .masked_by()
+            .map(|(by, entry)| (by, entry.clone()))
+            .unzip();
+        // What is hidden while anything is, whose setting that is: the
+        // administrator's where a rule guards anything, since then the
+        // person cannot open it.
+        let guarding = match sources.administrator.iter().any(Source::guards_anything) {
+            true => By::Administrator,
+            false => By::Person,
+        };
         let index: HashMap<(String, String), usize> = catalog
             .relations
             .iter()
@@ -348,18 +471,22 @@ impl Hidden {
             .collect();
         let mut why: Vec<Option<Option<Why>>> = vec![None; catalog.relations.len()];
         for at in 0..catalog.relations.len() {
-            hidden_why(at, catalog, &depends, tables, &mut why);
+            hidden_why(at, catalog, &depends, &tables, guarding, &mut why);
         }
         // A generated column of a table with a masked column may be
         // computed from it (`lower(email)`): it is masked too, by an entry
-        // of its own.
-        let named = masked_tables(catalog, &depends, masked);
-        let mut every = masked.to_vec();
+        // of its own, the administrator's where one of theirs is of the
+        // table.
+        let named = masked_tables(catalog, &depends, &masked);
+        let mut every = masked.clone();
+        let mut every_by = masked_by.clone();
         for (schema, table, column) in &catalog.generated {
-            let of_masked = named
+            let of_masked: Vec<By> = named
                 .iter()
-                .any(|(own, name, _)| same(own, schema) && same(name, table));
-            if of_masked
+                .filter(|(own, name, _)| same(own, schema) && same(name, table))
+                .map(|(_, _, at)| masked_by[*at])
+                .collect();
+            if !of_masked.is_empty()
                 && !every
                     .iter()
                     .any(|entry| entry.names(Some(schema), table, column))
@@ -369,9 +496,12 @@ impl Hidden {
                     table: table.clone(),
                     column: column.clone(),
                 });
+                every_by.push(match of_masked.contains(&By::Administrator) {
+                    true => By::Administrator,
+                    false => By::Person,
+                });
             }
         }
-        let masked_entries = masked;
         let masked = every.as_slice();
         let masked_tables = masked_tables(catalog, &depends, masked);
         let masks = masked_views(dialect, catalog, &depends, masked, &masked_tables);
@@ -384,7 +514,7 @@ impl Hidden {
                     schema: relation.schema.clone(),
                     name: relation.name.clone(),
                     why: why.flatten(),
-                    masks: masks.map(|at| masked[at].to_string()),
+                    masks: masks.map(|at| (masked[at].to_string(), every_by[at])),
                 });
         }
         let routines = match guards {
@@ -399,20 +529,27 @@ impl Hidden {
             true => catalog.unnamed_calls.clone(),
             false => Vec::new(),
         };
-        let masked_missing = masked_entries
+        let stale = |entry: &&ColumnName| {
+            !system_catalog(dialect, entry.schema.as_deref(), &entry.table)
+                && !catalog
+                    .columns
+                    .iter()
+                    .any(|(schema, table, column)| entry.names(Some(schema), table, column))
+        };
+        let masked_missing = sources
+            .person
+            .masked
             .iter()
-            .filter(|entry| {
-                !system_catalog(dialect, entry.schema.as_deref(), &entry.table)
-                    && !catalog
-                        .columns
-                        .iter()
-                        .any(|(schema, table, column)| entry.names(Some(schema), table, column))
-            })
+            .filter(stale)
             .map(ToString::to_string)
             .collect();
+        let policy_stale = sources.administrator.iter().any(|source| {
+            !missing(dialect, catalog, &source.tables).is_empty()
+                || source.masked.iter().any(|entry| stale(&entry))
+        });
         Self {
             dialect,
-            tables: tables.clone(),
+            tables,
             relations,
             routines,
             unnamed_calls,
@@ -421,16 +558,20 @@ impl Hidden {
                 .iter()
                 .map(|name| fold(name))
                 .collect(),
-            missing: missing(dialect, catalog, tables),
+            missing: missing(dialect, catalog, &sources.person.tables),
             masked: masked.to_vec(),
+            masked_by: every_by,
             masked_tables,
             masked_missing,
+            policy_stale,
         }
     }
 
     /// Whether anything is hidden.
     pub fn hides_anything(&self) -> bool {
-        self.tables.hides_anything()
+        self.tables
+            .iter()
+            .any(|(_, tables)| tables.hides_anything())
     }
 
     /// Whether anything is hidden or masked: then the system catalogs and
@@ -440,11 +581,15 @@ impl Hidden {
         self.hides_anything() || !self.masked.is_empty()
     }
 
-    /// Whether agents may use the connection at all: not while its "All
+    /// Whether agents may use the connection at all: not while an "All
     /// except" list names a table it does not have, or a masked column's
     /// entry names no column. A hidden table or a masked column that was
     /// renamed is that, and its new name is hidden or masked by nothing.
+    /// A rule's entry is told first: the person cannot fix it.
     pub fn check_settings(&self) -> Result<(), Refusal> {
+        if self.policy_stale {
+            return Err(Refusal::PolicyNeedsFixing);
+        }
         match self.missing.is_empty() && self.masked_missing.is_empty() {
             true => Ok(()),
             false => Err(Refusal::SettingsNeedALook {
@@ -478,7 +623,8 @@ impl Hidden {
             .iter()
             .find(|listed| same(&listed.schema, schema))?
             .masks
-            .clone()
+            .as_ref()
+            .map(|(entry, _)| entry.clone())
     }
 
     /// A masked column of the relation `table` of `schema`, as the person
@@ -496,20 +642,37 @@ impl Hidden {
     /// the person writes its entry, where it is one: a column the entries
     /// name, or one of a partition or a child table of their tables.
     pub fn masks(&self, schema: Option<&str>, table: &str, column: &str) -> Option<String> {
+        self.masked_at(schema, table, column)
+            .map(|at| self.masked[at].to_string())
+    }
+
+    /// [`Self::masks`]'s entry, by its place in `masked`.
+    fn masked_at(&self, schema: Option<&str>, table: &str, column: &str) -> Option<usize> {
         let by_entry = self
             .masked
             .iter()
-            .find(|entry| entry.names(schema, table, column));
+            .position(|entry| entry.names(schema, table, column));
         let by_table = || {
             self.masked_tables
                 .iter()
                 .filter(|(own, name, _)| {
                     same(name, table) && schema.is_none_or(|schema| same(own, schema))
                 })
-                .map(|(_, _, at)| &self.masked[*at])
-                .find(|entry| same(&entry.column, column))
+                .map(|(_, _, at)| *at)
+                .find(|at| same(&self.masked[*at].column, column))
         };
-        by_entry.or_else(by_table).map(ToString::to_string)
+        by_entry.or_else(by_table)
+    }
+
+    /// Whose the masked column's entry `entry` is, as it is written: the
+    /// administrator's where both have it.
+    pub fn masked_by(&self, entry: &str) -> By {
+        self.masked
+            .iter()
+            .zip(&self.masked_by)
+            .find(|(own, _)| own.to_string() == entry)
+            .map(|(_, by)| *by)
+            .unwrap_or_default()
     }
 
     /// Checks a column the engine says a statement reads, with the view or
@@ -523,10 +686,11 @@ impl Hidden {
         column: &str,
         source: Option<&str>,
     ) -> Result<(), Refusal> {
-        match (source, self.masks(schema, table, column)) {
-            (Some(view), Some(column)) => Err(Refusal::MaskedColumnUsed {
-                column,
+        match (source, self.masked_at(schema, table, column)) {
+            (Some(view), Some(at)) => Err(Refusal::MaskedColumnUsed {
+                column: self.masked[at].to_string(),
                 how: MaskedUse::Through(view.to_owned()),
+                by: self.masked_by[at],
             }),
             _ => Ok(()),
         }
@@ -538,7 +702,7 @@ impl Hidden {
             .masked_tables
             .iter()
             .map(|(_, name, at)| (name.clone(), &self.masked[*at]));
-        Masks::new(&self.masked, more)
+        Masks::new(&self.masked, &self.masked_by, more)
     }
 
     /// Whether `schema` is a schema of the database: one the catalog lists
@@ -566,11 +730,18 @@ impl Hidden {
         match self.listed(schema, name) {
             Some(found) => refused(found),
             None if self.table_functions.contains(&fold(name)) => Ok(()),
-            None if self.tables.hides(schema, name) => Err(Refusal::TableHidden {
-                name: name.to_owned(),
-                through: None,
-            }),
-            None => Ok(()),
+            None => match self
+                .tables
+                .iter()
+                .find(|(_, tables)| tables.hides(schema, name))
+            {
+                Some((by, _)) => Err(Refusal::TableHidden {
+                    name: name.to_owned(),
+                    through: None,
+                    by: *by,
+                }),
+                None => Ok(()),
+            },
         }
     }
 
@@ -701,19 +872,22 @@ fn missing(dialect: Dialect, catalog: &Catalog, tables: &Tables) -> Vec<String> 
 fn refused(found: &Listed) -> Result<(), Refusal> {
     match &found.why {
         None => match &found.masks {
-            Some(column) => Err(Refusal::MaskedColumnUsed {
+            Some((column, by)) => Err(Refusal::MaskedColumnUsed {
                 column: column.clone(),
                 how: MaskedUse::Through(found.name.clone()),
+                by: *by,
             }),
             None => Ok(()),
         },
-        Some(Why::Named) => Err(Refusal::TableHidden {
+        Some(Why::Named(by)) => Err(Refusal::TableHidden {
             name: found.name.clone(),
             through: None,
+            by: *by,
         }),
-        Some(Why::DependsOn(hidden)) => Err(Refusal::TableHidden {
+        Some(Why::DependsOn(hidden, by)) => Err(Refusal::TableHidden {
             name: hidden.clone(),
             through: Some(found.name.clone()),
+            by: *by,
         }),
     }
 }
@@ -793,7 +967,7 @@ fn masked_views(
     let more = tables
         .iter()
         .map(|(_, name, at)| (name.clone(), &masked[*at]));
-    let masks = Masks::new(masked, more);
+    let masks = Masks::new(masked, &[], more);
     // The entry of a table whose whole row the view's definition reads.
     let whole_row = |relation: &Relation| {
         catalog
@@ -920,14 +1094,16 @@ pub(crate) fn column_references(
 }
 
 /// Whether the relation at `at` is hidden, and why, worked out once: by
-/// its own name, else by the first hidden relation it depends on. A
+/// its own name, in the first of `tables` that hides it, else as opaque,
+/// by `guarding`, else by the first hidden relation it depends on. A
 /// relation met again while its own answer is being worked out (a cycle
 /// the catalog should not have) is taken for hidden.
 fn hidden_why(
     at: usize,
     catalog: &Catalog,
     depends: &[Vec<usize>],
-    tables: &Tables,
+    tables: &[(By, Tables)],
+    guarding: By,
     why: &mut [Option<Option<Why>>],
 ) -> Option<Why> {
     if let Some(known) = &why[at] {
@@ -935,26 +1111,38 @@ fn hidden_why(
     }
     let relation = &catalog.relations[at];
     // Hidden until worked out, for a cycle.
-    why[at] = Some(Some(Why::Named));
-    let by_name = match (relation.part, tables) {
-        (true, Tables::Only(_)) => false,
-        _ => tables.hides(Some(&relation.schema), &relation.name),
-    };
-    let found = if relation.opaque || by_name {
-        Some(Why::Named)
-    } else {
-        depends[at].iter().find_map(|&on| {
-            hidden_why(on, catalog, depends, tables, why).map(|_| {
-                let name = &catalog.relations[on].name;
-                Why::DependsOn(name.clone())
-            })
+    why[at] = Some(Some(Why::Named(guarding)));
+    let by_name = tables
+        .iter()
+        .find(|(_, tables)| match (relation.part, tables) {
+            (true, Tables::Only(_)) => false,
+            _ => tables.hides(Some(&relation.schema), &relation.name),
         })
+        .map(|(by, _)| *by)
+        .or(relation.opaque.then_some(guarding));
+    let found = match by_name {
+        Some(by) => Some(Why::Named(by)),
+        None => depends[at].iter().find_map(|&on| {
+            hidden_why(on, catalog, depends, tables, guarding, why).map(|hidden| {
+                let name = &catalog.relations[on].name;
+                Why::DependsOn(name.clone(), hidden.by())
+            })
+        }),
     };
     // What a relation depends on through another is named by the one it
     // reaches first, which is hidden itself: its name is told, not the
     // hidden table at the end of the chain.
     why[at] = Some(found.clone());
     found
+}
+
+impl Why {
+    /// Whose setting hides the relation.
+    fn by(&self) -> By {
+        match self {
+            Self::Named(by) | Self::DependsOn(_, by) => *by,
+        }
+    }
 }
 
 /// Whether the relation `name` of `schema` is one of the system catalogs,
@@ -1504,6 +1692,7 @@ mod tests {
         Err(Refusal::TableHidden {
             name: name.to_owned(),
             through: through.map(str::to_owned),
+            by: crate::agent::By::Person,
         })
     }
 
@@ -2077,6 +2266,7 @@ mod tests {
         Err(Refusal::MaskedColumnUsed {
             column: column.into(),
             how,
+            by: crate::agent::By::Person,
         })
     }
 
@@ -2252,6 +2442,242 @@ mod tests {
         assert_eq!(
             statement(&open, "SELECT relname FROM pg_catalog.pg_class"),
             Ok(())
+        );
+    }
+
+    /// The Bookshop with the person's `tables` and `masked`, and one rule
+    /// of the administrator's for each of `rules`.
+    fn sourced(person: Source, rules: Vec<Source>) -> Hidden {
+        let sources = Sources {
+            person,
+            administrator: rules,
+        };
+        Hidden::of(Dialect::Postgres, &bookshop(), &sources)
+    }
+
+    fn hiding(tables: Tables) -> Source {
+        Source {
+            tables,
+            masked: Vec::new(),
+        }
+    }
+
+    fn by(refusal: Result<(), Refusal>, by: By) -> Result<(), Refusal> {
+        refusal.map_err(|refusal| match refusal {
+            Refusal::TableHidden { name, through, .. } => {
+                Refusal::TableHidden { name, through, by }
+            }
+            Refusal::MaskedColumnUsed { column, how, .. } => {
+                Refusal::MaskedColumnUsed { column, how, by }
+            }
+            other => other,
+        })
+    }
+
+    #[test]
+    fn a_rules_tables_are_hidden_beside_the_persons_and_say_whose_they_are() {
+        let hidden = sourced(
+            hiding(Tables::AllExcept(vec![table(None, "books")])),
+            vec![hiding(Tables::AllExcept(vec![table(None, "customers")]))],
+        );
+        assert!(hidden.hides_anything());
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM customers"),
+            by(table_hidden("customers", None), By::Administrator)
+        );
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM customer_count"),
+            by(
+                table_hidden("customer_names", Some("customer_count")),
+                By::Administrator
+            )
+        );
+        assert_eq!(
+            hidden.check_engine_read(Some("public"), "customer_names"),
+            by(
+                table_hidden("customers", Some("customer_names")),
+                By::Administrator
+            )
+        );
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM books"),
+            table_hidden("books", None)
+        );
+        assert_eq!(statement(&hidden, "SELECT * FROM orders"), Ok(()));
+        // A table the catalog does not list yet, by the names alone.
+        let only = sourced(
+            Source::default(),
+            vec![hiding(Tables::Only(vec![table(None, "books")]))],
+        );
+        assert_eq!(
+            only.check_engine_read(Some("public"), "made_today"),
+            by(table_hidden("made_today", None), By::Administrator)
+        );
+        // The sentence says whose.
+        let said = by(table_hidden("customers", None), By::Administrator)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            said,
+            "customers is hidden for agents by your administrator's policy."
+        );
+    }
+
+    #[test]
+    fn two_only_lists_leave_the_tables_both_name() {
+        let hidden = sourced(
+            hiding(Tables::Only(vec![
+                table(None, "books"),
+                table(None, "orders"),
+            ])),
+            vec![hiding(Tables::Only(vec![
+                table(None, "orders"),
+                table(None, "events"),
+            ]))],
+        );
+        assert_eq!(statement(&hidden, "SELECT * FROM orders"), Ok(()));
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM books"),
+            by(table_hidden("books", None), By::Administrator)
+        );
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM events"),
+            table_hidden("events", None)
+        );
+        // A rule's Only list over the person's All except.
+        let over = sourced(
+            hiding(Tables::AllExcept(vec![table(None, "orders")])),
+            vec![hiding(Tables::Only(vec![
+                table(None, "books"),
+                table(None, "orders"),
+            ]))],
+        );
+        assert_eq!(statement(&over, "SELECT * FROM books"), Ok(()));
+        assert_eq!(
+            statement(&over, "SELECT * FROM orders"),
+            by(table_hidden("orders", None), By::Person)
+        );
+        assert!(over.hides("public", "customers"));
+    }
+
+    #[test]
+    fn a_rules_stale_entry_closes_the_connection_and_names_nothing_of_the_file() {
+        let person_stale = hiding(Tables::AllExcept(vec![table(None, "gone")]));
+        let rule_stale = hiding(Tables::AllExcept(vec![table(None, "secret_ledger")]));
+        let hidden = sourced(person_stale.clone(), vec![rule_stale.clone()]);
+        assert_eq!(hidden.check_settings(), Err(Refusal::PolicyNeedsFixing));
+        assert_eq!(
+            statement(&hidden, "SELECT * FROM books"),
+            Err(Refusal::PolicyNeedsFixing)
+        );
+        let said = Refusal::PolicyNeedsFixing.to_string();
+        assert_eq!(
+            said,
+            "Agents may not use this connection until your administrator's policy is fixed."
+        );
+        assert_eq!(Refusal::PolicyNeedsFixing.code(), "connection_unavailable");
+        // The person's alone is theirs to look at.
+        assert!(matches!(
+            sourced(person_stale, Vec::new()).check_settings(),
+            Err(Refusal::SettingsNeedALook { .. })
+        ));
+        // A rule's stale masked entry closes it too.
+        let masks_gone = Source {
+            tables: Tables::All,
+            masked: vec!["orders.secret".parse().unwrap()],
+        };
+        assert_eq!(
+            Hidden::of(
+                Dialect::Postgres,
+                &Catalog {
+                    columns: vec![("public".into(), "orders".into(), "email".into())],
+                    ..bookshop()
+                },
+                &Sources {
+                    person: Source::default(),
+                    administrator: vec![masks_gone],
+                },
+            )
+            .check_settings(),
+            Err(Refusal::PolicyNeedsFixing)
+        );
+        // A stale Only entry hides more and stops nothing.
+        let only = sourced(
+            Source::default(),
+            vec![hiding(Tables::Only(vec![
+                table(None, "books"),
+                table(None, "secret_ledger"),
+            ]))],
+        );
+        assert_eq!(only.check_settings(), Ok(()));
+        assert_eq!(statement(&only, "SELECT * FROM books"), Ok(()));
+    }
+
+    #[test]
+    fn a_rules_masked_column_is_masked_beside_the_persons_and_says_whose_it_is() {
+        let catalog = Catalog {
+            relations: vec![
+                relation("public", "orders", &[]),
+                Relation {
+                    view: true,
+                    ..relation("public", "recent_orders", &[("public", "orders")])
+                },
+            ],
+            columns: ["id", "email", "phone"]
+                .iter()
+                .map(|column| ("public".into(), "orders".into(), (*column).into()))
+                .collect(),
+            ..Catalog::default()
+        };
+        let source = |masked: &[&str]| Source {
+            tables: Tables::All,
+            masked: masked.iter().map(|entry| entry.parse().unwrap()).collect(),
+        };
+        let hidden = Hidden::of(
+            Dialect::Postgres,
+            &catalog,
+            &Sources {
+                person: source(&["orders.phone", "orders.email"]),
+                administrator: vec![source(&["orders.email"])],
+            },
+        );
+        assert!(hidden.masks_anything());
+        assert_eq!(
+            statement(&hidden, "SELECT id FROM orders ORDER BY email"),
+            by(
+                masked_used("orders.email", MaskedUse::Named("email".into())),
+                By::Administrator
+            )
+        );
+        assert_eq!(
+            statement(&hidden, "SELECT id FROM orders WHERE phone = '1'"),
+            masked_used("orders.phone", MaskedUse::Named("phone".into()))
+        );
+        assert_eq!(hidden.masked_by("orders.email"), By::Administrator);
+        assert_eq!(hidden.masked_by("orders.phone"), By::Person);
+        assert_eq!(
+            hidden.check_column_read(Some("public"), "orders", "email", Some("recent_orders")),
+            by(
+                masked_used("orders.email", MaskedUse::Through("recent_orders".into())),
+                By::Administrator
+            )
+        );
+        assert_eq!(
+            hidden.check_engine_read(Some("public"), "recent_orders"),
+            by(
+                masked_used("orders.email", MaskedUse::Through("recent_orders".into())),
+                By::Administrator
+            )
+        );
+        let said = by(
+            masked_used("orders.email", MaskedUse::Named("email".into())),
+            By::Administrator,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            said.starts_with("orders.email is masked by your administrator's policy."),
+            "{said}"
         );
     }
 }

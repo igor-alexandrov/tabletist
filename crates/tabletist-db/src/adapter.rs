@@ -1,6 +1,6 @@
 //! What the adapter of every database provides.
 
-use crate::agent::{Catalog, ColumnName, Limits, Read, Tables};
+use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::{
     CancelHandle, ChangeSet, Lookup, LookupPage, ObjectInfo, ObjectRef, Result, RowPage, RowQuery,
     ScriptMode, ScriptOutcome, StopFlag, Structure, WriteOutcome,
@@ -44,16 +44,15 @@ pub(crate) trait Adapter {
 
     /// `read` has passed [`crate::agent::check_read`] for this database's
     /// dialect. The outcome is a read-only script's of one statement, or
-    /// [`crate::Error::Agent`] where it reads what `tables` hides, or a
-    /// column `masked` names otherwise than as it is; with it, whether each
+    /// [`crate::Error::Agent`] where it reads what `sources` hide, or a
+    /// column they mask otherwise than as it is; with it, whether each
     /// of its result columns is a masked column's, as the database says
     /// where each comes from (none where nothing is masked).
     async fn run_read(
         &self,
         read: &Read,
         limits: Limits,
-        tables: &Tables,
-        masked: &[ColumnName],
+        sources: &Sources,
         stop: &StopFlag,
     ) -> Result<(ScriptOutcome, Vec<bool>)>;
 

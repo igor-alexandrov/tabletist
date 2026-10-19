@@ -9194,7 +9194,9 @@ timeout_max_secs = 5
         );
         // And the server is sent them.
         let sent_masked = match agents_sent(&app).last() {
-            Some(AgentsCommand::Policy { connections, .. }) => connections[0].masked.clone(),
+            Some(AgentsCommand::Policy { connections, .. }) => {
+                connections[0].sources.person.masked.clone()
+            }
             other => panic!("{other:?}"),
         };
         assert_eq!(sent_masked, email);

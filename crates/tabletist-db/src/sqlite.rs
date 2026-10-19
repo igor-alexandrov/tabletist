@@ -14,7 +14,7 @@ use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 
 use crate::adapter::Adapter;
 use crate::agent::{
-    Catalog, ColumnName, ColumnRead, Hidden, Limits, Param, Read, Relation, Sent, Tables,
+    Catalog, ColumnName, ColumnRead, Hidden, Limits, Param, Read, Relation, Sent, Sources,
     count_mismatch,
 };
 use crate::script::{cancelled_commit, cleanup_failed};
@@ -1154,8 +1154,7 @@ impl Adapter for Conn {
         &self,
         read: &Read,
         limits: Limits,
-        tables: &Tables,
-        masked: &[ColumnName],
+        sources: &Sources,
         stop: &StopFlag,
     ) -> Result<(ScriptOutcome, Vec<bool>)> {
         let stop = stop.clone();
@@ -1163,15 +1162,15 @@ impl Adapter for Conn {
         let fences = self.fences.clone();
         let texts = vec![read.text().to_owned()];
         let params = read.params().to_vec();
-        let (read, tables, masked) = (read.clone(), tables.clone(), masked.to_vec());
+        let (read, sources) = (read.clone(), sources.clone());
         let outcome = self
             .run(move |connection| {
                 // What is hidden and masked, from the catalog as it is
                 // now: a table made a moment ago is in it.
-                let hidden = match tables.hides_anything() || !masked.is_empty() {
+                let hidden = match sources.guards_anything() {
                     true => {
-                        let catalog = agents_catalog(connection, &fences, &masked)?;
-                        let hidden = Hidden::masking(Dialect::Sqlite, &catalog, &tables, &masked);
+                        let catalog = agents_catalog(connection, &fences, &sources.masked())?;
+                        let hidden = Hidden::of(Dialect::Sqlite, &catalog, &sources);
                         hidden.check_statement(&read).map_err(Error::Agent)?;
                         Some(Arc::new(hidden))
                     }
@@ -2451,7 +2450,12 @@ mod tests {
             let (conn, _dir) = virtual_tables().await;
             let read = crate::agent::check_read(Dialect::Sqlite, sql, &[]).unwrap();
             let outcome = conn
-                .run_read(&read, limits, &only(table), &[], &StopFlag::new())
+                .run_read(
+                    &read,
+                    limits,
+                    &Sources::person(only(table), Vec::new()),
+                    &StopFlag::new(),
+                )
                 .await;
             let answer =
                 outcome.and_then(|(outcome, _)| crate::agent::answer(outcome, &StopFlag::new()));
@@ -2470,13 +2474,19 @@ mod tests {
         let read =
             crate::agent::check_read(Dialect::Sqlite, "SELECT * FROM notes_content", &[]).unwrap();
         let outcome = conn
-            .run_read(&read, limits, &notes, &[], &StopFlag::new())
+            .run_read(
+                &read,
+                limits,
+                &Sources::person(notes, Vec::new()),
+                &StopFlag::new(),
+            )
             .await;
         assert_eq!(
             outcome.map(|_| ()),
             Err(Error::Agent(crate::agent::Refusal::TableHidden {
                 name: "notes".into(),
-                through: Some("notes_content".into())
+                through: Some("notes_content".into()),
+                by: crate::agent::By::Person,
             }))
         );
     }
@@ -3292,15 +3302,9 @@ mod tests {
             rows: 10,
             timeout: Duration::from_millis(250),
         };
-        conn.run_read(
-            &read,
-            limits,
-            &crate::agent::Tables::All,
-            &[],
-            &StopFlag::new(),
-        )
-        .await
-        .unwrap();
+        conn.run_read(&read, limits, &Sources::default(), &StopFlag::new())
+            .await
+            .unwrap();
         assert_eq!(wait(&conn).await, Ok(5_000));
     }
 

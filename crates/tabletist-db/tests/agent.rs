@@ -10,7 +10,8 @@
 use std::time::{Duration, Instant};
 
 use tabletist_db::agent::{
-    self, Answer, ColumnName, Limits, MaskedUse, Param, Refusal, TableName, Tables,
+    self, Answer, By, ColumnName, Limits, MaskedUse, Param, Refusal, Source, Sources, TableName,
+    Tables,
 };
 use tabletist_db::{
     Access, ConnectSpec, Connection, Dialect, Error, HostKeys, ScriptMode, Secrets,
@@ -119,7 +120,7 @@ async fn asked(
     let read = agent::check_read(connection.dialect(), &sql, params)
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
-        .run_agent_read(&read, limits, &Tables::All, &[], &StopFlag::new())
+        .run_agent_read(&read, limits, &Sources::default(), &StopFlag::new())
         .await
 }
 
@@ -256,7 +257,7 @@ async fn a_read_that_is_stopped_or_fails_says_so(connection: &Connection, on: &s
     stopped.stop();
     let books = agent::check_read(connection.dialect(), "SELECT title FROM books", &[]).unwrap();
     let ended = connection
-        .run_agent_read(&books, LIMITS, &Tables::All, &[], &stopped)
+        .run_agent_read(&books, LIMITS, &Sources::default(), &stopped)
         .await;
     assert_eq!(ended.unwrap_err(), Error::Cancelled, "{on}");
     // The database's own error, in its words.
@@ -279,7 +280,7 @@ async fn a_read_checked_for_another_database_is_not_run(connection: &Connection,
     };
     let read = agent::check_read(other, "SELECT title FROM books", &[]).unwrap();
     let error = connection
-        .run_agent_read(&read, LIMITS, &Tables::All, &[], &StopFlag::new())
+        .run_agent_read(&read, LIMITS, &Sources::default(), &StopFlag::new())
         .await
         .unwrap_err();
     assert_eq!(
@@ -303,7 +304,12 @@ async fn hiding(connection: &Connection, tables: &Tables, sql: &str) -> Result<A
     let read = agent::check_read(connection.dialect(), sql, &[])
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
-        .run_agent_read(&read, LIMITS, tables, &[], &StopFlag::new())
+        .run_agent_read(
+            &read,
+            LIMITS,
+            &Sources::person(tables.clone(), Vec::new()),
+            &StopFlag::new(),
+        )
         .await
 }
 
@@ -312,6 +318,7 @@ fn hidden_refusal(name: &str, through: Option<&str>) -> Error {
     Error::Agent(Refusal::TableHidden {
         name: name.to_owned(),
         through: through.map(str::to_owned),
+        by: By::Person,
     })
 }
 
@@ -440,7 +447,10 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
             let greeting = "SELECT * FROM shop_greeting";
             let error = hiding(connection, &customers, greeting).await.unwrap_err();
             assert_eq!(error, hidden_refusal("shop_greeting", None), "{on}");
-            let hidden = connection.agent_hidden(&customers, &[]).await.unwrap();
+            let hidden = connection
+                .agent_hidden(&Sources::person(customers.clone(), Vec::new()))
+                .await
+                .unwrap();
             assert!(hidden.hides("bookshop", "shop_greeting"), "{on}");
             let found = hiding(connection, &Tables::All, greeting).await;
             assert_eq!(
@@ -462,7 +472,10 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
         Dialect::Postgres => "public",
         Dialect::MySql => "bookshop",
     };
-    let hidden = connection.agent_hidden(&customers, &[]).await.unwrap();
+    let hidden = connection
+        .agent_hidden(&Sources::person(customers.clone(), Vec::new()))
+        .await
+        .unwrap();
     assert!(hidden.hides(home, "customers"), "{on}");
     assert!(hidden.hides(home, "customer_names"), "{on}");
     assert!(!hidden.hides(home, "books"), "{on}");
@@ -477,7 +490,10 @@ async fn a_hidden_table_is_never_read(connection: &Connection, on: &str) {
         columns: Vec::new(),
     };
     assert_eq!(error, Error::Agent(look.clone()), "{on}");
-    let hidden = connection.agent_hidden(&gone, &[]).await.unwrap();
+    let hidden = connection
+        .agent_hidden(&Sources::person(gone.clone(), Vec::new()))
+        .await
+        .unwrap();
     assert_eq!(hidden.check_settings(), Err(look), "{on}");
     // Nothing hidden: the table reads.
     let found = count(hiding(connection, &Tables::All, "SELECT count(*) FROM customers").await);
@@ -492,7 +508,12 @@ async fn masking(connection: &Connection, masked: &[&str], sql: &str) -> Result<
     let read = agent::check_read(connection.dialect(), sql, &[])
         .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
     connection
-        .run_agent_read(&read, LIMITS, &Tables::All, &masked, &StopFlag::new())
+        .run_agent_read(
+            &read,
+            LIMITS,
+            &Sources::person(Tables::All, masked),
+            &StopFlag::new(),
+        )
         .await
 }
 
@@ -501,6 +522,7 @@ fn masked_refusal(how: MaskedUse) -> Error {
     Error::Agent(Refusal::MaskedColumnUsed {
         column: "orders.email".into(),
         how,
+        by: By::Person,
     })
 }
 
@@ -581,13 +603,13 @@ async fn a_masked_column_is_used_only_as_it_is(connection: &Connection, on: &str
     assert_eq!(gone, Error::Agent(look.clone()), "{on}");
     let masked: Vec<ColumnName> = vec!["orders.mail".parse().unwrap()];
     let hidden = connection
-        .agent_hidden(&Tables::All, &masked)
+        .agent_hidden(&Sources::person(Tables::All, masked.clone()))
         .await
         .unwrap();
     assert_eq!(hidden.check_settings(), Err(look), "{on}");
     let masked: Vec<ColumnName> = vec!["ORDERS.EMAIL".parse().unwrap()];
     let hidden = connection
-        .agent_hidden(&Tables::All, &masked)
+        .agent_hidden(&Sources::person(Tables::All, masked.clone()))
         .await
         .unwrap();
     assert_eq!(hidden.check_settings(), Ok(()), "{on}");
@@ -729,6 +751,150 @@ async fn a_column_computed_from_a_masked_one_is_masked(connection: &Connection, 
 }
 
 /// What every engine is asked.
+/// What the connection's database answers an agent that sends `sql` on a
+/// connection with the settings `sources`.
+async fn sourced(connection: &Connection, sources: &Sources, sql: &str) -> Result<Answer, Error> {
+    let read = agent::check_read(connection.dialect(), sql, &[])
+        .unwrap_or_else(|refusal| panic!("{sql}: {refusal}"));
+    connection
+        .run_agent_read(&read, LIMITS, sources, &StopFlag::new())
+        .await
+}
+
+/// A rule of an administrator's policy that hides and masks as `tables`
+/// and `masked` say.
+fn rule(tables: Tables, masked: &[&str]) -> Source {
+    Source {
+        tables,
+        masked: masked.iter().map(|entry| entry.parse().unwrap()).collect(),
+    }
+}
+
+/// The managed policy's run 1b, on the Bookshop: a rule's hidden tables
+/// and masked columns beside the person's, and refusals that say whose
+/// they are.
+async fn a_rule_hides_and_masks_beside_the_person(connection: &Connection, on: &str) {
+    let count = |answer: Result<Answer, Error>| answer.map(|answer| answer.rows);
+    let sources = Sources {
+        person: rule(Tables::AllExcept(vec![named("publishers")]), &[]),
+        administrator: vec![rule(
+            Tables::AllExcept(vec![named("customers")]),
+            &["orders.email"],
+        )],
+    };
+    let refused = |name: &str, through: Option<&str>, by: By| {
+        Error::Agent(Refusal::TableHidden {
+            name: name.to_owned(),
+            through: through.map(str::to_owned),
+            by,
+        })
+    };
+    let found = sourced(connection, &sources, "SELECT count(*) FROM customers").await;
+    assert_eq!(
+        found,
+        Err(refused("customers", None, By::Administrator)),
+        "{on}"
+    );
+    assert_eq!(
+        found.unwrap_err().to_string(),
+        "customers is hidden for agents by your administrator's policy.",
+        "{on}"
+    );
+    let found = sourced(connection, &sources, "SELECT count(*) FROM customer_names").await;
+    assert_eq!(
+        found,
+        Err(refused(
+            "customers",
+            Some("customer_names"),
+            By::Administrator
+        )),
+        "{on}"
+    );
+    let found = sourced(connection, &sources, "SELECT count(*) FROM publishers").await;
+    assert_eq!(found, Err(refused("publishers", None, By::Person)), "{on}");
+    let found = count(sourced(connection, &sources, "SELECT count(*) FROM books").await);
+    assert_eq!(found, Ok(vec![vec![Value::Int(12)]]), "{on}");
+    // The rule's masked column: refused as theirs, and answered masked.
+    let found = sourced(
+        connection,
+        &sources,
+        "SELECT id FROM orders WHERE email LIKE 'a%'",
+    )
+    .await;
+    assert_eq!(
+        found,
+        Err(Error::Agent(Refusal::MaskedColumnUsed {
+            column: "orders.email".into(),
+            how: MaskedUse::Named("email".into()),
+            by: By::Administrator,
+        })),
+        "{on}"
+    );
+    let found = sourced(
+        connection,
+        &sources,
+        "SELECT id, email FROM orders WHERE id = 1",
+    )
+    .await
+    .map(|answer| (answer.masked, answer.rows));
+    assert_eq!(
+        found,
+        Ok((
+            vec![false, true],
+            vec![vec![Value::Int(1), Value::Text(agent::MASKED.into())]]
+        )),
+        "{on}"
+    );
+    // A rule's Only list over the person's All except: what both let be
+    // seen.
+    let only = Sources {
+        person: rule(Tables::AllExcept(vec![named("orders")]), &[]),
+        administrator: vec![rule(
+            Tables::Only(vec![named("books"), named("orders")]),
+            &[],
+        )],
+    };
+    let found = count(sourced(connection, &only, "SELECT count(*) FROM books").await);
+    assert_eq!(found, Ok(vec![vec![Value::Int(12)]]), "{on}");
+    let found = sourced(connection, &only, "SELECT count(*) FROM orders").await;
+    assert_eq!(found, Err(refused("orders", None, By::Person)), "{on}");
+    let found = sourced(connection, &only, "SELECT count(*) FROM authors").await;
+    assert_eq!(
+        found,
+        Err(refused("authors", None, By::Administrator)),
+        "{on}"
+    );
+    // A rule's stale entry closes the connection, and says nothing of it.
+    for stale in [
+        rule(Tables::AllExcept(vec![named("ledger")]), &[]),
+        rule(Tables::All, &["orders.ledger_note"]),
+    ] {
+        let sources = Sources {
+            person: Source::default(),
+            administrator: vec![stale],
+        };
+        let found = sourced(connection, &sources, "SELECT count(*) FROM books").await;
+        assert_eq!(found, Err(Error::Agent(Refusal::PolicyNeedsFixing)), "{on}");
+        let hidden = connection.agent_hidden(&sources).await.unwrap();
+        assert_eq!(
+            hidden.check_settings(),
+            Err(Refusal::PolicyNeedsFixing),
+            "{on}"
+        );
+    }
+    // A stale Only entry stops nothing.
+    let sources = Sources {
+        person: Source::default(),
+        administrator: vec![rule(
+            Tables::Only(vec![named("books"), named("ledger")]),
+            &[],
+        )],
+    };
+    let found = count(sourced(connection, &sources, "SELECT count(*) FROM books").await);
+    assert_eq!(found, Ok(vec![vec![Value::Int(12)]]), "{on}");
+    the_bookshop_is_stocked(connection, on).await;
+}
+
 async fn an_agent_reads_the_bookshop(connection: &Connection, on: &str) {
     a_read_answers_its_rows(connection, on).await;
     values_are_bound_to_their_placeholders(connection, on).await;
@@ -793,7 +959,10 @@ mod sqlite {
         )
         .await;
         let customers = Tables::AllExcept(vec![named("customers")]);
-        let hidden = connection.agent_hidden(&customers, &[]).await.unwrap();
+        let hidden = connection
+            .agent_hidden(&Sources::person(customers.clone(), Vec::new()))
+            .await
+            .unwrap();
         for view in ["v_cte", "v_string", "v_in", "v_over"] {
             assert!(hidden.hides("main", view), "{view}");
         }
@@ -804,6 +973,12 @@ mod sqlite {
     async fn a_hidden_table_is_never_read_on_sqlite() {
         let (connection, _dir) = bookshop().await;
         a_hidden_table_is_never_read(&connection, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn a_rule_hides_and_masks_beside_the_person_on_sqlite() {
+        let (connection, _dir) = bookshop().await;
+        a_rule_hides_and_masks_beside_the_person(&connection, "sqlite").await;
     }
 
     #[tokio::test]
@@ -1170,6 +1345,14 @@ mod postgres {
     }
 
     #[tokio::test]
+    async fn a_rule_hides_and_masks_beside_the_person_on_postgres() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_rule_hides_and_masks_beside_the_person(&connection, "postgres").await;
+    }
+
+    #[tokio::test]
     async fn a_masked_column_is_used_only_as_it_is_on_postgres() {
         let Some(connection) = bookshop().await else {
             return;
@@ -1306,7 +1489,7 @@ mod postgres {
         let twice = "SELECT title FROM books WHERE id = $1 OR author_id = $1 ORDER BY id";
         let read_twice = agent::check_read(Dialect::Postgres, twice, &[Param::Int(3)]).unwrap();
         let found = connection
-            .run_agent_read(&read_twice, LIMITS, &Tables::All, &[], &StopFlag::new())
+            .run_agent_read(&read_twice, LIMITS, &Sources::default(), &StopFlag::new())
             .await
             .unwrap();
         assert_eq!(found.rows, [[text("Lanterns")], [text("Ninety-One Doors")]]);
@@ -1335,7 +1518,7 @@ mod postgres {
         let sql = "SELECT '$1', $q$ $1 $q$, title FROM books WHERE id = $1";
         let read = agent::check_read(Dialect::Postgres, sql, &[Param::Int(3)]).unwrap();
         let found = connection
-            .run_agent_read(&read, LIMITS, &Tables::All, &[], &StopFlag::new())
+            .run_agent_read(&read, LIMITS, &Sources::default(), &StopFlag::new())
             .await
             .unwrap();
         assert_eq!(found.rows, [[text("$1"), text(" $1 "), text("Lanterns")]]);
@@ -1538,6 +1721,14 @@ mod mysql {
             return;
         };
         a_hidden_table_is_never_read(&connection, "mysql").await;
+    }
+
+    #[tokio::test]
+    async fn a_rule_hides_and_masks_beside_the_person_on_mysql() {
+        let Some(connection) = bookshop().await else {
+            return;
+        };
+        a_rule_hides_and_masks_beside_the_person(&connection, "mysql").await;
     }
 
     #[tokio::test]

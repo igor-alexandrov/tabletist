@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tabletist_db::agent::{Answer, ColumnName, Hidden, Limits, Read, Tables};
+use tabletist_db::agent::{Answer, Hidden, Limits, Read, Sources};
 use tabletist_db::{
     Access, CancelHandle, ConnectSpec, Connection, Error, HostKeys, ObjectInfo, ObjectRef, Secrets,
     StopFlag, Structure,
@@ -45,10 +45,10 @@ pub struct Agentable {
     pub password: PasswordMode,
     pub ssh_secret: PasswordMode,
     pub limits: Limits,
-    /// What agents may not read of it.
-    pub tables: Tables,
-    /// The columns whose values agents get masked.
-    pub masked: Vec<ColumnName>,
+    /// What agents may not read of it, and the columns whose values they
+    /// get masked: the person's, and each matching rule's of the
+    /// administrator's policy.
+    pub sources: Sources,
 }
 
 /// The connections of `saved` that agents may use, in its order. One that
@@ -79,8 +79,7 @@ pub fn agentable(saved: &[SavedConnection]) -> Vec<Agentable> {
                 rows: saved.agents.rows,
                 timeout: Duration::from_secs(u64::from(saved.agents.timeout_secs)),
             },
-            tables: saved.agents.tables.clone(),
-            masked: saved.agents.masked.clone(),
+            sources: Sources::person(saved.agents.tables.clone(), saved.agents.masked.clone()),
         })
         .collect()
 }
@@ -834,8 +833,7 @@ impl Gateway for AppGateway {
                 name: agentable.name.clone(),
                 dialect: agentable.spec.driver.dialect(),
                 limits: agentable.limits,
-                tables: agentable.tables.clone(),
-                masked: agentable.masked.clone(),
+                sources: agentable.sources.clone(),
             })
             .collect()
     }
@@ -1082,24 +1080,22 @@ impl Session for AppSession {
         self.ended(None, connection.describe(object)).await
     }
 
-    async fn hidden(&self, tables: &Tables, masked: &[ColumnName]) -> Result<Hidden, Failure> {
+    async fn hidden(&self, sources: &Sources) -> Result<Hidden, Failure> {
         let connection = self.connection()?;
-        self.ended(None, connection.agent_hidden(tables, masked))
-            .await
+        self.ended(None, connection.agent_hidden(sources)).await
     }
 
     async fn read(
         &self,
         read: &Read,
         limits: Limits,
-        tables: &Tables,
-        masked: &[ColumnName],
+        sources: &Sources,
     ) -> Result<Answer, Failure> {
         let connection = self.connection()?;
         let flag = StopFlag::new();
         self.ended(
             Some(&flag),
-            connection.run_agent_read(read, limits, tables, masked, &flag),
+            connection.run_agent_read(read, limits, sources, &flag),
         )
         .await
     }
@@ -1110,7 +1106,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use tabletist_db::Dialect;
-    use tabletist_db::agent::check_read;
+    use tabletist_db::agent::{Tables, check_read};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     use super::*;
@@ -1160,8 +1156,7 @@ mod tests {
                     rows: 500,
                     timeout: Duration::from_secs(10),
                 },
-                &Tables::All,
-                &[],
+                &Sources::default(),
             )
             .await
     }
@@ -1305,11 +1300,8 @@ mod tests {
         shop.agents.tables = customers.clone();
         shop.agents.masked = vec!["orders.email".parse().unwrap()];
         let gateway = gateway(shop);
-        assert_eq!(gateway.connections()[0].tables, customers);
-        assert_eq!(
-            gateway.connections()[0].masked,
-            vec!["orders.email".parse().unwrap()]
-        );
+        let sources = Sources::person(customers.clone(), vec!["orders.email".parse().unwrap()]);
+        assert_eq!(gateway.connections()[0].sources, sources);
         let stop = CancellationToken::new();
         let session = gateway.open("shop", &stop).await.unwrap();
         let read = check_read(Dialect::Sqlite, "SELECT * FROM customers", &[]).unwrap();
@@ -1320,8 +1312,7 @@ mod tests {
                     rows: 500,
                     timeout: Duration::from_secs(10),
                 },
-                &customers,
-                &[],
+                &sources,
             )
             .await;
         assert!(
@@ -1333,7 +1324,7 @@ mod tests {
             ),
             "{refused:?}"
         );
-        let hidden = session.hidden(&customers, &[]).await.unwrap();
+        let hidden = session.hidden(&sources).await.unwrap();
         assert!(hidden.hides("main", "customers") && !hidden.hides("main", "books"));
     }
 

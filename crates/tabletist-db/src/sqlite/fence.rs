@@ -311,11 +311,13 @@ fn through_view(refusal: Refusal, source: Option<&str>) -> Refusal {
             Refusal::TableHidden {
                 name,
                 through: None,
+                by,
             },
             Some(view),
         ) if !view.eq_ignore_ascii_case(&name) => Refusal::TableHidden {
             name,
             through: Some(view.to_owned()),
+            by,
         },
         (refusal, _) => refusal,
     }
@@ -642,6 +644,7 @@ mod tests {
             Some(Refusal::MaskedColumnUsed {
                 column: "orders.email".into(),
                 how: crate::agent::MaskedUse::Through("recent_orders".into()),
+                by: crate::agent::By::Person,
             })
         );
     }
