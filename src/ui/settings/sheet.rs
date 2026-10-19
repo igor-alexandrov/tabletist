@@ -10,8 +10,8 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    EnvBar, FontSizes, Idle, InterfaceSize, Mode, OptionId, OptionValue, RowHeight, Settings,
-    TableList, ThemeChoice, Timestamps, Zone,
+    EnvBar, FontSizes, Idle, InterfaceSize, Launch, Mode, OptionId, OptionValue, RowHeight,
+    Settings, TableList, ThemeChoice, Timestamps, Zone,
 };
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
@@ -88,6 +88,8 @@ pub(super) struct Skin<'a> {
     /// The zone database's names, which the zone menu lists: none until
     /// the backend has read it.
     pub(super) zones: &'a [String],
+    /// The saved connections, which On launch lists.
+    pub(super) connections: &'a [crate::connections::SavedConnection],
 }
 
 impl Skin<'_> {
@@ -110,6 +112,7 @@ pub(super) fn show(
         locale: app.locale,
         system: app.system_zone.iana_name(),
         zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
+        connections: &app.connections.connections,
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
@@ -166,7 +169,11 @@ pub(super) fn show(
                     &mut pane,
                     ("General", Some(GENERAL)),
                     (
-                        &[("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)],
+                        &[
+                            ("Startup", &OptionId::STARTUP),
+                            ("Data", &OptionId::DATA),
+                            ("Safety", &OptionId::SAFETY),
+                        ],
                         false,
                     ),
                     &app.settings,
@@ -303,7 +310,8 @@ fn nav(
 }
 
 /// What the General pane says under its title.
-const GENERAL: &str = "How Tabletist shows data and protects your work. Changes apply right away.";
+const GENERAL: &str =
+    "How Tabletist starts, shows data and protects your work. Changes apply right away.";
 /// What the Appearance pane says under its title.
 const APPEARANCE: &str =
     "Theme, type and how dense the grid is. The preview updates as you change things.";
@@ -673,13 +681,14 @@ fn keyboard_came_to(ui: &Ui, place: Rect) -> bool {
 /// How tall `option`'s control is: its row is at least as tall.
 fn control_height(option: OptionId, look: &Look) -> f32 {
     match option {
-        OptionId::PageSize | OptionId::Tz => look.control_height,
+        OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
         OptionId::InterfaceSize => SEGMENT + 4.0,
         OptionId::Font | OptionId::FontSize => look.control_height,
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -736,6 +745,7 @@ fn control(
             });
         }
         OptionId::Tz => zone_menu(ui, &name, settings, skin, actions),
+        OptionId::OnLaunch => launch_menu(ui, &name, settings, skin, actions),
         OptionId::Timestamps => {
             let words = [skin.say("To the second"), skin.say("Full precision")];
             let selected = usize::from(settings.timestamps == Timestamps::Full);
@@ -831,7 +841,8 @@ fn control(
                 actions.push(Action::SetOption(OptionValue::EnvBar(bar)));
             }
         }
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -1011,6 +1022,64 @@ fn page_sizes(current: u32) -> Vec<u32> {
     sizes
 }
 
+/// What a launch opens: the last session, Connections, or a saved
+/// connection, each with where it points beside its name.
+fn launch_menu(
+    ui: &mut Ui,
+    name: &str,
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let shown = super::launch_text(skin.locale, &settings.on_launch, skin.connections);
+    // Closed, the menu tells two connections of one name apart by where
+    // each points, as the open one does.
+    let place = match &settings.on_launch {
+        Launch::Connection { id, .. } => skin
+            .connections
+            .iter()
+            .find(|saved| saved.id == *id)
+            .map(super::place)
+            .filter(|place| !place.is_empty()),
+        Launch::Restore | Launch::Connections => None,
+    };
+    let value = match place {
+        Some(place) => format!("{shown}, {place}"),
+        None => shown.clone(),
+    };
+    let dropdown = menu::Dropdown::new("launch", &shown, ZONE_MENU);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for launch in super::launch_choices(skin.connections) {
+            let text = super::launch_text(skin.locale, &launch, skin.connections);
+            let place = match &launch {
+                Launch::Connection { id, .. } => skin
+                    .connections
+                    .iter()
+                    .find(|saved| saved.id == *id)
+                    .map(super::place)
+                    .unwrap_or_default(),
+                Launch::Restore | Launch::Connections => String::new(),
+            };
+            let entry_name = format!("{name} {text} {place}");
+            let mut entry =
+                menu::Item::choice(&text, launch == settings.on_launch).name(entry_name.trim_end());
+            if !place.is_empty() {
+                entry = entry.detail(&place);
+            }
+            if entry.show(ui, look, palette).clicked() {
+                actions.push(Action::SetOption(OptionValue::OnLaunch(launch)));
+                ui.close();
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(value.clone());
+        info
+    });
+}
+
 /// The zone's menu: the computer's zone and UTC, then every zone of the
 /// database, which a search field over them narrows. What was typed there
 /// is the field's own, kept in egui's memory while the menu is open.
@@ -1088,6 +1157,8 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         // What the Appearance pane's rows say is their small print, and its
         // tiles have their own line.
         OptionId::Theme
+        | OptionId::OnLaunch
+        | OptionId::RestoreTabs
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::IdleDisconnect

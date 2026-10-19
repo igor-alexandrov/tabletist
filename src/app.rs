@@ -30,6 +30,8 @@ use crate::theme::{self, Catalog, Palette};
 mod editing;
 mod key_picker;
 mod labels;
+#[cfg(test)]
+mod startup_tests;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -123,6 +125,13 @@ pub struct App {
     /// id, as the file had them: a newer version may have written them,
     /// and they are written back with the others.
     table_lists_unread: std::collections::BTreeMap<String, serde_json::Value>,
+    /// What was open at the last quit, and each connection's tables as
+    /// its window last had them, from session.json.
+    pub session: crate::session::Session,
+    /// Whether session.json is written: not while the connections could
+    /// not be read, when no window could be open and the file would lose
+    /// every connection's tables.
+    writes_session: bool,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -270,6 +279,8 @@ impl App {
             crate::settings::Zone::System | crate::settings::Zone::Utc => None,
         };
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
+        let session = crate::session::Session::load(&dirs.session_file());
+        let writes_session = loaded_connections.problem.is_none();
         let look = crate::theme::Look::for_platform().with_text(&settings);
         let mut app = Self {
             dirs,
@@ -291,6 +302,8 @@ impl App {
             labels,
             table_lists,
             table_lists_unread,
+            session,
+            writes_session,
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -328,8 +341,7 @@ impl App {
             agents_held: Vec::new(),
             next_id: 1,
         };
-        let tab = app.picker_tab();
-        app.tabs.push(tab);
+        app.launch();
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
         // which a connection had no id yet.
@@ -730,6 +742,7 @@ impl App {
                 self.apply(action);
             }
         }
+        self.read_reopened();
         self.format_rows();
         self.make_reviews();
     }
@@ -858,11 +871,15 @@ impl App {
                         self.close_tab(tab);
                         self.apply(Action::ShowConnections);
                     } else {
-                        self.backend.send(Command::Close { session });
+                        let kept = self.keep_tabs(tab);
                         self.close_editors(tab);
                         if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
                             entry.content = ConnTabContent::Picker(PickerState::default());
                         }
+                        if kept {
+                            self.save_session();
+                        }
+                        self.backend.send(Command::Close { session });
                     }
                 }
             }
@@ -2361,6 +2378,10 @@ impl App {
                 }
             }
             Action::SwitchDatabase { tab, database } => {
+                // While the window is on its own connection's database
+                // this keeps its tables for the next time; switched once
+                // already, it keeps nothing.
+                let kept = self.keep_tabs(tab);
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.spec.database = database;
                     // The other database's objects, listed as these were.
@@ -2379,6 +2400,11 @@ impl App {
                         .active_tab
                         .filter(|id| workspace.tab(*id).is_some())
                         .or_else(|| workspace.tabs.first().map(Tab::id));
+                }
+                // Written before the reconnect, so that the connect is
+                // the last thing sent.
+                if kept {
+                    self.save_session();
                 }
                 // Which also forgets what the editors asked the old
                 // session for.
@@ -2480,6 +2506,20 @@ impl App {
                     let unread = self.table_lists_unread.remove(&id.0).is_some();
                     if self.table_lists.remove(&id.0).is_some() || unread {
                         self.save_table_lists();
+                    }
+                    // And the tables its window last had.
+                    if self.session.forget(&id) {
+                        self.save_session();
+                    }
+                    // A launch that was to open it shows the connections.
+                    let chosen = crate::settings::Launch::Connection {
+                        id: id.clone(),
+                        name: String::new(),
+                    };
+                    if self.settings.on_launch == chosen {
+                        self.change_settings(|settings| {
+                            settings.on_launch = crate::settings::Launch::Connections;
+                        });
                     }
                     if removed.password == PasswordMode::Keyring {
                         self.store_secret(&id, false, None, false);
@@ -2673,11 +2713,11 @@ impl App {
         let Some(index) = self.tab_index(id) else {
             return;
         };
-        if let ConnTabContent::Workspace(workspace) = &self.tabs[index].content {
-            self.backend.send(Command::Close {
-                session: workspace.session,
-            });
-        }
+        let session = match &self.tabs[index].content {
+            ConnTabContent::Workspace(workspace) => Some(workspace.session),
+            ConnTabContent::Picker(_) => None,
+        };
+        let closes_window = self.keep_tabs(id);
         self.close_editors(id);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
@@ -2689,6 +2729,212 @@ impl App {
         } else {
             self.active = self.active.min(self.tabs.len() - 1);
         }
+        if closes_window {
+            self.save_session();
+        }
+        if let Some(session) = session {
+            self.backend.send(Command::Close { session });
+        }
+    }
+
+    /// Opens what the settings say a launch opens: the windows open at the
+    /// last quit, in their order and the one in front in front again, the
+    /// picker, or the chosen connection. A chosen connection that is
+    /// deleted opens the picker, says so, and sets the option to the
+    /// picker, so that the next launch does what the menu says; with
+    /// connections that could not be read, nothing is known to be
+    /// deleted, and the option stays. Whatever opens nothing opens the
+    /// picker.
+    fn launch(&mut self) {
+        match self.settings.on_launch.clone() {
+            crate::settings::Launch::Restore => self.open_last_session(),
+            crate::settings::Launch::Connections => {}
+            crate::settings::Launch::Connection { id, .. } => {
+                match self.connections.get(&id).cloned() {
+                    Some(saved) => {
+                        let tab = self.picker_tab();
+                        let id = tab.id;
+                        self.tabs.push(tab);
+                        self.connect_tab(id, saved, Secrets::default());
+                    }
+                    None if self.writes_session => {
+                        self.say(
+                            "The connection chosen to open at launch was deleted. \
+                             Tabletist showed Connections instead.",
+                        );
+                        self.change_settings(|settings| {
+                            settings.on_launch = crate::settings::Launch::Connections;
+                        });
+                    }
+                    None => {}
+                }
+            }
+        }
+        if self.tabs.is_empty() {
+            let tab = self.picker_tab();
+            self.tabs.push(tab);
+        }
+    }
+
+    /// The windows open at the last quit, each connecting as a connection
+    /// does, asking for what it needs: the one in front first, so that a
+    /// question it asks at once is asked over it, and the others in their
+    /// order after it. A window behind that asks before the front window
+    /// does (the front one is still reading its password from the
+    /// keyring) takes the question, and the other says so and offers
+    /// Reconnect, as when a connect finds a dialog open. A connection
+    /// deleted since is left out, and the picker is one window at most.
+    fn open_last_session(&mut self) {
+        let open = self.session.open.clone();
+        // The windows are put after any tab there already is.
+        let base = self.tabs.len();
+        let mut windows = Vec::new();
+        let mut active = None;
+        // Every window opens as a picker until it connects, below: the
+        // picker kept is counted here.
+        let mut picker = false;
+        for (index, entry) in open.into_iter().enumerate() {
+            let saved = match entry {
+                Some(id) => match self.connections.get(&id).cloned() {
+                    Some(saved) => Some(saved),
+                    None => continue,
+                },
+                None if picker => continue,
+                None => {
+                    picker = true;
+                    None
+                }
+            };
+            let tab = self.picker_tab();
+            windows.push((tab.id, saved));
+            self.tabs.push(tab);
+            if index <= self.session.active {
+                active = Some(self.tabs.len() - 1 - base);
+            }
+        }
+        let active = active.unwrap_or(0);
+        self.active = base + active;
+        if active < windows.len() {
+            let front = windows.remove(active);
+            windows.insert(0, front);
+        }
+        for (tab, saved) in windows {
+            if let Some(saved) = saved {
+                self.connect_tab(tab, saved, Secrets::default());
+            }
+        }
+    }
+
+    /// Writes the name of `saved` beside it in the settings file, where it
+    /// is the connection a launch opens and its name there is another:
+    /// the comment is the only thing that changes. It runs on every save
+    /// of the chosen connection, and the name it writes replaces any
+    /// comment written by hand there.
+    fn rename_launch(&mut self, saved: &SavedConnection) {
+        let crate::settings::Launch::Connection { id, name } = &self.settings.on_launch else {
+            return;
+        };
+        if *id != saved.id || *name == saved.name {
+            return;
+        }
+        let mut renamed = self.settings.clone();
+        renamed.on_launch = crate::settings::Launch::Connection {
+            id: id.clone(),
+            name: saved.name.clone(),
+        };
+        let text = renamed.write_into(&self.settings_file.text, &[crate::settings::Key::OnLaunch]);
+        self.settings.on_launch = renamed.on_launch;
+        if text != self.settings_file.text {
+            let loaded = Settings::from_toml_over(&text, &self.settings);
+            let live = self.settings_file.live;
+            let saved = self.settings_file.saved.take();
+            let (_, file) = loaded.into_parts();
+            self.settings_file = SettingsFile {
+                live,
+                saved,
+                ..file
+            };
+            self.save_settings();
+        }
+    }
+
+    /// Shows `text` in the notice, after what it says already: a start can
+    /// have more than one thing to say.
+    fn say(&mut self, text: &str) {
+        self.notice = Some(match self.notice.take() {
+            Some(said) => format!("{said} {text}"),
+            None => text.to_owned(),
+        });
+    }
+
+    /// Keeps the table tabs of `tab`'s window in the session, for the
+    /// next time its connection opens: before the window closes, or has
+    /// another connection put in its place. Whether there was a window of
+    /// a saved connection to keep.
+    ///
+    /// A window switched to another database than its connection's keeps
+    /// nothing: the connection opens on its own, where those tables are
+    /// not, and what it kept of that one stays.
+    fn keep_tabs(&mut self, tab: ConnTabId) -> bool {
+        let Some(workspace) = self.workspace(tab) else {
+            return false;
+        };
+        let Some(saved) = self.connections.get(&workspace.conn_id) else {
+            return false;
+        };
+        let database = crate::session::database_of(&workspace.spec);
+        if database != crate::session::database_of(&saved.spec) {
+            return true;
+        }
+        let kept = crate::session::Kept::of(workspace);
+        let id = workspace.conn_id.clone();
+        self.session.keep(&id, kept);
+        true
+    }
+
+    /// Writes session.json on the backend: the connection tabs open now,
+    /// in order, the picker as none, and the tables of every window open,
+    /// with what is kept of the connections closed before. A connection
+    /// that is not saved (deleted while its window is open) is left out.
+    /// The window calls it as the app quits.
+    pub fn save_session(&mut self) {
+        if !self.writes_session {
+            return;
+        }
+        let ids: Vec<ConnTabId> = self.tabs.iter().map(|tab| tab.id).collect();
+        for id in &ids {
+            self.keep_tabs(*id);
+        }
+        let mut open = Vec::new();
+        let mut active = 0;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let entry = match &tab.content {
+                ConnTabContent::Picker(_) => None,
+                ConnTabContent::Workspace(workspace) => {
+                    if self.connections.get(&workspace.conn_id).is_none() {
+                        continue;
+                    }
+                    Some(workspace.conn_id.clone())
+                }
+            };
+            if index == self.active {
+                active = open.len();
+            }
+            open.push(entry);
+        }
+        self.session.open = open;
+        self.session.active = active;
+        // The connections were read, or this would not write: one that is
+        // not among them, deleted from connections.toml by hand, goes.
+        self.session.retain(|id| {
+            self.connections
+                .get(&crate::connections::ConnectionId(id.to_owned()))
+                .is_some()
+        });
+        self.backend.send(Command::Save {
+            path: self.dirs.session_file(),
+            file: StateFile::Session(self.session.clone()),
+        });
     }
 
     /// Opens `saved` in `tab`; `typed` holds secrets typed in the dialog.
@@ -2706,6 +2952,21 @@ impl App {
         let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let zone = self.zone();
         let flat = self.lists_flat(&saved.id);
+        // The connection the window had closes in it. That comes first, so
+        // that what the window just had is what reopens, if this connection
+        // was it.
+        let replaced = self.keep_tabs(tab);
+        // The tables the connection's window last had, where the settings
+        // reopen them and they are of the database it opens on.
+        let kept = self
+            .session
+            .connections
+            .get(&saved.id.0)
+            .filter(|kept| {
+                self.settings.restore_tabs
+                    && kept.database == crate::session::database_of(&saved.spec)
+            })
+            .cloned();
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -2714,6 +2975,59 @@ impl App {
         workspace.zone = zone;
         workspace.tree.flat = flat;
         entry.content = ConnTabContent::Workspace(Box::new(workspace));
+        if let Some(kept) = kept {
+            self.reopen_tabs(tab, &kept);
+        }
+        if replaced {
+            self.save_session();
+        }
+    }
+
+    /// Puts the tables `kept` in `tab`'s window, in their order, with
+    /// their sort and filters, the one that was in front in front again
+    /// (the first where none was). Nothing is read here: the one in front
+    /// is read with the connect, and each other when it is first shown.
+    fn reopen_tabs(&mut self, tab: ConnTabId, kept: &crate::session::Kept) {
+        let page_size = self.settings.page_size;
+        let mut opened = Vec::new();
+        for saved in &kept.tabs {
+            let id = TabId(self.next_id());
+            opened.extend(saved.reopen(id, page_size));
+        }
+        let front = kept
+            .active
+            .and_then(|at| kept.tabs.get(at))
+            .map(|front| ObjectRef::new(front.schema.clone(), front.name.clone()));
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let active = opened
+            .iter()
+            .find(|object| Some(&object.object) == front.as_ref())
+            .or(opened.first())
+            .map(|object| object.id);
+        workspace.tabs.extend(
+            opened
+                .into_iter()
+                .map(|object| Tab::Object(Box::new(object))),
+        );
+        workspace.active_tab = active;
+    }
+
+    /// Reads the table in front of each window that was reopened and not
+    /// read yet: its structure and its first page, as when it opened. A
+    /// connect under way reads it once it is up (`App::wake_to_read`).
+    fn read_reopened(&mut self) {
+        let due: Vec<(ConnTabId, TabId)> = self
+            .open_connections()
+            .filter_map(|(tab, workspace)| {
+                let front = workspace.active_object_tab()?;
+                front.reopened.then_some((tab, front.id))
+            })
+            .collect();
+        for (tab, id) in due {
+            self.fetch_rows(tab, id);
+        }
     }
 
     /// Fills the tab's secrets one at a time (the database password, then
@@ -3261,6 +3575,24 @@ impl App {
                     && node.objects.finish(request, result)
                 {
                     workspace.catalog_changed();
+                    // A table reopened by a connect is open before the tree
+                    // is listed, so it gets here the estimate that one opened
+                    // from the sidebar had when it opened. A count that came
+                    // first is exact and stays.
+                    let estimates: Vec<(TabId, u64)> = workspace
+                        .object_tabs()
+                        .filter(|object| object.object.schema == schema)
+                        .filter(|object| object.estimated_rows.is_none())
+                        .filter_map(|object| {
+                            let info = workspace.tree.object_info(&object.object)?;
+                            Some((object.id, info.estimated_rows?))
+                        })
+                        .collect();
+                    for (id, estimate) in estimates {
+                        if let Some(object) = workspace.object_tab_mut(id) {
+                            object.estimated_rows = Some(estimate);
+                        }
+                    }
                 }
             }
             Event::Rows {
@@ -4376,6 +4708,7 @@ impl App {
         }
         self.connections.upsert(saved.clone());
         self.save_connections();
+        self.rename_launch(&saved);
         if saved.password == PasswordMode::Keyring {
             if typed.is_some() || stale {
                 self.store_secret(&saved.id, false, typed.clone().map(SecretString), false);
@@ -4487,6 +4820,13 @@ impl App {
                     return (object.id, false, false, count);
                 }
                 let is_active = Some(object.id) == active;
+                // Reopened behind another: read when it is first shown.
+                if object.reopened && !is_active {
+                    return (object.id, false, false, count);
+                }
+                // Reopened in front and not read yet: its rows are read
+                // here, and that asks for its structure too.
+                let described = object.reopened;
                 (
                     object.id,
                     is_active
@@ -4494,11 +4834,12 @@ impl App {
                         || lost(&object.rows)
                         || object.rows.needs_load()
                         || object.rows.asked,
-                    object.structure.is_loading()
-                        || lost(&object.structure)
-                        || object.structure.needs_load()
-                        || object.structure.asked
-                        || (is_active && object.structure.value.is_some()),
+                    !described
+                        && (object.structure.is_loading()
+                            || lost(&object.structure)
+                            || object.structure.needs_load()
+                            || object.structure.asked
+                            || (is_active && object.structure.value.is_some())),
                     count,
                 )
             })
@@ -4537,7 +4878,7 @@ impl App {
         }
         let waited: Vec<(TabId, bool, bool)> = workspace
             .object_tabs()
-            .filter(|object| !object.edits.holds())
+            .filter(|object| !object.edits.holds() && !object.reopened)
             .map(|object| {
                 (
                     object.id,
@@ -5578,8 +5919,18 @@ impl App {
     /// here: a new Rows per page lands on the next one.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
         let size = self.settings.page_size;
+        let mut reopened = false;
         if let Some(object) = self.object_tab_mut(tab, id) {
             object.page_size = size;
+            // Read now, whatever asked: a reopened tab is not read again
+            // when it is shown.
+            reopened = std::mem::take(&mut object.reopened);
+        }
+        // Nothing else asked for its structure, which a tab opened from the
+        // sidebar gets as it opens, so the first read, from whatever path,
+        // brings it.
+        if reopened {
+            self.describe(tab, id);
         }
         self.fetch_page(tab, id, size);
     }
@@ -9549,6 +9900,8 @@ mod tests {
             settings.production_read_only = false;
             settings.confirm_close_edits = false;
             settings.idle_disconnect = crate::settings::Idle::Never;
+            settings.restore_tabs = false;
+            settings.on_launch = crate::settings::Launch::Connections;
             settings.show_system_schemas = true;
             settings.sql_limit = 50;
         });
@@ -9575,6 +9928,9 @@ mod tests {
         assert!(app.settings.production_read_only);
         assert!(app.settings.confirm_close_edits);
         assert_eq!(app.settings.idle_disconnect, defaults.idle_disconnect);
+        // And the Startup group's.
+        assert!(app.settings.restore_tabs);
+        assert_eq!(app.settings.on_launch, crate::settings::Launch::Restore);
         assert!(app.settings.show_system_schemas);
         assert_eq!(app.settings.sql_limit, 50);
         assert_eq!(app.settings_file.text, app.settings.to_toml());

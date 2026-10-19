@@ -228,6 +228,8 @@ pub enum StateFile {
     /// How each connection lists its tables where its user chose, by id:
     /// a list's name, or a value a newer version wrote, kept as it was.
     TableLists(std::collections::BTreeMap<String, serde_json::Value>),
+    /// The connection tabs open, and each connection's tables.
+    Session(crate::session::Session),
 }
 
 impl StateFile {
@@ -243,6 +245,7 @@ impl StateFile {
             Self::Labels(labels) => labels.save(path),
             Self::AgentsShown(shown) => shown.save(path),
             Self::TableLists(lists) => crate::util::save_json(path, lists),
+            Self::Session(session) => session.save(path),
         }
     }
 }

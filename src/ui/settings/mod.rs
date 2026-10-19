@@ -14,18 +14,21 @@ mod terminal;
 use std::borrow::Cow;
 
 use crate::app::App;
+use crate::connections::SavedConnection;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::keymap::{Command, Keymap, Layout, Scope, Spelled, Stroke};
 use crate::model::{Action, AgentsView, Dialog, SettingsDialog, SettingsPane, SettingsRow};
 use crate::settings::{
-    EnvBar, Idle, InterfaceSize, Mode, OptionId, OptionValue, RowHeight, Settings, TableList,
-    Theme, ThemeChoice, Timestamps, Zone,
+    EnvBar, Idle, InterfaceSize, Launch, Mode, OptionId, OptionValue, RowHeight, Settings,
+    TableList, Theme, ThemeChoice, Timestamps, Zone,
 };
 
 /// The label of an option's row. English: the caller translates, and the
 /// terminal look lower-cases.
 pub(super) fn label(option: OptionId) -> &'static str {
     match option {
+        OptionId::OnLaunch => "On launch",
+        OptionId::RestoreTabs => "Restore tabs and filters",
         OptionId::PageSize => "Rows per page",
         OptionId::Timestamps => "Timestamps",
         OptionId::Tz => "Time zone for timestamptz",
@@ -65,7 +68,9 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         // One font and one size for everything.
         OptionId::Font => "Font",
         OptionId::FontSize => "Size",
-        OptionId::PageSize
+        OptionId::OnLaunch
+        | OptionId::RestoreTabs
+        | OptionId::PageSize
         | OptionId::Timestamps
         | OptionId::GroupDigits
         | OptionId::ValueTags
@@ -82,6 +87,11 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
 /// What a row says under its label, where it says something. English.
 pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
     match option {
+        // As the board writes it, though hiding columns is not built: what
+        // the option will cover once it is.
+        OptionId::RestoreTabs => Some("Per connection, including sort and hidden columns"),
+        // The board's hint: beside the menu it has no room in the sheet.
+        OptionId::OnLaunch => Some("Or: show Connections · open a chosen connection"),
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
@@ -134,6 +144,44 @@ pub(super) fn zone_text(locale: Locale, zone: &Zone, system: Option<&str>) -> St
     }
 }
 
+/// What a launch can open, as the menu lists it and the screen steps
+/// through it: the last session, Connections, then each saved connection
+/// in the order they are saved.
+pub(super) fn launch_choices(connections: &[SavedConnection]) -> Vec<Launch> {
+    let mut choices = vec![Launch::Restore, Launch::Connections];
+    choices.extend(connections.iter().map(|saved| Launch::Connection {
+        id: saved.id.clone(),
+        name: saved.name.clone(),
+    }));
+    choices
+}
+
+/// What a launch opens, as the window writes it: a connection by its name
+/// as it is saved now. English but the name. One that is not saved (the
+/// file names another) is said to be gone: the next launch shows
+/// Connections in its place.
+pub(super) fn launch_text(
+    locale: Locale,
+    launch: &Launch,
+    connections: &[SavedConnection],
+) -> String {
+    match launch {
+        Launch::Restore => gettext(locale, "Restore last session").into_owned(),
+        Launch::Connections => gettext(locale, "Show Connections").into_owned(),
+        Launch::Connection { id, .. } => match connections.iter().find(|saved| saved.id == *id) {
+            Some(saved) => saved.name.clone(),
+            None => gettext(locale, "Connection not found").into_owned(),
+        },
+    }
+}
+
+/// Where a saved connection points, as the menu writes it beside its
+/// name: so that three of one name are told apart.
+pub(super) fn place(saved: &SavedConnection) -> String {
+    let (host, database) = crate::ui::picker::target(saved);
+    format!("{host}{database}")
+}
+
 /// How long a connection may go unused, as the menu writes it.
 pub(super) fn idle_text(locale: Locale, choice: Idle) -> String {
     let (one, many, count) = match choice {
@@ -156,7 +204,8 @@ pub(super) fn days(locale: Locale, days: u32) -> String {
 pub(super) fn is_on(value: &OptionValue) -> bool {
     matches!(
         value,
-        OptionValue::ValueTags(true)
+        OptionValue::RestoreTabs(true)
+            | OptionValue::ValueTags(true)
             | OptionValue::ProductionReadOnly(true)
             | OptionValue::ConfirmCloseEdits(true)
             | OptionValue::AgentsOn(true)
@@ -239,14 +288,19 @@ impl Said {
 /// called: what the row draws as segments or as a check, and what a screen
 /// reader and the tests call them.
 /// `named` is the last named zone the session had, which the zone's steps
-/// reach.
+/// reach, and `launches` what On launch steps through.
 pub(super) fn choices(
     option: OptionId,
     settings: &Settings,
     named: Option<&str>,
+    launches: &[Launch],
 ) -> Vec<(Said, OptionValue)> {
     use Said::{Sample, Word};
     match option {
+        OptionId::OnLaunch => vec![
+            (Word("fewer"), settings.stepped_launch(launches, false)),
+            (Word("more"), settings.stepped_launch(launches, true)),
+        ],
         OptionId::Tz => vec![
             (Word("fewer"), settings.stepped_zone(named, false)),
             (Word("more"), settings.stepped_zone(named, true)),
@@ -276,6 +330,10 @@ pub(super) fn choices(
         OptionId::ConfirmCloseEdits => vec![
             (Word("off"), OptionValue::ConfirmCloseEdits(false)),
             (Word("on"), OptionValue::ConfirmCloseEdits(true)),
+        ],
+        OptionId::RestoreTabs => vec![
+            (Word("off"), OptionValue::RestoreTabs(false)),
+            (Word("on"), OptionValue::RestoreTabs(true)),
         ],
         OptionId::AgentsOn => vec![
             (Word("off"), OptionValue::AgentsOn(false)),
@@ -547,6 +605,10 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
                         Asked::Reset => Some(option.default_value()),
                         Asked::Step { forward } if option == OptionId::Tz => {
                             Some(settings.stepped_zone(app.named_zone.as_deref(), forward))
+                        }
+                        Asked::Step { forward } if option == OptionId::OnLaunch => {
+                            let launches = launch_choices(&app.connections.connections);
+                            Some(settings.stepped_launch(&launches, forward))
                         }
                         Asked::Step { forward } => Some(settings.stepped(option, forward)),
                         _ => settings.flipped(option),
