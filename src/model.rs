@@ -3073,6 +3073,9 @@ pub struct ClosedSql {
     /// The number it had: `Query 1`.
     pub number: u32,
     pub text: String,
+    /// Whether its runs could write: an agent's statement opened read-only,
+    /// or a choice the person made, comes back as it was.
+    pub mode: RunMode,
     /// When it was opened, in seconds since the Unix epoch.
     pub opened: u64,
 }

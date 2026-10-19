@@ -1192,6 +1192,7 @@ impl App {
                             crate::model::ClosedSql {
                                 number: sql.number,
                                 text: sql.text.clone(),
+                                mode: sql.mode,
                                 opened: sql.opened,
                             },
                         );
@@ -4345,6 +4346,7 @@ impl App {
                 sql.text = kept.text;
                 sql.opened = kept.opened;
                 sql.number = kept.number;
+                sql.mode = kept.mode;
             }
         }
     }

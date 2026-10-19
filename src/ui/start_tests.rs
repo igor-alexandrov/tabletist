@@ -8,7 +8,7 @@ use tabletist_db::{Driver, ObjectInfo, ObjectKind, ObjectRef};
 use crate::backend::{Command, Event};
 use crate::connections::SavedConnection;
 use crate::env::Environment;
-use crate::model::{Action, ConnTabId, Dialog, Pane};
+use crate::model::{Action, ConnTabId, Dialog, Pane, RunMode};
 use crate::recents::Recent;
 use crate::testing::{Harness, bookshop_objects, bounds, fixture_connection, labels};
 use crate::theme::Look;
@@ -626,6 +626,38 @@ fn a_reopened_sql_editor_keeps_its_number() {
     let workspace = harness.app.workspace(tab).unwrap();
     assert_eq!(workspace.active_sql_tab().unwrap().number, 2);
     assert_eq!(workspace.next_query, next);
+}
+
+/// A SQL editor opened again from the screen runs as it did: one opened
+/// read-only (an agent's statement, or the person's choice) on a
+/// writable connection stays read-only, and a read-write one read-write.
+#[test]
+fn a_reopened_sql_editor_keeps_its_mode() {
+    crate::util::pin_now(Some(NOW));
+    let mut harness = Harness::new();
+    harness.set_look(Look::macos());
+    let mut saved = fixture_connection();
+    saved.read_only = Some(false);
+    let tab = harness.connect_with(saved, bookshop_objects());
+    for mode in [RunMode::ReadOnly, RunMode::ReadWrite] {
+        harness.app.apply(Action::NewSqlTab(tab));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let sql = harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .sql_tab_mut(id)
+            .unwrap();
+        sql.text = "UPDATE book_covers SET kind = 'print'".into();
+        sql.mode = mode;
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.app.apply(Action::OpenRecent { tab, index: 0 });
+        let workspace = harness.app.workspace(tab).unwrap();
+        let sql = workspace.active_sql_tab().expect("the editor");
+        assert_eq!(sql.mode, mode, "{mode:?}");
+        let id = sql.id;
+        harness.app.apply(Action::CloseTab { tab, id });
+    }
 }
 
 /// A listing that failed says nothing of what exists: the recents stay,
