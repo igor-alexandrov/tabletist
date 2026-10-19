@@ -1466,6 +1466,92 @@ pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(crate::keymap::Comm
     Some((offer.names().1, blocked.action(offer, tab, sql.id)))
 }
 
+/// A link the results offer after our words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Link {
+    /// Under a cut result: its statement again, with no limit.
+    ShowAll,
+    /// Beside the words of a run the timeout stopped: it again, with none.
+    WithoutTimeout,
+}
+
+impl Link {
+    /// The link's name, and the command whose letter takes it in the
+    /// terminal look.
+    fn names(self) -> (&'static str, crate::keymap::Command) {
+        use crate::keymap::Command;
+        match self {
+            Self::ShowAll => ("Show all", Command::ShowAllRows),
+            Self::WithoutTimeout => ("Run without timeout", Command::RunWithoutTimeout),
+        }
+    }
+
+    fn action(self, tab: ConnTabId, sql_tab: TabId) -> Action {
+        match self {
+            Self::ShowAll => Action::ShowAllRows { tab, sql_tab },
+            Self::WithoutTimeout => Action::RunWithoutTimeout { tab, sql_tab },
+        }
+    }
+}
+
+/// The links the editor's results offer now. `App` sends only what
+/// `SqlTab::cut_statement` and `SqlTab::timed_out_run` allow, so a link is
+/// drawn only where pressing it sends something.
+#[derive(Clone, Copy, Default)]
+struct Links {
+    show_all: bool,
+    without_timeout: bool,
+}
+
+impl Links {
+    fn of(workspace: &Workspace, sql: &SqlTab) -> Self {
+        let (takes, on) = (workspace.takes_commands(), &workspace.spec);
+        Self {
+            show_all: takes && sql.cut_statement(on).is_some(),
+            without_timeout: takes && sql.timed_out_run(on).is_some(),
+        }
+    }
+
+    /// The links on screen: Show all on the strip under the rows (Results);
+    /// Run without timeout on the line of the cancel (Messages), and in
+    /// Results where no rows show and the note says the cancel.
+    fn on_screen(self, sql: &SqlTab) -> impl Iterator<Item = Link> {
+        let results = sql.pane == ResultPane::Results;
+        let rows = sql.shown_rows().is_some();
+        [
+            (self.show_all && results, Link::ShowAll),
+            (
+                self.without_timeout && (!results || !rows),
+                Link::WithoutTimeout,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(shown, link)| shown.then_some(link))
+    }
+}
+
+/// The links on screen in the SQL editor in front, with the command whose
+/// letter takes each and what it does. Only in the terminal look, whose
+/// links name their letters, as [`card_key`].
+pub(crate) fn link_keys(app: &App, tab: ConnTabId) -> Vec<(crate::keymap::Command, Action)> {
+    if !app.look.terminal {
+        return Vec::new();
+    }
+    let Some(workspace) = app.workspace(tab) else {
+        return Vec::new();
+    };
+    let Some(sql) = workspace.active_sql_tab() else {
+        return Vec::new();
+    };
+    if !workspace.opened() || sql.run.error.is_some() {
+        return Vec::new();
+    }
+    Links::of(workspace, sql)
+        .on_screen(sql)
+        .map(|link| (link.names().1, link.action(tab, sql.id)))
+        .collect()
+}
+
 /// The card of a refused write, at the head of the Messages: said as what
 /// it is, a run that was read-only, and not as a mistake in the statement.
 /// Under it the database's own words, then the way on: what it asks of the

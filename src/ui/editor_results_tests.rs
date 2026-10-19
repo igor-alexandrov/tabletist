@@ -8,7 +8,7 @@ use egui::{Key, Modifiers};
 use tabletist_db::{Driver, ScriptEnd, ScriptMode, StatementOutcome};
 
 use crate::backend::{CancelReason, Command};
-use crate::model::{Action, ConnTabId, SqlTab, TabId};
+use crate::model::{Action, ConnTabId, ResultPane, SqlTab, TabId};
 use crate::settings::NewTab;
 use crate::testing::{
     Harness, cut_outcome, done_outcome, rows_outcome, script_outcome, write_outcome,
@@ -258,4 +258,84 @@ fn the_links_send_nothing_once_the_tab_is_on_another_database() {
         without_timeout(&mut harness, tab, id);
         assert_eq!(runs_sent(&harness), before, "timed out: {timed_out}");
     }
+}
+
+fn sql(harness: &Harness, tab: ConnTabId, id: TabId) -> &SqlTab {
+    harness.app.workspace(tab).unwrap().sql_tab(id).unwrap()
+}
+
+#[test]
+fn the_terminal_looks_letters_take_the_links_on_screen() {
+    let (mut harness, tab, id) = editor(Look::omarchy(), Driver::Sqlite, "SELECT * FROM users");
+    run(&mut harness);
+    harness.answer_sql(Ok(script_outcome(vec![cut_outcome(1_000)])), None);
+    assert_eq!(sql(&harness, tab, id).pane, ResultPane::Results);
+    let before = runs_sent(&harness);
+    // In the editor's text a letter is typed; out of it, `t` offers
+    // nothing here and `a` shows all.
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.press(Key::T, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before);
+    harness.press(Key::A, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before + 1);
+    assert_eq!(last_run(&harness).limit, u32::MAX);
+    // Stopped by the timeout, with no rows: Messages, and `t`.
+    let stopped = script_outcome(vec![StatementOutcome::Cancelled]);
+    harness.answer_sql(Ok(stopped), Some(TIMEOUT));
+    assert_eq!(sql(&harness, tab, id).pane, ResultPane::Messages);
+    harness.press(Key::T, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before + 2);
+    assert_eq!(last_run(&harness).timeout, None);
+}
+
+#[test]
+fn the_other_looks_have_no_letters_for_the_links() {
+    let (mut harness, tab, id) = editor(Look::macos(), Driver::Sqlite, "SELECT * FROM users");
+    run(&mut harness);
+    harness.answer_sql(Ok(script_outcome(vec![cut_outcome(1_000)])), None);
+    let before = runs_sent(&harness);
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.press(Key::A, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before);
+    // The letter was not typed into the text either.
+    assert_eq!(sql(&harness, tab, id).text, "SELECT * FROM users");
+}
+
+#[test]
+fn a_letter_takes_its_link_only_in_the_pane_that_shows_the_link() {
+    // Run without timeout is on the Messages; the Results show the rows.
+    let (mut harness, tab, id) = editor(Look::omarchy(), Driver::Sqlite, "SELECT 1;\nSELECT 2");
+    run_all(&mut harness);
+    let stopped = vec![rows_outcome(2), StatementOutcome::Cancelled];
+    harness.answer_sql(Ok(script_outcome(stopped)), Some(TIMEOUT));
+    assert_eq!(sql(&harness, tab, id).pane, ResultPane::Messages);
+    let before = runs_sent(&harness);
+    harness.click("Results");
+    assert_eq!(sql(&harness, tab, id).pane, ResultPane::Results);
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.press(Key::T, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before);
+    assert_eq!(sql(&harness, tab, id).text, "SELECT 1;\nSELECT 2");
+    harness.click("Messages");
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.press(Key::T, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before + 1);
+    assert_eq!(last_run(&harness).timeout, None);
+
+    // Show all is on the Results; the Messages do not offer it.
+    let (mut harness, tab, id) = editor(Look::omarchy(), Driver::Sqlite, "SELECT * FROM users");
+    run(&mut harness);
+    harness.answer_sql(Ok(script_outcome(vec![cut_outcome(1_000)])), None);
+    let before = runs_sent(&harness);
+    harness.click("Messages");
+    assert_eq!(sql(&harness, tab, id).pane, ResultPane::Messages);
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.press(Key::A, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before);
+    assert_eq!(sql(&harness, tab, id).text, "SELECT * FROM users");
+    harness.click("Results");
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.press(Key::A, Modifiers::NONE);
+    assert_eq!(runs_sent(&harness), before + 1);
+    assert_eq!(last_run(&harness).limit, u32::MAX);
 }

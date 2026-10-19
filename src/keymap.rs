@@ -137,6 +137,11 @@ pub enum When {
     Suggestion,
     /// The card of a refused write shows in Messages.
     RefusedWrite,
+    /// The results offer Show all: a cut result shows.
+    RowsCut,
+    /// The results offer Run without timeout: a run the timeout stopped
+    /// shows its cancel.
+    TimedOut,
     /// The connection form.
     ConnectionForm,
     /// The Settings screen.
@@ -489,6 +494,8 @@ commands! {
     NextPlanTip,
     EditRefusedConnection,
     AllowRefusedWrite,
+    ShowAllRows,
+    RunWithoutTimeout,
     // AI assistant.
     AskAi,
     AcceptAi,
@@ -820,6 +827,8 @@ impl Command {
             C::NextPlanTip => info("Next plan tip", "Next plan tip", Sql).reserved(),
             C::EditRefusedConnection => info("Edit the connection that refused", "", Prompts),
             C::AllowRefusedWrite => info("Allow writes, or run again", "", Prompts),
+            C::ShowAllRows => info("Show all rows", "", Prompts),
+            C::RunWithoutTimeout => info("Run without timeout", "", Prompts),
             C::AskAi => info("Ask AI", "Ask AI", Ai).reserved(),
             C::AcceptAi => info("Accept AI", ANSWER, Ai).reserved(),
             C::AcceptAiAndRun => info("Accept AI and run", ANSWER, Ai).reserved(),
@@ -1749,6 +1758,8 @@ pub const BINDINGS: &[Binding] = {
         bind(C::NextPlanTip, RESULTS, NONE, keys(&[k("]t")])),
         bind(C::EditRefusedConnection, SQL_EDITOR, NONE, keys(&[k("e")])).when(When::RefusedWrite),
         bind(C::AllowRefusedWrite, SQL_EDITOR, NONE, keys(&[k("w")])).when(When::RefusedWrite),
+        bind(C::ShowAllRows, SQL_EDITOR, NONE, keys(&[k("a")])).when(When::RowsCut),
+        bind(C::RunWithoutTimeout, SQL_EDITOR, NONE, keys(&[k("t")])).when(When::TimedOut),
         // AI assistant.
         bind(
             C::AskAi,

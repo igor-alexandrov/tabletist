@@ -2303,11 +2303,20 @@ fn letters(
     // the command its button stands for, and what the button does.
     let mut card = crate::ui::sql_results::card_key(app, tab);
     let has_card = card.is_some();
+    // The results' links on screen: the commands their letters stand for.
+    let mut links = crate::ui::sql_results::link_keys(app, tab);
+    let offers = |command: Command| links.iter().any(|(offered, _)| *offered == command);
+    let (cut, timed_out) = (
+        offers(Command::ShowAllRows),
+        offers(Command::RunWithoutTimeout),
+    );
     let holds = |when: crate::keymap::When| match when {
         crate::keymap::When::InspectorOpen => panel,
         crate::keymap::When::Review => reviewing.is_some(),
         crate::keymap::When::Note => note.is_some(),
         crate::keymap::When::RefusedWrite => has_card,
+        crate::keymap::When::RowsCut => cut,
+        crate::keymap::When::TimedOut => timed_out,
         crate::keymap::When::NewRow => on_new,
         crate::keymap::When::Visual => visual,
         // The Structure view shows where the rows would: its own keys
@@ -2781,6 +2790,15 @@ fn letters(
                     && let Some((_, action)) = card.take()
                 {
                     actions.push(action);
+                }
+            }
+            // A link's letter, while its link is on screen. A press of its
+            // own, as the card's.
+            (Some(command @ (Command::ShowAllRows | Command::RunWithoutTimeout)), _) => {
+                if fresh_key
+                    && let Some(at) = links.iter().position(|(offered, _)| *offered == command)
+                {
+                    actions.push(links.swap_remove(at).1);
                 }
             }
             // Only the documents of a panel that shows.
