@@ -991,7 +991,15 @@ fn search_field(
     if blur {
         response.surrender_focus();
     }
-    let lit = focus || response.has_focus();
+    // The ring of the keyboard is `focus.rs`'s to draw, round the whole
+    // box rather than the line of text inside it: the accent border and,
+    // on macOS, the halo, while the keyboard put the focus there.
+    focus::hint(
+        ui,
+        &response,
+        rect,
+        focus::Ring::Field { radius: corner.nw },
+    );
     let fill = if look.terminal {
         palette.window
     } else {
@@ -1001,21 +1009,11 @@ fn search_field(
         backdrop,
         egui::epaint::RectShape::filled(rect, corner, fill),
     );
-    let border = if lit {
-        palette.accent
-    } else if look.terminal {
+    let border = if look.terminal {
         palette.outline
     } else {
         palette.border
     };
-    if lit && !look.terminal {
-        ui.painter().rect_stroke(
-            rect,
-            corner,
-            Stroke::new(3.0, focus::halo(palette)),
-            StrokeKind::Outside,
-        );
-    }
     ui.painter()
         .rect_stroke(rect, corner, Stroke::new(1.0, border), StrokeKind::Inside);
     let y = rect.center().y;
