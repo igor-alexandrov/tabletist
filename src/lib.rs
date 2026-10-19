@@ -24,6 +24,7 @@ pub mod paths;
 pub mod relay;
 pub mod review;
 pub mod secrets;
+pub mod session;
 pub mod settings;
 #[cfg(all(test, feature = "shots"))]
 mod shots;

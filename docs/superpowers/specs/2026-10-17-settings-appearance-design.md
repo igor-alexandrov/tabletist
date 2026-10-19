@@ -31,7 +31,7 @@ and an edit in `$EDITOR` comes back live.
 | Writing the file | Today's writer: every key, in the app's fixed form, as General and both Appearance boards have it. The prompt asked for non-default values only and comments kept; that would change General's and Agents' file too. Not done. |
 | Delivery | One plan for the tab in four steps, each its own pull request: 1 Grid and Environment, 2 Theme, 3 Text and the font size keys, 4 Preview. |
 | Font size keys | egui's own zoom (Cmd/Ctrl + `=` `-` `0`, the whole window) is turned off. The keys change `appearance.font_size` through the keymap and write it (step 3). |
-| macOS data font menu | The bundled fonts first (IBM Plex Mono, JetBrains Mono). Installed fonts through CoreText come later, in `tabletist-appkit`. |
+| macOS data font menu | The bundled fonts first (IBM Plex Mono, JetBrains Mono). Installed fonts through CoreText come later, in `tabletist-appkit` (step 5, below). |
 | Table list per connection | A state file by connection id (`table_lists.json`, beside `last_used.json`), not `connections.toml`: that file refuses unknown keys, and a new key would make an older Tabletist refuse it whole. |
 | Alternate rows default | The prompt's default, as drawn: off on macOS, on on Omarchy (open question 1). `zebra` is written once it is set; a file without it takes the look's default. |
 | Interface size on Omarchy | The prompt's default: none, one font and size for everything (open question 2). |
@@ -43,7 +43,7 @@ and an edit in `$EDITOR` comes back live.
 |---|---|---|
 | Only non-default values written, comments and unknown keys kept | Today's canonical writer | The user's choice (above). |
 | The table list choice "stored with that connection" | A state file by connection id | The user's choice (above). |
-| Data font: a menu of installed monospace fonts | The two bundled monospace fonts (step 3) | The user's choice (above). |
+| Data font: a menu of installed monospace fonts | The two bundled monospace fonts (step 3), and the installed ones after them (step 5) | The user's choice (above). |
 | The macOS board's subtitle, "Theme, type and how dense the grid is. The preview updates as you change things." | Shown from step 4, when there is a preview | Until then it says what the pane does not have. Step 1 draws the title alone. |
 | The Omarchy board's file pane writes every key, `zebra` among them | `zebra` is written once it is set | Its default depends on the look and the writer does not know the look. |
 | Every section of the boards at once | Grid and Environment in step 1, the rest in steps 2 to 4 | Delivery in steps (above). |
@@ -183,6 +183,30 @@ bar. Colours come from the palettes there are: nothing new.
 The real grid and header components with two Bookshop rows of
 `book_covers`, and the connection bar, drawn from the settings as they
 are. It never asks the backend for anything.
+
+## Step 5: Installed data fonts on macOS
+
+Added after the four steps, as the decision above has it.
+
+- The data font's menu lists the bundled faces first, then a heading,
+  "Installed", and the installed families CoreText marks monospace, each
+  once, sorted, without the bundled faces' names and the system's hidden
+  ones. The list is read on the backend each time Settings opens.
+- `tabletist-appkit` lists the families and a family's faces (file,
+  PostScript name, weight, width, italic) through CoreText, behind a safe
+  API; the app picks the upright regular and a medium (or the regular
+  again) and reads their files with skrifa, a collection's face by its
+  PostScript name, a variable font at its weight.
+- The named font is read as the Omarchy font is: at the start before the
+  first frame, and on the backend after a change (`Command::ReadFont`). Its
+  faces fill `installed-mono-400` and `-500`, which hold Plex Mono while
+  none is read. The face drawn (bundled, or installed and read before)
+  stays while the read of another is on its way; a name no installed
+  family has falls back to IBM Plex Mono and says
+  "“name” is not installed: IBM Plex Mono is used".
+- The CoreText calls are compiled for macOS here, not run. Three
+  macOS-only tests read Menlo through them on CI's macOS job; the other
+  tests use a list of their own.
 
 ## Out of scope
 

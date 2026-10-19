@@ -10,8 +10,8 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, SettingsDialog, SettingsPane};
 use crate::settings::{
-    EnvBar, FontSizes, Idle, InterfaceSize, Mode, OptionId, OptionValue, RowHeight, Settings,
-    TableList, ThemeChoice, Timestamps, Zone,
+    EnvBar, FontSizes, Idle, InterfaceSize, Launch, Mode, OptionId, OptionValue, RowHeight,
+    Settings, TableList, ThemeChoice, Timestamps, Zone,
 };
 use crate::theme::{DataFace, Look, Palette, Typeface};
 use crate::typography::{Laid, Text, TextRole};
@@ -88,6 +88,23 @@ pub(super) struct Skin<'a> {
     /// The zone database's names, which the zone menu lists: none until
     /// the backend has read it.
     pub(super) zones: &'a [String],
+    /// The saved connections, which On launch lists.
+    pub(super) connections: &'a [crate::connections::SavedConnection],
+    /// The data fonts beyond the bundled faces, on macOS.
+    pub(super) fonts: DataFonts<'a>,
+}
+
+/// The installed fonts macOS's data font menu lists after the bundled
+/// faces, and the one the settings name where nothing draws it.
+#[derive(Clone, Copy)]
+pub(super) struct DataFonts<'a> {
+    /// The installed monospace families: none until the backend has
+    /// listed them.
+    pub(super) installed: &'a [String],
+    /// The font the settings name, where it is no bundled face and no
+    /// installed one is read or on its way ([`App::data_font_missing`]):
+    /// the default is drawn in its place.
+    pub(super) missing: Option<&'a str>,
 }
 
 impl Skin<'_> {
@@ -110,6 +127,11 @@ pub(super) fn show(
         locale: app.locale,
         system: app.system_zone.iana_name(),
         zones: app.zones.as_deref().map_or(&[], crate::zones::Zones::names),
+        connections: &app.connections.connections,
+        fonts: DataFonts {
+            installed: &app.installed_fonts,
+            missing: app.data_font_missing(),
+        },
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
@@ -166,7 +188,11 @@ pub(super) fn show(
                     &mut pane,
                     ("General", Some(GENERAL)),
                     (
-                        &[("Data", &OptionId::DATA), ("Safety", &OptionId::SAFETY)],
+                        &[
+                            ("Startup", &OptionId::STARTUP),
+                            ("Data", &OptionId::DATA),
+                            ("Safety", &OptionId::SAFETY),
+                        ],
                         false,
                     ),
                     &app.settings,
@@ -303,7 +329,8 @@ fn nav(
 }
 
 /// What the General pane says under its title.
-const GENERAL: &str = "How Tabletist shows data and protects your work. Changes apply right away.";
+const GENERAL: &str =
+    "How Tabletist starts, shows data and protects your work. Changes apply right away.";
 /// What the Appearance pane says under its title.
 const APPEARANCE: &str =
     "Theme, type and how dense the grid is. The preview updates as you change things.";
@@ -584,11 +611,13 @@ pub(super) fn row(
     )
     .wrap(column)
     .layout(ui.ctx());
-    // A data font that is not bundled is said in place of the small
+    // A data font that is not installed is said in place of the small
     // print, where the row has the room for it.
-    let print = match not_bundled(option, settings, look) {
+    let print = match missing_font(option, skin) {
         Some(missing) => {
-            let said = skin.say(super::FONT_NOT_BUNDLED).replace("{name}", missing);
+            let said = skin
+                .say(super::FONT_NOT_INSTALLED)
+                .replace("{name}", missing);
             Some((said, palette.warning))
         }
         None => small_print(option).map(|print| (skin.say(print), palette.dim)),
@@ -650,11 +679,11 @@ pub(super) fn row(
 
 /// The data font the settings name, on its row, where it is no face the
 /// look has: the default is drawn in its place.
-fn not_bundled<'a>(option: OptionId, settings: &'a Settings, look: &Look) -> Option<&'a str> {
-    let plex = look.faces.typeface == Typeface::Plex;
-    (option == OptionId::Font && plex)
-        .then(|| DataFace::of(settings.font.as_deref()).err())
-        .flatten()
+fn missing_font<'a>(option: OptionId, skin: &Skin<'a>) -> Option<&'a str> {
+    let plex = skin.look.faces.typeface == Typeface::Plex;
+    skin.fonts
+        .missing
+        .filter(|_| option == OptionId::Font && plex)
 }
 
 /// Whether the keyboard came in this frame to a control in `place`, on the
@@ -673,13 +702,14 @@ fn keyboard_came_to(ui: &Ui, place: Rect) -> bool {
 /// How tall `option`'s control is: its row is at least as tall.
 fn control_height(option: OptionId, look: &Look) -> f32 {
     match option {
-        OptionId::PageSize | OptionId::Tz => look.control_height,
+        OptionId::PageSize | OptionId::Tz | OptionId::OnLaunch => look.control_height,
         // The track has 2 over its segments and under them.
         OptionId::Timestamps | OptionId::GroupDigits => SEGMENT + 4.0,
         OptionId::RowHeight | OptionId::TableList | OptionId::EnvBar => SEGMENT + 4.0,
         OptionId::InterfaceSize => SEGMENT + 4.0,
         OptionId::Font | OptionId::FontSize => look.control_height,
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -736,6 +766,7 @@ fn control(
             });
         }
         OptionId::Tz => zone_menu(ui, &name, settings, skin, actions),
+        OptionId::OnLaunch => launch_menu(ui, &name, settings, skin, actions),
         OptionId::Timestamps => {
             let words = [skin.say("To the second"), skin.say("Full precision")];
             let selected = usize::from(settings.timestamps == Timestamps::Full);
@@ -831,7 +862,8 @@ fn control(
                 actions.push(Action::SetOption(OptionValue::EnvBar(bar)));
             }
         }
-        OptionId::ValueTags
+        OptionId::RestoreTabs
+        | OptionId::ValueTags
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -894,8 +926,10 @@ fn control(
     }
 }
 
-/// The data font's menu: the bundled faces. A name that is none of them
-/// is drawn as the default, which the row's hint says.
+/// The data font's menu: the bundled faces, then the installed monospace
+/// families. An installed font reads as the settings name it, drawn or on
+/// its way; a name that nothing draws reads as the default drawn in its
+/// place, which the row's small print says.
 fn font_menu(
     ui: &mut Ui,
     (name, width): (&str, f32),
@@ -904,25 +938,39 @@ fn font_menu(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let drawn = DataFace::of(settings.font.as_deref()).unwrap_or_default();
-    let dropdown = menu::Dropdown::new("data-font", drawn.name(), width);
+    let named = DataFace::of(settings.font.as_deref());
+    let installed = named.err().filter(|_| skin.fonts.missing.is_none());
+    let bundled = named.unwrap_or_default();
+    let shown = installed.or(bundled.name()).unwrap_or_default();
+    let dropdown = menu::Dropdown::new("data-font", shown, width);
     let menu = dropdown.show(ui, look, palette, |ui| {
-        for face in DataFace::ALL {
-            let entry_name = format!("{name} {}", face.name());
-            let entry = menu::Item::choice(face.name(), face == drawn)
+        let mut pick = |ui: &mut Ui, text: &str, current: bool, font: Option<String>| {
+            let entry_name = format!("{name} {text}");
+            let entry = menu::Item::choice(text, current)
                 .name(&entry_name)
                 .show(ui, look, palette);
             if entry.clicked() {
-                // The default is no value: the file leaves it out.
-                let font = (face != DataFace::default()).then(|| face.name().to_owned());
                 actions.push(Action::SetOption(OptionValue::Font(font)));
                 ui.close();
             }
+        };
+        for face in DataFace::BUNDLED {
+            let text = face.name().unwrap_or_default();
+            // The default is no value: the file leaves it out.
+            let font = (face != DataFace::default()).then(|| text.to_owned());
+            pick(ui, text, installed.is_none() && face == bundled, font);
+        }
+        if !skin.fonts.installed.is_empty() {
+            menu::heading(ui, &skin.say("Installed"), look, palette);
+        }
+        for family in skin.fonts.installed {
+            let current = installed.is_some_and(|name| name.eq_ignore_ascii_case(family));
+            pick(ui, family, current, Some(family.clone()));
         }
     });
     menu.response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
-        info.current_text_value = Some(drawn.name().to_owned());
+        info.current_text_value = Some(shown.to_owned());
         info
     });
 }
@@ -1011,6 +1059,64 @@ fn page_sizes(current: u32) -> Vec<u32> {
     sizes
 }
 
+/// What a launch opens: the last session, Connections, or a saved
+/// connection, each with where it points beside its name.
+fn launch_menu(
+    ui: &mut Ui,
+    name: &str,
+    settings: &Settings,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let shown = super::launch_text(skin.locale, &settings.on_launch, skin.connections);
+    // Closed, the menu tells two connections of one name apart by where
+    // each points, as the open one does.
+    let place = match &settings.on_launch {
+        Launch::Connection { id, .. } => skin
+            .connections
+            .iter()
+            .find(|saved| saved.id == *id)
+            .map(super::place)
+            .filter(|place| !place.is_empty()),
+        Launch::Restore | Launch::Connections => None,
+    };
+    let value = match place {
+        Some(place) => format!("{shown}, {place}"),
+        None => shown.clone(),
+    };
+    let dropdown = menu::Dropdown::new("launch", &shown, ZONE_MENU);
+    let menu = dropdown.show(ui, look, palette, |ui| {
+        for launch in super::launch_choices(skin.connections) {
+            let text = super::launch_text(skin.locale, &launch, skin.connections);
+            let place = match &launch {
+                Launch::Connection { id, .. } => skin
+                    .connections
+                    .iter()
+                    .find(|saved| saved.id == *id)
+                    .map(super::place)
+                    .unwrap_or_default(),
+                Launch::Restore | Launch::Connections => String::new(),
+            };
+            let entry_name = format!("{name} {text} {place}");
+            let mut entry =
+                menu::Item::choice(&text, launch == settings.on_launch).name(entry_name.trim_end());
+            if !place.is_empty() {
+                entry = entry.detail(&place);
+            }
+            if entry.show(ui, look, palette).clicked() {
+                actions.push(Action::SetOption(OptionValue::OnLaunch(launch)));
+                ui.close();
+            }
+        }
+    });
+    menu.response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(value.clone());
+        info
+    });
+}
+
 /// The zone's menu: the computer's zone and UTC, then every zone of the
 /// database, which a search field over them narrows. What was typed there
 /// is the field's own, kept in egui's memory while the menu is open.
@@ -1088,6 +1194,8 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         // What the Appearance pane's rows say is their small print, and its
         // tiles have their own line.
         OptionId::Theme
+        | OptionId::OnLaunch
+        | OptionId::RestoreTabs
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::IdleDisconnect
