@@ -33,6 +33,9 @@ tags.
 - **Pages.** The grid loads 1,000 rows at a time unless you change
   [Rows per page]({% link _reference/settings-and-files.md %}#the-settings-window)
   in Settings. Cmd/Ctrl+Alt+Left and Right move between pages.
+- **Moving.** The arrows move a cell at a time. Cmd/Ctrl with an arrow
+  goes to the first or last row, or the first or last column, in the
+  macOS and Windows looks.
 - **Sorting.** Click a column's header to sort by it: ascending, then
   descending, then not at all. The server does the sorting.
 - **Counts.** The footer shows the range you are looking at and the

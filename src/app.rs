@@ -943,12 +943,18 @@ impl App {
                         .selected
                         .as_ref()
                         .and_then(|selected| order.iter().position(|id| id == selected));
+                    let last = order.len() - 1;
+                    // With nothing selected Up starts at the bottom and
+                    // Down at the top, and a step to an end (Mod with an
+                    // arrow) goes to that end.
                     let next = match at {
-                        None if step < 0 => order.len() - 1,
-                        None => 0,
-                        Some(at) => {
-                            (at as isize + step).clamp(0, order.len() as isize - 1) as usize
-                        }
+                        None => match step {
+                            isize::MIN => 0,
+                            isize::MAX => last,
+                            step if step < 0 => last,
+                            _ => 0,
+                        },
+                        Some(at) => at.saturating_add_signed(step).min(last),
                     };
                     picker.selected = Some(order[next].clone());
                 }

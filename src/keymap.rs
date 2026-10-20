@@ -1139,7 +1139,7 @@ pub const BINDINGS: &[Binding] = {
         bind(
             C::MoveInConnections,
             CONNECTIONS,
-            keys(&[k("up"), k("down")]),
+            keys(&[k("up"), k("down"), k("cmd+up"), k("cmd+down")]),
             keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
         ),
         bind(C::FilterConnections, CONNECTIONS, NONE, keys(&[k("/")])),
@@ -1285,6 +1285,8 @@ pub const BINDINGS: &[Binding] = {
                 k("right"),
                 k("home"),
                 k("end"),
+                k("cmd+up"),
+                k("cmd+down"),
             ]),
             keys(&[
                 k("j"),
@@ -1342,13 +1344,22 @@ pub const BINDINGS: &[Binding] = {
         bind(
             C::MoveColumn,
             ROWS,
-            keys(&[k("left"), k("right")]),
+            keys(&[k("left"), k("right"), k("cmd+left"), k("cmd+right")]),
             keys(&[k("h"), k("l"), k("left"), k("right")]).shown("h/l"),
         ),
+        // Mod with an arrow goes to the end it points at, as in a list
+        // and a spreadsheet on the Mac. The terminal look has its own.
         bind(
             C::MovePage,
             ROWS,
-            keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
+            keys(&[
+                k("pgup"),
+                k("pgdn"),
+                k("home"),
+                k("end"),
+                k("cmd+up"),
+                k("cmd+down"),
+            ]),
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
         ),
         // A table's rows only: a result has one selected row.
