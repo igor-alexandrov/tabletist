@@ -109,6 +109,7 @@ fn doing(held: &Held, terminal: bool) -> &'static str {
             _ => "going on",
         },
         Held::CloseWindow => "closing the window",
+        Held::Nothing => "discarding",
     }
 }
 
@@ -228,6 +229,11 @@ fn leave_sheet(
     } = skin;
     let changes = counted(locale, prompt.changes, "change", "changes");
     let title = match (prompt.can_save, prompt.tabs.len()) {
+        // The changes themselves were asked to be dropped: nothing waits
+        // on the answer to be named.
+        _ if matches!(prompt.held, Held::Nothing) => {
+            format!("{} {changes}?", gettext(locale, "Discard"))
+        }
         (true, _) => format!(
             "{} {changes} {} {}?",
             gettext(locale, "Save"),

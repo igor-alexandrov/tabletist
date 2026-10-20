@@ -14612,6 +14612,122 @@ value_tags   = true
     }
 
     #[test]
+    fn esc_on_the_grid_asks_to_discard_and_discard_drops_the_set() {
+        use crate::model::Dialog;
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(
+                matches!(harness.app.dialog, Some(Dialog::Leave(_))),
+                "{}",
+                look.name
+            );
+            assert!(harness.has("Discard 1 change?"), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Esc again stays: the prompt's Esc is its Cancel.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Asked again, Discard drops the set.
+            harness.press(Key::Escape, Modifiers::NONE);
+            harness.click("Discard");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(!edits(&harness, tab, id).pending(), "{}", look.name);
+            // With nothing pending Esc asks nothing.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn esc_that_cancels_a_cell_edit_asks_nothing_until_pressed_again() {
+        use crate::model::Dialog;
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            select(&mut harness, tab, id, (3, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            // Held down: the press closes the editor, its repeats ask
+            // nothing.
+            harness.frame(vec![crate::testing::key(Key::Escape, Modifiers::NONE)]);
+            let repeat = egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: true,
+                modifiers: Modifiers::NONE,
+            };
+            harness.frame(vec![repeat.clone()]);
+            harness.frame(vec![repeat]);
+            harness.frame(vec![crate::testing::release(Key::Escape, Modifiers::NONE)]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // A second press asks.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(
+                matches!(harness.app.dialog, Some(Dialog::Leave(_))),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn esc_discards_at_once_when_dropping_edits_asks_nothing() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(!edits(&harness, tab, id).pending(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_looks_esc_on_the_grid_asks_nothing() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.settle();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
+    #[test]
+    fn esc_that_closes_a_list_over_the_grid_asks_nothing() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            with_database_picker(&mut harness, tab);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            harness.click("Database");
+            assert!(egui::Popup::is_any_open(&harness.ctx), "{}", look.name);
+            focus_grid(&mut harness, tab);
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!egui::Popup::is_any_open(&harness.ctx), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_pending_bar_writes_the_discard_key_beside_discard_all() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            let keys = key_of(&look, crate::keymap::Command::DiscardChanges);
+            assert!(painted(&harness, &keys), "{}: {keys}", look.name);
+        }
+    }
+
+    #[test]
     fn mod_c_copies_the_pending_value_the_cell_shows() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);

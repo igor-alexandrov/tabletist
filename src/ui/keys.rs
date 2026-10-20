@@ -1624,6 +1624,20 @@ fn editing_keys(
         Scope::Grid
     };
     let terminal = app.look.terminal;
+    // Esc on the rows asks to drop what is pending: a fresh press only,
+    // so the repeats of one held since it closed an editor ask nothing.
+    // Nor does one that left a text field, or that an open menu or list
+    // takes: the key closes that, and nothing under it.
+    let left_field: bool = ctx
+        .data(|data| data.get_temp(was_editing_id()))
+        .unwrap_or(false);
+    let quiet = !left_field && !egui::Popup::is_any_open(ctx);
+    let ask =
+        |input: &mut egui::InputState| on(input, Command::AskDiscard, Scope::Grid, true).fresh;
+    let asks = field.is_none() && !visual && object.edits.pending() && quiet;
+    if asks && ctx.input_mut(ask) {
+        actions.push(Action::AskDiscard { tab, id });
+    }
     // The field the keys were given back from: it gives up the keyboard
     // once the input is read.
     let mut left = None;

@@ -200,6 +200,7 @@ column's line, or come to them with Tab or F6.
 | Cmd+Z | Revert the cell |
 | Cmd+S | Save all pending changes |
 | Cmd+Option+Backspace | Discard all pending changes |
+| Esc | With no cell being edited: discard all pending changes, asking first |
 | Cmd+Shift+D | Show or hide the SQL of the pending changes |
 
 ### The SQL editor

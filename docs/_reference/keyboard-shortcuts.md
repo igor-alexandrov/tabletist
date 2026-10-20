@@ -119,6 +119,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Z | Revert the cell |
 | Mod+S | Save all pending changes |
 | Mod+Alt+Backspace | Discard all pending changes |
+| Esc | With no cell being edited: discard all pending changes, asking first |
 | Mod+Shift+D | Show or hide the SQL of the pending changes |
 
 ## SQL editor
