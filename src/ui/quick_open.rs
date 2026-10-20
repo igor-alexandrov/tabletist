@@ -1,8 +1,8 @@
 //! Quick open (`⌘P`, Omarchy `ctrl+p`): a panel over the window that finds
 //! a table or view of the window's connection by name, or of every open
 //! connection (`⇥`, `tab`), and in the macOS and Windows looks runs a
-//! command (`>` first lists the commands alone). What it lists is
-//! [`App::quick_open_list`]'s; this draws
+//! command or opens Settings at one of its rows (`>` first lists those
+//! alone). What it lists is [`App::quick_open_list`]'s; this draws
 //! it and reads its keys, which are its own while it is open (the window's
 //! handler does not run under a dialog). macOS: a floating panel 640 wide,
 //! 84 from the window's top, the window behind it not dimmed. Omarchy: the
@@ -116,6 +116,8 @@ struct Skin<'a> {
     agents: Option<String>,
     /// The commands' keys, as the window reads them.
     command_keys: &'a HashMap<Command, Written>,
+    /// The run key, as the window writes it: a setting's row names it.
+    run_key: Written,
     /// The key that opens the picked result, written on its row (macOS).
     open_key: String,
 }
@@ -184,10 +186,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // Each command's first key where a connection's window reads it: the
     // whole window's, then the panes' (Format's is the SQL editor's). A key
     // only Connections reads (Edit connection's) is none here, and so is
-    // Reload's: on a table's rows it reloads them, not the schema.
+    // Reload's: on a table's rows it reloads them, not the schema. A
+    // setting's row has the key of Settings.
     let window_scopes = [Scope::Global, Scope::Grid, Scope::Sidebar, Scope::SqlEditor];
     let command_keys: HashMap<Command, Written> = crate::app::RUNNABLE
         .into_iter()
+        .chain([Command::Settings])
         .filter(|command| *command != Command::Reload)
         .map(|command| {
             let key = window_scopes
@@ -208,6 +212,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         here,
         agents,
         command_keys: &command_keys,
+        run_key: keymap.key(layout, Command::RunStatement),
         open_key: keys.open.as_str().to_owned(),
     };
     let mut actions = Vec::new();
@@ -697,7 +702,8 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                 .get(&command.command())
                 .map(|key| key.as_str().to_owned())
                 .unwrap_or_default();
-            // A screen reader hears what it is.
+            // A screen reader hears which it is: a setting's row opens
+            // Settings, not the setting.
             let (name, icon, detail, what) = match command {
                 QuickCommand::Run(runnable) => {
                     let name = gettext(skin.locale, runnable.name).into_owned();
@@ -710,6 +716,12 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                         _ => Icon::SquareTerminal,
                     };
                     (name, icon, about(&runnable.about, skin), "command")
+                }
+                QuickCommand::Setting(option) => {
+                    let name =
+                        crate::app::setting_path(skin.locale, skin.run_key.as_str(), *option);
+                    let detail = skin.say("jumps to the setting");
+                    (name, Icon::Settings, detail, "setting")
                 }
             };
             let mut label = format!("{name}, {}", skin.say(what));

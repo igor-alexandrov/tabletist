@@ -1059,6 +1059,81 @@ fn the_prefix_lists_the_commands_that_apply() {
     assert!(!shown.contains(&"reviews".to_owned()), "{shown:?}");
 }
 
+/// Test 6, its settings: a setting's row opens Settings at that row: its
+/// pane, the row on the selection's ground, its switch with the keyboard.
+#[test]
+fn a_setting_opens_settings_at_its_row() {
+    let look = Look::macos();
+    let (mut harness, _tab) = bookshop(look);
+    ask(&mut harness, look, "> re");
+    let restore = "> Settings › General › Restore tabs and filters";
+    let index = result_named(&harness, restore);
+    harness.app.apply(Action::QuickOpenPick {
+        index: Some(index),
+        in_editor: false,
+    });
+    harness.settle();
+    let Some(Dialog::Settings(dialog)) = &harness.app.dialog else {
+        panic!("Settings is not open");
+    };
+    assert_eq!(dialog.pane, crate::model::SettingsPane::General);
+    assert_eq!(focused(&mut harness), "Restore tabs and filters");
+    let grounded = |harness: &Harness| {
+        let label = harness
+            .painted_rect("Restore tabs and filters")
+            .expect("the row's label");
+        let selection = harness.app.palette.selection;
+        harness
+            .fills
+            .iter()
+            .any(|(rect, color)| *color == selection && rect.contains_rect(label))
+    };
+    assert!(grounded(&harness), "the row is on the selection's ground");
+    // The keyboard stays where it was put: it is given once.
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_ne!(focused(&mut harness), "Restore tabs and filters");
+    // Another pane leaves the row behind.
+    for pane in [
+        crate::model::SettingsPane::Appearance,
+        crate::model::SettingsPane::General,
+    ] {
+        harness.app.apply(Action::ShowSettingsPane(pane));
+        harness.settle();
+    }
+    assert!(!grounded(&harness));
+}
+
+/// A setting's row that the sheet shows only scrolled, in a short window,
+/// is scrolled to.
+#[test]
+fn a_setting_below_the_fold_is_scrolled_to() {
+    let look = Look::macos();
+    let mut harness = Harness::with_size(egui::vec2(1280.0, 560.0));
+    harness.set_look(look);
+    harness.connect_with(bookshop_dev(), bookshop_objects());
+    // Opened plainly, the sheet shows the row under its footer's line.
+    harness.app.apply(Action::ShowSettings);
+    harness.settle();
+    let row = harness.painted_rect("Disconnect when idle");
+    let footer = harness.painted_rect("Stored in").expect("the footer");
+    assert!(row.is_none_or(|row| row.top() > footer.top()), "{row:?}");
+    harness.app.apply(Action::CloseDialog);
+    harness.settle();
+    ask(&mut harness, look, "> idle");
+    let index = result_named(&harness, "> Settings › General › Disconnect when idle");
+    harness.app.apply(Action::QuickOpenPick {
+        index: Some(index),
+        in_editor: false,
+    });
+    harness.settle();
+    let row = harness
+        .painted_rect("Disconnect when idle")
+        .expect("the row's label");
+    let footer = harness.painted_rect("Stored in").expect("the footer");
+    assert!(row.bottom() < footer.top(), "{row:?} under {footer:?}");
+    assert_eq!(focused(&mut harness), "Disconnect when idle");
+}
+
 /// The commands quick open runs are the keymap's, built, each once; and
 /// each listed does what it names, here a few that change what shows.
 #[test]

@@ -930,6 +930,14 @@ pub enum Action {
     /// The answer to the history's question in Settings: clear it, or keep
     /// it.
     AnswerHistoryQuestion(bool),
+    /// Show the Settings window at this option: its pane, the sheet's row
+    /// on the selection's ground, scrolled to, its control with the
+    /// keyboard (the terminal look's cursor on it, where that screen has
+    /// its row). From quick open.
+    ShowSetting(crate::settings::OptionId),
+    /// The sheet has scrolled to the row it was asked for and given its
+    /// control the keyboard.
+    SettingShown,
     /// Show how this agent is connected, in Settings › Agents.
     ChooseAgentSetup(crate::endpoint::Agent),
     /// Close Settings and show the Agents tab on this view: the window's in
@@ -2675,7 +2683,7 @@ pub enum QuickGroup {
     Views,
     /// The objects of the window `ConnTabId`, of every kind.
     Connection(ConnTabId),
-    /// The commands whose names match.
+    /// The commands and the settings' rows whose names match.
     Commands,
 }
 
@@ -2697,6 +2705,13 @@ pub struct SettingsDialog {
     pub history_question: Option<HistoryQuestion>,
     /// The agent Settings › Agents says how to connect.
     pub agent: crate::endpoint::Agent,
+    /// The option quick open opened the window at: the sheet draws its row
+    /// on the selection's ground while its pane shows.
+    pub asked: Option<crate::settings::OptionId>,
+    /// That row is still to be scrolled to and its control given the
+    /// keyboard: once, by the sheet's next frame, which says so
+    /// ([`Action::SettingShown`]).
+    pub reveal: bool,
 }
 
 /// What Settings › Editor asks of the query history.
@@ -2738,6 +2753,54 @@ impl SettingsPane {
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Agents => "Agents",
+        }
+    }
+
+    /// The pane whose rows hold `option`.
+    pub fn of(option: crate::settings::OptionId) -> Self {
+        [Self::General, Self::Appearance, Self::Editor, Self::Agents]
+            .into_iter()
+            .find(|pane| pane.options().contains(&option))
+            .unwrap_or_default()
+    }
+
+    /// The sections the sheet (macOS, Windows) shows the pane's options
+    /// in, each under its heading (English), in order. The Agents pane
+    /// draws its own, and has none here.
+    pub fn sections(self) -> &'static [(&'static str, &'static [crate::settings::OptionId])] {
+        use crate::settings::OptionId;
+        match self {
+            Self::General => &[
+                ("Startup", &OptionId::STARTUP),
+                ("Data", &OptionId::DATA),
+                ("Safety", &OptionId::SAFETY),
+            ],
+            Self::Appearance => &[
+                ("Theme", &OptionId::THEME),
+                ("Text", &OptionId::TEXT),
+                ("Grid", &OptionId::GRID),
+                ("Environment color", &OptionId::ENVIRONMENT),
+            ],
+            Self::Editor => &[
+                ("Running queries", &OptionId::RUNNING),
+                ("Typing", &OptionId::TYPING),
+                ("History", &OptionId::HISTORY),
+            ],
+            Self::Agents => &[],
+        }
+    }
+
+    /// The options the sheet (macOS, Windows) has a row for, in order:
+    /// what quick open lists of the pane. The Agents pane's switch stands
+    /// by its title, and its Log section has the other two.
+    pub fn sheet_options(self) -> Vec<crate::settings::OptionId> {
+        match self {
+            Self::Agents => crate::settings::OptionId::AGENTS.to_vec(),
+            Self::General | Self::Appearance | Self::Editor => self
+                .sections()
+                .iter()
+                .flat_map(|(_, options)| options.iter().copied())
+                .collect(),
         }
     }
 

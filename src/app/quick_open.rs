@@ -13,8 +13,9 @@ use tabletist_db::{ObjectKind, ObjectRef};
 use super::App;
 use super::commands::Runnable;
 use crate::keymap::Command;
-use crate::model::{Action, ConnTabId, Dialog, QuickGroup, QuickOpen, StartRecent};
+use crate::model::{Action, ConnTabId, Dialog, QuickGroup, QuickOpen, SettingsPane, StartRecent};
 use crate::search::{self, Tier};
+use crate::settings::OptionId;
 
 /// How many results a group shows before its "more" row (macOS).
 pub const GROUP_SHOWN: usize = 3;
@@ -150,13 +151,17 @@ pub enum StartRow {
 pub enum QuickCommand {
     /// A command of the keymap's, run as its key runs it.
     Run(Runnable),
+    /// A row of the Settings window: the window opens at it.
+    Setting(OptionId),
 }
 
 impl QuickCommand {
-    /// The keymap's command it is, whose key the row writes.
+    /// The keymap's command it is, whose key the row writes: a setting's
+    /// is the one that opens Settings.
     pub fn command(&self) -> Command {
         match self {
             Self::Run(runnable) => runnable.command,
+            Self::Setting(_) => Command::Settings,
         }
     }
 }
@@ -185,7 +190,8 @@ impl QuickItem {
     /// Whether `other` is this result, though it may be listed elsewhere
     /// or say something else of itself now (an estimate read again, a
     /// command's name): the same object of the same window, the same row
-    /// of a start screen, the same command, the same group's "more" row.
+    /// of a start screen, the same command or setting, the same group's
+    /// "more" row.
     pub fn same(&self, other: &QuickItem) -> bool {
         match (self, other) {
             (
@@ -216,8 +222,11 @@ impl QuickItem {
                     }
             }
             (Self::Command { command, .. }, Self::Command { command: other, .. }) => {
-                let (QuickCommand::Run(one), QuickCommand::Run(two)) = (command, other);
-                one.command == two.command
+                match (command, other) {
+                    (QuickCommand::Run(one), QuickCommand::Run(two)) => one.command == two.command,
+                    (QuickCommand::Setting(one), QuickCommand::Setting(two)) => one == two,
+                    _ => false,
+                }
             }
             (Self::More { group, .. }, Self::More { group: other, .. }) => group == other,
             _ => false,
@@ -282,10 +291,22 @@ impl QuickList {
     }
 }
 
-/// `command`'s name, translated.
-fn name_of(locale: crate::i18n::Locale, command: &QuickCommand) -> String {
+/// A setting's row as quick open names it: the path to it in the Settings
+/// window, `Settings › General › Restore tabs and filters`, translated.
+/// `run` is the run key as the window writes it, for `{run} runs`.
+pub fn setting_path(locale: crate::i18n::Locale, run: &str, option: OptionId) -> String {
+    let say = |text| crate::i18n::gettext(locale, text);
+    let pane = SettingsPane::of(option);
+    let label = say(crate::ui::settings::label(option)).replace("{run}", run);
+    format!("{} › {} › {label}", say("Settings"), say(pane.name()))
+}
+
+/// `command`'s name, translated; `run` is the run key, as for
+/// [`setting_path`].
+fn name_of(locale: crate::i18n::Locale, run: &str, command: &QuickCommand) -> String {
     match command {
         QuickCommand::Run(runnable) => crate::i18n::gettext(locale, runnable.name).into_owned(),
+        QuickCommand::Setting(option) => setting_path(locale, run, *option),
     }
 }
 
@@ -415,23 +436,26 @@ impl App {
         windows
     }
 
-    /// A command's name, as its row writes it and what is typed matches.
+    /// A command's name, as its row writes it and what is typed matches:
+    /// a setting's is the path to its row, `Settings › General › Restore
+    /// tabs and filters`.
     pub fn command_name(&self, command: &QuickCommand) -> String {
-        name_of(self.locale, command)
+        let run = self.keymap.key(self.layout(), Command::RunStatement);
+        name_of(self.locale, run.as_str(), command)
     }
 
     /// The commands `typed` (folded) finds in `tab`'s window, best first,
-    /// in the registry's order within a tier: each with the runs of its
-    /// name that matched. With nothing typed, every command
-    /// (`commands_only`), or the suggested ones. None in the terminal
-    /// look.
+    /// in the registry's order within a tier and then the settings' rows in
+    /// the window's: each with the runs of its name that matched. With
+    /// nothing typed, the commands alone (`commands_only`), or the
+    /// suggested ones. None in the terminal look.
     fn commands_found(
         &self,
         tab: ConnTabId,
         typed: &[char],
         commands_only: bool,
     ) -> Vec<QuickItem> {
-        let commands: Vec<QuickCommand> = self
+        let mut commands: Vec<QuickCommand> = self
             .runnable(tab)
             .into_iter()
             .filter(|runnable| {
@@ -439,6 +463,16 @@ impl App {
             })
             .map(QuickCommand::Run)
             .collect();
+        // The settings' rows answer a word: with nothing typed they would
+        // bury the commands.
+        if !typed.is_empty() && !self.look.terminal {
+            let rows = SettingsPane::listed()
+                .iter()
+                .flat_map(|pane| pane.sheet_options());
+            commands.extend(rows.map(QuickCommand::Setting));
+        }
+        // Asked once: a setting's row may name it.
+        let run = self.keymap.key(self.layout(), Command::RunStatement);
         let mut found: Vec<(Tier, QuickItem)> = commands
             .into_iter()
             .filter_map(|command| {
@@ -446,7 +480,7 @@ impl App {
                     let spans = Vec::new();
                     return Some((Tier::Exact, QuickItem::Command { command, spans }));
                 }
-                let hit = search::find(typed, &name_of(self.locale, &command))?;
+                let hit = search::find(typed, &name_of(self.locale, run.as_str(), &command))?;
                 let spans = hit.spans;
                 Some((hit.tier, QuickItem::Command { command, spans }))
             })
@@ -461,7 +495,7 @@ impl App {
     /// open one is searched), then the suggested commands. With a query:
     /// the tables and then the views that match, or where every open
     /// connection is searched, each connection's matches under it; then
-    /// the commands whose names match. In the macOS
+    /// the commands and the settings' rows whose names match. In the macOS
     /// and Windows looks each group shows its first three and a "more" row
     /// until that is opened, and a query that begins with `>` lists every
     /// command that matches what follows it, and nothing else; the
@@ -748,6 +782,7 @@ impl App {
                         self.apply(action);
                     }
                 }
+                QuickCommand::Setting(option) => self.apply(Action::ShowSetting(option)),
             },
             QuickItem::More { .. } => {}
         }
