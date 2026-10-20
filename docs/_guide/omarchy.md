@@ -45,8 +45,20 @@ back.
 | `:history clear` | Clear this connection's history, once you answer `y` |
 | `?` | The list of keys |
 
-Quick open has no key in the Omarchy look. `/` in the sidebar filters its
-list instead.
+Ctrl+P opens quick open from any pane: a picker at the top of the
+window that finds a table or view by name, in this connection or (Tab)
+in every open one. With nothing typed it lists what you opened lately,
+numbered; once you type, it lists what matches. Its commands stay on `:`.
+`/` in the sidebar still filters the sidebar's list.
+
+| Keys | Do |
+| --- | --- |
+| `Ctrl+P` | Open it |
+| `Ctrl+N`, `Ctrl+P`, Down, Up | Move in the list |
+| `Enter` | Open the one picked, or show its tab where it has one |
+| `1` to `9` | With nothing typed: open that recent. Once you type, digits are typed |
+| `Tab` | Search every open connection, or this one again |
+| `Esc` | Close |
 
 ### The picker
 

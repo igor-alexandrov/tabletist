@@ -871,6 +871,13 @@ pub(super) fn database_menu(
 /// The connection bar: the connection's environment colour behind the open
 /// connections, and the way out.
 fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    // Quick open's Switch database asks for the chip's menu, as its key
+    // does: the menu opens as the chip is drawn.
+    if let Some(workspace) = app.workspace_mut(tab)
+        && std::mem::take(&mut workspace.database_menu_asked)
+    {
+        egui::Popup::open_id(ui.ctx(), database_menu_id(tab, false));
+    }
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;

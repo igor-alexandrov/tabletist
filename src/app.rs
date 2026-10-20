@@ -18,9 +18,9 @@ use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
-    HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
-    Reach, ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId,
-    TestState, TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
+    HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, Reach,
+    ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, StartRecent, Tab, TabId, TestState,
+    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -31,8 +31,13 @@ mod editing;
 mod history;
 mod key_picker;
 mod labels;
+mod quick_open;
 #[cfg(test)]
 mod startup_tests;
+
+pub use quick_open::{
+    Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
+};
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -77,16 +82,6 @@ pub enum PinState {
     Reading,
     /// Nowhere to be found: the desktop is followed instead.
     Missing,
-}
-
-/// What quick open lists.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Found {
-    /// The window's Agents tab.
-    Agents,
-    /// The window's History tab.
-    History,
-    Object(ObjectRef, ObjectKind),
 }
 
 pub struct App {
@@ -137,6 +132,10 @@ pub struct App {
     writes_session: bool,
     /// What was opened lately on each connection: `recents.json`.
     pub recents: crate::recents::Recents,
+    /// Each open connection's index of its objects, for quick open and the
+    /// start screen's search: built when first searched, and again once
+    /// the catalog changes.
+    indexes: quick_open::Indexes,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -323,6 +322,7 @@ impl App {
             session,
             writes_session,
             recents,
+            indexes: Default::default(),
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),
@@ -1437,9 +1437,10 @@ impl App {
                 // clamped, as the matches may have shrunk since it moved
                 // (a relist, a database switched under a typed query).
                 let picked = index.unwrap_or_else(|| selected.min(matches.len().saturating_sub(1)));
-                let Some((object, kind)) = matches.get(picked).cloned() else {
+                let Some(Found { object, kind, .. }) = matches.into_iter().nth(picked) else {
                     return;
                 };
+                let object = std::rc::Rc::unwrap_or_clone(object);
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.start_search.clear();
                     workspace.start_selected = 0;
@@ -2381,55 +2382,22 @@ impl App {
                     });
                 }
             }
-            Action::OpenQuickOpen => {
-                let tab = self.active_tab_id();
-                if self.dialog.is_none() && self.workspace(tab).is_some() {
-                    self.dialog = Some(Dialog::QuickOpen(Box::new(QuickOpen {
-                        tab,
-                        query: String::new(),
-                        selected: 0,
-                        scrolled_to: None,
-                        scroll_offset: 0.0,
-                    })));
-                }
-            }
-            Action::QuickOpenMove(step) => {
-                let (tab, query) = match &self.dialog {
-                    Some(Dialog::QuickOpen(open)) => (open.tab, open.query.clone()),
-                    _ => return,
-                };
-                let count = self.quick_open_found(tab, &query).len();
+            Action::OpenQuickOpen => self.open_quick_open(),
+            Action::QuickOpenTyped(text) => {
+                self.open_quick_open();
                 if let Some(Dialog::QuickOpen(open)) = &mut self.dialog {
-                    open.selected = (open.selected as isize + step)
-                        .clamp(0, count.saturating_sub(1) as isize)
-                        as usize;
+                    open.query.push_str(&text);
+                    open.caret = Some(crate::model::QuickCaret::End);
                 }
+                self.quick_open_changed();
             }
-            Action::QuickOpenPick => {
-                let Some(Dialog::QuickOpen(open)) = &self.dialog else {
-                    return;
-                };
-                let (tab, query, selected) = (open.tab, open.query.clone(), open.selected);
-                let found = self.quick_open_found(tab, &query);
-                match found.get(selected).or(found.first()).cloned() {
-                    Some(Found::Agents) => {
-                        self.dialog = None;
-                        self.apply(Action::ShowAgents(tab));
-                    }
-                    Some(Found::History) => {
-                        self.dialog = None;
-                        self.apply(Action::ShowHistory(tab));
-                    }
-                    Some(Found::Object(object, kind)) => {
-                        self.dialog = None;
-                        self.apply(Action::OpenObject {
-                            tab,
-                            object,
-                            kind,
-                            pin: true,
-                        });
-                    }
-                    None => {}
+            Action::QuickOpenChanged => self.quick_open_changed(),
+            Action::QuickOpenMove(step) => self.quick_open_move(step),
+            Action::QuickOpenPick { index, in_editor } => self.quick_open_pick(index, in_editor),
+            Action::QuickOpenScope => self.quick_open_scope(),
+            Action::ShowDatabaseMenu(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.database_menu_asked = true;
                 }
             }
             Action::ToggleFilterBar(tab) => {
@@ -4558,23 +4526,21 @@ impl App {
     }
 
     /// What the start screen's search lists for `tab`, in the order it
-    /// draws them: the `⌘P` index's matches (`quick_open_matches`, the
-    /// same index and ranking), grouped with the tables first and the
+    /// draws them: quick open's matches (`search_objects`, the same index
+    /// and ranking), the best 50, grouped with the tables first and the
     /// views after, each group in the index's order. Empty where nothing
     /// is typed. Materialized views go with the views. The picked match
     /// ([`Workspace::start_selected`]) is an index into this.
-    pub fn start_matches(&self, tab: ConnTabId) -> Vec<(ObjectRef, ObjectKind)> {
+    pub fn start_matches(&self, tab: ConnTabId) -> Vec<Found> {
         let query = self
             .workspace(tab)
             .map(|workspace| workspace.start_search.trim())
             .unwrap_or_default();
-        if query.is_empty() {
-            return Vec::new();
-        }
-        let matched = self.quick_open_matches(tab, query);
+        let mut matched = self.search_objects(tab, query);
+        matched.truncate(50);
         let (tables, views): (Vec<_>, Vec<_>) = matched
             .into_iter()
-            .partition(|(_, kind)| *kind == ObjectKind::Table);
+            .partition(|found| found.kind == ObjectKind::Table);
         tables.into_iter().chain(views).collect()
     }
 
@@ -6725,62 +6691,6 @@ impl App {
             }),
             TreeNode::Object(..) | TreeNode::Empty(_) => {}
         }
-    }
-
-    /// What quick open lists for `query`: the Agents and History tabs
-    /// first where what is typed is the start of "agents" or "history", two
-    /// letters at least (and agents can reach the app, for theirs); then
-    /// the objects. Fewer letters, or letters that are only somewhere in
-    /// the word, are a table's. After `>` it lists those tabs alone, by
-    /// what follows it: `> History`.
-    pub fn quick_open_found(&self, tab: ConnTabId, query: &str) -> Vec<Found> {
-        let typed = query.trim().to_lowercase();
-        let (commands, typed) = match typed.strip_prefix('>') {
-            Some(rest) => (true, rest.trim().to_owned()),
-            None => (false, typed),
-        };
-        let names = |word: &str| (commands || typed.len() >= 2) && word.starts_with(&typed);
-        let agents = crate::endpoint::AVAILABLE && names("agents");
-        let tabs = [(agents, Found::Agents), (names("history"), Found::History)]
-            .into_iter()
-            .filter_map(|(listed, found)| listed.then_some(found));
-        if commands {
-            return tabs.collect();
-        }
-        let objects = self.quick_open_matches(tab, query).into_iter();
-        tabs.chain(objects.map(|(object, kind)| Found::Object(object, kind)))
-            .collect()
-    }
-
-    /// Loaded objects of `tab`'s connection that match `query`, best first,
-    /// at most 50.
-    pub fn quick_open_matches(&self, tab: ConnTabId, query: &str) -> Vec<(ObjectRef, ObjectKind)> {
-        let Some(workspace) = self.workspace(tab) else {
-            return Vec::new();
-        };
-        let mut scored: Vec<(i64, ObjectRef, ObjectKind)> = workspace
-            .tree
-            .nodes
-            .iter()
-            .filter_map(|(schema, node)| Some((schema, node.objects.value.as_ref()?)))
-            .flat_map(|(schema, objects)| objects.iter().map(move |info| (schema, info)))
-            .filter_map(|(schema, info)| {
-                let qualified = format!("{schema}.{}", info.name);
-                let score = crate::util::fuzzy_score(query, &info.name)
-                    .max(crate::util::fuzzy_score(query, &qualified))?;
-                Some((score, ObjectRef::new(schema, &info.name), info.kind))
-            })
-            .collect();
-        scored.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| a.1.schema.cmp(&b.1.schema))
-                .then_with(|| a.1.name.cmp(&b.1.name))
-        });
-        scored.truncate(50);
-        scored
-            .into_iter()
-            .map(|(_, object, kind)| (object, kind))
-            .collect()
     }
 
     /// Runs the object tab's query with its filter bar's conditions, from
@@ -8940,16 +8850,6 @@ mod tests {
                 _ => None,
             })
             .collect()
-    }
-
-    /// Quick open has no Agents tab to offer where agents cannot reach the
-    /// app.
-    #[cfg(not(any(unix, windows)))]
-    #[test]
-    fn quick_open_offers_no_agents_where_they_cannot_reach_the_app() {
-        let (app, _dir) = app();
-        let tab = app.active_tab_id();
-        assert!(!app.quick_open_found(tab, "agents").contains(&Found::Agents));
     }
 
     #[test]
@@ -16514,7 +16414,7 @@ masked = ["orders.email"]
         }
 
         #[test]
-        fn quick_open_ranks_and_caps_results() {
+        fn the_search_ranks_by_tier_and_reads_a_schema_before_a_dot() {
             let mut harness = Harness::new();
             let tab = harness.connect_fake();
             let many: Vec<String> = (0..200).map(|i| format!("log_{i:03}")).collect();
@@ -16526,12 +16426,16 @@ masked = ["orders.email"]
                 "shop",
                 &["orders", "product_reviews_old"],
             );
-            let matches = harness.app.quick_open_matches(tab, "ord");
-            assert_eq!(matches[0].0.name, "orders");
-            assert!(harness.app.quick_open_matches(tab, "log").len() <= 50);
-            let qualified = harness.app.quick_open_matches(tab, "shop.ord");
-            assert_eq!(qualified[0].0.name, "orders");
-            assert_eq!(qualified[0].0.schema, "shop");
+            let matches = harness.app.search_objects(tab, "ord");
+            assert_eq!(matches[0].object.name, "orders");
+            // Every match is found: the lists cap what they show.
+            assert_eq!(harness.app.search_objects(tab, "log").len(), 200);
+            let qualified = harness.app.search_objects(tab, "shop.ord");
+            assert_eq!(qualified[0].object.name, "orders");
+            assert_eq!(qualified[0].object.schema, "shop");
+            // Only the name's part of the match is marked.
+            let name = std::iter::once(0..3).collect::<Vec<_>>();
+            assert_eq!(qualified[0].spans, name);
         }
 
         #[test]
@@ -16545,7 +16449,10 @@ masked = ["orders.email"]
             };
             // The fake connection has a main.users too: name the schema.
             open.query = "shop.us".into();
-            harness.app.apply(Action::QuickOpenPick);
+            harness.app.apply(Action::QuickOpenPick {
+                index: None,
+                in_editor: false,
+            });
             assert!(harness.app.dialog.is_none());
             let workspace = harness.app.workspace(tab).unwrap();
             let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
@@ -23317,7 +23224,7 @@ masked = ["orders.email"]
             .app
             .start_matches(tab)
             .into_iter()
-            .map(|(object, kind)| (object.name, kind))
+            .map(|found| (found.object.name.clone(), found.kind))
             .collect();
         // The `⌘P` index ranks `covers` and `cover_counts` first; grouped,
         // the tables come before the views, each in that order.

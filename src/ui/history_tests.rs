@@ -1071,29 +1071,41 @@ fn every_way_in_shows_one_history_tab_and_none_opens_it_by_itself() {
     harness.click(&clock);
     harness.settle();
     assert!(front(&harness, tab));
-    // Quick open's `> History`, and View › History's action.
+    // Quick open's History command, by its name; after `>` the commands
+    // are all it lists.
     harness.app.apply(Action::ActivateTab { tab, id: rows });
-    assert_eq!(
-        harness.app.quick_open_found(tab, "> Hist"),
-        [crate::app::Found::History]
-    );
-    assert!(
+    harness.app.apply(Action::OpenQuickOpen);
+    let listed = |harness: &mut Harness, query: &str| {
+        if let Some(crate::model::Dialog::QuickOpen(open)) = &mut harness.app.dialog {
+            open.query = query.into();
+        }
+        let Some(crate::model::Dialog::QuickOpen(open)) = &harness.app.dialog else {
+            panic!("quick open");
+        };
         harness
             .app
-            .quick_open_found(tab, "hi")
-            .contains(&crate::app::Found::History)
-    );
-    assert!(
-        !harness
-            .app
-            .quick_open_found(tab, "h")
-            .contains(&crate::app::Found::History)
-    );
-    harness.app.apply(Action::OpenQuickOpen);
-    if let Some(crate::model::Dialog::QuickOpen(open)) = &mut harness.app.dialog {
-        open.query = "> History".into();
-    }
-    harness.app.apply(Action::QuickOpenPick);
+            .quick_open_list(open)
+            .items()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let history = |item: &crate::app::QuickItem| {
+        matches!(
+            item,
+            crate::app::QuickItem::Command {
+                command: crate::app::QuickCommand::History,
+                ..
+            }
+        )
+    };
+    let commands = listed(&mut harness, "> Hist");
+    assert_eq!(commands.len(), 1, "the commands alone");
+    assert!(history(&commands[0]));
+    let index = listed(&mut harness, "> History").iter().position(history);
+    harness.app.apply(Action::QuickOpenPick {
+        index,
+        in_editor: false,
+    });
     assert!(front(&harness, tab));
     assert_eq!(history_tabs(&harness, tab), 1);
     // `:history`, in the terminal look.

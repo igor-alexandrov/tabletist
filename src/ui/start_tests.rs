@@ -561,7 +561,7 @@ fn the_search_groups_the_index_opens_the_first_and_in_an_editor_and_clears() {
     // Grouped Tables then Views; the index's order inside each group.
     assert!(harness.has("Tables") && harness.has("Views"));
     assert_eq!(
-        harness.app.start_matches(tab).first().unwrap().0.name,
+        harness.app.start_matches(tab).first().unwrap().object.name,
         "covers"
     );
     // ↩ opens the first match.
@@ -715,8 +715,8 @@ fn the_omarchy_slash_search_moves_opens_and_returns() {
     assert_eq!(harness.app.workspace(tab).unwrap().start_search, "cov");
     assert!(harness.has("matches"));
     // The first match is picked; ctrl+n moves to the second, enter opens it.
-    assert_eq!(harness.app.start_matches(tab)[0].0.name, "covers");
-    assert_eq!(harness.app.start_matches(tab)[1].0.name, "book_covers");
+    assert_eq!(harness.app.start_matches(tab)[0].object.name, "covers");
+    assert_eq!(harness.app.start_matches(tab)[1].object.name, "book_covers");
     harness.press(Key::N, Modifiers::CTRL);
     harness.press(Key::Enter, Modifiers::NONE);
     assert!(harness.has("book_covers tab"));

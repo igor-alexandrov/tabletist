@@ -9,7 +9,7 @@ use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, WidgetI
 use egui::{pos2, vec2};
 use tabletist_db::{Driver, ObjectKind, ObjectRef};
 
-use crate::app::App;
+use crate::app::{App, Found};
 use crate::env::{Platform, env_colors};
 use crate::i18n::{Locale, gettext};
 use crate::keymap::{Command, Scope, Written};
@@ -129,8 +129,8 @@ struct Keys {
     recent: Written,
     sidebar: Written,
     help: Written,
-    /// Quick open's key, written at the macOS field's end: search goes on
-    /// from anywhere with it. Empty in the Omarchy look, which has none.
+    /// Quick open's key, written at the field's end: search goes on from
+    /// anywhere with it.
     quick_open: Written,
     /// The search: the keys that move among the matches (`↑↓`, `ctrl+n/p`),
     /// open one, open one in a SQL editor, clear the search, and (Omarchy)
@@ -271,7 +271,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // three ways to start.
             let mut claimed = look.terminal;
             if searching {
-                results(&mut ui, &matches, selected, &query, skin, &mut actions);
+                results(&mut ui, &matches, selected, skin, &mut actions);
                 if !look.terminal {
                     ui.add_space(gap(&look));
                     search_footer(&mut ui, &keys, skin);
@@ -619,16 +619,21 @@ fn lists(
 /// A table's estimate, as the look writes numbers: `≈ 48,200 rows` on
 /// macOS, `≈ 48.2k` in the terminal look.
 fn estimate_text(rows: u64, skin: Skin<'_>) -> String {
-    if skin.look.terminal {
-        skin.look
-            .label(&format!("≈ {}", crate::ui::format::compact_count(rows)))
+    estimate_words(rows, skin.look, skin.grouped, skin.locale)
+}
+
+/// The words of a table's estimate of `rows`, as `look` writes numbers
+/// (`grouped`: in threes): quick open's too.
+pub(crate) fn estimate_words(rows: u64, look: &Look, grouped: bool, locale: Locale) -> String {
+    if look.terminal {
+        look.label(&format!("≈ {}", crate::ui::format::compact_count(rows)))
     } else {
-        let count = if skin.grouped {
+        let count = if grouped {
             crate::ui::format::group_digits(rows)
         } else {
             rows.to_string()
         };
-        format!("≈ {count} {}", skin.say("rows"))
+        format!("≈ {count} {}", look.label(&gettext(locale, "rows")))
     }
 }
 
@@ -931,7 +936,7 @@ fn search_field(
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let id = search_field_id(skin.tab);
     // What the search finds, and no more: the index has no functions and
-    // the app no saved queries, which the brief's words named too.
+    // the app no saved queries.
     let hint = look.label(&gettext(locale, "Find a table or view"));
     let full = ui.available_width();
     let height = if look.terminal { 30.0 } else { 44.0 };
@@ -944,17 +949,17 @@ fn search_field(
     let role = TextRole::pick(look, TextRole::UiBody, TextRole::OField);
     let pad = if look.terminal { 8.0 } else { 14.0 };
     // The lead mark: an accent `/` in the terminal look, a magnifier on
-    // macOS. The `⌘P` hint stands at the right on macOS; the Omarchy look
-    // has no quick open, so its line carries none.
+    // macOS. Quick open's key stands at the right: `⌘P from anywhere`.
     let slash = Text::one(look, TextRole::OGroup, "/", palette.accent).layout(ui.ctx());
     let mark = if look.terminal { slash.width() } else { 14.0 };
-    let shortcut = (!look.terminal && !keys.quick_open.as_str().is_empty()).then(|| {
-        let text = format!(
+    let shortcut = (!keys.quick_open.as_str().is_empty()).then(|| {
+        let text = look.label(&format!(
             "{} {}",
             keys.quick_open.as_str(),
             gettext(locale, "from anywhere")
-        );
-        Text::one(look, widgets::secondary(look), &text, palette.dim).layout(ui.ctx())
+        ));
+        let role = TextRole::pick(look, widgets::secondary(look), TextRole::OSecondary);
+        Text::one(look, role, &text, palette.dim).layout(ui.ctx())
     });
     let right_room = shortcut.as_ref().map_or(0.0, |laid| laid.width() + 10.0);
     let left = rect.left() + pad + mark + 8.0;
@@ -1049,9 +1054,8 @@ fn search_field(
 /// accent. Opening a row opens its object.
 fn results(
     ui: &mut egui::Ui,
-    matches: &[(ObjectRef, ObjectKind)],
+    matches: &[Found],
     selected: usize,
-    query: &str,
     skin: Skin<'_>,
     actions: &mut Vec<Action>,
 ) {
@@ -1071,14 +1075,14 @@ fn results(
         // own: the terminal board's dashboard, not the Mac's sections.
         group_header(ui, &gettext(locale, "matches"), skin);
         for (index, entry) in matches.iter().enumerate() {
-            result_row(ui, index, entry, query, index == selected, skin, actions);
+            result_row(ui, index, entry, index == selected, skin, actions);
         }
     } else {
         // The matches under the kind they are, tables first, then views,
         // as `start_matches` already orders them.
         let tables = matches
             .iter()
-            .take_while(|(_, k)| *k == ObjectKind::Table)
+            .take_while(|found| found.kind == ObjectKind::Table)
             .count();
         for (title, range) in [("Tables", 0..tables), ("Views", tables..matches.len())] {
             if range.is_empty() {
@@ -1086,15 +1090,7 @@ fn results(
             }
             group_header(ui, &gettext(locale, title), skin);
             for index in range {
-                result_row(
-                    ui,
-                    index,
-                    &matches[index],
-                    query,
-                    index == selected,
-                    skin,
-                    actions,
-                );
+                result_row(ui, index, &matches[index], index == selected, skin, actions);
             }
         }
     }
@@ -1117,19 +1113,18 @@ fn group_header(ui: &mut egui::Ui, title: &str, skin: Skin<'_>) {
     );
 }
 
-/// One match: on macOS its kind's icon, the name with the matched run in
+/// One match: on macOS its kind's icon, the name with the matched runs in
 /// the accent, and its schema; in the terminal look a cursor bar on the
 /// picked one, the name and the kind. A click opens it.
 fn result_row(
     ui: &mut egui::Ui,
     index: usize,
-    entry: &(ObjectRef, ObjectKind),
-    query: &str,
+    found: &Found,
     picked: bool,
     skin: Skin<'_>,
     actions: &mut Vec<Action>,
 ) {
-    let (object, kind) = (&entry.0, entry.1);
+    let (object, kind) = (&found.object, found.kind);
     let (look, palette) = (skin.look, skin.palette);
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, row_height(look)), Sense::click());
@@ -1153,7 +1148,6 @@ fn result_row(
             },
         );
     }
-    let [before, hit, after] = highlight(&name, query);
     let y = rect.center().y;
     let left = rect.left() + INSET;
     let right = rect.right() - INSET;
@@ -1173,10 +1167,13 @@ fn result_row(
             Text::one(look, TextRole::OBody, &kind_word, palette.dim),
         );
         let room = (detail_x - 10.0 - (left + 28.0)).max(0.0);
-        let name = Text::new(look)
-            .add(TextRole::OBody, &before, palette.text)
-            .add(TextRole::OGroup, &hit, palette.accent)
-            .add(TextRole::OBody, &after, palette.text);
+        let runs = (
+            TextRole::OBody,
+            palette.text,
+            TextRole::OGroup,
+            palette.accent,
+        );
+        let name = marked(look, &object.name, &found.spans, runs);
         name.wrap(room)
             .layout(ui.ctx())
             .paint_left(ui.painter(), left + 28.0, y);
@@ -1196,10 +1193,13 @@ fn result_row(
         } else {
             palette.text
         };
-        let name = Text::new(look)
-            .add(TextRole::UiBodyStrong, &before, name_ink)
-            .add(TextRole::UiBodyStrong, &hit, palette.accent)
-            .add(TextRole::UiBodyStrong, &after, name_ink);
+        let role = TextRole::UiBodyStrong;
+        let name = marked(
+            look,
+            &object.name,
+            &found.spans,
+            (role, name_ink, role, palette.accent),
+        );
         let laid = name.layout(ui.ctx());
         let after_name = x + laid.width() + 8.0;
         laid.paint_left(ui.painter(), x, y);
@@ -1219,31 +1219,34 @@ fn result_row(
     }
 }
 
-/// Splits `name` into what stands before the run of it that matched
-/// `query`, that run, and what stands after. A contiguous, case-ignoring
-/// run only, and only where lowercasing leaves the bytes in place (ASCII
-/// names); a scattered or qualified query highlights nothing.
-fn highlight(name: &str, query: &str) -> [String; 3] {
-    let needle = query.trim();
-    let nothing = || [name.to_owned(), String::new(), String::new()];
-    if needle.is_empty() {
-        return nothing();
+/// `name` as text whose `spans` (byte ranges of it, in order, as the
+/// search found them) are in the second role and colour and the rest in
+/// the first. What is not shown safely is shown as `display_safe` writes
+/// it, unmarked.
+pub(crate) fn marked(
+    look: &Look,
+    name: &str,
+    spans: &[std::ops::Range<usize>],
+    (plain, plain_ink, hit, hit_ink): (TextRole, egui::Color32, TextRole, egui::Color32),
+) -> Text {
+    let safe = display_safe(name);
+    if safe != name {
+        return Text::one(look, plain, &safe, plain_ink);
     }
-    let lower = name.to_lowercase();
-    let found = lower.find(&needle.to_lowercase());
-    if lower.len() == name.len()
-        && let Some(at) = found
-    {
-        let end = at + needle.to_lowercase().len();
-        if name.is_char_boundary(at) && name.is_char_boundary(end) {
-            return [
-                name[..at].to_owned(),
-                name[at..end].to_owned(),
-                name[end..].to_owned(),
-            ];
+    let mut text = Text::new(look);
+    let mut at = 0;
+    for span in spans {
+        if span.start < at || span.end > name.len() {
+            continue;
         }
+        text = text.add(plain, &name[at..span.start], plain_ink).add(
+            hit,
+            &name[span.clone()],
+            hit_ink,
+        );
+        at = span.end;
     }
-    nothing()
+    text.add(plain, &name[at..], plain_ink)
 }
 
 /// The macOS footer under the matches: the keys that move among them, open

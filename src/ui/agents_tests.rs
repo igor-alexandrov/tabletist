@@ -171,35 +171,31 @@ fn every_way_in_shows_the_one_tab_and_none_opens_it_by_itself() {
     harness.settle();
     assert!(front(&harness, tab));
     assert_eq!(agents_tabs(&harness, tab), 1);
-    // Quick open, from the words that ask for it.
+    // Quick open's Agents command, found by its name.
     harness.app.apply(Action::ActivateTab { tab, id: query });
     harness.app.apply(Action::OpenQuickOpen);
     if let Some(crate::model::Dialog::QuickOpen(open)) = &mut harness.app.dialog {
         open.query = "age".into();
     }
     harness.settle();
-    assert_eq!(
-        harness.app.quick_open_found(tab, "age").first(),
-        Some(&crate::app::Found::Agents)
-    );
-    harness.app.apply(Action::QuickOpenPick);
+    let Some(crate::model::Dialog::QuickOpen(open)) = &harness.app.dialog else {
+        panic!("quick open");
+    };
+    let agents = crate::app::QuickItem::Command {
+        command: crate::app::QuickCommand::Agents,
+        spans: std::iter::once(0..3).collect(),
+    };
+    let index = harness
+        .app
+        .quick_open_list(open)
+        .items()
+        .position(|item| *item == agents);
+    harness.app.apply(Action::QuickOpenPick {
+        index,
+        in_editor: false,
+    });
     assert!(front(&harness, tab));
     assert_eq!(agents_tabs(&harness, tab), 1);
-    // One letter, or letters only somewhere in the word, are a table's.
-    for typed in ["a", "s", "gen", "act"] {
-        assert_ne!(
-            harness.app.quick_open_found(tab, typed).first(),
-            Some(&crate::app::Found::Agents),
-            "{typed}"
-        );
-    }
-    // And with nothing typed, quick open is the objects'.
-    assert!(
-        !harness
-            .app
-            .quick_open_found(tab, "")
-            .contains(&crate::app::Found::Agents)
-    );
 }
 
 #[test]

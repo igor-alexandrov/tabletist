@@ -90,11 +90,26 @@ a Mac keyboard labels Delete.
 
 ### Quick open
 
+Quick open floats over the window, from anywhere in it: the rows, the
+SQL editor, the start screen or the Agents tab. The sidebar's "Find any
+object…" field opens it too. With nothing typed it lists what the start
+screen lists (what you opened lately), then three commands: New SQL
+query, Switch database (where the server has another) and Agents. Typing
+lists the tables and then the views that match, three of each and a row
+that shows the rest, and the commands whose names match. The best
+matches come first: the whole name, then its start, then the starts of
+its words (`bc` finds `book_covers`), then any run of its letters; what
+you opened lately comes first among equals. Nothing is asked of the
+database while you type. The chip beside the field says what is
+searched; Tab searches every open connection, each under its name.
+
 | Keys | Do |
 | --- | --- |
-| Cmd+P | Open it, then type to find a table or view |
+| Cmd+P | Open it. While it is open, select what is typed |
 | Up, Down | Move in the list |
-| Return | Open the one selected |
+| Return | Open the one picked, or show its tab where it has one |
+| Option+Return | Open a new SQL editor reading its first rows |
+| Tab | Search every open connection, or this one again |
 | Esc | Close |
 
 ### The picker
