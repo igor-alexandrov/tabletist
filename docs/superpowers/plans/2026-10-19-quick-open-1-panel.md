@@ -94,6 +94,8 @@ A second reviewer read this plan against its diffs and the brief. It found a pro
 
 Every diff in this plan was applied in order to a `git archive` copy of `main` at `1e61307`, and the result is the last state, with zero mismatches. Not run: CI, macOS and Windows, and the app by hand.
 
+After the pull request opened, Windows CI failed test 12 once: `e` took 21.9 ms on a runner whose whole lib suite took 188 s, against 9.5 s on a desk. A fixed wall-clock budget in a debug build cannot hold on such a machine, so the test measures the machine too, in a commit of its own (the diffs above are the plan as it was run). Each try also times taking the same 10,000 names apart for matching, which is what the index saves every keystroke (about 9.5 ms on a desk). A keystroke now fails only where it is both over 16 ms and slower than that. A pass over the names with the standard library's `to_lowercase` and `contains` was tried first as the measure and dropped: the standard library is optimized even in a debug build, and so was 4 to 16 times faster than any search of the crate's own.
+
 ## Files
 
 | File | What changes |
