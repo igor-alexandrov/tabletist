@@ -747,34 +747,42 @@ fn sql_button(
     if response.clicked() {
         actions.push(Action::NewSqlTab(tab));
     }
-    // The clock: drawn over the main part's right corners, so the two
-    // read as one button with a line between them.
+    // A primary button's fill as it is now: at rest, under the pointer, or
+    // held down (as `ButtonSpec` paints it).
+    let fill_of = |hovered: bool, held: bool| {
+        if held {
+            palette.text.lerp_to_gamma(palette.window, 0.25)
+        } else if hovered {
+            palette.text.lerp_to_gamma(palette.window, 0.15)
+        } else {
+            palette.text
+        }
+    };
+    // The main part's right corners squared in its own fill, and the clock
+    // from the line on, so the two read as one button with a line between
+    // them.
     let history = format!("{} ({})", gettext(locale, "History"), history_keys.as_str());
     let pressed_id = Id::new(("sql-editor-history", tab.0));
     let segment = parts.interact(clock, pressed_id, Sense::click());
     segment.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, history_front, &history));
-    let held = segment.is_pointer_button_down_on();
-    let fill = if history_front || held {
-        palette.text.lerp_to_gamma(palette.window, 0.25)
-    } else if segment.hovered() {
-        palette.text.lerp_to_gamma(palette.window, 0.15)
-    } else {
-        palette.text
-    };
+    // Pressed while History is in front.
+    let held = history_front || segment.is_pointer_button_down_on();
     let radius = look.radius;
-    let behind = Rect::from_min_max(
+    let corners = Rect::from_min_max(
         pos2(clock.left() - f32::from(radius), clock.top()),
-        clock.max,
+        pos2(clock.left(), clock.bottom()),
     );
+    let main_fill = fill_of(response.hovered(), response.is_pointer_button_down_on());
+    ui.painter().rect_filled(corners, 0.0, main_fill);
     ui.painter().rect_filled(
-        behind,
+        clock,
         egui::CornerRadius {
             nw: 0,
             sw: 0,
             ne: radius,
             se: radius,
         },
-        fill,
+        fill_of(segment.hovered(), held),
     );
     // The line between them, in the colour a spinner has on the fill.
     widgets::vline(
