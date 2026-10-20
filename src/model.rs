@@ -5362,8 +5362,11 @@ mod tests {
         let call = |n: usize, conn: &str| tabletist_mcp::Call {
             at: std::time::SystemTime::UNIX_EPOCH,
             session: "s".into(),
+            agent: "Claude Code".into(),
             connection: Some(conn.to_owned()),
             tool: "run_query".into(),
+            statement: true,
+            logged: Some(1),
             request: Some(format!("SELECT {n}")),
             result: "ok".into(),
             message: None,

@@ -9133,8 +9133,11 @@ mod tests {
         app.apply_event(Event::Agents(AgentsEvent::Called(tabletist_mcp::Call {
             at: std::time::SystemTime::now(),
             session: "one".into(),
+            agent: "Claude Code".into(),
             connection: Some(conn.0.clone()),
             tool: "run_query".into(),
+            statement: true,
+            logged: Some(1),
             request: Some("SELECT 1".into()),
             result: "ok".into(),
             message: None,
@@ -9597,8 +9600,11 @@ mod tests {
         let call = |on: &str| tabletist_mcp::Call {
             at: std::time::SystemTime::now(),
             session: "one".into(),
+            agent: "Claude Code".into(),
             connection: Some(on.into()),
             tool: "run_query".into(),
+            statement: true,
+            logged: Some(1),
             request: Some("SELECT 1".into()),
             result: "ok".into(),
             message: None,

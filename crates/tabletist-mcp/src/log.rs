@@ -323,8 +323,8 @@ impl Log {
         })
     }
 
-    /// Adds an entry.
-    pub async fn record(&self, entry: Entry) -> Result<(), LogError> {
+    /// Writes `entry`, and says its place in the log ([`Logged::id`]).
+    pub async fn record(&self, entry: Entry) -> Result<i64, LogError> {
         self.blocking(move |connection| {
             connection.execute(
                 "INSERT INTO calls (at_ms, session, agent, project, transport, connection_id, \
@@ -356,7 +356,23 @@ impl Log {
                     entry.took_ms,
                 ],
             )?;
-            Ok(())
+            Ok(connection.last_insert_rowid())
+        })
+        .await
+    }
+
+    /// Which of the calls `ids` names the log still holds: those it has
+    /// not forgotten since.
+    pub async fn holds(&self, ids: Vec<i64>) -> Result<Vec<i64>, LogError> {
+        self.blocking(move |connection| {
+            let mut statement = connection.prepare("SELECT 1 FROM calls WHERE id = ?1")?;
+            let mut held = Vec::new();
+            for id in ids {
+                if statement.exists([id])? {
+                    held.push(id);
+                }
+            }
+            Ok(held)
         })
         .await
     }
@@ -892,6 +908,23 @@ mod tests {
         assert_eq!(read[0].tool, "list_connections", "the newest first");
         assert_eq!(read[1], whole);
         assert_eq!(log.latest(1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_call_is_told_its_place_and_the_log_says_which_it_still_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = open(&dir.path().join("agents.sqlite3"));
+        let old = log.record(entry(1_000, "run_query")).await.unwrap();
+        let new = log.record(entry(9_000, "run_query")).await.unwrap();
+        assert!(new > old);
+        let page = log.page(LogFilter::default(), None, 10).await.unwrap();
+        assert_eq!(page.calls[0].id, new, "the place is the one a page reads");
+        assert_eq!(
+            log.holds(vec![old, new, new + 7]).await.unwrap(),
+            [old, new]
+        );
+        log.forget_before(5_000).await.unwrap();
+        assert_eq!(log.holds(vec![old, new]).await.unwrap(), [new]);
     }
 
     #[tokio::test]
