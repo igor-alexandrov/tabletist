@@ -21,6 +21,14 @@ pub struct Sql {
     pub params: Vec<Value>,
 }
 
+/// Where the values of a statement being built go: bound, in order, or,
+/// `inline`, written in as literals for a person to read.
+#[derive(Default)]
+struct Binds {
+    params: Vec<Value>,
+    inline: bool,
+}
+
 /// A row's `UPDATE`, as a user reads it and as the driver runs it. Both
 /// come from the same values, so they cannot drift apart.
 #[derive(Debug, Clone, PartialEq)]
@@ -312,7 +320,7 @@ impl Dialect {
 
     /// `column`, as text, like `pattern`: what a contains filter writes,
     /// with this engine's sense of case.
-    fn matches(self, column: &str, pattern: String, params: &mut Vec<Value>) -> String {
+    fn matches(self, column: &str, pattern: String, params: &mut Binds) -> String {
         let placeholder = self.bind(params, pattern);
         format!(
             "{} {} {placeholder}{}",
@@ -326,11 +334,12 @@ impl Dialect {
     /// simple-query protocol, which has no parameters, so its values become
     /// escape-string literals that do not depend on the session's
     /// `standard_conforming_strings`. The others bind.
-    fn bind(self, params: &mut Vec<Value>, value: String) -> String {
+    fn bind(self, binds: &mut Binds, value: String) -> String {
         match self {
             Self::Postgres => quote_literal(&value),
+            Self::MySql | Self::Sqlite if binds.inline => self.literal(&value),
             Self::MySql | Self::Sqlite => {
-                params.push(Value::Text(value.into()));
+                binds.params.push(Value::Text(value.into()));
                 self.placeholder().to_owned()
             }
         }
@@ -338,7 +347,7 @@ impl Dialect {
 
     /// Bytes as a filter value: bound, or for PostgreSQL a `bytea` literal
     /// in hex.
-    fn bind_bytes(self, params: &mut Vec<Value>, bytes: Vec<u8>) -> String {
+    fn bind_bytes(self, binds: &mut Binds, bytes: Vec<u8>) -> String {
         match self {
             Self::Postgres => {
                 let mut hex = String::from("\\x");
@@ -347,8 +356,9 @@ impl Dialect {
                 }
                 quote_literal(&hex)
             }
+            Self::MySql | Self::Sqlite if binds.inline => self.bytes_literal(&bytes),
             Self::MySql | Self::Sqlite => {
-                params.push(Value::Bytes(bytes.into()));
+                binds.params.push(Value::Bytes(bytes.into()));
                 self.placeholder().to_owned()
             }
         }
@@ -358,7 +368,7 @@ impl Dialect {
     /// typed, and in a binary column first the bytes it reads as. A UUID or
     /// `0x` hex as text never equals the bytes the grid shows that way. The
     /// text stays, since such a column may hold the text itself.
-    fn operands(self, value: &str, binary: bool, params: &mut Vec<Value>) -> Vec<String> {
+    fn operands(self, value: &str, binary: bool, params: &mut Binds) -> Vec<String> {
         let mut operands = Vec::with_capacity(2);
         if binary && let Some(bytes) = bytes_from_text(value) {
             operands.push(self.bind_bytes(params, bytes));
@@ -368,14 +378,14 @@ impl Dialect {
     }
 
     /// `binary` names the table's columns that hold bytes.
-    fn filter(self, filter: &Filter, binary: &[String], params: &mut Vec<Value>) -> String {
+    fn filter(self, filter: &Filter, binary: &[String], params: &mut Binds) -> String {
         let column = self.quote_ident(&filter.column);
-        let compare = |op: &str, params: &mut Vec<Value>| {
+        let compare = |op: &str, params: &mut Binds| {
             let placeholder = self.bind(params, filter.value.clone());
             format!("{column} {op} {placeholder}")
         };
         let binary = binary.contains(&filter.column);
-        let equals = |op: &str, list: &str, params: &mut Vec<Value>| {
+        let equals = |op: &str, list: &str, params: &mut Binds| {
             let operands = self.operands(&filter.value, binary, params);
             match operands.as_slice() {
                 [operand] => format!("{column} {op} {operand}"),
@@ -412,7 +422,7 @@ impl Dialect {
         }
     }
 
-    fn where_clause(self, query: &RowQuery, binary: &[String], params: &mut Vec<Value>) -> String {
+    fn where_clause(self, query: &RowQuery, binary: &[String], params: &mut Binds) -> String {
         let mut conditions: Vec<String> = query
             .filters
             .iter()
@@ -1027,9 +1037,46 @@ impl Dialect {
     /// hold bytes: a filter value written as a UUID or as `0x` hex is
     /// compared with them as those bytes.
     pub fn select_rows(self, query: &RowQuery, key: &[String], binary: &[String]) -> Sql {
-        let mut params = Vec::new();
+        let mut binds = Binds::default();
+        let mut text = self.rows_statement(query, key, binary, &mut binds);
+        text.push_str(&format!(
+            " LIMIT {} OFFSET {}",
+            u64::from(query.limit) + 1,
+            query.offset
+        ));
+        Sql {
+            text,
+            params: binds.params,
+        }
+    }
+
+    /// The statement [`Dialect::select_rows`] runs, as a person reads it:
+    /// its values written in as literals, and the page it reads as its
+    /// `LIMIT` (and `OFFSET`, past the first page). What the query history
+    /// keeps of a filter or a sort set on a table.
+    pub fn shown_rows(self, query: &RowQuery, key: &[String], binary: &[String]) -> String {
+        let mut binds = Binds {
+            inline: true,
+            ..Binds::default()
+        };
+        let mut text = self.rows_statement(query, key, binary, &mut binds);
+        text.push_str(&format!(" LIMIT {}", query.limit));
+        if query.offset > 0 {
+            text.push_str(&format!(" OFFSET {}", query.offset));
+        }
+        text
+    }
+
+    /// `SELECT * FROM`, the conditions and the order of a page of rows.
+    fn rows_statement(
+        self,
+        query: &RowQuery,
+        key: &[String],
+        binary: &[String],
+        binds: &mut Binds,
+    ) -> String {
         let mut text = format!("SELECT * FROM {}", self.qualified(&query.object));
-        text.push_str(&self.where_clause(query, binary, &mut params));
+        text.push_str(&self.where_clause(query, binary, binds));
         let mut order: Vec<String> = query
             .sort
             .iter()
@@ -1050,20 +1097,18 @@ impl Dialect {
             text.push_str(" ORDER BY ");
             text.push_str(&order.join(", "));
         }
-        text.push_str(&format!(
-            " LIMIT {} OFFSET {}",
-            u64::from(query.limit) + 1,
-            query.offset
-        ));
-        Sql { text, params }
+        text
     }
 
     /// `binary` as for [`Dialect::select_rows`].
     pub fn count_rows(self, query: &RowQuery, binary: &[String]) -> Sql {
-        let mut params = Vec::new();
+        let mut binds = Binds::default();
         let mut text = format!("SELECT count(*) FROM {}", self.qualified(&query.object));
-        text.push_str(&self.where_clause(query, binary, &mut params));
-        Sql { text, params }
+        text.push_str(&self.where_clause(query, binary, &mut binds));
+        Sql {
+            text,
+            params: binds.params,
+        }
     }
 
     /// The one statement of a [`Lookup`]. Its rows are the key, the label
@@ -1084,10 +1129,10 @@ impl Dialect {
             None => key.clone(),
         };
         let limit = u64::from(lookup.limit) + 1;
-        let mut params = Vec::new();
+        let mut binds = Binds::default();
         let text = match &lookup.part {
             LookupPart::Pinned(value) => {
-                let operand = self.sent(&self.key_operand(value), &mut params);
+                let operand = self.sent(&self.key_operand(value), &mut binds.params);
                 format!(
                     "SELECT {columns}, {} FROM {table} WHERE {key} = {operand} LIMIT {limit}",
                     Matched::Key.code()
@@ -1106,13 +1151,13 @@ impl Dialect {
                 let is_key = format!(
                     "{} = {}",
                     self.as_text(&key),
-                    self.bind(&mut params, text.clone())
+                    self.bind(&mut binds, text.clone())
                 );
                 let how = match &label {
                     Some(label) => format!(
                         "CASE WHEN {is_key} THEN {} WHEN {} THEN {} ELSE {} END",
                         Matched::Key.code(),
-                        self.matches(label, format!("%{escaped}%"), &mut params),
+                        self.matches(label, format!("%{escaped}%"), &mut binds),
                         Matched::Label.code(),
                         Matched::KeyStart.code()
                     ),
@@ -1124,9 +1169,9 @@ impl Dialect {
                 };
                 let mut found = Vec::with_capacity(2);
                 if let Some(label) = &label {
-                    found.push(self.matches(label, format!("%{escaped}%"), &mut params));
+                    found.push(self.matches(label, format!("%{escaped}%"), &mut binds));
                 }
-                found.push(self.matches(&key, format!("{escaped}%"), &mut params));
+                found.push(self.matches(&key, format!("{escaped}%"), &mut binds));
                 let order = if label.is_some() { "3, 1" } else { "2, 1" };
                 // `OFFSET 0` is for SQLite: without it the derived table
                 // is folded into the outer query, and the whole table is
@@ -1138,7 +1183,10 @@ impl Dialect {
                 )
             }
         };
-        Sql { text, params }
+        Sql {
+            text,
+            params: binds.params,
+        }
     }
 }
 
@@ -1204,6 +1252,40 @@ mod tests {
         assert_eq!(
             sql.text,
             "SELECT * FROM `public`.`users` ORDER BY `email` DESC, `id` ASC LIMIT 301 OFFSET 0"
+        );
+    }
+
+    #[test]
+    fn a_page_is_shown_with_its_values_written_in() {
+        let mut q = RowQuery::new(ObjectRef::new("main", "book_covers"), 1000);
+        q.filters = vec![
+            Filter {
+                column: "kind".into(),
+                op: FilterOp::Eq,
+                value: "print's".into(),
+            },
+            Filter {
+                column: "alt_text".into(),
+                op: FilterOp::Contains,
+                value: "?".into(),
+            },
+        ];
+        q.sort = vec![Sort {
+            column: "created_at".into(),
+            dir: SortDir::Asc,
+        }];
+        assert_eq!(
+            Dialect::Sqlite.shown_rows(&q, &["id".into()], &[]),
+            r#"SELECT * FROM "main"."book_covers" WHERE "kind" = 'print''s' AND CAST("alt_text" AS TEXT) LIKE '%?%' ESCAPE '\' ORDER BY "created_at" ASC, "id" ASC LIMIT 1000"#
+        );
+        // What runs still binds them.
+        let sent = Dialect::Sqlite.select_rows(&q, &["id".into()], &[]);
+        assert_eq!(sent.params, [text("print's"), text("%?%")]);
+        q.offset = 2000;
+        assert!(
+            Dialect::MySql
+                .shown_rows(&q, &[], &[])
+                .ends_with("`kind` = 'print''s' AND CAST(`alt_text` AS CHAR) LIKE '%?%' ORDER BY `created_at` ASC LIMIT 1000 OFFSET 2000")
         );
     }
 
