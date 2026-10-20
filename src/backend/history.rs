@@ -36,11 +36,12 @@ pub enum HistoryCommand {
     },
     /// Keeps the newest `keep` entries of each connection.
     Trim { file: PathBuf, keep: u32 },
-    /// Which of these agents' calls the Agents Log at `log` still holds.
+    /// Which of these agents' calls, each by its place in the Agents Log at
+    /// `log` and the time it arrived, the log still holds.
     /// Answered with [`HistoryEvent::Held`].
     Held {
         log: PathBuf,
-        calls: Vec<i64>,
+        calls: Vec<(i64, i64)>,
         asked: u64,
     },
 }
@@ -161,7 +162,7 @@ fn work(mut queue: tokio_mpsc::UnboundedReceiver<HistoryCommand>, outbox: &super
 
 /// Which of `calls` the Agents Log at `log` still holds. No log yet holds
 /// none.
-async fn held(log: PathBuf, calls: Vec<i64>) -> Result<Vec<(i64, String)>, String> {
+async fn held(log: PathBuf, calls: Vec<(i64, i64)>) -> Result<Vec<(i64, String)>, String> {
     let opened = tokio::task::spawn_blocking(move || tabletist_mcp::Log::open_to_read(&log))
         .await
         .map_err(|_| "opening it failed".to_owned())?

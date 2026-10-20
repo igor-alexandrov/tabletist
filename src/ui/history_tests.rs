@@ -532,7 +532,7 @@ fn an_agents_entry_holds_no_statement_and_links_to_its_call() {
             .rev()
             .find_map(|command| match command {
                 Command::History(HistoryCommand::Held { asked, calls, .. }) => {
-                    assert_eq!(calls, &[41]);
+                    assert_eq!(calls, &[(41, written.at_ms)], "by its place and time");
                     Some(*asked)
                 }
                 _ => None,

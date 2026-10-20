@@ -361,17 +361,22 @@ impl Log {
         .await
     }
 
-    /// Which of the calls `ids` names the log still holds, those it has
-    /// not forgotten since, each with the agent that made it: the query
-    /// history keeps a call's place and reads its agent here, as the log
-    /// keeps what an agent sent and nothing else does.
-    pub async fn holds(&self, ids: Vec<i64>) -> Result<Vec<(i64, String)>, LogError> {
+    /// Which of `calls` the log still holds, each named by its place and
+    /// the time it arrived (`Entry::at_ms`), with the agent that made it.
+    /// The query history keeps a call's place and reads its agent here, as
+    /// the log keeps what an agent sent and nothing else does. The time is
+    /// asked too: a place is not a call's for good, since SQLite gives the
+    /// next call the place after the highest, and once every call is
+    /// forgotten (or the file is made again) a place comes back.
+    pub async fn holds(&self, calls: Vec<(i64, i64)>) -> Result<Vec<(i64, String)>, LogError> {
         self.blocking(move |connection| {
-            let mut statement = connection.prepare("SELECT agent FROM calls WHERE id = ?1")?;
+            let mut statement =
+                connection.prepare("SELECT agent FROM calls WHERE id = ?1 AND at_ms = ?2")?;
             let mut held = Vec::new();
-            for id in ids {
-                let agent: Option<String> =
-                    statement.query_row([id], |row| row.get(0)).optional()?;
+            for (id, at_ms) in calls {
+                let agent: Option<String> = statement
+                    .query_row([id, at_ms], |row| row.get(0))
+                    .optional()?;
                 if let Some(agent) = agent {
                     held.push((id, agent));
                 }
@@ -926,11 +931,31 @@ mod tests {
         // Each with its agent, which the log alone keeps.
         let agent = || "Claude Code".to_owned();
         assert_eq!(
-            log.holds(vec![old, new, new + 7]).await.unwrap(),
+            log.holds(vec![(old, 1_000), (new, 9_000), (new + 7, 9_000)])
+                .await
+                .unwrap(),
             [(old, agent()), (new, agent())]
         );
+        // A place with another call's time is not that call.
+        assert!(log.holds(vec![(old, 9_000)]).await.unwrap().is_empty());
         log.forget_before(5_000).await.unwrap();
-        assert_eq!(log.holds(vec![old, new]).await.unwrap(), [(new, agent())]);
+        assert_eq!(
+            log.holds(vec![(old, 1_000), (new, 9_000)]).await.unwrap(),
+            [(new, agent())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_place_that_comes_back_is_not_the_call_that_had_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = open(&dir.path().join("agents.sqlite3"));
+        let old = log.record(entry(1_000, "run_query")).await.unwrap();
+        // Every call forgotten, the next one is given the same place.
+        log.forget_before(5_000).await.unwrap();
+        let next = log.record(entry(9_000, "run_query")).await.unwrap();
+        assert_eq!(next, old, "SQLite gives the place again");
+        assert!(log.holds(vec![(old, 1_000)]).await.unwrap().is_empty());
+        assert_eq!(log.holds(vec![(next, 9_000)]).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

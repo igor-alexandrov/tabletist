@@ -464,15 +464,18 @@ impl App {
         let Some(history) = self.workspace_mut(tab).and_then(Workspace::history_tab_mut) else {
             return;
         };
-        let calls: Vec<i64> = history
+        // Each by its place and its time: a place the log gives again is
+        // another call's.
+        let calls: Vec<(i64, i64)> = history
             .entries
             .iter()
-            .filter_map(|row| row.entry.call)
+            .filter_map(|row| Some((row.entry.call?, row.entry.at_ms)))
             .collect();
         if calls.is_empty() {
             return;
         }
-        history.held_asked = Some((asked, calls.clone()));
+        let ids = calls.iter().map(|(id, _)| *id).collect();
+        history.held_asked = Some((asked, ids));
         self.backend
             .send(Command::History(HistoryCommand::Held { log, calls, asked }));
     }
