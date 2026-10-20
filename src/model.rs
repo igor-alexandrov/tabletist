@@ -886,12 +886,30 @@ pub enum Action {
     ResetSettings,
     /// The answer: put them back, or leave them.
     ConfirmResetSettings(bool),
-    /// Open quick open for the active connection tab.
+    /// Open quick open for the active connection tab, its scope that
+    /// connection. While it is open, select what its field holds.
     OpenQuickOpen,
-    /// Move quick open's selection by this many results.
+    /// Open quick open as `OpenQuickOpen` does, with this typed in its
+    /// field: what was typed on the sidebar's field, which is its way in.
+    QuickOpenTyped(String),
+    /// Quick open's field changed: pick the first result again, and fold
+    /// the groups opened in full.
+    QuickOpenChanged,
+    /// Move quick open's pick by this many results.
     QuickOpenMove(isize),
-    /// Open (and pin) quick open's selected result.
-    QuickOpenPick,
+    /// Open quick open's picked result, or the result at `index` where a
+    /// row was clicked or its number typed; `in_editor` opens it in a new
+    /// SQL editor (`⌥↩`). A group's "more" row shows that group in full,
+    /// and quick open stays.
+    QuickOpenPick {
+        index: Option<usize>,
+        in_editor: bool,
+    },
+    /// Switch quick open between this connection and every open one.
+    QuickOpenScope,
+    /// Open the menu of the server's other databases under the connection
+    /// bar's chip, as Switch database's key does.
+    ShowDatabaseMenu(ConnTabId),
     /// Put keyboard focus back into the open filter bar.
     FocusFilterBar(ConnTabId),
     /// Open or close the active object tab's filter bar.
@@ -1031,6 +1049,9 @@ pub struct Workspace {
     /// frame, so the screen's own keys answer again: when `esc` clears
     /// the search in the Omarchy look.
     pub blur_start_search: bool,
+    /// Open the menu of the server's other databases under the connection
+    /// bar's chip on the next frame: quick open's Switch database asked.
+    pub database_menu_asked: bool,
     pub sidebar_hidden: bool,
     /// The grid shows timestamps in full rather than to the second.
     pub full_precision: bool,
@@ -2537,18 +2558,54 @@ impl std::fmt::Debug for ConflictPrompt {
     }
 }
 
-/// Cmd/Ctrl+P: find a loaded table or view by name.
+/// Quick open (`⌘P`, `ctrl+p`): find a table or view of the connection, or
+/// of every open one, by name, or (macOS) start one of a few commands.
+/// What it lists is [`crate::app::App::quick_open_list`]'s.
 #[derive(Debug)]
 pub struct QuickOpen {
+    /// The window it was opened in: the connection searched, and where
+    /// its commands act.
     pub tab: ConnTabId,
+    /// What the field holds: the field edits it.
     pub query: String,
-    /// Index into the current matches.
+    /// The picked result, an index into the list's results (headings are
+    /// none). Clamped as it moves; reset when what is typed changes.
     pub selected: usize,
+    /// Whether every open connection is searched (`⇥`), not only this
+    /// one. Each open starts with this one.
+    pub everywhere: bool,
+    /// The groups shown in full: their "more" row was opened.
+    pub expanded: Vec<QuickGroup>,
+    /// Where the field's caret goes on the next frame, where anything
+    /// moves it: `⌘P` again while open selects the text, and what was
+    /// typed on the sidebar's field leaves the caret after it.
+    pub caret: Option<QuickCaret>,
     /// The selection the list last scrolled to, so it scrolls only when the
     /// selection moves and a wheel scroll is left alone.
     pub scrolled_to: Option<usize>,
     /// The list's scroll offset, in points.
     pub scroll_offset: f32,
+}
+
+/// Where quick open moves its field's caret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickCaret {
+    /// Select the whole text.
+    All,
+    /// After the text.
+    End,
+}
+
+/// A group of quick open's results, which shows its first three until its
+/// "more" row opens it in full: a kind of object of this connection, or
+/// one connection's objects where every open one is searched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickGroup {
+    Tables,
+    /// Views and materialized views.
+    Views,
+    /// The objects of the window `ConnTabId`, of every kind.
+    Connection(ConnTabId),
 }
 
 /// The Settings window while it is open. The settings themselves are the
@@ -4787,6 +4844,7 @@ impl Workspace {
             start_selected: 0,
             focus_start_search: false,
             blur_start_search: false,
+            database_menu_asked: false,
             sidebar_hidden: false,
             full_precision: false,
             zone: None,

@@ -33,6 +33,99 @@ fn field_height(look: &Look) -> f32 {
     if look.terminal { 32.0 } else { 36.0 }
 }
 
+/// Where the macOS and Windows sidebar's search field keeps the keyboard,
+/// by window.
+pub(crate) fn find_field_id(tab: ConnTabId) -> Id {
+    Id::new(("sidebar-find", tab.0))
+}
+
+/// The macOS and Windows sidebar's search field, which is quick open's
+/// way in: a box like the filter's, with the magnifier, "Find any
+/// object…" and quick open's key at its right. A click, or Space or Enter
+/// while it has the keyboard, opens quick open (the response is clicked);
+/// what is typed while it has the keyboard is returned, for quick open's
+/// field. A button to a screen reader, named as it reads.
+fn find_field(
+    ui: &mut egui::Ui,
+    tab: ConnTabId,
+    size: egui::Vec2,
+    key: &Written,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> (egui::Response, Option<String>) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let response = ui.interact(rect, find_field_id(tab), Sense::click());
+    let name = gettext(locale, "Find any object…");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &name));
+    focus::region(ui, focus::Region::Search, rect.expand(8.0));
+    focus::claim(ui, focus::Region::Search, &response);
+    let corner = CornerRadius::same(look.radius);
+    focus::hint(
+        ui,
+        &response,
+        rect,
+        focus::Ring::Field { radius: corner.nw },
+    );
+    let painter = ui.painter();
+    painter.rect_filled(rect, corner, palette.window);
+    let border = if response.hovered() {
+        palette.outline
+    } else {
+        palette.border
+    };
+    painter.rect_stroke(
+        rect,
+        corner,
+        egui::Stroke::new(widgets::hairline(ui), border),
+        egui::StrokeKind::Inside,
+    );
+    let y = rect.center().y;
+    let icon = Rect::from_center_size(pos2(rect.left() + 11.0 + 7.0, y), vec2(14.0, 14.0));
+    Icon::Search.image(palette.dim, 14.0).paint_at(ui, icon);
+    let role = TextRole::UiBody;
+    let right = rect.right() - 10.0;
+    let shortcut = || Text::one(look, TextRole::Shortcut, key.as_str(), palette.dim);
+    let key_width = if key.as_str().is_empty() {
+        0.0
+    } else {
+        widgets::paint_text_right(ui, right, y, shortcut()) + 8.0
+    };
+    let left = rect.left() + 11.0 + 14.0 + 8.0;
+    let room = (right - key_width - left).max(0.0);
+    let shown = crate::ui::grid::ellipsize(&name, room, false, |text| {
+        role.width(ui.ctx(), look.faces, text)
+    });
+    widgets::paint_text(ui, left, y, Text::one(look, role, &shown, palette.dim));
+    // Space and Enter press it while it has the keyboard, as a button.
+    let pressed = response.has_focus()
+        && ui.input_mut(|input| {
+            input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::Space)
+        });
+    // What is typed on it is a search: it goes to quick open's field. A
+    // space alone is the press above.
+    let typed = response
+        .has_focus()
+        .then(|| {
+            ui.input_mut(|input| {
+                let mut typed = String::new();
+                input.events.retain(|event| match event {
+                    egui::Event::Text(text) if !text.trim().is_empty() => {
+                        typed.push_str(text);
+                        false
+                    }
+                    _ => true,
+                });
+                typed
+            })
+        })
+        .filter(|typed| !typed.is_empty());
+    let mut response = response;
+    if pressed {
+        response.flags |= egui::response::Flags::CLICKED;
+    }
+    (response, typed)
+}
+
 /// The Reload button's spinner, and a loading row's.
 const RELOAD_SPINNER: f32 = 14.0;
 const ROW_SPINNER: f32 = 12.0;
@@ -179,13 +272,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ui.add_space(pad);
             ui.horizontal(|ui| {
                 ui.add_space(pad);
-                if let Some(workspace) = app.workspace_mut(tab) {
-                    let hint = if look.terminal {
-                        gettext(locale, "filter objects")
-                    } else {
-                        gettext(locale, "Find any object…")
-                    };
-                    let size = vec2(full.width() - 2.0 * pad, field_height(&look));
+                let size = vec2(full.width() - 2.0 * pad, field_height(&look));
+                // The macOS and Windows field is quick open's: it opens
+                // it. The terminal look's `/` line filters the tree.
+                if !look.terminal {
+                    let key = crate::ui::keys::written(ui.ctx(), &look, Command::FindObject);
+                    let (field, typed) = find_field(ui, tab, size, &key, (&look, &palette, locale));
+                    if let Some(typed) = typed {
+                        actions.push(Action::QuickOpenTyped(typed));
+                    } else if field.clicked() {
+                        actions.push(Action::OpenQuickOpen);
+                    }
+                } else if let Some(workspace) = app.workspace_mut(tab) {
+                    let hint = gettext(locale, "filter objects");
                     let style = widgets::FieldStyle {
                         fill: Some(palette.window),
                         boxed: true,

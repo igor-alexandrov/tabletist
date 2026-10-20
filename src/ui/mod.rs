@@ -60,6 +60,8 @@ pub mod picker;
 #[cfg(test)]
 mod preview_settings_tests;
 pub mod quick_open;
+#[cfg(test)]
+mod quick_open_tests;
 pub mod review;
 pub mod row_form;
 pub mod row_panel;
@@ -348,13 +350,15 @@ mod tests {
                         look.name
                     );
                 }
+                // The terminal look's filter, or the others' way into
+                // quick open.
                 assert!(
                     tree.nodes.iter().any(|(_, node)| {
-                        node.role() == egui::accesskit::Role::TextInput
-                            && matches!(
-                                node.placeholder(),
-                                Some("Find any object…" | "filter objects")
-                            )
+                        let filter = node.role() == egui::accesskit::Role::TextInput
+                            && node.placeholder() == Some("filter objects");
+                        let find = node.role() == egui::accesskit::Role::Button
+                            && node.label() == Some("Find any object…");
+                        filter || find
                     }),
                     "the sidebar filter is missing in {} at {size:?}",
                     look.name
@@ -3041,22 +3045,6 @@ value_tags   = true
         assert_ne!(flat(&harness), before);
     }
 
-    #[test]
-    fn quick_open_has_its_chord_on_the_mac_and_none_on_omarchy() {
-        for (look, opens) in [
-            (Look::macos(), true),
-            (Look::standard(), true),
-            (Look::omarchy(), false),
-        ] {
-            let mut harness = Harness::new();
-            harness.set_look(look);
-            harness.connect_fake();
-            harness.press(Key::P, Modifiers::COMMAND);
-            let open = matches!(harness.app.dialog, Some(crate::model::Dialog::QuickOpen(_)));
-            assert_eq!(open, opens, "{}", look.name);
-        }
-    }
-
     fn cancels(harness: &Harness) -> usize {
         let sent = harness.app.backend.sent.iter();
         sent.filter(|c| matches!(c, Command::Cancel { .. })).count()
@@ -5622,7 +5610,7 @@ value_tags   = true
         assert!(!harness.has("orders"));
         harness.press(Key::B, Modifiers::COMMAND);
         harness.press(Key::P, Modifiers::COMMAND);
-        assert!(harness.has("Open table or view"));
+        assert!(harness.has("Quick open"));
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
         harness.frame(vec![egui::Event::Text("?".into())]);
@@ -7349,12 +7337,13 @@ value_tags   = true
     /// Drags the sidebar's edge as far right as it goes.
     fn widen_sidebar(harness: &mut Harness) {
         let filter = |harness: &mut Harness| {
-            crate::testing::bounds(
-                &harness.settle(),
-                "Filter",
-                egui::accesskit::Role::TextInput,
-            )
-            .expect("the sidebar's filter")
+            let tree = harness.settle();
+            let filter = crate::testing::bounds(&tree, "Filter", egui::accesskit::Role::TextInput);
+            let find = || {
+                let role = egui::accesskit::Role::Button;
+                crate::testing::bounds(&tree, "Find any object…", role)
+            };
+            filter.or_else(find).expect("the sidebar's field")
         };
         let before = filter(harness);
         // The edge is a few points right of the filter field.
@@ -10407,79 +10396,6 @@ value_tags   = true
     }
 
     #[test]
-    fn command_p_opens_quick_open_and_enter_opens_the_match() {
-        let (mut harness, tab) = tree_harness();
-        harness.press(Key::P, Modifiers::COMMAND);
-        assert!(harness.has("Open table or view"));
-        harness.frame(vec![egui::Event::Text("users".into())]);
-        harness.press(Key::Enter, Modifiers::NONE);
-        assert!(harness.app.dialog.is_none());
-        let workspace = harness.app.workspace(tab).unwrap();
-        let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
-        assert_eq!(object.object.name, "users");
-    }
-
-    #[test]
-    fn quick_open_shortens_long_names_and_shows_them_on_hover() {
-        let (mut harness, tab) = tree_harness();
-        let long = "an_uncommonly_long_table_name_that_runs_well_past_the_right_edge_of_the_quick_open_dialog_in_every_look";
-        let objects = &mut harness
-            .app
-            .workspace_mut(tab)
-            .unwrap()
-            .tree
-            .nodes
-            .get_mut("main")
-            .unwrap()
-            .objects;
-        objects
-            .value
-            .as_mut()
-            .unwrap()
-            .push(tabletist_db::ObjectInfo {
-                name: long.into(),
-                kind: tabletist_db::ObjectKind::Table,
-                estimated_rows: None,
-            });
-        harness.press(Key::P, Modifiers::COMMAND);
-        let mut count_on_hover = |name: &str| {
-            let tree = harness.settle();
-            let row = tree
-                .nodes
-                .iter()
-                .find(|(_, node)| node.label() == Some(name))
-                .and_then(|(_, node)| node.bounds())
-                .unwrap_or_else(|| panic!("a row for {name}"));
-            let over = egui::pos2(row.x0 as f32 + 20.0, ((row.y0 + row.y1) / 2.0) as f32);
-            harness.frame(vec![egui::Event::PointerMoved(over)]);
-            // Past the tooltip delay: each frame is 1/60 s.
-            for _ in 0..60 {
-                harness.frame(Vec::new());
-            }
-            let tree = harness.frame(Vec::new());
-            crate::testing::labels(&tree)
-                .iter()
-                .filter(|label| *label == name)
-                .count()
-        };
-        let full = format!("main.{long}");
-        assert_eq!(count_on_hover(&full), 2, "the row and its tooltip");
-        assert_eq!(
-            count_on_hover("main.users"),
-            1,
-            "a short name has no tooltip"
-        );
-    }
-
-    #[test]
-    fn quick_open_explains_what_it_searches() {
-        let mut harness = Harness::new();
-        harness.connect_fake();
-        harness.press(Key::P, Modifiers::COMMAND);
-        assert!(harness.has("Searches schemas loaded in the sidebar"));
-    }
-
-    #[test]
     fn clicking_the_tree_sends_arrows_there_and_the_grid_takes_them_back() {
         let (mut harness, tab) = tree_harness();
         harness.click("orders");
@@ -11376,10 +11292,12 @@ value_tags   = true
         assert_eq!(harness.painted_color("Counting…"), Some(secondary));
         assert_eq!(harness.painted_color("Unordered"), Some(secondary));
 
+        // Quick open's line when nothing matches.
         harness.press(Key::P, Modifiers::COMMAND);
+        harness.frame(vec![egui::Event::Text("zzz".into())]);
         harness.settle();
         assert_eq!(
-            harness.painted_color("Searches schemas loaded in the sidebar"),
+            harness.painted_color("No objects match “zzz” in Fixture · dev"),
             Some(secondary)
         );
     }
@@ -11962,7 +11880,7 @@ value_tags   = true
         }
         // The tree and the grid are one stop each: the arrows move in them.
         for expected in [
-            "Filter",
+            "Find any object…",
             "Objects",
             "Rows",
             "Count",
@@ -12112,6 +12030,13 @@ value_tags   = true
             let forward: Vec<String> = (0..6)
                 .map(|_| step(&mut harness, Modifiers::NONE))
                 .collect();
+            // The sidebar's field: the terminal look's filter, the
+            // others' way into quick open.
+            let field = if look.terminal {
+                "Filter"
+            } else {
+                "Find any object…"
+            };
             assert_eq!(
                 forward,
                 [
@@ -12119,7 +12044,7 @@ value_tags   = true
                     "Data",
                     "Rows",
                     "Connections",
-                    "Filter",
+                    field,
                     "Objects"
                 ],
                 "{}",
@@ -12129,7 +12054,7 @@ value_tags   = true
             let back: Vec<String> = (0..3)
                 .map(|_| step(&mut harness, Modifiers::SHIFT))
                 .collect();
-            assert_eq!(back, ["Filter", "Connections", "Rows"], "{}", look.name);
+            assert_eq!(back, [field, "Connections", "Rows"], "{}", look.name);
         }
     }
 
@@ -12390,62 +12315,6 @@ value_tags   = true
         let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
         assert!(object.filter.open, "Cmd/Ctrl+F focuses, not closes");
         assert!(harness.ctx.text_edit_focused());
-    }
-
-    #[test]
-    fn quick_open_keeps_a_wheel_scroll() {
-        let (mut harness, tab) = tree_harness();
-        let names: Vec<String> = (0..60).map(|i| format!("t_{i:03}")).collect();
-        harness
-            .app
-            .workspace_mut(tab)
-            .unwrap()
-            .tree
-            .nodes
-            .get_mut("main")
-            .unwrap()
-            .objects
-            .value = Some(
-            names
-                .iter()
-                .map(|name| tabletist_db::ObjectInfo {
-                    name: name.clone(),
-                    kind: tabletist_db::ObjectKind::Table,
-                    estimated_rows: None,
-                })
-                .collect(),
-        );
-        harness.press(Key::P, Modifiers::COMMAND);
-        harness.settle();
-        let tree = harness.settle();
-        let list = tree
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("main.t_005"))
-            .and_then(|(_, node)| node.bounds())
-            .expect("a result row");
-        let over = egui::pos2(list.x0 as f32 + 20.0, list.y0 as f32 + 5.0);
-        harness.frame(vec![egui::Event::PointerMoved(over)]);
-        harness.frame(vec![
-            egui::Event::PointerMoved(over),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, -200.0),
-                modifiers: Modifiers::NONE,
-                phase: egui::TouchPhase::Move,
-            },
-        ]);
-        for _ in 0..120 {
-            harness.frame(vec![]);
-        }
-        let Some(crate::model::Dialog::QuickOpen(open)) = &harness.app.dialog else {
-            panic!("quick open");
-        };
-        assert!(
-            open.scroll_offset > 50.0,
-            "snapped back to {}",
-            open.scroll_offset
-        );
     }
 
     #[test]

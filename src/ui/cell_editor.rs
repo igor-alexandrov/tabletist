@@ -636,7 +636,7 @@ pub fn field(
 /// A terminal's cursor is a block: one character wide from where the next
 /// one goes, over the caret's line of the field `output` is of. Tinted, so
 /// the character under it reads through.
-fn block_cursor(
+pub(crate) fn block_cursor(
     ui: &Ui,
     output: &egui::text_edit::TextEditOutput,
     role: TextRole,

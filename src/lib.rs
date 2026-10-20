@@ -24,6 +24,7 @@ pub mod paths;
 pub mod recents;
 pub mod relay;
 pub mod review;
+pub mod search;
 pub mod secrets;
 pub mod session;
 pub mod settings;

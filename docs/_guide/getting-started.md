@@ -53,8 +53,8 @@ TLS, SSH tunnels and where passwords are kept are covered in
 - **The sidebar** lists the tables and views of one schema. On macOS and
   Windows the ones you opened recently are on top. Cmd/Ctrl+B shows or
   hides it.
-- **Quick open** (Cmd/Ctrl+P, on macOS and Windows) finds any table or
-  view by name.
+- **Quick open** (Cmd/Ctrl+P) finds any table or view by name, from
+  anywhere in the window.
 - **Tabs** hold the tables and SQL editors you have open.
 - **The row panel** on the right shows every field of the selected row.
   Cmd/Ctrl+Shift+R shows or hides it.
