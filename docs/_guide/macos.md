@@ -45,7 +45,11 @@ launch, are on the
   light or dark whatever the system says.
 - **The app menu has the usual two.** **Tabletist → About Tabletist**
   shows the version and the licenses of the fonts it bundles, and
-  **Tabletist → Settings…** opens Settings.
+  **Tabletist → Settings…** opens Settings. **View → History** shows the
+  window's [History tab]({% link _guide/sql-editor.md %}#history).
+- **The sidebar's SQL Editor button has a clock.** Its main part opens a
+  new SQL editor; the clock at its right shows the History tab, and looks
+  pressed while that tab is in front.
 - **Text has two sizes.** **Settings › Appearance** sizes the interface
   (Small, Default or Large) and the data apart: grid cells, the SQL
   editor and JSON, from 11 to 16 points, in IBM Plex Mono or JetBrains
@@ -78,6 +82,7 @@ a Mac keyboard labels Delete.
 | Cmd+W | Close the tab |
 | Cmd+B | Show or hide the sidebar |
 | Cmd+Option+A | Show the Agents tab |
+| Cmd+Y | Show the History tab. Not while you type in a text field, where it is redo |
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
 | Cmd+=, Cmd+-, Cmd+0 | Larger, smaller and default data text |
@@ -187,6 +192,17 @@ and Esc closes it. Return accepts too, except when it stays a line break:
 
 macOS may keep Ctrl+Space for switching input sources. Cmd+I always
 reaches Tabletist.
+
+### The History tab
+
+| Keys | Do |
+| --- | --- |
+| Up, Down | Move among the statements |
+| Cmd+Return | Run the selected read again, in a new SQL editor |
+| Cmd+C | Copy the selected statement |
+| Cmd+F | Search the statements |
+| Cmd+Option+A | On an agent's statement: show its call in the Agents Log |
+| Esc | Keep the history, when Clear history… asks |
 
 ## The Keychain
 

@@ -53,6 +53,7 @@ In the connection dialog:
 | Mod+P | Quick open. In it, Up and Down move, Enter opens and Esc closes |
 | Mod+B | Show or hide the sidebar |
 | Mod+Alt+A | Show the Agents tab |
+| Mod+Y | Show the [History tab]({% link _guide/sql-editor.md %}#history). Not while you type in a text field, where it is redo |
 | Mod+W | Close the tab |
 | Mod+Shift+[ and ] | Previous and next tab |
 | F6, Shift+F6 | Next and previous part of the window |
@@ -135,6 +136,17 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Tab | Accept the completion |
 | Enter | Accept the completion, except when it stays a line break: [the SQL Editor guide says when]({% link _guide/sql-editor.md %}#completion) |
 | Esc | Close the completion list |
+
+In the [History tab]({% link _guide/sql-editor.md %}#history):
+
+| Keys | Do |
+| --- | --- |
+| Up, Down | Move among the statements |
+| Mod+Return | Run the selected read again, in a new SQL editor |
+| Mod+C | Copy the selected statement |
+| Mod+F | Search the statements |
+| Mod+Alt+A | On an agent's statement: show its call in the Agents Log |
+| Esc | Keep the history, when Clear history… asks |
 
 ## The Omarchy look
 

@@ -100,3 +100,53 @@ Tab accepts the highlighted row, and Esc closes the list. Enter accepts
 too once you moved in the list or asked for it. When the list opened by
 itself and its row is only a guess (it does not begin with what you
 typed), or is what you typed already, Enter stays a line break.
+
+## History
+
+Each connection window has a **History** tab: every statement run on the
+connection, the newest first and grouped by day. Show it with Cmd/Ctrl+Y,
+**View › History** on macOS, the clock at the right of the sidebar's SQL
+Editor button, `> History` in quick open, or `:history` in the Omarchy
+look. It never opens by itself, and closes like any tab.
+
+It keeps every source, each marked as such:
+
+- **SQL editor**: each statement as it was split and run, by its tab's
+  name. A run of three statements is three entries.
+- **Grid save**: a table's Save as one entry, the whole transaction, with
+  the values you typed written in.
+- **Filter**: the `SELECT` a table ran for a filter or a sort you set,
+  with the filter and the sort.
+- **Agent**: an agent's run, marked in the accent colour. What the agent
+  sent stays in the [Agents Log]({% link _guide/agents.md %}#the-log) alone:
+  the entry keeps when it ran, the tool, its rows, how long it took and how
+  it ended, and **Show in Agents Log** opens its call there. Once the log
+  drops the call, the entry says it is no longer there.
+
+Tabletist's own reads of the schema, the row estimates and completion's
+are not kept, nor is a table read with no filter or sort of yours.
+
+Select an entry to see it whole. A read (`SELECT`, `WITH` that writes
+nothing, `EXPLAIN` without `ANALYZE`, `SHOW`, and a filter's query)
+offers **Run again**, which opens a new SQL editor with it and runs it,
+as a new tab runs: read-only by default, with the Editor's row limit and
+timeout, on the connection's current database. On production, and on a
+connection that opens read-only, that editor is read-only whatever the
+settings. Errors and cancelled reads run again too. A write is never run
+again from History: **Open in SQL editor** puts it in a new read-only
+editor, which runs nothing until you switch it to read-write and run it.
+**Reapply filter** opens a filter's table with its filter and sort, and
+**Copy SQL** copies the statement.
+
+The filters above the list choose a source and a result, and **Search
+SQL…** finds a text in the statements, in any case; an agent's entry is
+found by its agent and tool alone. In the Omarchy look `/` opens the same
+filter as a line: plain words search the SQL, and `source:` and `result:`
+choose.
+
+The history is kept on this computer, never with a result's rows: the
+last 1,000 statements of each connection, which **Settings › Editor ›
+Keep query history** changes, or turns off. **Clear history…** in the tab
+deletes the connection's history once you say so, and the one in
+**Settings › Editor** every connection's. A grid save's entry holds the
+values you typed, so clear the history to delete them from this computer.

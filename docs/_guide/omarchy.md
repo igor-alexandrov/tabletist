@@ -41,6 +41,8 @@ back.
 | Ctrl+=, Ctrl+- | Larger and smaller text: the whole window, under a dialog too |
 | `:agents` | Show the Agents tab |
 | `:agents log` | Show the Agents tab's log |
+| `:history` | Show the [History tab]({% link _guide/sql-editor.md %}#history) |
+| `:history clear` | Clear this connection's history, once you answer `y` |
 | `?` | The list of keys |
 
 Quick open has no key in the Omarchy look. `/` in the sidebar filters its
@@ -285,6 +287,19 @@ Under a result the limit cut, `a` shows all of it. When the timeout
 stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 "1m 30s" in this look.
 
+### The History tab
+
+| Keys | Do |
+| --- | --- |
+| `j` `k`, arrows | Move among the statements |
+| `r` | Run the selected read again, in a new SQL tab. On a write the status line says that writes open with Enter |
+| Enter | Open the selected statement in a SQL tab, a write's in a read-only one |
+| `a` | On an agent's statement: open its call in the Agents tab's log |
+| `f` | On a filter's: open its table with that filter and sort |
+| `y` | Copy the selected statement |
+| `/` | The filter line: plain words search the SQL; `source:sql`, `source:save`, `source:filter`, `source:agent`, `result:ok`, `result:error`, `result:cancelled` and `result:saved` choose. A token it does not know shows in red and is left out. Esc closes the line and keeps it |
+| `y`, `n` or Esc | Clear the history, or keep it, when `:history clear` asks |
+
 ### Settings
 
 | Keys | Do |
@@ -293,10 +308,11 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 | `h` `l` | Change the option |
 | Space | Toggle the option |
 | Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Editor, Agents |
-| Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row |
+| Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row. On the Editor pane's keep row: show the History tab |
 | `y` | On the Agents pane: copy the command that connects Claude Code |
 | Ctrl+E | Open `settings.toml` in your editor |
 | `R` | Reset the option. The agent server's switch is left as it is |
+| `D`, `n` | On the Editor pane, once keep is set to don't keep: delete the history kept, or keep it |
 | Esc | Close |
 
 The Mac's keys are in [Tabletist on macOS]({% link _guide/macos.md %}#the-keyboard),

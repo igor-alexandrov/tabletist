@@ -231,6 +231,12 @@ says for how many days a call is kept. Open it with **Show log** or the
 switch at the tab's top, or `l` in the Omarchy look, and `:agents log`
 from anywhere in the window.
 
+A call that brought a statement is in its connection's
+[History tab]({% link _guide/sql-editor.md %}#history) too, among what you
+ran yourself, marked as an agent's. History keeps none of what the agent
+sent: its entry links to the call here, and **Show in Agents Log** opens
+this view with the call selected.
+
 ### Filter the calls
 
 The bar narrows the list: **This connection** or **All connections**, one
