@@ -162,6 +162,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let layout = app.layout();
     let hints = HINTS.map(|(command, label)| (app.keymap.key(layout, command), label));
     let sql_key = app.keymap.key(layout, Command::NewSqlTab);
+    let history_key = app.keymap.key(layout, Command::History);
     // The Agents entry, where agents can reach the app: what it says, and
     // the key that shows the tab.
     // The terminal look names the letters from the tree and the grid, as
@@ -183,6 +184,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         return;
     }
     let agents_front = workspace.agents_in_front();
+    let history_front = workspace.history_in_front();
     let rows = workspace.tree.visible_rows(workspace.driver, show_system);
     let schemas = workspace
         .tree
@@ -463,7 +465,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     agents_line(ui, full, tab, (here, key, agents_front), skin, &mut actions);
                 }
             } else {
-                sql_button(ui, full, tab, &sql_key, skin, &mut actions);
+                let keys = (&sql_key, &history_key, history_front);
+                sql_button(ui, full, tab, keys, skin, &mut actions);
                 if let Some((here, key)) = &agents {
                     agents_button(ui, full, tab, (here, key, agents_front), skin, &mut actions);
                 }
@@ -685,13 +688,18 @@ fn agents_line(
     }
 }
 
-/// The button that opens a SQL editor, with its keys: as wide as the
-/// sidebar, 12 in from its sides.
+/// The width of the SQL Editor button's History segment, at its right.
+const CLOCK: f32 = 38.0;
+
+/// The SQL Editor button, as wide as the sidebar, 12 in from its sides: a
+/// split button whose main part opens a SQL editor, with its keys, and
+/// whose clock at the right shows the History tab, pressed while that tab
+/// is in front. A group named "SQL editor" of two buttons.
 fn sql_button(
     ui: &mut egui::Ui,
     full: Rect,
     tab: ConnTabId,
-    keys: &Written,
+    (keys, history_keys, history_front): (&Written, &Written, bool),
     (locale, look, palette): (Locale, &Look, &Palette),
     actions: &mut Vec<Action>,
 ) {
@@ -701,10 +709,25 @@ fn sql_button(
         pos2(full.left() + 12.0, top + 1.0 + 10.0),
         vec2(full.width() - 24.0, 34.0),
     );
+    let group = ui.interact(rect, Id::new(("sql-editor-button", tab.0)), Sense::hover());
+    let group_name = gettext(locale, "SQL editor");
+    group.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &group_name));
+    ui.ctx().accesskit_node_builder(group.id, |node| {
+        node.set_role(egui::accesskit::Role::Group);
+    });
+    let mut parts = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .accessibility_parent(group.id),
+    );
+    let clock = Rect::from_min_max(pos2(rect.right() - CLOCK, rect.top()), rect.max);
+    let main = Rect::from_min_max(rect.min, pos2(clock.left(), rect.bottom()));
     let label = gettext(locale, "SQL Editor");
+    let named = format!("{} ({})", gettext(locale, "New SQL editor"), keys.as_str());
     // 10 at its sides, a 14 pt plus, 8, the words; the keys at the right.
     let button = || {
         ButtonSpec::new(&label)
+            .label(&named)
             .icon(Icon::Plus)
             .primary()
             .padding(10.0)
@@ -713,16 +736,59 @@ fn sql_button(
     };
     // In a sidebar too narrow for them the keys give way.
     let with_keys = button().shortcut(keys);
-    let button = if with_keys.width(ui, look) <= rect.width() {
+    let button = if with_keys.width(&parts, look) <= main.width() {
         with_keys
     } else {
         button()
     };
     let response = button
-        .show_at(ui, rect, look, palette)
+        .show_at(&mut parts, main, look, palette)
         .on_hover_text(gettext(locale, "Open a new SQL editor"));
     if response.clicked() {
         actions.push(Action::NewSqlTab(tab));
+    }
+    // The clock: drawn over the main part's right corners, so the two
+    // read as one button with a line between them.
+    let history = format!("{} ({})", gettext(locale, "History"), history_keys.as_str());
+    let pressed_id = Id::new(("sql-editor-history", tab.0));
+    let segment = parts.interact(clock, pressed_id, Sense::click());
+    segment.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, history_front, &history));
+    let held = segment.is_pointer_button_down_on();
+    let fill = if history_front || held {
+        palette.text.lerp_to_gamma(palette.window, 0.25)
+    } else if segment.hovered() {
+        palette.text.lerp_to_gamma(palette.window, 0.15)
+    } else {
+        palette.text
+    };
+    let radius = look.radius;
+    let behind = Rect::from_min_max(
+        pos2(clock.left() - f32::from(radius), clock.top()),
+        clock.max,
+    );
+    ui.painter().rect_filled(
+        behind,
+        egui::CornerRadius {
+            nw: 0,
+            sw: 0,
+            ne: radius,
+            se: radius,
+        },
+        fill,
+    );
+    // The line between them, in the colour a spinner has on the fill.
+    widgets::vline(
+        ui,
+        clock.left() + 0.5,
+        clock.y_range(),
+        palette.window.gamma_multiply(0.35),
+    );
+    Icon::Clock
+        .image(palette.window, 15.0)
+        .paint_at(ui, Rect::from_center_size(clock.center(), vec2(15.0, 15.0)));
+    let tip = format!("{} · {}", gettext(locale, "History"), history_keys.as_str());
+    if segment.on_hover_text(tip).clicked() {
+        actions.push(Action::ShowHistory(tab));
     }
 }
 

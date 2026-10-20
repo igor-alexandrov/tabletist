@@ -64,10 +64,12 @@ pub enum Scope {
     Agents,
     /// The start screen: a connection's window with no tab open.
     Start,
+    /// The History tab.
+    History,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 11] = [
+    pub const ALL: [Scope; 12] = [
         Scope::Global,
         Scope::Connections,
         Scope::Sidebar,
@@ -79,6 +81,7 @@ impl Scope {
         Scope::Prompt,
         Scope::Agents,
         Scope::Start,
+        Scope::History,
     ];
 
     /// The scope's name in `settings.toml` (`[keys.<scope>]`).
@@ -95,6 +98,7 @@ impl Scope {
             Self::Prompt => "prompt",
             Self::Agents => "agents",
             Self::Start => "start",
+            Self::History => "history",
         }
     }
 
@@ -173,6 +177,8 @@ pub enum When {
     /// The Agents tab shows its Log view: its keys come before the
     /// activity's.
     AgentsLog,
+    /// The History tab asks whether to clear the connection's history.
+    ClearingHistory,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -487,6 +493,17 @@ commands! {
     CloseCompletion,
     GoToLine,
     History,
+    ClearHistory,
+    MoveInHistory,
+    RunHistoryAgain,
+    OpenHistoryEntry,
+    ShowHistoryCall,
+    ReapplyHistoryFilter,
+    CopyHistorySql,
+    FilterHistory,
+    CloseHistoryLine,
+    ConfirmClearHistory,
+    KeepHistory,
     ReadOnlyTab,
     ReadWriteTab,
     ToggleSqlMode,
@@ -530,6 +547,8 @@ commands! {
     SettingsPane,
     SettingsOpenRow,
     SettingsCopyCommand,
+    SettingsDeleteHistory,
+    SettingsKeepHistory,
     QuickOpenMove,
     QuickOpenPick,
     QuickOpenPickInEditor,
@@ -823,7 +842,18 @@ impl Command {
             C::PreviousCompletion => info("Previous completion", "Completion", Sql),
             C::CloseCompletion => info("Close the completion list", "", Sql),
             C::GoToLine => info("Go to line", "Go to line", Sql).reserved(),
-            C::History => info("History", "History", Sql).reserved(),
+            C::History => info("History", "History", Sql),
+            C::ClearHistory => info("Clear this connection's history", "", Sql),
+            C::MoveInHistory => info("Move in the history", "", Sql),
+            C::RunHistoryAgain => info("Run the selected read again", "", Sql),
+            C::OpenHistoryEntry => info("Open the selected statement in a SQL editor", "", Sql),
+            C::ShowHistoryCall => info("Show the agent's call in the Agents Log", "", Sql),
+            C::ReapplyHistoryFilter => info("Reapply the selected filter", "", Sql),
+            C::CopyHistorySql => info("Copy the selected statement", "", Sql),
+            C::FilterHistory => info("Filter the history", "", Sql),
+            C::CloseHistoryLine => info("Close the history's filter line, and keep it", "", Sql),
+            C::ConfirmClearHistory => info("Clear the history, as asked", "", Prompts),
+            C::KeepHistory => info("Keep the history, as asked", "", Prompts),
             C::ReadOnlyTab => info("Read-only tab", MODE, Sql),
             C::ReadWriteTab => info("Read-write tab", MODE, Sql),
             C::ToggleSqlMode => info("Read-only or read-write runs", "", Sql),
@@ -877,6 +907,14 @@ impl Command {
                 "",
                 Prompts,
             )),
+            C::SettingsDeleteHistory => info(
+                "Delete the query history kept, as the settings ask",
+                "",
+                Prompts,
+            ),
+            C::SettingsKeepHistory => {
+                info("Keep the query history, as the settings ask", "", Prompts)
+            }
             C::QuickOpenMove => info("Move in quick open", "", Prompts),
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
             C::QuickOpenPickInEditor => info("Open the one selected in a SQL editor", "", Prompts),
@@ -943,7 +981,8 @@ impl Binding {
                 | Scope::Inspector
                 | Scope::Results
                 | Scope::Agents
-                | Scope::Start => Mode::Normal,
+                | Scope::Start
+                | Scope::History => Mode::Normal,
             },
             set => set,
         }
@@ -979,6 +1018,7 @@ const RESULTS: &[Scope] = &[Scope::Results];
 const PROMPT: &[Scope] = &[Scope::Prompt];
 const ROWS: &[Scope] = &[Scope::Grid, Scope::Results];
 const AGENTS: &[Scope] = &[Scope::Agents];
+const HISTORY: &[Scope] = &[Scope::History];
 const TREE_AND_GRID: &[Scope] = &[Scope::Sidebar, Scope::Grid];
 const START: &[Scope] = &[Scope::Start];
 const CELLS: &[Scope] = &[Scope::Grid, Scope::Inspector];
@@ -1739,7 +1779,51 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+l")]),
             keys(&[k(":N")]),
         ),
-        bind(C::History, SQL_EDITOR, NONE, keys(&[k(":history")])),
+        // Out of a text field only: in one, egui's text editing takes the
+        // chord as redo (Ctrl+Y on Windows), the SQL editor's included.
+        bind(
+            C::History,
+            GLOBAL,
+            keys(&[k("cmd+y")]).normal(),
+            keys(&[k(":history")]),
+        ),
+        bind(C::ClearHistory, GLOBAL, NONE, keys(&[k(":history clear")])),
+        bind(
+            C::MoveInHistory,
+            HISTORY,
+            keys(&[k("up"), k("down")]),
+            keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
+        ),
+        bind(
+            C::RunHistoryAgain,
+            HISTORY,
+            keys(&[k("cmd+enter")]),
+            keys(&[k("r")]),
+        ),
+        bind(C::OpenHistoryEntry, HISTORY, NONE, keys(&[k("enter")])),
+        bind(C::ShowHistoryCall, HISTORY, NONE, keys(&[k("a")])),
+        bind(C::ReapplyHistoryFilter, HISTORY, NONE, keys(&[k("f")])),
+        bind(
+            C::CopyHistorySql,
+            HISTORY,
+            keys(&[k("cmd+c")]),
+            keys(&[k("y")]),
+        ),
+        bind(
+            C::FilterHistory,
+            HISTORY,
+            keys(&[k("cmd+f")]).any(),
+            keys(&[k("/")]),
+        ),
+        bind(C::CloseHistoryLine, HISTORY, NONE, keys(&[k("esc")])),
+        bind(C::ConfirmClearHistory, HISTORY, NONE, keys(&[k("y")])).when(When::ClearingHistory),
+        bind(
+            C::KeepHistory,
+            HISTORY,
+            keys(&[k("esc")]),
+            keys(&[k("n"), k("esc")]).shown("n"),
+        )
+        .when(When::ClearingHistory),
         bind(
             C::ReadOnlyTab,
             SQL_EDITOR,
@@ -1913,6 +1997,8 @@ pub const BINDINGS: &[Binding] = {
         .when(When::SettingsScreen),
         bind(C::SettingsOpenRow, PROMPT, NONE, keys(&[k("enter")])).when(When::SettingsScreen),
         bind(C::SettingsCopyCommand, PROMPT, NONE, keys(&[k("y")])).when(When::SettingsScreen),
+        bind(C::SettingsDeleteHistory, PROMPT, NONE, keys(&[k("D")])).when(When::SettingsScreen),
+        bind(C::SettingsKeepHistory, PROMPT, NONE, keys(&[k("n")])).when(When::SettingsScreen),
         bind(
             C::SettingsClose,
             PROMPT,
@@ -3361,9 +3447,15 @@ mod tests {
         assert_eq!(ex(Scope::SqlEditor, "rw"), command(Command::ReadWriteTab));
         assert_eq!(ex(Scope::SqlEditor, "ro"), command(Command::ReadOnlyTab));
         // Not built yet: claimed.
-        for line in ["commit", "rollback", "history", "42"] {
+        for line in ["commit", "rollback", "42"] {
             assert_eq!(ex(Scope::SqlEditor, line), Claimed, "{line}");
         }
+        // Built, from any tab of the window.
+        assert_eq!(ex(Scope::SqlEditor, "history"), command(Command::History));
+        assert_eq!(
+            ex(Scope::Grid, "history clear"),
+            command(Command::ClearHistory)
+        );
         assert_eq!(ex(Scope::Grid, "keys default"), Claimed);
         // Each in its own scope only, and `:w` never anything but a save.
         assert_eq!(ex(Scope::Grid, "rw"), Nothing);

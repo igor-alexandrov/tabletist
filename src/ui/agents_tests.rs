@@ -506,10 +506,13 @@ fn call(harness: &Harness, tab: Option<ConnTabId>, sql: &str) -> tabletist_mcp::
     tabletist_mcp::Call {
         at: at(),
         session: "session of Claude Code".into(),
+        agent: "Claude Code".into(),
         connection: Some(tab.map_or("ledger".into(), |tab| {
             harness.app.workspace(tab).unwrap().conn_id.0.clone()
         })),
         tool: "run_query".into(),
+        statement: true,
+        logged: Some(1),
         request: Some(sql.into()),
         result: "ok".into(),
         message: None,

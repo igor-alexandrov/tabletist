@@ -1680,6 +1680,48 @@ impl Harness {
     }
 }
 
+impl Harness {
+    /// Answers the History tab's read of the file, the last one sent, with
+    /// `entries` (the newest first), and settles.
+    pub fn answer_history(&mut self, entries: Vec<crate::history::Entry>) {
+        let asked = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::History(crate::backend::HistoryCommand::Load { asked, .. }) => {
+                    Some(*asked)
+                }
+                _ => None,
+            })
+            .expect("a read of the history was sent");
+        self.app.apply(Action::Backend(Event::History(
+            crate::backend::HistoryEvent::Loaded {
+                asked,
+                result: Ok(entries),
+            },
+        )));
+        self.settle();
+    }
+
+    /// The entries the history was asked to write, oldest first.
+    pub fn history_written(&self) -> Vec<crate::history::Entry> {
+        self.app
+            .backend
+            .sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::History(crate::backend::HistoryCommand::Append { entry, .. }) => {
+                    Some((**entry).clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Harness;

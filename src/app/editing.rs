@@ -12,6 +12,7 @@ use crate::edit::{
     conflicting, is_change, new_id, new_row, opens_large, same_changes, settled, shown_lines,
     start_text,
 };
+use crate::history::Source;
 use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
     ObjectTab, ObjectView, Pane, Reach, SaveBlock, TabId, WritePrompt,
@@ -691,10 +692,20 @@ impl App {
             return;
         }
         let request = RequestId(self.next_id());
+        let keeps = self.settings.history_keep > 0;
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
         let session = workspace.session;
+        let dialect = workspace.driver.dialect();
+        let mut history = keeps.then(|| {
+            super::history::entry_on(workspace, Source::Save, changes.object.name.clone())
+        });
+        if let Some(entry) = &mut history {
+            entry.sql = super::history::save_sql(dialect, &changes);
+            entry.kind = crate::history::Kind::Write;
+            entry.read_only = false;
+        }
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
@@ -710,6 +721,7 @@ impl App {
             deletes: sent.deletes,
             started: std::time::Instant::now(),
             then,
+            history: history.filter(|entry| entry.sql.is_some()).map(Box::new),
         });
         self.backend.send(Command::Write {
             session,
@@ -1790,6 +1802,7 @@ impl App {
         let scope = match table {
             Some(_) => Scope::Grid,
             None if workspace.agents_in_front() => Scope::Agents,
+            None if workspace.history_in_front() => Scope::History,
             None => Scope::SqlEditor,
         };
         // The Structure view's own lines hold while it shows.
@@ -1808,6 +1821,9 @@ impl App {
             }
         };
         let action = match (read, table) {
+            // From any tab of the window.
+            (Typed::Command(Command::History), _) => Action::ShowHistory(tab),
+            (Typed::Command(Command::ClearHistory), _) => Action::ClearHistory(tab),
             // From any tab of the window, where agents can reach the app.
             (Typed::Command(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 Action::ShowAgents(tab)
@@ -2071,6 +2087,10 @@ impl App {
         let Some(mut saving) = object.edits.saving.take() else {
             return;
         };
+        let saved = saving
+            .history
+            .take()
+            .map(|entry| super::history::saved(*entry, &saving, &result));
         // What was held for this save goes on only when everything was
         // written: every other outcome drops it.
         let then = saving.then.take();
@@ -2338,6 +2358,9 @@ impl App {
         }
         if let Some(row) = refused {
             self.count_holders(tab, id, row);
+        }
+        if let Some(entry) = saved {
+            self.record(entry);
         }
     }
 

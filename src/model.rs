@@ -715,6 +715,62 @@ pub enum Action {
         tab: ConnTabId,
         step: isize,
     },
+    /// Show the workspace's History tab: open it at the end of the strip
+    /// where it is not open yet. ⌘Y, View › History, the clock of the
+    /// sidebar's SQL Editor button, quick open and `:history`.
+    ShowHistory(ConnTabId),
+    /// The History tab: show only the entries of a source, that ended one
+    /// way, or whose statement holds a text; or every one again.
+    FilterHistory {
+        tab: ConnTabId,
+        filter: HistoryFilterSet,
+    },
+    /// The History tab, in the terminal look: open its filter line, or
+    /// close it and keep what it says.
+    ShowHistoryLine {
+        tab: ConnTabId,
+        open: bool,
+    },
+    /// The History tab: select an entry, by its key.
+    SelectHistoryEntry {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: move the selection among the entries shown.
+    MoveHistorySelection {
+        tab: ConnTabId,
+        step: isize,
+    },
+    /// The History tab: run a read again, in a new SQL editor, with the
+    /// Editor settings of a new tab. A write is never run again.
+    RunHistoryAgain {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: an entry's statement in a new SQL editor, not run;
+    /// a write's in a read-only one.
+    OpenHistoryEntry {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: a filter's table, with that filter and sort.
+    ReapplyHistoryFilter {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab: an agent's entry, as its call in the Agents Log.
+    ShowHistoryCall {
+        tab: ConnTabId,
+        key: u64,
+    },
+    /// The History tab's Clear history… and `:history clear`: ask whether
+    /// to clear this connection's history.
+    ClearHistory(ConnTabId),
+    /// The answer to that question: clear it, or keep it.
+    ConfirmClearHistory {
+        tab: ConnTabId,
+        clear: bool,
+    },
     /// Set what agents may do on a saved connection, from the Connections
     /// list's menu or Omarchy's box: the person's own, never held.
     SetAgentAccess {
@@ -865,6 +921,15 @@ pub enum Action {
     ShowAgentSettings,
     /// Show this pane of the Settings window, its cursor on its first row.
     ShowSettingsPane(SettingsPane),
+    /// Settings › Editor's Show History: close Settings and show the
+    /// History tab of the window in front, or of the last one.
+    ShowHistoryFromSettings,
+    /// Settings › Editor's Clear history…: ask whether to clear every
+    /// connection's history.
+    ClearAllHistory,
+    /// The answer to the history's question in Settings: clear it, or keep
+    /// it.
+    AnswerHistoryQuestion(bool),
     /// Show how this agent is connected, in Settings › Agents.
     ChooseAgentSetup(crate::endpoint::Agent),
     /// Close Settings and show the Agents tab on this view: the window's in
@@ -2621,8 +2686,20 @@ pub struct SettingsDialog {
     /// Reset to defaults was chosen and waits for its answer: the footer
     /// asks in place of its links.
     pub resetting: bool,
+    /// A question of the query history's waits for its answer, where the
+    /// footer asks it as it asks Reset's.
+    pub history_question: Option<HistoryQuestion>,
     /// The agent Settings › Agents says how to connect.
     pub agent: crate::endpoint::Agent,
+}
+
+/// What Settings › Editor asks of the query history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryQuestion {
+    /// Clear history…: clear every connection's.
+    ClearAll,
+    /// Don't keep was chosen: delete what is kept?
+    Forget,
 }
 
 /// A pane of the Settings window.
@@ -2716,6 +2793,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::RunScope),
                 SettingsRow::Option(OptionId::LineNumbers),
                 SettingsRow::Option(OptionId::Autocomplete),
+                SettingsRow::Option(OptionId::HistoryKeep),
             ],
             Self::Agents => &[
                 SettingsRow::Option(OptionId::AgentsOn),
@@ -3353,6 +3431,9 @@ pub struct ObjectTab {
     /// (`App::read_reopened`, or any read of it). The one in front is read
     /// with the connect; one behind it is not.
     pub reopened: bool,
+    /// The load of the rows that a filter or a sort the person set asked
+    /// for: the query history keeps its `SELECT` once it is answered.
+    pub history_load: Option<RequestId>,
 }
 
 /// The row panel's text for one row, formatted once when the selection or
@@ -3574,6 +3655,7 @@ impl ObjectTab {
             structure_cursor: 0,
             label_chooser: None,
             reopened: false,
+            history_load: None,
         }
     }
 
@@ -3657,6 +3739,8 @@ pub enum Tab {
     Sql(Box<SqlTab>),
     /// What agents do on the workspace's connection. One at most.
     Agents(Box<AgentsTab>),
+    /// Every statement run on the workspace's connection. One at most.
+    History(Box<HistoryTab>),
 }
 
 impl Tab {
@@ -3665,44 +3749,45 @@ impl Tab {
             Self::Object(object) => object.id,
             Self::Sql(sql) => sql.id,
             Self::Agents(agents) => agents.id,
+            Self::History(history) => history.id,
         }
     }
 
     pub fn as_object(&self) -> Option<&ObjectTab> {
         match self {
             Self::Object(object) => Some(object.as_ref()),
-            Self::Sql(_) | Self::Agents(_) => None,
+            Self::Sql(_) | Self::Agents(_) | Self::History(_) => None,
         }
     }
 
     pub fn as_object_mut(&mut self) -> Option<&mut ObjectTab> {
         match self {
             Self::Object(object) => Some(object.as_mut()),
-            Self::Sql(_) | Self::Agents(_) => None,
+            Self::Sql(_) | Self::Agents(_) | Self::History(_) => None,
         }
     }
 
     pub fn as_sql(&self) -> Option<&SqlTab> {
         match self {
             Self::Sql(sql) => Some(sql.as_ref()),
-            Self::Object(_) | Self::Agents(_) => None,
+            Self::Object(_) | Self::Agents(_) | Self::History(_) => None,
         }
     }
 
     pub fn as_sql_mut(&mut self) -> Option<&mut SqlTab> {
         match self {
             Self::Sql(sql) => Some(sql.as_mut()),
-            Self::Object(_) | Self::Agents(_) => None,
+            Self::Object(_) | Self::Agents(_) | Self::History(_) => None,
         }
     }
 
-    /// What the tab is loading; closing it cancels these. The Agents tab
-    /// loads nothing of the session's.
+    /// What the tab is loading; closing it cancels these. The Agents and
+    /// History tabs load nothing of the session's.
     pub fn pending(&self) -> Vec<RequestId> {
         match self {
             Self::Object(object) => object.pending().collect(),
             Self::Sql(sql) => sql.run.pending.into_iter().collect(),
-            Self::Agents(_) => Vec::new(),
+            Self::Agents(_) | Self::History(_) => Vec::new(),
         }
     }
 
@@ -3712,6 +3797,155 @@ impl Tab {
     pub fn is_preview(&self) -> bool {
         matches!(self, Self::Object(object) if !object.pinned && !object.edits.holds())
     }
+}
+
+/// The History tab: every statement run on the workspace's connection,
+/// the newest first, read from the history's file when it opens and kept
+/// up to date as statements run. Its `Debug` leaves out the statements
+/// and what was typed into its filters.
+#[derive(Clone, PartialEq)]
+pub struct HistoryTab {
+    pub id: TabId,
+    /// The entries kept, the newest first.
+    pub entries: Vec<HistoryRow>,
+    /// The read that is out.
+    pub asked: Option<u64>,
+    /// Whether it was read once at least.
+    pub read: bool,
+    /// Why the history could not be read.
+    pub failed: Option<String>,
+    /// Which entries show.
+    pub filter: crate::history::Filter,
+    /// The terminal look's filter line, as typed: what `filter` was read
+    /// from there.
+    pub line: String,
+    /// The terminal look's filter line is open over the list.
+    pub line_open: bool,
+    /// How many times it was asked to open: each time, it takes the
+    /// keyboard.
+    pub line_asked: u64,
+    /// The selected entry, by its key.
+    pub selected: Option<u64>,
+    /// The agents' calls the Agents Log no longer holds, by their place
+    /// there, as the last look said.
+    pub gone: std::collections::BTreeSet<i64>,
+    /// The agent of each call the Agents Log holds, by its place there, as
+    /// the log says it. Only the log keeps what an agent sent, its name
+    /// too: the history keeps the call's place, and the tab holds the name
+    /// while it shows it.
+    pub agents: std::collections::BTreeMap<i64, String>,
+    /// The look into the Agents Log that is out, and the calls it asks
+    /// about: a call that ended since is not among them.
+    pub held_asked: Option<(u64, Vec<i64>)>,
+    /// Clear history… was asked, and waits for its answer.
+    pub clearing: bool,
+    /// What the terminal look's line says until the next key: why a key
+    /// did nothing.
+    pub said: Option<String>,
+}
+
+impl std::fmt::Debug for HistoryTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryTab")
+            .field("id", &self.id)
+            .field("entries", &self.entries.len())
+            .field("read", &self.read)
+            .field("selected", &self.selected)
+            .field("clearing", &self.clearing)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for HistoryRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryRow")
+            .field("key", &self.key)
+            .field("entry", &self.entry)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HistoryTab {
+    pub fn new(id: TabId) -> Self {
+        Self {
+            id,
+            entries: Vec::new(),
+            asked: None,
+            read: false,
+            failed: None,
+            filter: crate::history::Filter::default(),
+            line: String::new(),
+            line_open: false,
+            line_asked: 0,
+            selected: None,
+            gone: Default::default(),
+            agents: Default::default(),
+            held_asked: None,
+            clearing: false,
+            said: None,
+        }
+    }
+
+    /// The entries that pass the filter, the newest first.
+    pub fn shown(&self) -> impl Iterator<Item = &HistoryRow> {
+        self.entries
+            .iter()
+            .filter(|row| self.filter.passes(&row.entry, &row.searched))
+    }
+
+    /// The entry of `key`, shown or not.
+    pub fn row(&self, key: u64) -> Option<&HistoryRow> {
+        self.entries.iter().find(|row| row.key == key)
+    }
+
+    /// The selected entry, where it passes the filter.
+    pub fn chosen(&self) -> Option<&HistoryRow> {
+        let key = self.selected?;
+        self.shown().find(|row| row.key == key)
+    }
+
+    /// Whether an agent's entry's call is no longer in the Agents Log.
+    pub fn call_gone(&self, entry: &crate::history::Entry) -> bool {
+        entry.call.is_none_or(|call| self.gone.contains(&call))
+    }
+
+    /// The agent of an agent's entry, as the Agents Log names it: none for
+    /// a call the log does not hold, or has not said yet.
+    pub fn agent_of(&self, entry: &crate::history::Entry) -> Option<&str> {
+        self.agents.get(&entry.call?).map(String::as_str)
+    }
+
+    /// Takes the agent of `call` as the Agents Log names it: its entry
+    /// shows it, and its search reads it.
+    pub fn named(&mut self, call: i64, agent: String) {
+        for row in &mut self.entries {
+            if row.entry.call == Some(call) {
+                row.searched = format!("{} {}", agent.to_lowercase(), row.entry.searched());
+            }
+        }
+        self.agents.insert(call, agent);
+    }
+}
+
+/// One entry of a History tab, with what its search reads. Its `Debug`
+/// leaves out the statement, as the entry's does.
+#[derive(Clone, PartialEq)]
+pub struct HistoryRow {
+    /// The tab's own name for it: what the selection holds.
+    pub key: u64,
+    pub entry: crate::history::Entry,
+    /// [`crate::history::Entry::searched`], read once.
+    pub searched: String,
+}
+
+/// One of the History tab's filters, set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryFilterSet {
+    Source(Option<crate::history::Source>),
+    Outcome(Option<crate::history::Outcome>),
+    Search(String),
+    /// The terminal look's line, read whole.
+    Line(String),
 }
 
 /// The Agents tab: the app's own view of what agents do on the
@@ -3825,6 +4059,9 @@ pub struct AgentsLog {
     pub failed: Option<String>,
     /// The selected call, by its place in the log.
     pub selected: Option<i64>,
+    /// A call to select once a page holds it: the one History's Show in
+    /// Agents Log asked for. Pages are read until one does.
+    pub seek: Option<i64>,
     /// Whether it was read once at least.
     pub read: bool,
 }
@@ -4951,7 +5188,7 @@ impl Workspace {
         match self.tab(self.active_tab?)? {
             Tab::Object(object) => (object.view == ObjectView::Data).then_some(object.id),
             Tab::Sql(sql) => sql.selected_row().map(|_| sql.id),
-            Tab::Agents(_) => None,
+            Tab::Agents(_) | Tab::History(_) => None,
         }
     }
 
@@ -5043,7 +5280,7 @@ impl Workspace {
     pub fn agents_tab(&self) -> Option<TabId> {
         self.tabs.iter().find_map(|open| match open {
             Tab::Agents(agents) => Some(agents.id),
-            Tab::Object(_) | Tab::Sql(_) => None,
+            Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
         })
     }
 
@@ -5051,13 +5288,34 @@ impl Workspace {
     pub fn agents_tab_mut(&mut self) -> Option<&mut AgentsTab> {
         self.tabs.iter_mut().find_map(|open| match open {
             Tab::Agents(agents) => Some(&mut **agents),
-            Tab::Object(_) | Tab::Sql(_) => None,
+            Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
         })
     }
 
     /// Whether the tab in front is the Agents tab.
     pub fn agents_in_front(&self) -> bool {
         self.active_tab.is_some() && self.active_tab == self.agents_tab()
+    }
+
+    /// The History tab, where it is open.
+    pub fn history_tab(&self) -> Option<&HistoryTab> {
+        self.tabs.iter().find_map(|open| match open {
+            Tab::History(history) => Some(&**history),
+            Tab::Object(_) | Tab::Sql(_) | Tab::Agents(_) => None,
+        })
+    }
+
+    /// The History tab, where it is open.
+    pub fn history_tab_mut(&mut self) -> Option<&mut HistoryTab> {
+        self.tabs.iter_mut().find_map(|open| match open {
+            Tab::History(history) => Some(&mut **history),
+            Tab::Object(_) | Tab::Sql(_) | Tab::Agents(_) => None,
+        })
+    }
+
+    /// Whether the tab in front is the History tab.
+    pub fn history_in_front(&self) -> bool {
+        self.active_tab.is_some() && self.active_tab == self.history_tab().map(|history| history.id)
     }
 
     /// The SQL editors, in strip order.
@@ -5420,8 +5678,11 @@ mod tests {
         let call = |n: usize, conn: &str| tabletist_mcp::Call {
             at: std::time::SystemTime::UNIX_EPOCH,
             session: "s".into(),
+            agent: "Claude Code".into(),
             connection: Some(conn.to_owned()),
             tool: "run_query".into(),
+            statement: true,
+            logged: Some(1),
             request: Some(format!("SELECT {n}")),
             result: "ok".into(),
             message: None,
@@ -6397,6 +6658,7 @@ mod tests {
             inserts: Vec::new(),
             started: std::time::Instant::now(),
             then: None,
+            history: None,
             deletes: Vec::new(),
         });
         assert_eq!(

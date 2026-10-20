@@ -146,6 +146,8 @@ pub enum QuickCommand {
     /// The window's Agents tab. Offered only where agents can reach the
     /// app.
     Agents,
+    /// The window's History tab.
+    History,
 }
 
 impl QuickCommand {
@@ -156,6 +158,7 @@ impl QuickCommand {
             Self::NewSql { .. } => "New SQL query",
             Self::SwitchDatabase => "Switch database",
             Self::Agents => "Agents",
+            Self::History => "History",
         }
     }
 
@@ -166,6 +169,7 @@ impl QuickCommand {
             Self::NewSql { .. } => Command::NewSqlTab,
             Self::SwitchDatabase => Command::SwitchDatabase,
             Self::Agents => Command::ShowAgents,
+            Self::History => Command::History,
         }
     }
 }
@@ -399,6 +403,7 @@ impl App {
         if crate::endpoint::AVAILABLE {
             commands.push(QuickCommand::Agents);
         }
+        commands.push(QuickCommand::History);
         commands
     }
 
@@ -410,13 +415,21 @@ impl App {
     /// whose names match. In the macOS and Windows looks each group shows
     /// its first three and a "more" row until that is opened; the terminal
     /// look lists every match, in one list with no kind headings, and no
-    /// commands.
+    /// commands. After `>` it lists the commands alone, by what follows
+    /// it: `> History`.
     pub fn quick_open_list(&self, open: &QuickOpen) -> QuickList {
         let terminal = self.look.terminal;
-        let query = open.query.trim();
+        let (commands_only, query) = match open.query.trim().strip_prefix('>') {
+            Some(rest) => (true, rest.trim()),
+            None => (false, open.query.trim()),
+        };
         let mut list = QuickList::default();
         let whole = |group| terminal || open.expanded.contains(&group);
-        for tab in self.quick_open_windows(open) {
+        let windows = match commands_only {
+            true => Vec::new(),
+            false => self.quick_open_windows(open),
+        };
+        for tab in windows {
             if query.is_empty() {
                 let (heading, rows) = self.start_rows(tab);
                 if rows.is_empty() {
@@ -621,6 +634,7 @@ impl App {
                 QuickCommand::NewSql { .. } => Action::NewSqlTab(here),
                 QuickCommand::SwitchDatabase => Action::ShowDatabaseMenu(here),
                 QuickCommand::Agents => Action::ShowAgents(here),
+                QuickCommand::History => Action::ShowHistory(here),
             }),
             QuickItem::More { .. } => {}
         }

@@ -55,9 +55,14 @@ open SQL editor follows each change at once.
 | **Autocomplete** | As you type, On Ctrl+Space (the list opens only when you ask), or Off | As you type |
 | **Line numbers** | On or off on macOS and Windows; relative, absolute or off in the Omarchy look. On writes `absolute`; a `relative` set in the file shows as on and stays | On (absolute) on macOS and Windows, relative in the Omarchy look |
 | **Current line highlight** (macOS and Windows) | On or off: the line the cursor is on is filled while the editor has the keyboard. The Omarchy look has no row: it follows the key, set in the file | On |
+| **Keep query history** (Omarchy: keep) | The last 100, 1,000 or 10,000 statements of each connection, on this computer, or Don't keep: every statement run from the SQL editor, a grid's save, a filter or sort you set, and agents' runs, as the [History tab]({% link _guide/sql-editor.md %}#history) shows them. Results are never kept. Don't keep records nothing more, and asks whether to delete what is kept (Omarchy: `D` deletes, `n` keeps). **Show History** beside it (Omarchy: Enter) shows the window's History tab | Last 1,000 |
 
 The other keys of the four `[editor.…]` tables are read and kept now, and
 take effect in a later version.
+
+On macOS and Windows the Editor pane's **Clear history…** deletes the
+history of every connection, once you say so; a History tab's own clears
+its connection's alone.
 
 A fourth pane, **Agents**, sets what the `[mcp]` keys
 hold, and shows how to connect an agent:
@@ -169,7 +174,7 @@ bar = "tint"
 | `editor.typing.wrap` | `true` or `false`. Read and kept; not acted on yet | `false` |
 | `editor.format.keywords` | `"upper"`, `"lower"` or `"keep"`. Read and kept; not acted on yet | Not set: upper on macOS and Windows, lower in the Omarchy look |
 | `editor.format.commas` | `"trailing"` or `"leading"`. Read and kept; not acted on yet | `"trailing"` |
-| `editor.history.keep` | 0 to 100000 queries for each connection. Read and kept; not acted on yet | `1000` |
+| `editor.history.keep` | 0 to 100000 statements kept for each connection, from every source; `0` keeps none. A smaller number deletes the oldest past it | `1000` |
 | `appearance.interface_size` | `"small"`, `"default"` or `"large"`, on macOS and Windows | `"default"` |
 | `appearance.font` | On macOS the data's face, `"IBM Plex Mono"`, `"JetBrains Mono"` or the family name of an installed font (`"Menlo"`); `"monospace"` is IBM Plex Mono too, and a name no installed font has is drawn as IBM Plex Mono, which the window says. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |
 | `appearance.font_size` | Points, whole or by halves (`13`, `12.5`). On macOS and Windows the data's, 11 to 16; in the Omarchy look all of it, 9 to 24. A size past a look's range is drawn at its nearest end. Written once you set it | Not set: 12.5 on macOS and Windows, 13 in the Omarchy look |
@@ -241,6 +246,7 @@ An administrator's policy, `managed.toml`, is in a third place of its own:
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
+| `history.sqlite3` | State | The query history, by saved connection: each statement run from the SQL editor, a grid's save (its whole transaction, with the values you typed written in) and a filter or sort you set, with when, how long, its rows and how it ended, and a filter's table, filter and sort. An agent's run is kept as its call's place in `agents.sqlite3`, its tool, rows, time and result, never what it sent, its name included: the History tab reads that from `agents.sqlite3`. Never a result's rows. Kept to `editor.history.keep` per connection, and written on its own: a statement never waits for it |
 | `agents_shown.json` | State | What agents may do as Tabletist last showed it: whether the server is on, and each connection's access, hidden tables and masked columns |
 | `mcp.sock`, `mcp.key`, `mcp.lock` | Runtime, else State | Where `tabletist mcp` reaches the app, the key each proves it holds before either says more, and the lock the app holds while it listens. The socket and the key are there while agents are on |
 | `mcp.pipe` | State | On Windows, in the socket's place: the name of the pipe `tabletist mcp` reaches the app by, new each time agents are turned on |

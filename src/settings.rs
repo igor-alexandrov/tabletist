@@ -1070,7 +1070,7 @@ impl OptionId {
     ];
     /// The Editor pane's options whose features are not built yet: no row
     /// draws them, and their keys are read, kept and reset.
-    pub const EDITOR_LATER: [OptionId; 8] = [
+    pub const EDITOR_LATER: [OptionId; 7] = [
         Self::ConfirmUnsafeWrites,
         Self::EditorKeys,
         Self::Indent,
@@ -1078,7 +1078,6 @@ impl OptionId {
         Self::Wrap,
         Self::Keywords,
         Self::Commas,
-        Self::HistoryKeep,
     ];
     /// The Editor pane's Running queries section, as far as its options
     /// are built.
@@ -1089,6 +1088,8 @@ impl OptionId {
     /// The terminal look's, as its board orders them, with no row for the
     /// cursor's line.
     pub const TERMINAL_TYPING: [OptionId; 2] = [Self::LineNumbers, Self::Autocomplete];
+    /// Its History section, in both looks.
+    pub const HISTORY: [OptionId; 1] = [Self::HistoryKeep];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
 
@@ -4600,6 +4601,7 @@ bar = \"label\"  # tint | label
             let mut shown = [
                 &OptionId::RUNNING[..],
                 sections,
+                &OptionId::HISTORY[..],
                 &OptionId::EDITOR_LATER[..],
             ]
             .concat()

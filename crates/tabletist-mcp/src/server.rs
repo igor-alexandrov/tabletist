@@ -65,10 +65,16 @@ pub struct Call {
     /// When it arrived.
     pub at: SystemTime,
     pub session: String,
+    /// What the client calls itself, as the log has it.
+    pub agent: String,
     /// The id of the connection it named, where it named one an agent may
     /// see.
     pub connection: Option<String>,
     pub tool: String,
+    /// Whether it brought a statement: one that ran, or that was refused.
+    pub statement: bool,
+    /// Its place in the log ([`crate::Logged::id`]), where the log took it.
+    pub logged: Option<i64>,
     /// What it asked: the statement, or the tables, on one line and cut
     /// to [`CALL_CHARS`] characters.
     pub request: Option<String>,
@@ -463,11 +469,15 @@ impl<G: Gateway> Server<G> {
             took.as_millis()
         );
         let (connection_id, connection) = note.connection.unzip();
-        let call = Call {
+        let agent = live.agent.get().map_or(UNNAMED, String::as_str).to_owned();
+        let mut call = Call {
             at: arrived,
             session: live.id.clone(),
+            agent: agent.clone(),
             connection: connection_id.clone(),
             tool: name.to_owned(),
+            statement: note.sql.is_some(),
+            logged: None,
             request: note
                 .sql
                 .as_deref()
@@ -482,7 +492,7 @@ impl<G: Gateway> Server<G> {
         let entry = Entry {
             at_ms: millis(arrived.duration_since(UNIX_EPOCH).unwrap_or_default()),
             session: live.id.clone(),
-            agent: live.agent.get().map_or(UNNAMED, String::as_str).to_owned(),
+            agent,
             project: live.origin.project.clone(),
             transport: live.origin.transport.as_str().to_owned(),
             connection_id,
@@ -502,10 +512,11 @@ impl<G: Gateway> Server<G> {
             masked: note.masked,
             took_ms: Some(millis(took)),
         };
-        if let Err(error) = self.inner.log.record(entry).await {
+        match self.inner.log.record(entry).await {
+            Ok(id) => call.logged = Some(id),
             // The call was answered all the same: a full disk must not
             // turn every read into an error.
-            log::error!("an agent's call is not in the log: {error}");
+            Err(error) => log::error!("an agent's call is not in the log: {error}"),
         }
         // Nobody may be listening.
         let _ = self.inner.calls.send(call);

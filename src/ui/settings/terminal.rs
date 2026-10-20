@@ -227,8 +227,63 @@ pub(super) fn show(
                 file_pane::show(ui, beside, app, option, &skin);
             }
             let opens = cursor.and_then(|cursor| opened(app, cursor).map(|opens| (cursor, opens)));
-            footer(ui, pane, option, opens, &settings, &skin, actions);
+            let question = match &app.dialog {
+                Some(crate::model::Dialog::Settings(dialog)) => dialog.history_question,
+                _ => None,
+            };
+            match question {
+                Some(question) => history_question(ui, question, &skin, actions),
+                None => footer(ui, pane, option, opens, &settings, &skin, actions),
+            }
         });
+}
+
+/// The footer while the history asks whether to delete what it kept: the
+/// question, and its two keys, each a button too.
+fn history_question(
+    ui: &mut Ui,
+    question: crate::model::HistoryQuestion,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), FOOTER + 1.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, palette.panel);
+    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
+    let y = rect.top() + 1.0 + FOOTER / 2.0;
+    let asks = skin.say(match question {
+        crate::model::HistoryQuestion::ClearAll => {
+            "clear the history of every connection? this can't be undone"
+        }
+        crate::model::HistoryQuestion::Forget => {
+            "history is off · delete the statements it kept on this computer?"
+        }
+    });
+    let mut left = rect.left() + 12.0;
+    left += widgets::paint_label(
+        ui,
+        left,
+        y,
+        Text::one(look, TextRole::OSecondary, &asks, palette.warning),
+    ) + 16.0;
+    for (command, what, answer) in [
+        (Command::SettingsDeleteHistory, skin.say("delete"), true),
+        (Command::SettingsKeepHistory, skin.say("keep"), false),
+    ] {
+        let key = key(ui, look, command);
+        let hint = [(&key, what.as_str(), true)];
+        let width = widgets::key_hints(ui, (left, y), &hint, 0.0, look, palette);
+        let place = Rect::from_min_max(
+            pos2(left, rect.top() + 5.0),
+            pos2(left + width, rect.bottom() - 4.0),
+        );
+        left += width + 16.0;
+        if ButtonSpec::new(&what).hidden_at(ui, place).clicked() {
+            actions.push(Action::AnswerHistoryQuestion(answer));
+        }
+    }
 }
 
 /// One tinted line: the title and the pane it shows, and at the right
@@ -470,12 +525,18 @@ fn editor_rows(
     actions: &mut Vec<Action>,
 ) {
     let room = ui.available_width() - 2.0 * ROW_SIDE;
-    let shown: Vec<OptionId> = [&OptionId::RUNNING[..], &OptionId::TERMINAL_TYPING[..]].concat();
+    let shown: Vec<OptionId> = [
+        &OptionId::RUNNING[..],
+        &OptionId::TERMINAL_TYPING[..],
+        &OptionId::HISTORY[..],
+    ]
+    .concat();
     let columns = columns(ui, room, widths(ui, &shown, settings, skin), skin);
     let mut index = 0;
     for (heading_text, top, options) in [
         ("Running queries", 8.0, &OptionId::RUNNING[..]),
         ("Typing", 12.0, &OptionId::TERMINAL_TYPING[..]),
+        ("History", 12.0, &OptionId::HISTORY[..]),
     ] {
         heading(ui, heading_text, top, skin);
         for option in options.iter().copied() {
@@ -1494,7 +1555,9 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
         OptionId::ConfirmUnsafeWrites => dim(&skin.say("connections that allow writes")),
         OptionId::EditorKeys => dim(&skin.say("-- INSERT -- shown in the status line")),
         OptionId::Autocomplete => dim(&skin.say("schema objects")),
-        OptionId::HistoryKeep => dim(&skin.say("text only, no results")),
+        OptionId::HistoryKeep => {
+            dim(&skin.say("per connection · sql, saves, filters, agents · never results"))
+        }
         OptionId::Timeout
         | OptionId::Indent
         | OptionId::ClosePairs
@@ -1571,6 +1634,17 @@ fn footer(
             Some(("Toggle", flip.map(|flip| vec![flip]))),
         ),
     ];
+    // The history's row shows the History tab.
+    let mut opens = opens;
+    if pane == SettingsPane::Editor
+        && let Some((_, shows)) = opens.take()
+    {
+        keys.push((
+            Command::SettingsOpenRow,
+            skin.say("show history"),
+            Some(("Show History", Some(shows))),
+        ));
+    }
     if pane == SettingsPane::Agents {
         if let Some((row, opens)) = opens {
             let (what, name) = match row {

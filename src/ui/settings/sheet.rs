@@ -186,6 +186,8 @@ pub(super) fn show(
             let limit = room.top() + height - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
             let mut pane = ui.new_child(builder.layout(egui::Layout::top_down(egui::Align::Min)));
+            let show_history = skin.say("Show History");
+            let no_window = skin.say("Open a connection to see its history");
             match dialog.pane {
                 SettingsPane::General => content(
                     &mut pane,
@@ -197,6 +199,7 @@ pub(super) fn show(
                             ("Safety", &OptionId::SAFETY),
                         ],
                         false,
+                        None,
                     ),
                     // As the window shows them: what the look has where the
                     // settings do not say (the grouping of numbers).
@@ -216,23 +219,37 @@ pub(super) fn show(
                             ("Environment color", &OptionId::ENVIRONMENT),
                         ],
                         true,
+                        None,
                     ),
                     &super::shown(app),
                     limit,
                     &skin,
                     actions,
                 ),
-                // The title alone: the board's line under it speaks of the
-                // history, which is not built yet.
                 SettingsPane::Editor => content(
                     &mut pane,
-                    ("Editor", None),
+                    (
+                        "Editor",
+                        Some(
+                            "The SQL editor: how queries run, how typing behaves, and what is remembered.",
+                        ),
+                    ),
                     (
                         &[
                             ("Running queries", &OptionId::RUNNING),
                             ("Typing", &OptionId::TYPING),
+                            ("History", &OptionId::HISTORY),
                         ],
                         false,
+                        // Show History, which shows the window's tab.
+                        Some((
+                            OptionId::HistoryKeep,
+                            After {
+                                text: &show_history,
+                                disabled: app.agents_window().is_none().then_some(&*no_window),
+                                action: Action::ShowHistoryFromSettings,
+                            },
+                        )),
                     ),
                     &super::shown(app),
                     limit,
@@ -357,6 +374,14 @@ const GENERAL: &str =
 const APPEARANCE: &str =
     "Theme, type and how dense the grid is. The preview updates as you change things.";
 
+/// A pane's sections, each its heading and its options; whether it has
+/// the preview; and the button after one of its rows.
+type Sections<'a> = (
+    &'a [(&'static str, &'a [OptionId])],
+    bool,
+    Option<(OptionId, After<'a>)>,
+);
+
 /// The tab: its title, what it is for where it says, and its options under
 /// the heading of each group, then the preview where it has one. The rows
 /// end at `limit` at the latest, and scroll when they are taller than that
@@ -365,7 +390,7 @@ const APPEARANCE: &str =
 fn content(
     ui: &mut Ui,
     (title, about): (&'static str, Option<&'static str>),
-    (sections, preview): (&[(&'static str, &[OptionId])], bool),
+    (sections, preview, mut after): Sections<'_>,
     settings: &Settings,
     limit: f32,
     skin: &Skin,
@@ -425,6 +450,10 @@ fn content(
                     if option == OptionId::Theme {
                         tiles(ui, settings, skin, actions);
                     } else {
+                        // The button after the one row that has one.
+                        let beside = after
+                            .take_if(|(with, _)| *with == option)
+                            .map(|(_, after)| after);
                         row(
                             ui,
                             option,
@@ -433,7 +462,7 @@ fn content(
                             settings,
                             skin,
                             actions,
-                            None,
+                            beside,
                         );
                     }
                     index += 1;
@@ -590,9 +619,12 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
 /// from the labels, and the small print wraps.
 pub(super) fn label_column(ui: &Ui, options: &[OptionId], skin: &Skin) -> f32 {
     let role = TextRole::Secondary;
+    // Keep query history's small print, the longest, wraps under its
+    // label: the column it would make leaves the other rows' hints no room.
     let widest = options
         .iter()
         .copied()
+        .filter(|option| *option != OptionId::HistoryKeep)
         .filter_map(small_print)
         .map(|print| role.width(ui.ctx(), skin.look.faces, &skin.say(print)))
         .fold(LABEL, f32::max);
@@ -1608,6 +1640,12 @@ fn footer(
         ui.data_mut(|data| data.remove_temp::<u64>(asked)) == Some(now.saturating_sub(1))
     };
 
+    // The history's question, where Settings › Editor asks one, and the
+    // pane shown.
+    let (question, shown_pane) = match &app.dialog {
+        Some(crate::model::Dialog::Settings(dialog)) => (dialog.history_question, dialog.pane),
+        _ => (None, SettingsPane::General),
+    };
     // The right side first: what it leaves is the path's.
     let parts = if let Some(pane) = asking {
         vec![
@@ -1621,8 +1659,30 @@ fn footer(
                 Some((palette.accent, Action::ConfirmResetSettings(false))),
             ),
         ]
-    } else {
+    } else if let Some(question) = question {
+        let (asks, yes) = match question {
+            crate::model::HistoryQuestion::ClearAll => (
+                "Clear the history of every connection? This can't be undone. It holds the values typed into grid saves.",
+                "Clear history",
+            ),
+            crate::model::HistoryQuestion::Forget => (
+                "History is off. Delete the statements it kept on this computer?",
+                "Delete",
+            ),
+        };
         vec![
+            (skin.say(asks), None),
+            (
+                skin.say(yes),
+                Some((palette.danger, Action::AnswerHistoryQuestion(true))),
+            ),
+            (
+                skin.say("Keep"),
+                Some((palette.accent, Action::AnswerHistoryQuestion(false))),
+            ),
+        ]
+    } else {
+        let mut links = vec![
             (
                 skin.say(reveal_words()),
                 Some((palette.accent, Action::RevealSettingsFile)),
@@ -1631,11 +1691,19 @@ fn footer(
                 skin.say("Export…"),
                 Some((palette.accent, Action::ExportSettings)),
             ),
-            (
-                skin.say("Reset to defaults"),
-                Some((palette.danger, Action::ResetSettings)),
-            ),
-        ]
+        ];
+        // Every connection's history, from the pane that keeps it.
+        if shown_pane == SettingsPane::Editor {
+            links.push((
+                skin.say("Clear history…"),
+                Some((palette.danger, Action::ClearAllHistory)),
+            ));
+        }
+        links.push((
+            skin.say("Reset to defaults"),
+            Some((palette.danger, Action::ResetSettings)),
+        ));
+        links
     };
     let widths: Vec<f32> = parts
         .iter()

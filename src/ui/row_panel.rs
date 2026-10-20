@@ -363,7 +363,7 @@ fn source(workspace: &Workspace, id: TabId, locale: crate::i18n::Locale) -> Opti
                 table: false,
             })
         }
-        Tab::Agents(_) => None,
+        Tab::Agents(_) | Tab::History(_) => None,
     }
 }
 

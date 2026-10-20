@@ -11,6 +11,7 @@ pub mod edit;
 pub mod endpoint;
 pub mod entrypoint;
 pub mod env;
+pub mod history;
 pub mod i18n;
 pub mod key_picker;
 pub mod keymap;

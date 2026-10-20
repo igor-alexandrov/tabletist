@@ -44,7 +44,7 @@ fn agents_view(harness: &Harness, tab: ConnTabId) -> Option<AgentsView> {
     }
     workspace.tabs.iter().find_map(|open| match open {
         Tab::Agents(agents) => Some(agents.view),
-        Tab::Object(_) | Tab::Sql(_) => None,
+        Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
     })
 }
 

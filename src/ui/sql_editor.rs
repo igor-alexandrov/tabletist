@@ -1512,7 +1512,7 @@ mod tests {
         line(&mut harness, "ro");
         // A table's lines are no commands of an editor's, and the lines
         // of what is not built yet are claimed and do nothing.
-        for text in ["w", "e!", "diff", "commit", "rollback", "history", "12"] {
+        for text in ["w", "e!", "diff", "commit", "rollback", "12"] {
             line(&mut harness, text);
             assert_eq!(refused(&harness).as_deref(), Some(text));
             assert_eq!(mode_of(&harness, tab, id), RunMode::ReadOnly, "{text}");

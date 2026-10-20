@@ -11,7 +11,7 @@ publish = false
 # check, and listing the installed fonts means reading CoreText's C statics and
 # untyped collections, so this crate carries the workspace's lints with
 # `unsafe_code` lowered to `deny`, allowed only in `about.rs`, `fonts.rs`,
-# `settings.rs`, `target.rs` and the tests, each use with a SAFETY note. The
+# `settings.rs`, `target.rs`, `view.rs` and the tests, each use with a SAFETY note. The
 # app and the database layer keep `forbid`.
 [lints.rust]
 unsafe_code = "deny"
@@ -38,4 +38,8 @@ harness = false
 
 [[test]]
 name = "settings_menu"
+harness = false
+
+[[test]]
+name = "view_menu"
 harness = false

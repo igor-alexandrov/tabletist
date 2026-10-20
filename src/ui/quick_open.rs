@@ -178,6 +178,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Command::NewSqlTab,
         Command::SwitchDatabase,
         Command::ShowAgents,
+        Command::History,
     ]
     .into_iter()
     .map(|command| (command, keymap.key_in(layout, command, Scope::Global)))
@@ -697,6 +698,7 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                     }
                     (Icon::SquareTerminal, detail)
                 }
+                QuickCommand::History => (Icon::Clock, skin.window_name(skin.here)),
             };
             let mut label = format!("{name}, {}", skin.say("command"));
             for words in [&detail, &key] {
