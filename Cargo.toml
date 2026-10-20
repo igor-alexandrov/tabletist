@@ -64,15 +64,15 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 egui_kittest = { version = "0.36", optional = true, default-features = false, features = ["wgpu"] }
 # Shared foundation with spotifast (crmne/fastframe). Every crate comes from
 # the same tag; move them together.
-fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
-fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
-fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # Palettes, presets, and following the Omarchy theme live.
-fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # gettext catalogs compiled at build time (see build.rs).
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # Log file for bug reports and a panic log without payloads.
-fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 # The database layer (no UI dependencies).
 tabletist-db = { path = "crates/tabletist-db" }
 # The MCP server agents reach the saved connections through. The backend
@@ -166,7 +166,7 @@ windows-native-keyring-store = { version = "1.1", default-features = false }
 tokio = { version = "1", features = ["test-util"] }
 
 [build-dependencies]
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1", features = ["build"] }
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0", features = ["build"] }
 
 # A target-specific build dependency is chosen by the host, so only a build
 # on Windows compiles this; Linux and macOS builds never see it.
@@ -195,23 +195,27 @@ panic = "abort"
 opt-level = 2
 
 [patch.crates-io]
-# crmne/egui apps-0.36, shared with spotifast: bidi shaping, the busy-loop
-# fix, Wayland frame-callback pacing, and the clipboard through winit's data
-# device on Wayland. Every egui crate from one revision.
-ecolor = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-eframe = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui-winit = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui_extras = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui_glow = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui-wgpu = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui_kittest = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-emath = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-epaint = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+# crmne/egui apps-0.36.2, the revision fastframe's getting-started guide
+# names, shared with spotifast: bidi shaping, Wayland frame-callback pacing,
+# and the clipboard through winit's data device on Wayland, on egui 0.36.2
+# (which carries the busy-loop fix itself). Every egui crate from one
+# revision.
+ecolor = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+eframe = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui-winit = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_extras = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_glow = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui-wgpu = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_kittest = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+emath = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+epaint = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
 # crmne/winit apps-0.30, used by the eframe fork above. It moves with egui:
 # winit makes one wl_data_device per seat (for file drops), and egui-winit
 # reads and writes the clipboard through it rather than through
 # smithay-clipboard's own. Hyprland sends the selection only to a client's
 # first data device, so with two of them paste never worked there (#115).
+# The branch's tip: two macOS fixes past ed7caa90, the revision the egui
+# fork and fastframe's guide name, which this one builds on.
 winit = { git = "https://github.com/crmne/winit", rev = "0bed9dc0a7db02590a279fb8bac795fa39ee6948" }
