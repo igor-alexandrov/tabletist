@@ -937,3 +937,42 @@ fn a_deleted_connection_is_not_written_back_by_an_open() {
     assert_eq!(saves_of(&harness, &file), saves);
     assert!(harness.app.start_recents(tab).is_empty());
 }
+
+/// The boards' colours: the screen is the content's white (the design's
+/// `surface`, the window's colour here) in both looks, and the search
+/// field the same white on macOS and the sunken tone on Omarchy.
+#[test]
+fn the_screen_and_its_field_take_the_boards_colours() {
+    for (look, field) in [(Look::macos(), false), (Look::omarchy(), true)] {
+        let (mut harness, _tab) = bookshop(look);
+        let tree = harness.settle();
+        let palette = harness.app.palette;
+        let name = look.label("Find a table or view");
+        let at = bounds(&tree, &name, Role::TextInput)
+            .unwrap_or_else(|| panic!("{}: the search field", look.name))
+            .center();
+        // What is painted under the field's middle, from the back.
+        let under: Vec<(egui::Rect, egui::Color32)> = harness
+            .fills
+            .iter()
+            .filter(|(rect, _)| rect.contains(at))
+            .copied()
+            .collect();
+        let pane = under
+            .iter()
+            .rfind(|(rect, _)| rect.height() > 100.0)
+            .unwrap_or_else(|| panic!("{}: the pane's fill", look.name));
+        assert_eq!(pane.1, palette.window, "{}: the pane", look.name);
+        let box_fill = under
+            .iter()
+            .rfind(|(rect, _)| rect.height() <= 50.0)
+            .unwrap_or_else(|| panic!("{}: the field's fill", look.name));
+        let want = if field { palette.panel } else { palette.window };
+        assert_eq!(box_fill.1, want, "{}: the field", look.name);
+        assert!(
+            !under.iter().any(|(_, color)| *color == palette.surface),
+            "{}: nothing under it is the app's surface grey",
+            look.name
+        );
+    }
+}
