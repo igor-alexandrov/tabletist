@@ -374,11 +374,6 @@ const GENERAL: &str =
 const APPEARANCE: &str =
     "Theme, type and how dense the grid is. The preview updates as you change things.";
 
-/// The tab: its title, what it is for where it says, and its options under
-/// the heading of each group, then the preview where it has one. The rows
-/// end at `limit` at the latest, and scroll when they are taller than that
-/// leaves them.
-#[allow(clippy::too_many_arguments)] // one pane: what it says, what it shows, what it pushes
 /// A pane's sections, each its heading and its options; whether it has
 /// the preview; and the button after one of its rows.
 type Sections<'a> = (
@@ -387,6 +382,11 @@ type Sections<'a> = (
     Option<(OptionId, After<'a>)>,
 );
 
+/// The tab: its title, what it is for where it says, and its options under
+/// the heading of each group, then the preview where it has one. The rows
+/// end at `limit` at the latest, and scroll when they are taller than that
+/// leaves them.
+#[allow(clippy::too_many_arguments)] // one pane: what it says, what it shows, what it pushes
 fn content(
     ui: &mut Ui,
     (title, about): (&'static str, Option<&'static str>),
