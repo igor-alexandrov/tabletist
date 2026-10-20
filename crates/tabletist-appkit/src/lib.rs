@@ -17,6 +17,9 @@ mod settings;
 mod target;
 
 #[cfg(target_os = "macos")]
+mod view;
+
+#[cfg(target_os = "macos")]
 pub use about::AboutItem;
 
 #[cfg(target_os = "macos")]
@@ -24,3 +27,6 @@ pub use fonts::{FontFace, faces_of, monospace_families};
 
 #[cfg(target_os = "macos")]
 pub use settings::SettingsItem;
+
+#[cfg(target_os = "macos")]
+pub use view::ViewItem;
