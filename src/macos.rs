@@ -16,7 +16,8 @@
 //!
 //! The app menu's About item opens the app's own About dialog ([`AboutMenu`]),
 //! and its Settings item, added the same way, opens the Settings window
-//! ([`SettingsMenu`]). Pointing a menu item somewhere does need `unsafe`,
+//! ([`SettingsMenu`]). The View menu has History ([`HistoryMenu`]) and Quick
+//! Open ([`QuickOpenMenu`]). Pointing a menu item somewhere does need `unsafe`,
 //! which this crate forbids, so that one call lives in `tabletist-appkit`.
 
 use std::cell::Cell;
@@ -215,6 +216,44 @@ impl HistoryMenu {
     /// Adds the item, titled `title`, to the View menu titled `menu`.
     /// Choosing it draws a frame, which finds it with
     /// [`HistoryMenu::take`]. `None` before the menu bar exists (or off
+    /// the main thread).
+    pub fn attach(ctx: &egui::Context, menu: &str, title: &str) -> Option<Self> {
+        let chosen = Rc::new(Cell::new(false));
+        let item = tabletist_appkit::ViewItem::insert(menu, title, {
+            let chosen = chosen.clone();
+            let ctx = ctx.clone();
+            move || {
+                chosen.set(true);
+                ctx.request_repaint();
+            }
+        })?;
+        Some(Self {
+            chosen,
+            _item: item,
+        })
+    }
+
+    /// Whether the item was chosen since the last call.
+    pub fn take(&self) -> bool {
+        self.chosen.replace(false)
+    }
+}
+
+/// The View menu's Quick Open item, asking for quick open.
+///
+/// The item has no key equivalent, as History's has none: ⌘P is the
+/// window's key, which while quick open is open selects what is typed, and
+/// AppKit would take it before the window sees it.
+pub struct QuickOpenMenu {
+    chosen: Rc<Cell<bool>>,
+    /// The item is in the menu for as long as this lives.
+    _item: tabletist_appkit::ViewItem,
+}
+
+impl QuickOpenMenu {
+    /// Adds the item, titled `title`, to the View menu titled `menu`.
+    /// Choosing it draws a frame, which finds it with
+    /// [`QuickOpenMenu::take`]. `None` before the menu bar exists (or off
     /// the main thread).
     pub fn attach(ctx: &egui::Context, menu: &str, title: &str) -> Option<Self> {
         let chosen = Rc::new(Cell::new(false));

@@ -27,6 +27,7 @@ use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
+mod commands;
 mod editing;
 mod history;
 mod key_picker;
@@ -35,8 +36,10 @@ mod quick_open;
 #[cfg(test)]
 mod startup_tests;
 
+pub use commands::{About, RUNNABLE, Runnable, TabName};
 pub use quick_open::{
     Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
+    setting_path,
 };
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -2255,6 +2258,39 @@ impl App {
                     // The question was about the other pane's options.
                     dialog.resetting = false;
                     dialog.history_question = None;
+                    // The row quick open asked for is the other pane's.
+                    dialog.asked = None;
+                    dialog.reveal = false;
+                }
+            }
+            Action::ShowSetting(option) => {
+                let pane = crate::model::SettingsPane::of(option);
+                if !crate::model::SettingsPane::listed().contains(&pane) {
+                    return;
+                }
+                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                    self.dialog = Some(Dialog::Settings(Box::default()));
+                    self.list_fonts();
+                }
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    let row = crate::model::SettingsRow::Option(option);
+                    // The terminal look's cursor, where its screen has the
+                    // row (it has none for some of the sheet's).
+                    if dialog.pane != pane {
+                        dialog.pane = pane;
+                        dialog.row = 0;
+                    }
+                    if let Some(at) = pane.rows().iter().position(|at| *at == row) {
+                        dialog.row = at;
+                    }
+                    dialog.resetting = false;
+                    dialog.asked = Some(option);
+                    dialog.reveal = true;
+                }
+            }
+            Action::SettingShown => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    dialog.reveal = false;
                 }
             }
             Action::ChooseAgentSetup(agent) => {
@@ -16449,6 +16485,7 @@ masked = ["orders.email"]
             };
             // The fake connection has a main.users too: name the schema.
             open.query = "shop.us".into();
+            harness.app.apply(Action::QuickOpenChanged);
             harness.app.apply(Action::QuickOpenPick {
                 index: None,
                 in_editor: false,

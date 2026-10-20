@@ -14,7 +14,9 @@ are listed above them.
 Quick open (Cmd+P on macOS, Ctrl+P on Windows and Omarchy) finds any
 table or view by name without the sidebar, in this connection or in every
 open one. On macOS and Windows the sidebar's "Find any object…" field
-opens it; in the Omarchy look `/` in the sidebar filters its list.
+opens it, and `>` typed first lists the commands instead (and, with a
+word after it, the settings); in the Omarchy look `/` in the sidebar
+filters its list.
 
 System schemas such as `pg_catalog` and `information_schema` are hidden.
 [A setting]({% link _reference/settings-and-files.md %}#the-settings-file)
