@@ -226,8 +226,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     if !look.terminal {
         status_bar(ui, skin, searching);
     }
+    // The boards' `surface`: the content's white (the window's colour
+    // here), as a table's grid and the Agents tab have it.
     egui::CentralPanel::default()
-        .frame(Frame::new().fill(palette.surface))
+        .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
             let full = ui.max_rect();
             focus::region(ui, Region::Start, full);
@@ -1009,10 +1011,12 @@ fn search_field(
         rect,
         focus::Ring::Field { radius: corner.nw },
     );
+    // The boards': the content's own white on macOS, set apart by its
+    // border and halo; the sunken tone of an input on Omarchy.
     let fill = if look.terminal {
-        palette.window
+        palette.panel
     } else {
-        palette.surface
+        palette.window
     };
     ui.painter().set(
         backdrop,
