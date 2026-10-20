@@ -27,6 +27,7 @@ use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
+mod commands;
 mod editing;
 mod history;
 mod key_picker;
@@ -35,6 +36,7 @@ mod quick_open;
 #[cfg(test)]
 mod startup_tests;
 
+pub use commands::{About, RUNNABLE, Runnable, TabName};
 pub use quick_open::{
     Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
 };
@@ -16449,6 +16451,7 @@ masked = ["orders.email"]
             };
             // The fake connection has a main.users too: name the schema.
             open.query = "shop.us".into();
+            harness.app.apply(Action::QuickOpenChanged);
             harness.app.apply(Action::QuickOpenPick {
                 index: None,
                 in_editor: false,

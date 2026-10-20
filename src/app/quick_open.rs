@@ -11,11 +11,22 @@ use std::rc::Rc;
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use super::App;
-use crate::model::{Action, ConnTabId, Dialog, QuickGroup, QuickOpen, RunMode, StartRecent};
+use super::commands::Runnable;
+use crate::keymap::Command;
+use crate::model::{Action, ConnTabId, Dialog, QuickGroup, QuickOpen, StartRecent};
 use crate::search::{self, Tier};
 
 /// How many results a group shows before its "more" row (macOS).
 pub const GROUP_SHOWN: usize = 3;
+
+/// The commands quick open offers with nothing typed, where they apply:
+/// the boards' three, and History.
+const SUGGESTED: [Command; 4] = [
+    Command::NewSqlTab,
+    Command::SwitchDatabase,
+    Command::ShowAgents,
+    Command::History,
+];
 
 /// A table or view that matches what is typed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,41 +146,17 @@ pub enum StartRow {
 }
 
 /// One of the commands quick open offers in the macOS and Windows looks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickCommand {
-    /// A new SQL editor. `read_only` where a production connection's new
-    /// editors open read-only, which the row says.
-    NewSql { read_only: bool },
-    /// The menu of the server's other databases. Offered only where there
-    /// is another.
-    SwitchDatabase,
-    /// The window's Agents tab. Offered only where agents can reach the
-    /// app.
-    Agents,
-    /// The window's History tab.
-    History,
+    /// A command of the keymap's, run as its key runs it.
+    Run(Runnable),
 }
 
 impl QuickCommand {
-    /// The command's name, as the row writes it and what is typed
-    /// matches.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::NewSql { .. } => "New SQL query",
-            Self::SwitchDatabase => "Switch database",
-            Self::Agents => "Agents",
-            Self::History => "History",
-        }
-    }
-
     /// The keymap's command it is, whose key the row writes.
-    pub fn command(self) -> crate::keymap::Command {
-        use crate::keymap::Command;
+    pub fn command(&self) -> Command {
         match self {
-            Self::NewSql { .. } => Command::NewSqlTab,
-            Self::SwitchDatabase => Command::SwitchDatabase,
-            Self::Agents => Command::ShowAgents,
-            Self::History => Command::History,
+            Self::Run(runnable) => runnable.command,
         }
     }
 }
@@ -192,6 +179,50 @@ pub enum QuickItem {
     },
     /// The row after a group's first results: the rest are `hidden`.
     More { group: QuickGroup, hidden: usize },
+}
+
+impl QuickItem {
+    /// Whether `other` is this result, though it may be listed elsewhere
+    /// or say something else of itself now (an estimate read again, a
+    /// command's name): the same object of the same window, the same row
+    /// of a start screen, the same command, the same group's "more" row.
+    pub fn same(&self, other: &QuickItem) -> bool {
+        match (self, other) {
+            (
+                Self::Object { tab, found },
+                Self::Object {
+                    tab: at,
+                    found: other,
+                },
+            ) => tab == at && found.object == other.object && found.kind == other.kind,
+            (
+                Self::Start { tab, row, .. },
+                Self::Start {
+                    tab: at,
+                    row: other,
+                    ..
+                },
+            ) => {
+                // The largest tables by their table: an estimate read
+                // again is the same row.
+                let largest = |row: &StartRow| match row {
+                    StartRow::Largest(object, _) => Some(object.clone()),
+                    StartRow::Recent(_) => None,
+                };
+                tab == at
+                    && match (largest(row), largest(other)) {
+                        (Some(one), Some(two)) => one == two,
+                        _ => row == other,
+                    }
+            }
+            (Self::Command { command, .. }, Self::Command { command: other, .. }) => {
+                let (QuickCommand::Run(one), QuickCommand::Run(two)) = (command, other);
+                one.command == two.command
+            }
+            (Self::More { group, .. }, Self::More { group: other, .. }) => group == other,
+            _ => false,
+        }
+    }
 }
 
 /// What heads a group of quick open's results.
@@ -248,6 +279,13 @@ impl QuickList {
             self.rows
                 .push(QuickRow::Item(QuickItem::More { group, hidden }));
         }
+    }
+}
+
+/// `command`'s name, translated.
+fn name_of(locale: crate::i18n::Locale, command: &QuickCommand) -> String {
+    match command {
+        QuickCommand::Run(runnable) => crate::i18n::gettext(locale, runnable.name).into_owned(),
     }
 }
 
@@ -377,57 +415,69 @@ impl App {
         windows
     }
 
-    /// The commands quick open offers in the macOS and Windows looks, in
-    /// order, those that can do something now: none in the terminal look,
-    /// whose commands are on `:`.
-    fn quick_commands(&self, tab: ConnTabId) -> Vec<QuickCommand> {
-        let Some(workspace) = self.workspace(tab) else {
-            return Vec::new();
-        };
-        if self.look.terminal {
-            return Vec::new();
-        }
-        let read_only = workspace.environment.is_production()
-            && (self.settings.new_tab == crate::settings::NewTab::ReadOnly
-                || RunMode::of_new_tab(workspace.sql_writes(), workspace.environment)
-                    == RunMode::ReadOnly);
-        let switchable = workspace
-            .databases
-            .value
-            .as_ref()
-            .is_some_and(|databases| databases.len() > 1);
-        let mut commands = vec![QuickCommand::NewSql { read_only }];
-        if switchable {
-            commands.push(QuickCommand::SwitchDatabase);
-        }
-        if crate::endpoint::AVAILABLE {
-            commands.push(QuickCommand::Agents);
-        }
-        commands.push(QuickCommand::History);
-        commands
+    /// A command's name, as its row writes it and what is typed matches.
+    pub fn command_name(&self, command: &QuickCommand) -> String {
+        name_of(self.locale, command)
+    }
+
+    /// The commands `typed` (folded) finds in `tab`'s window, best first,
+    /// in the registry's order within a tier: each with the runs of its
+    /// name that matched. With nothing typed, every command
+    /// (`commands_only`), or the suggested ones. None in the terminal
+    /// look.
+    fn commands_found(
+        &self,
+        tab: ConnTabId,
+        typed: &[char],
+        commands_only: bool,
+    ) -> Vec<QuickItem> {
+        let commands: Vec<QuickCommand> = self
+            .runnable(tab)
+            .into_iter()
+            .filter(|runnable| {
+                !typed.is_empty() || commands_only || SUGGESTED.contains(&runnable.command)
+            })
+            .map(QuickCommand::Run)
+            .collect();
+        let mut found: Vec<(Tier, QuickItem)> = commands
+            .into_iter()
+            .filter_map(|command| {
+                if typed.is_empty() {
+                    let spans = Vec::new();
+                    return Some((Tier::Exact, QuickItem::Command { command, spans }));
+                }
+                let hit = search::find(typed, &name_of(self.locale, &command))?;
+                let spans = hit.spans;
+                Some((hit.tier, QuickItem::Command { command, spans }))
+            })
+            .collect();
+        // Best first; a sort that keeps their order within a tier.
+        found.sort_by_key(|(tier, _)| std::cmp::Reverse(*tier));
+        found.into_iter().map(|(_, item)| item).collect()
     }
 
     /// What quick open lists for `open`. With nothing typed: each searched
     /// window's start screen list (headed by its connection where every
-    /// open one is searched), then the commands. With a query: the tables
-    /// and then the views that match, or where every open connection is
-    /// searched, each connection's matches under it; then the commands
-    /// whose names match. In the macOS and Windows looks each group shows
-    /// its first three and a "more" row until that is opened; the terminal
-    /// look lists every match, in one list with no kind headings, and no
-    /// commands. After `>` it lists the commands alone, by what follows
-    /// it: `> History`.
+    /// open one is searched), then the suggested commands. With a query:
+    /// the tables and then the views that match, or where every open
+    /// connection is searched, each connection's matches under it; then
+    /// the commands whose names match. In the macOS
+    /// and Windows looks each group shows its first three and a "more" row
+    /// until that is opened, and a query that begins with `>` lists every
+    /// command that matches what follows it, and nothing else; the
+    /// terminal look lists every match, in one list with no kind headings,
+    /// and no commands.
     pub fn quick_open_list(&self, open: &QuickOpen) -> QuickList {
         let terminal = self.look.terminal;
-        let (commands_only, query) = match open.query.trim().strip_prefix('>') {
-            Some(rest) => (true, rest.trim()),
-            None => (false, open.query.trim()),
-        };
+        let commands_query = self.quick_open_commands_query(open);
+        let commands_only = commands_query.is_some();
+        let query = commands_query.unwrap_or(open.query.trim());
         let mut list = QuickList::default();
         let whole = |group| terminal || open.expanded.contains(&group);
-        let windows = match commands_only {
-            true => Vec::new(),
-            false => self.quick_open_windows(open),
+        let windows = if commands_only {
+            Vec::new()
+        } else {
+            self.quick_open_windows(open)
         };
         for tab in windows {
             if query.is_empty() {
@@ -478,28 +528,41 @@ impl App {
             }
         }
         let typed = search::folded(query);
-        let mut commands: Vec<(Tier, QuickItem)> = self
-            .quick_commands(open.tab)
-            .into_iter()
-            .filter_map(|command| {
-                let name = crate::i18n::gettext(self.locale, command.name());
-                if typed.is_empty() {
-                    let spans = Vec::new();
-                    return Some((Tier::Exact, QuickItem::Command { command, spans }));
-                }
-                let hit = search::find(&typed, &name)?;
-                let spans = hit.spans;
-                Some((hit.tier, QuickItem::Command { command, spans }))
-            })
-            .collect();
-        // Best first; a sort that keeps their order within a tier.
-        commands.sort_by_key(|(tier, _)| std::cmp::Reverse(*tier));
+        let commands = self.commands_found(open.tab, &typed, commands_only);
         if !commands.is_empty() {
             list.rows.push(QuickRow::Heading(QuickHeading::Commands));
-            list.rows
-                .extend(commands.into_iter().map(|(_, item)| QuickRow::Item(item)));
+            // Folded under what was typed, as each kind of object is; the
+            // commands alone and the suggested three are listed whole.
+            let group = QuickGroup::Commands;
+            let all = commands_only || typed.is_empty() || whole(group);
+            list.group(group, commands, all);
         }
         list
+    }
+
+    /// What follows the `>` of a query that lists the commands alone,
+    /// trimmed (macOS, Windows): the character that quick open's
+    /// `QuickOpenCommands` is spelled as in the keymap, first in the query
+    /// after spaces. None where the query does not begin with it, or the
+    /// look has none (Omarchy).
+    pub fn quick_open_commands_query<'a>(&self, open: &'a QuickOpen) -> Option<&'a str> {
+        use crate::keymap::{Scope, Spelled, Stroke};
+        let keys = self
+            .keymap
+            .chords_now(
+                self.layout(),
+                Command::QuickOpenCommands,
+                Scope::Prompt,
+                true,
+            )
+            .next()?;
+        let Ok(Spelled::Strokes(strokes)) = crate::keymap::spell(keys) else {
+            return None;
+        };
+        let [Stroke::Text(prefix)] = strokes.as_slice() else {
+            return None;
+        };
+        open.query.trim().strip_prefix(*prefix).map(str::trim)
     }
 
     /// `OpenQuickOpen`: quick open for the window in front, searching its
@@ -522,7 +585,38 @@ impl App {
                 caret: None,
                 scrolled_to: None,
                 scroll_offset: 0.0,
+                picked: None,
             })));
+            self.quick_open_hold();
+        }
+    }
+
+    /// Notes the result the pick is on as the pick: what Enter opens, and
+    /// what the panel shows picked, wherever the list moves it since.
+    fn quick_open_hold(&mut self) {
+        let picked = match &self.dialog {
+            Some(Dialog::QuickOpen(open)) => {
+                let list = self.quick_open_list(open);
+                list.items().nth(open.selected).cloned()
+            }
+            _ => return,
+        };
+        if let Some(open) = self.quick_open_mut() {
+            open.picked = picked;
+        }
+    }
+
+    /// Where the pick is in `list`, `open`'s list as it is now: the result
+    /// it was put on, wherever the list has moved it (a command that came
+    /// or went above it, a list that came in). None where that result is
+    /// no longer listed: then nothing is picked, and Enter opens nothing.
+    pub fn quick_open_picked(&self, open: &QuickOpen, list: &QuickList) -> Option<usize> {
+        match &open.picked {
+            Some(picked) => list.items().position(|item| item.same(picked)),
+            None => {
+                let count = list.items().count();
+                (count > 0).then(|| open.selected.min(count - 1))
+            }
         }
     }
 
@@ -540,6 +634,7 @@ impl App {
             open.selected = 0;
             open.expanded.clear();
         }
+        self.quick_open_hold();
     }
 
     /// `QuickOpenScope`: this connection, or every open one.
@@ -549,21 +644,32 @@ impl App {
             open.selected = 0;
             open.expanded.clear();
         }
+        self.quick_open_hold();
     }
 
     /// `QuickOpenMove`: the pick moves by `step`, and stops at the ends.
     pub(super) fn quick_open_move(&mut self, step: isize) {
-        let count = match &self.dialog {
-            Some(Dialog::QuickOpen(open)) => self.quick_open_list(open).items().count(),
+        let (count, shown) = match &self.dialog {
+            Some(Dialog::QuickOpen(open)) => {
+                let list = self.quick_open_list(open);
+                (list.items().count(), self.quick_open_picked(open, &list))
+            }
             _ => return,
         };
         if let Some(open) = self.quick_open_mut() {
-            // From the pick as it shows: clamped, as the list may have
-            // shrunk under it (a relist, a window closed).
-            let last = count.saturating_sub(1);
-            let from = open.selected.min(last) as isize;
-            open.selected = (from + step).clamp(0, last as isize) as usize;
+            // From the pick as it shows, wherever the list moved it. Where
+            // its result is gone (a relist, a run that ended), it stood
+            // between the result before it and the one now in its place:
+            // up is the one before, down the one in its place.
+            let last = count.saturating_sub(1) as isize;
+            let to = match shown {
+                Some(at) => at as isize + step,
+                None if step > 0 => open.selected as isize + step - 1,
+                None => open.selected as isize + step,
+            };
+            open.selected = to.clamp(0, last) as usize;
         }
+        self.quick_open_hold();
     }
 
     /// `QuickOpenPick`: opens the picked result, or the one at `index`.
@@ -573,29 +679,32 @@ impl App {
     /// opens as the start screen opens it. A command does what it does in
     /// the window quick open was opened in. A "more" row shows its group
     /// in full and quick open stays; the pick stays where it was, on the
-    /// first result that row hid. Anything else closes quick open.
+    /// first result that row hid. Anything else closes quick open. The
+    /// pick is the result it was put on, not a place in the list: where
+    /// that result is no longer listed (a Cancel whose run ended), Enter
+    /// opens nothing, and quick open stays.
     pub(super) fn quick_open_pick(&mut self, index: Option<usize>, in_editor: bool) {
-        let (here, item) = match &self.dialog {
+        let (here, at, item) = match &self.dialog {
             Some(Dialog::QuickOpen(open)) => {
                 let list = self.quick_open_list(open);
-                let count = list.items().count();
-                // The pick is clamped: the list may have shrunk since it
-                // moved (a relist under a typed query).
-                let picked = index.unwrap_or(open.selected.min(count.saturating_sub(1)));
-                (open.tab, list.items().nth(picked).cloned())
+                // A click and a digit name a row of the list drawn this
+                // frame; Enter, the result picked.
+                let picked = index.or_else(|| self.quick_open_picked(open, &list));
+                let item = picked.and_then(|at| list.items().nth(at).cloned());
+                (open.tab, picked, item)
             }
             _ => return,
         };
-        let Some(item) = item else {
+        let (Some(at), Some(item)) = (at, item) else {
             return;
         };
         if let QuickItem::More { group, .. } = item {
             if let Some(open) = self.quick_open_mut() {
                 open.expanded.push(group);
-                if let Some(index) = index {
-                    open.selected = index;
-                }
+                // Where the row stood: the first result it hid comes there.
+                open.selected = at;
             }
+            self.quick_open_hold();
             return;
         }
         self.dialog = None;
@@ -630,12 +739,16 @@ impl App {
                     _ => self.apply(Action::OpenRecent { tab, index }),
                 }
             }
-            QuickItem::Command { command, .. } => self.apply(match command {
-                QuickCommand::NewSql { .. } => Action::NewSqlTab(here),
-                QuickCommand::SwitchDatabase => Action::ShowDatabaseMenu(here),
-                QuickCommand::Agents => Action::ShowAgents(here),
-                QuickCommand::History => Action::ShowHistory(here),
-            }),
+            QuickItem::Command { command, .. } => match command {
+                // As its key does it in the window quick open was opened
+                // in: listed now, so it applies now.
+                QuickCommand::Run(runnable) => {
+                    let actions = self.command_actions(here, runnable.command);
+                    for action in actions.into_iter().flatten() {
+                        self.apply(action);
+                    }
+                }
+            },
             QuickItem::More { .. } => {}
         }
     }

@@ -2650,6 +2650,10 @@ pub struct QuickOpen {
     pub scrolled_to: Option<usize>,
     /// The list's scroll offset, in points.
     pub scroll_offset: f32,
+    /// The result the pick was put on (by a move, a scope, what was
+    /// typed): what Enter opens, wherever the list, which can change by
+    /// itself (a run that ends, a list that comes in), has moved it.
+    pub picked: Option<crate::app::QuickItem>,
 }
 
 /// Where quick open moves its field's caret.
@@ -2671,6 +2675,8 @@ pub enum QuickGroup {
     Views,
     /// The objects of the window `ConnTabId`, of every kind.
     Connection(ConnTabId),
+    /// The commands whose names match.
+    Commands,
 }
 
 /// The Settings window while it is open. The settings themselves are the

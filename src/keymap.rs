@@ -553,6 +553,7 @@ commands! {
     QuickOpenPick,
     QuickOpenPickInEditor,
     QuickOpenScope,
+    QuickOpenCommands,
     QuickOpenNumber,
     QuickOpenClose,
     NextLabel,
@@ -919,6 +920,7 @@ impl Command {
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
             C::QuickOpenPickInEditor => info("Open the one selected in a SQL editor", "", Prompts),
             C::QuickOpenScope => info("Search this connection or every open one", "", Prompts),
+            C::QuickOpenCommands => info("List the commands alone", "", Prompts),
             C::QuickOpenNumber => info("Open a recent by its number", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
             C::NextLabel => info("Next line of the label chooser", "", Prompts),
@@ -2038,6 +2040,10 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("tab")]),
         )
         .when(When::QuickOpen),
+        // Typed first, it lists the commands alone: what quick open reads
+        // from its field's text (macOS, Windows). Omarchy's commands stay
+        // on `:`.
+        bind(C::QuickOpenCommands, PROMPT, keys(&[k(">")]), NONE).when(When::QuickOpen),
         bind(C::QuickOpenNumber, PROMPT, NONE, keys(&[k("1..9")])).when(When::QuickOpen),
         bind(
             C::QuickOpenClose,
