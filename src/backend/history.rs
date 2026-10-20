@@ -52,9 +52,10 @@ pub enum HistoryEvent {
         asked: u64,
         result: Result<Vec<Entry>, String>,
     },
+    /// The calls the log still holds, each with the agent that made it.
     Held {
         asked: u64,
-        held: Result<Vec<i64>, String>,
+        held: Result<Vec<(i64, String)>, String>,
     },
 }
 
@@ -160,7 +161,7 @@ fn work(mut queue: tokio_mpsc::UnboundedReceiver<HistoryCommand>, outbox: &super
 
 /// Which of `calls` the Agents Log at `log` still holds. No log yet holds
 /// none.
-async fn held(log: PathBuf, calls: Vec<i64>) -> Result<Vec<i64>, String> {
+async fn held(log: PathBuf, calls: Vec<i64>) -> Result<Vec<(i64, String)>, String> {
     let opened = tokio::task::spawn_blocking(move || tabletist_mcp::Log::open_to_read(&log))
         .await
         .map_err(|_| "opening it failed".to_owned())?

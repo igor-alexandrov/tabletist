@@ -167,7 +167,8 @@ pub struct Entry {
     /// When it began, in milliseconds of Unix time.
     pub at_ms: i64,
     pub source: Source,
-    /// The SQL editor's tab ("Query 1"), the table's name, or the agent's.
+    /// The SQL editor's tab ("Query 1") or the table's name. Empty for an
+    /// agent's: its name is the Agents Log's, which the tab reads.
     pub detail: String,
     /// An agent's tool.
     pub tool: Option<String>,
@@ -222,14 +223,11 @@ impl Entry {
     }
 
     /// What a search looks through, in lower case: the statement, or an
-    /// agent's name and tool, which is all an agent's entry has.
+    /// agent's tool, which is all an agent's entry has (its agent's name,
+    /// read from the Agents Log, is added by the tab that shows it).
     pub fn searched(&self) -> String {
         match self.source {
-            Source::Agent => format!(
-                "{} {}",
-                self.detail.to_lowercase(),
-                self.tool.as_deref().unwrap_or_default().to_lowercase()
-            ),
+            Source::Agent => self.tool.as_deref().unwrap_or_default().to_lowercase(),
             Source::Sql | Source::Save | Source::Filter => {
                 self.sql.as_deref().unwrap_or_default().to_lowercase()
             }
@@ -651,7 +649,7 @@ mod tests {
     fn agent() -> Entry {
         Entry {
             source: Source::Agent,
-            detail: "Claude Code".into(),
+            detail: String::new(),
             tool: Some("run_query".into()),
             sql: None,
             call: Some(42),
@@ -770,13 +768,12 @@ mod tests {
     }
 
     #[test]
-    fn an_agents_entry_is_searched_by_its_agent_and_tool_alone() {
+    fn an_agents_entry_is_searched_by_its_tool_alone() {
         let entry = agent();
         let filter = |search: &str| Filter {
             search: search.into(),
             ..Filter::default()
         };
-        assert!(filter("claude").passes(&entry, &entry.searched()));
         assert!(filter("RUN_QUERY").passes(&entry, &entry.searched()));
         assert!(!filter("select").passes(&entry, &entry.searched()));
         let sql = read("SELECT name FROM publishers");

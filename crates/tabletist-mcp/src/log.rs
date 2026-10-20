@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use rusqlite::{Connection, ErrorCode, OpenFlags, Row, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, params};
 
 /// The schema's version, in `PRAGMA user_version`.
 const VERSION: i64 = 1;
@@ -361,15 +361,19 @@ impl Log {
         .await
     }
 
-    /// Which of the calls `ids` names the log still holds: those it has
-    /// not forgotten since.
-    pub async fn holds(&self, ids: Vec<i64>) -> Result<Vec<i64>, LogError> {
+    /// Which of the calls `ids` names the log still holds, those it has
+    /// not forgotten since, each with the agent that made it: the query
+    /// history keeps a call's place and reads its agent here, as the log
+    /// keeps what an agent sent and nothing else does.
+    pub async fn holds(&self, ids: Vec<i64>) -> Result<Vec<(i64, String)>, LogError> {
         self.blocking(move |connection| {
-            let mut statement = connection.prepare("SELECT 1 FROM calls WHERE id = ?1")?;
+            let mut statement = connection.prepare("SELECT agent FROM calls WHERE id = ?1")?;
             let mut held = Vec::new();
             for id in ids {
-                if statement.exists([id])? {
-                    held.push(id);
+                let agent: Option<String> =
+                    statement.query_row([id], |row| row.get(0)).optional()?;
+                if let Some(agent) = agent {
+                    held.push((id, agent));
                 }
             }
             Ok(held)
@@ -919,12 +923,14 @@ mod tests {
         assert!(new > old);
         let page = log.page(LogFilter::default(), None, 10).await.unwrap();
         assert_eq!(page.calls[0].id, new, "the place is the one a page reads");
+        // Each with its agent, which the log alone keeps.
+        let agent = || "Claude Code".to_owned();
         assert_eq!(
             log.holds(vec![old, new, new + 7]).await.unwrap(),
-            [old, new]
+            [(old, agent()), (new, agent())]
         );
         log.forget_before(5_000).await.unwrap();
-        assert_eq!(log.holds(vec![old, new]).await.unwrap(), [new]);
+        assert_eq!(log.holds(vec![old, new]).await.unwrap(), [(new, agent())]);
     }
 
     #[tokio::test]

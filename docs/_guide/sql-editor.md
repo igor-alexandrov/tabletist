@@ -120,8 +120,9 @@ It keeps every source, each marked as such:
 - **Agent**: an agent's run, marked in the accent colour. What the agent
   sent stays in the [Agents Log]({% link _guide/agents.md %}#the-log) alone:
   the entry keeps when it ran, the tool, its rows, how long it took and how
-  it ended, and **Show in Agents Log** opens its call there. Once the log
-  drops the call, the entry says it is no longer there.
+  it ended, and **Show in Agents Log** opens its call there. The agent's
+  name is read from the log while it holds the call. Once the log drops
+  the call, the entry says it is no longer there.
 
 Tabletist's own reads of the schema, the row estimates and completion's
 are not kept, nor is a table read with no filter or sort of yours.

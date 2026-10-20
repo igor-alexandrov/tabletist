@@ -146,6 +146,15 @@ struct View<'a> {
 }
 
 impl View<'_> {
+    /// What an entry was of: its tab or its table, or an agent's name as
+    /// the Agents Log says it.
+    fn detail_of<'e>(&'e self, entry: &'e Entry) -> &'e str {
+        match entry.source {
+            Source::Agent => self.history.agent_of(entry).unwrap_or_default(),
+            Source::Sql | Source::Save | Source::Filter => &entry.detail,
+        }
+    }
+
     fn say(&self, text: &'static str) -> String {
         self.look.label(&gettext(self.locale, text))
     }
@@ -762,10 +771,11 @@ impl View<'_> {
         x += widths[0];
         // The source: its icon and word, and what it was of.
         let agent = entry.source == Source::Agent;
-        let (word, detail) = source_words(entry, locale, look);
+        let (word, detail) = source_words(entry, self.detail_of(entry), locale, look);
         let ink = if agent { palette.accent } else { palette.text };
+        let source = joined(&word, &detail);
         if look.terminal {
-            let said = fit(&format!("{word} · {detail}"), widths[1], body);
+            let said = fit(&source, widths[1], body);
             widgets::paint_text(ui, x, y, Text::one(look, body, &said, ink));
         } else {
             source_icon(entry.source)
@@ -838,15 +848,7 @@ impl View<'_> {
         let (result, tone) = result_words(entry, locale, look, palette);
         result_pill(ui, (x + 8.0, y), &result, tone, look, palette);
         // What a screen reader and the tests read of the row.
-        let said = [
-            time,
-            format!("{word} · {detail}"),
-            statement,
-            rows,
-            took,
-            result,
-        ]
-        .join(" · ");
+        let said = [time, source, statement, rows, took, result].join(" · ");
         let id = ui.id().with(("history-row", entry.at_ms, said.as_str()));
         let response = ui.interact(place, id, egui::Sense::hover());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &said));
@@ -935,8 +937,12 @@ impl View<'_> {
         let body = widgets::body(look);
         let small = widgets::secondary(look);
         let strong = TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OGroup);
-        let (word, detail) = source_words(entry, locale, look);
+        let (word, detail) = source_words(entry, self.detail_of(entry), locale, look);
         let agent = entry.source == Source::Agent;
+        let detail = match detail.is_empty() {
+            true => String::new(),
+            false => format!(" · {detail}"),
+        };
         // "SQL editor · Query 1", with production's pill.
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -949,7 +955,7 @@ impl View<'_> {
             let ink = if agent { palette.accent } else { palette.text };
             Text::new(look)
                 .add(strong, &word, ink)
-                .add(body, &format!(" · {detail}"), palette.secondary)
+                .add(body, &detail, palette.secondary)
                 .layout(ui.ctx())
                 .label(ui);
             if self.production {
@@ -1296,8 +1302,9 @@ fn source_icon(source: Source) -> Icon {
 }
 
 /// An entry's source, in a word, and what it was of: "SQL editor" and
-/// "Query 1", "save" and "book_covers" in the terminal look.
-fn source_words(entry: &Entry, locale: Locale, look: &Look) -> (String, String) {
+/// "Query 1"; an agent's `detail` is its name as the Agents Log says it,
+/// where it says one.
+fn source_words(entry: &Entry, detail: &str, locale: Locale, look: &Look) -> (String, String) {
     let word = match (entry.source, look.terminal) {
         (Source::Sql, false) => gettext(locale, "SQL editor"),
         (Source::Sql, true) => gettext(locale, "sql"),
@@ -1307,10 +1314,19 @@ fn source_words(entry: &Entry, locale: Locale, look: &Look) -> (String, String) 
         (Source::Agent, _) => gettext(locale, "Agent"),
     };
     let detail = match look.terminal {
-        true => entry.detail.to_lowercase(),
-        false => entry.detail.clone(),
+        true => detail.to_lowercase(),
+        false => detail.to_owned(),
     };
     (look.label(&word), detail)
+}
+
+/// "SQL editor · Query 1", or the word alone where it was of nothing
+/// named.
+fn joined(word: &str, detail: &str) -> String {
+    match detail.is_empty() {
+        true => word.to_owned(),
+        false => format!("{word} · {detail}"),
+    }
 }
 
 /// A source as the Source menu offers it.

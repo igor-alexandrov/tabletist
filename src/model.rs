@@ -3829,6 +3829,11 @@ pub struct HistoryTab {
     /// The agents' calls the Agents Log no longer holds, by their place
     /// there, as the last look said.
     pub gone: std::collections::BTreeSet<i64>,
+    /// The agent of each call the Agents Log holds, by its place there, as
+    /// the log says it. Only the log keeps what an agent sent, its name
+    /// too: the history keeps the call's place, and the tab holds the name
+    /// while it shows it.
+    pub agents: std::collections::BTreeMap<i64, String>,
     /// The look into the Agents Log that is out, and the calls it asks
     /// about: a call that ended since is not among them.
     pub held_asked: Option<(u64, Vec<i64>)>,
@@ -3874,6 +3879,7 @@ impl HistoryTab {
             line_asked: 0,
             selected: None,
             gone: Default::default(),
+            agents: Default::default(),
             held_asked: None,
             clearing: false,
             said: None,
@@ -3901,6 +3907,23 @@ impl HistoryTab {
     /// Whether an agent's entry's call is no longer in the Agents Log.
     pub fn call_gone(&self, entry: &crate::history::Entry) -> bool {
         entry.call.is_none_or(|call| self.gone.contains(&call))
+    }
+
+    /// The agent of an agent's entry, as the Agents Log names it: none for
+    /// a call the log does not hold, or has not said yet.
+    pub fn agent_of(&self, entry: &crate::history::Entry) -> Option<&str> {
+        self.agents.get(&entry.call?).map(String::as_str)
+    }
+
+    /// Takes the agent of `call` as the Agents Log names it: its entry
+    /// shows it, and its search reads it.
+    pub fn named(&mut self, call: i64, agent: String) {
+        for row in &mut self.entries {
+            if row.entry.call == Some(call) {
+                row.searched = format!("{} {}", agent.to_lowercase(), row.entry.searched());
+            }
+        }
+        self.agents.insert(call, agent);
     }
 }
 

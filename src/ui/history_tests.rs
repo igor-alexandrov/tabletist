@@ -101,7 +101,8 @@ fn entry(harness: &Harness, tab: ConnTabId, source: Source, sql: Option<&str>) -
         detail: match source {
             Source::Sql => "Query 1",
             Source::Save | Source::Filter => "book_covers",
-            Source::Agent => "Claude Code",
+            // An agent's name is the Agents Log's: the history keeps none.
+            Source::Agent => "",
         }
         .into(),
         tool: (source == Source::Agent).then(|| "run_query".into()),
@@ -172,6 +173,28 @@ fn shown_with(harness: &mut Harness, tab: ConnTabId, entries: Vec<Entry>) {
     harness.app.apply(Action::ShowHistory(tab));
     harness.settle();
     harness.answer_history(entries);
+}
+
+/// Answers the newest look into the Agents Log with the calls it holds.
+fn held(harness: &mut Harness, held: Vec<(i64, String)>) {
+    let asked = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::History(HistoryCommand::Held { asked, .. }) => Some(*asked),
+            _ => None,
+        })
+        .expect("the Agents Log is asked");
+    harness
+        .app
+        .apply(Action::Backend(Event::History(HistoryEvent::Held {
+            asked,
+            held: Ok(held),
+        })));
+    harness.settle();
 }
 
 fn history_tabs(harness: &Harness, tab: ConnTabId) -> usize {
@@ -305,10 +328,12 @@ fn each_source_adds_one_entry_with_its_source_and_detail() {
         )))));
     assert_eq!(harness.history_written().len(), before + 1);
     let agent = last_written(&harness);
+    // No name: the client's name is what it sent, the Agents Log's alone.
     assert_eq!(
         (agent.source, agent.detail.as_str(), agent.tool.as_deref()),
-        (Source::Agent, "Claude Code", Some("run_query"))
+        (Source::Agent, "", Some("run_query"))
     );
+    assert!(!format!("{agent:?}").contains("Claude"));
     assert_eq!(
         (agent.call, agent.rows, agent.took_ms),
         (Some(41), Some(14), Some(12))
@@ -929,6 +954,7 @@ fn the_source_the_result_and_the_search_combine() {
     );
     let agent = entry(&harness, tab, Source::Agent, None);
     shown_with(&mut harness, tab, vec![failed, ok, filter, agent]);
+    held(&mut harness, vec![(7, "Claude Code".into())]);
     let shown = |harness: &Harness| {
         let history = harness.app.workspace(tab).unwrap().history_tab().unwrap();
         history
@@ -1346,7 +1372,7 @@ fn a_call_that_ended_while_the_log_was_asked_is_not_taken_for_gone() {
         .app
         .apply(Action::Backend(Event::History(HistoryEvent::Held {
             asked,
-            held: Ok(vec![7]),
+            held: Ok(vec![(7, "Claude Code".into())]),
         })));
     let history = harness.app.workspace(tab).unwrap().history_tab().unwrap();
     assert!(history.gone.is_empty());
@@ -1361,4 +1387,37 @@ fn the_history_tab_stays_through_a_switch_of_database() {
         database: "bookshop_test".into(),
     });
     assert_eq!(history_tabs(&harness, tab), 1);
+}
+
+#[test]
+fn an_agents_name_is_read_from_the_agents_log_and_not_kept() {
+    for look in looks() {
+        let (mut harness, tab, _) = covers(look);
+        let agent = entry(&harness, tab, Source::Agent, None);
+        shown_with(&mut harness, tab, vec![agent]);
+        select(&mut harness, tab, 0);
+        // Until the log says whose call it is, the word alone.
+        let word = look.label("Agent");
+        let named = format!("{word} · {}", look.label("Claude Code"));
+        let rows = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::labels(&tree)
+                .into_iter()
+                .filter(|label| label.contains("run_query"))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            rows(&mut harness).iter().all(|row| !row.contains(&named)),
+            "{}",
+            look.name
+        );
+        held(&mut harness, vec![(7, "Claude Code".into())]);
+        assert!(
+            rows(&mut harness).iter().any(|row| row.contains(&named)),
+            "{}",
+            look.name
+        );
+        // Nothing of it was written to the history.
+        assert!(harness.history_written().is_empty());
+    }
 }

@@ -441,8 +441,11 @@ impl App {
                         Ok(held) => {
                             history.gone = calls
                                 .into_iter()
-                                .filter(|call| !held.contains(call))
+                                .filter(|call| !held.iter().any(|(id, _)| id == call))
                                 .collect();
+                            for (call, agent) in held {
+                                history.named(*call, agent.clone());
+                            }
                         }
                         Err(error) => {
                             log::warn!("the Agents Log could not be read: {error}");
@@ -773,7 +776,8 @@ impl App {
         self.record(Entry {
             at_ms,
             source: Source::Agent,
-            detail: call.agent.clone(),
+            // The agent's name is what it sent: the Agents Log's alone.
+            detail: String::new(),
             tool: Some(call.tool.clone()),
             connection,
             database,
@@ -788,6 +792,19 @@ impl App {
             message: None,
             query: None,
         });
+        // The tabs that show it name it, from what the server said, until
+        // they read it from the log again.
+        if let Some(logged) = call.logged {
+            for tab in self
+                .open_connections()
+                .map(|(tab, _)| tab)
+                .collect::<Vec<_>>()
+            {
+                if let Some(history) = self.history_mut(tab) {
+                    history.named(logged, call.agent.clone());
+                }
+            }
+        }
     }
 }
 
