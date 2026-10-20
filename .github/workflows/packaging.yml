@@ -1,7 +1,8 @@
 name: Packaging
 
-# Builds the macOS app and DMG and the Windows installer the way the release
-# does, and installs them, whenever packaging changes. No signing here.
+# Builds the macOS app and DMG, the Windows installer and the Linux AppImage
+# the way the release does, and installs or runs them, whenever packaging
+# changes. No signing here.
 on:
   pull_request:
     paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
@@ -136,6 +137,41 @@ jobs:
           Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
           Start-Sleep -Seconds 3
           if (Test-Path "$app\tabletist.exe") { throw "still installed after uninstall" }
+
+  appimage:
+    name: Linux AppImage (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add ${{ matrix.target }}
+      # fuse3 to run the AppImage the way a desktop does, mounted.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev desktop-file-utils fuse3
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: AppImage
+        run: |
+          mkdir -p dist
+          bash packaging/linux/appimage.sh "target/${{ matrix.target }}/release/tabletist" \
+            "dist/tabletist-dev-${{ matrix.target }}.AppImage" 0.0.0-dev
+      - name: The AppImage runs and holds the desktop entry
+        run: |
+          appimage="dist/tabletist-dev-${{ matrix.target }}.AppImage"
+          "$appimage" --version
+          "$appimage" --appimage-extract >/dev/null
+          test -x squashfs-root/usr/bin/tabletist
+          test -f squashfs-root/.DirIcon
+          grep -x 'X-AppImage-Version=0.0.0-dev' squashfs-root/dev.tabletist.Tabletist.desktop
 
   arch:
     name: AUR packages
