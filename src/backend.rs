@@ -19,10 +19,12 @@ use crate::connections::SavedConnections;
 use crate::secrets::{Keyring, SecretString};
 
 mod agents;
+mod history;
 
 pub use agents::{
     Agentable, AgentsCommand, AgentsEvent, AppGateway, LOG_PAGE, agent_names, agentable,
 };
+pub use history::{HistoryCommand, HistoryEvent};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
 #[derive(Clone)]
@@ -215,6 +217,8 @@ pub enum Command {
     },
     /// The MCP server: what agents may use, and whether it runs.
     Agents(AgentsCommand),
+    /// The query history's file.
+    History(HistoryCommand),
 }
 
 /// The contents of a state file the backend saves.
@@ -398,6 +402,8 @@ pub enum Event {
     },
     /// What came of an [`AgentsCommand`].
     Agents(AgentsEvent),
+    /// What came of a [`HistoryCommand`].
+    History(HistoryEvent),
 }
 
 /// What the settings file was handed to.
@@ -1707,6 +1713,7 @@ struct Worker {
     settings_watch: Option<SettingsReader>,
     /// The MCP server, its gateway and what agents may use.
     agents: agents::Agents,
+    history: history::History,
     #[cfg(test)]
     watched: Watched,
 }
@@ -1725,6 +1732,7 @@ impl Worker {
             connecting: Default::default(),
             waiting: HashMap::new(),
             settings_watch: None,
+            history: history::History::default(),
             #[cfg(test)]
             watched: Watched::default(),
         };
@@ -2043,6 +2051,7 @@ impl Worker {
                 });
             }
             Command::Agents(command) => self.agents.handle(command, &self.outbox),
+            Command::History(command) => self.history.handle(command, &self.outbox),
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {
@@ -2094,7 +2103,8 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ReadFont { .. }
         | Command::ListFonts
         | Command::Flush { .. }
-        | Command::Agents(_) => SessionId(0),
+        | Command::Agents(_)
+        | Command::History(_) => SessionId(0),
     }
 }
 
@@ -2126,7 +2136,8 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::ReadFont { .. }
         | Command::ListFonts
         | Command::Flush { .. }
-        | Command::Agents(_) => None,
+        | Command::Agents(_)
+        | Command::History(_) => None,
     }
 }
 
@@ -2216,7 +2227,8 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::ReadFont { .. }
         | Command::ListFonts
         | Command::Flush { .. }
-        | Command::Agents(_) => return,
+        | Command::Agents(_)
+        | Command::History(_) => return,
     };
     outbox.emit(event);
 }
@@ -2502,7 +2514,8 @@ async fn run_session(
             | Command::ReadFont { .. }
             | Command::ListFonts
             | Command::Flush { .. }
-            | Command::Agents(_) => None,
+            | Command::Agents(_)
+            | Command::History(_) => None,
         };
         end.command = None;
         {
@@ -4579,6 +4592,99 @@ mod tests {
         let (_, result, cancel) = sql_ran(&mut backend);
         assert_eq!(cancel, None);
         assert!(result.unwrap_err().is_connection_lost());
+    }
+
+    /// An entry of the Bookshop's, as the SQL editor records one.
+    fn history_entry(sql: &str) -> crate::history::Entry {
+        crate::history::Entry {
+            at_ms: 1_792_000_000_000,
+            source: crate::history::Source::Sql,
+            detail: "Query 1".into(),
+            tool: None,
+            connection: "bookshop".into(),
+            database: "bookshop_development".into(),
+            sql: Some(sql.into()),
+            call: None,
+            kind: crate::history::Kind::Read,
+            read_only: true,
+            rows: Some(6),
+            took_ms: Some(38),
+            outcome: crate::history::Outcome::Ok,
+            code: None,
+            message: None,
+            query: None,
+        }
+    }
+
+    fn history_loaded(backend: &mut Backend) -> (u64, Result<Vec<crate::history::Entry>, String>) {
+        loop {
+            match backend.wait(WAIT) {
+                Some(Event::History(HistoryEvent::Loaded { asked, result })) => {
+                    return (asked, result);
+                }
+                Some(_) => {}
+                None => panic!("the history was not read"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_history_is_written_in_order_and_one_that_cannot_be_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        // A folder that is a file: nothing can be written there. The
+        // command is taken and nothing waits for it.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "a file").unwrap();
+        let nowhere = blocked.join("history.sqlite3");
+        backend.send(Command::History(HistoryCommand::Append {
+            file: nowhere.clone(),
+            entry: Box::new(history_entry("SELECT 1")),
+            keep: 10,
+        }));
+        backend.send(Command::History(HistoryCommand::Load {
+            file: nowhere,
+            connection: "bookshop".into(),
+            keep: 10,
+            asked: 1,
+        }));
+        let (asked, result) = history_loaded(&mut backend);
+        assert_eq!(asked, 1);
+        assert!(result.is_err(), "it says the file could not be read");
+        // The next file is written, each entry before the read sent after.
+        let file = dir.path().join("history.sqlite3");
+        for sql in ["SELECT 1", "SELECT 2", "SELECT 3"] {
+            backend.send(Command::History(HistoryCommand::Append {
+                file: file.clone(),
+                entry: Box::new(history_entry(sql)),
+                keep: 2,
+            }));
+        }
+        backend.send(Command::History(HistoryCommand::Load {
+            file: file.clone(),
+            connection: "bookshop".into(),
+            keep: 10,
+            asked: 2,
+        }));
+        let (asked, result) = history_loaded(&mut backend);
+        assert_eq!(asked, 2);
+        let kept: Vec<_> = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| entry.sql)
+            .collect();
+        assert_eq!(kept, ["SELECT 3", "SELECT 2"]);
+        backend.send(Command::History(HistoryCommand::Clear {
+            file: file.clone(),
+            connection: Some("bookshop".into()),
+        }));
+        backend.send(Command::History(HistoryCommand::Load {
+            file,
+            connection: "bookshop".into(),
+            keep: 10,
+            asked: 3,
+        }));
+        assert_eq!(history_loaded(&mut backend).1, Ok(Vec::new()));
     }
 
     #[test]

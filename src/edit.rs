@@ -2374,6 +2374,10 @@ pub struct Saving {
     pub started: Instant,
     /// What to do once everything is written.
     pub then: Option<crate::model::Held>,
+    /// What the query history keeps of the save once it is answered: its
+    /// whole transaction, its values written in. `None` with the history
+    /// off.
+    pub history: Option<Box<crate::history::Entry>>,
 }
 
 /// A save that wrote.

@@ -71,6 +71,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 Kind::Agents,
                 false,
             ),
+            model::Tab::History(history) => (
+                history.id,
+                gettext(locale, "History").to_string(),
+                true,
+                Kind::History,
+                false,
+            ),
         })
         .collect();
     let active = workspace.active_tab;
@@ -314,6 +321,7 @@ enum Kind {
     Table,
     Sql,
     Agents,
+    History,
 }
 
 /// One tab to draw.
@@ -366,6 +374,7 @@ fn mac_tab(
         Kind::Table => Icon::Table,
         Kind::Sql => Icon::Code,
         Kind::Agents => Icon::SquareTerminal,
+        Kind::History => Icon::Clock,
     };
     icon.image(palette.secondary, 14.0).paint_at(
         ui,
@@ -408,7 +417,7 @@ fn terminal_tab(
     // The look's lower case for an editor's name and the Agents tab's; a
     // table keeps its own.
     let name = match tab.kind {
-        Kind::Sql | Kind::Agents => look.label(tab.name),
+        Kind::Sql | Kind::Agents | Kind::History => look.label(tab.name),
         Kind::Table => tab.name.to_owned(),
     };
     // A table with pending changes says so after its name.

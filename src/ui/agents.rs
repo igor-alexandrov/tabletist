@@ -82,7 +82,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let agents_tab = app.workspace(tab).and_then(|workspace| {
         workspace.tabs.iter().find_map(|open| match open {
             crate::model::Tab::Agents(agents) => Some(agents),
-            crate::model::Tab::Object(_) | crate::model::Tab::Sql(_) => None,
+            crate::model::Tab::Object(_)
+            | crate::model::Tab::Sql(_)
+            | crate::model::Tab::History(_) => None,
         })
     });
     let view = agents_tab.map_or_else(AgentsView::default, |agents| agents.view);

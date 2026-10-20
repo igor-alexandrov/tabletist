@@ -162,6 +162,16 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
             if settings_menu.is_none() {
                 log::warn!("the app menu has no place for a Settings item");
             }
+            #[cfg(target_os = "macos")]
+            let history_menu = crate::macos::HistoryMenu::attach(
+                &cc.egui_ctx,
+                &crate::i18n::gettext(app.locale, "View"),
+                &crate::i18n::gettext(app.locale, "History"),
+            );
+            #[cfg(target_os = "macos")]
+            if history_menu.is_none() {
+                log::warn!("the menu bar has no place for a View menu");
+            }
             Ok(Box::new(Window {
                 app,
                 shot,
@@ -172,6 +182,8 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
                 about_menu,
                 #[cfg(target_os = "macos")]
                 settings_menu,
+                #[cfg(target_os = "macos")]
+                history_menu,
             }))
         }),
     )
@@ -308,6 +320,9 @@ struct Window {
     /// window.
     #[cfg(target_os = "macos")]
     settings_menu: Option<crate::macos::SettingsMenu>,
+    /// macOS: View › History, which shows the window's History tab.
+    #[cfg(target_os = "macos")]
+    history_menu: Option<crate::macos::HistoryMenu>,
 }
 
 impl Window {
@@ -374,6 +389,18 @@ impl eframe::App for Window {
             .is_some_and(crate::macos::SettingsMenu::take)
         {
             self.app.actions.push(crate::model::Action::ShowSettings);
+        }
+        // The History tab of the connection in front, as ⌘Y shows it.
+        #[cfg(target_os = "macos")]
+        if self
+            .history_menu
+            .as_ref()
+            .is_some_and(crate::macos::HistoryMenu::take)
+        {
+            let tab = self.app.active_tab_id();
+            self.app
+                .actions
+                .push(crate::model::Action::ShowHistory(tab));
         }
         self.app.logic(ctx);
         self.drive_shot(ctx);

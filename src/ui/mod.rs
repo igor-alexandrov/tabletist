@@ -40,6 +40,9 @@ pub mod focus;
 pub mod format;
 pub mod grid;
 pub mod help;
+pub mod history;
+#[cfg(test)]
+mod history_tests;
 pub mod host_key_prompt;
 #[cfg(test)]
 mod insert_audit_tests;
@@ -5823,10 +5826,15 @@ value_tags   = true
             let tab = harness.connect_fake();
             // "+ sql" ends the terminal's strip; the others have a button
             // under the tree. Both are named for what they open.
+            // The macOS button is a split button: its main part says its
+            // keys in its name, beside the History clock.
+            let keys =
+                crate::ui::keys::written(&harness.ctx, &look, crate::keymap::Command::NewSqlTab);
+            let main = format!("New SQL editor ({})", keys.as_str());
             let name = if look.terminal {
                 "New SQL editor"
             } else {
-                "SQL Editor"
+                main.as_str()
             };
             harness.click(name);
             let workspace = harness.app.workspace(tab).unwrap();

@@ -520,18 +520,15 @@ fn the_sheet_sets_each_editor_option_with_a_click() {
         "Tables, views, columns and functions from the schema",
         &format!("On {}", complete.as_str()),
         "Current line highlight",
+        // History is built: its row covers every source.
+        "HISTORY",
+        "Keep query history",
+        "Per connection, on this computer: SQL editor, grid saves, filters and agent runs. Results are never stored.",
     ] {
         assert!(shows(&mut harness, words), "{words}");
     }
     // The rows of what is not built yet are not there.
-    for words in [
-        "Keybindings",
-        "Indent",
-        "Wrap",
-        "FORMAT",
-        "HISTORY",
-        "Keywords",
-    ] {
+    for words in ["Keybindings", "Indent", "Wrap", "FORMAT", "Keywords"] {
         assert!(!shows(&mut harness, words), "{words}");
     }
     let saves = settings_saves(&harness);

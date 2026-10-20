@@ -286,7 +286,8 @@ impl Kept {
 }
 
 impl KeptTab {
-    fn of(object: &ObjectTab) -> Self {
+    /// The tab as it is now: its object, its sort and its filter bar.
+    pub(crate) fn of(object: &ObjectTab) -> Self {
         let bar = &object.filter;
         Self {
             schema: object.object.schema.clone(),
@@ -325,8 +326,24 @@ impl KeptTab {
         let kind = kind_of(&self.kind)?;
         let object = ObjectRef::new(self.schema.clone(), self.name.clone());
         let mut tab = ObjectTab::new(id, object, kind, self.pinned, page_size, None);
-        tab.query.sort = self
-            .sort
+        tab.query.sort = self.sorts();
+        tab.filter = self.bar();
+        (tab.query.filters, tab.query.raw_where) = tab.filter.to_query();
+        tab.reopened = true;
+        Some(tab)
+    }
+
+    /// The object the tab shows, and its kind: `None` for a kind this
+    /// version does not know.
+    pub(crate) fn object(&self) -> Option<(ObjectRef, ObjectKind)> {
+        let kind = kind_of(&self.kind)?;
+        Some((ObjectRef::new(self.schema.clone(), self.name.clone()), kind))
+    }
+
+    /// Its sort, without a column whose direction this version does not
+    /// know.
+    pub(crate) fn sorts(&self) -> Vec<Sort> {
+        self.sort
             .iter()
             .filter_map(|(column, dir)| {
                 Some(Sort {
@@ -334,9 +351,14 @@ impl KeptTab {
                     dir: dir_of(dir)?,
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    /// Its filter bar, without a row whose operator this version does not
+    /// know.
+    pub(crate) fn bar(&self) -> FilterBar {
         let filter = &self.filter;
-        tab.filter = FilterBar {
+        FilterBar {
             open: filter.open,
             rows: filter
                 .rows
@@ -352,10 +374,7 @@ impl KeptTab {
             raw: filter.raw,
             raw_text: filter.raw_text.clone(),
             ..FilterBar::default()
-        };
-        (tab.query.filters, tab.query.raw_where) = tab.filter.to_query();
-        tab.reopened = true;
-        Some(tab)
+        }
     }
 }
 

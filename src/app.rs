@@ -28,6 +28,7 @@ use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
 mod editing;
+mod history;
 mod key_picker;
 mod labels;
 #[cfg(test)]
@@ -83,6 +84,8 @@ pub enum PinState {
 pub enum Found {
     /// The window's Agents tab.
     Agents,
+    /// The window's History tab.
+    History,
     Object(ObjectRef, ObjectKind),
 }
 
@@ -1132,6 +1135,7 @@ impl App {
                     object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     self.fetch_rows(tab, object_tab);
+                    self.note_query_load(tab, object_tab);
                 }
             }
             Action::FollowForeignKey {
@@ -1326,6 +1330,7 @@ impl App {
                     object.set_cursor(None, Reach::End);
                     object.rows.value = None;
                     self.fetch_rows(tab, object_tab);
+                    self.note_query_load(tab, object_tab);
                 }
             }
             Action::SaveValue { tab, id, row, col } => {
@@ -1345,7 +1350,7 @@ impl App {
                             let (columns, rows, _) = sql.shown_rows()?;
                             ("query", columns, rows)
                         }
-                        Tab::Agents(_) => return None,
+                        Tab::Agents(_) | Tab::History(_) => return None,
                     };
                     let tabletist_db::Value::Bytes(bytes) = rows.get(row)?.get(col)? else {
                         return None;
@@ -1923,6 +1928,17 @@ impl App {
                 self.new_sql_tab(tab);
             }
             Action::ShowAgents(tab) => self.show_agents(tab),
+            action @ (Action::ShowHistory(_)
+            | Action::FilterHistory { .. }
+            | Action::ShowHistoryLine { .. }
+            | Action::SelectHistoryEntry { .. }
+            | Action::MoveHistorySelection { .. }
+            | Action::RunHistoryAgain { .. }
+            | Action::OpenHistoryEntry { .. }
+            | Action::ReapplyHistoryFilter { .. }
+            | Action::ShowHistoryCall { .. }
+            | Action::ClearHistory(_)
+            | Action::ConfirmClearHistory { .. }) => self.history_action(action),
             Action::TurnAgentsOn => self.turn_agents_on(),
             Action::StopAgentSession(id) => self.stop_agent_session(id),
             Action::StopAgentsHere(tab) => self.stop_agents_here(tab),
@@ -2022,7 +2038,7 @@ impl App {
                     let conn = workspace.conn_id.0.clone();
                     workspace.tabs.iter().find_map(|open| match open {
                         Tab::Agents(agents) => Some(agents.log.filter(&conn)),
-                        Tab::Object(_) | Tab::Sql(_) => None,
+                        Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
                     })
                 });
                 if let Some(filter) = filter {
@@ -2217,6 +2233,18 @@ impl App {
                 }
             }
             Action::ShowSettingsPane(pane) => {
+                // From the window, where Settings is not open (History's
+                // Open Settings › Editor): it opens on the pane.
+                if matches!(self.dialog, None | Some(Dialog::Help))
+                    && crate::model::SettingsPane::listed().contains(&pane)
+                {
+                    self.dialog = Some(Dialog::Settings(Box::new(crate::model::SettingsDialog {
+                        pane,
+                        ..Default::default()
+                    })));
+                    self.list_fonts();
+                    return;
+                }
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog
                     && crate::model::SettingsPane::listed().contains(&pane)
                     && dialog.pane != pane
@@ -2225,6 +2253,7 @@ impl App {
                     dialog.row = 0;
                     // The question was about the other pane's options.
                     dialog.resetting = false;
+                    dialog.history_question = None;
                 }
             }
             Action::ChooseAgentSetup(agent) => {
@@ -2268,7 +2297,39 @@ impl App {
             }
             Action::SetOption(value) => {
                 let value = value.for_look(&self.settings, self.look.terminal);
-                self.change_settings(|settings| value.set(settings))
+                // Don't keep, from Settings: what is kept stays until the
+                // person says to delete it.
+                let forgets = matches!(value, crate::settings::OptionValue::HistoryKeep(0))
+                    && self.settings.history_keep > 0;
+                self.change_settings(|settings| value.set(settings));
+                if forgets && let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    dialog.history_question = Some(crate::model::HistoryQuestion::Forget);
+                }
+            }
+            Action::ShowHistoryFromSettings => {
+                if !matches!(self.dialog, Some(Dialog::Settings(_))) {
+                    return;
+                }
+                let Some(tab) = self.agents_window() else {
+                    return;
+                };
+                self.dialog = None;
+                self.apply(Action::ActivateConnTab(tab));
+                self.apply(Action::ShowHistory(tab));
+            }
+            Action::ClearAllHistory => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    dialog.history_question = Some(crate::model::HistoryQuestion::ClearAll);
+                }
+            }
+            Action::AnswerHistoryQuestion(clear) => {
+                let asked = match &mut self.dialog {
+                    Some(Dialog::Settings(dialog)) => dialog.history_question.take(),
+                    _ => None,
+                };
+                if asked.is_some() && clear {
+                    self.clear_history(None);
+                }
             }
             Action::EditSettingsFile => {
                 let text = self.offer_settings_text();
@@ -2354,6 +2415,10 @@ impl App {
                     Some(Found::Agents) => {
                         self.dialog = None;
                         self.apply(Action::ShowAgents(tab));
+                    }
+                    Some(Found::History) => {
+                        self.dialog = None;
+                        self.apply(Action::ShowHistory(tab));
                     }
                     Some(Found::Object(object, kind)) => {
                         self.dialog = None;
@@ -2546,10 +2611,10 @@ impl App {
                     workspace.catalog_changed();
                     // The other database has other objects, but a SQL
                     // editor's text is the user's work: it stays, and so
-                    // does the connection's Agents tab.
-                    workspace
-                        .tabs
-                        .retain(|open| matches!(open, Tab::Sql(_) | Tab::Agents(_)));
+                    // do the connection's Agents and History tabs.
+                    workspace.tabs.retain(|open| {
+                        matches!(open, Tab::Sql(_) | Tab::Agents(_) | Tab::History(_))
+                    });
                     workspace.active_tab = workspace
                         .active_tab
                         .filter(|id| workspace.tab(*id).is_some())
@@ -3839,6 +3904,9 @@ impl App {
                 let Some(workspace) = self.workspace_mut(tab) else {
                     return;
                 };
+                let dialect = workspace.driver.dialect();
+                let base =
+                    history::entry_on(workspace, crate::history::Source::Filter, String::new());
                 let Some(object) = workspace
                     .object_tabs_mut()
                     .find(|o| o.rows.pending == Some(request))
@@ -3847,6 +3915,10 @@ impl App {
                 };
                 let id = object.id;
                 let failed = result.is_err();
+                // A load for a filter or a sort the person set, which the
+                // history keeps.
+                let filtered = (object.history_load.take() == Some(request))
+                    .then(|| history::filtered(base, dialect, object, &result));
                 object.rows.finish(request, result);
                 // The marks of the last save and the note of a locked cell
                 // were about the page this one replaces. Nothing is pending
@@ -3890,6 +3962,9 @@ impl App {
                     Some(Dialog::Conflict(prompt)) if prompt.tab == tab && prompt.id == id
                 ) {
                     self.dialog = None;
+                }
+                if let Some(entry) = filtered {
+                    self.record(entry);
                 }
             }
             Event::Structure {
@@ -4132,6 +4207,7 @@ impl App {
                 AgentsEvent::Sessions(_) => {}
                 AgentsEvent::Called(call) => {
                     let on = call.connection.clone();
+                    self.record_call(&call);
                     self.agents.called(call);
                     self.log_called(on.as_deref());
                 }
@@ -4226,6 +4302,7 @@ impl App {
                 request,
                 result,
             } => self.written(session, request, result),
+            Event::History(event) => self.history_event(event),
             Event::SqlRan {
                 session,
                 request,
@@ -4234,17 +4311,40 @@ impl App {
             } => {
                 // An answer for a closed tab or a replaced run finds no
                 // editor waiting for it.
-                let Some(sql) = self
+                let locale = self.locale;
+                let Some(workspace) = self
                     .tab_for_session(session)
                     .and_then(|tab| self.workspace_mut(tab))
-                    .and_then(|workspace| {
-                        workspace
-                            .sql_tabs_mut()
-                            .find(|sql| sql.run.pending == Some(request))
-                    })
                 else {
                     return;
                 };
+                let dialect = workspace.driver.dialect();
+                let base = history::entry_on(workspace, crate::history::Source::Sql, String::new());
+                let Some(sql) = workspace
+                    .sql_tabs_mut()
+                    .find(|sql| sql.run.pending == Some(request))
+                else {
+                    return;
+                };
+                // What ran, each statement as it was split, before the run
+                // takes the statements over.
+                let ran = sql.in_flight.as_ref().map(|run| {
+                    let base = crate::history::Entry {
+                        detail: format!("{} {}", gettext(locale, "Query"), sql.number),
+                        read_only: run.mode == tabletist_db::ScriptMode::ReadOnly,
+                        at_ms: base.at_ms.saturating_sub(
+                            i64::try_from(run.started.elapsed().as_millis()).unwrap_or_default(),
+                        ),
+                        ..base
+                    };
+                    history::run_entries(
+                        &base,
+                        dialect,
+                        (&run.statements, run.mode),
+                        &result,
+                        cancel,
+                    )
+                });
                 let messages = opens_messages(&result, cancel);
                 if sql.finish_run(request, result, cancel) {
                     sql.selection = None;
@@ -4253,6 +4353,9 @@ impl App {
                     } else {
                         ResultPane::Results
                     };
+                }
+                for entry in ran.unwrap_or_default() {
+                    self.record(entry);
                 }
             }
         }
@@ -4944,6 +5047,11 @@ impl App {
                 }
             }
         }
+        // The history keeps what the setting says from now on: off, it
+        // keeps what it has until the person deletes it.
+        if old.history_keep != self.settings.history_keep {
+            self.trim_history(self.settings.history_keep);
+        }
         if old.autocomplete != self.settings.autocomplete && !self.settings.autocomplete.on_key() {
             // Off, no list stays open either.
             for tab in &mut self.tabs {
@@ -5554,6 +5662,7 @@ impl App {
     fn agents_log_read(&mut self, asked: u64, page: Result<tabletist_mcp::Page, String>) {
         let tabs: Vec<ConnTabId> = self.open_connections().map(|(tab, _)| tab).collect();
         let mut stale = Vec::new();
+        let mut seek = Vec::new();
         for tab in tabs {
             let Some(agents) = self
                 .workspace_mut(tab)
@@ -5592,6 +5701,19 @@ impl App {
                     {
                         log.selected = None;
                     }
+                    // A call History showed: selected once it is read, and
+                    // read on for until the log has no older one.
+                    if let Some(id) = log.seek {
+                        if log.calls.iter().any(|logged| logged.id == id) {
+                            log.selected = Some(id);
+                            log.details_open = true;
+                            log.seek = None;
+                        } else if log.more && log.calls.last().is_some_and(|last| last.id > id) {
+                            seek.push(tab);
+                        } else {
+                            log.seek = None;
+                        }
+                    }
                 }
                 Err(error) => {
                     // Its words are the file's and SQLite's, never a call's.
@@ -5602,6 +5724,9 @@ impl App {
         }
         for tab in stale {
             self.read_agents_log(tab, false);
+        }
+        for tab in seek {
+            self.read_agents_log(tab, true);
         }
     }
 
@@ -5792,7 +5917,7 @@ impl App {
         let workspace = self.workspace(tab)?;
         let selected = workspace.tabs.iter().find_map(|open| match open {
             Tab::Agents(agents) => Some(agents.selected.as_ref()),
-            Tab::Object(_) | Tab::Sql(_) => None,
+            Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
         })?;
         let listed = self.agents.listed(&workspace.conn_id);
         listed
@@ -5870,7 +5995,7 @@ impl App {
             .and_then(|workspace| {
                 workspace.tabs.iter().find_map(|open| match open {
                     Tab::Agents(agents) => Some(agents),
-                    Tab::Object(_) | Tab::Sql(_) => None,
+                    Tab::Object(_) | Tab::Sql(_) | Tab::History(_) => None,
                 })
             })
             .and_then(|agents| agents.log.calls.iter().find(|logged| logged.id == id))
@@ -6602,18 +6727,28 @@ impl App {
         }
     }
 
-    /// What quick open lists for `query`: the Agents tab first where what
-    /// is typed is the start of "agents", two letters at least, and agents
-    /// can reach the app; then the objects. Fewer letters, or letters
-    /// that are only somewhere in the word, are a table's.
+    /// What quick open lists for `query`: the Agents and History tabs
+    /// first where what is typed is the start of "agents" or "history", two
+    /// letters at least (and agents can reach the app, for theirs); then
+    /// the objects. Fewer letters, or letters that are only somewhere in
+    /// the word, are a table's. After `>` it lists those tabs alone, by
+    /// what follows it: `> History`.
     pub fn quick_open_found(&self, tab: ConnTabId, query: &str) -> Vec<Found> {
         let typed = query.trim().to_lowercase();
-        let agents = crate::endpoint::AVAILABLE && typed.len() >= 2 && "agents".starts_with(&typed);
-        let objects = self.quick_open_matches(tab, query).into_iter();
-        agents
-            .then_some(Found::Agents)
+        let (commands, typed) = match typed.strip_prefix('>') {
+            Some(rest) => (true, rest.trim().to_owned()),
+            None => (false, typed),
+        };
+        let names = |word: &str| (commands || typed.len() >= 2) && word.starts_with(&typed);
+        let agents = crate::endpoint::AVAILABLE && names("agents");
+        let tabs = [(agents, Found::Agents), (names("history"), Found::History)]
             .into_iter()
-            .chain(objects.map(|(object, kind)| Found::Object(object, kind)))
+            .filter_map(|(listed, found)| listed.then_some(found));
+        if commands {
+            return tabs.collect();
+        }
+        let objects = self.quick_open_matches(tab, query).into_iter();
+        tabs.chain(objects.map(|(object, kind)| Found::Object(object, kind)))
             .collect()
     }
 
@@ -6668,6 +6803,7 @@ impl App {
         object.set_cursor(None, Reach::End);
         self.reset_count(tab, id);
         self.fetch_rows(tab, id);
+        self.note_query_load(tab, id);
     }
 
     pub fn count_rows(&mut self, tab: ConnTabId, id: TabId) {
@@ -19012,10 +19148,11 @@ masked = ["orders.email"]
                 gone: Vec::new(),
             }));
             assert!(!object(&harness, tab, id).edits.holds());
-            assert!(matches!(
-                harness.app.backend.sent[before..].last(),
-                Some(Command::FetchRows { .. })
-            ));
+            // After the history's entry of the save, which is written apart.
+            let sent = harness.app.backend.sent[before..]
+                .iter()
+                .rfind(|command| !matches!(command, Command::History(_)));
+            assert!(matches!(sent, Some(Command::FetchRows { .. })));
         }
 
         #[test]
@@ -21040,10 +21177,11 @@ masked = ["orders.email"]
                 after.page().unwrap().rows[1][1],
                 Value::Text("user2@example.com".into())
             );
-            assert!(matches!(
-                harness.app.backend.sent[before..].last(),
-                Some(Command::FetchRows { .. })
-            ));
+            // After the history's entry of the save, which is written apart.
+            let sent = harness.app.backend.sent[before..]
+                .iter()
+                .rfind(|command| !matches!(command, Command::History(_)));
+            assert!(matches!(sent, Some(Command::FetchRows { .. })));
         }
 
         #[test]

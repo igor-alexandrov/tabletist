@@ -98,9 +98,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let agents = app
                 .workspace(tab)
                 .is_some_and(crate::model::Workspace::agents_in_front);
+            let history = app
+                .workspace(tab)
+                .is_some_and(crate::model::Workspace::history_in_front);
             match active {
                 Some(sql_tab) if sql => super::sql_editor::show(app, ui, tab, sql_tab),
                 Some(_) if agents => super::agents::show(app, ui, tab),
+                Some(_) if history => super::history::show(app, ui, tab),
                 Some(object_tab) => {
                     super::data_view::header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {
@@ -2187,6 +2191,47 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             })
         })
         .unwrap_or_default();
+    // The History tab in front: what its selected entry offers, and what
+    // its line says of a key that did nothing.
+    let history_line = app
+        .workspace(tab)
+        .filter(|workspace| workspace.history_in_front())
+        .and_then(crate::model::Workspace::history_tab)
+        .map(|history| {
+            let chosen = history.chosen().map(|row| {
+                (
+                    row.entry.runs_again(),
+                    row.entry.source,
+                    row.entry.sql.is_some(),
+                )
+            });
+            (chosen, history.said.clone(), history.shown().count())
+        });
+    let history_key = app.keymap.key(app.layout(), Command::History);
+    let history_keys = [
+        Command::MoveInHistory,
+        Command::RunHistoryAgain,
+        Command::OpenHistoryEntry,
+        Command::ShowHistoryCall,
+        Command::ReapplyHistoryFilter,
+        Command::CopyHistorySql,
+        Command::FilterHistory,
+        Command::ClearHistory,
+        Command::CloseHistoryLine,
+    ]
+    .map(|command| app.keymap.key(app.layout(), command));
+    let history_words = [
+        "move",
+        "run again",
+        "open in sql",
+        "agents log",
+        "reapply filter",
+        "copy sql",
+        "filter",
+        "clear",
+        "back",
+    ]
+    .map(|word| gettext(locale, word));
     let mut editing = editing_status(app, tab);
     // What was just done (a copy of the review's SQL), where the line has
     // nothing of a lock or of a save to say: this look floats no toast.
@@ -2359,6 +2404,56 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 None => agents_hints.push((&agents_log_key, &*log_words[0], true)),
             }
             agents_hints.push((&sidebar_key, "tables", true));
+            if let Some((chosen, said, shown)) = &history_line {
+                // j/k move, r run again, enter open in sql, a agents log,
+                // f reapply filter, y copy sql, / filter, :history clear,
+                // esc back: each where the selected entry offers it.
+                let offered = |index: usize| match (index, chosen) {
+                    (0 | 6 | 7 | 8, _) => true,
+                    (_, None) => false,
+                    (1, Some((again, _, _))) => *again,
+                    (2 | 5, Some((_, _, sql))) => *sql,
+                    (3, Some((_, source, _))) => *source == crate::history::Source::Agent,
+                    (4, Some((_, source, _))) => *source == crate::history::Source::Filter,
+                    _ => false,
+                };
+                let hints: Vec<widgets::Hint<'_>> = history_keys
+                    .iter()
+                    .zip(&history_words)
+                    .enumerate()
+                    .filter(|(index, _)| offered(*index))
+                    .map(|(_, (key, word))| (key, &**word, true))
+                    .collect();
+                let left = rect.left() + 12.0;
+                widgets::key_hints(ui, (left, y), &hints, 18.0, &look, &palette);
+                // Why a key did nothing, or what was just done, at the
+                // line's end: this look floats no toast.
+                // Else how many it shows: ":history · 184 statements".
+                let count = u32::try_from(*shown).unwrap_or(u32::MAX);
+                let count = crate::i18n::ngettext(locale, "{n} statement", "{n} statements", count)
+                    .replace("{n}", &shown.to_string());
+                let said = said
+                    .as_ref()
+                    .map(|said| (look.label(said), palette.warning))
+                    .or_else(|| {
+                        editing
+                            .said
+                            .as_ref()
+                            .map(|said| (said.text.clone(), said.color))
+                    })
+                    .or_else(|| Some((format!("{} · {count}", history_key.as_str()), palette.dim)));
+                if let Some((said, color)) = said {
+                    let role = TextRole::OSecondary;
+                    let text = Text::one(&look, role, &said, color);
+                    let width = widgets::paint_text_right(ui, rect.right() - 12.0, y, text);
+                    let place = Rect::from_min_size(
+                        pos2(rect.right() - 12.0 - width, y - 8.0),
+                        vec2(width.max(1.0), 16.0),
+                    );
+                    widgets::announce(ui, place, &said);
+                }
+                return;
+            }
             if agents.is_some() {
                 let left = rect.left() + 12.0;
                 widgets::key_hints(ui, (left, y), &agents_hints, 18.0, &look, &palette);

@@ -157,6 +157,13 @@ impl AppDirs {
         self.state.join("agents.sqlite3")
     }
 
+    /// Every statement run on each saved connection, from every source,
+    /// kept to the settings' `[editor.history] keep` per connection.
+    /// Beside the Agents Log, which an agent's entry links to.
+    pub fn history_file(&self) -> PathBuf {
+        self.state.join("history.sqlite3")
+    }
+
     /// Where `tabletist mcp` reaches the running app: the directory of its
     /// socket, `mcp.sock`, and of the key a relay sends first, `mcp.key`.
     /// Private to the user: made 0700 by the app before it listens.

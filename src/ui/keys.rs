@@ -473,9 +473,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|object| object.view == crate::model::ObjectView::Structure)
     });
+    // The History tab's list is somewhere else: its arrows are its own,
+    // unless the person went to the tree.
     let tree_arrows = !editing
         && app.workspace(active).is_some_and(|workspace| {
-            let nowhere_else = !any_grid && structure.is_none();
+            let nowhere_else = !any_grid && structure.is_none() && !workspace.history_in_front();
             workspace.pane == crate::model::Pane::Tree || nowhere_else
         });
     // That view has the keys: the tree does not, nor a field, a button or
@@ -523,12 +525,19 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && app
             .workspace(active)
             .is_some_and(crate::model::Workspace::agents_in_front);
+    // The History tab in front: its own keys, and the global ones.
+    let history = !on_picker
+        && app
+            .workspace(active)
+            .is_some_and(crate::model::Workspace::history_in_front);
     let front = if on_picker {
         Scope::Connections
     } else if sql.is_some() {
         Scope::SqlEditor
     } else if agents {
         Scope::Agents
+    } else if history {
+        Scope::History
     } else {
         Scope::Grid
     };
@@ -570,6 +579,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         &[Scope::Start]
     } else if agents {
         &[Scope::Agents]
+    } else if history {
+        &[Scope::History]
     } else if sql.is_some() && sql_grid {
         &[Scope::Results, Scope::SqlEditor]
     } else if sql.is_some() {
@@ -768,7 +779,23 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             && crate::endpoint::AVAILABLE
             && on(input, Command::ShowAgents, Scope::Global).count > 0
         {
-            actions.push(Action::ShowAgents(active));
+            // With an agent's entry selected in History, its call: the key
+            // its Show in Agents Log button names.
+            let shown = history_shown(app, active);
+            let call = shown
+                .and_then(crate::model::HistoryTab::chosen)
+                .filter(|chosen| chosen.entry.source == crate::history::Source::Agent)
+                .filter(|chosen| shown.is_some_and(|history| !history.call_gone(&chosen.entry)));
+            actions.push(match call {
+                Some(chosen) => Action::ShowHistoryCall {
+                    tab: active,
+                    key: chosen.key,
+                },
+                None => Action::ShowAgents(active),
+            });
+        }
+        if in_workspace && on(input, Command::History, Scope::Global).count > 0 {
+            actions.push(Action::ShowHistory(active));
         }
         if on(input, Command::Connections, Scope::Global).count > 0 {
             actions.push(Action::ShowConnections);
@@ -1113,6 +1140,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         let keyboard = !editing && grid && !tree_arrows && !focused;
         let on_field = field.filter(|_| !editing);
         editing_keys(app, ctx, (keyboard, normal), on_field, &mut actions);
+    }
+    // The History tab's keys that are no letters, in every look: its
+    // arrows, Enter in the terminal look, and the macOS look's chords. Not
+    // from the tree, nor from a field or a button.
+    if !editing
+        && app.dialog.is_none()
+        && !focused
+        && let Some(history) = history_shown(app, active).filter(|_| !on_tree)
+    {
+        history_chords(app, ctx, active, history, &mut actions);
     }
     if !editing && app.dialog.is_none() {
         // A click ends a first key's wait: what is typed after it is typed
@@ -1885,6 +1922,116 @@ fn agents_lists(app: &App, tab: ConnTabId) -> bool {
     listing && !app.agents.listed(&workspace.conn_id).is_empty()
 }
 
+/// The History tab of `tab`, while it is in front.
+fn history_shown(app: &App, tab: ConnTabId) -> Option<&crate::model::HistoryTab> {
+    let workspace = app
+        .workspace(tab)
+        .filter(|workspace| workspace.history_in_front())?;
+    workspace.history_tab()
+}
+
+/// The History tab's keys that are no letters, which [`letters`] reads:
+/// the arrows, Enter and Esc, and the macOS look's chords. A letter of the
+/// terminal look's is left to the letters.
+fn history_chords(
+    app: &App,
+    ctx: &egui::Context,
+    tab: ConnTabId,
+    history: &crate::model::HistoryTab,
+    actions: &mut Vec<Action>,
+) {
+    let layout = app.layout();
+    let keymap = &app.keymap;
+    let holds = |command: Command| {
+        keymap
+            .of(command)
+            .all(|binding| binding.when != crate::keymap::When::ClearingHistory || history.clearing)
+    };
+    let chords = |command: Command| {
+        keymap
+            .chords_now(layout, command, Scope::History, true)
+            .filter(|keys| keys.chars().count() > 1)
+            .filter(move |_| holds(command))
+            .collect::<Vec<_>>()
+    };
+    ctx.input_mut(|input| {
+        let pressed = |input: &mut egui::InputState, command: Command| {
+            chords(command)
+                .into_iter()
+                .map(|keys| presses(input, layout, keys))
+                .any(|presses| presses.fresh)
+        };
+        // While Clear history asks, its answer is the only key.
+        if history.clearing {
+            if pressed(input, Command::KeepHistory) {
+                actions.push(Action::ConfirmClearHistory { tab, clear: false });
+            }
+            return;
+        }
+        for keys in chords(Command::MoveInHistory) {
+            let step = match keys {
+                "up" => -1,
+                "down" => 1,
+                _ => continue,
+            };
+            let count = presses(input, layout, keys).count;
+            actions.extend((0..count).map(|_| Action::MoveHistorySelection { tab, step }));
+        }
+        if pressed(input, Command::FilterHistory) {
+            actions.push(Action::ShowHistoryLine { tab, open: true });
+        }
+        let Some(chosen) = history.chosen() else {
+            return;
+        };
+        for command in [
+            Command::RunHistoryAgain,
+            Command::OpenHistoryEntry,
+            Command::ShowHistoryCall,
+            Command::ReapplyHistoryFilter,
+            Command::CopyHistorySql,
+        ] {
+            if pressed(input, command) {
+                history_command(ctx, app, tab, command, chosen, actions);
+            }
+        }
+    });
+}
+
+/// What one of the History tab's commands does with the selected entry:
+/// only what the entry offers.
+fn history_command(
+    ctx: &egui::Context,
+    app: &App,
+    tab: ConnTabId,
+    command: Command,
+    chosen: &crate::model::HistoryRow,
+    actions: &mut Vec<Action>,
+) {
+    use crate::history::Source;
+    let (entry, key) = (&chosen.entry, chosen.key);
+    match command {
+        // A write is not run, and says how it opens.
+        Command::RunHistoryAgain => actions.push(Action::RunHistoryAgain { tab, key }),
+        Command::OpenHistoryEntry if entry.sql.is_some() => {
+            actions.push(Action::OpenHistoryEntry { tab, key });
+        }
+        Command::ShowHistoryCall if entry.source == Source::Agent => {
+            actions.push(Action::ShowHistoryCall { tab, key });
+        }
+        Command::ReapplyHistoryFilter if entry.source == Source::Filter => {
+            actions.push(Action::ReapplyHistoryFilter { tab, key });
+        }
+        Command::CopyHistorySql => {
+            if let Some(sql) = &entry.sql {
+                ctx.copy_text(sql.clone());
+                let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
+                crate::ui::toast::say(ctx, &said);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The Log view of the Agents tab of `tab`, while it shows.
 fn agents_log(app: &App, tab: ConnTabId) -> Option<&crate::model::AgentsLog> {
     if agents_view(app, tab) != Some(crate::model::AgentsView::Log) {
@@ -1893,7 +2040,9 @@ fn agents_log(app: &App, tab: ConnTabId) -> Option<&crate::model::AgentsLog> {
     let workspace = app.workspace(tab)?;
     workspace.tabs.iter().find_map(|open| match open {
         crate::model::Tab::Agents(agents) => Some(&agents.log),
-        crate::model::Tab::Object(_) | crate::model::Tab::Sql(_) => None,
+        crate::model::Tab::Object(_)
+        | crate::model::Tab::Sql(_)
+        | crate::model::Tab::History(_) => None,
     })
 }
 
@@ -1904,7 +2053,9 @@ fn agents_view(app: &App, tab: ConnTabId) -> Option<crate::model::AgentsView> {
         .filter(|workspace| workspace.agents_in_front())?;
     workspace.tabs.iter().find_map(|open| match open {
         crate::model::Tab::Agents(agents) => Some(agents.view),
-        crate::model::Tab::Object(_) | crate::model::Tab::Sql(_) => None,
+        crate::model::Tab::Object(_)
+        | crate::model::Tab::Sql(_)
+        | crate::model::Tab::History(_) => None,
     })
 }
 
@@ -2325,6 +2476,9 @@ fn letters(
         crate::keymap::When::AgentsLog => {
             agents_view(app, tab) == Some(crate::model::AgentsView::Log)
         }
+        crate::keymap::When::ClearingHistory => {
+            history_shown(app, tab).is_some_and(|history| history.clearing)
+        }
         _ => false,
     };
     let review_only = |when: crate::keymap::When| when == crate::keymap::When::Review;
@@ -2440,6 +2594,12 @@ fn letters(
             open: !log.details_open,
         });
     }
+    // The History tab's keys that are no letters: its arrows, Enter in
+    // the terminal look, and the macOS look's chords. Its letters are read
+    // with the others, below.
+    let history = history_shown(app, tab).filter(|_| !tree);
+    // While Clear history asks, its answers are the tab's only letters.
+    let history_free = history.filter(|history| !history.clearing);
     let alone = actions.is_empty() && !pointer && keys <= typed.len() && only_edits;
     // Whether a field or the prompt was asked for: the frame's typing ends
     // there.
@@ -2549,6 +2709,36 @@ fn letters(
             {
                 opened = true;
                 actions.push(Action::ShowAgentsLogFilters { tab, open: true });
+            }
+            // The History tab's letters.
+            (Some(Command::ConfirmClearHistory), _)
+                if history.is_some_and(|history| history.clearing) =>
+            {
+                actions.push(Action::ConfirmClearHistory { tab, clear: true });
+            }
+            (Some(Command::KeepHistory), _) if history.is_some_and(|history| history.clearing) => {
+                actions.push(Action::ConfirmClearHistory { tab, clear: false });
+            }
+            (Some(Command::MoveInHistory), _) if history_free.is_some() => {
+                let step = if char == 'k' { -1 } else { 1 };
+                actions.push(Action::MoveHistorySelection { tab, step });
+            }
+            (Some(Command::FilterHistory), _) if history_free.is_some() => {
+                opened = true;
+                actions.push(Action::ShowHistoryLine { tab, open: true });
+            }
+            (
+                Some(
+                    command @ (Command::RunHistoryAgain
+                    | Command::ShowHistoryCall
+                    | Command::ReapplyHistoryFilter
+                    | Command::CopyHistorySql),
+                ),
+                _,
+            ) if history_free.is_some() => {
+                if let Some(chosen) = history_free.and_then(crate::model::HistoryTab::chosen) {
+                    history_command(ctx, app, tab, command, chosen, actions);
+                }
             }
             (Some(Command::MoveInAgentSessions), _)
                 if agents_view(app, tab) == Some(crate::model::AgentsView::Log) =>

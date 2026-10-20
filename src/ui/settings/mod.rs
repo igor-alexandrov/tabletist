@@ -159,7 +159,9 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::RowLimit => Some("Caps results you browse. Show all and exports get every row."),
         OptionId::ConfirmUnsafeWrites => Some("On every connection that allows writes"),
         OptionId::Autocomplete => Some("Tables, views, columns and functions from the schema"),
-        OptionId::HistoryKeep => Some("Per connection, on this Mac; results are never stored"),
+        OptionId::HistoryKeep => Some(
+            "Per connection, on this computer: SQL editor, grid saves, filters and agent runs. Results are never stored.",
+        ),
         OptionId::Timeout
         | OptionId::RunScope
         | OptionId::EditorKeys
@@ -590,6 +592,9 @@ pub(super) fn opened(app: &App, row: SettingsRow) -> Option<Vec<Action>> {
         SettingsRow::AgentsStatus => show(AgentsView::Activity),
         SettingsRow::Option(OptionId::LogDays) => show(AgentsView::Log),
         SettingsRow::AgentsAccess => Some(vec![Action::CloseDialog, Action::ShowConnections]),
+        SettingsRow::Option(OptionId::HistoryKeep) => app
+            .agents_window()
+            .map(|_| vec![Action::ShowHistoryFromSettings]),
         SettingsRow::Option(_) => None,
     }
 }
@@ -621,6 +626,8 @@ enum Asked {
     Open,
     /// Copy the command that connects an agent.
     Copy,
+    /// Answer the history's question: delete what it kept, or keep it.
+    History(bool),
 }
 
 /// What `event` asks of the screen, if it is a press of one of its keys,
@@ -643,6 +650,8 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
         Command::SettingsPane,
         Command::SettingsOpenRow,
         Command::SettingsCopyCommand,
+        Command::SettingsDeleteHistory,
+        Command::SettingsKeepHistory,
     ];
     // A letter is read as the key that types it, with Shift for its
     // capital and nothing else held.
@@ -690,6 +699,8 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
                 Command::SettingsPane => Asked::Pane { forward: nth == 1 },
                 Command::SettingsOpenRow => Asked::Open,
                 Command::SettingsCopyCommand => Asked::Copy,
+                Command::SettingsDeleteHistory => Asked::History(true),
+                Command::SettingsKeepHistory => Asked::History(false),
                 _ => Asked::Flip,
             });
         }
@@ -766,6 +777,13 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
                         return true;
                     }
                     copy |= !repeat;
+                }
+                // Only while the question stands.
+                Asked::History(delete) => {
+                    if dialog.history_question.is_none() || repeat {
+                        return true;
+                    }
+                    actions.push(Action::AnswerHistoryQuestion(delete));
                 }
                 Asked::Reset | Asked::Step { .. } | Asked::Flip => {
                     // A cursor on no option has no option to change: the

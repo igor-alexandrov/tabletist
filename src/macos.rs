@@ -198,3 +198,42 @@ impl SettingsMenu {
         self.chosen.replace(false)
     }
 }
+
+/// The View menu's History item, asking for the window's History tab.
+///
+/// winit's menu bar has no View menu, so one is made after the app menu.
+/// The item has no key equivalent: the keymap's chord for History holds
+/// outside a text field only, where egui's text editing does not take it
+/// as redo, and AppKit would take it everywhere.
+pub struct HistoryMenu {
+    chosen: Rc<Cell<bool>>,
+    /// The item is in the menu for as long as this lives.
+    _item: tabletist_appkit::ViewItem,
+}
+
+impl HistoryMenu {
+    /// Adds the item, titled `title`, to the View menu titled `menu`.
+    /// Choosing it draws a frame, which finds it with
+    /// [`HistoryMenu::take`]. `None` before the menu bar exists (or off
+    /// the main thread).
+    pub fn attach(ctx: &egui::Context, menu: &str, title: &str) -> Option<Self> {
+        let chosen = Rc::new(Cell::new(false));
+        let item = tabletist_appkit::ViewItem::insert(menu, title, {
+            let chosen = chosen.clone();
+            let ctx = ctx.clone();
+            move || {
+                chosen.set(true);
+                ctx.request_repaint();
+            }
+        })?;
+        Some(Self {
+            chosen,
+            _item: item,
+        })
+    }
+
+    /// Whether the item was chosen since the last call.
+    pub fn take(&self) -> bool {
+        self.chosen.replace(false)
+    }
+}

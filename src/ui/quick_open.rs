@@ -21,6 +21,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         let key = keymap.key(layout, crate::keymap::Command::ShowAgents);
         format!("{name} · {}", key.as_str())
     });
+    let history_note = {
+        let key = keymap.key(layout, crate::keymap::Command::History);
+        format!("{} · {}", app.history_name(tab), key.as_str())
+    };
     let Some(Dialog::QuickOpen(open)) = &mut app.dialog else {
         return;
     };
@@ -78,12 +82,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     for (index, found) in matches.iter().enumerate() {
                         let label = match found {
                             crate::app::Found::Agents => gettext(locale, "Agents").into_owned(),
+                            crate::app::Found::History => gettext(locale, "History").into_owned(),
                             crate::app::Found::Object(object, _) => {
                                 crate::ui::format::object_title(object, true)
                             }
                         };
                         let note = match found {
                             crate::app::Found::Agents => agents_note.as_deref(),
+                            crate::app::Found::History => Some(history_note.as_str()),
                             crate::app::Found::Object(..) => None,
                         };
                         let selected = index == open.selected;
