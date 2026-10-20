@@ -50,7 +50,7 @@ In the connection dialog:
 
 | Keys | Do |
 | --- | --- |
-| Mod+P | Quick open (Ctrl+P in the Omarchy look too). In it, Up and Down move, Enter opens, Tab searches every open connection and Esc closes. On macOS and Windows, Alt+Enter opens a SQL editor reading the rows |
+| Mod+P | Quick open (Ctrl+P in the Omarchy look too). In it, Up and Down move, Enter opens, Tab searches every open connection and Esc closes. On macOS and Windows, Alt+Enter opens a SQL editor reading the rows, and `>` typed first lists the commands alone (and, with a word after it, the settings) |
 | Mod+B | Show or hide the sidebar |
 | Mod+Alt+A | Show the Agents tab |
 | Mod+Y | Show the [History tab]({% link _guide/sql-editor.md %}#history). Not while you type in a text field, where it is redo |

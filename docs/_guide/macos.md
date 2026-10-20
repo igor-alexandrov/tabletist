@@ -46,7 +46,8 @@ launch, are on the
 - **The app menu has the usual two.** **Tabletist → About Tabletist**
   shows the version and the licenses of the fonts it bundles, and
   **Tabletist → Settings…** opens Settings. **View → History** shows the
-  window's [History tab]({% link _guide/sql-editor.md %}#history).
+  window's [History tab]({% link _guide/sql-editor.md %}#history), and
+  **View → Quick Open** opens quick open.
 - **The sidebar's SQL Editor button has a clock.** Its main part opens a
   new SQL editor; the clock at its right shows the History tab, and looks
   pressed while that tab is in front.
@@ -92,16 +93,26 @@ a Mac keyboard labels Delete.
 
 Quick open floats over the window, from anywhere in it: the rows, the
 SQL editor, the start screen or the Agents tab. The sidebar's "Find any
-object…" field opens it too. With nothing typed it lists what the start
-screen lists (what you opened lately), then three commands: New SQL
-query, Switch database (where the server has another) and Agents. Typing
-lists the tables and then the views that match, three of each and a row
-that shows the rest, and the commands whose names match. The best
-matches come first: the whole name, then its start, then the starts of
-its words (`bc` finds `book_covers`), then any run of its letters; what
-you opened lately comes first among equals. Nothing is asked of the
+object…" field and View › Quick Open in the menu bar open it too. With
+nothing typed it lists what the start screen lists (what you opened
+lately), then four commands: New SQL query, Switch database (where the
+server has another), Agents and History. Typing lists the tables and
+then the views that match, three of each and a row that shows the rest,
+then the commands and the settings whose names match, three and a row
+that shows the rest. The best matches come first: the whole name, then
+its start, then the starts of its words (`bc` finds `book_covers`), then
+any run of its letters; what you opened lately comes first among equals. Nothing is asked of the
 database while you type. The chip beside the field says what is
 searched; Tab searches every open connection, each under its name.
+
+Start with `>` to list the commands alone: those of the window, such as
+Reload schema, Close connection or Hide sidebar, and those of the tab in
+front, such as Close tab, Save changes, Run all or Format SQL. A command
+is listed only where it can do something now, with its key beside it
+where the window has one. Typing after `>` finds the settings too, each
+by where it is (`Settings › General › Restore tabs and filters`):
+Return opens Settings at that row, with its control ready for the
+keyboard.
 
 | Keys | Do |
 | --- | --- |
@@ -110,6 +121,7 @@ searched; Tab searches every open connection, each under its name.
 | Return | Open the one picked, or show its tab where it has one |
 | Option+Return | Open a new SQL editor reading its first rows |
 | Tab | Search every open connection, or this one again |
+| `>` | Typed first: list the commands alone (and, with a word after it, the settings) |
 | Esc | Close |
 
 ### The picker
