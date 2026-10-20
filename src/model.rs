@@ -593,6 +593,12 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Drop every pending change of the tab once the Leave prompt is
+    /// answered, or at once where dropping edits asks nothing.
+    AskDiscard {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Take away what the tab's last save came to, and nothing else: an
     /// editor that is open keeps its text.
     DismissNote {
@@ -2548,6 +2554,9 @@ pub enum Held {
     Action(Box<Action>),
     /// The window was asked to close.
     CloseWindow,
+    /// Nothing waits on the answer: the changes themselves were asked to
+    /// be dropped.
+    Nothing,
 }
 
 /// Asks before pending changes are dropped.

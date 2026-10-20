@@ -131,6 +131,8 @@ pub enum When {
     InspectorOpen,
     /// The SQL of the pending changes shows.
     Review,
+    /// The table on screen holds pending changes.
+    Pending,
     /// What the last save came to is still said.
     Note,
     /// The large editor is open.
@@ -471,6 +473,7 @@ commands! {
     DismissNote,
     SaveChanges,
     DiscardChanges,
+    AskDiscard,
     NextError,
     PreviousError,
     BooleanCycle,
@@ -818,6 +821,11 @@ impl Command {
             C::DismissNote => info("Dismiss what the last save came to", "", Editing),
             C::SaveChanges => info("Save changes", "Save changes", Editing),
             C::DiscardChanges => info("Discard all pending", "Discard all pending", Editing),
+            C::AskDiscard => info(
+                "Discard all pending, asking first",
+                "Discard all pending",
+                Editing,
+            ),
             C::NextError => info("Next error", ERRORS, Editing).reserved(),
             C::PreviousError => info("Previous error", ERRORS, Editing).reserved(),
             C::BooleanCycle => info("Boolean cycle", "Boolean cycle", Editing),
@@ -1636,6 +1644,9 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+alt+backspace")]),
             keys(&[k(":e!")]),
         ),
+        // Esc on the rows asks before it drops them, as closing the tab
+        // does. The terminal look's Esc stays harmless: `:e!` drops them.
+        bind(C::AskDiscard, GRID, keys(&[k("esc")]), NONE).when(When::Pending),
         bind(
             C::NextError,
             GRID,

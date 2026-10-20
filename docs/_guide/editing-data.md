@@ -177,7 +177,9 @@ appears with what you can do with them.
 
 - **Save** (Cmd/Ctrl+S) writes all of them in one transaction. Either
   every change is written or none is.
-- **Discard all** drops them.
+- **Discard all** drops them, and shows its key (`:e!` in the Omarchy
+  look). In the macOS and Windows looks, Esc on the grid with no cell
+  being edited asks before it drops them.
 - **Review SQL** (Cmd/Ctrl+Shift+D; `:diff` in the Omarchy look) shows the
   statements a save will run.
   **Copy SQL** in that panel copies them.

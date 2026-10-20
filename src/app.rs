@@ -1732,6 +1732,14 @@ impl App {
                     self.discard_edits(&[(tab, id)]);
                 }
             }
+            Action::AskDiscard { tab, id } => {
+                let pending = self
+                    .object_tab_mut(tab, id)
+                    .is_some_and(|object| object.edits.pending());
+                if pending {
+                    self.hold(Held::Nothing, vec![(tab, id)]);
+                }
+            }
             Action::DismissNote { tab, id } => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.note = None;
