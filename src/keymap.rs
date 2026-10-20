@@ -351,6 +351,7 @@ commands! {
     FilterConnections,
     // Navigation.
     FindObject,
+    FilterObjects,
     NewSqlTab,
     ShowAgents,
     CopyAgentCommand,
@@ -531,6 +532,9 @@ commands! {
     SettingsCopyCommand,
     QuickOpenMove,
     QuickOpenPick,
+    QuickOpenPickInEditor,
+    QuickOpenScope,
+    QuickOpenNumber,
     QuickOpenClose,
     NextLabel,
     PreviousLabel,
@@ -617,6 +621,7 @@ impl Command {
             C::MoveInConnections => info("Move in the connections", "", Window),
             C::FilterConnections => info("Filter the connections", "", Window),
             C::FindObject => info("Find any object", "Find any object", Navigation),
+            C::FilterObjects => info("Filter the sidebar's objects", "", Navigation),
             C::NewSqlTab => info("New SQL editor tab", "New SQL editor tab", Navigation),
             // Nothing of agents answers where they cannot reach the app.
             C::ShowAgents => agents(info("Show the Agents tab", "", Navigation)),
@@ -874,6 +879,9 @@ impl Command {
             )),
             C::QuickOpenMove => info("Move in quick open", "", Prompts),
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
+            C::QuickOpenPickInEditor => info("Open the one selected in a SQL editor", "", Prompts),
+            C::QuickOpenScope => info("Search this connection or every open one", "", Prompts),
+            C::QuickOpenNumber => info("Open a recent by its number", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
             C::NextLabel => info("Next line of the label chooser", "", Prompts),
             C::PreviousLabel => info("Previous line of the label chooser", "", Prompts),
@@ -1086,8 +1094,15 @@ pub const BINDINGS: &[Binding] = {
         ),
         bind(C::FilterConnections, CONNECTIONS, NONE, keys(&[k("/")])),
         // Navigation.
-        bind(C::FindObject, GLOBAL, keys(&[k("cmd+p")]), NONE),
-        bind(C::FindObject, SIDEBAR, NONE, keys(&[k("/")])),
+        // Quick open, from anywhere in a connection's window. The Omarchy
+        // `/` filters the sidebar's tree where it is.
+        bind(
+            C::FindObject,
+            GLOBAL,
+            keys(&[k("cmd+p")]),
+            keys(&[k("ctrl+p")]),
+        ),
+        bind(C::FilterObjects, SIDEBAR, NONE, keys(&[k("/")])),
         bind(
             C::NewSqlTab,
             GLOBAL,
@@ -1905,11 +1920,15 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("esc")]),
         )
         .when(When::SettingsScreen),
+        // Quick open: its field has the keyboard. Omarchy's digits pick a
+        // recent while nothing is typed; once anything is, they are typed
+        // (names hold digits), and quick open reads them as text. Its
+        // moves list the keys that go up first, then those that go down.
         bind(
             C::QuickOpenMove,
             PROMPT,
-            keys(&[k("up"), k("down")]),
-            keys(&[k("up"), k("down")]),
+            keys(&[k("up"), k("down")]).shown("↑↓"),
+            keys(&[k("ctrl+p"), k("up"), k("ctrl+n"), k("down")]).shown("ctrl+n/p"),
         )
         .when(When::QuickOpen),
         bind(
@@ -1919,6 +1938,21 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("enter")]),
         )
         .when(When::QuickOpen),
+        bind(
+            C::QuickOpenPickInEditor,
+            PROMPT,
+            keys(&[k("alt+enter")]),
+            NONE,
+        )
+        .when(When::QuickOpen),
+        bind(
+            C::QuickOpenScope,
+            PROMPT,
+            keys(&[k("tab")]),
+            keys(&[k("tab")]),
+        )
+        .when(When::QuickOpen),
+        bind(C::QuickOpenNumber, PROMPT, NONE, keys(&[k("1..9")])).when(When::QuickOpen),
         bind(
             C::QuickOpenClose,
             PROMPT,
@@ -3217,7 +3251,10 @@ mod tests {
         assert_eq!(omarchy(Scope::Grid, "R"), command(Command::Reload));
         assert_eq!(omarchy(Scope::Sidebar, "R"), command(Command::Reload));
         // The slash is the sidebar's filter there and the WHERE line here.
-        assert_eq!(omarchy(Scope::Sidebar, "/"), command(Command::FindObject));
+        assert_eq!(
+            omarchy(Scope::Sidebar, "/"),
+            command(Command::FilterObjects)
+        );
         assert_eq!(omarchy(Scope::Grid, "/"), command(Command::WhereFilter));
         // A global letter is read in every scope but a prompt's.
         assert_eq!(omarchy(Scope::Grid, "?"), command(Command::Help));

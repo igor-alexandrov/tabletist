@@ -556,6 +556,8 @@ fn ctrl_n_and_ctrl_p_move_the_highlight_only_in_the_terminal_look() {
     assert!(harness.app.dialog.is_none());
     harness.press(Key::P, ctrl());
     assert_eq!(selected(&harness, tab), Some(0));
+    // And here quick open did not: the open list keeps its ctrl+p.
+    assert!(harness.app.dialog.is_none());
 
     // The other looks: not the list's keys. Ctrl+P is quick open where
     // Mod is Ctrl (it reports `command` too); Ctrl+N is nothing from an

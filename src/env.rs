@@ -902,6 +902,7 @@ mod tests {
             "src/ui/settings/preview.rs",
             "src/ui/start.rs",
             "src/ui/start_tests.rs",
+            "src/ui/quick_open.rs",
         ];
         let mut found = Vec::new();
         for (path, text) in sources() {

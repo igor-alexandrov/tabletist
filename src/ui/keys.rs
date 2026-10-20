@@ -1957,7 +1957,7 @@ pub fn after_frame(ctx: &egui::Context) {
 /// takes a key: [`letters`] takes such a character from the frame.
 const WINDOW_LETTERS: [Command; 4] = [
     Command::Reload,
-    Command::FindObject,
+    Command::FilterObjects,
     Command::ToggleTree,
     Command::Help,
 ];
@@ -2006,7 +2006,7 @@ fn letters(
             Command::Reload if app.active_sql().is_some() => {}
             Command::Reload if tree_arrows => actions.push(Action::RefreshTree(tab)),
             Command::Reload => actions.push(Action::Refresh(tab)),
-            Command::FindObject => {
+            Command::FilterObjects => {
                 use crate::ui::focus::{self, Region};
                 focus::step(ctx, true, Some(&[Region::Search]), None);
             }
