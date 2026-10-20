@@ -581,7 +581,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // keyboard is: a character typed with no text field holding the
     // keyboard asks for the search field, and is left in the frame for it
     // to read. So the keyboard can stay in the sidebar until a letter is
-    // typed, and the sidebar's own filter keeps what is typed into it.
+    // typed. The sidebar's search field keeps what is typed on it: it is
+    // quick open's way in, and takes it there.
     // Keys held with Cmd, Ctrl or Alt are shortcuts, and bring no
     // character. A space alone is no search: Space presses the focused
     // button or row, and a real keyboard sends it as text too. Nor is a
@@ -590,6 +591,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if on_start_screen
         && !app.look.terminal
         && !ctx.text_edit_focused()
+        && !ctx.memory(|memory| memory.has_focus(crate::ui::sidebar::find_field_id(active)))
         && typed_chars(ctx)
             .into_iter()
             .any(|char| !char.is_whitespace() && window_letter(app, scopes, char).is_none())

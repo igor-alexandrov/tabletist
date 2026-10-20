@@ -651,6 +651,41 @@ fn omarchy_ctrl_n_and_ctrl_p_move_the_pick() {
     assert!(matches!(harness.app.dialog, Some(Dialog::QuickOpen(_))));
 }
 
+/// Test 11: the macOS sidebar's search field opens quick open.
+#[test]
+fn the_sidebar_field_opens_quick_open() {
+    for look in [Look::macos(), Look::standard()] {
+        let (mut harness, _tab) = bookshop(look);
+        harness.settle();
+        harness.click("Find any object…");
+        assert!(
+            matches!(harness.app.dialog, Some(Dialog::QuickOpen(_))),
+            "{}",
+            look.name
+        );
+        harness.press(Key::Escape, Modifiers::NONE);
+        // With the keyboard on it, Enter opens quick open, and what is
+        // typed goes into quick open's field.
+        reach(&mut harness, "Find any object…");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(matches!(harness.app.dialog, Some(Dialog::QuickOpen(_))));
+        harness.press(Key::Escape, Modifiers::NONE);
+        reach(&mut harness, "Find any object…");
+        type_text(&mut harness, "pu");
+        type_text(&mut harness, "b");
+        assert_eq!(quick_open(&harness).query, "pub", "{}", look.name);
+    }
+    // The terminal look's `/` line filters the tree, as it did.
+    let (mut harness, tab) = bookshop(Look::omarchy());
+    harness.settle();
+    assert!(!harness.has("Find any object…"));
+    reach(&mut harness, "Objects");
+    super::tests::type_key(&mut harness, Key::Slash, "/");
+    type_text(&mut harness, "pub");
+    assert!(harness.app.dialog.is_none());
+    assert_eq!(harness.app.workspace(tab).unwrap().tree.filter, "pub");
+}
+
 /// The panel is a dialog named for the look; the field is a combobox
 /// that controls the list; the picked result is said with its kind, its
 /// schema and its estimate; headings are labels, not options.

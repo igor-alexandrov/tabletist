@@ -350,13 +350,15 @@ mod tests {
                         look.name
                     );
                 }
+                // The terminal look's filter, or the others' way into
+                // quick open.
                 assert!(
                     tree.nodes.iter().any(|(_, node)| {
-                        node.role() == egui::accesskit::Role::TextInput
-                            && matches!(
-                                node.placeholder(),
-                                Some("Find any object…" | "filter objects")
-                            )
+                        let filter = node.role() == egui::accesskit::Role::TextInput
+                            && node.placeholder() == Some("filter objects");
+                        let find = node.role() == egui::accesskit::Role::Button
+                            && node.label() == Some("Find any object…");
+                        filter || find
                     }),
                     "the sidebar filter is missing in {} at {size:?}",
                     look.name
@@ -7335,12 +7337,13 @@ value_tags   = true
     /// Drags the sidebar's edge as far right as it goes.
     fn widen_sidebar(harness: &mut Harness) {
         let filter = |harness: &mut Harness| {
-            crate::testing::bounds(
-                &harness.settle(),
-                "Filter",
-                egui::accesskit::Role::TextInput,
-            )
-            .expect("the sidebar's filter")
+            let tree = harness.settle();
+            let filter = crate::testing::bounds(&tree, "Filter", egui::accesskit::Role::TextInput);
+            let find = || {
+                let role = egui::accesskit::Role::Button;
+                crate::testing::bounds(&tree, "Find any object…", role)
+            };
+            filter.or_else(find).expect("the sidebar's field")
         };
         let before = filter(harness);
         // The edge is a few points right of the filter field.
@@ -11877,7 +11880,7 @@ value_tags   = true
         }
         // The tree and the grid are one stop each: the arrows move in them.
         for expected in [
-            "Filter",
+            "Find any object…",
             "Objects",
             "Rows",
             "Count",
@@ -12027,6 +12030,13 @@ value_tags   = true
             let forward: Vec<String> = (0..6)
                 .map(|_| step(&mut harness, Modifiers::NONE))
                 .collect();
+            // The sidebar's field: the terminal look's filter, the
+            // others' way into quick open.
+            let field = if look.terminal {
+                "Filter"
+            } else {
+                "Find any object…"
+            };
             assert_eq!(
                 forward,
                 [
@@ -12034,7 +12044,7 @@ value_tags   = true
                     "Data",
                     "Rows",
                     "Connections",
-                    "Filter",
+                    field,
                     "Objects"
                 ],
                 "{}",
@@ -12044,7 +12054,7 @@ value_tags   = true
             let back: Vec<String> = (0..3)
                 .map(|_| step(&mut harness, Modifiers::SHIFT))
                 .collect();
-            assert_eq!(back, ["Filter", "Connections", "Rows"], "{}", look.name);
+            assert_eq!(back, [field, "Connections", "Rows"], "{}", look.name);
         }
     }
 
