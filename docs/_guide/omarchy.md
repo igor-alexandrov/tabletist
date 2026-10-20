@@ -281,6 +281,10 @@ letters: `e` edits the connection, and `w` allows writes in this tab or
 runs the statements again in a read-write transaction, whichever the card
 offers.
 
+Under a result the limit cut, `a` shows all of it. When the timeout
+stopped a run, `t` runs it again without one. Times read "45s", "1m" and
+"1m 30s" in this look.
+
 ### Settings
 
 | Keys | Do |

@@ -49,8 +49,8 @@ open SQL editor follows each change at once.
 | Option | Choices | Default |
 | --- | --- | --- |
 | **New tabs run in** | Read-only transaction, or Follow connection. Read-only: a new SQL editor opens in Read-only on every connection, and its switch can still set it to Read-write. Follow connection: it opens in Read-write on a writable connection that is not production, as the [SQL Editor guide]({% link _guide/sql-editor.md %}#read-only-and-read-write) says. A connection that opens read-only keeps every editor read-only either way. A change is for the tabs opened after it | Read-only transaction |
-| **Row limit** | 100, 500, 1,000, 5,000 or 10,000 rows for each statement, or No limit. The rows past the limit are not fetched; nothing is added to your SQL | 1,000 |
-| **Timeout** | 5, 15 or 30 seconds, 1 or 5 minutes, or Off. A run still going then is cancelled and rolled back; Cancel works either way | 30 s |
+| **Row limit** | 100, 500, 1,000, 5,000 or 10,000 rows for each statement, or No limit. The rows past the limit are not fetched; nothing is added to your SQL. **Show all** under a cut result fetches the rest | 1,000 |
+| **Timeout** | 5, 15 or 30 seconds, 1 or 5 minutes, or Off. A run still going then is cancelled and rolled back; Cancel works either way. **Run without timeout** runs a stopped run again with none | 30 s |
 | **⌘↩ runs** (Omarchy: ctrl+enter runs) | Statement at cursor, or Whole tab: every statement in order, stopping at the first error. A selection always runs what it selects, whichever is set | Statement at cursor |
 | **Autocomplete** | As you type, On Ctrl+Space (the list opens only when you ask), or Off | As you type |
 | **Line numbers** | On or off on macOS and Windows; relative, absolute or off in the Omarchy look. On writes `absolute`; a `relative` set in the file shows as on and stays | On (absolute) on macOS and Windows, relative in the Omarchy look |

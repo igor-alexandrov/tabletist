@@ -1444,6 +1444,16 @@ pub fn rows_outcome(rows: usize) -> tabletist_db::StatementOutcome {
     }
 }
 
+/// A SQL editor statement's result that the row limit cut at `rows`.
+pub fn cut_outcome(rows: usize) -> tabletist_db::StatementOutcome {
+    let page = page(rows, false);
+    tabletist_db::StatementOutcome::Rows {
+        columns: page.columns,
+        rows: page.rows,
+        truncated: true,
+    }
+}
+
 /// A SQL editor statement that failed with `message`, at the 1-based
 /// character `position` of its text when the database gives one.
 pub fn error_outcome(message: &str, position: Option<usize>) -> tabletist_db::StatementOutcome {

@@ -1055,7 +1055,7 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
         OptionId::RowLimit => {
             crate::ui::sql_editor::limit_words(settings.sql_limit, skin.look, skin.locale)
         }
-        // As the file writes it: `30s`, `1m`, `off`.
+        // As the editor writes a time (`30s`, `1m`, `1m 30s`), or `off`.
         OptionId::Timeout => match settings.sql_timeout_secs {
             Some(secs) => crate::ui::sql_editor::time_words(secs, true, skin.locale),
             None => skin.say("Off"),
@@ -1487,7 +1487,9 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             .add(role, " / ", palette.dim)
             .add(role, &key(ui, look, Command::ReadWriteTab), palette.accent)
             .add(role, &format!(" {}", skin.say("per tab")), palette.dim),
-        OptionId::RowLimit => dim(&skin.say("caps results you browse")),
+        OptionId::RowLimit => {
+            dim(&skin.say("caps results you browse · show all and exports get every row"))
+        }
         OptionId::RunScope => dim(&skin.say("a selection always wins")),
         OptionId::ConfirmUnsafeWrites => dim(&skin.say("connections that allow writes")),
         OptionId::EditorKeys => dim(&skin.say("-- INSERT -- shown in the status line")),

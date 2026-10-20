@@ -750,6 +750,18 @@ pub enum Action {
         tab: ConnTabId,
         sql_tab: TabId,
     },
+    /// The results' Show all: run the statement whose rows the limit cut
+    /// again, alone, with no limit (see `SqlTab::cut_statement`).
+    ShowAllRows {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Run without timeout: run the last run, which the timeout stopped,
+    /// again with no timeout (see `SqlTab::timed_out_run`).
+    RunWithoutTimeout {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// Format the editor's script, or the statements its selection
     /// overlaps.
     FormatSql {
@@ -3953,6 +3965,38 @@ pub enum NoWrites {
     Unconfirmed,
 }
 
+/// What a SQL editor run is sent with beside its statements: the most rows
+/// a statement keeps (`u32::MAX` keeps every one, see
+/// `Settings::fetch_cap`) and how long the run may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCaps {
+    pub limit: u32,
+    pub timeout: Option<Duration>,
+}
+
+/// Neither cap: every row, and no timer. Never a limit of no rows.
+impl Default for RunCaps {
+    fn default() -> Self {
+        Self {
+            limit: u32::MAX,
+            timeout: None,
+        }
+    }
+}
+
+/// The connection and database a run went to: the workspace's
+/// `ConnectSpec` when it was sent. A link of the results is offered only
+/// while the tab is still there. Its `Debug` names none of it, as
+/// `SqlTab`'s names none of the text.
+#[derive(Clone, PartialEq)]
+pub struct RanOn(pub tabletist_db::ConnectSpec);
+
+impl std::fmt::Debug for RanOn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RanOn").finish_non_exhaustive()
+    }
+}
+
 /// A finished SQL editor run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlRun {
@@ -3967,11 +4011,22 @@ pub struct SqlRun {
     /// and the column when the database gave a position. Worked out once,
     /// when the run finishes, since views ask every frame.
     pub error_mark: Option<(usize, Option<usize>)>,
+    /// What the run was sent with. Show all and Run without timeout each
+    /// lift one of the two and keep the other.
+    pub caps: RunCaps,
+    /// Where the run went; `None` for a run started without saying
+    /// (`SqlTab::start_run`), which offers no link.
+    pub on: Option<RanOn>,
 }
 
 impl SqlRun {
     fn new(
-        (statements, mode): (Vec<tabletist_db::sql::Statement>, tabletist_db::ScriptMode),
+        (statements, mode, caps, on): (
+            Vec<tabletist_db::sql::Statement>,
+            tabletist_db::ScriptMode,
+            RunCaps,
+            Option<RanOn>,
+        ),
         outcome: tabletist_db::ScriptOutcome,
         cancel: Option<crate::backend::CancelReason>,
     ) -> Self {
@@ -3997,6 +4052,39 @@ impl SqlRun {
             outcome,
             cancel,
             error_mark,
+            caps,
+            on,
+        }
+    }
+
+    /// Whether the run went to `spec`: the connection and database a tab
+    /// is on now.
+    pub fn ran_on(&self, spec: &tabletist_db::ConnectSpec) -> bool {
+        self.on.as_ref().is_some_and(|on| on.0 == *spec)
+    }
+
+    /// Whether nothing of the run stayed written, its transaction known to
+    /// be rolled back: a read-only run, or one sent to write whose
+    /// transaction rolled back whole. Not one MySQL committed part of by
+    /// itself, nor one the database could not roll back fully, nor one
+    /// whose session could not be put back and was closed. (Every run is
+    /// its own transaction, which the backend ends before it answers. A
+    /// PostgreSQL cancel aborts it, and the rollback has run by the time
+    /// the run has an outcome.)
+    pub fn nothing_written(&self) -> bool {
+        use tabletist_db::ScriptEnd;
+        if self.outcome.broken.is_some() {
+            return false;
+        }
+        match self.mode {
+            tabletist_db::ScriptMode::ReadOnly => true,
+            tabletist_db::ScriptMode::Write => {
+                self.outcome.rollback_warning.is_none()
+                    && matches!(
+                        self.outcome.end,
+                        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 }
+                    )
+            }
         }
     }
 }
@@ -4041,6 +4129,10 @@ pub struct RunInFlight {
     pub statements: Vec<tabletist_db::sql::Statement>,
     /// The transaction the run was sent in.
     pub mode: tabletist_db::ScriptMode,
+    /// What the run was sent with.
+    pub caps: RunCaps,
+    /// Where the run went; `None` offers no link.
+    pub on: Option<RanOn>,
     /// When the run started, for the elapsed time.
     pub started: std::time::Instant,
     /// The editor's text when the run started.
@@ -4343,9 +4435,18 @@ impl SqlTab {
         }
     }
 
+    /// What a run of this editor is sent with: its limit, as the fetch cap,
+    /// and its timeout.
+    pub fn caps(&self) -> RunCaps {
+        RunCaps {
+            limit: crate::settings::Settings::fetch_cap(self.limit),
+            timeout: self.timeout,
+        }
+    }
+
     /// Starts a run of `statements` as `request`, sent in a transaction
-    /// of `mode`. Returns the run it replaces, if one was still pending,
-    /// for the caller to cancel.
+    /// of `mode` with the editor's caps. Returns the run it replaces, if
+    /// one was still pending, for the caller to cancel.
     #[must_use]
     pub fn start_run(
         &mut self,
@@ -4353,11 +4454,28 @@ impl SqlTab {
         statements: Vec<tabletist_db::sql::Statement>,
         mode: tabletist_db::ScriptMode,
     ) -> Option<RequestId> {
+        let caps = self.caps();
+        self.start_run_with(request, statements, mode, caps, None)
+    }
+
+    /// [`Self::start_run`], sent with `caps` in place of the editor's, to
+    /// `on`: what the results' links need to be offered.
+    #[must_use]
+    pub fn start_run_with(
+        &mut self,
+        request: RequestId,
+        statements: Vec<tabletist_db::sql::Statement>,
+        mode: tabletist_db::ScriptMode,
+        caps: RunCaps,
+        on: Option<RanOn>,
+    ) -> Option<RequestId> {
         let superseded = self.run.pending;
         self.run.start(request);
         self.in_flight = Some(RunInFlight {
             statements,
             mode,
+            caps,
+            on,
             started: std::time::Instant::now(),
             text: TextPrint::of(&self.text),
         });
@@ -4385,7 +4503,7 @@ impl SqlTab {
             self.run.loaded = None;
         }
         let ran = in_flight
-            .map(|run| (run.statements, run.mode))
+            .map(|run| (run.statements, run.mode, run.caps, run.on))
             .unwrap_or_default();
         self.run.finish(
             request,
@@ -4469,6 +4587,43 @@ impl SqlTab {
             } => Some((columns, rows, *truncated)),
             _ => None,
         }
+    }
+
+    /// The statement Show all sends again: the one whose rows the Results
+    /// show, where the limit cut them, in a run that only read. Only while
+    /// the editor holds the text that ran, no run is in flight and the tab
+    /// is on `on`, the connection and database the run went to: what
+    /// would be sent is then what the editor shows, where it was answered.
+    pub fn cut_statement(
+        &self,
+        on: &tabletist_db::ConnectSpec,
+    ) -> Option<&tabletist_db::sql::Statement> {
+        let run = self
+            .last_run()
+            .filter(|run| self.ran_this_text() && run.ran_on(on))?;
+        if run.mode != tabletist_db::ScriptMode::ReadOnly {
+            return None;
+        }
+        let (index, result) = self.shown()?;
+        let cut = matches!(
+            result.outcome,
+            tabletist_db::StatementOutcome::Rows {
+                truncated: true,
+                ..
+            }
+        );
+        if cut { run.statements.get(index) } else { None }
+    }
+
+    /// The run Run without timeout sends again: the last one, where the
+    /// timeout stopped it and nothing of it was written. Only while the
+    /// editor holds the text that ran, no run is in flight and the tab is
+    /// on `on`, as [`Self::cut_statement`].
+    pub fn timed_out_run(&self, on: &tabletist_db::ConnectSpec) -> Option<&SqlRun> {
+        self.last_run()
+            .filter(|run| self.ran_this_text() && run.ran_on(on))
+            .filter(|run| matches!(run.cancel, Some(crate::backend::CancelReason::Timeout(_))))
+            .filter(|run| run.nothing_written())
     }
 
     /// Rows and columns of the shown result; zero of both without one.
@@ -5013,6 +5168,151 @@ impl std::fmt::Debug for PasswordPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the tests' runs go.
+    fn here() -> tabletist_db::ConnectSpec {
+        tabletist_db::ConnectSpec::sqlite("/tmp/bookshop.db")
+    }
+
+    /// An editor that ran `text` (split as SQLite does) in `mode` on
+    /// [`here`] and got `outcomes`, stopped by `cancel`, sent with `caps`.
+    fn ran(
+        text: &str,
+        outcomes: Vec<tabletist_db::StatementOutcome>,
+        cancel: Option<crate::backend::CancelReason>,
+        (mode, caps): (tabletist_db::ScriptMode, RunCaps),
+    ) -> SqlTab {
+        let mut sql = SqlTab::new(TabId(1), 1, 1_000, Some(Duration::from_secs(30)));
+        sql.text = text.into();
+        let statements =
+            tabletist_db::sql::statements(tabletist_db::Driver::Sqlite.dialect(), text);
+        let request = crate::backend::RequestId(9);
+        let on = Some(RanOn(here()));
+        let _ = sql.start_run_with(request, statements, mode, caps, on);
+        let outcome = crate::testing::script_outcome(outcomes);
+        assert!(sql.finish_run(request, Ok(outcome), cancel));
+        sql
+    }
+
+    #[test]
+    fn a_run_keeps_the_caps_it_was_sent_with() {
+        let mut sql = SqlTab::new(TabId(1), 1, 0, None);
+        assert_eq!(
+            sql.caps(),
+            RunCaps {
+                limit: u32::MAX,
+                timeout: None
+            }
+        );
+        sql.limit = 500;
+        sql.timeout = Some(Duration::from_secs(5));
+        let caps = sql.caps();
+        assert_eq!(
+            (caps.limit, caps.timeout),
+            (500, Some(Duration::from_secs(5)))
+        );
+        let other = RunCaps {
+            limit: u32::MAX,
+            timeout: Some(Duration::from_secs(5)),
+        };
+        let sql = ran(
+            "SELECT 1",
+            vec![crate::testing::rows_outcome(1)],
+            None,
+            (tabletist_db::ScriptMode::ReadOnly, other),
+        );
+        assert_eq!(sql.last_run().unwrap().caps, other);
+    }
+
+    #[test]
+    fn show_all_is_the_shown_statement_of_a_read_cut_by_the_limit() {
+        use crate::testing::{cut_outcome, done_outcome, rows_outcome};
+        use tabletist_db::ScriptMode::{ReadOnly, Write};
+        let caps = RunCaps::default();
+        let text = "SELECT 1;\nSELECT 2;\nSELECT 3";
+        // The Results show the last statement that returned rows.
+        let outcomes = vec![rows_outcome(1), cut_outcome(1_000), done_outcome(None)];
+        let mut sql = ran(text, outcomes.clone(), None, (ReadOnly, caps));
+        let cut = sql.cut_statement(&here()).expect("the cut statement");
+        assert_eq!(cut.first_line, 2);
+        // Not on another database, nor on another connection.
+        let mut other = here();
+        other.database = "main2".into();
+        assert!(sql.cut_statement(&other).is_none());
+        let elsewhere = tabletist_db::ConnectSpec::sqlite("/tmp/elsewhere.db");
+        assert!(sql.cut_statement(&elsewhere).is_none());
+        // Not once the text is another, and again when it is that text.
+        sql.text.push(' ');
+        assert!(sql.cut_statement(&here()).is_none());
+        sql.text.pop();
+        assert!(sql.cut_statement(&here()).is_some());
+        // Not while a run is in flight.
+        let _ = sql.start_run(crate::backend::RequestId(10), Vec::new(), ReadOnly);
+        assert!(sql.cut_statement(&here()).is_none());
+        // Not for a run sent to write, nor for a whole result.
+        let sql = ran(text, outcomes, None, (Write, caps));
+        assert!(sql.cut_statement(&here()).is_none());
+        let sql = ran(text, vec![rows_outcome(3)], None, (ReadOnly, caps));
+        assert!(sql.cut_statement(&here()).is_none());
+        // A run started without saying where (`start_run`) offers nothing.
+        let mut sql = SqlTab::new(TabId(1), 1, 1_000, None);
+        crate::testing::run_script(&mut sql, text, vec![cut_outcome(1_000)]);
+        assert!(sql.cut_statement(&here()).is_none());
+    }
+
+    #[test]
+    fn run_without_timeout_is_the_last_run_where_the_timeout_stopped_it_and_nothing_was_written() {
+        use crate::backend::CancelReason;
+        use crate::testing::rows_outcome;
+        use tabletist_db::StatementOutcome::Cancelled;
+        let timeout = Some(CancelReason::Timeout(Duration::from_secs(30)));
+        let read = (tabletist_db::ScriptMode::ReadOnly, RunCaps::default());
+        let text = "SELECT 1;\nSELECT 2";
+        let outcomes = vec![rows_outcome(1), Cancelled];
+        let mut sql = ran(text, outcomes.clone(), timeout, read);
+        assert!(sql.timed_out_run(&here()).is_some());
+        let mut other = here();
+        other.database = "main2".into();
+        assert!(sql.timed_out_run(&other).is_none());
+        sql.text.push(' ');
+        assert!(sql.timed_out_run(&here()).is_none());
+        // Cancelled by hand, or stopped for no reason of ours: no.
+        for cancel in [Some(CancelReason::User), None] {
+            let sql = ran(text, outcomes.clone(), cancel, read);
+            assert!(sql.timed_out_run(&here()).is_none(), "{cancel:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_written_by_a_read_or_by_a_write_rolled_back_whole() {
+        use tabletist_db::{ScriptEnd, ScriptMode};
+        let run = |mode, end, warning: Option<&str>| SqlRun {
+            statements: Vec::new(),
+            mode,
+            outcome: tabletist_db::ScriptOutcome {
+                end,
+                rollback_warning: warning.map(str::to_owned),
+                ..Default::default()
+            },
+            cancel: None,
+            error_mark: None,
+            caps: RunCaps::default(),
+            on: None,
+        };
+        let partly = |committed| ScriptEnd::Partly { committed };
+        assert!(run(ScriptMode::ReadOnly, ScriptEnd::RolledBack, None).nothing_written());
+        assert!(run(ScriptMode::Write, ScriptEnd::RolledBack, None).nothing_written());
+        assert!(run(ScriptMode::Write, partly(0), None).nothing_written());
+        assert!(!run(ScriptMode::Write, partly(1), None).nothing_written());
+        assert!(!run(ScriptMode::Write, ScriptEnd::Committed, None).nothing_written());
+        let kept = Some("could not roll back");
+        assert!(!run(ScriptMode::Write, ScriptEnd::RolledBack, kept).nothing_written());
+        // A session that could not be put back was closed: its rollback
+        // is not known to have run.
+        let mut closed = run(ScriptMode::Write, ScriptEnd::RolledBack, None);
+        closed.outcome.broken = Some(tabletist_db::Error::ConnectionLost("closed".into()));
+        assert!(!closed.nothing_written());
+    }
 
     #[test]
     fn a_connections_agents_state_is_the_server_then_its_access_then_who_called_last() {

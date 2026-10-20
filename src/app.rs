@@ -2078,6 +2078,8 @@ impl App {
                 self.run_sql(tab, sql_tab, all);
             }
             Action::RunSqlAgain { tab, sql_tab } => self.run_sql_again(tab, sql_tab),
+            Action::ShowAllRows { tab, sql_tab } => self.show_all_rows(tab, sql_tab),
+            Action::RunWithoutTimeout { tab, sql_tab } => self.run_without_timeout(tab, sql_tab),
             Action::SqlTyped { tab, sql_tab } => {
                 // Off, or on the key alone, typing opens no list. One open
                 // goes on as the word is typed (`refresh_completion`).
@@ -6177,7 +6179,8 @@ impl App {
             return;
         }
         let mode = script_mode(workspace.run_mode(sql), dialect, &statements);
-        self.send_run(tab, id, statements, mode);
+        let caps = sql.caps();
+        self.send_run(tab, id, statements, mode, caps);
     }
 
     /// The card's "Run in a read-write transaction": sends the statements
@@ -6212,17 +6215,77 @@ impl App {
         if statements.is_empty() {
             return;
         }
-        self.send_run(tab, id, statements, tabletist_db::ScriptMode::Write);
+        let caps = sql.caps();
+        self.send_run(tab, id, statements, tabletist_db::ScriptMode::Write, caps);
+    }
+
+    /// The results' Show all: the statement whose rows the limit cut, sent
+    /// again alone and read-only, with no limit and the timeout its run
+    /// had. Only what `SqlTab::cut_statement` offers: never a run that was
+    /// sent to write, nor a statement of a text the editor no longer holds,
+    /// nor one that ran on another connection or database than the tab's.
+    fn show_all_rows(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        if !workspace.takes_commands() {
+            return;
+        }
+        let Some(sql) = workspace.sql_tab(id) else {
+            return;
+        };
+        let (Some(statement), Some(run)) = (sql.cut_statement(&workspace.spec), sql.last_run())
+        else {
+            return;
+        };
+        let caps = crate::model::RunCaps {
+            limit: u32::MAX,
+            ..run.caps
+        };
+        let statements = vec![statement.clone()];
+        let mode = tabletist_db::ScriptMode::ReadOnly;
+        self.send_run(tab, id, statements, mode, caps);
+    }
+
+    /// Run without timeout: the last run, which the timeout stopped and
+    /// which wrote nothing, sent again with no timeout and the row limit
+    /// it had. Its transaction is the one Run would give it now: a tab
+    /// switched to Read-only since sends it read-only.
+    fn run_without_timeout(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        if !workspace.takes_commands() {
+            return;
+        }
+        let Some(sql) = workspace.sql_tab(id) else {
+            return;
+        };
+        let Some(run) = sql.timed_out_run(&workspace.spec) else {
+            return;
+        };
+        let statements = run.statements.clone();
+        if statements.is_empty() {
+            return;
+        }
+        let dialect = workspace.driver.dialect();
+        let mode = script_mode(workspace.run_mode(sql), dialect, &statements);
+        let caps = crate::model::RunCaps {
+            timeout: None,
+            ..run.caps
+        };
+        self.send_run(tab, id, statements, mode, caps);
     }
 
     /// Sends `statements` to the editor's session as its run, in a
-    /// transaction of `mode`.
+    /// transaction of `mode`, with `caps`.
     fn send_run(
         &mut self,
         tab: ConnTabId,
         id: TabId,
         statements: Vec<tabletist_db::sql::Statement>,
         mode: tabletist_db::ScriptMode,
+        caps: crate::model::RunCaps,
     ) {
         self.wake(tab);
         // A connect again that has to ask for a secret first is not sent
@@ -6238,12 +6301,13 @@ impl App {
             return;
         };
         let session = workspace.session;
+        // Where the run goes: its links are offered only while the tab is
+        // still there.
+        let on = Some(crate::model::RanOn(workspace.spec.clone()));
         let Some(sql) = workspace.sql_tab_mut(id) else {
             return;
         };
-        // No limit keeps as many rows as there are.
-        let (limit, timeout) = (Settings::fetch_cap(sql.limit), sql.timeout);
-        let superseded = sql.start_run(request, statements.clone(), mode);
+        let superseded = sql.start_run_with(request, statements.clone(), mode, caps, on);
         // The session runs one thing at a time: the run still going must
         // stop before this one can start.
         self.cancel(session, superseded);
@@ -6251,8 +6315,8 @@ impl App {
             session,
             request,
             statements,
-            limit,
-            timeout,
+            limit: caps.limit,
+            timeout: caps.timeout,
             mode,
         });
     }
