@@ -91,6 +91,8 @@ mod text_settings_tests;
 #[cfg(test)]
 mod theme_settings_tests;
 pub mod toast;
+#[cfg(test)]
+mod typing_settings_tests;
 pub mod value_tags;
 pub mod widgets;
 pub mod workspace;

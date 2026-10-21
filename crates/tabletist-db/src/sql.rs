@@ -199,7 +199,7 @@ impl Dialect {
     }
 
     /// `` `name` `` is a quoted name.
-    fn backtick_names(self) -> bool {
+    pub fn backtick_names(self) -> bool {
         match self {
             Self::MySql | Self::Sqlite => true,
             Self::Postgres => false,

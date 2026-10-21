@@ -3002,6 +3002,8 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::LineNumbers),
                 SettingsRow::Option(OptionId::Indent),
                 SettingsRow::Option(OptionId::Autocomplete),
+                SettingsRow::Option(OptionId::ClosePairs),
+                SettingsRow::Option(OptionId::Wrap),
                 SettingsRow::Option(OptionId::Keywords),
                 SettingsRow::Option(OptionId::Commas),
                 SettingsRow::Option(OptionId::HistoryKeep),
