@@ -43,6 +43,16 @@ look) sets what a run may do.
 
 {% include shot.html file="macos-sql-committed" alt="A read-write run of two statements, with Messages saying how many rows each changed and that the run was committed" %}
 
+A run in Read-write that would change every row of a table asks first:
+an `UPDATE` or a `DELETE` with no `WHERE`, `LIMIT` or join condition of
+its own (a `WHERE` inside a subquery does not count), and a `TRUNCATE`. The
+question names the table and, where the sidebar has the database's count
+of its rows, about how many it holds: "Update every row in
+book_covers?". **Cancel** sends nothing; **Run anyway** runs it. In the
+Omarchy look the question takes the status line's place: `y` runs, `n`,
+Enter or Esc does not. **Settings › Editor** can stop the question for
+`UPDATE` and `DELETE`; a `TRUNCATE` always asks.
+
 A new tab opens in Read-only. With **New tabs run in** set to Follow
 connection in **Settings › Editor**, it opens in Read-write on a writable
 connection that is not production. On a connection that opens read-only,

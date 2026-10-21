@@ -272,6 +272,7 @@ A save can ask you something first. Each question has its own keys:
 | Tab, Shift+Tab | Indent, outdent, in the text: at the cursor, or every line of the selection |
 | `:ro`, `:rw` | Read-only and read-write runs, with the keyboard out of the text |
 | Ctrl+Space | Complete |
+| `y`; `n`, Enter or Esc | When the status line asks before a run that changes every row of a table (an `UPDATE` or a `DELETE` without `WHERE`, a `TRUNCATE`): run it; do not |
 
 {% include shot.html file="omarchy-sql" alt="A SQL editor in the Omarchy look, with its result under it and the run keys in the status line" %}
 

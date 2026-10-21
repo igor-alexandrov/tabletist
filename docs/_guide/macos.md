@@ -226,6 +226,7 @@ column's line, or come to them with Tab or F6.
 | Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Cmd+Shift+M | Switch between read-only and read-write runs |
 | Cmd+I, Ctrl+Space | Complete |
+| Esc, Return | Cancel, when a run that changes every row of a table asks first. Return runs only from Run anyway, with the keyboard on it |
 
 While the completion list is open, Up and Down move in it, Tab accepts
 and Esc closes it. Return accepts too, except when it stays a line break:
