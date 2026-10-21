@@ -95,6 +95,11 @@ start of every line a selection touches when there is one (blank lines
 stay blank), and Shift+Tab takes one off. While the completion list is
 open, Tab accepts its row first.
 
+A bracket or a quote you type gets its closing one, which you type over,
+or delete with Backspace while the pair is empty. Typed over a selection,
+the two go round it. **Settings › Editor** turns this off. There, Wrap
+wraps long lines at the editor's width, each numbered once.
+
 ## Completion
 
 Keywords, schemas, tables, views and the columns of the tables in your
