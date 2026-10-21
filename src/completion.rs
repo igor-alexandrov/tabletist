@@ -221,7 +221,11 @@ fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
 /// schema, a bare name in the bare schema and then in the other loaded
 /// ones, in their order. The name as spelled first, else whatever its
 /// case.
-fn resolve(schema: Option<&str>, name: &str, catalog: &Catalog<'_>) -> Option<ObjectRef> {
+pub(crate) fn resolve(
+    schema: Option<&str>,
+    name: &str,
+    catalog: &Catalog<'_>,
+) -> Option<ObjectRef> {
     let within = |schema: &str| {
         let objects = objects_of(catalog, schema);
         let spelled = objects.iter().find(|info| info.name == name);

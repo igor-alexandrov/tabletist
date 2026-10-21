@@ -35,6 +35,9 @@ mod editor_results_tests;
 mod editor_settings_tests;
 #[cfg(test)]
 mod env_tests;
+pub mod every_row_prompt;
+#[cfg(test)]
+mod every_row_tests;
 pub mod filter_bar;
 pub mod focus;
 pub mod format;
@@ -129,6 +132,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     about::show(app, &ui.ctx().clone());
     settings::show(app, &ui.ctx().clone());
     write_prompts::show(app, &ui.ctx().clone());
+    every_row_prompt::show(app, &ui.ctx().clone());
     conflict_prompt::show(app, &ui.ctx().clone());
     agent_access::show(app, &ui.ctx().clone());
     // Last: it says what was done, whatever is on screen by now.

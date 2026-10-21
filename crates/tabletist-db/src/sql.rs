@@ -1111,11 +1111,13 @@ pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
     }
 }
 
-/// A statement that changes or removes rows, for [`unbounded`].
+/// A statement that changes or removes every row of a table: what
+/// [`unbounded`] and [`every_row`] name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     Update,
     Delete,
+    Truncate,
 }
 
 /// The words a statement's own verb can be, once a `WITH` list and an
@@ -1124,47 +1126,419 @@ const VERBS: [&str; 8] = [
     "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "TABLE", "REPLACE",
 ];
 
-/// `UPDATE` or `DELETE` when `statement` is one with no `WHERE` of its
-/// own: it reaches every row of its table. A `WHERE` inside parentheses
-/// belongs to a subquery and does not count. A `WITH` in front is passed,
-/// and so is an `EXPLAIN` that has `ANALYZE`, which runs the statement
-/// behind it. An `INSERT` that updates on a conflict and a `MERGE` are
-/// bounded by their rows, and are never named.
+/// The words that bound an `UPDATE` or a `DELETE` among its own words:
+/// a `WHERE`, and a `LIMIT` (MySQL's, and SQLite's where it is built with
+/// one). MySQL's `ON` of an inner join bounds it too: see [`joins_target`].
+const BOUNDS: [&str; 2] = ["WHERE", "LIMIT"];
+
+/// `UPDATE` or `DELETE` when `statement` is one with nothing of its own to
+/// bound it (a `WHERE`, a `LIMIT`, MySQL's inner join with its `ON`): it
+/// reaches every row of its table. What stands inside parentheses belongs
+/// to a subquery and does not count. A `WITH`
+/// in front is passed, and so is an `EXPLAIN` that has `ANALYZE`, which
+/// runs the statement behind it. A `WITH`'s own `UPDATE` or `DELETE`
+/// (`WITH d AS (DELETE FROM books RETURNING *) SELECT ...`) is named too:
+/// it runs whatever the statement after it reads. An `INSERT` that updates
+/// on a conflict and a `MERGE` are bounded by their rows, and are never
+/// named; nor is a `TRUNCATE`, which has no `WHERE` to leave out
+/// ([`every_row`] names it).
 pub fn unbounded(dialect: Dialect, statement: &str) -> Option<Verb> {
-    let tokens = tokenize(dialect, statement);
-    // The words outside parentheses, in order.
-    let mut top = Vec::new();
-    let mut depth = 0_usize;
+    unbounded_at(dialect, statement, &tokenize(dialect, statement)).map(|(verb, _)| verb)
+}
+
+/// A word of a statement, for [`unbounded_at`].
+struct Word {
+    /// Upper-cased.
+    text: String,
+    /// Its token's place.
+    at: usize,
+    /// The parentheses it stands in: 0 outside all of them, and a number
+    /// of its own for each pair.
+    group: usize,
+    /// It is the first thing inside its parentheses.
+    opens: bool,
+    /// The commas before it in its parentheses.
+    commas: usize,
+}
+
+/// The words of `tokens`, each with the parentheses it stands in, and
+/// whether an `ANALYZE` stands anywhere (also as an option:
+/// `EXPLAIN (ANALYZE)`).
+fn words_of(statement: &str, tokens: &[Token]) -> (Vec<Word>, bool) {
+    let mut words = Vec::new();
     let mut analyzed = false;
-    for token in &tokens {
+    let mut groups = vec![0];
+    let mut next = 1;
+    let mut opened = false;
+    // The commas so far in each pair of parentheses, by its number.
+    let mut commas = vec![0];
+    for (at, token) in tokens.iter().enumerate() {
+        let group = groups.last().copied().unwrap_or_default();
         match (token.kind, &statement[token.range.clone()]) {
-            (TokenKind::Punctuation, "(") => depth += 1,
-            (TokenKind::Punctuation, ")") => depth = depth.saturating_sub(1),
-            _ => {
-                if let Some(word) = bare_word(statement, token) {
-                    // Also as an option: EXPLAIN (ANALYZE).
-                    analyzed |= ANALYZES.contains(&word.as_str());
-                    if depth == 0 {
-                        top.push(word);
-                    }
+            (TokenKind::Punctuation, ",") => {
+                commas[group] += 1;
+                opened = false;
+            }
+            (TokenKind::Punctuation, "(") => {
+                commas.push(0);
+                groups.push(next);
+                next += 1;
+                opened = true;
+            }
+            (TokenKind::Punctuation, ")") => {
+                // A `)` that closes nothing leaves the outermost as it is.
+                if groups.len() > 1 {
+                    groups.pop();
                 }
+                opened = false;
+            }
+            (TokenKind::Whitespace | TokenKind::Comment, _) => {}
+            _ => {
+                if let Some(text) = bare_word(statement, token) {
+                    analyzed |= ANALYZES.contains(&text.as_str());
+                    words.push(Word {
+                        text,
+                        at,
+                        group,
+                        opens: opened,
+                        commas: commas[group],
+                    });
+                }
+                opened = false;
             }
         }
     }
-    let leads = match top.first()?.as_str() {
+    (words, analyzed)
+}
+
+/// [`unbounded`] of `statement`, whose tokens are `tokens`, with the place
+/// in `tokens` of its verb.
+fn unbounded_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<(Verb, usize)> {
+    let (words, analyzed) = words_of(statement, tokens);
+    let mut top = words.iter().filter(|word| word.group == 0);
+    let leads = match top.next()?.text.as_str() {
         "UPDATE" | "DELETE" | "WITH" => true,
         word => EXPLAINS.contains(&word) && analyzed,
     };
     if !leads {
         return None;
     }
-    let at = top.iter().position(|word| VERBS.contains(&word.as_str()))?;
-    let verb = match top[at].as_str() {
-        "UPDATE" => Verb::Update,
-        "DELETE" => Verb::Delete,
-        _ => return None,
+    // The statement's own verb: the first word outside parentheses that
+    // can be one.
+    let own = words
+        .iter()
+        .find(|word| word.group == 0 && VERBS.contains(&word.text.as_str()));
+    // A WITH's statements: the verbs that open their parentheses.
+    let ctes = words.iter().filter(|word| word.group > 0 && word.opens);
+    let bounded = |verb: &Word| {
+        let own: Vec<&Word> = words
+            .iter()
+            .filter(|word| word.at > verb.at && word.group == verb.group)
+            .collect();
+        let joined = joins_target(dialect, verb, &own);
+        joined || own.iter().any(|word| BOUNDS.contains(&word.text.as_str()))
     };
-    (!top[at + 1..].iter().any(|word| word == "WHERE")).then_some(verb)
+    own.into_iter().chain(ctes).find_map(|word| {
+        let verb = match word.text.as_str() {
+            "UPDATE" => Verb::Update,
+            "DELETE" => Verb::Delete,
+            _ => return None,
+        };
+        (!bounded(word)).then_some((verb, word.at))
+    })
+}
+
+/// Whether `words`, a statement's own after its verb, join its target to
+/// another table with an `ON` that keeps only the rows that match: MySQL's
+/// `DELETE b FROM books b JOIN covers c ON ...` and `UPDATE books b JOIN
+/// covers c ON ... SET ...`, whose target is a side of the join. Not a
+/// `LEFT` or a `RIGHT` join, which keeps every row of one side, nor a join
+/// in a list of tables that has a comma, before it or after it
+/// (`UPDATE books b, covers c JOIN shelves s ON ...`): the target may be
+/// crossed with it. Nor on PostgreSQL
+/// and SQLite, where a join stands in the `FROM` or the `USING` and its
+/// `ON` does not touch the target: only a `WHERE` ties them.
+fn joins_target(dialect: Dialect, verb: &Word, words: &[&Word]) -> bool {
+    match dialect {
+        Dialect::MySql => {}
+        Dialect::Postgres | Dialect::Sqlite => return false,
+    }
+    words.iter().enumerate().any(|(at, word)| {
+        if word.text != "ON" {
+            return false;
+        }
+        // The join this ON is of: the last one before it.
+        let Some(join) = words[..at]
+            .iter()
+            .rposition(|word| matches!(word.text.as_str(), "JOIN" | "STRAIGHT_JOIN"))
+        else {
+            return false;
+        };
+        let kind = words[..join].iter().rev().take(2);
+        let outer = kind
+            .into_iter()
+            .any(|word| matches!(word.text.as_str(), "LEFT" | "RIGHT"));
+        // Where the list of tables starts: DELETE's FROM or USING, or the
+        // verb itself.
+        let list = words[..join]
+            .iter()
+            .rev()
+            .find(|word| matches!(word.text.as_str(), "FROM" | "USING"))
+            .map_or(verb.commas, |word| word.commas);
+        // Where it ends: UPDATE's SET, or what follows DELETE's tables.
+        let end = words[at..]
+            .iter()
+            .find(|word| matches!(word.text.as_str(), "SET" | "WHERE" | "ORDER" | "LIMIT"))
+            .or(words.last())
+            .map_or(list, |word| word.commas);
+        let crossed = end > list;
+        !outer && !crossed
+    })
+}
+
+/// A statement that reaches every row of the tables it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EveryRow {
+    pub verb: Verb,
+    /// The tables it names, each once, in order. Empty where they cannot
+    /// be read off the statement.
+    pub tables: Vec<NamedTable>,
+}
+
+/// A table as a statement names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedTable {
+    pub schema: Option<String>,
+    /// Without its quotes.
+    pub name: String,
+    /// The name was quoted: it is spelled as the database has it.
+    pub quoted: bool,
+}
+
+/// What reaches every row of a table: an `UPDATE` or a `DELETE` that
+/// [`unbounded`] names, or a `TRUNCATE` where the dialect has one (SQLite
+/// does not). Its tables are the ones after the verb, in order: `books`
+/// of `UPDATE ONLY books b SET`, both of MySQL's `DELETE a, b FROM ...`
+/// (by the tables their aliases stand for) and of PostgreSQL's
+/// `TRUNCATE a, b`.
+pub fn every_row(dialect: Dialect, statement: &str) -> Option<EveryRow> {
+    let tokens = tokenize(dialect, statement);
+    let (verb, at) = match unbounded_at(dialect, statement, &tokens) {
+        Some(found) => found,
+        None => (Verb::Truncate, truncate_at(dialect, statement, &tokens)?),
+    };
+    let after = code_of(&tokens[at + 1..]);
+    let (named, end) = tables_after(statement, &after);
+    // MySQL's DELETE of several tables names them by the aliases its FROM
+    // or USING, after them, gives them: `DELETE b FROM books b`.
+    let aliases = aliases(statement, &after[end..]);
+    let mut tables: Vec<NamedTable> = Vec::new();
+    for table in named {
+        let alias = aliases
+            .iter()
+            .find(|(alias, _)| table.schema.is_none() && alias.eq_ignore_ascii_case(&table.name));
+        let table = alias.map_or(table, |(_, aliased)| aliased.clone());
+        if !tables.contains(&table) {
+            tables.push(table);
+        }
+    }
+    Some(EveryRow { verb, tables })
+}
+
+/// `tokens` without their whitespace and comments.
+fn code_of(tokens: &[Token]) -> Vec<&Token> {
+    let code = |token: &&Token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment);
+    tokens.iter().filter(code).collect()
+}
+
+/// The place in `tokens` of the `TRUNCATE` that begins `statement`, where
+/// the dialect has the statement.
+fn truncate_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<usize> {
+    let truncates = match dialect {
+        Dialect::Postgres | Dialect::MySql => true,
+        Dialect::Sqlite => false,
+    };
+    let (at, first) = tokens
+        .iter()
+        .enumerate()
+        .find(|(_, token)| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))?;
+    let word = bare_word(statement, first);
+    (truncates && word.as_deref() == Some("TRUNCATE")).then_some(at)
+}
+
+/// The words that may stand between a verb and its first table:
+/// `UPDATE ONLY`, MySQL's `DELETE LOW_PRIORITY QUICK IGNORE FROM`,
+/// `TRUNCATE TABLE ONLY`. SQLite's `OR` takes the word after it with it
+/// (`UPDATE OR REPLACE`). `ONLY` may stand before each table.
+const BEFORE_TABLES: [&str; 7] = [
+    "ONLY",
+    "LOW_PRIORITY",
+    "QUICK",
+    "IGNORE",
+    "FROM",
+    "TABLE",
+    "OR",
+];
+
+/// The words that end the list of a verb's tables, though they are not
+/// quoted: where an unquoted alias would stand.
+const AFTER_TABLES: [&str; 17] = [
+    "SET",
+    "FROM",
+    "USING",
+    "WHERE",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "CROSS",
+    "NATURAL",
+    "STRAIGHT_JOIN",
+    "RESTART",
+    "CONTINUE",
+    "CASCADE",
+    "RETURNING",
+    "ORDER",
+    "LIMIT",
+];
+
+/// The name `token` spells, without quotes, and whether it was quoted.
+/// With `keywords`, a keyword too, where it is none of [`AFTER_TABLES`].
+fn name_of(statement: &str, token: &Token, keywords: bool) -> Option<(String, bool)> {
+    let text = &statement[token.range.clone()];
+    match token.kind {
+        TokenKind::QuotedIdentifier => Some((unquoted(text), true)),
+        TokenKind::Identifier => Some((text.to_owned(), false)),
+        TokenKind::Keyword if keywords => {
+            let word = text.to_ascii_uppercase();
+            (!AFTER_TABLES.contains(&word.as_str())).then(|| (text.to_owned(), false))
+        }
+        _ => None,
+    }
+}
+
+/// The table named at `code[at]`, of as many parts as it has (the last two
+/// count: `db.schema.table`), and the place after it.
+fn table_at(
+    statement: &str,
+    code: &[&Token],
+    at: usize,
+    keywords: bool,
+) -> Option<(NamedTable, usize)> {
+    let part = |at: usize| name_of(statement, code.get(at)?, keywords);
+    let dot = |at: usize| {
+        code.get(at)
+            .is_some_and(|token| &statement[token.range.clone()] == ".")
+    };
+    let mut parts = vec![part(at)?];
+    let mut next = at + 1;
+    while dot(next)
+        && let Some(more) = part(next + 1)
+    {
+        parts.push(more);
+        next += 2;
+    }
+    let (name, quoted) = parts.pop()?;
+    let schema = parts.pop().map(|(schema, _)| schema);
+    Some((
+        NamedTable {
+            schema,
+            name,
+            quoted,
+        },
+        next,
+    ))
+}
+
+/// The tables named at the start of `code`, the ones after a verb: a list
+/// of names, each with its schema where it has one and its alias passed,
+/// separated by commas. With the place in `code` where the list ends.
+fn tables_after(statement: &str, code: &[&Token]) -> (Vec<NamedTable>, usize) {
+    let text = |at: usize| code.get(at).map(|token| &statement[token.range.clone()]);
+    let word = |at: usize| code.get(at).and_then(|token| bare_word(statement, token));
+    let mut at = 0;
+    while let Some(word) = word(at).filter(|word| BEFORE_TABLES.contains(&word.as_str())) {
+        at += if word == "OR" { 2 } else { 1 };
+    }
+    let mut tables = Vec::new();
+    loop {
+        if word(at).as_deref() == Some("ONLY") {
+            at += 1;
+        }
+        let Some((table, next)) = table_at(statement, code, at, true) else {
+            break;
+        };
+        tables.push(table);
+        at = next;
+        // PostgreSQL's `*` after a table takes its children in.
+        if text(at) == Some("*") {
+            at += 1;
+        }
+        if word(at).as_deref() == Some("AS") {
+            at += 2;
+        } else if code
+            .get(at)
+            .and_then(|token| name_of(statement, token, true))
+            .is_some()
+            && text(at + 1) != Some(".")
+        {
+            at += 1;
+        }
+        if text(at) != Some(",") {
+            break;
+        }
+        at += 1;
+    }
+    (tables, at.min(code.len()))
+}
+
+/// The aliases `code` gives tables: `books b`, `shop.books AS b`, each
+/// alias with its table. Names only, not keywords: an approximate scan.
+fn aliases(statement: &str, code: &[&Token]) -> Vec<(String, NamedTable)> {
+    let text = |at: usize| code.get(at).map(|token| &statement[token.range.clone()]);
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < code.len() {
+        let Some((table, after)) = table_at(statement, code, at, false) else {
+            at += 1;
+            continue;
+        };
+        let as_word = code
+            .get(after)
+            .and_then(|token| bare_word(statement, token))
+            .is_some_and(|word| word == "AS");
+        let alias_at = after + usize::from(as_word);
+        let alias = code
+            .get(alias_at)
+            .and_then(|token| name_of(statement, token, false))
+            .filter(|_| text(alias_at + 1) != Some("."));
+        match alias {
+            Some((alias, _)) => {
+                found.push((alias, table));
+                at = alias_at + 1;
+            }
+            None => at = after,
+        }
+    }
+    found
+}
+
+/// The name a quoted identifier spells: its quotes taken off and a
+/// doubled quote inside it made one. `[name]` has no doubling to undo; an
+/// unterminated one no closing quote to take off.
+pub(crate) fn unquoted(quoted: &str) -> String {
+    let mut chars = quoted.chars();
+    let Some(open) = chars.next() else {
+        return String::new();
+    };
+    let close = if open == '[' { ']' } else { open };
+    let inner = chars.as_str();
+    let inner = inner.strip_suffix(close).unwrap_or(inner);
+    if open == '[' {
+        inner.to_owned()
+    } else {
+        inner.replace(&format!("{open}{open}"), &open.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -2456,7 +2830,12 @@ mod tests {
                     "UPDATE books SET title = (SELECT name FROM drafts WHERE drafts.id = books.id)",
                     Verb::Update,
                 ),
-                ("DELETE FROM books ORDER BY id LIMIT 5", Verb::Delete),
+                ("DELETE FROM books ORDER BY id", Verb::Delete),
+                // A LIMIT of a subquery bounds the subquery.
+                (
+                    "UPDATE books SET title = (SELECT name FROM drafts LIMIT 1)",
+                    Verb::Update,
+                ),
                 (
                     "WITH old AS (SELECT id FROM books WHERE id < 5) DELETE FROM books",
                     Verb::Delete,
@@ -2486,6 +2865,9 @@ mod tests {
                 "delete from books where id = 1",
                 "DELETE FROM books WHERE id IN (SELECT book_id FROM drafts)",
                 "UPDATE books SET title = 'x' WHERE CURRENT OF pick",
+                // A LIMIT of its own bounds it too.
+                "DELETE FROM books ORDER BY id LIMIT 5",
+                "UPDATE books SET title = 'x' LIMIT 1",
                 "WITH old AS (SELECT 1) DELETE FROM books WHERE id = 1",
                 "EXPLAIN ANALYZE DELETE FROM books WHERE id = 1",
             ] {
@@ -2537,5 +2919,227 @@ mod tests {
             }
         }
         assert_eq!(unbounded(Dialect::Postgres, "UPDATE"), Some(Verb::Update));
+    }
+
+    fn table(schema: Option<&str>, name: &str) -> NamedTable {
+        NamedTable {
+            schema: schema.map(str::to_owned),
+            name: name.to_owned(),
+            quoted: false,
+        }
+    }
+
+    fn quoted(schema: Option<&str>, name: &str) -> NamedTable {
+        NamedTable {
+            quoted: true,
+            ..table(schema, name)
+        }
+    }
+
+    #[test]
+    fn every_row_names_the_verb_and_the_tables_after_it() {
+        let reach = |dialect, text| every_row(dialect, text).expect(text);
+        for dialect in DIALECTS {
+            for (text, verb, tables) in [
+                (
+                    "UPDATE book_covers SET kind = 'ebook'",
+                    Verb::Update,
+                    vec![table(None, "book_covers")],
+                ),
+                (
+                    "update public.book_covers as c set kind = 'x'",
+                    Verb::Update,
+                    vec![table(Some("public"), "book_covers")],
+                ),
+                (
+                    "DELETE FROM book_covers b ORDER BY id",
+                    Verb::Delete,
+                    vec![table(None, "book_covers")],
+                ),
+                (
+                    "WITH old AS (SELECT id FROM covers WHERE id < 5) DELETE FROM books",
+                    Verb::Delete,
+                    vec![table(None, "books")],
+                ),
+                (
+                    "EXPLAIN ANALYZE DELETE FROM /* all */ books",
+                    Verb::Delete,
+                    vec![table(None, "books")],
+                ),
+                // Unreadable: the question names no table.
+                ("UPDATE", Verb::Update, vec![]),
+                ("DELETE FROM (", Verb::Delete, vec![]),
+            ] {
+                let found = reach(dialect, text);
+                assert_eq!(
+                    (found.verb, found.tables),
+                    (verb, tables),
+                    "{dialect:?} {text}"
+                );
+            }
+        }
+        // Each dialect's quotes, and its own words before the table.
+        let pg = reach(
+            Dialect::Postgres,
+            r#"UPDATE ONLY "Book ""Covers""" * SET a = 1"#,
+        );
+        assert_eq!(pg.tables, vec![quoted(None, r#"Book "Covers""#)]);
+        let mysql = reach(
+            Dialect::MySql,
+            "DELETE LOW_PRIORITY QUICK IGNORE FROM `shop`.`books`",
+        );
+        assert_eq!(mysql.tables, vec![quoted(Some("shop"), "books")]);
+        let sqlite = reach(Dialect::Sqlite, "UPDATE OR REPLACE [books] SET a = 1");
+        assert_eq!(sqlite.tables, vec![quoted(None, "books")]);
+        // A name of three parts: the last two are the schema and the table.
+        let three = reach(Dialect::Postgres, "DELETE FROM shop.public.books");
+        assert_eq!(three.tables, vec![table(Some("public"), "books")]);
+        // MySQL's statements of several tables: the ones the verb names,
+        // by the tables their aliases stand for.
+        let several = reach(Dialect::MySql, "UPDATE books b, covers c SET b.a = c.a");
+        assert_eq!(
+            several.tables,
+            vec![table(None, "books"), table(None, "covers")]
+        );
+        let targets = reach(Dialect::MySql, "DELETE b, c FROM shop.books AS b, covers c");
+        assert_eq!(
+            targets.tables,
+            vec![table(Some("shop"), "books"), table(None, "covers")]
+        );
+        let using = reach(Dialect::MySql, "DELETE FROM b USING books b");
+        assert_eq!(using.tables, vec![table(None, "books")]);
+        // A WITH's own DELETE or UPDATE runs whatever reads it.
+        let cte = reach(
+            Dialect::Postgres,
+            "WITH d AS (DELETE FROM books RETURNING *) SELECT count(*) FROM d",
+        );
+        assert_eq!(
+            (cte.verb, cte.tables),
+            (Verb::Delete, vec![table(None, "books")])
+        );
+        let logged = reach(
+            Dialect::Postgres,
+            "WITH u AS (UPDATE books SET a = 1 RETURNING id) INSERT INTO log SELECT id FROM u",
+        );
+        assert_eq!(logged.verb, Verb::Update);
+    }
+
+    #[test]
+    fn a_truncate_always_reaches_every_row_where_the_dialect_has_one() {
+        let pg = every_row(
+            Dialect::Postgres,
+            "TRUNCATE TABLE ONLY books, ONLY public.covers *, books RESTART IDENTITY",
+        );
+        // Each table once.
+        assert_eq!(
+            pg,
+            Some(EveryRow {
+                verb: Verb::Truncate,
+                tables: vec![table(None, "books"), table(Some("public"), "covers")],
+            })
+        );
+        let mysql = every_row(Dialect::MySql, "-- empty it\ntruncate `books`");
+        assert_eq!(
+            mysql.map(|found| found.tables),
+            Some(vec![quoted(None, "books")])
+        );
+        // SQLite has no TRUNCATE: the database refuses the word.
+        assert_eq!(every_row(Dialect::Sqlite, "TRUNCATE books"), None);
+        // `unbounded` still names UPDATE and DELETE alone.
+        assert_eq!(unbounded(Dialect::Postgres, "TRUNCATE books"), None);
+    }
+
+    #[test]
+    fn a_bounded_statement_and_a_read_reach_no_row_of_every_row() {
+        for dialect in DIALECTS {
+            for text in [
+                "UPDATE books SET title = 'x' WHERE id = 1",
+                "DELETE FROM books WHERE id IN (SELECT book_id FROM drafts)",
+                "SELECT * FROM books FOR UPDATE",
+                "INSERT INTO books VALUES (1) ON CONFLICT (id) DO UPDATE SET title = 'x'",
+                "SELECT 'TRUNCATE books'",
+                "-- TRUNCATE books",
+                "EXPLAIN DELETE FROM books",
+                // A LIMIT bounds it as a WHERE does.
+                "DELETE FROM logs LIMIT 1000",
+                // A WITH's DELETE with a WHERE of its own.
+                "WITH d AS (DELETE FROM books WHERE id = 1 RETURNING *) SELECT * FROM d",
+                "",
+            ] {
+                assert_eq!(every_row(dialect, text), None, "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_mysql_inner_join_with_the_target_bounds_by_its_on() {
+        // MySQL's statements of several tables, whose target is a side of
+        // an inner join: only the rows that match.
+        for text in [
+            "UPDATE books JOIN covers ON books.id = covers.book_id SET a = 1",
+            "DELETE b FROM books b JOIN covers c ON b.id = c.book_id",
+            "DELETE b FROM books b INNER JOIN covers c ON b.id = c.book_id",
+            // Several targets before the FROM; the FROM's own list joins.
+            "DELETE b, c FROM books b JOIN covers c ON b.id = c.book_id",
+            // Commas after SET are its own.
+            "UPDATE books b JOIN covers c ON b.id = c.book_id SET b.a = 1, b.b = 2",
+        ] {
+            assert_eq!(every_row(Dialect::MySql, text), None, "{text}");
+        }
+        // A LEFT or a RIGHT join keeps every row of a side: the orphan
+        // cleanup with its WHERE left out deletes every book.
+        for text in [
+            "DELETE b FROM books b LEFT JOIN covers c ON b.id = c.book_id",
+            "DELETE b FROM books b LEFT OUTER JOIN covers c ON b.id = c.book_id",
+            "UPDATE books b RIGHT JOIN covers c ON b.id = c.book_id SET b.a = c.a",
+            // The join is of the tables after a comma: books is crossed
+            // with it.
+            "UPDATE books b, covers c JOIN shelves s ON s.id = c.shelf_id SET b.a = 1",
+            "DELETE b FROM books b, covers c JOIN shelves s ON s.id = c.shelf_id",
+            // Or after it.
+            "UPDATE covers c JOIN shelves s ON s.id = c.shelf_id, books b SET b.a = 1",
+            "DELETE b FROM covers c JOIN shelves s ON s.id = c.shelf_id, books b",
+        ] {
+            assert!(every_row(Dialect::MySql, text).is_some(), "{text}");
+        }
+        // On PostgreSQL and SQLite a join stands in the FROM or the USING,
+        // and its ON does not touch the target: every row of it.
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            for text in [
+                "UPDATE books SET price = p.price FROM prices p JOIN regions r ON r.id = p.region_id",
+                "DELETE FROM books USING covers c JOIN shelves s ON s.id = c.shelf_id",
+            ] {
+                let found = every_row(dialect, text).expect(text);
+                assert_eq!(
+                    found.tables,
+                    vec![table(None, "books")],
+                    "{dialect:?} {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn odd_text_never_panics_the_every_row_check() {
+        for dialect in DIALECTS {
+            for text in [
+                "UPDATE .",
+                "UPDATE a.",
+                "UPDATE a AS",
+                "TRUNCATE ,",
+                "TRUNCATE a,",
+                "DELETE OR",
+                "UPDATE \"",
+                "TRUNCATE `",
+                "DELETE FROM a..b",
+                "TRUNCATE ONLY",
+                "WITH x AS (UPDATE",
+                "WITH x AS (DELETE FROM a) (",
+                "UPDATE [",
+                "DELETE FROM a.b.c",
+            ] {
+                let _ = every_row(dialect, text);
+            }
+        }
     }
 }
