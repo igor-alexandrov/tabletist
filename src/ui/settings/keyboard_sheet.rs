@@ -406,16 +406,13 @@ fn key_row(
     let scope = skin.say(row.scope.name(layout));
     let fixed = fixed(layout, row);
     let changed = app.keymap.changed(layout, row);
+    let built = row.command.info().built;
     let spoken = keyboard::spoken_keys(app, row);
     let id = ui.id().with(("keyboard-row", row));
     // The row, for the pointer's hover and its context menu, and what a
     // screen reader says of it.
     let line = ui.interact(rect, id, Sense::click());
-    let said = if changed {
-        format!("{name}, {scope}, {spoken}, {}", skin.say("changed"))
-    } else {
-        format!("{name}, {scope}, {spoken}")
-    };
+    let said = keyboard::said(app, row, [&name, &scope, &spoken]);
     line.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &said));
     ui.ctx().accesskit_node_builder(line.id, |node| {
         node.set_role(egui::accesskit::Role::Row);
@@ -448,12 +445,23 @@ fn key_row(
     } else {
         palette.text
     };
-    widgets::paint_text(
+    let width = widgets::paint_text(
         ui,
         name_x,
         middle,
         Text::one(look, TextRole::UiBody, &name, ink),
     );
+    // A command nothing answers yet keeps its keys, and says so.
+    if !built {
+        let role = TextRole::Secondary;
+        let note = skin.say("Not built yet");
+        widgets::paint_text(
+            ui,
+            name_x + width + 8.0,
+            middle,
+            Text::one(look, role, &note, palette.faint),
+        );
+    }
     widgets::paint_text(
         ui,
         scope_x,

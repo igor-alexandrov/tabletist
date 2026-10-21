@@ -106,12 +106,13 @@ fn the_pane_lists_every_row_of_the_look_with_its_defaults() {
     for said in [
         "Find any object, Global, Command P",
         "History, Global, Command Y",
-        "Reopen closed tabs, Global, Shift Command T",
+        // A command nothing answers yet keeps its keys, and says so.
+        "Reopen closed tabs, Global, Shift Command T, not built yet",
         "New SQL editor tab, Global, Command T",
         "Format SQL or JSON, Editor, Shift Command F",
-        "Explain analyze, Editor, Option Command E",
+        "Explain analyze, Editor, Option Command E, not built yet",
         // No key, and one can be given.
-        "Compare with previous run, Editor, not set",
+        "Compare with previous run, Editor, not set, not built yet",
         "Switch database, Global, not set",
     ] {
         assert!(listed.iter().any(|row| row == said), "{said}: {listed:?}");
@@ -242,12 +243,11 @@ fn swap_moves_the_keys_both_ways_and_cancel_and_esc_change_nothing() {
     assert!(
         listed
             .iter()
-            .any(|row| row == "Explain analyze, Editor, not set, changed")
+            .any(|row| row == "Explain analyze, Editor, not set, changed, not built yet")
     );
     assert!(
-        listed
-            .iter()
-            .any(|row| row == "Compare with previous run, Editor, Option Command E, changed")
+        listed.iter().any(|row| row
+            == "Compare with previous run, Editor, Option Command E, changed, not built yet")
     );
     // Both ways: Format and Run all trade theirs.
     harness.click(&caps("Format SQL or JSON", "Shift Command F"));
@@ -379,8 +379,8 @@ fn the_search_and_changed_cut_the_list() {
     assert_eq!(
         listed,
         [
-            "Explain analyze, Editor, Option Command E",
-            "Explain, Editor, Command E",
+            "Explain analyze, Editor, Option Command E, not built yet",
+            "Explain, Editor, Command E, not built yet",
         ]
     );
     // By a group's name.
@@ -468,7 +468,7 @@ fn omarchy_lists_its_rows_by_group_with_its_keys() {
         "find any object, global, ctrl+p",
         "history, global, :history",
         "new sql editor tab, global, ctrl+t",
-        "reopen closed tabs, start, u",
+        "reopen closed tabs, start, u, not built yet",
         "delete row, grid, dd",
         "save changes, grid, :w or ctrl+s",
     ] {
@@ -685,6 +685,7 @@ fn the_keys_lines_never_change_the_settings() {
             assert_ne!(*path, harness.app.dirs.settings_file());
             assert!(text.contains("# [keys.grid]\n"));
             assert!(text.contains("# \"dd\" = \"delete_row\"\n"));
+            assert!(text.contains("# \"ctrl+k\" = \"ask_ai\"  # not built yet\n"));
         }
         other => panic!("{other:?}"),
     }
@@ -700,7 +701,7 @@ fn the_keys_lines_never_change_the_settings() {
 }
 
 /// The cheat sheet: a table for each group, the keys as the look writes
-/// them, a changed row marked so.
+/// them, a changed row marked so, and one nothing answers yet.
 #[test]
 fn the_cheat_sheet_lists_the_groups_with_their_keys_as_the_look_writes_them() {
     let mut harness = keyboard(Look::macos());
@@ -713,7 +714,8 @@ fn the_cheat_sheet_lists_the_groups_with_their_keys_as_the_look_writes_them() {
     );
     assert!(sheet.contains("| Format SQL or JSON | Editor | F5 (changed) |\n"));
     assert!(sheet.contains("| Find any object | Global | ⌘P |\n"));
-    assert!(sheet.contains("| Compare with previous run | Editor | Not set |\n"));
+    assert!(sheet.contains("| Compare with previous run (not built yet) | Editor | Not set |\n"));
+    assert!(sheet.contains("| Ask AI (not built yet) | Editor | ⌘K |\n"));
     let omarchy = crate::app::cheat_sheet(&crate::keymap::Keymap::default(), Layout::Omarchy);
     assert!(omarchy.contains("| Delete row | grid | dd |\n"));
     assert!(omarchy.contains("\n## edit\n"));
