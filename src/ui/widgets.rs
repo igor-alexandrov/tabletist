@@ -104,6 +104,37 @@ fn padded<'a>(
         .vertical_align(egui::Align::Center)
 }
 
+/// Makes `rect`, the bar that leads the window, move the window as a title
+/// bar does, and answers a double-click on it. Call it before the widgets
+/// inside `rect`, so they keep their clicks. Only the pointer can: it is no
+/// stop for the Tab key.
+///
+/// macOS: fastframe-titlebar starts the drag on the press, the only time
+/// AppKit takes one, and a double-click does what System Settings says.
+/// Elsewhere the window keeps the desktop's frame, which fastframe-titlebar
+/// leaves alone, so the bar moves the window once the pointer does and a
+/// double-click maximizes or restores it.
+pub fn title_bar_drag(ui: &mut Ui, rect: Rect) {
+    #[cfg(target_os = "macos")]
+    fastframe_titlebar::drag(ui, rect);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let drag = ui.interact(
+            rect,
+            ui.id().with("title-bar-drag"),
+            Sense::CLICK | Sense::DRAG,
+        );
+        if drag.drag_started() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if drag.double_clicked() {
+            let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+    }
+}
+
 /// A square icon button. `label` is its accessible name and tooltip, so it
 /// is reachable by screen readers and by the headless tests.
 pub fn icon_button(
