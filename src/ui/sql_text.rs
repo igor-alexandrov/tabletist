@@ -448,6 +448,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let numbering = app.settings.line_numbers_in(look.terminal);
     let (style, indent) = (format_style(&app.settings, &look), app.settings.indent);
     let highlight = app.settings.highlight_line;
+    let pairs = app.settings.close_pairs;
     let Some(workspace) = app.workspace_mut(tab) else {
         return;
     };
@@ -478,6 +479,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         // keyboard. Not one whose row this frame inserts: Esc is the
         // editor's again.
         hold_escape: sql_tab.completion.as_ref().is_some_and(|list| !list.accept),
+        pairs,
     };
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
@@ -694,6 +696,8 @@ struct Field<'a> {
     palette: &'a Palette,
     /// Keep the keyboard on Esc (a completion list is open and takes it).
     hold_escape: bool,
+    /// A bracket or a quote typed gets its closing one.
+    pairs: bool,
     /// How Format writes the script.
     style: sql::format::Style,
     /// What the Tab key puts in, and takes out with Shift.
@@ -911,6 +915,254 @@ fn indent_script(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     changed
 }
 
+/// The closing character of a bracket or a quote that `typed` opens in
+/// `dialect`: a backtick only where it quotes names (MySQL, SQLite).
+fn closer_of(typed: char, dialect: Dialect) -> Option<char> {
+    match typed {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '\'' | '"' => Some(typed),
+        '`' => dialect.backtick_names().then_some('`'),
+        _ => None,
+    }
+}
+
+/// Whether the quote `typed` at byte `at` of `text` would close the
+/// string or the quoted name the cursor is in: the literal's own last
+/// character, its closing quote, is right after the cursor. A quote of an
+/// escaped pair, or one inside a literal of another kind, closes nothing.
+fn closes_literal(text: &str, dialect: Dialect, at: usize, typed: char) -> bool {
+    sql::tokenize(dialect, text).iter().any(|token| {
+        let quoted = matches!(token.kind, TokenKind::String | TokenKind::QuotedIdentifier);
+        let range = &token.range;
+        quoted
+            && range.start < at
+            && range.end == at + typed.len_utf8()
+            && text[range.clone()].ends_with(typed)
+            && text[range.clone()]
+                .trim_start_matches(char::is_alphabetic)
+                .starts_with(typed)
+    })
+}
+
+/// Whether `at` is inside a string, a quoted name or a comment of `text`
+/// (one left open counts to its end): a quote typed there closes one or
+/// is text, and is never paired. Told by the tokenizer, of the text up to
+/// `at` with a letter after it: a literal that takes the letter in goes
+/// on past `at`. So a line comment with lines under it, a dollar quote, an
+/// escaped quote at an open string's end are read as the dialect reads
+/// them.
+fn in_literal(text: &str, dialect: Dialect, at: usize) -> bool {
+    // A letter, not a space: MySQL reads `--` as a comment only before a
+    // space, and the text after the cursor is not known to be one.
+    let probe = format!("{}x", &text[..at]);
+    sql::tokenize(dialect, &probe).iter().any(|token| {
+        let literal = matches!(
+            token.kind,
+            TokenKind::String
+                | TokenKind::QuotedIdentifier
+                | TokenKind::Comment
+                | TokenKind::ExecutableComment
+        );
+        literal && token.range.start < at && at < token.range.end
+    })
+}
+
+/// The edit Close brackets and quotes makes of a character typed with
+/// nothing selected, at byte `at` of `text`: its pair put in (`Pair`), a
+/// closing character stepped over (`Over`), or none.
+#[derive(Debug, PartialEq, Eq)]
+enum Paired {
+    Pair(char),
+    Over,
+}
+
+fn paired(text: &str, dialect: Dialect, at: usize, typed: char) -> Option<Paired> {
+    let next = text[at..].chars().next();
+    let before = text[..at].chars().next_back();
+    // Its own closing character already there: stepped over. A quote
+    // only where it closes the literal the cursor is in: one that opens
+    // the next string is typed before it.
+    let bracket = matches!(typed, ')' | ']' | '}');
+    let quote = closer_of(typed, dialect) == Some(typed);
+    let closes = bracket || (quote && closes_literal(text, dialect, at, typed));
+    if closes && next == Some(typed) {
+        return Some(Paired::Over);
+    }
+    let closer = closer_of(typed, dialect)?;
+    // Only where nothing follows that the pair would split off.
+    let room = next.is_none_or(|next| next.is_whitespace() || ")]},;".contains(next));
+    if !room {
+        return None;
+    }
+    if closer == typed {
+        // A quote: not inside a word (`it's`), after another quote (`''`
+        // escapes), or inside a string or a comment.
+        let wordy = before
+            .is_some_and(|before| before.is_alphanumeric() || before == '_' || before == typed);
+        if wordy || in_literal(text, dialect, at) {
+            return None;
+        }
+    }
+    Some(Paired::Pair(closer))
+}
+
+/// Close brackets and quotes, before the field reads the frame's events:
+/// a bracket or a quote typed gets its closing one after the caret, a
+/// closing one typed before its twin steps over it, Backspace between an
+/// empty pair takes both out, and a bracket or a quote typed over a
+/// selection puts the selection between the two (one step of the undo
+/// history, the selection kept). The other edits are the field's own
+/// (the pair typed and the caret moved back), so they undo as typing
+/// does. Only in a frame of one edit, while the field has the keyboard.
+/// Returns whether the text changed here.
+fn close_pairs(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
+    if !field.pairs || !ui.memory(|memory| memory.has_focus(field.id)) {
+        return false;
+    }
+    let key = |key: egui::Key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    // The frame's one edit: a character typed, or a plain Backspace. A
+    // character comes with the press of its key too, which is no edit of
+    // its own; the keys that edit or move the caret are.
+    let edit = ui.input(|input| {
+        use egui::Key as K;
+        let edits: Vec<&egui::Event> = input
+            .events
+            .iter()
+            .filter(|event| match event {
+                egui::Event::Text(_)
+                | egui::Event::Paste(_)
+                | egui::Event::Cut
+                | egui::Event::Ime(egui::ImeEvent::Commit(_)) => true,
+                // The text field's own editing keys, which the keymap does
+                // not hold, and any chord (undo, redo).
+                egui::Event::Key {
+                    key,
+                    pressed,
+                    modifiers,
+                    ..
+                } => {
+                    *pressed && (modifiers.command || modifiers.ctrl)
+                        || *pressed
+                            && matches!(
+                                key,
+                                K::Backspace
+                                    | K::Delete
+                                    | K::Enter
+                                    | K::Tab
+                                    | K::ArrowLeft
+                                    | K::ArrowRight
+                                    | K::ArrowUp
+                                    | K::ArrowDown
+                                    | K::Home
+                                    | K::End
+                                    | K::PageUp
+                                    | K::PageDown
+                            )
+                }
+                _ => false,
+            })
+            .collect();
+        match edits.as_slice() {
+            [egui::Event::Text(text)] if text.chars().count() == 1 => text.chars().next(),
+            [
+                egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    modifiers,
+                    ..
+                },
+            ] if modifiers.is_none() => Some('\u{8}'),
+            _ => None,
+        }
+    });
+    let Some(typed) = edit else {
+        return false;
+    };
+    let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+    let Some(range) = state.cursor.char_range() else {
+        return false;
+    };
+    let [start, end] = range.sorted_cursors();
+    let byte = |cursor: CCursor| byte_offset(&sql_tab.text, cursor.index.0);
+    let (start, end) = (byte(start), byte(end));
+    let text = &sql_tab.text;
+    if typed == '\u{8}' {
+        // Backspace between an empty pair: the closing one goes with it.
+        let before = text[..start].chars().next_back();
+        let next = text[start..].chars().next();
+        // A quote's pair only where the first one opens a literal: the two
+        // of an escaped quote (`'it''s'`) are inside one.
+        let empty = start == end
+            && before.is_some_and(|before| {
+                let opens = closer_of(before, field.dialect).is_some_and(|c| Some(c) == next);
+                let escaped = before == next.unwrap_or_default()
+                    && in_literal(text, field.dialect, start - before.len_utf8());
+                opens && !escaped
+            });
+        if empty {
+            ui.input_mut(|input| input.events.push(key(egui::Key::Delete)));
+        }
+        return false;
+    }
+    if start != end {
+        // Over a selection: the selection between the two.
+        let Some(closer) = closer_of(typed, field.dialect) else {
+            return false;
+        };
+        ui.input_mut(|input| {
+            input
+                .events
+                .retain(|event| !matches!(event, egui::Event::Text(_)));
+        });
+        let inner = &text[start..end];
+        let out = [
+            &text[..start],
+            &typed.to_string(),
+            inner,
+            &closer.to_string(),
+            &text[end..],
+        ]
+        .concat();
+        let (from, to) = (start + typed.len_utf8(), end + typed.len_utf8());
+        let at = |byte: usize| CCursor::new(char_index(&out, byte));
+        let backwards = range.primary.index < range.secondary.index;
+        let after = if backwards {
+            CCursorRange::two(at(to), at(from))
+        } else {
+            CCursorRange::two(at(from), at(to))
+        };
+        let before = (range, std::mem::take(&mut sql_tab.text));
+        let after = (after, out);
+        outside_edit(&mut state, ui.input(|input| input.time), &before, &after);
+        egui::TextEdit::store_state(ui.ctx(), field.id, state);
+        sql_tab.text = after.1;
+        sql_tab.cursor = if backwards { from } else { to };
+        return true;
+    }
+    let events = match paired(text, field.dialect, start, typed) {
+        Some(Paired::Pair(closer)) => vec![
+            egui::Event::Text(format!("{typed}{closer}")),
+            key(egui::Key::ArrowLeft),
+        ],
+        Some(Paired::Over) => vec![key(egui::Key::ArrowRight)],
+        None => return false,
+    };
+    ui.input_mut(|input| {
+        input
+            .events
+            .retain(|event| !matches!(event, egui::Event::Text(_)));
+        input.events.extend(events);
+    });
+    false
+}
+
 /// The text field itself: edits the tab's text and reports its cursor.
 fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let inserted = insert_completion(ui.ctx(), field.id, sql_tab);
@@ -919,8 +1171,9 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     // An indent is an outside edit too: what the field shows, and where
     // its caret goes, follow as after Format.
     let indented = indent_script(ui, sql_tab, field);
+    let paired = close_pairs(ui, sql_tab, field);
     let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
-    let formatted = formatted || indented;
+    let formatted = formatted || indented || paired;
     // The field fills the pane, so a click under the last line lands in
     // it: whole lines, and the rest as bottom padding. (egui sizes a text
     // edit in lines of its font.)
@@ -1163,6 +1416,78 @@ mod tests {
     }
 
     #[test]
+    fn a_pair_goes_in_where_nothing_follows_that_it_would_split_off() {
+        let pair = |text: &str, typed| paired(text, Dialect::Postgres, text.len(), typed);
+        assert_eq!(pair("SELECT count", '('), Some(Paired::Pair(')')));
+        assert_eq!(pair("SELECT ", '\''), Some(Paired::Pair('\'')));
+        assert_eq!(pair("SELECT ", '"'), Some(Paired::Pair('"')));
+        // A backtick quotes names on MySQL alone.
+        assert_eq!(pair("SELECT ", '`'), None);
+        let mysql = paired("SELECT ", Dialect::MySql, 7, '`');
+        assert_eq!(mysql, Some(Paired::Pair('`')));
+        // Before a word, after a word or a quote, inside a literal: none.
+        assert_eq!(paired("SELECT x", Dialect::Postgres, 7, '('), None);
+        assert_eq!(pair("SELECT it", '\''), None);
+        assert_eq!(pair("SELECT ''", '\''), None);
+        assert_eq!(pair("SELECT 'a ", '\''), None);
+        assert_eq!(pair("-- a ", '"'), None);
+        assert_eq!(pair("/* a ", '"'), None);
+        // Closed, a comment or a string is behind the cursor.
+        assert_eq!(pair("/* a */ ", '"'), Some(Paired::Pair('"')));
+        assert_eq!(pair("SELECT 'a' ", '"'), Some(Paired::Pair('"')));
+        // Before a closing one or a comma: room.
+        assert_eq!(
+            paired("f()", Dialect::Postgres, 2, '['),
+            Some(Paired::Pair(']'))
+        );
+        // Its twin after the cursor: stepped over.
+        assert_eq!(paired("f()", Dialect::Postgres, 2, ')'), Some(Paired::Over));
+        assert_eq!(paired("''", Dialect::Postgres, 1, '\''), Some(Paired::Over));
+        // A closing one with nothing to step over is typed.
+        assert_eq!(pair("f(", ')'), None);
+    }
+
+    #[test]
+    fn a_literal_is_told_as_the_dialect_reads_it() {
+        use Dialect::{MySql, Postgres};
+        let at = |text: &str, dialect, at, typed| paired(text, dialect, at, typed);
+        // A line comment with a line under it, `--` and MySQL's `#`.
+        assert_eq!(at("-- note \nSELECT 1", Postgres, 8, '"'), None);
+        assert_eq!(at("SELECT 1 # x \nSELECT 2", MySql, 13, '\''), None);
+        // Left open at the end: dollar quotes, an escaped quote, a quoted
+        // name, a block comment that only looks closed.
+        assert_eq!(at("SELECT $$", Postgres, 9, '\''), None);
+        assert_eq!(at("SELECT $f$", Postgres, 10, '\''), None);
+        assert_eq!(at("SELECT 'it''", Postgres, 12, '"'), None);
+        assert_eq!(at("SELECT \"a\"\"", Postgres, 11, '\''), None);
+        assert_eq!(at("/*/", Postgres, 3, '\''), None);
+        // Closed, whatever its first character: room for a pair.
+        assert_eq!(
+            at("SELECT E'a' ", Postgres, 12, '"'),
+            Some(Paired::Pair('"'))
+        );
+        // A quote before the next string's opening one is typed, not
+        // stepped over.
+        let two = "SELECT 'a',  'b'";
+        assert_eq!(at(two, Postgres, two.find("'b'").unwrap(), '\''), None);
+        // In a string, before its closing quote: stepped over.
+        assert_eq!(at("SELECT 'a'", Postgres, 9, '\''), Some(Paired::Over));
+        // Before a quote that closes nothing it is typed: one inside a
+        // string of the other quote, one of an escaped pair.
+        assert_eq!(at("'{\"a\":1}'", Postgres, 4, '"'), None);
+        assert_eq!(at("'it''s'", Postgres, 3, '\''), None);
+        // Backticks quote names on MySQL and SQLite, and step over there.
+        assert_eq!(at("``", MySql, 1, '`'), Some(Paired::Over));
+        assert_eq!(
+            at("SELECT ", Dialect::Sqlite, 7, '`'),
+            Some(Paired::Pair('`'))
+        );
+        // MySQL's `--` is a comment only before a space: right after it,
+        // a quote pairs.
+        assert_eq!(at("SELECT 1 --", MySql, 11, '\''), Some(Paired::Pair('\'')));
+    }
+
+    #[test]
     fn an_indent_goes_in_at_the_cursor_or_on_each_line_selected() {
         let tab = |text: &str, selection: Range<usize>, indent, outdent| {
             indented(text, selection, indent, outdent)
@@ -1256,6 +1581,7 @@ mod tests {
                     look: &look,
                     palette: &palette,
                     hold_escape,
+                    pairs: false,
                     style: sql::format::Style::default(),
                     // A tab character: what Tab put in before the setting.
                     indent: Indent::Tab,
