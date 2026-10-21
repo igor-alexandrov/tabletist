@@ -2154,12 +2154,7 @@ pub fn after_frame(ctx: &egui::Context) {
 
 /// The commands of the letters every look reads before anything else
 /// takes a key: [`letters`] takes such a character from the frame.
-const WINDOW_LETTERS: [Command; 4] = [
-    Command::Reload,
-    Command::FilterObjects,
-    Command::ToggleTree,
-    Command::Help,
-];
+const WINDOW_LETTERS: [Command; 4] = crate::keymap::ONE_LETTER;
 
 /// The command `char`, typed this frame, stands for among
 /// [`WINDOW_LETTERS`], in the first of `scopes` that reads it (the global

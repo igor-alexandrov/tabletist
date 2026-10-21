@@ -67,11 +67,11 @@ fn settings_lists_an_agents_pane_after_appearance() {
         harness.settle();
         assert_eq!(pane(&harness), Some(SettingsPane::General), "{}", look.name);
         assert!(!harness.has("Let agents use Tabletist"), "{}", look.name);
-        // Past Appearance and Editor, the panes between them.
+        // Past Appearance, Editor and Keyboard, the panes between them.
         if look.terminal {
-            harness.press(egui::Key::L, egui::Modifiers::CTRL);
-            harness.press(egui::Key::L, egui::Modifiers::CTRL);
-            harness.press(egui::Key::L, egui::Modifiers::CTRL);
+            for _ in 0..4 {
+                harness.press(egui::Key::L, egui::Modifiers::CTRL);
+            }
         } else {
             harness.click("Agents");
         }
@@ -81,9 +81,9 @@ fn settings_lists_an_agents_pane_after_appearance() {
         assert!(!harness.has("Rows per page"), "{}", look.name);
         // And back.
         if look.terminal {
-            harness.press(egui::Key::H, egui::Modifiers::CTRL);
-            harness.press(egui::Key::H, egui::Modifiers::CTRL);
-            harness.press(egui::Key::H, egui::Modifiers::CTRL);
+            for _ in 0..4 {
+                harness.press(egui::Key::H, egui::Modifiers::CTRL);
+            }
         } else {
             harness.click("General");
         }

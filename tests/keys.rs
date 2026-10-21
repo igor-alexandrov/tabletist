@@ -14,12 +14,18 @@ const SPELLED: [&str; 18] = [
 ];
 
 /// The files that may spell a key: the keymap, which is where they are
-/// spelled, and the fonts, whose notes name the glyphs the faces hold.
-const MAY: [&str; 2] = ["src/keymap.rs", "src/typography/fonts.rs"];
+/// spelled (the person's keys laid over it too), and the fonts, whose
+/// notes name the glyphs the faces hold.
+const MAY: [&str; 3] = [
+    "src/keymap.rs",
+    "src/keymap/overrides.rs",
+    "src/typography/fonts.rs",
+];
 
 /// The files that are tests and nothing else, or scenes for screenshots: a
 /// test says what the user presses and sees, in its own words.
-const TESTS: [&str; 11] = [
+const TESTS: [&str; 13] = [
+    "src/app/keyboard_tests.rs",
     "src/testing.rs",
     "src/shots.rs",
     "src/ui/complete_tests.rs",
@@ -29,6 +35,7 @@ const TESTS: [&str; 11] = [
     "src/ui/env_tests.rs",
     "src/ui/insert_audit_tests.rs",
     "src/ui/key_picker_tests.rs",
+    "src/ui/keyboard_tests.rs",
     "src/ui/label_tests.rs",
     "src/ui/start_tests.rs",
 ];

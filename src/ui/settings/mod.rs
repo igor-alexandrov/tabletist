@@ -7,6 +7,11 @@
 
 mod agents;
 mod file_pane;
+mod keyboard;
+mod keyboard_sheet;
+mod keyboard_terminal;
+#[cfg(test)]
+pub(crate) use keyboard_sheet::search_id as keyboard_search_id;
 mod preview;
 mod sheet;
 mod terminal;
@@ -840,10 +845,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         return;
     };
     let mut actions = Vec::new();
+    // A row being recorded has the frame's keys before anything else: the
+    // key is the row's, whatever it would do otherwise. A button of the
+    // refusal's line keeps the keys that press it.
+    let keyboard = dialog.pane == SettingsPane::Keyboard;
+    if keyboard && let Some(recording) = &dialog.keyboard.recording {
+        let on_buttons = keyboard_sheet::on_refusal(ctx);
+        keyboard::record(ctx, app, (recording, on_buttons), &mut actions);
+    }
     if app.look.terminal {
         // The screen's keys act on its cursor. The sheet has none: its
-        // controls are reached with Tab.
-        keys(app, ctx, dialog, &mut actions);
+        // controls are reached with Tab. The Keyboard pane's are its own,
+        // and its `/` line's field has them while it is open.
+        if !keyboard {
+            keys(app, ctx, dialog, &mut actions);
+        } else if dialog.keyboard.recording.is_none() && !dialog.keyboard.filtering {
+            keyboard_terminal::keys(app, ctx, dialog, &mut actions);
+        }
         terminal::show(app, ctx, dialog, &mut actions);
     } else {
         sheet::show(app, ctx, dialog, &mut actions);

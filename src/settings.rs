@@ -9,6 +9,7 @@ use crate::paths::AppDirs;
 use crate::util::toml_string;
 
 mod editor;
+mod keys;
 pub use editor::{
     Autocomplete, Commas, EditorKeys, Indent, KeywordCase, LineNumbers, NewTab, RunScope,
 };
@@ -692,6 +693,11 @@ pub struct Settings {
     pub table_list: TableList,
     /// How the connection bar shows a connection's environment.
     pub env_bar: EnvBar,
+    /// The person's changes to the keymap: `[keys.<scope>]` and
+    /// `[keys.unbind]`. As the file says them: whether the keymap can take
+    /// each is the look's to say ([`crate::keymap::Keymap::with`]).
+    #[serde(skip)]
+    pub keys: crate::keymap::Overrides,
 }
 
 /// A key of the settings file.
@@ -1376,6 +1382,8 @@ pub struct Loaded {
     pub invalid: Vec<usize>,
     /// The line each key was read from, in the order of [`Key::ALL`].
     pub lines: Vec<(Key, usize)>,
+    /// The line each line of the keys' tables was read from.
+    pub key_lines: Vec<(crate::keymap::Line, usize)>,
     pub source: Source,
 }
 
@@ -1386,12 +1394,13 @@ impl Loaded {
     pub fn of(settings: Settings, source: Source) -> Self {
         let settings = settings.validated();
         let text = settings.to_toml();
-        let lines = Settings::from_toml(&text).lines;
+        let read = Settings::from_toml(&text);
         Self {
             settings,
             text,
             invalid: Vec::new(),
-            lines,
+            lines: read.lines,
+            key_lines: read.key_lines,
             source,
         }
     }
@@ -1442,6 +1451,8 @@ pub struct SettingsFile {
     pub invalid: Vec<usize>,
     /// The line each key is on.
     pub lines: Vec<(Key, usize)>,
+    /// The line each line of the keys' tables is on.
+    pub key_lines: Vec<(crate::keymap::Line, usize)>,
     /// Whether the backend watches the file for changes made outside.
     pub live: bool,
     /// The text the app last asked to be written, if it asked: what tells
@@ -1493,6 +1504,7 @@ impl Loaded {
             text: self.text,
             invalid: self.invalid,
             lines: self.lines,
+            key_lines: self.key_lines,
             live: false,
             saved: None,
             offered: Vec::new(),
@@ -2401,7 +2413,20 @@ impl Settings {
     /// header line, and a table for the keys that are not at their
     /// default, in the order of [`Key::ALL`], each with its note.
     pub fn to_toml(&self) -> String {
-        self.write_into("", &Key::ALL)
+        keys::write(&self.write_into("", &Key::ALL), &self.keys)
+    }
+
+    /// `text` with its keys' tables saying what [`Settings::keys`] says,
+    /// and nothing else of it changed (`keys::write`): the person's
+    /// comments, a line the reader ignored, and every other table stay.
+    pub fn write_keys_into(&self, text: &str) -> String {
+        keys::write(text, &self.keys)
+    }
+
+    /// `text` with every table of the keys taken out, and nothing else
+    /// changed: what Reset all of the Keyboard settings writes.
+    pub fn without_keys(text: &str) -> String {
+        keys::without_keys(text)
     }
 
     /// `text` with `keys` set to their values here, and nothing else of it
@@ -2752,6 +2777,7 @@ impl Settings {
                 text: text.to_owned(),
                 invalid,
                 lines: Vec::new(),
+                key_lines: Vec::new(),
                 source: Source::Toml,
             };
         }
@@ -2822,6 +2848,11 @@ impl Settings {
         for key in kept {
             settings.keep(key, last);
         }
+        // The keys' lines: a line that says nothing this version reads is
+        // ignored, and its keys stay the keymap's own.
+        let keys = keys::read(&document, &working);
+        settings.keys = keys.overrides;
+        invalid.extend(keys.invalid);
         invalid.sort_unstable();
         invalid.dedup();
         Loaded {
@@ -2829,6 +2860,7 @@ impl Settings {
             text: text.to_owned(),
             invalid,
             lines,
+            key_lines: keys.lines,
             source: Source::Toml,
         }
     }
@@ -2959,6 +2991,7 @@ impl Default for Settings {
             column_types: true,
             table_list: TableList::Tree,
             env_bar: EnvBar::Tint,
+            keys: crate::keymap::Overrides::default(),
         }
     }
 }
@@ -3254,6 +3287,7 @@ mod tests {
             column_types: false,
             table_list: TableList::Flat,
             env_bar: EnvBar::Label,
+            keys: crate::keymap::Overrides::default(),
         }
     }
 
@@ -4217,6 +4251,7 @@ bar = \"label\"  # tint | label
                 line_starts: vec![0, 7, 23],
                 invalid: vec![3],
                 lines: vec![(Key::PageSize, 2)],
+                key_lines: Vec::new(),
                 live: false,
                 saved: None,
                 offered: Vec::new(),

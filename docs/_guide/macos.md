@@ -70,6 +70,14 @@ dialogs and of the lists that open in an editor.
 Keys written with Ctrl are the Control key, not Cmd. Backspace is the key
 a Mac keyboard labels Delete.
 
+These are the defaults. **Settings › Keyboard** changes any key that is
+not dimmed there:
+[Changing a key]({% link _reference/keyboard-shortcuts.md %}#changing-a-key).
+macOS keeps Cmd+Q, Cmd+W, Cmd+H, Cmd+Option+H, Cmd+M, Cmd+Tab, Cmd+Space,
+Ctrl+Cmd+F and Cmd+, for itself, and the copy, paste, cut, undo, redo and
+select all of every text field (Cmd+C, Cmd+V, Cmd+X, Cmd+Z, Cmd+Shift+Z,
+Cmd+A): none of them can be given to a command.
+
 ### Everywhere
 
 | Keys | Do |

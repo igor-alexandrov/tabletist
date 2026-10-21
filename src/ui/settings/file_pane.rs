@@ -189,10 +189,57 @@ pub(super) fn drawn(line: &str) -> &str {
     &line[..end]
 }
 
+/// What the file pane shows of the file.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Shown {
+    /// All of it, the line of the cursor's option marked.
+    Option(Option<OptionId>),
+    /// The `[keys.*]` tables alone, as the Keyboard pane has them, the
+    /// lines of the cursor's row marked.
+    Keys(Option<crate::keymap::Row>),
+}
+
+/// Whether a line is a table's header, and the table's first name if so
+/// (`keys` of `[keys.grid]`).
+fn header_name(line: &str) -> Option<String> {
+    let line = line.trim_start_matches('\u{feff}').trim();
+    let inner = line.strip_prefix('[')?;
+    let inner = inner.strip_prefix('[').unwrap_or(inner);
+    let end = inner.find(']')?;
+    let first = inner[..end].split('.').next()?.trim();
+    Some(first.trim_matches(['"', '\'']).to_owned())
+}
+
+/// The lines of the file (from 0) in its keys' tables: from the header of
+/// one to the next header of another table.
+pub(super) fn keys_lines(file: &crate::settings::SettingsFile) -> Vec<usize> {
+    let mut lines = Vec::new();
+    let mut inside = false;
+    for index in 0..file.line_count() {
+        let Some(line) = file.line(index) else {
+            break;
+        };
+        if let Some(name) = header_name(line) {
+            inside = name == "keys";
+        }
+        if inside {
+            lines.push(index);
+        }
+    }
+    // A blank line that only stands before the next table is not the keys'.
+    while lines
+        .last()
+        .is_some_and(|last| file.line(*last).is_some_and(|line| line.trim().is_empty()))
+    {
+        lines.pop();
+    }
+    lines
+}
+
 /// The settings file beside its options, in `rect`: where it is and whether
-/// it is watched, its text with the line of the cursor's option marked, and
-/// what its colours say.
-pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>, skin: &Skin) {
+/// it is watched, its text (or the part of it `shown` says) with the line
+/// of the cursor's option or row marked, and what its colours say.
+pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, shown: Shown, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let role = widgets::code(look);
     let file = &app.settings_file;
@@ -242,20 +289,68 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
         pos2(left, under.top() + NOTE),
     );
 
-    let marked = option.and_then(|option| {
-        // The new key's line, else the old key's it took the place of,
-        // which sets it while the file has no new one.
-        let key = option.key();
-        let line = file
-            .lines
-            .iter()
-            .find(|(read, _)| *read == key)
-            .or_else(|| {
-                let old = key.replaced()?;
-                file.lines.iter().find(|(read, _)| *read == old)
-            });
-        line.map(|(_, line)| *line)
-    });
+    let marked: Vec<usize> = match shown {
+        Shown::Option(option) => option
+            .and_then(|option| {
+                // The new key's line, else the old key's it took the place
+                // of, which sets it while the file has no new one.
+                let key = option.key();
+                let line = file
+                    .lines
+                    .iter()
+                    .find(|(read, _)| *read == key)
+                    .or_else(|| {
+                        let old = key.replaced()?;
+                        file.lines.iter().find(|(read, _)| *read == old)
+                    });
+                line.map(|(_, line)| *line)
+            })
+            .into_iter()
+            .collect(),
+        // The lines that give the row its keys.
+        Shown::Keys(row) => row
+            .map(|row| {
+                file.key_lines
+                    .iter()
+                    .filter(|(line, _)| match line {
+                        crate::keymap::Line::Bind(index) => {
+                            app.settings.keys.binds.get(*index).is_some_and(|bind| {
+                                bind.scope == row.scope && bind.command == row.command
+                            })
+                        }
+                        crate::keymap::Line::Unbind(_) => false,
+                    })
+                    .map(|(_, at)| *at)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    // The lines drawn, by their index in the file, and what is said over
+    // them: the keys' part has a caption of the pane's own, which the file
+    // does not hold.
+    let (only, caption): (Option<Vec<usize>>, Vec<String>) = match shown {
+        Shown::Option(_) => (None, Vec::new()),
+        Shown::Keys(_) => {
+            let keymap = crate::ui::keys::published(ui.ctx());
+            let list = keymap.key_in(
+                crate::keymap::Layout::Omarchy,
+                crate::keymap::Command::KeysDefault,
+                crate::keymap::Scope::Global,
+            );
+            (
+                Some(keys_lines(file)),
+                vec![
+                    format!("# {}", skin.say("only changes from the defaults live here")),
+                    format!(
+                        "# {}",
+                        skin.say("{list} writes the full list")
+                            .replace("{list}", list.as_str())
+                    ),
+                    String::new(),
+                ],
+            )
+        }
+    };
     let line = role.row_height(ui.ctx(), look.faces);
     // The text scrolls between the header and the note, past the pane's
     // rule.
@@ -270,7 +365,7 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
             // As tall as all its lines, which were found when the text was
             // set: a text that is no settings file can be megabytes long,
             // and is shown all the same.
-            let count = file.line_count();
+            let count = caption.len() + only.as_ref().map_or(file.line_count(), Vec::len);
             let height = 2.0 * TOP + count as f32 * line;
             let (place, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
@@ -279,7 +374,23 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
             // painted, each reached by where it starts: the ones before
             // them are not walked, and the ones after them are not reached.
             let shown = lines_in_view(top, line, count, ui.clip_rect().y_range());
-            for index in shown {
+            for at in shown {
+                let row = Rect::from_min_size(
+                    pos2(place.left(), top + at as f32 * line),
+                    vec2(place.width(), line),
+                );
+                if let Some(said) = caption.get(at) {
+                    let piece = Text::one(look, role, said, palette.dim);
+                    widgets::paint_text(ui, row.left() + SIDE, row.center().y, piece);
+                    continue;
+                }
+                let index = match &only {
+                    Some(only) => match only.get(at - caption.len()) {
+                        Some(index) => *index,
+                        None => break,
+                    },
+                    None => at,
+                };
                 // The lines as `Settings::from_toml` counts them, from 1.
                 // The end of a line as another system's editor wrote it is
                 // not drawn, nor is more of a line than the pane could show.
@@ -287,11 +398,7 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
                     break;
                 };
                 let number = index + 1;
-                let row = Rect::from_min_size(
-                    pos2(place.left(), top + index as f32 * line),
-                    vec2(place.width(), line),
-                );
-                if marked == Some(number) {
+                if marked.contains(&number) {
                     ui.painter()
                         .rect_filled(row, CornerRadius::ZERO, palette.selection);
                 }

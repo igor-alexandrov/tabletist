@@ -15,6 +15,33 @@ The same keys are written out for one system in
 [Tabletist on macOS]({% link _guide/macos.md %}#the-keyboard) and
 [The Omarchy Look]({% link _guide/omarchy.md %}#the-keyboard).
 
+## Changing a key
+
+Every key in this page is a default. **Settings › Keyboard** lists the
+commands with their keys and the scope each key works in: the same keys
+can do different things in different scopes (Mod+N is New connection in
+the picker and Add row on a table), and a key of the whole window counts
+in every scope. Click a shortcut and press the new keys: they are saved at
+once, and every list, hint and tooltip names them from then on. A key
+needs Mod, Ctrl or Alt with it, or is a function key (F1 to F19).
+
+A key the system keeps, or one Tabletist keeps for itself (the keys that
+move, Mod+1 to 9), is refused, and so is one another command has in the
+same scope or in the whole window: for that one the pane offers **Swap**,
+an exchange that gives the other command the keys yours had in that key's
+place, where both can stand. Esc gives up, and Backspace leaves the
+command with no key. A changed row has a dot before its keys and, under
+the pointer, a button that puts its defaults back (a default another
+command has been given since stays that command's); **Reset all…** puts
+every key back. The search field finds a command by
+its name, or by its keys when you press them in it with Mod, Ctrl or Alt
+held, and **Changed** lists the keys you changed. **Export cheat sheet**
+saves the keys in force as a Markdown file.
+
+Some keys cannot be changed: they are dimmed. The keys you change are kept
+in `settings.toml`, in
+[tables of their own]({% link _reference/settings-and-files.md %}#the-keys).
+
 ## Connections
 
 | Keys | Do |
