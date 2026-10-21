@@ -384,8 +384,11 @@ writes" on Omarchy. Its words are step 1's, there already.
   statement that writes) holding a statement that reaches every row of a
   table:
   - an `UPDATE` or a `DELETE` with nothing of its own to bound it: no
-    `WHERE`, no `LIMIT` (MySQL's, SQLite's), no join condition (`ON`, in
-    MySQL's statements of several tables). What stands in a subquery does
+    `WHERE`, no `LIMIT` (MySQL's, SQLite's), no inner join with its `ON`
+    in MySQL's statements of several tables, whose target is a side of
+    the join (not a `LEFT` or `RIGHT` one, which keeps every row of a
+    side; and not on PostgreSQL or SQLite, where a join stands in the
+    `FROM` or `USING` and its `ON` does not touch the target). What stands in a subquery does
     not count; a `WITH` and an `EXPLAIN ANALYZE` in front are looked
     through, and a `WITH`'s own `UPDATE` or `DELETE`
     (`WITH d AS (DELETE FROM books RETURNING *) SELECT ...`) is asked
@@ -438,7 +441,7 @@ writes" on Omarchy. Its words are step 1's, there already.
 |---|---|---|
 | "`TRUNCATE` always asks" | Asks with the row off too, on PostgreSQL and MySQL | The row names UPDATE and DELETE; "always" read as whatever it says. The other reading: TRUNCATE follows the row |
 | "with the row estimate from the database's statistics" | The sidebar's count, no query before the question; no number where it has none (SQLite, a schema not loaded) | The catalog's count is that estimate; asking the server first would put a round trip, and a failure, before the question |
-| "without WHERE" | A `LIMIT` or a join's `ON` of its own counts as a `WHERE`; a `WITH`'s own `UPDATE` or `DELETE` is asked about | `DELETE FROM logs LIMIT 1000` and a join reach some rows, not every row; a `WITH`'s `DELETE` reaches them all |
+| "without WHERE" | A `LIMIT`, or MySQL's inner join of the target with its `ON`, counts as a `WHERE`; a `WITH`'s own `UPDATE` or `DELETE` is asked about | `DELETE FROM logs LIMIT 1000` and a join reach some rows, not every row; a `WITH`'s `DELETE` reaches them all |
 | The writes spec (2026-10-05): "`TRUNCATE` is not asked about"; "This UPDATE has no WHERE" | It asks; the question names the table, as this spec's "Update every row in book_covers?" | This spec is newer |
 | (the words the boards do not draw) | "Line 3 has no WHERE." / "takes out every row." (TRUNCATE); "Update every row of its table?" where no table can be read; "Run 2 statements that change every row?" with a line each, Omarchy's `lines 1, 3`; a TRUNCATE's tables' rows summed, only where each has a count | Only the one question is drawn |
 | Omarchy: the question in the status line | A dialog drawn over the status line, transparent around it | The keyboard leaves the editor, as for every other question, so `y` and `n` type nothing |

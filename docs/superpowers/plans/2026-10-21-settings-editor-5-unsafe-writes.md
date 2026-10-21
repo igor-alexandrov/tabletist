@@ -52,6 +52,8 @@ A reviewer given the draft broke it with tests of its own, and a second read thi
 - `app.rs`'s test of which runs write would have passed without testing its two `DELETE`s.
 - The terminal line's count and lines were painted with no node for a screen reader.
 
+The pull request's review (#212) found that any `ON` was taken for a bound, in every dialect and every join: MySQL's `LEFT JOIN` deletes and PostgreSQL's and SQLite's `UPDATE ... FROM a JOIN b ON ...` (whose `ON` does not touch the target) were never asked about. A follow-up commit takes an `ON` for a bound on MySQL only, and only of an inner join (`joins_target`), with a test of each case; the diffs above show the draft before it.
+
 Left as they are, for the record:
 
 - `EXPLAIN (ANALYZE false) DELETE ...` is asked about, though nothing runs: `unbounded` reads `ANALYZE` as an option either way.

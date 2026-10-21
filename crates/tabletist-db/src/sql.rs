@@ -1127,14 +1127,14 @@ const VERBS: [&str; 8] = [
 ];
 
 /// The words that bound an `UPDATE` or a `DELETE` among its own words:
-/// a `WHERE`, a `LIMIT` (MySQL's, and SQLite's where it is built with one)
-/// and the `ON` of a join (MySQL's statements of several tables).
-const BOUNDS: [&str; 3] = ["WHERE", "LIMIT", "ON"];
+/// a `WHERE`, and a `LIMIT` (MySQL's, and SQLite's where it is built with
+/// one). MySQL's `ON` of an inner join bounds it too: see [`joins_target`].
+const BOUNDS: [&str; 2] = ["WHERE", "LIMIT"];
 
 /// `UPDATE` or `DELETE` when `statement` is one with nothing of its own to
-/// bound it (a `WHERE`, a `LIMIT`, a join's `ON`): it reaches every row of
-/// its table. What stands
-/// inside parentheses belongs to a subquery and does not count. A `WITH`
+/// bound it (a `WHERE`, a `LIMIT`, MySQL's inner join with its `ON`): it
+/// reaches every row of its table. What stands inside parentheses belongs
+/// to a subquery and does not count. A `WITH`
 /// in front is passed, and so is an `EXPLAIN` that has `ANALYZE`, which
 /// runs the statement behind it. A `WITH`'s own `UPDATE` or `DELETE`
 /// (`WITH d AS (DELETE FROM books RETURNING *) SELECT ...`) is named too:
@@ -1143,7 +1143,7 @@ const BOUNDS: [&str; 3] = ["WHERE", "LIMIT", "ON"];
 /// named; nor is a `TRUNCATE`, which has no `WHERE` to leave out
 /// ([`every_row`] names it).
 pub fn unbounded(dialect: Dialect, statement: &str) -> Option<Verb> {
-    unbounded_at(statement, &tokenize(dialect, statement)).map(|(verb, _)| verb)
+    unbounded_at(dialect, statement, &tokenize(dialect, statement)).map(|(verb, _)| verb)
 }
 
 /// A word of a statement, for [`unbounded_at`].
@@ -1203,7 +1203,7 @@ fn words_of(statement: &str, tokens: &[Token]) -> (Vec<Word>, bool) {
 
 /// [`unbounded`] of `statement`, whose tokens are `tokens`, with the place
 /// in `tokens` of its verb.
-fn unbounded_at(statement: &str, tokens: &[Token]) -> Option<(Verb, usize)> {
+fn unbounded_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<(Verb, usize)> {
     let (words, analyzed) = words_of(statement, tokens);
     let mut top = words.iter().filter(|word| word.group == 0);
     let leads = match top.next()?.text.as_str() {
@@ -1221,10 +1221,12 @@ fn unbounded_at(statement: &str, tokens: &[Token]) -> Option<(Verb, usize)> {
     // A WITH's statements: the verbs that open their parentheses.
     let ctes = words.iter().filter(|word| word.group > 0 && word.opens);
     let bounded = |verb: &Word| {
-        let after = words.iter().filter(|word| word.at > verb.at);
-        after
-            .filter(|word| word.group == verb.group)
-            .any(|word| BOUNDS.contains(&word.text.as_str()))
+        let own: Vec<&Word> = words
+            .iter()
+            .filter(|word| word.at > verb.at && word.group == verb.group)
+            .collect();
+        let joined = joins_target(dialect, &own);
+        joined || own.iter().any(|word| BOUNDS.contains(&word.text.as_str()))
     };
     own.into_iter().chain(ctes).find_map(|word| {
         let verb = match word.text.as_str() {
@@ -1233,6 +1235,36 @@ fn unbounded_at(statement: &str, tokens: &[Token]) -> Option<(Verb, usize)> {
             _ => return None,
         };
         (!bounded(word)).then_some((verb, word.at))
+    })
+}
+
+/// Whether `words`, a statement's own after its verb, join its target to
+/// another table with an `ON` that keeps only the rows that match: MySQL's
+/// `DELETE b FROM books b JOIN covers c ON ...` and `UPDATE books b JOIN
+/// covers c ON ... SET ...`, whose target is a side of the join. Not a
+/// `LEFT` or a `RIGHT` join, which keeps every row of one side. Nor on
+/// PostgreSQL and SQLite, where a join stands in the `FROM` or the `USING`
+/// and its `ON` does not touch the target: only a `WHERE` ties them.
+fn joins_target(dialect: Dialect, words: &[&Word]) -> bool {
+    match dialect {
+        Dialect::MySql => {}
+        Dialect::Postgres | Dialect::Sqlite => return false,
+    }
+    words.iter().enumerate().any(|(at, word)| {
+        if word.text != "ON" {
+            return false;
+        }
+        // The join this ON is of: the last one before it.
+        let Some(join) = words[..at]
+            .iter()
+            .rposition(|word| matches!(word.text.as_str(), "JOIN" | "STRAIGHT_JOIN"))
+        else {
+            return false;
+        };
+        let kind = words[..join].iter().rev().take(2);
+        !kind
+            .into_iter()
+            .any(|word| matches!(word.text.as_str(), "LEFT" | "RIGHT"))
     })
 }
 
@@ -1263,7 +1295,7 @@ pub struct NamedTable {
 /// `TRUNCATE a, b`.
 pub fn every_row(dialect: Dialect, statement: &str) -> Option<EveryRow> {
     let tokens = tokenize(dialect, statement);
-    let (verb, at) = match unbounded_at(statement, &tokens) {
+    let (verb, at) = match unbounded_at(dialect, statement, &tokens) {
         Some(found) => found,
         None => (Verb::Truncate, truncate_at(dialect, statement, &tokens)?),
     };
@@ -3000,15 +3032,50 @@ mod tests {
                 "SELECT 'TRUNCATE books'",
                 "-- TRUNCATE books",
                 "EXPLAIN DELETE FROM books",
-                // A LIMIT, or a join's ON, bounds it as a WHERE does.
+                // A LIMIT bounds it as a WHERE does.
                 "DELETE FROM logs LIMIT 1000",
-                "UPDATE books JOIN covers ON books.id = covers.book_id SET a = 1",
-                "DELETE b FROM books b JOIN covers c ON b.id = c.book_id",
                 // A WITH's DELETE with a WHERE of its own.
                 "WITH d AS (DELETE FROM books WHERE id = 1 RETURNING *) SELECT * FROM d",
                 "",
             ] {
                 assert_eq!(every_row(dialect, text), None, "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_mysql_inner_join_with_the_target_bounds_by_its_on() {
+        // MySQL's statements of several tables, whose target is a side of
+        // an inner join: only the rows that match.
+        for text in [
+            "UPDATE books JOIN covers ON books.id = covers.book_id SET a = 1",
+            "DELETE b FROM books b JOIN covers c ON b.id = c.book_id",
+            "DELETE b FROM books b INNER JOIN covers c ON b.id = c.book_id",
+        ] {
+            assert_eq!(every_row(Dialect::MySql, text), None, "{text}");
+        }
+        // A LEFT or a RIGHT join keeps every row of a side: the orphan
+        // cleanup with its WHERE left out deletes every book.
+        for text in [
+            "DELETE b FROM books b LEFT JOIN covers c ON b.id = c.book_id",
+            "DELETE b FROM books b LEFT OUTER JOIN covers c ON b.id = c.book_id",
+            "UPDATE books b RIGHT JOIN covers c ON b.id = c.book_id SET b.a = c.a",
+        ] {
+            assert!(every_row(Dialect::MySql, text).is_some(), "{text}");
+        }
+        // On PostgreSQL and SQLite a join stands in the FROM or the USING,
+        // and its ON does not touch the target: every row of it.
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            for text in [
+                "UPDATE books SET price = p.price FROM prices p JOIN regions r ON r.id = p.region_id",
+                "DELETE FROM books USING covers c JOIN shelves s ON s.id = c.shelf_id",
+            ] {
+                let found = every_row(dialect, text).expect(text);
+                assert_eq!(
+                    found.tables,
+                    vec![table(None, "books")],
+                    "{dialect:?} {text}"
+                );
             }
         }
     }

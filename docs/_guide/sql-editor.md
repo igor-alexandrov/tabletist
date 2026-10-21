@@ -44,8 +44,9 @@ look) sets what a run may do.
 {% include shot.html file="macos-sql-committed" alt="A read-write run of two statements, with Messages saying how many rows each changed and that the run was committed" %}
 
 A run in Read-write that would change every row of a table asks first:
-an `UPDATE` or a `DELETE` with no `WHERE`, `LIMIT` or join condition of
-its own (a `WHERE` inside a subquery does not count), and a `TRUNCATE`. The
+an `UPDATE` or a `DELETE` with no `WHERE` or `LIMIT` of its own (a
+`WHERE` inside a subquery does not count; on MySQL, an inner join of the
+table with its `ON` counts as one), and a `TRUNCATE`. The
 question names the table and, where the sidebar has the database's count
 of its rows, about how many it holds: "Update every row in
 book_covers?". **Cancel** sends nothing; **Run anyway** runs it. In the
