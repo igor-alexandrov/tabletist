@@ -166,7 +166,12 @@ fn structure() -> Structure {
         type_name: type_name.into(),
         nullable,
         default: default.map(Into::into),
-        comment: None,
+        // Two of them say what they hold, as a Bookshop's author would.
+        comment: match name {
+            "kind" => Some("Cover or preview page".into()),
+            "image_data" => Some("Its width, height and the address of each size".into()),
+            _ => None,
+        },
         // `kind` has a CHECK (kind IN ('cover', 'preview')).
         allowed_values: (name == "kind").then(|| vec!["cover".into(), "preview".into()]),
         generated: false,
@@ -223,7 +228,7 @@ fn structure() -> Structure {
             on_delete: "CASCADE".into(),
         }],
         referenced_by: Vec::new(),
-        comment: None,
+        comment: Some("The pictures of a book: its cover and the pages of its preview".into()),
     }
 }
 
