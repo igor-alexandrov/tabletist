@@ -69,20 +69,26 @@ pub(super) fn label(option: OptionId) -> &'static str {
     }
 }
 
-/// A row's label as the window writes it, translated: with the run key in
-/// place of `{run}`, as the keymap writes it for the look.
+/// A row's label or a section's heading as the window writes it,
+/// translated: with the run key in place of `{run}` and the editor's
+/// Format key in place of `{format}`, as the keymap writes them for the
+/// look.
 pub(super) fn said(
     ctx: &egui::Context,
     look: &crate::theme::Look,
     locale: Locale,
     text: &'static str,
 ) -> String {
-    let said = gettext(locale, text);
-    if !said.contains("{run}") {
-        return said.into_owned();
+    let mut said = gettext(locale, text).into_owned();
+    if said.contains("{run}") {
+        let key = crate::ui::keys::written(ctx, look, Command::RunStatement);
+        said = said.replace("{run}", key.as_str());
     }
-    let key = crate::ui::keys::written(ctx, look, Command::RunStatement);
-    said.replace("{run}", key.as_str())
+    if said.contains("{format}") {
+        let key = crate::ui::keys::written_in(ctx, look, Command::Format, Scope::SqlEditor);
+        said = said.replace("{format}", key.as_str());
+    }
+    said
 }
 
 /// The label of an option's row in the terminal look, which names some

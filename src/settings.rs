@@ -1070,24 +1070,29 @@ impl OptionId {
     ];
     /// The Editor pane's options whose features are not built yet: no row
     /// draws them, and their keys are read, kept and reset.
-    pub const EDITOR_LATER: [OptionId; 7] = [
+    pub const EDITOR_LATER: [OptionId; 4] = [
         Self::ConfirmUnsafeWrites,
         Self::EditorKeys,
-        Self::Indent,
         Self::ClosePairs,
         Self::Wrap,
-        Self::Keywords,
-        Self::Commas,
     ];
     /// The Editor pane's Running queries section, as far as its options
     /// are built.
     pub const RUNNING: [OptionId; 4] =
         [Self::NewTab, Self::RowLimit, Self::Timeout, Self::RunScope];
     /// Its Typing section on macOS and Windows.
-    pub const TYPING: [OptionId; 3] = [Self::Autocomplete, Self::LineNumbers, Self::HighlightLine];
+    pub const TYPING: [OptionId; 4] = [
+        Self::Indent,
+        Self::Autocomplete,
+        Self::LineNumbers,
+        Self::HighlightLine,
+    ];
     /// The terminal look's, as its board orders them, with no row for the
     /// cursor's line.
-    pub const TERMINAL_TYPING: [OptionId; 2] = [Self::LineNumbers, Self::Autocomplete];
+    pub const TERMINAL_TYPING: [OptionId; 3] =
+        [Self::LineNumbers, Self::Indent, Self::Autocomplete];
+    /// Its Format section, in both looks.
+    pub const FORMAT: [OptionId; 2] = [Self::Keywords, Self::Commas];
     /// Its History section, in both looks.
     pub const HISTORY: [OptionId; 1] = [Self::HistoryKeep];
     /// The Agents pane's, in the order it has them.
@@ -4601,6 +4606,7 @@ bar = \"label\"  # tint | label
             let mut shown = [
                 &OptionId::RUNNING[..],
                 sections,
+                &OptionId::FORMAT[..],
                 &OptionId::HISTORY[..],
                 &OptionId::EDITOR_LATER[..],
             ]

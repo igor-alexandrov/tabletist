@@ -528,7 +528,7 @@ fn the_sheet_sets_each_editor_option_with_a_click() {
         assert!(shows(&mut harness, words), "{words}");
     }
     // The rows of what is not built yet are not there.
-    for words in ["Keybindings", "Indent", "Wrap", "FORMAT", "Keywords"] {
+    for words in ["Keybindings", "Wrap", "Close brackets and quotes"] {
         assert!(!shows(&mut harness, words), "{words}");
     }
     let saves = settings_saves(&harness);
@@ -658,11 +658,19 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     // The whole tab, with space.
     type_key(&mut harness, Key::J, "j");
     harness.press(Key::Space, Modifiers::NONE);
-    // Line numbers from relative to absolute; completion on the key.
+    // Line numbers from relative to absolute; four spaces; completion on
+    // the key; keywords from the look's lower case to upper; leading
+    // commas, with space.
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::L, "l");
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::L, "l");
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::L, "l");
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::H, "h");
+    type_key(&mut harness, Key::J, "j");
+    harness.press(Key::Space, Modifiers::NONE);
     harness.settle();
     let settings = &harness.app.settings;
     assert_eq!(settings.new_tab, NewTab::Connection);
@@ -670,8 +678,11 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     assert_eq!(settings.sql_timeout_secs, Some(15));
     assert_eq!(settings.run_scope, RunScope::All);
     assert_eq!(settings.line_numbers, Some(LineNumbers::Absolute));
+    assert_eq!(settings.indent, crate::settings::Indent::Four);
     assert_eq!(settings.autocomplete, Autocomplete::Manual);
-    assert_eq!(settings_saves(&harness), saves + 6);
+    assert_eq!(settings.keywords, Some(KeywordCase::Upper));
+    assert_eq!(settings.commas, crate::settings::Commas::Leading);
+    assert_eq!(settings_saves(&harness), saves + 9);
     // The file has each of them, and R puts the cursor's back.
     let text = harness.app.settings_file.text.clone();
     assert!(
@@ -681,7 +692,10 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     assert!(text.contains("autocomplete = \"manual\""), "{text}");
     harness.press(Key::R, Modifiers::SHIFT);
     harness.settle();
-    assert_eq!(harness.app.settings.autocomplete, Autocomplete::Typing);
+    assert_eq!(
+        harness.app.settings.commas,
+        crate::settings::Commas::Trailing
+    );
 }
 
 #[test]

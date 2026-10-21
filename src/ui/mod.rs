@@ -38,6 +38,8 @@ mod env_tests;
 pub mod filter_bar;
 pub mod focus;
 pub mod format;
+#[cfg(test)]
+mod format_settings_tests;
 pub mod grid;
 pub mod help;
 pub mod history;
