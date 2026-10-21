@@ -2398,13 +2398,28 @@ pub fn char_of(key: Key, shift: bool) -> Option<char> {
 
 /// Reads a spelling. `super` is no modifier here: Hyprland owns it.
 pub fn spell(keys: &'static str) -> Result<Spelled, Unread> {
-    let unread = |why: &str| Unread(format!("{keys}: {why}"));
     if let Some(line) = keys.strip_prefix(':') {
         if line.is_empty() {
-            return Err(unread("a command without a name"));
+            return Err(Unread(format!("{keys}: a command without a name")));
         }
         return Ok(Spelled::Ex(line));
     }
+    spell_keys(keys)
+}
+
+/// Whether `keys` reads as a spelling, without keeping it: for text read
+/// from a file, which is kept ([`intern`]) only once it reads.
+pub fn spells(keys: &str) -> bool {
+    match keys.strip_prefix(':') {
+        Some(line) => !line.is_empty(),
+        None => spell_keys(keys).is_ok(),
+    }
+}
+
+/// Reads a spelling that is no line of the prompt: keys, or a range of
+/// digits, which hold nothing of the text.
+fn spell_keys(keys: &str) -> Result<Spelled, Unread> {
+    let unread = |why: &str| Unread(format!("{keys}: {why}"));
     if let Some(key) = named(keys) {
         let mods = Mods::default();
         return Ok(Spelled::Strokes(vec![Stroke::Key { mods, key }]));

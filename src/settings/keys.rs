@@ -35,11 +35,11 @@ fn name<'a>(key: &'a toml::Spanned<toml::de::DeString<'_>>) -> &'a str {
     key.get_ref().as_ref()
 }
 
-/// The keys `keys` of `[keys.<table>]` would give: the scope the table
-/// names, and a key that spells.
+/// The keys `keys` of `[keys.<table>]` would give, kept for as long as the
+/// app runs where they read. Text that does not read is not kept: a file
+/// edited by hand is read again at every save, half-typed keys and all.
 fn spelled(keys: &str) -> Option<&'static str> {
-    let keys = intern(keys);
-    spell(keys).is_ok().then_some(keys)
+    crate::keymap::spells(keys).then(|| intern(keys))
 }
 
 /// Reads the keys' tables of `document`, the parse of `working` (the
@@ -996,6 +996,18 @@ sql = \"=\"
         });
         assert_eq!(out.matches("\"gs\"").count(), 1, "{out}");
         assert_eq!(Settings::from_toml(&out).settings.keys.unbinds.len(), 3);
+    }
+
+    #[test]
+    fn keys_that_do_not_read_are_not_kept() {
+        assert!(crate::keymap::spells("cmd+shift+f"));
+        assert!(crate::keymap::spells(":w"));
+        assert!(crate::keymap::spells("gd"));
+        for unread in ["cmd+sh", "super+t", ":", ""] {
+            assert!(!crate::keymap::spells(unread), "{unread}");
+            assert_eq!(spelled(unread), None);
+        }
+        assert_eq!(spelled("cmd+shift+f"), Some("cmd+shift+f"));
     }
 
     #[test]
