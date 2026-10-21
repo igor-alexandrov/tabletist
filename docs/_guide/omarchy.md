@@ -36,6 +36,7 @@ back.
 | Ctrl+W | Close the tab. While you type in a field it deletes a word instead |
 | Ctrl+B | Show or hide the sidebar |
 | Ctrl+H, Ctrl+L | Move between the parts of the window |
+| Ctrl+K, Ctrl+J | In a SQL editor: up to the script, down to its results |
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
 | Ctrl+=, Ctrl+- | Larger and smaller text: the whole window, under a dialog too |
@@ -203,7 +204,7 @@ says why.
 | Ctrl+Shift+R | Show or hide the row panel |
 | `j` `k` | Move between its fields |
 | Enter, `i` | Edit the field |
-| `[` `]` | Previous and next row, while the panel shows |
+| `[` `]` | Previous and next row, while the panel shows. Where there is an error to go to, the bracket waits for the key after it: `e` goes to the error, and any other key steps the row. A key that moves then moves on from there; a key that edits, and `:`, are dropped, so the edit never lands on the row you left: press it again |
 | `za` | Fold the documents in it |
 | `cc`, `x`, `D`, `u` | Work on the field as they do on its cell |
 | Ctrl+H | Back to the grid, on that field's cell |
@@ -239,6 +240,7 @@ says why.
 | `:e!` | Discard all pending changes |
 | `:diff` | Show the SQL of the pending changes |
 | `Y` | Copy that SQL, while it shows |
+| `]e`, `[e` | Next and previous error: a cell to fix, or a row a save failed on. Past the last it starts again at the first |
 | Esc | Close that SQL |
 
 A date or time cell has no key for the time of the save: type `now()`
@@ -268,6 +270,8 @@ A save can ask you something first. Each question has its own keys:
 | Ctrl+Shift+Enter | Run all |
 | Ctrl+C | Cancel the run, while one runs. With none running it copies |
 | Esc | Leave the editor: the letters below are read from then on |
+| Ctrl+J | Give the keyboard to the results. Ctrl+K gives it back to the script |
+| `]e`, `[e` | Put the cursor where the last run's error is, while the script is the one that ran |
 | `=` | Format, with the keyboard out of the text |
 | Tab, Shift+Tab | Indent, outdent, in the text: at the cursor, or every line of the selection |
 | `:ro`, `:rw` | Read-only and read-write runs, with the keyboard out of the text |

@@ -1844,6 +1844,7 @@ impl App {
                     object.set_cursor(moved, Reach::Move);
                 }
             }
+            Action::NextError { tab, id, forward } => self.next_error(tab, id, forward),
             Action::ExtendTo { tab, id, cell } => {
                 self.close_editor(tab, id, true);
                 if let Some(object) = self.object_tab_mut(tab, id) {

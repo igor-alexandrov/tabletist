@@ -738,6 +738,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             if on(input, Command::ToggleSqlMode, Scope::SqlEditor).fresh {
                 actions.push(Action::ToggleSqlMode { tab, sql_tab });
             }
+            // The error's mark, while typing too. Omarchy's keys are
+            // letters, read with the letters.
+            for (command, forward) in [(Command::NextError, true), (Command::PreviousError, false)]
+            {
+                if on(input, command, Scope::SqlEditor).count > 0 {
+                    let id = sql_tab;
+                    actions.push(Action::NextError { tab, id, forward });
+                }
+            }
         }
         // A document being edited in a table's large editor is formatted
         // by the editor's own chord.
@@ -1037,6 +1046,19 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                         actions.extend((0..presses).map(|_| Action::ExtendBy { tab, id, rows }));
                     }
                 }
+                // Down on a table's last row, on its last page, adds a
+                // row below it where the table takes one, in the looks
+                // with a key for it. A fresh press only: a held arrow
+                // that reaches the end adds no more, and stays there.
+                if let Some((tab, id)) = adds.filter(|&(tab, id)| on_last_row(app, tab, id)) {
+                    let pressed = on(input, Command::AddRowAtEnd, Scope::Grid);
+                    if pressed.fresh
+                        && let Some(row) = selection_row(app, tab, id)
+                    {
+                        let place = crate::edit::Place::Below(row);
+                        actions.push(Action::AddRow { tab, id, place });
+                    }
+                }
                 let page = 20;
                 let moves = [Command::MoveRow, Command::MoveColumn, Command::MovePage];
                 for command in moves {
@@ -1090,7 +1112,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // tree, the tabs, the table's header, the rows, the row panel), and
     // Shift+F6 back. The terminal look steps through its panes alone with
     // ctrl+l and ctrl+h, out of a text field: the keymap has those two for
-    // it only, in normal mode.
+    // it only, in normal mode. And up and down with ctrl+k and ctrl+j,
+    // where panes stand one above the other: a SQL editor's script over
+    // its results. From inside the script ctrl+j is Focus results.
     if let Some(workspace) = app.workspace(active) {
         use crate::ui::focus::{self, Region};
         let from = match workspace.pane {
@@ -1132,6 +1156,34 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                     actions.push(Action::FocusFields { tab, id });
                 }
                 _ => focus::step(ctx, index == 1, Some(&Region::PANES), Some(from)),
+            }
+        } else if let Some(index) = first([Command::PaneUp, Command::PaneDown])
+            && let Some((tab, _)) = sql
+        {
+            // With the keyboard nowhere, it counts from the script, unless
+            // the person was in the tree. From any other region, nothing.
+            let start = (from != Region::Tree).then_some(Region::Editor);
+            let down = index == 1;
+            if focus::neighbour(ctx, down, &Region::STACKED, start) && down {
+                actions.push(Action::GridKeys(tab));
+            }
+        } else if let Some((tab, _)) = in_editor {
+            let results = |input: &mut egui::InputState| {
+                let scope = Scope::SqlEditor;
+                asked(
+                    input,
+                    &app.keymap,
+                    layout,
+                    Command::FocusResults,
+                    scope,
+                    false,
+                )
+                .count
+                    > 0
+            };
+            let script = Some(Region::Editor);
+            if ctx.input_mut(results) && focus::neighbour(ctx, true, &Region::STACKED, script) {
+                actions.push(Action::GridKeys(tab));
             }
         }
     }
@@ -1639,6 +1691,13 @@ fn editing_keys(
             .any(|event| matches!(event, egui::Event::PointerButton { .. }));
         on(input, Command::OpenInspector, Scope::Grid, false).fresh && !clicked
     };
+    // The errors of the set, by the same rule as a save, in the looks
+    // that have a chord for them: the terminal's are letters. One move a
+    // press.
+    for (command, forward) in [(Command::NextError, true), (Command::PreviousError, false)] {
+        let presses = ctx.input_mut(|input| on(input, command, Scope::Grid, normal).count);
+        actions.extend((0..presses).map(|_| Action::NextError { tab, id, forward }));
+    }
     let rows = object.view == crate::model::ObjectView::Data;
     if !open && rows && ctx.input_mut(focus_fields) {
         actions.push(Action::FocusFields { tab, id });
@@ -1900,6 +1959,30 @@ fn delete_count(
         actions.push(Action::DeleteCount { tab, id, count });
     }
     said
+}
+
+/// The row the cursor of the table tab `id` is on.
+fn selection_row(app: &App, tab: ConnTabId, id: TabId) -> Option<usize> {
+    let object = app.workspace(tab)?.object_tab(id)?;
+    Some(object.selection?.row)
+}
+
+/// Whether the cursor of the table tab `id` is on the last row its Data
+/// view shows, on the last page: no row is under it to move to.
+fn on_last_row(app: &App, tab: ConnTabId, id: TabId) -> bool {
+    let Some(object) = app
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(id))
+    else {
+        return false;
+    };
+    let Some(page) = object.page().filter(|page| !page.has_more) else {
+        return false;
+    };
+    let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
+    let place = object.selection.and_then(|cell| order.place(cell.row));
+    object.view == crate::model::ObjectView::Data
+        && place.is_some_and(|place| place + 1 == order.len())
 }
 
 /// Whether a visual selection of rows holds `command` back: what changes,
@@ -2532,7 +2615,7 @@ fn letters(
     // What the characters typed so far come to, for the scope that has
     // the keys. The Review SQL panel's own letter is read wherever the
     // keys are in its tab: the panel stands under the tree's rows too.
-    let read = |waiting: &str| {
+    let as_written = |waiting: &str| {
         let read = scopes
             .iter()
             .map(|scope| app.keymap.typed(layout, *scope, &holds, waiting))
@@ -2546,12 +2629,49 @@ fn letters(
         }
         read
     };
+    // With the row panel showing, a bracket steps its row at once. Where
+    // there is an error to go to it waits for the key after it instead:
+    // `]e` and `[e` go to the error, and any other key steps the row
+    // after all and is then read itself (`bracket_step`).
+    let errors_here = object.is_some_and(|object| {
+        let height = object.page().map_or(0, |page| page.rows.len());
+        !object.edits.errors(height).is_empty()
+    }) || workspace
+        .active_sql_tab()
+        .is_some_and(|sql| sql.error_mark().is_some());
+    let bracket_waits = panel && errors_here;
+    let read = |waiting: &str| match waiting {
+        "[" | "]" if bracket_waits => Typed::Waiting,
+        _ => as_written(waiting),
+    };
+    // The step of a bracket that waited (`waiting` begins with it), when
+    // the key after it is no key of the bracket's.
+    let bracket_step = |waiting: &str| {
+        let bracket = waiting.get(..1).filter(|_| bracket_waits)?;
+        match as_written(bracket) {
+            Typed::Command(command @ (Command::PreviousRow | Command::NextRow)) => Some(command),
+            _ => None,
+        }
+    };
     // The characters so far of a key of several (`cc`, `gd`, `yy p`). A
     // key that types nothing (an arrow, Esc) ends the wait.
     let mut waiting: String = ctx
         .data(|data| data.get_temp(typed_id()))
         .unwrap_or_default();
     if typed.is_empty() {
+        // A bracket that waited steps the row after all.
+        if let Some(command) = bracket_step(&waiting)
+            && let Some(id) = active.or(sql_grid)
+        {
+            let rows = if command == Command::NextRow { 1 } else { -1 };
+            let cols = 0;
+            actions.push(Action::MoveSelection {
+                tab,
+                id,
+                rows,
+                cols,
+            });
+        }
         waiting.clear();
     }
     // Whether the frame brings nothing but letters that edit, the colon
@@ -2651,7 +2771,8 @@ fn letters(
     // Whether a field or the prompt was asked for: the frame's typing ends
     // there.
     let mut opened = false;
-    for char in typed {
+    let mut typed: std::collections::VecDeque<char> = typed.into();
+    while let Some(char) = typed.pop_front() {
         if opened {
             take_char(ctx, char);
             continue;
@@ -2671,6 +2792,21 @@ fn letters(
         }
         waiting.push(char);
         let (command, count) = match read(&waiting) {
+            // A bracket that waited, and a key after it that is none of
+            // its keys, or the key of something not built yet (`]c`):
+            // the bracket steps the row, and the key is read again on its
+            // own. A key that edits, and the colon, are then dropped: the
+            // frame is not `alone` (it brought more than edits), as the
+            // step is applied after the frame and the edit would land on
+            // the row it leaves.
+            Typed::Nothing | Typed::Claimed
+                if waiting.len() > 1
+                    && let Some(step) = bracket_step(&waiting) =>
+            {
+                typed.push_front(char);
+                waiting.clear();
+                (Some(step), None)
+            }
             // Nobody's: left in the frame, as any other text is.
             Typed::Nothing => {
                 waiting.clear();
@@ -2963,6 +3099,14 @@ fn letters(
                 }
             }
             (Some(Command::WhereFilter), Some(_)) => actions.push(Action::FocusWhere(tab)),
+            // The errors of the table's set, or the SQL editor's mark.
+            (Some(command @ (Command::NextError | Command::PreviousError)), _) => {
+                let sql = workspace.active_sql_tab().map(|sql| sql.id);
+                if let Some(id) = active.or(sql) {
+                    let forward = command == Command::NextError;
+                    actions.push(Action::NextError { tab, id, forward });
+                }
+            }
             // What `j/k/h/l` move in: the object's grid, or a SQL result.
             (Some(Command::MoveRow | Command::MoveColumn), _) => {
                 let (rows, cols) = match char {

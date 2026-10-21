@@ -176,7 +176,6 @@ fn fails(harness: &mut Harness, code: &str, message: &str, detail: &str) {
 /// INS-01d. Spec 1: "Grow: Down on the last row" adds an empty row on
 /// macOS.
 #[test]
-#[ignore = "INS-01d: Down on the last row adds no row yet"]
 fn down_on_the_last_row_adds_a_row() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     select(&mut harness, tab, id, (2, 1));
@@ -919,7 +918,7 @@ fn a_saved_row_can_be_shown_where_the_sort_puts_it() {
 
 /// Two new rows, each with a publisher that is no number: two cells to
 /// fix, with the selection on the page's first row.
-fn two_rows_to_fix(look: Look) -> (Harness, ConnTabId, TabId) {
+pub(super) fn two_rows_to_fix(look: Look) -> (Harness, ConnTabId, TabId) {
     let (mut harness, tab, id) = covers_in(look);
     for _ in 0..2 {
         let new = add(&mut harness, tab, id);
@@ -947,7 +946,6 @@ fn the_terminals_error_line_says_which_new_row_it_is_of() {
 /// INS-33a. The audit's item 33: Alt+Mod+Down and Alt+Mod+Up move between
 /// errors on macOS.
 #[test]
-#[ignore = "INS-33a: no key moves between errors on macOS"]
 fn alt_mod_down_moves_to_the_next_error() {
     let (mut harness, tab, id) = two_rows_to_fix(Look::macos());
     harness.press(Key::ArrowDown, Modifiers::ALT | Modifiers::COMMAND);
@@ -959,7 +957,6 @@ fn alt_mod_down_moves_to_the_next_error() {
 /// INS-33b. Spec 9: `]e` and `[e` move between errors in the terminal
 /// look.
 #[test]
-#[ignore = "INS-33b: ]e and [e do not move between errors"]
 fn bracket_e_moves_to_the_next_error() {
     let (mut harness, tab, id) = two_rows_to_fix(Look::omarchy());
     type_key(&mut harness, Key::CloseBracket, "]");

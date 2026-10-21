@@ -982,6 +982,50 @@ impl App {
         }
     }
 
+    /// Next error (`forward`) or Previous error in the tab `id`: in a
+    /// table's grid the cursor goes to the next or the previous error of
+    /// the set, round to the first or the last; in a SQL editor its cursor
+    /// goes to the error mark of its last run. With none, nothing moves.
+    pub(super) fn next_error(&mut self, tab: ConnTabId, id: TabId, forward: bool) {
+        if let Some(sql) = self.sql_tab_mut(tab, id) {
+            // A SQL editor has one mark: either key goes there.
+            if let Some((line, column)) = sql.error_mark() {
+                sql.go_to = Some(sql.offset_of(line, column));
+                sql.focus_editor = true;
+            }
+            return;
+        }
+        // An editor's text is kept, as a move keeps it, and may be
+        // one of the errors.
+        self.close_editor(tab, id, true);
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let height = object.page().map_or(0, |page| page.rows.len());
+        let order = crate::edit::Order::of(&object.edits.added, height);
+        let key = |cell: CellPos| order.place(cell.row).map(|place| (place, cell.col));
+        let errors = object.edits.errors(height);
+        let at = object.selection.and_then(key);
+        let after = |cell: &&CellPos| at.is_none_or(|at| key(**cell) > Some(at));
+        let before = |cell: &&CellPos| at.is_none_or(|at| key(**cell) < Some(at));
+        // Past the last it starts again at the first, and back.
+        let next = if forward {
+            errors.iter().find(after).or(errors.first())
+        } else {
+            errors.iter().rev().find(before).or(errors.last())
+        };
+        let Some(&cell) = next else {
+            return;
+        };
+        object.edits.why = None;
+        object.focus_field = None;
+        object.pinned = true;
+        object.set_cursor(Some(cell), Reach::End);
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.pane = Pane::Grid;
+        }
+    }
+
     /// Adds a new row to the tab's table at `place`, where it takes one,
     /// and opens the editor on the first cell a save needs a value in.
     /// With no such cell the selection goes to the first that takes a

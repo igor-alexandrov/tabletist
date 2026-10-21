@@ -816,8 +816,8 @@ impl Command {
             )),
             C::ToggleSidebar => info("Toggle sidebar", "Toggle sidebar", Navigation),
             C::PaneLeft => info("Pane to the left", PANES, Navigation),
-            C::PaneDown => info("Pane below", PANES, Navigation).reserved(),
-            C::PaneUp => info("Pane above", PANES, Navigation).reserved(),
+            C::PaneDown => info("Pane below", PANES, Navigation),
+            C::PaneUp => info("Pane above", PANES, Navigation),
             C::PaneRight => info("Pane to the right", PANES, Navigation),
             C::NextPart => info("Next part of the window", "", Navigation),
             C::PreviousPart => info("Previous part of the window", "", Navigation),
@@ -887,7 +887,7 @@ impl Command {
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
             C::AddRow => info("Add row", "Add row", Editing),
             C::AddRowAbove => info("Add row above", "Add row", Editing),
-            C::AddRowAtEnd => info("Add row after the last", "Add row", Editing).reserved(),
+            C::AddRowAtEnd => info("Add row after the last", "Add row", Editing),
             C::DuplicateRow => info("Duplicate row", "Duplicate row", Editing),
             C::YankRow => info("Yank the row", "Duplicate row", Editing),
             C::PutRow => info(
@@ -929,8 +929,8 @@ impl Command {
                 "Discard all pending",
                 Editing,
             ),
-            C::NextError => info("Next error", ERRORS, Editing).reserved(),
-            C::PreviousError => info("Previous error", ERRORS, Editing).reserved(),
+            C::NextError => info("Next error", ERRORS, Editing),
+            C::PreviousError => info("Previous error", ERRORS, Editing),
             C::BooleanCycle => info("Boolean cycle", "Boolean cycle", Editing),
             C::StepUp => info("Step up", STEP, Editing).reserved(),
             C::StepDown => info("Step down", STEP, Editing).reserved(),
@@ -948,7 +948,7 @@ impl Command {
             )
             .reserved(),
             C::CancelQuery => info("Cancel running query", "Cancel running query", Sql),
-            C::FocusResults => info("Focus results", "Focus results", Sql).reserved(),
+            C::FocusResults => info("Focus results", "Focus results", Sql),
             C::LeaveEditor => info("Leave the editor", "", Sql),
             C::Complete => info("Completion", "Completion", Sql),
             C::InsertCompletion => info("Insert the completion", "Completion", Sql),
@@ -1522,9 +1522,10 @@ pub const BINDINGS: &[Binding] = {
         ),
         // From the rows too, while the inspector shows: its header offers
         // the brackets, and `j` and `k` are the rows' there. A bracket
-        // also begins the keys of the errors and the changes (`]e`, `]c`),
-        // which nothing answers yet; with the inspector open the bracket
-        // is its own, at once.
+        // also begins the keys of the errors and the changes (`]e`, `]c`).
+        // With the inspector open the bracket is its own, at once, except
+        // where there is an error to go to: the letters (`ui::keys`) then
+        // wait for the key after it.
         bind(C::PreviousRow, ROWS, NONE, keys(&[k("[")])).when(When::InspectorOpen),
         bind(C::NextRow, ROWS, NONE, keys(&[k("]")])).when(When::InspectorOpen),
         bind(
@@ -4418,7 +4419,8 @@ mod tests {
         // while it shows. Without it they begin other keys on the grid.
         assert_eq!(omarchy(Scope::Inspector, "]"), command(Command::NextRow));
         assert_eq!(omarchy(Scope::Grid, "]"), Waiting);
-        assert_eq!(omarchy(Scope::Grid, "]e"), Claimed);
+        assert_eq!(omarchy(Scope::Grid, "]e"), command(Command::NextError));
+        assert_eq!(omarchy(Scope::Grid, "]c"), Claimed);
         let inspector = |when: When| when == When::InspectorOpen;
         for scope in [Scope::Grid, Scope::Results] {
             assert_eq!(

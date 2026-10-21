@@ -2049,6 +2049,37 @@ impl Edits {
         counts
     }
 
+    /// The errors of the set, as the grid shows them on a page `height`
+    /// rows long, in its order (row by row, cell by cell): the cells that
+    /// fail their check or whose statement failed, and the first cell of a
+    /// row that failed with no cell to say so (a new row with nothing set,
+    /// a row whose `DELETE` failed). The ones `counts` counts.
+    pub fn errors(&self, height: usize) -> Vec<CellPos> {
+        let order = Order::of(&self.added, height);
+        let cells = self
+            .cells
+            .iter()
+            .filter(|(_, cell)| cell.state != State::Ready);
+        let cells = cells.map(|(&(row, col), _)| CellPos { row, col });
+        let new = self
+            .added
+            .iter()
+            .filter(|new| new.failed.is_some() && self.unset_all(new.id));
+        let new = new.map(|new| new_row(new.id));
+        let doomed = self
+            .deleted
+            .iter()
+            .filter(|(_, doomed)| doomed.failed.is_some());
+        let rows = new.chain(doomed.map(|(&row, _)| row));
+        let mut errors: Vec<(usize, CellPos)> = cells
+            .chain(rows.map(|row| CellPos { row, col: 0 }))
+            .filter_map(|cell| Some((order.place(cell.row)?, cell)))
+            .collect();
+        errors.sort_by_key(|(place, cell)| (*place, cell.col));
+        errors.dedup();
+        errors.into_iter().map(|(_, cell)| cell).collect()
+    }
+
     /// Whether nothing is set in the new row `id`.
     fn unset_all(&self, id: usize) -> bool {
         let row = new_row(id);

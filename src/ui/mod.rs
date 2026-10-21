@@ -41,6 +41,8 @@ pub mod format;
 #[cfg(test)]
 mod format_settings_tests;
 pub mod grid;
+#[cfg(test)]
+mod grid_keys_tests;
 pub mod help;
 pub mod history;
 #[cfg(test)]
@@ -61,6 +63,8 @@ pub mod label_chooser;
 mod label_tests;
 pub mod menu;
 pub mod object_tabs;
+#[cfg(test)]
+mod pane_keys_tests;
 pub mod password_prompt;
 pub mod pending_bar;
 pub mod picker;
