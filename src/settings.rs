@@ -1076,11 +1076,15 @@ impl OptionId {
     ];
     /// The Editor pane's options whose features are not built yet: no row
     /// draws them, and their keys are read, kept and reset.
-    pub const EDITOR_LATER: [OptionId; 2] = [Self::ConfirmUnsafeWrites, Self::EditorKeys];
-    /// The Editor pane's Running queries section, as far as its options
-    /// are built.
-    pub const RUNNING: [OptionId; 4] =
-        [Self::NewTab, Self::RowLimit, Self::Timeout, Self::RunScope];
+    pub const EDITOR_LATER: [OptionId; 1] = [Self::EditorKeys];
+    /// The Editor pane's Running queries section, in both looks.
+    pub const RUNNING: [OptionId; 5] = [
+        Self::NewTab,
+        Self::RowLimit,
+        Self::Timeout,
+        Self::RunScope,
+        Self::ConfirmUnsafeWrites,
+    ];
     /// Its Typing section on macOS and Windows.
     pub const TYPING: [OptionId; 6] = [
         Self::Indent,

@@ -11,7 +11,7 @@ use crate::testing::Harness;
 use crate::theme::Look;
 use tabletist_db::ScriptMode;
 
-use super::appearance_settings_tests::shows;
+use super::appearance_settings_tests::{settings_saves, shows};
 
 fn looks() -> [Look; 2] {
     [Look::macos(), Look::omarchy()]
@@ -336,4 +336,57 @@ fn a_postgres_name_is_looked_up_as_postgres_folds_it() {
         run_key(&mut harness);
         assert!(harness.has(said), "{text}");
     }
+}
+
+/// Settings on its Editor pane.
+fn on_the_pane(harness: &mut Harness) {
+    harness.app.apply(Action::ShowSettings);
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(crate::model::SettingsPane::Editor));
+    harness.settle();
+}
+
+#[test]
+fn the_sheet_has_the_confirm_row_last_in_running_queries_and_sets_it() {
+    let mut harness = Harness::with_size(egui::vec2(1440.0, 1400.0));
+    harness.set_look(Look::macos());
+    on_the_pane(&mut harness);
+    let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
+    let row = "Confirm UPDATE or DELETE without WHERE";
+    assert!(top(&harness, "Statement at cursor") < top(&harness, row));
+    assert!(top(&harness, row) < top(&harness, "Indent"));
+    assert!(harness.has("On every connection that allows writes"));
+    let saves = settings_saves(&harness);
+    harness.click(row);
+    harness.settle();
+    assert!(!harness.app.settings.confirm_unsafe_writes);
+    assert_eq!(settings_saves(&harness), saves + 1);
+    assert!(
+        harness
+            .app
+            .settings_file
+            .text
+            .contains("confirm_unsafe_writes = false")
+    );
+}
+
+#[test]
+fn the_screen_has_the_confirm_row_after_the_run_key_and_toggles_it() {
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(Look::omarchy());
+    on_the_pane(&mut harness);
+    let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
+    let row = "confirm write without where";
+    // After the run key's row, by its hint.
+    assert!(top(&harness, "a selection always wins") < top(&harness, row));
+    assert!(top(&harness, row) < top(&harness, "line numbers"));
+    assert!(shows(&mut harness, "connections that allow writes"));
+    // Down to it from the first row: new tabs, limit, timeout, run key.
+    for _ in 0..4 {
+        type_key(&mut harness, Key::J, "j");
+    }
+    harness.press(Key::Space, Modifiers::NONE);
+    harness.settle();
+    assert!(!harness.app.settings.confirm_unsafe_writes);
 }

@@ -640,6 +640,7 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
         "per tab",
         "caps results you browse · show all and exports get every row",
         "a selection always wins",
+        "connections that allow writes",
         "schema objects",
     ] {
         assert!(shows(&mut harness, words), "{words}");
@@ -654,6 +655,9 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::H, "h");
     // The whole tab, with space.
+    type_key(&mut harness, Key::J, "j");
+    harness.press(Key::Space, Modifiers::NONE);
+    // Writes without WHERE asked about no more, with space.
     type_key(&mut harness, Key::J, "j");
     harness.press(Key::Space, Modifiers::NONE);
     // Line numbers from relative to absolute; four spaces; completion on
@@ -686,7 +690,8 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     assert_eq!(settings.commas, crate::settings::Commas::Leading);
     assert!(!settings.close_pairs);
     assert!(settings.wrap);
-    assert_eq!(settings_saves(&harness), saves + 11);
+    assert!(!settings.confirm_unsafe_writes);
+    assert_eq!(settings_saves(&harness), saves + 12);
     // The file has each of them, and R puts the cursor's back.
     let text = harness.app.settings_file.text.clone();
     assert!(
@@ -709,7 +714,8 @@ fn a_look_s_own_value_picked_while_none_is_set_is_not_written() {
     let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
     harness.set_look(Look::omarchy());
     on_the_pane(&mut harness);
-    for _ in 0..4 {
+    // Past the running queries' five rows.
+    for _ in 0..5 {
         type_key(&mut harness, Key::J, "j");
     }
     type_key(&mut harness, Key::H, "h");
