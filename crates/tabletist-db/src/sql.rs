@@ -1253,8 +1253,9 @@ fn unbounded_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<(
 /// `DELETE b FROM books b JOIN covers c ON ...` and `UPDATE books b JOIN
 /// covers c ON ... SET ...`, whose target is a side of the join. Not a
 /// `LEFT` or a `RIGHT` join, which keeps every row of one side, nor a join
-/// after a comma in the list of tables (`UPDATE books b, covers c JOIN
-/// shelves s ON ...`), which the target is crossed with. Nor on PostgreSQL
+/// in a list of tables that has a comma, before it or after it
+/// (`UPDATE books b, covers c JOIN shelves s ON ...`): the target may be
+/// crossed with it. Nor on PostgreSQL
 /// and SQLite, where a join stands in the `FROM` or the `USING` and its
 /// `ON` does not touch the target: only a `WHERE` ties them.
 fn joins_target(dialect: Dialect, verb: &Word, words: &[&Word]) -> bool {
@@ -1284,7 +1285,13 @@ fn joins_target(dialect: Dialect, verb: &Word, words: &[&Word]) -> bool {
             .rev()
             .find(|word| matches!(word.text.as_str(), "FROM" | "USING"))
             .map_or(verb.commas, |word| word.commas);
-        let crossed = words[join].commas > list;
+        // Where it ends: UPDATE's SET, or what follows DELETE's tables.
+        let end = words[at..]
+            .iter()
+            .find(|word| matches!(word.text.as_str(), "SET" | "WHERE" | "ORDER" | "LIMIT"))
+            .or(words.last())
+            .map_or(list, |word| word.commas);
+        let crossed = end > list;
         !outer && !crossed
     })
 }
@@ -3074,6 +3081,8 @@ mod tests {
             "DELETE b FROM books b INNER JOIN covers c ON b.id = c.book_id",
             // Several targets before the FROM; the FROM's own list joins.
             "DELETE b, c FROM books b JOIN covers c ON b.id = c.book_id",
+            // Commas after SET are its own.
+            "UPDATE books b JOIN covers c ON b.id = c.book_id SET b.a = 1, b.b = 2",
         ] {
             assert_eq!(every_row(Dialect::MySql, text), None, "{text}");
         }
@@ -3087,6 +3096,9 @@ mod tests {
             // with it.
             "UPDATE books b, covers c JOIN shelves s ON s.id = c.shelf_id SET b.a = 1",
             "DELETE b FROM books b, covers c JOIN shelves s ON s.id = c.shelf_id",
+            // Or after it.
+            "UPDATE covers c JOIN shelves s ON s.id = c.shelf_id, books b SET b.a = 1",
+            "DELETE b FROM covers c JOIN shelves s ON s.id = c.shelf_id, books b",
         ] {
             assert!(every_row(Dialect::MySql, text).is_some(), "{text}");
         }
