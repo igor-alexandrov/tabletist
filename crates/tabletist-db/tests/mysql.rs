@@ -227,6 +227,30 @@ async fn users_structure_has_full_types_comments_key_and_indexes() {
 }
 
 #[tokio::test]
+async fn a_table_says_its_own_comment_and_a_view_has_none() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let comment = |name: &'static str| {
+        let connection = &connection;
+        async move {
+            connection
+                .describe(&ObjectRef::new("tabletist", name))
+                .await
+                .unwrap()
+                .comment
+        }
+    };
+    assert_eq!(
+        comment("users").await.as_deref(),
+        Some("People who sign in")
+    );
+    assert_eq!(comment("orders").await, None);
+    // MySQL writes VIEW there for every view: nobody wrote it.
+    assert_eq!(comment("active_users").await, None);
+}
+
+#[tokio::test]
 async fn foreign_keys_name_their_target_and_actions() {
     let Some(connection) = connect().await else {
         return;

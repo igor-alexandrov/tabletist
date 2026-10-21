@@ -440,12 +440,28 @@ impl Adapter for Conn {
                 key.ref_columns.push(ref_column);
             }
         }
+        // The comment on the table itself. MySQL writes `VIEW` there for
+        // every view, and a warning for one that no longer works: nobody
+        // wrote either, so a view has none.
+        let comment = self
+            .catalog::<String>(
+                "SELECT CASE WHEN table_type = 'VIEW' THEN '' \
+                        ELSE COALESCE(table_comment, '') END \
+                 FROM information_schema.tables \
+                 WHERE table_schema = ? AND table_name = ?",
+                at,
+            )
+            .await?
+            .into_iter()
+            .next()
+            .filter(|comment| !comment.is_empty());
         Ok(Structure {
             columns,
             primary_key: self.primary_key(object).await?,
             indexes,
             foreign_keys,
             referenced_by,
+            comment,
         })
     }
 

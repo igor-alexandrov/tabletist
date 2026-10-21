@@ -8070,6 +8070,7 @@ value_tags   = true
             }],
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            comment: None,
         };
         harness.answer_structure(structure);
         assert!(harness.has("Columns"));
@@ -12258,6 +12259,7 @@ value_tags   = true
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            comment: None,
         });
         harness.answer_rows(RowPage {
             columns: names

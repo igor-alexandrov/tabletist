@@ -223,6 +223,7 @@ fn structure() -> Structure {
             on_delete: "CASCADE".into(),
         }],
         referenced_by: Vec::new(),
+        comment: None,
     }
 }
 
@@ -2166,6 +2167,7 @@ mod mock {
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            comment: None,
         }
     }
 
@@ -2201,6 +2203,7 @@ mod mock {
                 on_delete: "CASCADE".into(),
             }],
             referenced_by: Vec::new(),
+            comment: None,
         }
     }
 
