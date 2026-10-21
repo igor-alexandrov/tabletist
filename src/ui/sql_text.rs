@@ -175,16 +175,18 @@ pub fn scroll_offset(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Option<e
 }
 
 /// A text edit layouter for the editor `id` that colours `dialect`'s
-/// tokens and never wraps: one galley row per line, so the gutter can
-/// number the rows.
+/// tokens. It wraps a long line at the width it is given where `wraps`
+/// (Settings › Editor's Wrap), and otherwise never: one galley row per
+/// line, and the lines scroll.
 pub fn layouter(
     look: &Look,
     palette: &Palette,
     dialect: Dialect,
     id: Id,
+    wraps: bool,
 ) -> impl FnMut(&Ui, &dyn egui::TextBuffer, f32) -> Arc<Galley> + use<> {
     let (faces, role, palette) = (look.faces, role(look), *palette);
-    move |ui, buffer, _wrap| {
+    move |ui, buffer, width| {
         let text = buffer.as_str();
         let parsed = parsed(ui.ctx(), id, dialect, &palette, text);
         let runs = parsed.runs.iter();
@@ -195,6 +197,9 @@ pub fn layouter(
         if text.is_empty() {
             // An empty script still has a line, as tall as any other.
             laid = laid.add(role, "", palette.text);
+        }
+        if wraps && width.is_finite() {
+            laid = laid.wrap(width);
         }
         laid.layout(ui.ctx()).galley
     }
@@ -431,11 +436,18 @@ struct Edited {
 }
 
 impl Edited {
-    /// The screen's vertical range of the 1-based `lines`, each line being
-    /// a row of the galley.
-    fn span(&self, lines: &RangeInclusive<usize>) -> Option<egui::Rangef> {
-        let first = self.galley.rows.get(lines.start().checked_sub(1)?)?;
-        let last = self.galley.rows.get(lines.end().checked_sub(1)?)?;
+    /// The screen's vertical range of the 1-based `lines`, each with every
+    /// row it wraps to.
+    /// `starts` is `line_rows` of the galley.
+    fn span(&self, starts: &[usize], lines: &RangeInclusive<usize>) -> Option<egui::Rangef> {
+        let first = *starts.get(lines.start().checked_sub(1)?)?;
+        // The row before the next line's first, or the galley's last.
+        let last = match starts.get(*lines.end()) {
+            Some(next) => next.checked_sub(1)?,
+            None if *lines.end() == starts.len() => self.galley.rows.len().checked_sub(1)?,
+            None => return None,
+        };
+        let (first, last) = (self.galley.rows.get(first)?, self.galley.rows.get(last)?);
         Some(egui::Rangef::new(
             self.origin.y + first.min_y(),
             self.origin.y + last.max_y(),
@@ -443,10 +455,23 @@ impl Edited {
     }
 }
 
+/// The first row of each line of `galley`, in order: a line wrapped at
+/// the editor's width is more than one row.
+fn line_rows(galley: &Galley) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (index, row) in galley.rows.iter().enumerate() {
+        if row.ends_with_newline && index + 1 < galley.rows.len() {
+            starts.push(index + 1);
+        }
+    }
+    starts
+}
+
 pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let (look, palette, locale) = (app.look, app.palette, app.locale);
     let numbering = app.settings.line_numbers_in(look.terminal);
     let (style, indent) = (format_style(&app.settings, &look), app.settings.indent);
+    let wraps = app.settings.wrap;
     let highlight = app.settings.highlight_line;
     let pairs = app.settings.close_pairs;
     let Some(workspace) = app.workspace_mut(tab) else {
@@ -463,7 +488,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let editor = editor_id(tab, id);
     // Behind the text: filled in once the rows are laid out.
     let backdrop = ui.painter().add(Shape::Noop);
-    // The text scrolls both ways beside the gutter, which stays put.
+    // The text scrolls beside the gutter, which stays put: both ways, or
+    // down alone where it wraps.
     let text_pane = Rect::from_min_max(pos2(pane.left() + gutter.width, pane.top()), pane.max);
     let name = gettext(locale, "SQL");
     let field = Field {
@@ -475,6 +501,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         palette: &palette,
         style,
         indent,
+        wraps,
         // An open completion list takes Esc: the editor keeps the
         // keyboard. Not one whose row this frame inserts: Esc is the
         // editor's again.
@@ -483,7 +510,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     };
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
-    let scrolled = egui::ScrollArea::both()
+    // Wrapped, the lines never run past the pane: it scrolls down alone.
+    let scrolled = egui::ScrollArea::new([!wraps, true])
         .id_salt("scroll")
         .auto_shrink([false, false])
         .show(&mut child, |ui| edit(ui, sql_tab, &field));
@@ -501,9 +529,17 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     if (pressed.is_pointer_button_down_on() || pressed.clicked())
         && let Some(pointer) = pressed.interact_pointer_pos()
     {
-        let at = edited
-            .galley
-            .cursor_from_pos(vec2(0.0, pointer.y - edited.origin.y));
+        let y = pointer.y - edited.origin.y;
+        let row = edited.galley.cursor_from_pos(vec2(0.0, y));
+        // Beside a row, the start of its line, not of a row the line wraps
+        // to. Under the last, the end of the script.
+        let at = if y <= edited.galley.rect.max.y {
+            let byte = byte_offset(&sql_tab.text, row.index.0);
+            let start = sql_tab.text[..byte].rfind('\n').map_or(0, |at| at + 1);
+            CCursor::new(char_index(&sql_tab.text, start))
+        } else {
+            row
+        };
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor).unwrap_or_default();
         state.cursor.set_char_range(Some(CCursorRange::one(at)));
         egui::TextEdit::store_state(ui.ctx(), editor, state);
@@ -524,8 +560,10 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let error_line = sql_tab.error_mark().map(|(line, _)| line);
     // The statement Run executes, from the tokens the colours came from.
     let parsed = parsed(ui.ctx(), editor, dialect, &palette, &sql_tab.text);
+    // The first row of each line: a wrapped line has more than one.
+    let starts = line_rows(&edited.galley);
     let statement = sql::statement_at(&parsed.statements, sql_tab.cursor)
-        .and_then(|statement| edited.span(&statement_lines(statement)));
+        .and_then(|statement| edited.span(&starts, &statement_lines(statement)));
     if edited.focused && tree_has_arrows {
         app.actions
             .push(Action::SqlEditorFocused { tab, sql_tab: id });
@@ -555,7 +593,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     // unless the settings turn it off.
     if edited.focused
         && highlight
-        && let Some(y) = edited.span(&(cursor_line..=cursor_line))
+        && let Some(y) = edited.span(&starts, &(cursor_line..=cursor_line))
     {
         let color = if look.terminal {
             palette.selection
@@ -575,13 +613,18 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     }
     let clip = ui.clip_rect();
     let rows = &edited.galley.rows;
+    // A line's number stands on its first row: the rows a long line wraps
+    // to have none.
     let first = rows.partition_point(|row| edited.origin.y + row.max_y() < clip.top());
     for (index, row) in rows.iter().enumerate().skip(first) {
         let top = edited.origin.y + row.min_y();
         if top > clip.bottom() {
             break;
         }
-        let line = index + 1;
+        let Ok(line) = starts.binary_search(&index) else {
+            continue;
+        };
+        let line = line + 1;
         let color = if error_line == Some(line) {
             palette.danger
         } else if line == cursor_line {
@@ -637,11 +680,15 @@ fn completion_list(
     };
     let close = Action::CloseCompletion { tab, sql_tab };
     // A character's place on screen, as tall as its line.
-    let on_screen = |at: usize| {
-        let place = edited.galley.pos_from_cursor(CCursor::new(at));
+    // `next`: on the row after where a wrapped line breaks, as a word's
+    // start is.
+    let on_screen = |at: usize, next: bool| {
+        let mut cursor = CCursor::new(at);
+        cursor.prefer_next_row = next;
+        let place = edited.galley.pos_from_cursor(cursor);
         place.translate(edited.origin.to_vec2())
     };
-    let (word, end) = (on_screen(chars.start), on_screen(chars.end));
+    let (word, end) = (on_screen(chars.start, true), on_screen(chars.end, false));
     // The list hangs under its word while some of the word is in the
     // pane: its line is, and across the word starts before the pane's
     // right edge and ends after its left one.
@@ -702,6 +749,8 @@ struct Field<'a> {
     style: sql::format::Style,
     /// What the Tab key puts in, and takes out with Shift.
     indent: Indent,
+    /// Long lines wrap at the pane's width.
+    wraps: bool,
 }
 
 /// How Format writes, as the settings have it in `look`: its keyword case
@@ -1189,14 +1238,26 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         top: top as i8,
         bottom: bottom as i8,
     };
-    let mut layouter = layouter(field.look, field.palette, field.dialect, field.id);
+    let mut layouter = layouter(
+        field.look,
+        field.palette,
+        field.dialect,
+        field.id,
+        field.wraps,
+    );
+    // Wrapped, as wide as the pane, which the layouter wraps at.
+    let width = if field.wraps {
+        ui.available_width()
+    } else {
+        f32::INFINITY
+    };
     let output = egui::TextEdit::multiline(&mut sql_tab.text)
         .id(field.id)
         .font(font)
         // Tab indents; Esc gives the keys up unless `hold_escape`.
         .lock_focus(true)
         .frame(egui::Frame::new().inner_margin(margin))
-        .desired_width(f32::INFINITY)
+        .desired_width(width)
         .desired_rows(rows as usize)
         .layouter(&mut layouter)
         .show(ui);
@@ -1359,7 +1420,7 @@ mod tests {
         let mut harness = crate::testing::Harness::new();
         harness.frame_with(|ui| {
             let id = Id::new("an editor");
-            let mut layouter = layouter(&look, &palette, Dialect::Postgres, id);
+            let mut layouter = layouter(&look, &palette, Dialect::Postgres, id, false);
             // A width to wrap at is not taken: lines scroll instead.
             galleys.push(layouter(ui, &long, 100.0));
             galleys.push(layouter(ui, &String::new(), 100.0));
@@ -1383,6 +1444,30 @@ mod tests {
         let empty = &galleys[1];
         assert_eq!(empty.rows.len(), 1);
         assert_eq!(empty.rows[0].height(), galley.rows[0].height());
+    }
+
+    #[test]
+    fn a_line_starts_its_rows_and_a_wrapped_line_has_more() {
+        let (look, palette) = (Look::standard(), Palette::light());
+        let long = format!("SELECT {}\nFROM t\n", "title, ".repeat(40));
+        let mut galleys = Vec::new();
+        let mut harness = crate::testing::Harness::new();
+        harness.frame_with(|ui| {
+            let id = Id::new("an editor");
+            let mut wrapping = layouter(&look, &palette, Dialect::Postgres, id, true);
+            galleys.push(wrapping(ui, &long, 300.0));
+            galleys.push(wrapping(ui, &String::new(), 300.0));
+            galleys.push(wrapping(ui, &"a\nb\n".to_owned(), 300.0));
+        });
+        let wrapped = line_rows(&galleys[0]);
+        // Three lines (the last empty, after the break), the first of
+        // several rows.
+        assert_eq!(wrapped.len(), 3);
+        assert_eq!(wrapped[0], 0);
+        assert!(wrapped[1] > 1, "{wrapped:?}");
+        assert_eq!(wrapped[2], galleys[0].rows.len() - 1);
+        assert_eq!(line_rows(&galleys[1]), [0]);
+        assert_eq!(line_rows(&galleys[2]), [0, 1, 2]);
     }
 
     #[test]
@@ -1585,6 +1670,7 @@ mod tests {
                     style: sql::format::Style::default(),
                     // A tab character: what Tab put in before the setting.
                     indent: Indent::Tab,
+                    wraps: false,
                 };
                 focused = edit(ui, sql, &field).focused;
             });

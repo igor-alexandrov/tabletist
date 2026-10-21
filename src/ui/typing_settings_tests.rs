@@ -2,11 +2,12 @@
 //! what a bracket or a quote typed puts in, what Backspace takes out, how
 //! long lines lay out with their numbers, and the rows that set them.
 
+use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 
 use crate::model::{Action, ConnTabId};
 use crate::settings::OptionValue;
-use crate::testing::Harness;
+use crate::testing::{Harness, bounds};
 use crate::theme::Look;
 
 /// A connected fixture in `look`, with a new SQL editor that has the
@@ -221,4 +222,148 @@ fn a_paste_is_put_in_as_it_is() {
     harness.frame(vec![egui::Event::Paste("(".into())]);
     harness.settle();
     assert_eq!(text(&harness, tab), "SELECT count(");
+}
+
+/// The tops of the gutter's numbers, in order, with each number.
+fn numbers(harness: &mut Harness) -> Vec<(String, f32)> {
+    let tree = harness.settle();
+    let field = bounds(&tree, "SQL", Role::MultilineTextInput).expect("the editor");
+    let mut found: Vec<(String, f32)> = harness
+        .text_rects
+        .iter()
+        .filter(|(text, rect)| {
+            rect.right() <= field.left() && text.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        .map(|(text, rect)| (text.clone(), rect.top()))
+        .collect();
+    found.sort_by(|a, b| a.1.total_cmp(&b.1));
+    found
+}
+
+#[test]
+fn wrap_lays_a_long_line_out_in_rows_numbered_once() {
+    let long = format!("SELECT {}\nFROM book_covers", "title, ".repeat(60));
+    let (mut harness, _) = editor(Look::macos(), &long);
+    // Off: one row a line, the second right under the first.
+    let off = numbers(&mut harness);
+    assert_eq!(
+        off.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["1", "2"]
+    );
+    let row = off[1].1 - off[0].1;
+    set(&mut harness, OptionValue::Wrap(true));
+    let on = numbers(&mut harness);
+    assert_eq!(
+        on.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["1", "2"]
+    );
+    assert!(
+        on[1].1 - on[0].1 > 2.5 * row,
+        "the first line wraps to rows"
+    );
+    // The editor keeps the keyboard.
+    assert!(harness.ctx.text_edit_focused());
+}
+
+#[test]
+fn a_wrapped_line_is_one_line_to_the_bar_and_the_cursor() {
+    let long = format!("SELECT {}", "title, ".repeat(60));
+    let (mut harness, _) = editor(Look::macos(), &long);
+    set(&mut harness, OptionValue::Wrap(true));
+    harness.settle();
+    let palette = harness.app.palette;
+    let line = palette.window.lerp_to_gamma(palette.selection, 0.45);
+    let bar = crate::ui::sql_text::bar_color(&harness.app.look, &palette);
+    let tallest = |color| {
+        harness
+            .fills
+            .iter()
+            .filter(|(_, fill)| *fill == color)
+            .map(|(rect, _)| rect.height())
+            .fold(0.0, f32::max)
+    };
+    // Both stand beside every row the line wraps to: far taller than one.
+    let rows = harness
+        .text_rects
+        .iter()
+        .find(|(text, _)| text == "1")
+        .map(|(_, rect)| rect.height())
+        .expect("the number");
+    assert!(tallest(line) > 2.5 * rows, "the cursor's line");
+    assert!(tallest(bar) > 2.5 * rows, "the statement's bar");
+}
+
+#[test]
+fn a_press_beside_a_wrapped_row_puts_the_cursor_at_its_line_s_start() {
+    let long = format!("SELECT {}", "title, ".repeat(60));
+    let (mut harness, tab) = editor(Look::macos(), &long);
+    set(&mut harness, OptionValue::Wrap(true));
+    let tree = harness.settle();
+    let gutter = bounds(&tree, "Line numbers", Role::Unknown)
+        .or_else(|| bounds(&tree, "Line numbers", Role::GenericContainer))
+        .expect("the gutter");
+    let number = numbers(&mut harness)[0].1;
+    // Two rows down the first line, beside a row with no number.
+    let at = egui::pos2(gutter.center().x, number + 50.0);
+    harness.frame(vec![
+        egui::Event::PointerMoved(at),
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        },
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    harness.settle();
+    assert_eq!(cursor(&harness, tab), 0);
+}
+
+#[test]
+fn the_completion_list_hangs_under_a_word_that_starts_a_wrapped_row() {
+    // Filler of one length or another puts the word typed at the start of
+    // a wrapped row: the list hangs under the word's own row each time.
+    let mut started = 0;
+    for words in 40..80 {
+        let (mut harness, _) = editor(Look::macos(), &"a ".repeat(words));
+        set(&mut harness, OptionValue::Wrap(true));
+        type_chars(&mut harness, "se");
+        let tree = harness.settle();
+        let Some(list) = bounds(&tree, "Completions", Role::Unknown)
+            .or_else(|| bounds(&tree, "Completions", Role::GenericContainer))
+            .or_else(|| bounds(&tree, "Completions", Role::ListBox))
+        else {
+            continue;
+        };
+        // The row the word is on: the last of the editor's rows, each a
+        // text run to a screen reader.
+        let word = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::TextRun)
+            .filter_map(|(_, node)| node.bounds())
+            .map(|rect| {
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                    egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                )
+            })
+            .max_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the word's row");
+        assert!(
+            list.top() >= word.bottom() - 1.0,
+            "{words}: {list:?} {word:?}"
+        );
+        // The word alone on its row: it starts the row.
+        let field = bounds(&tree, "SQL", Role::MultilineTextInput).expect("the editor");
+        if word.left() < field.left() + 40.0 && word.width() < 40.0 {
+            started += 1;
+        }
+    }
+    assert!(started > 0, "no length put the word at a row's start");
 }
