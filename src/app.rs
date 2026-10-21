@@ -1818,6 +1818,8 @@ impl App {
                     self.dialog = None;
                 }
             }
+            Action::RunEveryRow { refocus } => self.answer_every_row(true, refocus),
+            Action::CancelEveryRow { refocus } => self.answer_every_row(false, refocus),
             Action::MoveSelection {
                 tab,
                 id,
@@ -6436,7 +6438,7 @@ impl App {
         }
         let mode = script_mode(workspace.run_mode(sql), dialect, &statements);
         let caps = sql.caps();
-        self.send_run(tab, id, statements, mode, caps);
+        self.send_or_ask(tab, id, statements, mode, caps);
     }
 
     /// The card's "Run in a read-write transaction": sends the statements
@@ -6472,7 +6474,8 @@ impl App {
             return;
         }
         let caps = sql.caps();
-        self.send_run(tab, id, statements, tabletist_db::ScriptMode::Write, caps);
+        let mode = tabletist_db::ScriptMode::Write;
+        self.send_or_ask(tab, id, statements, mode, caps);
     }
 
     /// The results' Show all: the statement whose rows the limit cut, sent
@@ -6530,6 +6533,157 @@ impl App {
             timeout: None,
             ..run.caps
         };
+        self.send_or_ask(tab, id, statements, mode, caps);
+    }
+
+    /// [`Self::send_run`], or first the question about a run that writes
+    /// to every row of a table: one sent to write that holds a `TRUNCATE`,
+    /// or an `UPDATE` or a `DELETE` without `WHERE` while Settings ›
+    /// Editor asks about them. A run that only reads never asks, nor one
+    /// of a tab in Read-only. While another dialog is open nothing is
+    /// asked, and nothing sent.
+    fn send_or_ask(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        statements: Vec<tabletist_db::sql::Statement>,
+        mode: tabletist_db::ScriptMode,
+        caps: crate::model::RunCaps,
+    ) {
+        // Nothing else runs while the question is open.
+        if matches!(self.dialog, Some(Dialog::ConfirmEveryRow(_))) {
+            return;
+        }
+        let wide = match mode {
+            tabletist_db::ScriptMode::Write => self.wide_statements(tab, &statements),
+            tabletist_db::ScriptMode::ReadOnly => Vec::new(),
+        };
+        if wide.is_empty() {
+            self.send_run(tab, id, statements, mode, caps);
+            return;
+        }
+        let asked = self.next_id();
+        let Some(workspace) = self.workspace(tab).filter(|_| self.dialog.is_none()) else {
+            return;
+        };
+        let prompt = crate::model::EveryRowPrompt {
+            tab,
+            id,
+            asked,
+            on: crate::model::RanOn(workspace.spec.clone()),
+            statements,
+            caps,
+            wide,
+        };
+        self.dialog = Some(Dialog::ConfirmEveryRow(Box::new(prompt)));
+    }
+
+    /// The statements of `statements` the question asks about, each with
+    /// its tables and what the sidebar's statistics say of their rows.
+    fn wide_statements(
+        &self,
+        tab: ConnTabId,
+        statements: &[tabletist_db::sql::Statement],
+    ) -> Vec<crate::model::WideStatement> {
+        use tabletist_db::sql::Verb;
+        let Some(workspace) = self.workspace(tab) else {
+            return Vec::new();
+        };
+        let dialect = workspace.driver.dialect();
+        let show_system = self.settings.show_system_schemas;
+        let schemas = workspace
+            .tree
+            .visible_schemas(workspace.driver, show_system);
+        let catalog = catalog_of(workspace, &schemas);
+        let asks = |verb: Verb| match verb {
+            Verb::Update | Verb::Delete => self.settings.confirm_unsafe_writes,
+            Verb::Truncate => true,
+        };
+        statements
+            .iter()
+            .filter_map(|statement| {
+                let found = tabletist_db::sql::every_row(dialect, &statement.text)?;
+                if !asks(found.verb) {
+                    return None;
+                }
+                // A count of 0 is none: older PostgreSQL says so of a
+                // table never analysed.
+                let rows_of = |named: &tabletist_db::sql::NamedTable| {
+                    let schema = named.schema.as_deref();
+                    // PostgreSQL folds a name that is not quoted to lower
+                    // case, and finds a table by its exact name; MySQL and
+                    // SQLite find it whatever its case, as completion does.
+                    let (name, exact) = match dialect {
+                        tabletist_db::Dialect::Postgres if named.quoted => {
+                            (named.name.clone(), true)
+                        }
+                        tabletist_db::Dialect::Postgres => (named.name.to_lowercase(), true),
+                        tabletist_db::Dialect::MySql | tabletist_db::Dialect::Sqlite => {
+                            (named.name.clone(), false)
+                        }
+                    };
+                    let object = crate::completion::resolve(schema, &name, &catalog)
+                        .filter(|object| !exact || object.name == name)?;
+                    let info = workspace.tree.object_info(&object)?;
+                    info.estimated_rows.filter(|rows| *rows > 0)
+                };
+                let rows = (!found.tables.is_empty())
+                    .then(|| found.tables.iter().map(rows_of).sum::<Option<u64>>())
+                    .flatten();
+                let tables = found
+                    .tables
+                    .iter()
+                    .map(|named| match &named.schema {
+                        Some(schema) => format!("{schema}.{}", named.name),
+                        None => named.name.clone(),
+                    })
+                    .collect();
+                Some(crate::model::WideStatement {
+                    line: statement.first_line,
+                    verb: found.verb,
+                    tables,
+                    rows,
+                })
+            })
+            .collect()
+    }
+
+    /// The answer to the question about every row: with `run`, the run it
+    /// holds, sent as Run would send it now. A tab closed meanwhile sends
+    /// nothing, nor one now on another database; one whose session came
+    /// back read-only sends it read-only, where the database refuses the
+    /// write. With `refocus` the editor
+    /// gets the keyboard back, which it had when the question came.
+    fn answer_every_row(&mut self, run: bool, refocus: bool) {
+        let Some(Dialog::ConfirmEveryRow(prompt)) = self.dialog.take() else {
+            return;
+        };
+        let crate::model::EveryRowPrompt {
+            tab,
+            id,
+            on,
+            statements,
+            caps,
+            ..
+        } = *prompt;
+        let Some(sql) = self.sql_tab_mut(tab, id) else {
+            return;
+        };
+        sql.focus_editor |= refocus;
+        if !run {
+            return;
+        }
+        let Some(workspace) = self
+            .workspace(tab)
+            .filter(|workspace| workspace.spec == on.0)
+        else {
+            return;
+        };
+        let Some(sql) = workspace.sql_tab(id) else {
+            return;
+        };
+        let dialect = workspace.driver.dialect();
+        let mode = script_mode(workspace.run_mode(sql), dialect, &statements);
         self.send_run(tab, id, statements, mode, caps);
     }
 
@@ -13227,13 +13381,13 @@ masked = ["orders.email"]
             ("PRAGMA table_info(users)", ReadOnly),
             ("-- UPDATE in a note\nSELECT 'DELETE'", ReadOnly),
             ("INSERT INTO users (email) VALUES ('a')", Write),
-            ("DELETE FROM users", Write),
+            ("DELETE FROM users WHERE id = 1", Write),
             ("CREATE TABLE notes (seen int)", Write),
             (
                 "WITH gone AS (DELETE FROM users RETURNING id) SELECT * FROM gone",
                 Write,
             ),
-            ("EXPLAIN ANALYZE DELETE FROM users", Write),
+            ("EXPLAIN ANALYZE DELETE FROM users WHERE id = 1", Write),
             // One write among reads is enough.
             ("SELECT 1; DROP TABLE users; SELECT 2", Write),
         ] {

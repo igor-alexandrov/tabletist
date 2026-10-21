@@ -2962,7 +2962,7 @@ mod tests {
         use crate::model::RunMode;
         use tabletist_db::ScriptMode;
         for look in Look::ALL {
-            let update = "UPDATE users SET email = 'x'";
+            let update = "UPDATE users SET email = 'x' WHERE id = 1";
             let (mut harness, tab) = writable(look, update);
             set_mode(&mut harness, tab, RunMode::ReadOnly);
             run(&mut harness);
@@ -3065,7 +3065,7 @@ mod tests {
     #[test]
     fn on_production_the_card_says_why_the_tab_cannot_write_and_offers_nothing() {
         for look in Look::ALL {
-            let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x'");
+            let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x' WHERE id = 1");
             // The tab an editor opened on production is: in Read-only.
             set_mode(&mut harness, tab, crate::model::RunMode::ReadOnly);
             harness.app.workspace_mut(tab).unwrap().environment =
@@ -3097,7 +3097,7 @@ mod tests {
     /// A refused `UPDATE` in a tab switched to Read-only on a writable
     /// connection, drawn in `look`: the card offers to allow writes.
     fn refused_in_a_read_only_tab(look: Look) -> (Harness, ConnTabId) {
-        let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x'");
+        let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x' WHERE id = 1");
         set_mode(&mut harness, tab, crate::model::RunMode::ReadOnly);
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
@@ -3188,7 +3188,7 @@ mod tests {
             assert_eq!(runs_sent(&harness), sent, "{}", look.name);
             // Nor does `e` open the dialog of a connection that opens
             // read-only.
-            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
+            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x' WHERE id = 1");
             harness.app.workspace_mut(tab).unwrap().driver = Driver::Postgres;
             run(&mut harness);
             harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
@@ -3251,7 +3251,7 @@ mod tests {
     fn a_read_only_production_connection_is_not_told_to_turn_the_box_off() {
         for look in Look::ALL {
             // Production opens read-only unless its box says otherwise.
-            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
+            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x' WHERE id = 1");
             let workspace = harness.app.workspace_mut(tab).unwrap();
             workspace.driver = Driver::Postgres;
             workspace.environment = crate::env::Environment::Production;
@@ -3323,7 +3323,7 @@ mod tests {
     #[test]
     fn a_refused_write_in_a_short_pane_scrolls_to_its_last_line() {
         for look in Look::ALL {
-            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
+            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x' WHERE id = 1");
             let workspace = harness.app.workspace_mut(tab).unwrap();
             workspace.driver = tabletist_db::Driver::Postgres;
             // The editor takes most of the height: the results have room
@@ -3490,7 +3490,7 @@ mod tests {
     }
 
     /// Three statements that change rows.
-    const CHANGES: &str = "INSERT INTO notes VALUES (1);\nUPDATE notes SET seen = 1;\nDELETE FROM notes WHERE seen = 0";
+    const CHANGES: &str = "INSERT INTO notes VALUES (1);\nUPDATE notes SET seen = 1 WHERE seen = 0;\nDELETE FROM notes WHERE seen = 0";
 
     #[test]
     fn a_committed_run_says_so_after_what_each_statement_changed() {
@@ -3976,7 +3976,8 @@ mod tests {
 
     #[test]
     fn a_statements_warnings_are_counted_on_its_line() {
-        let script = "INSERT INTO notes VALUES ('too long');\nUPDATE notes SET n = 'x'";
+        let script =
+            "INSERT INTO notes VALUES ('too long');\nUPDATE notes SET n = 'x' WHERE n = ''";
         let (mut harness, _tab) = writing(Look::standard(), Driver::MySql, script);
         let warned = |affected, warnings| StatementOutcome::Done {
             affected: Some(affected),

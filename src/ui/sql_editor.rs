@@ -1688,7 +1688,7 @@ mod tests {
             ),
         ] {
             for look in Look::ALL {
-                let script = "CREATE TABLE notes (n);\nUPDATE notes SET n = 1";
+                let script = "CREATE TABLE notes (n);\nUPDATE notes SET n = 1 WHERE n = 0";
                 let (mut harness, tab, id) = editor(look, script);
                 set_mode(&mut harness, tab, id, RunMode::ReadWrite);
                 harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);

@@ -1939,6 +1939,10 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
     }
 }
 
+/// The height of the terminal look's status line, and of what takes its
+/// place: the `:` prompt, the question about a run that changes every row.
+pub(crate) const STATUS_LINE: f32 = 31.0;
+
 /// The field of the terminal's `:` prompt in the tab `tab`.
 fn command_id(tab: ConnTabId) -> egui::Id {
     egui::Id::new(("command-line", tab.0))
@@ -1960,7 +1964,7 @@ fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let mut actions = Vec::new();
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
-        .exact_size(31.0)
+        .exact_size(STATUS_LINE)
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(palette.panel))
@@ -2251,12 +2255,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         });
     }
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
-        .exact_size(31.0)
+        .exact_size(STATUS_LINE)
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(palette.panel))
         .show(ui, |ui| {
             let rect = ui.max_rect();
+            // Where a question that takes the line's place stands.
+            let line = super::every_row_prompt::status_line_id(tab);
+            ui.ctx().data_mut(|data| data.insert_temp(line, rect));
             widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
             let y = rect.top() + 1.0 + 15.0;
             // The row is shown in the inspector; the cell is edited, where

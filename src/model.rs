@@ -630,6 +630,16 @@ pub enum Action {
     ConfirmWrite,
     /// Close the production confirmation and send nothing.
     CancelWrite,
+    /// The question before a run that reaches every row of a table: Run
+    /// anyway sends the run it holds. `refocus`: the editor had the
+    /// keyboard when the question came, and has it back.
+    RunEveryRow {
+        refocus: bool,
+    },
+    /// Its Cancel: the run is not sent. `refocus` as for Run anyway.
+    CancelEveryRow {
+        refocus: bool,
+    },
     /// Answer the question about a row a save found changed. `at` is the
     /// row's place among the save's conflicts as the question showed it: an
     /// answer for another row than the one asked about is dropped.
@@ -2577,6 +2587,9 @@ pub enum Dialog {
     Leave(Box<LeavePrompt>),
     /// A save to production, with its statements, before anything is sent.
     ConfirmWrite(Box<WritePrompt>),
+    /// A run of the SQL editor that reaches every row of a table, before
+    /// anything is sent.
+    ConfirmEveryRow(Box<EveryRowPrompt>),
     /// A save found rows changed on the server: what to do with each.
     Conflict(Box<ConflictPrompt>),
     /// What agents may do on a connection, in the terminal look's box.
@@ -2617,6 +2630,40 @@ pub struct LeavePrompt {
     /// One of the tabs is saving: only the window's close is asked about
     /// then, and the prompt says what leaving a save comes to.
     pub saving: bool,
+}
+
+/// Asks before a run of the SQL editor that writes to every row of a
+/// table: an `UPDATE` or a `DELETE` without `WHERE`, or a `TRUNCATE`.
+/// Nothing of the run is sent before the answer.
+#[derive(Debug)]
+pub struct EveryRowPrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// This question's own number, from `App::next_id`: what the view
+    /// keeps of it is kept under it, and never meets another question's.
+    pub asked: u64,
+    /// Where the run goes: Run anyway sends nothing once the tab is on
+    /// another database.
+    pub on: RanOn,
+    /// What Run anyway sends: the run as it was asked for.
+    pub statements: Vec<tabletist_db::sql::Statement>,
+    pub caps: RunCaps,
+    /// The run's statements that reach every row, in its order.
+    pub wide: Vec<WideStatement>,
+}
+
+/// A statement of a run that reaches every row of the tables it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WideStatement {
+    /// The editor's line it starts on.
+    pub line: usize,
+    pub verb: tabletist_db::sql::Verb,
+    /// Its tables, as the statement names them: with their schema where it
+    /// gives one. Empty where they cannot be read off it.
+    pub tables: Vec<String>,
+    /// The rows they hold together, by the database's statistics: where
+    /// the sidebar has a count above 0 for each of them.
+    pub rows: Option<u64>,
 }
 
 /// Asks before a save to production.

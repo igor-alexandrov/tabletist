@@ -237,6 +237,8 @@ pub enum When {
     AgentAccess,
     /// The question about leaving with pending changes.
     Leaving,
+    /// The question before a run that changes every row of a table.
+    EveryRow,
     /// The cursor's row is a new one, not saved yet: the row panel is its
     /// form.
     NewRow,
@@ -624,6 +626,8 @@ commands! {
     LeaveWrite = "leave_write",
     LeaveDiscard = "leave_discard",
     LeaveStay = "leave_stay",
+    RunEveryRow = "run_every_row",
+    CancelEveryRow = "cancel_every_row",
     ConflictOverwrite = "conflict_overwrite",
     ConflictUseServer = "conflict_use_server",
     ConflictKeepMine = "conflict_keep_mine",
@@ -992,6 +996,8 @@ impl Command {
             C::LeaveWrite => info("Write and leave", "", Prompts),
             C::LeaveDiscard => info("Discard and leave", "", Prompts),
             C::LeaveStay => info("Stay", "", Prompts),
+            C::RunEveryRow => info("Run anyway, when a run changes every row", "", Prompts),
+            C::CancelEveryRow => info("Cancel a run that changes every row", "", Prompts),
             C::ConflictOverwrite => info("Overwrite", "", Prompts),
             C::ConflictUseServer => info("Use the server's values", "", Prompts),
             C::ConflictKeepMine => info("Keep mine and reload", "", Prompts),
@@ -2068,6 +2074,22 @@ pub const BINDINGS: &[Binding] = {
         bind(C::LeaveWrite, PROMPT, NONE, keys(&[k("w")])).when(When::Leaving),
         bind(C::LeaveDiscard, PROMPT, NONE, keys(&[k("d")])).when(When::Leaving),
         bind(C::LeaveStay, PROMPT, keys(&[k("esc")]), keys(&[k("esc")])).when(When::Leaving),
+        // Either case, with Caps Lock on too.
+        bind(
+            C::RunEveryRow,
+            PROMPT,
+            control("dialog button"),
+            keys(&[k("y"), k("Y")]).shown("y"),
+        )
+        .when(When::EveryRow),
+        // `N` as the design writes it: the answer Enter gives.
+        bind(
+            C::CancelEveryRow,
+            PROMPT,
+            keys(&[k("esc")]),
+            keys(&[k("n"), k("N"), k("esc")]).shown("N"),
+        )
+        .when(When::EveryRow),
         bind(C::ConflictOverwrite, PROMPT, NONE, keys(&[k("o")])).when(When::Conflict),
         bind(C::ConflictUseServer, PROMPT, NONE, keys(&[k("s")])).when(When::Conflict),
         bind(
