@@ -1157,6 +1157,8 @@ struct Word {
     group: usize,
     /// It is the first thing inside its parentheses.
     opens: bool,
+    /// The commas before it in its parentheses.
+    commas: usize,
 }
 
 /// The words of `tokens`, each with the parentheses it stands in, and
@@ -1168,9 +1170,17 @@ fn words_of(statement: &str, tokens: &[Token]) -> (Vec<Word>, bool) {
     let mut groups = vec![0];
     let mut next = 1;
     let mut opened = false;
+    // The commas so far in each pair of parentheses, by its number.
+    let mut commas = vec![0];
     for (at, token) in tokens.iter().enumerate() {
+        let group = groups.last().copied().unwrap_or_default();
         match (token.kind, &statement[token.range.clone()]) {
+            (TokenKind::Punctuation, ",") => {
+                commas[group] += 1;
+                opened = false;
+            }
             (TokenKind::Punctuation, "(") => {
+                commas.push(0);
                 groups.push(next);
                 next += 1;
                 opened = true;
@@ -1186,12 +1196,12 @@ fn words_of(statement: &str, tokens: &[Token]) -> (Vec<Word>, bool) {
             _ => {
                 if let Some(text) = bare_word(statement, token) {
                     analyzed |= ANALYZES.contains(&text.as_str());
-                    let group = groups.last().copied().unwrap_or_default();
                     words.push(Word {
                         text,
                         at,
                         group,
                         opens: opened,
+                        commas: commas[group],
                     });
                 }
                 opened = false;
@@ -1225,7 +1235,7 @@ fn unbounded_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<(
             .iter()
             .filter(|word| word.at > verb.at && word.group == verb.group)
             .collect();
-        let joined = joins_target(dialect, &own);
+        let joined = joins_target(dialect, verb, &own);
         joined || own.iter().any(|word| BOUNDS.contains(&word.text.as_str()))
     };
     own.into_iter().chain(ctes).find_map(|word| {
@@ -1242,10 +1252,12 @@ fn unbounded_at(dialect: Dialect, statement: &str, tokens: &[Token]) -> Option<(
 /// another table with an `ON` that keeps only the rows that match: MySQL's
 /// `DELETE b FROM books b JOIN covers c ON ...` and `UPDATE books b JOIN
 /// covers c ON ... SET ...`, whose target is a side of the join. Not a
-/// `LEFT` or a `RIGHT` join, which keeps every row of one side. Nor on
-/// PostgreSQL and SQLite, where a join stands in the `FROM` or the `USING`
-/// and its `ON` does not touch the target: only a `WHERE` ties them.
-fn joins_target(dialect: Dialect, words: &[&Word]) -> bool {
+/// `LEFT` or a `RIGHT` join, which keeps every row of one side, nor a join
+/// after a comma in the list of tables (`UPDATE books b, covers c JOIN
+/// shelves s ON ...`), which the target is crossed with. Nor on PostgreSQL
+/// and SQLite, where a join stands in the `FROM` or the `USING` and its
+/// `ON` does not touch the target: only a `WHERE` ties them.
+fn joins_target(dialect: Dialect, verb: &Word, words: &[&Word]) -> bool {
     match dialect {
         Dialect::MySql => {}
         Dialect::Postgres | Dialect::Sqlite => return false,
@@ -1262,9 +1274,18 @@ fn joins_target(dialect: Dialect, words: &[&Word]) -> bool {
             return false;
         };
         let kind = words[..join].iter().rev().take(2);
-        !kind
+        let outer = kind
             .into_iter()
-            .any(|word| matches!(word.text.as_str(), "LEFT" | "RIGHT"))
+            .any(|word| matches!(word.text.as_str(), "LEFT" | "RIGHT"));
+        // Where the list of tables starts: DELETE's FROM or USING, or the
+        // verb itself.
+        let list = words[..join]
+            .iter()
+            .rev()
+            .find(|word| matches!(word.text.as_str(), "FROM" | "USING"))
+            .map_or(verb.commas, |word| word.commas);
+        let crossed = words[join].commas > list;
+        !outer && !crossed
     })
 }
 
@@ -3051,6 +3072,8 @@ mod tests {
             "UPDATE books JOIN covers ON books.id = covers.book_id SET a = 1",
             "DELETE b FROM books b JOIN covers c ON b.id = c.book_id",
             "DELETE b FROM books b INNER JOIN covers c ON b.id = c.book_id",
+            // Several targets before the FROM; the FROM's own list joins.
+            "DELETE b, c FROM books b JOIN covers c ON b.id = c.book_id",
         ] {
             assert_eq!(every_row(Dialect::MySql, text), None, "{text}");
         }
@@ -3060,6 +3083,10 @@ mod tests {
             "DELETE b FROM books b LEFT JOIN covers c ON b.id = c.book_id",
             "DELETE b FROM books b LEFT OUTER JOIN covers c ON b.id = c.book_id",
             "UPDATE books b RIGHT JOIN covers c ON b.id = c.book_id SET b.a = c.a",
+            // The join is of the tables after a comma: books is crossed
+            // with it.
+            "UPDATE books b, covers c JOIN shelves s ON s.id = c.shelf_id SET b.a = 1",
+            "DELETE b FROM books b, covers c JOIN shelves s ON s.id = c.shelf_id",
         ] {
             assert!(every_row(Dialect::MySql, text).is_some(), "{text}");
         }
