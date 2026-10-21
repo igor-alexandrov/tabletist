@@ -16,6 +16,7 @@ use tabletist_db::sql::{self, Statement, Token, TokenKind};
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, Completion, ConnTabId, Pane, SqlTab, TabId, TextPrint};
+use crate::settings::Indent;
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
@@ -339,8 +340,9 @@ fn format_script(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
         }
         None => (None, sql_tab.cursor),
     };
-    let Some(formatted) = sql::format::format(field.dialect, &sql_tab.text, selection, cursor)
-    else {
+    let formatted =
+        sql::format::format_with(field.dialect, &sql_tab.text, selection, cursor, field.style);
+    let Some(formatted) = formatted else {
         return false;
     };
     let at = |text: &str, byte: usize| CCursorRange::one(CCursor::new(char_index(text, byte)));
@@ -444,6 +446,7 @@ impl Edited {
 pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let (look, palette, locale) = (app.look, app.palette, app.locale);
     let numbering = app.settings.line_numbers_in(look.terminal);
+    let (style, indent) = (format_style(&app.settings, &look), app.settings.indent);
     let highlight = app.settings.highlight_line;
     let Some(workspace) = app.workspace_mut(tab) else {
         return;
@@ -469,6 +472,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         dialect,
         look: &look,
         palette: &palette,
+        style,
+        indent,
         // An open completion list takes Esc: the editor keeps the
         // keyboard. Not one whose row this frame inserts: Esc is the
         // editor's again.
@@ -689,6 +694,221 @@ struct Field<'a> {
     palette: &'a Palette,
     /// Keep the keyboard on Esc (a completion list is open and takes it).
     hold_escape: bool,
+    /// How Format writes the script.
+    style: sql::format::Style,
+    /// What the Tab key puts in, and takes out with Shift.
+    indent: Indent,
+}
+
+/// How Format writes, as the settings have it in `look`: its keyword case
+/// and commas, and a `CASE`'s parts in by the indent (four spaces for a
+/// tab: the river is set in spaces).
+fn format_style(settings: &crate::settings::Settings, look: &Look) -> sql::format::Style {
+    use crate::settings::{Commas, KeywordCase};
+    use sql::format::Case;
+    sql::format::Style {
+        keywords: match settings.keywords_in(look.terminal) {
+            KeywordCase::Upper => Case::Upper,
+            KeywordCase::Lower => Case::Lower,
+            KeywordCase::Keep => Case::Keep,
+        },
+        commas: match settings.commas {
+            Commas::Trailing => sql::format::Commas::Trailing,
+            Commas::Leading => sql::format::Commas::Leading,
+        },
+        case_indent: indent_width(settings.indent),
+    }
+}
+
+/// What an indent puts in.
+fn indent_unit(indent: Indent) -> &'static str {
+    match indent {
+        Indent::Two => "  ",
+        Indent::Four => "    ",
+        Indent::Tab => "\t",
+    }
+}
+
+/// How many columns an indent is: a tab counts four.
+fn indent_width(indent: Indent) -> usize {
+    match indent {
+        Indent::Two => 2,
+        Indent::Four | Indent::Tab => 4,
+    }
+}
+
+/// `text` with an indent put in or taken out (`outdent`), and the bytes
+/// `selection` covers after it. Without a selection an indent goes in at
+/// the cursor (`selection`'s end); with one, at the start of every line it
+/// touches but blank ones; an outdent takes one indent (a tab, or up to
+/// an indent's width of spaces) off the start of every line the selection
+/// or the cursor touches. A line the selection only reaches the start of
+/// is not touched. `None` when nothing changes.
+fn indented(
+    text: &str,
+    selection: Range<usize>,
+    indent: Indent,
+    outdent: bool,
+) -> Option<(String, Range<usize>)> {
+    let unit = indent_unit(indent);
+    if !outdent && selection.is_empty() {
+        let at = selection.end;
+        let mut out = text.to_owned();
+        out.insert_str(at, unit);
+        let to = at + unit.len();
+        return Some((out, to..to));
+    }
+    // The starts of the lines touched, in order.
+    let first = text[..selection.start].rfind('\n').map_or(0, |at| at + 1);
+    let mut starts = vec![first];
+    for (at, byte) in text.bytes().enumerate().skip(first) {
+        let next = at + 1;
+        let touched = next < selection.end;
+        if byte == b'\n' && touched && next < text.len() {
+            starts.push(next);
+        } else if next >= selection.end {
+            break;
+        }
+    }
+    // Each line's change: where, what goes out, what comes in.
+    let mut edits: Vec<(usize, usize, &str)> = Vec::new();
+    for start in starts {
+        let line = &text[start
+            ..text[start..]
+                .find('\n')
+                .map_or(text.len(), |end| start + end)];
+        if outdent {
+            let cut = if line.starts_with('\t') {
+                1
+            } else {
+                line.bytes()
+                    .take(indent_width(indent))
+                    .take_while(|byte| *byte == b' ')
+                    .count()
+            };
+            if cut > 0 {
+                edits.push((start, cut, ""));
+            }
+        } else if !line.trim().is_empty() {
+            edits.push((start, 0, unit));
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    // Where an offset of the old text lands in the new one.
+    let moved = |offset: usize| -> usize {
+        let mut to = offset;
+        for (at, cut, put) in &edits {
+            if *at >= offset {
+                break;
+            }
+            let gone = (*cut).min(offset - at);
+            to = to - gone + put.len();
+        }
+        to
+    };
+    let mut out = String::with_capacity(text.len() + edits.len() * unit.len());
+    let mut from = 0;
+    for (at, cut, put) in &edits {
+        out.push_str(&text[from..*at]);
+        out.push_str(put);
+        from = at + cut;
+    }
+    out.push_str(&text[from..]);
+    Some((out, moved(selection.start)..moved(selection.end)))
+}
+
+/// Takes the frame's Tab and Shift+Tab, as the keymap has them in the
+/// editor (`IndentLines`, `OutdentLines`), before the field reads its
+/// events: Tab with nothing selected becomes the indent's text, typed in
+/// its place among the frame's events; Tab over a selection and Shift+Tab
+/// are made here on the lines (`indented`), each one step of the field's
+/// undo history, the selection kept as it ran. Only while the field has
+/// the keyboard: the completion list took its Tab before. Returns whether
+/// the text changed here.
+fn indent_script(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
+    use crate::keymap::{Command, Layout, Scope};
+    if !ui.memory(|memory| memory.has_focus(field.id)) {
+        return false;
+    }
+    let keymap = crate::ui::keys::published(ui.ctx());
+    let layout = Layout::of(field.look);
+    let chords = |command| -> Vec<&'static str> {
+        keymap
+            .chords_now(layout, command, Scope::SqlEditor, false)
+            .collect()
+    };
+    let (indents, outdents) = (chords(Command::IndentLines), chords(Command::OutdentLines));
+    let unit = indent_unit(field.indent);
+    let selected = egui::TextEdit::load_state(ui.ctx(), field.id)
+        .and_then(|state| state.cursor.char_range())
+        .is_some_and(|range| !range.is_empty());
+    // The line edits asked for, in order: `true` to outdent.
+    let mut lines = Vec::new();
+    ui.input_mut(|input| {
+        let held = input.modifiers;
+        let pressed = |event: &egui::Event, chords: &[&'static str]| {
+            chords
+                .iter()
+                .any(|keys| crate::ui::keys::press_of(layout, held, event, keys).is_some())
+        };
+        let events = std::mem::take(&mut input.events);
+        input.events = events
+            .into_iter()
+            .filter_map(|event| {
+                if pressed(&event, &outdents) {
+                    lines.push(true);
+                    None
+                } else if pressed(&event, &indents) {
+                    if selected || !lines.is_empty() {
+                        lines.push(false);
+                        None
+                    } else {
+                        Some(egui::Event::Text(unit.to_owned()))
+                    }
+                } else {
+                    Some(event)
+                }
+            })
+            .collect();
+    });
+    let mut changed = false;
+    for outdent in lines {
+        let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+        let range = state.cursor.char_range().unwrap_or_else(|| {
+            CCursorRange::one(CCursor::new(char_index(&sql_tab.text, sql_tab.cursor)))
+        });
+        let [start, end] = range.sorted_cursors();
+        let byte = |cursor: CCursor| byte_offset(&sql_tab.text, cursor.index.0);
+        let selection = byte(start)..byte(end);
+        let Some((text, after)) = indented(&sql_tab.text, selection, field.indent, outdent) else {
+            continue;
+        };
+        let at = |byte: usize| CCursor::new(char_index(&text, byte));
+        // The end that moves stays the one that moved: a selection made
+        // backwards is still one.
+        let backwards = range.primary.index < range.secondary.index;
+        let after_range = match (after.is_empty(), backwards) {
+            (true, _) => CCursorRange::one(at(after.end)),
+            (false, false) => CCursorRange::two(at(after.start), at(after.end)),
+            (false, true) => CCursorRange::two(at(after.end), at(after.start)),
+        };
+        let cursor = if backwards { after.start } else { after.end };
+        let before = (range, std::mem::take(&mut sql_tab.text));
+        let after_edit = (after_range, text);
+        outside_edit(
+            &mut state,
+            ui.input(|input| input.time),
+            &before,
+            &after_edit,
+        );
+        egui::TextEdit::store_state(ui.ctx(), field.id, state);
+        sql_tab.text = after_edit.1;
+        sql_tab.cursor = cursor;
+        changed = true;
+    }
+    changed
 }
 
 /// The text field itself: edits the tab's text and reports its cursor.
@@ -696,7 +916,11 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let inserted = insert_completion(ui.ctx(), field.id, sql_tab);
     let focus = std::mem::take(&mut sql_tab.focus_editor);
     // Before the field is drawn, so this frame shows the formatted text.
+    // An indent is an outside edit too: what the field shows, and where
+    // its caret goes, follow as after Format.
+    let indented = indent_script(ui, sql_tab, field);
     let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
+    let formatted = formatted || indented;
     // The field fills the pane, so a click under the last line lands in
     // it: whole lines, and the rest as bottom padding. (egui sizes a text
     // edit in lines of its font.)
@@ -939,6 +1163,59 @@ mod tests {
     }
 
     #[test]
+    fn an_indent_goes_in_at_the_cursor_or_on_each_line_selected() {
+        let tab = |text: &str, selection: Range<usize>, indent, outdent| {
+            indented(text, selection, indent, outdent)
+        };
+        // No selection: at the cursor, in the middle of a line too.
+        assert_eq!(
+            tab("SELECT 1", 6..6, Indent::Two, false),
+            Some(("SELECT   1".to_owned(), 8..8))
+        );
+        assert_eq!(
+            tab("x", 0..0, Indent::Tab, false),
+            Some(("\tx".to_owned(), 1..1))
+        );
+        // A selection: each line it touches, not one it only reaches the
+        // start of, and no blank one; it covers the same text after.
+        assert_eq!(
+            tab("a\nb\n\nc\nd", 2..7, Indent::Four, false),
+            Some(("a\n    b\n\n    c\nd".to_owned(), 2..15))
+        );
+        // Characters of more than one byte keep their place.
+        assert_eq!(
+            tab("é\nü", 0..5, Indent::Two, false),
+            Some(("  é\n  ü".to_owned(), 0..9))
+        );
+    }
+
+    #[test]
+    fn an_outdent_takes_one_indent_off_each_line_it_touches() {
+        let tab =
+            |text: &str, selection: Range<usize>, indent| indented(text, selection, indent, true);
+        // The cursor's line: up to an indent's width of spaces.
+        assert_eq!(
+            tab("    x", 5..5, Indent::Two),
+            Some(("  x".to_owned(), 3..3))
+        );
+        assert_eq!(tab(" x", 2..2, Indent::Four), Some(("x".to_owned(), 1..1)));
+        // A tab, whatever the indent is.
+        assert_eq!(tab("\tx", 1..1, Indent::Two), Some(("x".to_owned(), 0..0)));
+        // Nothing to take: nothing changes.
+        assert_eq!(tab("x\n  y", 0..1, Indent::Two), None);
+        // A cursor inside the indent stays at the line's new start.
+        assert_eq!(
+            tab("    x", 1..1, Indent::Four),
+            Some(("x".to_owned(), 0..0))
+        );
+        // Every line selected.
+        assert_eq!(
+            tab("  a\n    b\nc", 0..10, Indent::Two),
+            Some(("a\n  b\nc".to_owned(), 0..6))
+        );
+    }
+
+    #[test]
     fn the_terminal_gutter_is_relative_to_the_cursors_line() {
         let numbers = |cursor, relative| -> Vec<usize> {
             (1..=5)
@@ -979,6 +1256,9 @@ mod tests {
                     look: &look,
                     palette: &palette,
                     hold_escape,
+                    style: sql::format::Style::default(),
+                    // A tab character: what Tab put in before the setting.
+                    indent: Indent::Tab,
                 };
                 focused = edit(ui, sql, &field).focused;
             });

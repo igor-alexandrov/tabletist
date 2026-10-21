@@ -478,6 +478,8 @@ commands! {
     StepDown,
     Format,
     // SQL editor.
+    IndentLines,
+    OutdentLines,
     RunStatement,
     RunAll,
     Explain,
@@ -823,6 +825,8 @@ impl Command {
             C::StepUp => info("Step up", STEP, Editing).reserved(),
             C::StepDown => info("Step down", STEP, Editing).reserved(),
             C::Format => info("Format SQL or JSON", "Format SQL or JSON", Sql),
+            C::IndentLines => info("Indent", "", Sql),
+            C::OutdentLines => info("Outdent", "", Sql),
             C::RunStatement => info("Run statement", "Run statement", Sql),
             C::RunAll => info("Run all", "Run all", Sql),
             C::Explain => info("Explain", "Explain", Sql).reserved(),
@@ -1681,6 +1685,21 @@ pub const BINDINGS: &[Binding] = {
             SQL_EDITOR,
             keys(&[k("cmd+shift+f")]).any(),
             keys(&[k("=")]),
+        ),
+        // In the editor's text: an indent at the cursor, or one on each
+        // line the selection touches; one taken off each line. Settings ›
+        // Editor says what an indent is.
+        bind(
+            C::IndentLines,
+            SQL_EDITOR,
+            keys(&[k("tab")]),
+            keys(&[k("tab")]),
+        ),
+        bind(
+            C::OutdentLines,
+            SQL_EDITOR,
+            keys(&[k("shift+tab")]),
+            keys(&[k("shift+tab")]),
         ),
         bind(
             C::Format,

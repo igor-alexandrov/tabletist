@@ -4820,7 +4820,8 @@ value_tags   = true
             harness.ctx.text_edit_focused(),
             "the keys stay in the editor"
         );
-        assert_eq!(active_sql(&harness, tab).text, "\tSELECT 1");
+        // An indent is two spaces until Settings › Editor says otherwise.
+        assert_eq!(active_sql(&harness, tab).text, "  SELECT 1");
     }
 
     #[test]
@@ -5383,6 +5384,9 @@ value_tags   = true
         // The terminal has the key alone: `=`, once the keyboard is out of
         // the text. Formatting gives it back.
         let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        // Upper case, so that Format has the keyword to change: the look's
+        // own is lower.
+        harness.app.settings.keywords = Some(crate::settings::KeywordCase::Upper);
         harness.settle();
         type_text(&mut harness, "select 1");
         assert!(!harness.has("Format"));
@@ -5395,6 +5399,8 @@ value_tags   = true
     #[test]
     fn omarchy_formats_with_the_equals_sign_once_the_keyboard_is_out_of_the_text() {
         let (mut harness, tab) = sql_harness(Look::omarchy());
+        // Upper case, so that Format has the keyword to change.
+        harness.app.settings.keywords = Some(crate::settings::KeywordCase::Upper);
         harness.settle();
         type_text(&mut harness, "select 1");
         type_text(&mut harness, "=");
