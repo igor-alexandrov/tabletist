@@ -1274,13 +1274,15 @@ pub fn show<'a>(
             }
             draw_header(ui, &painter, rect, column, pad, look, palette);
             // The column's comment: said after its name, and shown under
-            // the pointer. Laid out only when it is asked for.
-            if let Some(comment) = column.comment {
+            // the pointer. Laid out only when it is asked for. One of only
+            // spaces says nothing.
+            let comment = column.comment.map(str::trim);
+            if let Some(comment) = comment.filter(|comment| !comment.is_empty()) {
                 ui.ctx().accesskit_node_builder(response.id, |node| {
-                    node.set_description(for_display(comment.trim()));
+                    node.set_description(for_display(comment));
                 });
                 if response.hovered() {
-                    let _ = response.on_hover_text(for_display(comment.trim()));
+                    let _ = response.on_hover_text(for_display(comment));
                 }
             }
             let handle = Rect::from_min_max(
@@ -3355,6 +3357,8 @@ mod tests {
         for sortable in [true, false] {
             let mut columns = columns_that(sortable);
             columns[1].comment = Some("Login address");
+            // One of only spaces says nothing.
+            columns[0].comment = Some("  \n ");
             frame_of(&ctx, &columns, 3, vec![]);
             let (_, tree) = frame_of(&ctx, &columns, 3, vec![]);
             let role = if sortable { Role::Button } else { Role::Label };
