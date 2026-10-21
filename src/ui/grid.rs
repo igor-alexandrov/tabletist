@@ -1227,6 +1227,15 @@ pub fn show<'a>(
         painter.rect_filled(header, CornerRadius::ZERO, header_fill);
         let y = painter.round_to_pixel_center(header.bottom() - hairline / 2.0);
         painter.hline(header.x_range(), y, Stroke::new(hairline, palette.outline));
+        // Where the pinned column's header ends: what scrolled under it
+        // takes no pointer there.
+        let lead = origin.x + shift + gutter + widths[0];
+        let past_lead = |col: usize, mut rect: Rect| {
+            if pinned && col > 0 {
+                rect.min.x = rect.min.x.max(lead).min(rect.max.x);
+            }
+            rect
+        };
         for &col in &order {
             let column = &columns[col];
             let left = origin.x + gutter + lefts[col];
@@ -1257,8 +1266,10 @@ pub fn show<'a>(
             } else {
                 (Sense::CLICK, WidgetType::Label)
             };
-            let response = ui.interact(rect, id.with(("header", col)), sense);
-            focus::hint(ui, &response, rect, focus::Ring::Inset { radius: 0 });
+            // Only the part of it that shows, as a cell's hint.
+            let seen = past_lead(col, rect);
+            let response = ui.interact(seen, id.with(("header", col)), sense);
+            focus::hint(ui, &response, seen, focus::Ring::Inset { radius: 0 });
             // Column names come from the server: nothing hidden in them.
             let name = display_safe(column.name);
             response.widget_info(|| WidgetInfo::labeled(kind, true, &*name));
@@ -1267,7 +1278,7 @@ pub fn show<'a>(
             }
             if response.hovered() && column.sortable {
                 painter.rect_filled(
-                    rect.shrink2(vec2(0.0, hairline)),
+                    seen.shrink2(vec2(0.0, hairline)),
                     CornerRadius::ZERO,
                     palette.surface,
                 );
@@ -3457,5 +3468,80 @@ mod tests {
         let row = crate::testing::node(&tree, "Row 3", Role::Button).expect("row 3");
         let (output, _) = frame(&ctx, 10, vec![click(row)]);
         assert_eq!(output.clicked, Some(CellPos { row: 2, col: 0 }));
+    }
+
+    #[test]
+    fn a_header_under_the_pinned_column_takes_the_pointer_only_where_it_shows() {
+        let ctx = egui::Context::default();
+        let look = crate::theme::Look::standard();
+        crate::theme::install(&ctx, false, &look);
+        ctx.enable_accesskit();
+        // The key column is pinned; the email column after it scrolls.
+        let columns = columns_that(true);
+        let frame = |events| {
+            let mut result = GridOutput::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(160.0, 300.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    result = show(
+                        ui,
+                        egui::Id::new("grid"),
+                        &columns,
+                        3,
+                        None,
+                        false,
+                        &Palette::light(),
+                        &look,
+                        &|row| numbered(RowMark::None, row),
+                        None,
+                        None,
+                        |row, col| Cell {
+                            text: format!("r{row}c{col}-{}", "x".repeat(30)).into(),
+                            ..Default::default()
+                        },
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            (
+                result,
+                output.platform_output.accesskit_update.expect("accesskit"),
+            )
+        };
+        frame(vec![]);
+        frame(vec![]);
+        let widths: Vec<f32> = ctx
+            .data(|data| data.get_temp(egui::Id::new("grid").with(("widths", 2_usize))))
+            .expect("the widths");
+        // Scrolled half the email column's width: its left half is under
+        // the key's header.
+        let half = (widths[1] / 2.0).round();
+        let over = egui::pos2(100.0, header_height(&look) + 10.0);
+        frame(vec![egui::Event::PointerMoved(over)]);
+        frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(-half, 0.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        }]);
+        for _ in 0..60 {
+            frame(vec![]);
+        }
+        let (_, tree) = frame(vec![]);
+        let key = crate::testing::bounds(&tree, "id", Role::Button).expect("the key's header");
+        let email = crate::testing::bounds(&tree, "email", Role::Button).expect("its header");
+        assert_eq!(key.left(), 0.0);
+        assert_eq!(key.right(), widths[0]);
+        // The email header begins where the key's ends, and ends where
+        // its column does.
+        assert_eq!(email.left(), key.right());
+        assert_eq!(email.right(), widths[0] + widths[1] - half);
     }
 }
