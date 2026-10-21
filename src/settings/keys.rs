@@ -521,6 +521,22 @@ pub(super) fn write(text: &str, overrides: &Overrides) -> String {
             .iter()
             .find(|(key, _)| name(key) == UNBIND)
             .and_then(|(_, item)| item.get_ref().as_table());
+        // Every key the lists hold, by scope: a scope can be named twice,
+        // once by each look's name.
+        let held: Vec<(Scope, &'static str)> = entries
+            .into_iter()
+            .flatten()
+            .filter_map(|(key, value)| {
+                Some((Scope::from_table(name(key))?, value.get_ref().as_array()?))
+            })
+            .flat_map(|(scope, array)| {
+                array
+                    .iter()
+                    .filter_map(|element| element.get_ref().as_str().and_then(spelled))
+                    .map(move |keys| (scope, keys))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         for (key, value) in entries.into_iter().flatten() {
             let Some(scope) = Scope::from_table(name(key)) else {
                 continue;
@@ -528,6 +544,8 @@ pub(super) fn write(text: &str, overrides: &Overrides) -> String {
             let Some(array) = value.get_ref().as_array() else {
                 continue;
             };
+            // The first list of a scope takes the keys no list of it holds.
+            let first = !listed.contains(&scope);
             listed.push(scope);
             // The keys of the list that did not read stay in it.
             let (read, unread): (Vec<_>, Vec<_>) = array
@@ -537,10 +555,19 @@ pub(super) fn write(text: &str, overrides: &Overrides) -> String {
                 .iter()
                 .filter_map(|element| element.get_ref().as_str().and_then(spelled))
                 .collect();
+            // The wanted keys this list holds already, and the new ones in
+            // the first list of the scope.
             let want: Vec<&'static str> = lists
                 .iter()
                 .filter(|(table, _)| Scope::from_table(table) == Some(scope))
                 .flat_map(|(_, keys)| keys.iter().copied())
+                .filter(|wanted| {
+                    have.iter().any(|keys| same(keys, wanted))
+                        || (first
+                            && !held
+                                .iter()
+                                .any(|(held, keys)| *held == scope && same(keys, wanted)))
+                })
                 .collect();
             let alike = have.len() == want.len()
                 && have
@@ -951,6 +978,24 @@ sql = \"=\"
             "[keys.unbind]\ngrid = [\n  \"gd\",  # follow is mine\n  \"x\",\n]\n"
         );
         assert!(Settings::from_toml(&out).invalid.is_empty());
+    }
+
+    #[test]
+    fn a_scope_listed_under_both_names_keeps_each_list_its_own() {
+        let text = "[keys.unbind]\ntable = [\"cmd+'\"]\ngrid = [\"gd\"]\n";
+        // Nothing changed: nothing written.
+        assert_eq!(written(text, |_| {}), text);
+        // One key goes: only its list changes.
+        let out = written(text, |keys| {
+            keys.unbinds.retain(|unbind| unbind.keys != "gd")
+        });
+        assert_eq!(out, "[keys.unbind]\ntable = [\"cmd+'\"]\n");
+        // A new key goes into one list of the scope.
+        let out = written(text, |keys| {
+            keys.unbinds.push(unbind(Scope::Grid, "grid", "gs"))
+        });
+        assert_eq!(out.matches("\"gs\"").count(), 1, "{out}");
+        assert_eq!(Settings::from_toml(&out).settings.keys.unbinds.len(), 3);
     }
 
     #[test]
