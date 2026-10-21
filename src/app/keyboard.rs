@@ -276,7 +276,8 @@ fn cell(text: &str) -> String {
 
 /// The cheat sheet of the keys in force: a Markdown table for each group
 /// of the Keyboard pane, its rows as the pane lists them, with their scope
-/// and their keys as `layout` writes them, a changed row marked so.
+/// and their keys as `layout` writes them, a changed row marked so, and a
+/// row whose command nothing answers yet.
 pub fn cheat_sheet(keymap: &Keymap, layout: Layout) -> String {
     let mut out = String::from("# Tabletist shortcuts\n");
     let rows = keymap.rows(layout);
@@ -298,9 +299,13 @@ pub fn cheat_sheet(keymap: &Keymap, layout: Layout) -> String {
             if keymap.changed(layout, row) {
                 keys.push_str(" (changed)");
             }
+            let mut name = row.command.info().name.to_owned();
+            if !row.command.info().built {
+                name.push_str(" (not built yet)");
+            }
             out.push_str(&format!(
                 "| {} | {} | {} |\n",
-                cell(row.command.info().name),
+                cell(&name),
                 cell(row.scope.name(layout)),
                 cell(&keys)
             ));
@@ -311,7 +316,8 @@ pub fn cheat_sheet(keymap: &Keymap, layout: Layout) -> String {
 
 /// The full list of the keys in force, as `settings.toml` spells them and
 /// commented out: a table for each scope, a line for each key of a row, a
-/// row whose keys cannot be recorded marked so. For copying lines from:
+/// row whose keys cannot be recorded marked so, and one whose command
+/// nothing answers yet. For copying lines from:
 /// nothing reads it.
 pub fn keys_list(keymap: &Keymap, layout: Layout) -> String {
     let mut out = String::from(
@@ -333,6 +339,7 @@ pub fn keys_list(keymap: &Keymap, layout: Layout) -> String {
                 let note = match fixed(layout, *row) {
                     Some(Fixed::System) => "  # the system's",
                     Some(_) => "  # fixed",
+                    None if !row.command.info().built => "  # not built yet",
                     None => "",
                 };
                 keymap

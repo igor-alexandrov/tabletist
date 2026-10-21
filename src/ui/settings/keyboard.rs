@@ -110,6 +110,21 @@ pub(super) fn name(app: &App, command: crate::keymap::Command) -> String {
     app.look.label(&gettext(app.locale, command.info().name))
 }
 
+/// What a screen reader says of a row: its name, scope and keys as the
+/// look has them, then whether it is changed and whether nothing answers
+/// its command yet.
+pub(super) fn said(app: &App, row: Row, [name, scope, keys]: [&str; 3]) -> String {
+    let say = |text| app.look.label(&gettext(app.locale, text));
+    let mut said = format!("{name}, {scope}, {keys}");
+    if app.keymap.changed(app.layout(), row) {
+        said.push_str(&format!(", {}", say("changed")));
+    }
+    if !row.command.info().built {
+        said.push_str(&format!(", {}", say("not built yet")));
+    }
+    said
+}
+
 /// What a refusal of `keys` for `row` says, translated: the key as the look
 /// writes it, the name of the command it is about, and the scope.
 pub(super) fn refusal(app: &App, row: Row, keys: &'static str, why: &Why) -> String {

@@ -334,7 +334,8 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 
 The Keyboard pane lists the commands by group, each with the scope its
 keys work in and the keys, and changes them: the defaults are the ones on
-this page.
+this page. A command marked `not built yet` has its keys kept for it, and
+they do nothing until it is built; `:keys default` marks its lines so.
 
 | Keys | Do |
 | --- | --- |
