@@ -1228,8 +1228,8 @@ pub fn show<'a>(
         let y = painter.round_to_pixel_center(header.bottom() - hairline / 2.0);
         painter.hline(header.x_range(), y, Stroke::new(hairline, palette.outline));
         // Where the pinned column's header ends: what scrolled under it
-        // takes no pointer there.
-        let lead = origin.x + shift + gutter + widths[0];
+        // takes no pointer there. A grid may have no columns at all.
+        let lead = origin.x + shift + gutter + widths.first().copied().unwrap_or(0.0);
         let past_lead = |col: usize, mut rect: Rect| {
             if pinned && col > 0 {
                 rect.min.x = rect.min.x.max(lead).min(rect.max.x);
@@ -3483,6 +3483,17 @@ mod tests {
         let row = crate::testing::node(&tree, "Row 3", Role::Button).expect("row 3");
         let (output, _) = frame(&ctx, 10, vec![click(row)]);
         assert_eq!(output.clicked, Some(CellPos { row: 2, col: 0 }));
+    }
+
+    #[test]
+    fn a_grid_without_columns_draws_its_header() {
+        // PostgreSQL has tables of no columns (`CREATE TABLE t ()`).
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        ctx.enable_accesskit();
+        frame_of(&ctx, &[], 0, vec![]);
+        let (output, _) = frame_of(&ctx, &[], 0, vec![]);
+        assert_eq!(output.sort_clicked, None);
     }
 
     #[test]
