@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use crate::sql::{Token, TokenKind, is_code};
+use crate::sql::{Token, TokenKind, is_code, unquoted};
 
 /// Where a completion would go, and what belongs there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,21 +121,9 @@ impl Piece<'_> {
 
     /// The name it spells, without its quotes.
     fn name(&self) -> String {
-        if self.kind != TokenKind::QuotedIdentifier {
-            return self.text.to_owned();
-        }
-        let mut chars = self.text.chars();
-        let Some(open) = chars.next() else {
-            return String::new();
-        };
-        let close = if open == '[' { ']' } else { open };
-        // An unterminated name has no closing quote to strip.
-        let inner = chars.as_str();
-        let inner = inner.strip_suffix(close).unwrap_or(inner);
-        if open == '[' {
-            inner.to_owned()
-        } else {
-            inner.replace(&format!("{open}{open}"), &open.to_string())
+        match self.kind {
+            TokenKind::QuotedIdentifier => unquoted(self.text),
+            _ => self.text.to_owned(),
         }
     }
 }
