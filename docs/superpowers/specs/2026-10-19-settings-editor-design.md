@@ -229,6 +229,80 @@ or hint; segments are radio groups, as every pane's are since #177.
    macOS, and every change is written to the file.
 9. Reset to defaults resets the Editor keys only.
 
+## Step 3: Format and indent
+
+Date: 2026-10-20. Steps 1 and 2 are merged (#181, #183); the query
+history of #197 has since built most of step 6.
+
+### The rows
+
+- macOS, Typing: **Indent**, segments 2 spaces, 4 spaces, Tab, first in
+  the section as the board has it (Keybindings, before it, waits for
+  vim).
+- macOS, a **Format · ⇧⌘F** section between Typing and History:
+  **Keywords** (UPPERCASE, lowercase, Keep) and **Commas** (Trailing,
+  Leading). The key in the heading is the keymap's Format.
+- Omarchy, typing: **indent**, stepped (`2 spaces` … `tab`), after line
+  numbers; a **format · = in normal mode** section with **keywords**
+  (`UPPER`, `lower`, `keep`, the case shown as it is) and **commas**
+  (`trailing`, `leading`). `=` is the keymap's.
+
+### What they do
+
+- **Format** writes reserved words in the case set: upper, lower, or as
+  typed (Keep); the words it would uppercase today are the ones it
+  lowercases. Names, strings and comments never change, and Format stays
+  one undo step. The formatter takes a `Style` (`tabletist_db::sql::format`:
+  case, commas, a `CASE`'s indent); `format` keeps today's style for
+  other callers.
+- **Leading commas** stand on the river's edge, one column left of the
+  list's items: `SELECT a` then `     , b`. Only the lists Format breaks
+  (a `SELECT`'s and a `WITH`'s); a comma with a comment after it, on its
+  line or the next, stays at the end of its line, so the comment stays
+  where it was.
+- **Indent** sets how far a `CASE`'s `WHEN` and `ELSE` stand in from it:
+  two spaces or four; four for Tab, since the river is set in spaces.
+  Today it is four whatever is set.
+- **Tab** in the editor puts in an indent at the cursor (replacing no
+  selection); with text selected, at the start of every line the
+  selection touches but blank ones, and the selection covers the same
+  text after (one that starts at a line's start grows to take in its new
+  indent), its moving end kept. **Shift+Tab** takes one indent (a tab, or up to an indent's
+  width of spaces) off the cursor's line or every selected line. Each is
+  one undo step. Tab still accepts an open completion first. Both are
+  keymap commands (`IndentLines`, `OutdentLines`), which the editor reads
+  itself before its field does: a Tab with nothing selected becomes the
+  indent's text in its place among the frame's events, so a Tab and text
+  typed in one frame keep their order.
+- **Completion** offers keywords in the case set, upper case with Keep,
+  whatever case was typed.
+
+### Departures, for a yes
+
+| Asked, or today | Built | Why |
+|---|---|---|
+| Today: Format sets a `CASE`'s parts four in | Two in by default (the indent's default) | "Reformats … with … the indent from Typing" |
+| Omarchy today: Format uppercases | Lowercase until set: the look's default | The board's lowercase default |
+| Today: completion follows the case typed (`sel` gives `select`) | The case set, whatever is typed | "Keywords are inserted in the chosen keyword case" |
+| egui today: Tab replaces a selection with a tab character; Shift+Tab takes a tab or four spaces off the cursor's line | An indent on every line touched; Shift+Tab one indent off each | What an editor's Tab does over a selection; the prompt says only "indent" |
+| Indent Tab in Format | Four spaces | A tab cannot keep the river's columns |
+| "Each one undo step" | A Tab at the cursor is typed text, and undoes with what is typed beside it, as text does; a line edit (a selection's Tab, Shift+Tab) is one step | Typed in its place among the frame's events, it keeps its order with the text around it |
+| (where a leading comma goes) | On the river's edge, one column left of the list's items, only in a `SELECT`'s and a `WITH`'s list | No board draws leading commas |
+| Omarchy board: "format · = in normal mode" | The same words, `=` from the keymap, read with the keyboard out of the text | Normal mode is the keyboard out of the text until vim (step 7) |
+| (the in-app shortcuts sheet) | Indent and Outdent are not listed there; the website lists Tab and Shift+Tab | The sheet's rows are the Keyboard board's |
+
+### Tests (headless)
+
+1. Format writes each case and each comma side, keeps names, strings and
+   comments, sets a `CASE`'s parts in by the indent, and is one undo.
+2. Random scripts keep their tokens and hold on a second pass in every
+   style (the formatter's own test, run in each of the twelve).
+3. Tab puts in 2, 4 spaces or a tab; over a selection it indents each
+   line and keeps the selection; Shift+Tab takes one off; each is an undo
+   step; Tab still accepts an open completion.
+4. Completion inserts keywords in each case.
+5. The rows set the keys in both looks; the headings name the Format key.
+
 ## Out of scope
 
 - The other Settings tabs.
