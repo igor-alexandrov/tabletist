@@ -46,7 +46,8 @@ fn comment_cell(
     look: &Look,
     palette: &Palette,
 ) -> Option<Rect> {
-    let Some(comment) = comment else {
+    // One of only spaces says nothing, as on the grid's header.
+    let Some(comment) = comment.filter(|comment| !comment.trim().is_empty()) else {
         cell(ui, "", false, look, palette);
         return None;
     };
