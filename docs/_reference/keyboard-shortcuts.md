@@ -130,6 +130,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Shift+Return | Run all |
 | Mod+. | Cancel the run |
 | Mod+Shift+F | Format |
+| Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Mod+Shift+M | Switch between read-only and read-write runs |
 | Ctrl+Space, Mod+I | Complete |
 | Up, Down | Move in the completion list |

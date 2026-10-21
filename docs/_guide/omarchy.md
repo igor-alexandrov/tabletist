@@ -267,6 +267,7 @@ A save can ask you something first. Each question has its own keys:
 | Ctrl+C | Cancel the run, while one runs. With none running it copies |
 | Esc | Leave the editor: the letters below are read from then on |
 | `=` | Format, with the keyboard out of the text |
+| Tab, Shift+Tab | Indent, outdent, in the text: at the cursor, or every line of the selection |
 | `:ro`, `:rw` | Read-only and read-write runs, with the keyboard out of the text |
 | Ctrl+Space | Complete |
 

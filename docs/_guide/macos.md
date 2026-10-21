@@ -198,6 +198,7 @@ column's line, or come to them with Tab or F6.
 | Cmd+Shift+Return | Run all |
 | Cmd+. | Cancel the run |
 | Cmd+Shift+F | Format |
+| Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Cmd+Shift+M | Switch between read-only and read-write runs |
 | Cmd+I, Ctrl+Space | Complete |
 
