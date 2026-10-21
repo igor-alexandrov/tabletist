@@ -1236,6 +1236,8 @@ pub fn show<'a>(
             }
             rect
         };
+        // Each header's rect, for its resize handle.
+        let mut edges = Vec::with_capacity(order.len());
         for &col in &order {
             let column = &columns[col];
             let left = origin.x + gutter + lefts[col];
@@ -1296,10 +1298,23 @@ pub fn show<'a>(
                     let _ = response.on_hover_text(for_display(comment));
                 }
             }
-            let handle = Rect::from_min_max(
-                pos2(rect.right() - HANDLE_WIDTH / 2.0, top),
-                pos2(rect.right() + HANDLE_WIDTH / 2.0, top + header_height),
+            edges.push((col, rect));
+        }
+        // The handles straddle the headers' edges, so they come after
+        // every header: over the next one's left side, a drag-only handle
+        // on top keeps the pointer from hovering or clicking that header.
+        for (col, rect) in edges {
+            let handle = past_lead(
+                col,
+                Rect::from_min_max(
+                    pos2(rect.right() - HANDLE_WIDTH / 2.0, top),
+                    pos2(rect.right() + HANDLE_WIDTH / 2.0, top + header_height),
+                ),
             );
+            // A column wholly under the pinned one has no edge to drag.
+            if !handle.is_positive() {
+                continue;
+            }
             // Only the pointer drags it: no stop for the Tab key.
             let drag = ui.interact(handle, id.with(("resize", col)), Sense::DRAG);
             if drag.hovered() || drag.dragged() {
@@ -3468,6 +3483,61 @@ mod tests {
         let row = crate::testing::node(&tree, "Row 3", Role::Button).expect("row 3");
         let (output, _) = frame(&ctx, 10, vec![click(row)]);
         assert_eq!(output.clicked, Some(CellPos { row: 2, col: 0 }));
+    }
+
+    #[test]
+    fn past_a_columns_edge_the_pointer_resizes_it_and_leaves_the_next_header_be() {
+        let ctx = egui::Context::default();
+        let look = crate::theme::Look::standard();
+        crate::theme::install(&ctx, false, &look);
+        ctx.enable_accesskit();
+        // No key column: nothing is pinned, so the second header comes
+        // after the first.
+        let mut columns = columns_that(true);
+        columns[0].key = false;
+        frame_of(&ctx, &columns, 10, vec![]);
+        frame_of(&ctx, &columns, 10, vec![]);
+        let widths_id = egui::Id::new("grid").with(("widths", 2_usize));
+        let widths = |ctx: &egui::Context| -> Vec<f32> {
+            ctx.data(|data| data.get_temp(widths_id))
+                .expect("the widths")
+        };
+        let before = widths(&ctx)[0];
+        // A point right of the first column's edge, inside its handle.
+        let pos = egui::pos2(before + 1.0, header_height(&look) / 2.0);
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_of(&ctx, &columns, 10, vec![egui::Event::PointerMoved(pos)]);
+        frame_of(&ctx, &columns, 10, vec![]);
+        let header = ctx
+            .read_response(egui::Id::new("grid").with(("header", 1_usize)))
+            .expect("the second header");
+        assert!(!header.hovered(), "the handle is over the header");
+        // A click there sorts nothing.
+        frame_of(&ctx, &columns, 10, vec![press(pos, true)]);
+        let (up, _) = frame_of(&ctx, &columns, 10, vec![press(pos, false)]);
+        assert_eq!(up.sort_clicked, None);
+        assert_eq!(widths(&ctx)[0], before);
+        // A drag from there resizes the first column.
+        let to = pos + egui::vec2(20.0, 0.0);
+        frame_of(&ctx, &columns, 10, vec![press(pos, true)]);
+        let mut sorted = None;
+        for x in [5.0, 10.0, 15.0, 20.0] {
+            let (output, _) = frame_of(
+                &ctx,
+                &columns,
+                10,
+                vec![egui::Event::PointerMoved(pos + egui::vec2(x, 0.0))],
+            );
+            sorted = sorted.or(output.sort_clicked);
+        }
+        let (up, _) = frame_of(&ctx, &columns, 10, vec![press(to, false)]);
+        assert_eq!(sorted.or(up.sort_clicked), None);
+        assert_eq!(widths(&ctx)[0], before + 20.0);
     }
 
     #[test]
