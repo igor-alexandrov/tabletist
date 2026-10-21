@@ -13,6 +13,8 @@ pub struct Harness {
     pub size: egui::Vec2,
     /// The last text a frame put on the clipboard.
     pub copied: Option<String>,
+    /// The last address a frame asked the browser to open.
+    pub opened: Option<String>,
     /// Physical pixels per point (2.0 is a Retina Mac).
     pub scale: f32,
     /// Window commands the last frame sent (move, zoom...).
@@ -118,8 +120,10 @@ impl Harness {
             self.last = Some(output.clone());
         }
         for command in &output.platform_output.commands {
-            if let egui::OutputCommand::CopyText(text) = command {
-                self.copied = Some(text.clone());
+            match command {
+                egui::OutputCommand::CopyText(text) => self.copied = Some(text.clone()),
+                egui::OutputCommand::OpenUrl(open) => self.opened = Some(open.url.clone()),
+                egui::OutputCommand::CopyImage(_) => {}
             }
         }
         output
@@ -1596,6 +1600,7 @@ impl Harness {
             ctx,
             size,
             copied: None,
+            opened: None,
             scale: 1.0,
             viewport_commands: Vec::new(),
             fullscreen: false,

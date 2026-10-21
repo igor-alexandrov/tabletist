@@ -47,8 +47,10 @@ log = "0.4"
 directories = "6"
 # The whole UI. glow keeps the binary and dependency tree small; a 2D table
 # browser does not need wgpu. AccessKit exposes controls to screen readers and
-# to the headless tests.
-eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
+# to the headless tests. `links` opens the About dialog's link to the source
+# in the browser, through webbrowser: the one crate it adds, since its own
+# (url, log, objc2) are in the tree already.
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "persistence", "wayland", "x11"] }
 egui = "0.36"
 # Checks that a font read from the system parses before egui loads it (egui
 # panics on a font it cannot read): the desktop's monospace on Linux, an
