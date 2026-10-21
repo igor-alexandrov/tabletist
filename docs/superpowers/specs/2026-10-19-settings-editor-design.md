@@ -367,6 +367,107 @@ Date: 2026-10-21. Step 3 is merged (#204).
 5. The rows in both looks, in order, with their defaults, setting the
    keys.
 
+## Step 5: Writes without WHERE
+
+Date: 2026-10-21. Step 4 is merged (#210).
+
+### The row
+
+**Confirm UPDATE or DELETE without WHERE**, a switch, on by default,
+last in Running queries in both looks, as both boards draw it: "On every
+connection that allows writes" on macOS, `[x]` and "connections that allow
+writes" on Omarchy. Its words are step 1's, there already.
+
+### What it does
+
+- **Which runs ask.** A run sent to write (a tab in Read-write, a
+  statement that writes) holding a statement that reaches every row of a
+  table:
+  - an `UPDATE` or a `DELETE` with nothing of its own to bound it: no
+    `WHERE`, no `LIMIT` (MySQL's, SQLite's), no join condition (`ON`, in
+    MySQL's statements of several tables). What stands in a subquery does
+    not count; a `WITH` and an `EXPLAIN ANALYZE` in front are looked
+    through, and a `WITH`'s own `UPDATE` or `DELETE`
+    (`WITH d AS (DELETE FROM books RETURNING *) SELECT ...`) is asked
+    about too. While the row is on;
+  - a `TRUNCATE`, on PostgreSQL and MySQL, whatever the row says: it has
+    no `WHERE` to leave out. SQLite has no `TRUNCATE`.
+- Never a run that only reads, and so never one of a tab in Read-only:
+  the database refuses its write, and the card offers to run it again,
+  which asks then. Run without timeout asks again too: each is a run of
+  its own.
+- **The parse.** `sql::every_row` reads the verb and the tables after it
+  off the statement's tokens: `UPDATE ONLY books b`, MySQL's
+  `DELETE LOW_PRIORITY ... FROM` and its lists of several tables (named
+  by alias, read as the tables the aliases stand for), SQLite's
+  `UPDATE OR REPLACE`, `TRUNCATE TABLE a, ONLY b`, quoted names, a schema
+  (of a name in three parts, the last two). Each table once. What it
+  cannot read leaves the tables out, and the question still asks.
+- **The estimate** is what the sidebar has of each table: PostgreSQL's
+  `reltuples`, MySQL's `TABLE_ROWS`, as the catalog read them (0 counts as
+  none), summed where every table has one. A name is looked up as
+  completion looks one up, as each engine reads it: on PostgreSQL a name
+  not quoted in lower case, and either exactly; on MySQL and SQLite
+  whatever its case. Nothing is asked of the server before the question:
+  where the sidebar has no count (SQLite keeps none, a schema not loaded)
+  the question says no number.
+- **macOS and Windows**, the Components board's Dialog: "Update every row
+  in book_covers?" (Delete…, "Truncate book_covers?"), then "Line 3 has no
+  WHERE. About 1,200 rows, by the database's statistics." Several
+  statements: "Run 2 statements that change every row?" and a line each.
+  **Cancel** and **Run anyway** (danger). Esc cancels; Enter answers as
+  the button that has the keyboard, and cancels from anywhere else.
+- **Omarchy**, the Components board's confirm prompt, which "replaces the
+  status line": `update every row in book_covers? about 1,200 rows · line
+  3  [y] yes  [N] no`, over a red rule. `y` (or `Y`) runs; `n` (or `N`),
+  Enter and Esc cancel; each hint is its button for the pointer.
+- Nothing is sent before the answer, and nothing else runs while the
+  question is open. Run anyway sends the run as it was asked, in the mode
+  Run gives it then, and nothing where the tab is on another database by
+  then. After either answer the keyboard goes back into the editor's text
+  where it was there when the question came, and stays out of it
+  otherwise (Omarchy's keys out of the text).
+- A production tab cannot write yet (no SQL run there is confirmed), so
+  the question never meets the production confirmation. When that is
+  built it carries these lines, one question and not two, as the writes
+  spec of 2026-10-05 has it.
+
+### Departures, for a yes
+
+| Asked, or drawn | Built | Why |
+|---|---|---|
+| "`TRUNCATE` always asks" | Asks with the row off too, on PostgreSQL and MySQL | The row names UPDATE and DELETE; "always" read as whatever it says. The other reading: TRUNCATE follows the row |
+| "with the row estimate from the database's statistics" | The sidebar's count, no query before the question; no number where it has none (SQLite, a schema not loaded) | The catalog's count is that estimate; asking the server first would put a round trip, and a failure, before the question |
+| "without WHERE" | A `LIMIT` or a join's `ON` of its own counts as a `WHERE`; a `WITH`'s own `UPDATE` or `DELETE` is asked about | `DELETE FROM logs LIMIT 1000` and a join reach some rows, not every row; a `WITH`'s `DELETE` reaches them all |
+| The writes spec (2026-10-05): "`TRUNCATE` is not asked about"; "This UPDATE has no WHERE" | It asks; the question names the table, as this spec's "Update every row in book_covers?" | This spec is newer |
+| (the words the boards do not draw) | "Line 3 has no WHERE." / "takes out every row." (TRUNCATE); "Update every row of its table?" where no table can be read; "Run 2 statements that change every row?" with a line each, Omarchy's `lines 1, 3`; a TRUNCATE's tables' rows summed, only where each has a count | Only the one question is drawn |
+| Omarchy: the question in the status line | A dialog drawn over the status line, transparent around it | The keyboard leaves the editor, as for every other question, so `y` and `n` type nothing |
+| Omarchy `[N]` (the default) | `n`, `N`, Enter and Esc say no; `y` and `Y` yes | The design's capital marks the answer Enter gives; elsewhere a capital is Shift, so both cases answer |
+| macOS: Cancel / Run anyway | Enter cancels unless Run anyway has the keyboard | Nothing that writes to every row is the default |
+| (several statements) | One question, a line each | One answer for one run |
+| (the card's Run again, Run without timeout) | Ask again | Each is a new run that writes |
+
+### Tests (headless)
+
+1. `sql::every_row`: each verb and dialect, the words before a table,
+   `ONLY` before each, quotes, a schema, three parts, several tables and
+   their aliases, a `WITH`'s `DELETE` and `UPDATE`, each table once,
+   unreadable text; bounded statements (`WHERE`, `LIMIT`, `ON`) and reads
+   are none; SQLite's `TRUNCATE` is none.
+2. An `UPDATE` without `WHERE` asks on macOS and Windows, sends nothing,
+   then Run anyway sends it to write and the editor has the keyboard;
+   Cancel, Esc and Enter send nothing; a modified Enter answers nothing;
+   the keyboard goes back only where it was.
+3. A bounded write, a read and a tab in Read-only never ask; a table the
+   sidebar does not know is asked about with no number; several
+   statements in one question; off, `UPDATE` and `DELETE` run and
+   `TRUNCATE` asks; the card's run and Run without timeout ask; nothing
+   else runs under the question, and Run anyway sends nothing on another
+   database; PostgreSQL's names looked up as it folds them.
+4. Omarchy: the question in the status line's place; `n`, `N`, Enter and
+   Esc cancel and type nothing; `y` runs.
+5. The row in both looks, last in Running queries, setting the key.
+
 ## Out of scope
 
 - The other Settings tabs.
