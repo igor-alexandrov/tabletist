@@ -1213,7 +1213,17 @@ fn the_list_is_a_table_of_rows_by_day_and_the_pane_a_region() {
         Source::Filter,
         Some("SELECT * FROM publishers"),
     );
-    yesterday.at_ms -= 26 * 3_600_000;
+    // Noon of yesterday on this computer's clock: a day back from now can
+    // be two calendar days back just after midnight.
+    let zone = jiff::tz::TimeZone::system();
+    let today = jiff::Zoned::now().with_time_zone(zone.clone()).date();
+    let noon = today
+        .yesterday()
+        .unwrap()
+        .at(12, 0, 0, 0)
+        .to_zoned(zone)
+        .unwrap();
+    yesterday.at_ms = noon.timestamp().as_millisecond();
     let today = entry(&harness, tab, Source::Sql, Some(READ));
     shown_with(&mut harness, tab, vec![today, yesterday]);
     select(&mut harness, tab, 0);
