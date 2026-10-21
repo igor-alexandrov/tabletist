@@ -303,6 +303,70 @@ history of #197 has since built most of step 6.
 4. Completion inserts keywords in each case.
 5. The rows set the keys in both looks; the headings name the Format key.
 
+## Step 4: Close brackets and quotes, and Wrap
+
+Date: 2026-10-21. Step 3 is merged (#204).
+
+### The rows
+
+- macOS, Typing, in the board's order: Indent, Autocomplete, **Close
+  brackets and quotes** (a switch), Line numbers, Current line highlight,
+  **Wrap** (a switch). The board draws the last three as one row of
+  switches; a row each, as step 1 has it.
+- Omarchy, typing: line numbers, indent, autocomplete, **close brackets**
+  `[x]`, **wrap** `[ ]`, as its board.
+
+### What they do
+
+- **Close brackets and quotes**, on by default:
+  - `(`, `[`, `{`, `'`, `"` (and `` ` `` on MySQL and SQLite, where it
+    quotes names) get their closing one after the cursor, the cursor
+    between, where what follows is nothing, whitespace, a closing bracket,
+    `,` or `;`. Brackets pair inside strings and comments too.
+  - A quote is not paired inside a word (`it's`), right after the same
+    quote (`''` escapes one), or inside a string, a quoted name or a comment, as
+    the dialect's tokenizer reads them (dollar quotes, `#` on MySQL, a
+    line comment with lines under it, one left open at the end). A
+    prefixed string (`E'`, `N'`, `X'`) is not paired: its quote follows a
+    letter.
+  - A quote steps over its twin only where it closes the literal the
+    cursor is in; Backspace takes an escaped `''` one at a time.
+  - A closing one typed with its twin right after the cursor steps over
+    it.
+  - Backspace between an empty pair takes both out.
+  - Typed over a selection, a bracket or a quote goes round it, which
+    stays selected; one step of the undo history.
+  - The rest is the field's own typing (the pair typed, the caret moved
+    back, the twin stepped over, the second one deleted), so it undoes as
+    typing does. Only in a frame of one edit, typed: a paste, an input
+    method's text (one character too) and two characters in one frame go
+    in as they come.
+- **Wrap**, off by default: a long line wraps at the editor's width, which
+  then scrolls down alone. The gutter numbers a line on its first row; the
+  statement's bar and the cursor's line take in every row of their lines.
+  A press on the gutter beside a row a line wraps to puts the cursor at
+  the line's start, and the completion list hangs under a word that starts
+  a wrapped row. A change applies at once and leaves the keyboard where it
+  is.
+
+### Tests (headless)
+
+1. A bracket gets its closing one and the closing one steps over; the
+   window's event shape (a key's press with its character) is paired; a
+   paste and an input method's text are not.
+2. A quote pairs where a string starts and not in a word, after a quote,
+   or in a string or comment; a backtick only on MySQL and SQLite.
+3. Backspace between an empty pair, and one quote of an escaped `''`; a
+   bracket over a selection, made either way, keeps it selected and
+   undoes in one step; off types it alone; Omarchy's insert mode pairs
+   and normal mode types nothing.
+4. Wrap: two lines numbered once each with the first wrapped to rows (a
+   trailing line break and an empty script numbered too); the bar and the
+   cursor's line as tall as the wrapped line; the keyboard stays; a press
+   beside a wrapped row; the completion list under a word starting a row.
+5. The rows in both looks, in order, with their defaults, setting the
+   keys.
+
 ## Out of scope
 
 - The other Settings tabs.
