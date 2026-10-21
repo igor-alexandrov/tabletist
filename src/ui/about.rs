@@ -1,4 +1,5 @@
-//! The About dialog: the icon, the version, and where the project lives.
+//! The About dialog: the icon, the version, and a link to where the project
+//! lives.
 
 use egui::{Sense, WidgetInfo, WidgetType, pos2, vec2};
 
@@ -91,10 +92,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui,
                 Text::one(&look, widgets::body(&look), &about, palette.text),
             );
-            ui.add_space(12.0);
-            let repository = Text::one(&look, widgets::code(&look), repository(), palette.text);
-            ui.add(egui::Label::new(repository.layout(ui.ctx()).galley).selectable(true));
-            ui.add_space(4.0);
+            ui.add_space(8.0);
+            // The source code, opened in the browser.
+            let source = widgets::ButtonSpec::new(repository())
+                .link()
+                .role(widgets::code(&look))
+                .padding(6.0);
+            if source.show(ui, 24.0, &look, &palette).clicked() {
+                ui.ctx()
+                    .open_url(egui::OpenUrl::new_tab(env!("CARGO_PKG_REPOSITORY")));
+            }
             let license = format!(
                 "{COPYRIGHT} · {} {}",
                 env!("CARGO_PKG_LICENSE"),
@@ -282,6 +289,21 @@ mod tests {
         harness.app.apply(Action::ShowAbout);
         harness.settle();
         assert!(!shown(&harness, "SIL OPEN FONT LICENSE"));
+    }
+
+    #[test]
+    fn the_repository_opens_in_the_browser() {
+        let mut harness = Harness::new();
+        open(&mut harness);
+        harness.click("github.com/igor-alexandrov/tabletist");
+        assert_eq!(
+            harness.opened.as_deref(),
+            Some("https://github.com/igor-alexandrov/tabletist")
+        );
+        assert!(
+            matches!(harness.app.dialog, Some(Dialog::About)),
+            "About stays open"
+        );
     }
 
     #[test]
