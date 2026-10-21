@@ -2642,12 +2642,10 @@ fn letters(
         "[" | "]" if bracket_waits => Typed::Waiting,
         _ => as_written(waiting),
     };
-    // The step of a bracket that waited, when the key after it (`waiting`
-    // holds both) is no key of the bracket's.
+    // The step of a bracket that waited (`waiting` begins with it), when
+    // the key after it is no key of the bracket's.
     let bracket_step = |waiting: &str| {
-        let bracket = waiting
-            .get(..1)
-            .filter(|_| bracket_waits && waiting.len() > 1)?;
+        let bracket = waiting.get(..1).filter(|_| bracket_waits)?;
         match as_written(bracket) {
             Typed::Command(command @ (Command::PreviousRow | Command::NextRow)) => Some(command),
             _ => None,
@@ -2659,6 +2657,19 @@ fn letters(
         .data(|data| data.get_temp(typed_id()))
         .unwrap_or_default();
     if typed.is_empty() {
+        // A bracket that waited steps the row after all.
+        if let Some(command) = bracket_step(&waiting)
+            && let Some(id) = active.or(sql_grid)
+        {
+            let rows = if command == Command::NextRow { 1 } else { -1 };
+            let cols = 0;
+            actions.push(Action::MoveSelection {
+                tab,
+                id,
+                rows,
+                cols,
+            });
+        }
         waiting.clear();
     }
     // Whether the frame brings nothing but letters that edit, the colon
@@ -2780,9 +2791,13 @@ fn letters(
         waiting.push(char);
         let (command, count) = match read(&waiting) {
             // A bracket that waited, and a key after it that is none of
-            // its keys: the bracket steps the row, and the key is read
-            // again on its own.
-            Typed::Nothing if let Some(step) = bracket_step(&waiting) => {
+            // its keys, or the key of something not built yet (`]c`):
+            // the bracket steps the row, and the key is read again on its
+            // own.
+            Typed::Nothing | Typed::Claimed
+                if waiting.len() > 1
+                    && let Some(step) = bracket_step(&waiting) =>
+            {
                 typed.push_front(char);
                 waiting.clear();
                 (Some(step), None)

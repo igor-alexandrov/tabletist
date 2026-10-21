@@ -321,3 +321,26 @@ fn with_the_row_panel_shown_a_bracket_waits_only_where_an_error_is() {
     type_key(&mut harness, Key::K, "k");
     assert_eq!(selected(&harness, tab, id), Some((0, 1)));
 }
+
+#[test]
+fn a_bracket_that_waited_steps_the_row_before_a_key_that_types_nothing() {
+    // An arrow: the bracket steps the row, and the arrow moves on from it.
+    let (mut harness, tab, id) = two_rows_to_fix(Look::omarchy());
+    select(&mut harness, tab, id, (0, 1));
+    type_key(&mut harness, Key::CloseBracket, "]");
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.settle();
+    assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+    // The key of the changes, not built yet: the bracket steps the row too.
+    select(&mut harness, tab, id, (0, 1));
+    type_key(&mut harness, Key::CloseBracket, "]");
+    type_key(&mut harness, Key::C, "c");
+    assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+    // Esc: the bracket steps the row.
+    let (mut harness, tab, id) = two_rows_to_fix(Look::omarchy());
+    select(&mut harness, tab, id, (1, 1));
+    type_key(&mut harness, Key::OpenBracket, "[");
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.settle();
+    assert_eq!(selected(&harness, tab, id), Some((0, 1)));
+}
