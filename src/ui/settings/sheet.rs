@@ -186,7 +186,7 @@ pub(super) fn show(
             // The footer's height before the content's: a window too short
             // for the sheet takes from the rows, which scroll, and the
             // footer stays.
-            let ignored = ignored_lines(ui, app.settings_file.invalid.len(), pane.width(), &skin);
+            let ignored = ignored_lines(ui, &app.settings_file.invalid, pane.width(), &skin);
             let foot = footer_height(ui, ignored.as_ref(), &skin);
             let limit = room.top() + height - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
@@ -240,6 +240,14 @@ pub(super) fn show(
                     &skin,
                     actions,
                 ),
+                SettingsPane::Keyboard => super::keyboard_sheet::content(
+                    &mut pane,
+                    app,
+                    &dialog.keyboard,
+                    limit,
+                    &skin,
+                    actions,
+                ),
                 SettingsPane::Agents => {
                     super::agents::content(&mut pane, app, dialog.agent, limit, &skin, actions);
                 }
@@ -287,6 +295,8 @@ pub(super) fn show(
     {
         actions.push(if resetting {
             Action::ConfirmResetSettings(false)
+        } else if dialog.keyboard.resetting {
+            Action::AskResetAllKeys(false)
         } else {
             Action::CloseDialog
         });
@@ -1608,7 +1618,8 @@ fn reveal_words() -> &'static str {
 
 /// What the footer says while the app ignores `count` lines of the file,
 /// wrapped at `width`.
-fn ignored_lines(ui: &Ui, count: usize, width: f32, skin: &Skin) -> Option<Laid> {
+fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<Laid> {
+    let count = ignored.len();
     if count == 0 {
         return None;
     }
@@ -1619,9 +1630,25 @@ fn ignored_lines(ui: &Ui, count: usize, width: f32, skin: &Skin) -> Option<Laid>
         "lines in the file could not be read and were ignored",
         lines,
     );
-    let said = format!("{count} {said}");
+    let said = format!("{count} {said}: {}", line_numbers(skin.locale, ignored));
     let text = Text::one(skin.look, TextRole::Secondary, &said, skin.palette.warning);
     Some(text.wrap(width).layout(ui.ctx()))
+}
+
+/// The numbers of the lines that were ignored, as the footer names them:
+/// the first ten, and how many more.
+fn line_numbers(locale: crate::i18n::Locale, ignored: &[usize]) -> String {
+    const NAMED: usize = 10;
+    let lines = u32::try_from(ignored.len()).unwrap_or(u32::MAX);
+    let mut numbers: Vec<String> = ignored
+        .iter()
+        .take(NAMED)
+        .map(ToString::to_string)
+        .collect();
+    if ignored.len() > NAMED {
+        numbers.push("…".to_owned());
+    }
+    ngettext(locale, "line {lines}", "lines {lines}", lines).replace("{lines}", &numbers.join(", "))
 }
 
 /// How tall the footer is: its rule, and its line between its padding,
@@ -1637,7 +1664,9 @@ fn reset_question(pane: SettingsPane) -> &'static str {
     match pane {
         SettingsPane::General => "Reset all General settings to their defaults?",
         SettingsPane::Editor => "Reset all Editor settings to their defaults?",
-        SettingsPane::Appearance | SettingsPane::Agents => "Reset every option on this tab?",
+        SettingsPane::Appearance | SettingsPane::Keyboard | SettingsPane::Agents => {
+            "Reset every option on this tab?"
+        }
     }
 }
 
@@ -1688,6 +1717,10 @@ fn footer(
         Some(crate::model::Dialog::Settings(dialog)) => (dialog.history_question, dialog.pane),
         _ => (None, SettingsPane::General),
     };
+    if shown_pane == SettingsPane::Keyboard {
+        keyboard_footer(ui, (left, right, middle), app, skin, actions);
+        return;
+    }
     // The right side first: what it leaves is the path's.
     let parts = if let Some(pane) = asking {
         vec![
@@ -1808,6 +1841,119 @@ fn footer(
         let place = Rect::from_center_size(pos2(at + width / 2.0, middle), vec2(width, LINK));
         widgets::announce(ui, place, &path);
     }
+}
+
+/// The Keyboard pane's footer: where the editor's vim keys are set, with a
+/// link there, and Export cheat sheet; while Reset all… asks, its question
+/// and its answers. `(left, right, middle)` is the line it has.
+fn keyboard_footer(
+    ui: &Ui,
+    (left, right, middle): (f32, f32, f32),
+    app: &App,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let role = TextRole::Secondary;
+    let resetting = match &app.dialog {
+        Some(crate::model::Dialog::Settings(dialog)) => dialog.keyboard.resetting,
+        _ => false,
+    };
+    let changed = super::keyboard::changed_count(app);
+    let parts: Vec<(String, Option<(egui::Color32, Action)>)> = if resetting {
+        let lines = u32::try_from(changed).unwrap_or(u32::MAX);
+        let asks = ngettext(
+            skin.locale,
+            "Reset all keyboard shortcuts? Your {n} change will be removed.",
+            "Reset all keyboard shortcuts? Your {n} changes will be removed.",
+            lines,
+        )
+        .replace("{n}", &changed.to_string());
+        vec![
+            (asks, None),
+            (
+                skin.say("Reset all"),
+                Some((palette.danger, Action::ResetAllKeys)),
+            ),
+            (
+                skin.say("Cancel"),
+                Some((palette.accent, Action::AskResetAllKeys(false))),
+            ),
+        ]
+    } else {
+        vec![(
+            skin.say("Export cheat sheet"),
+            Some((palette.accent, Action::ExportCheatSheet)),
+        )]
+    };
+    let widths: Vec<f32> = parts
+        .iter()
+        .map(|(text, _)| role.width(ui.ctx(), look.faces, text).ceil())
+        .collect();
+    let taken = widths.iter().sum::<f32>() + FOOT_GAP * (parts.len() - 1) as f32;
+    let first = right - taken;
+    let mut x = first;
+    for (index, ((text, linked), width)) in parts.into_iter().zip(widths).enumerate() {
+        match linked {
+            None => {
+                widgets::paint_label(ui, x, middle, Text::one(look, role, &text, palette.text));
+            }
+            Some((color, action)) => {
+                let id = ui.id().with(("keyboard-link", index));
+                let link = link(ui, id, pos2(x, middle), width, &text, color, skin);
+                if resetting && index == 2 && !link.has_focus() {
+                    let asked = ui.id().with("keyboard-asked");
+                    let once = ui.data(|data| data.get_temp::<bool>(asked)).is_none();
+                    if once {
+                        ui.data_mut(|data| data.insert_temp(asked, true));
+                        link.request_focus();
+                    }
+                }
+                if pressed(ui, &link) {
+                    actions.push(action);
+                }
+            }
+        }
+        x += width + FOOT_GAP;
+    }
+    if !resetting {
+        ui.data_mut(|data| data.remove_temp::<bool>(ui.id().with("keyboard-asked")));
+    }
+    if resetting {
+        return;
+    }
+    // Where the editor's vim keys are set, the place named a link there.
+    let before = skin.say("Vim keys for the SQL editor are set in");
+    let place = skin.say("Editor · Keybindings");
+    let laid = Text::one(look, role, &before, palette.secondary).layout(ui.ctx());
+    if left + laid.width() > first - FOOT_GAP {
+        return;
+    }
+    write(ui, left, middle, &laid);
+    let at = left + laid.width() + WORD_GAP;
+    let width = role.width(ui.ctx(), look.faces, &place).ceil();
+    if at + width > first - FOOT_GAP {
+        return;
+    }
+    let id = ui.id().with("keyboard-editor-keys");
+    let to_editor = link(
+        ui,
+        id,
+        pos2(at, middle),
+        width,
+        &place,
+        palette.accent,
+        skin,
+    );
+    if pressed(ui, &to_editor) {
+        actions.push(Action::ShowSetting(OptionId::EditorKeys));
+    }
+    widgets::paint_text(
+        ui,
+        at + width,
+        middle,
+        Text::one(look, role, ".", palette.secondary),
+    );
 }
 
 /// A link of the footer: `text`, `width` wide from `at` on its middle, in

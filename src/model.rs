@@ -965,6 +965,51 @@ pub enum Action {
     ResetSettings,
     /// The answer: put them back, or leave them.
     ConfirmResetSettings(bool),
+    /// The Keyboard pane's search: what its field holds (macOS, Windows)
+    /// or what the `/` line filters by (Omarchy).
+    KeyboardSearch(String),
+    /// List the rows a key is a key of, in every scope; none lists them
+    /// all again.
+    KeyboardFind(Option<&'static str>),
+    /// List the changed rows alone (`true`), or every row.
+    KeyboardChanged(bool),
+    /// Put the Omarchy pane's cursor on this row.
+    KeyboardCursor(crate::keymap::Row),
+    /// Give the Omarchy pane's `/` line the keys, or take them from it.
+    KeyboardFiltering(bool),
+    /// Record a key for a row, or one to find the rows by.
+    RecordKeys(Recorded),
+    /// Stop recording, and keep the keys as they were.
+    StopRecording,
+    /// A character typed while recording on Omarchy (a key of several,
+    /// or a line of the prompt), at this time of the frame's input.
+    RecordTyped {
+        char: char,
+        at: f64,
+    },
+    /// Backspace while recording on Omarchy: the last character back.
+    RecordBack,
+    /// The keys recorded: given to the row, or refused with why.
+    RecordPress(&'static str),
+    /// A key Omarchy never binds was pressed while recording.
+    RecordNever(crate::keymap::Never),
+    /// Unbind a row: none of its keys does anything.
+    UnbindRow(crate::keymap::Row),
+    /// Put a row's keys back to its defaults.
+    ResetRow(crate::keymap::Row),
+    /// Give the recorded key to its row and the row that had it this
+    /// row's old keys, as the refusal offers.
+    SwapKeys,
+    /// Ask whether to reset every key (`true`), or leave it.
+    AskResetAllKeys(bool),
+    /// Every key back to the keymap's own: the keys' tables taken out of
+    /// the file.
+    ResetAllKeys,
+    /// Save the cheat sheet of the keys where the person says.
+    ExportCheatSheet,
+    /// Open the full list of the keys, commented, in the editor: a file of
+    /// its own, never the settings.
+    KeysDefault,
     /// Open quick open for the active connection tab, its scope that
     /// connection. While it is open, select what its field holds.
     OpenQuickOpen,
@@ -2721,6 +2766,70 @@ pub struct SettingsDialog {
     /// keyboard: once, by the sheet's next frame, which says so
     /// ([`Action::SettingShown`]).
     pub reveal: bool,
+    /// The Keyboard pane's.
+    pub keyboard: KeyboardPage,
+}
+
+/// What the Keyboard pane lists, and what it records.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyboardPage {
+    /// The search's text: the field's (macOS, Windows), or the `/` line's
+    /// (Omarchy). It filters by the command's name and its group's.
+    pub search: String,
+    /// A key pressed to find the rows bound to it, in every scope.
+    pub found: Option<&'static str>,
+    /// The changed rows alone.
+    pub changed_only: bool,
+    /// The Omarchy cursor's row. None: the first row listed.
+    pub cursor: Option<crate::keymap::Row>,
+    /// The Omarchy `/` line has the keys.
+    pub filtering: bool,
+    /// What is being recorded, if anything is.
+    pub recording: Option<Recording>,
+    /// Reset all… waits for its answer.
+    pub resetting: bool,
+}
+
+/// What a recording is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recorded {
+    /// A row's new key.
+    Row(crate::keymap::Row),
+    /// A key to find the rows by (Omarchy's `?`).
+    Find,
+}
+
+/// A recording under way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recording {
+    pub of: Recorded,
+    /// The characters typed so far, on Omarchy: a key of several (`gd`)
+    /// or a line of the prompt (`:w`).
+    pub typed: String,
+    /// When the last of them was typed, in the input's seconds: a key of
+    /// several ends [`Recording::WAIT`] after its last character.
+    pub at: f64,
+    /// The last key pressed, and why it was refused: the recording goes
+    /// on.
+    pub refused: Option<(&'static str, crate::keymap::Why)>,
+    /// Whether the refusal offers a swap: the key is another row's, and
+    /// the exchange would stand.
+    pub swaps: bool,
+}
+
+impl Recording {
+    /// How long a key of several waits for its next character.
+    pub const WAIT: f64 = 0.8;
+
+    pub fn of(of: Recorded) -> Self {
+        Self {
+            of,
+            typed: String::new(),
+            at: 0.0,
+            refused: None,
+            swaps: false,
+        }
+    }
 }
 
 /// What Settings › Editor asks of the query history.
@@ -2741,6 +2850,8 @@ pub enum SettingsPane {
     Appearance,
     /// How the SQL editor runs, types and formats.
     Editor,
+    /// Every command's keys, which can be recorded again.
+    Keyboard,
     /// How agents reach the app. Listed where they can.
     Agents,
 }
@@ -2749,9 +2860,20 @@ impl SettingsPane {
     /// The panes the window lists, in order.
     pub fn listed() -> &'static [SettingsPane] {
         if crate::endpoint::AVAILABLE {
-            &[Self::General, Self::Appearance, Self::Editor, Self::Agents]
+            &[
+                Self::General,
+                Self::Appearance,
+                Self::Editor,
+                Self::Keyboard,
+                Self::Agents,
+            ]
         } else {
-            &[Self::General, Self::Appearance, Self::Editor]
+            &[
+                Self::General,
+                Self::Appearance,
+                Self::Editor,
+                Self::Keyboard,
+            ]
         }
     }
 
@@ -2761,6 +2883,7 @@ impl SettingsPane {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
+            Self::Keyboard => "Keyboard",
             Self::Agents => "Agents",
         }
     }
@@ -2798,7 +2921,7 @@ impl SettingsPane {
                 ("Format · {format}", &OptionId::FORMAT),
                 ("History", &OptionId::HISTORY),
             ],
-            Self::Agents => &[],
+            Self::Keyboard | Self::Agents => &[],
         }
     }
 
@@ -2808,6 +2931,7 @@ impl SettingsPane {
     pub fn sheet_options(self) -> Vec<crate::settings::OptionId> {
         match self {
             Self::Agents => crate::settings::OptionId::AGENTS.to_vec(),
+            Self::Keyboard => Vec::new(),
             Self::General | Self::Appearance | Self::Editor => self
                 .sections()
                 .iter()
@@ -2822,6 +2946,7 @@ impl SettingsPane {
             Self::General => &crate::settings::OptionId::GENERAL,
             Self::Appearance => &crate::settings::OptionId::APPEARANCE,
             Self::Editor => &crate::settings::OptionId::EDITOR,
+            Self::Keyboard => &[],
             Self::Agents => &crate::settings::OptionId::AGENTS,
         }
     }
@@ -2836,6 +2961,8 @@ impl SettingsPane {
             Self::General => &OptionId::GENERAL,
             Self::Appearance => &OptionId::APPEARANCE,
             Self::Editor => &OptionId::EDITOR,
+            // Reset all… of its own, which asks first.
+            Self::Keyboard => &[],
             Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
         }
     }
@@ -2879,6 +3006,8 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::Commas),
                 SettingsRow::Option(OptionId::HistoryKeep),
             ],
+            // The pane has a cursor of its own, by row of the keymap.
+            Self::Keyboard => &[],
             Self::Agents => &[
                 SettingsRow::Option(OptionId::AgentsOn),
                 SettingsRow::AgentsStatus,

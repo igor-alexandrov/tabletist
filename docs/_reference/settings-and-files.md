@@ -67,7 +67,13 @@ On macOS and Windows the Editor pane's **Clear history…** deletes the
 history of every connection, once you say so; a History tab's own clears
 its connection's alone.
 
-A fourth pane, **Agents**, sets what the `[mcp]` keys
+A fourth pane, **Keyboard**, lists every command's keys and the scope
+each works in, and changes them: a click on a shortcut (Enter in the
+Omarchy look) records new keys, which are saved at once.
+[Changing a key]({% link _reference/keyboard-shortcuts.md %}#changing-a-key)
+says how, and [The keys](#the-keys) how they are kept.
+
+A fifth pane, **Agents**, sets what the `[mcp]` keys
 hold, and shows how to connect an agent:
 [Agents]({% link _guide/agents.md %}) is the guide.
 
@@ -212,6 +218,84 @@ with dotted keys (`data.page_size = 500`): a key added to it or taken out
 of it writes the whole file again, without your comments. **Export…**
 saves a copy of the file as it is.
 
+### The keys
+
+The keys changed in **Settings › Keyboard** are kept in tables of their
+own: one for each scope that holds a change, and only what differs from
+the defaults.
+
+```toml
+[keys.table]
+"cmd+alt+d" = "delete_row"
+
+[keys.editor]
+"f5" = "format"  # after swap · was run_all
+"cmd+shift+f" = "run_all"
+
+[keys.unbind]
+table = ["cmd+'"]
+```
+
+A line gives a command keys in a scope: the keys, then the command's id,
+its name in snake case (`delete_row`, `run_all`, `open_referenced_row`,
+`toggle_sidebar`). `:keys default` in the Omarchy look lists every one
+with its keys. Keys are what is held, `cmd`, `ctrl`, `alt` and `shift`,
+joined by `+`, then the key: a letter or a digit, one of `,` `.` `'` `[`
+`]` `/` `=` `-` `;` `` ` `` `\`, or one of `enter`, `esc`, `tab`, `space`,
+`backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`,
+`pgup`, `pgdn` and `f1` to `f19`. On Windows `cmd` is Ctrl. The Omarchy
+look also takes typed keys (`gd`, `D`) and lines of its prompt (`:w`).
+The window writes the Mac's keys as symbols (⌥⌘D); the file never does.
+
+| Scope | Table on macOS and Windows | Table in the Omarchy look |
+| --- | --- | --- |
+| The whole window | `global` | `window` |
+| The connection picker | `connections` | `connections` |
+| The sidebar | `sidebar` | `navigate` |
+| A table's rows | `table` | `grid` |
+| A cell's editor | `cell` | `edit` |
+| The row panel | `inspector` | `inspector` |
+| The SQL editor | `editor` | `sql` |
+| A SQL editor's result | `results` | `results` |
+| The Agents tab | `agents` | `agents` |
+| The start screen | `start` | `start` |
+| The History tab | `history` | `history` |
+
+Each look reads the other's names too; a table Tabletist adds has the
+name of the look it runs in. A line's keys take the place of the
+command's keys of their kind in that scope: a chord of its chords, typed
+keys of its typed keys, a line of its lines, so
+`"ctrl+alt+s" = "save_changes"` in the Omarchy look leaves `:w` as it is.
+`[keys.unbind]` lists, by scope, default keys that do nothing; a command
+whose keys are all there has none. A swap writes both lines, the moved one
+with a comment that says whose keys they were.
+
+A line is ignored, the command keeps its default keys, and the line is
+reported (red in the Omarchy look's file pane, by its number in the
+window's footer on macOS and Windows) when:
+
+- its table, its keys or its command is one Tabletist does not know;
+- the command has no keys in that scope, or its keys cannot be changed:
+  the keys that move, a range of digits (Cmd+1 to 9), a key that works only
+  while something shows (the completion list, the large editor);
+- the keys are of a kind the command is not read by in the look;
+- the system keeps them: on macOS Cmd+Q, Cmd+W, Cmd+H, Cmd+Option+H,
+  Cmd+M, Cmd+Tab, Cmd+Space, Ctrl+Cmd+F, Cmd+, and Cmd+C, Cmd+V, Cmd+X,
+  Cmd+Z, Cmd+Shift+Z, Cmd+A; on Windows Alt+F4 and Ctrl+C, Ctrl+V, Ctrl+X,
+  Ctrl+Z, Ctrl+Shift+Z, Ctrl+A. On macOS and Windows a key alone needs
+  Cmd, Ctrl or Alt with it, or is a function key;
+- in the Omarchy look they hold Super, are Esc, are one of vim's insert
+  keys (`ctrl+w`, `ctrl+h`, `ctrl+u`, `ctrl+r`) in an editor, or are
+  letters that start with a digit;
+- another command has them where both work: in the same scope, or in the
+  whole window. Of two lines, the later gives way. Two lines that trade
+  keys stand together.
+
+Tabletist never writes over a line it could not read. **Reset all…** takes
+every `[keys.…]` table out of the file, with the lines in them it could not
+read, and nothing else. Neither **Export cheat sheet** nor `:keys default`
+writes to `settings.toml`.
+
 A file an older version wrote holds every key, at the values it had then,
 the defaults of that time too (`page_size = 300`, `group_digits = false`).
 Those stay until you change them: take a key out of the file, or reset the
@@ -247,6 +331,7 @@ An administrator's policy, `managed.toml`, is in a third place of its own:
 | `session.json` | State | The connection windows open when Tabletist last quit, and each saved connection's window as it last had it: its table tabs, with their sort and filters, and whether the row panel was shown. Written at quit, when a connection's window closes or gets another connection, when a database switch drops its tables, and when a connection is deleted. Not written while `connections.toml` cannot be read. A connection deleted from `connections.toml` by hand is taken out of it at the next write |
 | `recents.json` | State | What you opened last on each saved connection, by its id: up to eight tables and views, with the database each is in and when it was opened, for the start screen. Written when something opens, when Clear is pressed, when an object the database no longer lists is dropped, and when a connection is deleted |
 | `labels.json` | State | The column you chose to label each table's rows in a foreign key's list, by saved connection and, on PostgreSQL, by database |
+| `keys.default.toml` | State | Every key in force, commented, as `:keys default` writes it for you to copy lines from. Written again each time, and never read |
 | `tabletist.log`, `panic.log` | State | Logs |
 | `agents.sqlite3` | State | Every call agents made: the tool, the statement and its values, and how it ended. Never a row |
 | `history.sqlite3` | State | The query history, by saved connection: each statement run from the SQL editor, a grid's save (its whole transaction, with the values you typed written in) and a filter or sort you set, with when, how long, its rows and how it ended, and a filter's table, filter and sort. An agent's run is kept as its call's place in `agents.sqlite3`, its tool, rows, time and result, never what it sent, its name included: the History tab reads that from `agents.sqlite3`. Never a result's rows. Kept to `editor.history.keep` per connection, and written on its own: a statement never waits for it |

@@ -1825,6 +1825,10 @@ impl App {
         let action = match (read, table) {
             // From any tab of the window.
             (Typed::Command(Command::History), _) => Action::ShowHistory(tab),
+            // The keys in force: the full list in the editor, or a cheat
+            // sheet where the person says. Neither touches the settings.
+            (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
+            (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
             (Typed::Command(Command::ClearHistory), _) => Action::ClearHistory(tab),
             // From any tab of the window, where agents can reach the app.
             (Typed::Command(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {

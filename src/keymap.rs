@@ -9,10 +9,16 @@
 //!
 //! A command that is not built yet is here all the same, with its keys:
 //! they are claimed, so nothing else takes them, and nothing answers them.
+//!
+//! The person's changes from `settings.toml` are laid over these defaults
+//! (`overrides.rs`): the keymap in force is [`Keymap::with`] them.
 
 use egui::Key;
 
 use crate::theme::{Look, Typeface};
+
+mod overrides;
+pub use overrides::{Bind, Line, Never, Overrides, Refused, Unbind, Why, intern, refuse_key};
 
 /// How a look binds its keys and writes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +46,7 @@ impl Layout {
 }
 
 /// Where a binding holds: what has the keyboard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
     /// Everywhere but under a prompt.
     Global,
@@ -102,6 +108,75 @@ impl Scope {
         }
     }
 
+    /// The scope's name as `layout` shows it, in the Scope column of the
+    /// Keyboard settings: the brief's names where it gives one. English:
+    /// the caller translates. A prompt's keys are not listed.
+    pub fn name(self, layout: Layout) -> &'static str {
+        match layout {
+            Layout::Mac | Layout::Windows => match self {
+                Self::Global => "Global",
+                Self::Connections => "Connections",
+                Self::Sidebar => "Sidebar",
+                Self::Grid => "Table",
+                Self::CellEditor => "Cell",
+                Self::Inspector => "Inspector",
+                Self::SqlEditor => "Editor",
+                Self::Results => "Results",
+                Self::Prompt => "Prompt",
+                Self::Agents => "Agents",
+                Self::Start => "Start screen",
+                Self::History => "History",
+            },
+            // As the terminal look writes its scopes: lower case, and the
+            // global one by its own word, as its board does.
+            Layout::Omarchy => match self {
+                Self::Global => "global",
+                other => other.table(layout),
+            },
+        }
+    }
+
+    /// The table of `settings.toml` that holds the scope's keys
+    /// (`[keys.<table>]`), as `layout` names it. Every look's names are
+    /// read in every look ([`Scope::from_table`]); a table the app adds
+    /// has the name of the look it runs in.
+    pub fn table(self, layout: Layout) -> &'static str {
+        let omarchy = layout == Layout::Omarchy;
+        match self {
+            Self::Global if omarchy => "window",
+            Self::Global => "global",
+            Self::Connections => "connections",
+            Self::Sidebar if omarchy => "navigate",
+            Self::Sidebar => "sidebar",
+            Self::Grid if omarchy => "grid",
+            Self::Grid => "table",
+            Self::CellEditor if omarchy => "edit",
+            Self::CellEditor => "cell",
+            Self::Inspector => "inspector",
+            Self::SqlEditor if omarchy => "sql",
+            Self::SqlEditor => "editor",
+            Self::Results => "results",
+            Self::Prompt => "prompt",
+            Self::Agents => "agents",
+            Self::Start => "start",
+            Self::History => "history",
+        }
+    }
+
+    /// The scope a table of `settings.toml` names: by either look's name,
+    /// or by the scope's id. None for a prompt's, whose keys are its own.
+    pub fn from_table(name: &str) -> Option<Scope> {
+        Self::ALL
+            .into_iter()
+            .filter(|scope| *scope != Self::Prompt)
+            .find(|scope| {
+                name == scope.id()
+                    || Layout::ALL
+                        .into_iter()
+                        .any(|layout| name == scope.table(layout))
+            })
+    }
+
     /// Whether a key of `self` and a key of `other` can be read in the same
     /// moment: the same scope, the global one with any but a prompt, an
     /// editor with what it was opened from, a result with its editor's tab.
@@ -120,7 +195,7 @@ impl Scope {
 /// What must also be on screen for a binding to hold. A binding with one
 /// of these takes its key before the same key of its scope with none: that
 /// is no conflict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum When {
     Always,
     /// A connect is under way.
@@ -190,7 +265,7 @@ pub enum When {
 /// The mode a chord holds in: with the keyboard in a text field (insert),
 /// or out of one (normal). Typed letters and `:` commands are normal mode's
 /// whatever this says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
     /// By the scope: insert in an editor, normal on rows and lists, any
     /// for the global scope and for prompts.
@@ -222,7 +297,7 @@ impl Mode {
 }
 
 /// What a spelling is to the command it stands under.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// The command's own key.
     Own,
@@ -235,7 +310,7 @@ pub enum Kind {
     Claimed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Chord {
     pub keys: &'static str,
     pub kind: Kind,
@@ -311,7 +386,7 @@ impl Bound {
 }
 
 /// The groups the Keyboard page lists the commands in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Group {
     Window,
     Navigation,
@@ -323,7 +398,7 @@ pub enum Group {
 }
 
 macro_rules! commands {
-    ($($name:ident),* $(,)?) => {
+    ($($name:ident = $id:literal),* $(,)?) => {
         /// Everything a key can ask for.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Command {
@@ -332,240 +407,262 @@ macro_rules! commands {
 
         impl Command {
             pub const ALL: &'static [Command] = &[$(Command::$name),*];
+
+            /// The command's name in `settings.toml`: snake case, and never
+            /// changed once a version has written it. A title is what a
+            /// menu says, and can change; this cannot.
+            pub fn id(self) -> &'static str {
+                match self {
+                    $(Self::$name => $id),*
+                }
+            }
         }
     };
 }
 
+impl Command {
+    /// The command a file names by its id.
+    pub fn from_id(id: &str) -> Option<Command> {
+        Self::ALL.iter().copied().find(|command| command.id() == id)
+    }
+}
+
 commands! {
     // Window and connections.
-    Connections,
-    GoToConnectionWindow,
-    SwitchDatabase,
-    Settings,
-    LargerText,
-    SmallerText,
-    DefaultTextSize,
-    CloseConnection,
-    NextConnection,
-    PreviousConnection,
-    CancelConnecting,
-    NewConnection,
-    EditConnection,
-    DuplicateConnection,
-    DeleteConnection,
-    Connect,
-    ConnectAgain,
-    MoveInConnections,
-    FilterConnections,
+    Connections = "connections",
+    GoToConnectionWindow = "go_to_connection_window",
+    SwitchDatabase = "switch_database",
+    Settings = "settings",
+    LargerText = "larger_text",
+    SmallerText = "smaller_text",
+    DefaultTextSize = "default_text_size",
+    CloseConnection = "close_connection",
+    NextConnection = "next_connection",
+    PreviousConnection = "previous_connection",
+    CancelConnecting = "cancel_connecting",
+    NewConnection = "new_connection",
+    EditConnection = "edit_connection",
+    DuplicateConnection = "duplicate_connection",
+    DeleteConnection = "delete_connection",
+    Connect = "connect",
+    ConnectAgain = "connect_again",
+    MoveInConnections = "move_in_connections",
+    FilterConnections = "filter_connections",
     // Navigation.
-    FindObject,
-    FilterObjects,
-    NewSqlTab,
-    ShowAgents,
-    CopyAgentCommand,
-    TurnAgentsOn,
-    MoveInAgentSessions,
-    StopAgentSession,
-    StopAgentsHere,
-    ShowAgentsElsewhere,
-    ShowAgentsLog,
-    ToggleAgentsLogScope,
-    FilterAgentsLog,
-    CloseAgentsLogPane,
-    ShowAgentsLogDetails,
-    OpenAgentsLogCall,
-    ExportAgentsLog,
-    AllowAgents,
-    ShowAgentSettings,
-    ChangeAgentAccess,
-    MoveInAgentLevels,
-    ShowAgentsFromBox,
-    OpenRecent,
-    StartSearchFocus,
-    StartSearchMove,
-    StartSearchOpen,
-    StartSearchOpenInEditor,
-    StartSearchClear,
-    ToggleSidebar,
-    PaneLeft,
-    PaneDown,
-    PaneUp,
-    PaneRight,
-    NextPart,
-    PreviousPart,
-    SwitchTab,
-    CloseTab,
-    PreviousTab,
-    NextTab,
-    MoveInTree,
-    OpenObject,
-    ToggleTree,
-    Reload,
-    FilterBar,
-    WhereFilter,
-    PreviousPage,
-    NextPage,
-    Help,
-    KeysDefault,
+    FindObject = "find_object",
+    FilterObjects = "filter_objects",
+    NewSqlTab = "new_sql_tab",
+    ReopenClosedTab = "reopen_closed_tab",
+    ShowAgents = "show_agents",
+    CopyAgentCommand = "copy_agent_command",
+    TurnAgentsOn = "turn_agents_on",
+    MoveInAgentSessions = "move_in_agent_sessions",
+    StopAgentSession = "stop_agent_session",
+    StopAgentsHere = "stop_agents_here",
+    ShowAgentsElsewhere = "show_agents_elsewhere",
+    ShowAgentsLog = "show_agents_log",
+    ToggleAgentsLogScope = "toggle_agents_log_scope",
+    FilterAgentsLog = "filter_agents_log",
+    CloseAgentsLogPane = "close_agents_log_pane",
+    ShowAgentsLogDetails = "show_agents_log_details",
+    OpenAgentsLogCall = "open_agents_log_call",
+    ExportAgentsLog = "export_agents_log",
+    AllowAgents = "allow_agents",
+    ShowAgentSettings = "show_agent_settings",
+    ChangeAgentAccess = "change_agent_access",
+    MoveInAgentLevels = "move_in_agent_levels",
+    ShowAgentsFromBox = "show_agents_from_box",
+    OpenRecent = "open_recent",
+    StartSearchFocus = "start_search_focus",
+    StartSearchMove = "start_search_move",
+    StartSearchOpen = "start_search_open",
+    StartSearchOpenInEditor = "start_search_open_in_editor",
+    StartSearchClear = "start_search_clear",
+    ToggleSidebar = "toggle_sidebar",
+    PaneLeft = "pane_left",
+    PaneDown = "pane_down",
+    PaneUp = "pane_up",
+    PaneRight = "pane_right",
+    NextPart = "next_part",
+    PreviousPart = "previous_part",
+    SwitchTab = "switch_tab",
+    CloseTab = "close_tab",
+    PreviousTab = "previous_tab",
+    NextTab = "next_tab",
+    MoveInTree = "move_in_tree",
+    OpenObject = "open_object",
+    ToggleTree = "toggle_tree",
+    Reload = "reload",
+    FilterBar = "filter_bar",
+    WhereFilter = "where_filter",
+    PreviousPage = "previous_page",
+    NextPage = "next_page",
+    Help = "help",
+    KeysDefault = "keys_default",
+    KeysCheatsheet = "keys_cheatsheet",
     // Grid and editing.
-    MoveRow,
-    MoveColumn,
-    MovePage,
-    ExtendUp,
-    ExtendDown,
-    OpenInspector,
-    ToggleInspector,
-    CloseInspector,
-    BackToGrid,
-    MoveField,
-    PreviousRow,
-    NextRow,
-    FoldDocuments,
-    EditCell,
-    ReplaceCell,
-    CommitDown,
-    CommitNext,
-    CommitPrevious,
-    KeepEdit,
-    NextPick,
-    PreviousPick,
-    PickPageDown,
-    PickPageUp,
-    ClosePicker,
-    ChangeLabelColumn,
-    CancelEdit,
-    OpenLargeEditor,
-    ApplyLargeEditor,
-    KeepLargeEditor,
-    CancelLargeEditor,
-    OpenInEditor,
-    SetNull,
-    SetDefault,
-    UndoCell,
-    RedoCell,
-    CopyCells,
-    CopyRow,
-    PasteCells,
-    PasteNewRows,
-    AddRow,
-    AddRowAbove,
-    AddRowAtEnd,
-    DuplicateRow,
-    YankRow,
-    PutRow,
-    PutRowAbove,
-    DeleteRow,
-    SelectRows,
-    DeleteSelection,
-    LeaveVisual,
-    OpenReferencedRow,
-    ShowSavedRow,
-    MoveInStructure,
-    OpenLabelChooser,
-    UseAsLabel,
-    LabelAutomatic,
-    LabelKeysOnly,
-    LabelColumn,
-    ReviewSql,
-    NextChange,
-    CopyReviewSql,
-    CloseReview,
-    DismissNote,
-    SaveChanges,
-    DiscardChanges,
-    AskDiscard,
-    NextError,
-    PreviousError,
-    BooleanCycle,
-    StepUp,
-    StepDown,
-    Format,
+    MoveRow = "move_row",
+    MoveColumn = "move_column",
+    MovePage = "move_page",
+    ExtendUp = "extend_up",
+    ExtendDown = "extend_down",
+    OpenInspector = "open_inspector",
+    ToggleInspector = "toggle_inspector",
+    CloseInspector = "close_inspector",
+    BackToGrid = "back_to_grid",
+    MoveField = "move_field",
+    PreviousRow = "previous_row",
+    NextRow = "next_row",
+    FoldDocuments = "fold_documents",
+    EditCell = "edit_cell",
+    ReplaceCell = "replace_cell",
+    CommitDown = "commit_down",
+    CommitNext = "commit_next",
+    CommitPrevious = "commit_previous",
+    KeepEdit = "keep_edit",
+    NextPick = "next_pick",
+    PreviousPick = "previous_pick",
+    PickPageDown = "pick_page_down",
+    PickPageUp = "pick_page_up",
+    ClosePicker = "close_picker",
+    ChangeLabelColumn = "change_label_column",
+    CancelEdit = "cancel_edit",
+    OpenLargeEditor = "open_large_editor",
+    ApplyLargeEditor = "apply_large_editor",
+    KeepLargeEditor = "keep_large_editor",
+    CancelLargeEditor = "cancel_large_editor",
+    OpenInEditor = "open_in_editor",
+    SetNull = "set_null",
+    SetDefault = "set_default",
+    UndoCell = "undo_cell",
+    RedoCell = "redo_cell",
+    CopyCells = "copy_cells",
+    CopyRow = "copy_row",
+    PasteCells = "paste_cells",
+    PasteNewRows = "paste_new_rows",
+    AddRow = "add_row",
+    AddRowAbove = "add_row_above",
+    AddRowAtEnd = "add_row_at_end",
+    DuplicateRow = "duplicate_row",
+    YankRow = "yank_row",
+    PutRow = "put_row",
+    PutRowAbove = "put_row_above",
+    DeleteRow = "delete_row",
+    SelectRows = "select_rows",
+    DeleteSelection = "delete_selection",
+    LeaveVisual = "leave_visual",
+    OpenReferencedRow = "open_referenced_row",
+    ShowSavedRow = "show_saved_row",
+    MoveInStructure = "move_in_structure",
+    OpenLabelChooser = "open_label_chooser",
+    UseAsLabel = "use_as_label",
+    LabelAutomatic = "label_automatic",
+    LabelKeysOnly = "label_keys_only",
+    LabelColumn = "label_column",
+    ReviewSql = "review_sql",
+    NextChange = "next_change",
+    CopyReviewSql = "copy_review_sql",
+    CloseReview = "close_review",
+    DismissNote = "dismiss_note",
+    SaveChanges = "save_changes",
+    DiscardChanges = "discard_changes",
+    AskDiscard = "ask_discard",
+    NextError = "next_error",
+    PreviousError = "previous_error",
+    BooleanCycle = "boolean_cycle",
+    StepUp = "step_up",
+    StepDown = "step_down",
+    Format = "format",
     // SQL editor.
-    IndentLines,
-    OutdentLines,
-    RunStatement,
-    RunAll,
-    Explain,
-    ExplainAnalyze,
-    ComparePreviousRun,
-    CancelQuery,
-    FocusResults,
-    LeaveEditor,
-    Complete,
-    InsertCompletion,
-    NextCompletion,
-    PreviousCompletion,
-    CloseCompletion,
-    GoToLine,
-    History,
-    ClearHistory,
-    MoveInHistory,
-    RunHistoryAgain,
-    OpenHistoryEntry,
-    ShowHistoryCall,
-    ReapplyHistoryFilter,
-    CopyHistorySql,
-    FilterHistory,
-    CloseHistoryLine,
-    ConfirmClearHistory,
-    KeepHistory,
-    ReadOnlyTab,
-    ReadWriteTab,
-    ToggleSqlMode,
-    Commit,
-    Rollback,
-    NextPlanTip,
-    EditRefusedConnection,
-    AllowRefusedWrite,
-    ShowAllRows,
-    RunWithoutTimeout,
+    IndentLines = "indent_lines",
+    OutdentLines = "outdent_lines",
+    RunStatement = "run_statement",
+    RunAll = "run_all",
+    Explain = "explain",
+    ExplainAnalyze = "explain_analyze",
+    ComparePreviousRun = "compare_previous_run",
+    CancelQuery = "cancel_query",
+    FocusResults = "focus_results",
+    LeaveEditor = "leave_editor",
+    Complete = "complete",
+    InsertCompletion = "insert_completion",
+    NextCompletion = "next_completion",
+    PreviousCompletion = "previous_completion",
+    CloseCompletion = "close_completion",
+    GoToLine = "go_to_line",
+    History = "history",
+    ClearHistory = "clear_history",
+    MoveInHistory = "move_in_history",
+    RunHistoryAgain = "run_history_again",
+    OpenHistoryEntry = "open_history_entry",
+    ShowHistoryCall = "show_history_call",
+    ReapplyHistoryFilter = "reapply_history_filter",
+    CopyHistorySql = "copy_history_sql",
+    FilterHistory = "filter_history",
+    CloseHistoryLine = "close_history_line",
+    ConfirmClearHistory = "confirm_clear_history",
+    KeepHistory = "keep_history",
+    ReadOnlyTab = "read_only_tab",
+    ReadWriteTab = "read_write_tab",
+    ToggleSqlMode = "toggle_sql_mode",
+    Commit = "commit",
+    Rollback = "rollback",
+    NextPlanTip = "next_plan_tip",
+    EditRefusedConnection = "edit_refused_connection",
+    AllowRefusedWrite = "allow_refused_write",
+    ShowAllRows = "show_all_rows",
+    RunWithoutTimeout = "run_without_timeout",
     // AI assistant.
-    AskAi,
-    AcceptAi,
-    AcceptAiAndRun,
-    DiscardAi,
+    AskAi = "ask_ai",
+    AcceptAi = "accept_ai",
+    AcceptAiAndRun = "accept_ai_and_run",
+    DiscardAi = "discard_ai",
     // Prompts and dialogs.
-    ConfirmProductionWrite,
-    CancelProductionWrite,
-    ScrollStatements,
-    LeaveWrite,
-    LeaveDiscard,
-    LeaveStay,
-    ConflictOverwrite,
-    ConflictUseServer,
-    ConflictKeepMine,
-    ConflictDiscard,
-    FormPasteUrl,
-    FormNextField,
-    FormTest,
-    FormSave,
-    FormSaveAndConnect,
-    FormForgetPassword,
-    FormCancel,
-    FormTableMove,
-    SettingsMove,
-    SettingsChange,
-    SettingsToggle,
-    SettingsOpenFile,
-    SettingsReset,
-    SettingsClose,
-    SettingsPane,
-    SettingsOpenRow,
-    SettingsCopyCommand,
-    SettingsDeleteHistory,
-    SettingsKeepHistory,
-    QuickOpenMove,
-    QuickOpenPick,
-    QuickOpenPickInEditor,
-    QuickOpenScope,
-    QuickOpenCommands,
-    QuickOpenNumber,
-    QuickOpenClose,
-    NextLabel,
-    PreviousLabel,
-    ChooseLabel,
-    CloseLabelChooser,
-    AddLabelPart,
+    ConfirmProductionWrite = "confirm_production_write",
+    CancelProductionWrite = "cancel_production_write",
+    ScrollStatements = "scroll_statements",
+    LeaveWrite = "leave_write",
+    LeaveDiscard = "leave_discard",
+    LeaveStay = "leave_stay",
+    ConflictOverwrite = "conflict_overwrite",
+    ConflictUseServer = "conflict_use_server",
+    ConflictKeepMine = "conflict_keep_mine",
+    ConflictDiscard = "conflict_discard",
+    FormPasteUrl = "form_paste_url",
+    FormNextField = "form_next_field",
+    FormTest = "form_test",
+    FormSave = "form_save",
+    FormSaveAndConnect = "form_save_and_connect",
+    FormForgetPassword = "form_forget_password",
+    FormCancel = "form_cancel",
+    FormTableMove = "form_table_move",
+    SettingsMove = "settings_move",
+    SettingsChange = "settings_change",
+    SettingsToggle = "settings_toggle",
+    SettingsOpenFile = "settings_open_file",
+    SettingsReset = "settings_reset",
+    SettingsClose = "settings_close",
+    SettingsPane = "settings_pane",
+    SettingsOpenRow = "settings_open_row",
+    SettingsCopyCommand = "settings_copy_command",
+    SettingsDeleteHistory = "settings_delete_history",
+    SettingsKeepHistory = "settings_keep_history",
+    SettingsUnbind = "settings_unbind",
+    SettingsFilter = "settings_filter",
+    SettingsFindKey = "settings_find_key",
+    SettingsSwap = "settings_swap",
+    QuickOpenMove = "quick_open_move",
+    QuickOpenPick = "quick_open_pick",
+    QuickOpenPickInEditor = "quick_open_pick_in_editor",
+    QuickOpenScope = "quick_open_scope",
+    QuickOpenCommands = "quick_open_commands",
+    QuickOpenNumber = "quick_open_number",
+    QuickOpenClose = "quick_open_close",
+    NextLabel = "next_label",
+    PreviousLabel = "previous_label",
+    ChooseLabel = "choose_label",
+    CloseLabelChooser = "close_label_chooser",
+    AddLabelPart = "add_label_part",
 }
 
 /// What is said of a command wherever it is listed.
@@ -648,6 +745,9 @@ impl Command {
             C::FindObject => info("Find any object", "Find any object", Navigation),
             C::FilterObjects => info("Filter the sidebar's objects", "", Navigation),
             C::NewSqlTab => info("New SQL editor tab", "New SQL editor tab", Navigation),
+            // Nothing reopens a closed tab yet: the start screen opens a
+            // recent by its number.
+            C::ReopenClosedTab => info("Reopen closed tabs", "", Navigation).reserved(),
             // Nothing of agents answers where they cannot reach the app.
             C::ShowAgents => agents(info("Show the Agents tab", "", Navigation)),
             C::CopyAgentCommand => {
@@ -734,7 +834,8 @@ impl Command {
             C::PreviousPage => info("Previous page", "", Navigation),
             C::NextPage => info("Next page", "", Navigation),
             C::Help => info("Help, all keys", "Help, all keys", Navigation),
-            C::KeysDefault => info("Write the full list of keys", "", Navigation).reserved(),
+            C::KeysDefault => info("Write the full list of keys", "", Navigation),
+            C::KeysCheatsheet => info("Write a cheat sheet of the keys", "", Navigation),
             C::MoveRow => info("Move by row", "", Editing),
             C::MoveColumn => info("Move by column", "", Editing),
             C::MovePage => info("Move by page", "", Editing),
@@ -928,6 +1029,10 @@ impl Command {
             C::SettingsKeepHistory => {
                 info("Keep the query history, as the settings ask", "", Prompts)
             }
+            C::SettingsUnbind => info("Unbind the keyboard row's keys", "", Prompts),
+            C::SettingsFilter => info("Filter the keyboard rows by name", "", Prompts),
+            C::SettingsFindKey => info("Find the keyboard rows by a key", "", Prompts),
+            C::SettingsSwap => info("Swap the keys, as the keyboard row asks", "", Prompts),
             C::QuickOpenMove => info("Move in quick open", "", Prompts),
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
             C::QuickOpenPickInEditor => info("Open the one selected in a SQL editor", "", Prompts),
@@ -1163,6 +1268,7 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+t")]),
             keys(&[k("ctrl+t")]),
         ),
+        bind(C::ReopenClosedTab, GLOBAL, keys(&[k("cmd+shift+t")]), NONE),
         bind(
             C::ShowAgents,
             GLOBAL,
@@ -1222,6 +1328,7 @@ pub const BINDINGS: &[Binding] = {
         // numbered recent, and the letters of its actions. On the Mac the
         // screen's buttons carry the global keys.
         bind(C::OpenRecent, START, NONE, keys(&[k("1..9")])),
+        bind(C::ReopenClosedTab, START, NONE, keys(&[k("u")])),
         bind(C::NewSqlTab, START, NONE, keys(&[k("t")])),
         bind(C::SwitchDatabase, START, NONE, keys(&[k("d")])),
         bind(C::EditConnection, START, NONE, keys(&[k("e")])),
@@ -1338,6 +1445,12 @@ pub const BINDINGS: &[Binding] = {
         ),
         bind(C::Help, GLOBAL, keys(&[k("?")]), keys(&[k("?")])),
         bind(C::KeysDefault, GLOBAL, NONE, keys(&[k(":keys default")])),
+        bind(
+            C::KeysCheatsheet,
+            GLOBAL,
+            NONE,
+            keys(&[k(":keys cheatsheet")]),
+        ),
         // Grid and editing.
         bind(
             C::MoveRow,
@@ -1752,13 +1865,13 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+e")]).any(),
             keys(&[k("ctrl+e")]).any(),
         ),
-        bind(C::ExplainAnalyze, SQL_EDITOR, NONE, NONE),
         bind(
-            C::ComparePreviousRun,
+            C::ExplainAnalyze,
             SQL_EDITOR,
             keys(&[k("cmd+alt+e")]).any(),
             NONE,
         ),
+        bind(C::ComparePreviousRun, SQL_EDITOR, NONE, NONE),
         bind(
             C::CancelQuery,
             SQL_EDITOR,
@@ -2042,6 +2155,13 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SettingsCopyCommand, PROMPT, NONE, keys(&[k("y")])).when(When::SettingsScreen),
         bind(C::SettingsDeleteHistory, PROMPT, NONE, keys(&[k("D")])).when(When::SettingsScreen),
         bind(C::SettingsKeepHistory, PROMPT, NONE, keys(&[k("n")])).when(When::SettingsScreen),
+        // The Keyboard pane's own: Enter records the row (the screen's
+        // Enter), `R` resets it, and the arrows' letters move as on any
+        // pane.
+        bind(C::SettingsUnbind, PROMPT, NONE, keys(&[k("dd")])).when(When::SettingsScreen),
+        bind(C::SettingsFilter, PROMPT, NONE, keys(&[k("/")])).when(When::SettingsScreen),
+        bind(C::SettingsFindKey, PROMPT, NONE, keys(&[k("?")])).when(When::SettingsScreen),
+        bind(C::SettingsSwap, PROMPT, NONE, keys(&[k("s")])).when(When::SettingsScreen),
         bind(
             C::SettingsClose,
             PROMPT,
@@ -2149,7 +2269,7 @@ fn argument<'a>(name: &str, line: &'a str) -> Option<&'a str> {
 }
 
 /// The modifiers of a chord, as a spelling names them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Mods {
     pub cmd: bool,
     pub ctrl: bool,
@@ -2165,14 +2285,14 @@ impl Mods {
 
 /// One press: a key with what is held, or a character as it is typed (a
 /// vim letter is its character on every keyboard layout).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stroke {
     Key { mods: Mods, key: Key },
     Text(char),
 }
 
 /// A spelling, read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Spelled {
     /// One press, or a few after one another (`yy p`).
     Strokes(Vec<Stroke>),
@@ -2201,9 +2321,53 @@ const NAMED: &[(&str, Key)] = &[
     ("end", Key::End),
     ("pgup", Key::PageUp),
     ("pgdn", Key::PageDown),
+    ("f1", Key::F1),
     ("f2", Key::F2),
+    ("f3", Key::F3),
+    ("f4", Key::F4),
+    ("f5", Key::F5),
     ("f6", Key::F6),
+    ("f7", Key::F7),
+    ("f8", Key::F8),
+    ("f9", Key::F9),
+    ("f10", Key::F10),
+    ("f11", Key::F11),
+    ("f12", Key::F12),
+    ("f13", Key::F13),
+    ("f14", Key::F14),
+    ("f15", Key::F15),
+    ("f16", Key::F16),
+    ("f17", Key::F17),
+    ("f18", Key::F18),
+    ("f19", Key::F19),
 ];
+
+/// The function keys a key alone can be on macOS and Windows, where every
+/// other key a command is given needs Cmd, Ctrl or Alt with it.
+fn function_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::F1
+            | Key::F2
+            | Key::F3
+            | Key::F4
+            | Key::F5
+            | Key::F6
+            | Key::F7
+            | Key::F8
+            | Key::F9
+            | Key::F10
+            | Key::F11
+            | Key::F12
+            | Key::F13
+            | Key::F14
+            | Key::F15
+            | Key::F16
+            | Key::F17
+            | Key::F18
+            | Key::F19
+    )
+}
 
 const MARKS: &[(char, Key)] = &[
     (',', Key::Comma),
@@ -2264,13 +2428,28 @@ pub fn char_of(key: Key, shift: bool) -> Option<char> {
 
 /// Reads a spelling. `super` is no modifier here: Hyprland owns it.
 pub fn spell(keys: &'static str) -> Result<Spelled, Unread> {
-    let unread = |why: &str| Unread(format!("{keys}: {why}"));
     if let Some(line) = keys.strip_prefix(':') {
         if line.is_empty() {
-            return Err(unread("a command without a name"));
+            return Err(Unread(format!("{keys}: a command without a name")));
         }
         return Ok(Spelled::Ex(line));
     }
+    spell_keys(keys)
+}
+
+/// Whether `keys` reads as a spelling, without keeping it: for text read
+/// from a file, which is kept ([`intern`]) only once it reads.
+pub fn spells(keys: &str) -> bool {
+    match keys.strip_prefix(':') {
+        Some(line) => !line.is_empty(),
+        None => spell_keys(keys).is_ok(),
+    }
+}
+
+/// Reads a spelling that is no line of the prompt: keys, or a range of
+/// digits, which hold nothing of the text.
+fn spell_keys(keys: &str) -> Result<Spelled, Unread> {
+    let unread = |why: &str| Unread(format!("{keys}: {why}"));
     if let Some(key) = named(keys) {
         let mods = Mods::default();
         return Ok(Spelled::Strokes(vec![Stroke::Key { mods, key }]));
@@ -2878,95 +3057,929 @@ impl Keymap {
     }
 }
 
+/// The presses of a spelling, each digit of a range apart.
+pub(crate) fn presses(layout: Layout, spelled: &Spelled) -> Vec<Vec<Stroke>> {
+    // Windows has one Ctrl where the Mac has Cmd and Control.
+    let fold = |mods: Mods| match layout {
+        Layout::Windows => Mods {
+            cmd: false,
+            ctrl: mods.cmd || mods.ctrl,
+            ..mods
+        },
+        Layout::Mac | Layout::Omarchy => mods,
+    };
+    match spelled {
+        Spelled::Ex(_) => Vec::new(),
+        Spelled::Digits(mods) => (1..=9)
+            .map(|digit| {
+                let key = Key::from_name(&digit.to_string()).expect("a digit");
+                vec![Stroke::Key {
+                    mods: fold(*mods),
+                    key,
+                }]
+            })
+            .collect(),
+        Spelled::Strokes(strokes) => vec![
+            strokes
+                .iter()
+                .map(|stroke| match stroke {
+                    Stroke::Key { mods, key } => Stroke::Key {
+                        mods: fold(*mods),
+                        key: *key,
+                    },
+                    text => *text,
+                })
+                .collect(),
+        ],
+    }
+}
+
+/// Whether two spellings would be read as one another: the same line
+/// of the prompt, the same presses, or presses the other begins with
+/// (after `y` nothing can tell `y` from `yy p`).
+pub(crate) fn clash(layout: Layout, a: &Spelled, b: &Spelled) -> bool {
+    if let (Spelled::Ex(a), Spelled::Ex(b)) = (a, b) {
+        return a == b;
+    }
+    presses(layout, a).iter().any(|a| {
+        presses(layout, b).iter().any(|b| {
+            let shared = a.len().min(b.len());
+            a[..shared] == b[..shared]
+        })
+    })
+}
+
+/// One key of the keymap where it is read: a line's key in one of its
+/// scopes, in one layout.
+#[derive(Clone, Debug)]
+pub(crate) struct Entry {
+    /// The line it is a key of, by its place in the keymap.
+    pub line: usize,
+    pub command: Command,
+    pub scope: Scope,
+    pub when: When,
+    pub mode: Mode,
+    pub keys: &'static str,
+    pub spelled: Spelled,
+}
+
+/// Every key of the keymap that is bound in `layout`, claimed ones and
+/// those of commands not built yet too. Not the ones written beside a
+/// command that are another's.
+pub(crate) fn entries(keymap: &Keymap, layout: Layout) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    for (line, binding) in keymap.bindings().iter().enumerate() {
+        for chord in binding.bound(layout).chords {
+            if chord.kind == Kind::Via {
+                continue;
+            }
+            let spelled = spell(chord.keys).expect("a spelling that reads");
+            for scope in binding.scopes {
+                entries.push(Entry {
+                    line,
+                    command: binding.command,
+                    scope: *scope,
+                    when: binding.when,
+                    mode: binding.mode(*scope, layout, &spelled),
+                    keys: chord.keys,
+                    spelled: spelled.clone(),
+                });
+            }
+        }
+    }
+    entries
+}
+
+/// Whether two spellings are the same keys in `layout`: the same line of
+/// the prompt, or the same presses (on Windows `cmd+s` is `ctrl+s`).
+pub fn same(layout: Layout, a: &Spelled, b: &Spelled) -> bool {
+    match (a, b) {
+        (Spelled::Ex(a), Spelled::Ex(b)) => a == b,
+        (Spelled::Ex(_), _) | (_, Spelled::Ex(_)) => false,
+        _ => presses(layout, a) == presses(layout, b),
+    }
+}
+
+/// How the key handler reads a key. A key recorded for a command must be
+/// of a kind the command is read by, or nothing would answer it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Press {
+    /// One press of a key with what is held (`ctrl+s`, `enter`, `f5`).
+    Chord,
+    /// Characters typed one after another (`gd`, `x`).
+    Typed,
+    /// A line of the `:` prompt (`:w`).
+    Line,
+}
+
+impl Press {
+    /// How `spelled` is read. None for a range of digits, which stands for
+    /// nine keys at once.
+    pub fn of(spelled: &Spelled) -> Option<Press> {
+        match spelled {
+            Spelled::Ex(_) => Some(Self::Line),
+            Spelled::Digits(_) => None,
+            Spelled::Strokes(strokes) => match strokes.as_slice() {
+                [Stroke::Key { .. }] => Some(Self::Chord),
+                typed if typed.iter().all(|stroke| matches!(stroke, Stroke::Text(_))) => {
+                    Some(Self::Typed)
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
+/// A row of the Keyboard settings: a command where its keys hold. A
+/// command with keys in two places has a row for each (`Edit cell` on the
+/// rows and in the inspector).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Row {
+    pub command: Command,
+    /// The first scope of its line: the table of `settings.toml` its keys
+    /// are written in.
+    pub scope: Scope,
+    /// What must also show for its keys to hold.
+    pub when: When,
+}
+
+impl Row {
+    /// The row a line of the keymap is.
+    pub fn of(binding: &Binding) -> Row {
+        Row {
+            command: binding.command,
+            scope: binding.scopes.first().copied().unwrap_or(Scope::Global),
+            when: binding.when,
+        }
+    }
+}
+
+/// Why a row's keys cannot be recorded again. Its keys are Tabletist's: a
+/// row that would take one is told so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fixed {
+    /// They hold only while something else shows (the completion list,
+    /// the large editor), where the same key is another's the rest of the
+    /// time.
+    While,
+    /// The key says which way to go: the handler reads the way from it.
+    Direction,
+    /// A range of digits, one key for each of nine.
+    Digits,
+    /// The system has the key: the app menu's, or one every text field
+    /// reads ([`reserved`]).
+    System,
+    /// Read where nothing asks the keymap for another key: Help's `?` is a
+    /// character in every look, and Esc leaves the editor by egui's rule.
+    Own,
+    /// Its keys are another command's (`yy`, then `p`).
+    Others,
+}
+
+/// The commands whose key says which way to go.
+const DIRECTIONS: [Command; 9] = [
+    Command::MoveRow,
+    Command::MoveColumn,
+    Command::MovePage,
+    Command::MoveField,
+    Command::MoveInTree,
+    Command::MoveInConnections,
+    Command::MoveInAgentSessions,
+    Command::MoveInHistory,
+    Command::MoveInStructure,
+];
+
+/// The commands read where nothing asks the keymap for another key.
+const OWN: [Command; 2] = [Command::Help, Command::LeaveEditor];
+
+/// The rows with no key in one look whose chords the key handler reads in
+/// every look: there a chord can be given them. Any other row with no key
+/// in a look is read by that look's letters or prompt, or by the other
+/// look's handler alone, and nothing would answer a key given it.
+const ANY_LOOK: [(Command, Scope); 14] = [
+    (Command::SwitchDatabase, Scope::Global),
+    (Command::PaneLeft, Scope::Global),
+    (Command::PaneRight, Scope::Global),
+    (Command::PaneUp, Scope::Global),
+    (Command::PaneDown, Scope::Global),
+    (Command::DefaultTextSize, Scope::Global),
+    (Command::ExtendUp, Scope::Grid),
+    (Command::ExtendDown, Scope::Grid),
+    (Command::CopyRow, Scope::Grid),
+    (Command::ToggleSqlMode, Scope::SqlEditor),
+    (Command::KeepEdit, Scope::CellEditor),
+    (Command::OpenHistoryEntry, Scope::History),
+    (Command::ShowHistoryCall, Scope::History),
+    (Command::ReapplyHistoryFilter, Scope::History),
+];
+
+/// The commands every look reads by one typed character, before anything
+/// else takes a key: their typed keys are one letter each.
+pub const ONE_LETTER: [Command; 4] = [
+    Command::Reload,
+    Command::FilterObjects,
+    Command::ToggleTree,
+    Command::Help,
+];
+
+/// Vim's own chords in insert mode, which text typed in an editor keeps:
+/// a word back, a character back, the line back, and a register.
+pub const VIM_INSERT: [&str; 4] = ["ctrl+w", "ctrl+h", "ctrl+u", "ctrl+r"];
+
+/// Who keeps a key the app never takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    MacOs,
+    Windows,
+}
+
+impl Owner {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MacOs => "macOS",
+            Self::Windows => "Windows",
+        }
+    }
+}
+
+/// The keys `layout`'s system keeps: the app menu's and the window's, and
+/// the text editing every field reads. No command is given one; a command
+/// that has one by default keeps it, and its row is fixed. Omarchy has
+/// none here: Super is Hyprland's, and the window never sees it.
+pub fn reserved(layout: Layout) -> &'static [&'static str] {
+    match layout {
+        Layout::Mac => &[
+            "cmd+q",
+            "cmd+w",
+            "cmd+h",
+            "alt+cmd+h",
+            "cmd+m",
+            "cmd+tab",
+            "cmd+space",
+            "ctrl+cmd+f",
+            "cmd+,",
+            "cmd+c",
+            "cmd+v",
+            "cmd+x",
+            "cmd+z",
+            "cmd+shift+z",
+            "cmd+a",
+        ],
+        Layout::Windows => &[
+            "alt+f4",
+            "cmd+c",
+            "cmd+v",
+            "cmd+x",
+            "cmd+z",
+            "cmd+shift+z",
+            "cmd+a",
+        ],
+        Layout::Omarchy => &[],
+    }
+}
+
+/// Who keeps `spelled` in `layout`, if the system does.
+pub fn reserved_by(layout: Layout, spelled: &Spelled) -> Option<Owner> {
+    let owner = match layout {
+        Layout::Mac => Owner::MacOs,
+        Layout::Windows => Owner::Windows,
+        Layout::Omarchy => return None,
+    };
+    reserved(layout)
+        .iter()
+        .filter_map(|keys| spell(keys).ok())
+        .any(|kept| same(layout, &kept, spelled))
+        .then_some(owner)
+}
+
+/// The keymap's lines a row is, as the defaults have them.
+fn default_lines(row: Row) -> impl Iterator<Item = &'static Binding> {
+    BINDINGS
+        .iter()
+        .filter(move |binding| Row::of(binding) == row)
+}
+
+/// A row's keys by default in `layout`: its own and those it claims, not
+/// another command's written beside it.
+pub fn defaults(layout: Layout, row: Row) -> Vec<&'static str> {
+    let mut keys: Vec<&'static str> = Vec::new();
+    for binding in default_lines(row) {
+        for chord in binding.bound(layout).chords {
+            if chord.kind != Kind::Via && !keys.contains(&chord.keys) {
+                keys.push(chord.keys);
+            }
+        }
+    }
+    keys
+}
+
+/// Why a row's keys cannot be recorded in `layout`, if they cannot.
+pub fn fixed(layout: Layout, row: Row) -> Option<Fixed> {
+    if row.when != When::Always {
+        return Some(Fixed::While);
+    }
+    if DIRECTIONS.contains(&row.command) {
+        return Some(Fixed::Direction);
+    }
+    if OWN.contains(&row.command) {
+        return Some(Fixed::Own);
+    }
+    let chords: Vec<&Chord> = default_lines(row)
+        .flat_map(|binding| binding.bound(layout).chords.iter())
+        .collect();
+    let spelled = |chord: &Chord| spell(chord.keys).ok();
+    if chords
+        .iter()
+        .any(|chord| matches!(spelled(chord), Some(Spelled::Digits(_))))
+    {
+        return Some(Fixed::Digits);
+    }
+    // ⌘, is the app menu's item, which AppKit takes before the window.
+    let menu = row.command == Command::Settings && layout == Layout::Mac;
+    let kept = chords.iter().any(|chord| {
+        chord.kind != Kind::Via
+            && spelled(chord).is_some_and(|keys| reserved_by(layout, &keys).is_some())
+    });
+    if menu || kept {
+        return Some(Fixed::System);
+    }
+    if !chords.is_empty() && chords.iter().all(|chord| chord.kind == Kind::Via) {
+        return Some(Fixed::Others);
+    }
+    None
+}
+
+/// The kinds of key a row can be given in `layout`: those its keys have
+/// by default (`Save changes` on Omarchy, a line and a chord). A row with
+/// no key in the look takes a chord where the handler reads its chords in
+/// every look, and where nothing answers it yet. Empty: nothing would read
+/// a key given it in this look.
+pub fn takes(layout: Layout, row: Row) -> Vec<Press> {
+    let keys = defaults(layout, row);
+    let mut kinds: Vec<Press> = Vec::new();
+    for press in keys
+        .iter()
+        .filter_map(|keys| spell(keys).ok())
+        .filter_map(|spelled| Press::of(&spelled))
+    {
+        if !kinds.contains(&press) {
+            kinds.push(press);
+        }
+    }
+    let none = keys.is_empty()
+        && default_lines(row).all(|binding| binding.bound(layout).chords.is_empty());
+    if none && (!row.command.info().built || ANY_LOOK.contains(&(row.command, row.scope))) {
+        kinds.push(Press::Chord);
+    }
+    kinds
+}
+
+impl Group {
+    /// The groups the Keyboard settings list, in order. A prompt's keys
+    /// are its own, and are not listed.
+    pub const LISTED: [Group; 5] = [
+        Group::Window,
+        Group::Navigation,
+        Group::Editing,
+        Group::Sql,
+        Group::Ai,
+    ];
+
+    /// The group's heading, as `layout` writes it. English: the caller
+    /// translates.
+    pub fn name(self, layout: Layout) -> &'static str {
+        let omarchy = layout == Layout::Omarchy;
+        match self {
+            Self::Window if omarchy => "window",
+            Self::Window => "Window and connections",
+            Self::Navigation if omarchy => "navigate",
+            Self::Navigation => "Navigation",
+            Self::Editing if omarchy => "edit",
+            Self::Editing => "Grid and editing",
+            Self::Sql if omarchy => "sql",
+            Self::Sql => "SQL editor",
+            Self::Ai if omarchy => "ai",
+            Self::Ai => "AI assistant",
+            Self::Prompts if omarchy => "prompts",
+            Self::Prompts => "Prompts and dialogs",
+        }
+    }
+}
+
+impl Keymap {
+    /// The rows of the Keyboard settings in `layout`, by their groups in
+    /// [`Group::LISTED`] order, each in the keymap's order. A row is
+    /// listed where it has a key in the look, or can be given one.
+    pub fn rows(&self, layout: Layout) -> Vec<Row> {
+        let mut rows: Vec<Row> = Vec::new();
+        for group in Group::LISTED {
+            for binding in BINDINGS {
+                let row = Row::of(binding);
+                if row.command.info().group != group || rows.contains(&row) {
+                    continue;
+                }
+                let has = default_lines(row).any(|line| !line.bound(layout).chords.is_empty());
+                if has || !takes(layout, row).is_empty() {
+                    rows.push(row);
+                }
+            }
+        }
+        rows
+    }
+
+    /// The lines of the keymap a row is.
+    pub fn lines_of(&self, row: Row) -> impl Iterator<Item = &Binding> {
+        self.bindings
+            .iter()
+            .filter(move |binding| Row::of(binding) == row)
+    }
+
+    /// A row's keys as they are now in `layout`: its own and those it
+    /// claims, not another command's written beside it.
+    pub fn keys_of(&self, layout: Layout, row: Row) -> Vec<&'static str> {
+        let mut keys: Vec<&'static str> = Vec::new();
+        for binding in self.lines_of(row) {
+            for chord in binding.bound(layout).chords {
+                if chord.kind != Kind::Via && !keys.contains(&chord.keys) {
+                    keys.push(chord.keys);
+                }
+            }
+        }
+        keys
+    }
+
+    /// A row's keys as `layout` writes them, one for each key cap: what
+    /// its lines write together where they do (`j/k`), and another
+    /// command's key written beside its own as [`Keymap::label`] does.
+    pub fn row_keys(&self, layout: Layout, row: Row) -> Vec<Written> {
+        let built = row.command.info().built;
+        let mut all: Vec<Written> = Vec::new();
+        for binding in self.lines_of(row) {
+            let bound = binding.bound(layout);
+            let mut line: Vec<String> = Vec::new();
+            if bound.shown.is_empty() {
+                for chord in bound.chords {
+                    if chord.kind != Kind::Claimed || !built {
+                        line.push(written(layout, chord.keys));
+                    }
+                }
+            } else {
+                line.push(bound.shown.to_owned());
+            }
+            for keys in line {
+                if !all.iter().any(|written| written.as_str() == keys) {
+                    all.push(Written(keys));
+                }
+            }
+        }
+        all
+    }
+
+    /// Whether a row's keys differ from its defaults in `layout`.
+    pub fn changed(&self, layout: Layout, row: Row) -> bool {
+        let now = self.keys_of(layout, row);
+        let then = defaults(layout, row);
+        let read = |keys: &[&'static str]| -> Vec<Spelled> {
+            keys.iter().filter_map(|keys| spell(keys).ok()).collect()
+        };
+        let (now, then) = (read(&now), read(&then));
+        now.len() != then.len()
+            || now
+                .iter()
+                .any(|key| !then.iter().any(|old| same(layout, key, old)))
+    }
+}
+
+/// A key as `layout` writes it, for a painter of keys: a key cap, a hint.
+pub fn key_written(layout: Layout, keys: &'static str) -> Written {
+    Written(written(layout, keys))
+}
+
+/// A press as `settings.toml` spells it: what is held (`cmd`, `ctrl`,
+/// `alt`, `shift`, in that order) joined with `+`, then the key. None for
+/// a key no spelling names.
+pub fn spelling(mods: Mods, key: Key) -> Option<String> {
+    let named = NAMED
+        .iter()
+        .find(|(_, known)| *known == key)
+        .map(|(name, _)| (*name).to_owned());
+    let name = named
+        .or_else(|| key_mark(key).map(|mark| mark.to_string()))
+        .or_else(|| {
+            let name = key.name();
+            let one = name.len() == 1 && name.chars().all(|char| char.is_ascii_alphanumeric());
+            one.then(|| name.to_ascii_lowercase())
+        })?;
+    let mut spelled = String::new();
+    for (held, word) in [
+        (mods.cmd, "cmd+"),
+        (mods.ctrl, "ctrl+"),
+        (mods.alt, "alt+"),
+        (mods.shift, "shift+"),
+    ] {
+        if held {
+            spelled.push_str(word);
+        }
+    }
+    spelled.push_str(&name);
+    Some(spelled)
+}
+
+/// Whether a chord needs nothing held with it to be given to a command on
+/// macOS and Windows: a function key.
+pub fn alone_will_do(spelled: &Spelled) -> bool {
+    match spelled {
+        Spelled::Strokes(strokes) => match strokes.as_slice() {
+            [Stroke::Key { mods, key }] => mods.cmd || mods.ctrl || mods.alt || function_key(*key),
+            _ => false,
+        },
+        Spelled::Digits(mods) => mods.cmd || mods.ctrl || mods.alt,
+        Spelled::Ex(_) => false,
+    }
+}
+
+/// A key as a screen reader says it on macOS: the names of what is held,
+/// in Apple's order, then the key's ("Shift Command F"). The other looks
+/// say a key as they write it.
+pub fn spoken(layout: Layout, keys: &'static str) -> String {
+    let Layout::Mac = layout else {
+        return written(layout, keys);
+    };
+    let Ok(Spelled::Strokes(strokes)) = spell(keys) else {
+        return written(layout, keys);
+    };
+    let [Stroke::Key { mods, key }] = strokes.as_slice() else {
+        return written(layout, keys);
+    };
+    let mut words: Vec<String> = Vec::new();
+    for (held, word) in [
+        (mods.ctrl, "Control"),
+        (mods.alt, "Option"),
+        (mods.shift, "Shift"),
+        (mods.cmd, "Command"),
+    ] {
+        if held {
+            words.push(word.to_owned());
+        }
+    }
+    let name = match key {
+        Key::Enter => "Return",
+        Key::Backspace => "Delete",
+        Key::Delete => "Forward Delete",
+        Key::Escape => "Escape",
+        Key::ArrowUp => "Up Arrow",
+        Key::ArrowDown => "Down Arrow",
+        Key::ArrowLeft => "Left Arrow",
+        Key::ArrowRight => "Right Arrow",
+        Key::PageUp => "Page Up",
+        Key::PageDown => "Page Down",
+        Key::Comma => "Comma",
+        Key::Period => "Period",
+        Key::Quote => "Apostrophe",
+        Key::OpenBracket => "Left Bracket",
+        Key::CloseBracket => "Right Bracket",
+        Key::Slash => "Slash",
+        Key::Equals => "Equals",
+        Key::Minus => "Minus",
+        Key::Semicolon => "Semicolon",
+        Key::Backtick => "Grave Accent",
+        Key::Backslash => "Backslash",
+        other => other.name(),
+    };
+    words.push(name.to_owned());
+    words.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The presses of a spelling, each digit of a range apart.
-    fn presses(layout: Layout, spelled: &Spelled) -> Vec<Vec<Stroke>> {
-        // Windows has one Ctrl where the Mac has Cmd and Control.
-        let fold = |mods: Mods| match layout {
-            Layout::Windows => Mods {
-                cmd: false,
-                ctrl: mods.cmd || mods.ctrl,
-                ..mods
-            },
-            Layout::Mac | Layout::Omarchy => mods,
-        };
-        match spelled {
-            Spelled::Ex(_) => Vec::new(),
-            Spelled::Digits(mods) => (1..=9)
-                .map(|digit| {
-                    let key = Key::from_name(&digit.to_string()).expect("a digit");
-                    vec![Stroke::Key {
-                        mods: fold(*mods),
-                        key,
-                    }]
-                })
-                .collect(),
-            Spelled::Strokes(strokes) => vec![
-                strokes
-                    .iter()
-                    .map(|stroke| match stroke {
-                        Stroke::Key { mods, key } => Stroke::Key {
-                            mods: fold(*mods),
-                            key: *key,
-                        },
-                        text => *text,
-                    })
-                    .collect(),
-            ],
+    #[test]
+    fn a_command_is_named_in_the_file_by_a_stable_snake_case_id() {
+        let mut ids: Vec<&str> = Vec::new();
+        for command in Command::ALL {
+            let id = command.id();
+            assert!(
+                !id.is_empty()
+                    && id.chars().all(|char| char.is_ascii_lowercase()
+                        || char.is_ascii_digit()
+                        || char == '_'),
+                "{id}"
+            );
+            assert!(!ids.contains(&id), "{id} names two commands");
+            ids.push(id);
+            assert_eq!(Command::from_id(id), Some(*command));
         }
+        // The brief's own.
+        assert_eq!(Command::DeleteRow.id(), "delete_row");
+        assert_eq!(Command::SetDefault.id(), "set_default");
+        assert_eq!(Command::RunAll.id(), "run_all");
+        assert_eq!(Command::from_id("Delete row"), None);
     }
 
-    /// Whether two spellings would be read as one another: the same line
-    /// of the prompt, the same presses, or presses the other begins with
-    /// (after `y` nothing can tell `y` from `yy p`).
-    fn clash(layout: Layout, a: &Spelled, b: &Spelled) -> bool {
-        if let (Spelled::Ex(a), Spelled::Ex(b)) = (a, b) {
-            return a == b;
-        }
-        presses(layout, a).iter().any(|a| {
-            presses(layout, b).iter().any(|b| {
-                let shared = a.len().min(b.len());
-                a[..shared] == b[..shared]
-            })
-        })
-    }
-
-    struct Entry {
-        command: Command,
-        scope: Scope,
-        when: When,
-        mode: Mode,
-        keys: &'static str,
-        spelled: Spelled,
-    }
-
-    /// Every key of the keymap that is bound in `layout`, claimed ones and
-    /// those of commands not built yet too. Not the ones written beside a
-    /// command that are another's.
-    fn entries(keymap: &Keymap, layout: Layout) -> Vec<Entry> {
-        let mut entries = Vec::new();
-        for binding in keymap.bindings() {
-            for chord in binding.bound(layout).chords {
-                if chord.kind == Kind::Via {
-                    continue;
-                }
-                let spelled = spell(chord.keys).expect("a spelling that reads");
-                for scope in binding.scopes {
-                    entries.push(Entry {
-                        command: binding.command,
-                        scope: *scope,
-                        when: binding.when,
-                        mode: binding.mode(*scope, layout, &spelled),
-                        keys: chord.keys,
-                        spelled: spelled.clone(),
-                    });
+    #[test]
+    fn a_scope_is_named_and_filed_as_each_look_has_it() {
+        assert_eq!(Scope::Grid.name(Layout::Mac), "Table");
+        assert_eq!(Scope::SqlEditor.name(Layout::Mac), "Editor");
+        assert_eq!(Scope::CellEditor.name(Layout::Mac), "Cell");
+        assert_eq!(Scope::Global.name(Layout::Omarchy), "global");
+        assert_eq!(Scope::Global.table(Layout::Omarchy), "window");
+        assert_eq!(Scope::Sidebar.table(Layout::Omarchy), "navigate");
+        assert_eq!(Scope::CellEditor.table(Layout::Omarchy), "edit");
+        assert_eq!(Scope::SqlEditor.table(Layout::Omarchy), "sql");
+        for layout in Layout::ALL {
+            let mut tables: Vec<&str> = Vec::new();
+            for scope in Scope::ALL {
+                let table = scope.table(layout);
+                assert!(!tables.contains(&table), "{table}");
+                tables.push(table);
+                if scope == Scope::Prompt {
+                    assert_eq!(Scope::from_table(table), None);
+                } else {
+                    assert_eq!(Scope::from_table(table), Some(scope), "{table}");
+                    assert_eq!(Scope::from_table(scope.id()), Some(scope));
                 }
             }
         }
-        entries
+        // Every look's name is read in every look.
+        assert_eq!(Scope::from_table("table"), Some(Scope::Grid));
+        assert_eq!(Scope::from_table("grid"), Some(Scope::Grid));
+        assert_eq!(Scope::from_table("editor"), Some(Scope::SqlEditor));
+        assert_eq!(Scope::from_table("unbind"), None);
+    }
+
+    #[test]
+    fn a_press_is_spelled_as_the_file_writes_it_and_reads_back() {
+        let mods = |cmd, ctrl, alt, shift| Mods {
+            cmd,
+            ctrl,
+            alt,
+            shift,
+        };
+        assert_eq!(
+            spelling(mods(true, false, false, true), Key::F).as_deref(),
+            Some("cmd+shift+f")
+        );
+        assert_eq!(
+            spelling(mods(true, false, true, false), Key::E).as_deref(),
+            Some("cmd+alt+e")
+        );
+        assert_eq!(
+            spelling(mods(false, true, false, false), Key::Enter).as_deref(),
+            Some("ctrl+enter")
+        );
+        assert_eq!(spelling(Mods::default(), Key::F5).as_deref(), Some("f5"));
+        assert_eq!(
+            spelling(mods(true, false, false, false), Key::Comma).as_deref(),
+            Some("cmd+,")
+        );
+        let keys = NAMED
+            .iter()
+            .map(|(_, key)| *key)
+            .chain(MARKS.iter().map(|(_, key)| *key));
+        for key in keys.chain([Key::A, Key::Num7]) {
+            for held in [
+                mods(true, false, false, false),
+                mods(false, true, true, true),
+            ] {
+                let spelled = spelling(held, key).expect("a key the keymap names");
+                let read = spell(Box::leak(spelled.into_boxed_str())).expect("reads");
+                assert_eq!(
+                    read,
+                    Spelled::Strokes(vec![Stroke::Key { mods: held, key }])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_is_spoken_by_its_names_on_macos() {
+        assert_eq!(spoken(Layout::Mac, "cmd+shift+f"), "Shift Command F");
+        assert_eq!(spoken(Layout::Mac, "cmd+alt+e"), "Option Command E");
+        assert_eq!(spoken(Layout::Mac, "ctrl+space"), "Control Space");
+        assert_eq!(spoken(Layout::Mac, "cmd+enter"), "Command Return");
+        assert_eq!(spoken(Layout::Mac, "cmd+backspace"), "Command Delete");
+        assert_eq!(spoken(Layout::Windows, "cmd+shift+f"), "Ctrl+Shift+F");
+        assert_eq!(spoken(Layout::Omarchy, "ctrl+shift+f"), "ctrl+shift+f");
+        assert_eq!(spoken(Layout::Omarchy, "gd"), "gd");
+    }
+
+    #[test]
+    fn the_keyboard_settings_list_the_recent_commands_with_their_defaults() {
+        let keymap = Keymap::default();
+        let row = |command, scope| Row {
+            command,
+            scope,
+            when: When::Always,
+        };
+        let listed = |layout, row: Row| keymap.rows(layout).contains(&row);
+        let written = |layout, row| -> Vec<String> {
+            keymap
+                .row_keys(layout, row)
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect()
+        };
+        let global = Scope::Global;
+        for (command, mac, omarchy) in [
+            (Command::FindObject, "⌘P", "ctrl+p"),
+            (Command::History, "⌘Y", ":history"),
+            (Command::NewSqlTab, "⌘T", "ctrl+t"),
+            (Command::ReopenClosedTab, "⇧⌘T", ""),
+        ] {
+            let row = row(command, global);
+            assert!(listed(Layout::Mac, row), "{command:?}");
+            assert_eq!(written(Layout::Mac, row), [mac]);
+            if !omarchy.is_empty() {
+                assert!(listed(Layout::Omarchy, row), "{command:?}");
+                assert_eq!(written(Layout::Omarchy, row), [omarchy]);
+            }
+        }
+        if crate::endpoint::AVAILABLE {
+            assert_eq!(
+                written(Layout::Mac, row(Command::ShowAgents, global)),
+                ["⌥⌘A"]
+            );
+        }
+        let start = row(Command::ReopenClosedTab, Scope::Start);
+        assert!(listed(Layout::Omarchy, start));
+        assert_eq!(written(Layout::Omarchy, start), ["u"]);
+        // No prompt's keys, and every row once.
+        for layout in Layout::ALL {
+            let rows = keymap.rows(layout);
+            for (index, row) in rows.iter().enumerate() {
+                assert_ne!(row.command.info().group, Group::Prompts, "{row:?}");
+                assert!(!rows[index + 1..].contains(row), "{row:?}");
+            }
+        }
+        // A command with no key in the look is listed where it can be
+        // given one, and not where nothing would read it.
+        assert!(listed(Layout::Mac, row(Command::SwitchDatabase, global)));
+        assert!(written(Layout::Mac, row(Command::SwitchDatabase, global)).is_empty());
+        assert!(listed(
+            Layout::Mac,
+            row(Command::ComparePreviousRun, Scope::SqlEditor)
+        ));
+        assert!(!listed(
+            Layout::Mac,
+            row(Command::CopyAgentCommand, Scope::Agents)
+        ));
+        assert!(!listed(
+            Layout::Mac,
+            row(Command::OpenReferencedRow, Scope::Grid)
+        ));
+    }
+
+    #[test]
+    fn a_row_takes_the_kinds_of_key_its_command_is_read_by() {
+        let row = |command, scope| Row {
+            command,
+            scope,
+            when: When::Always,
+        };
+        use Press::{Chord, Line, Typed};
+        let save = row(Command::SaveChanges, Scope::Grid);
+        assert_eq!(takes(Layout::Omarchy, save), [Line, Chord]);
+        assert_eq!(takes(Layout::Mac, save), [Chord]);
+        assert_eq!(
+            takes(Layout::Omarchy, row(Command::DeleteRow, Scope::Grid)),
+            [Typed]
+        );
+        assert_eq!(
+            takes(Layout::Mac, row(Command::DeleteRow, Scope::Grid)),
+            [Chord]
+        );
+        assert_eq!(
+            takes(Layout::Mac, row(Command::SwitchDatabase, Scope::Global)),
+            [Chord]
+        );
+        assert!(takes(Layout::Mac, row(Command::SwitchDatabase, Scope::Start)).is_empty());
+        assert_eq!(
+            takes(Layout::Omarchy, row(Command::CopyRow, Scope::Grid)),
+            [Chord]
+        );
+        // Nothing answers it yet: it can be given a chord in either look.
+        for layout in Layout::ALL {
+            let compare = row(Command::ComparePreviousRun, Scope::SqlEditor);
+            assert_eq!(takes(layout, compare), [Chord]);
+        }
+        assert!(takes(Layout::Mac, row(Command::CopyAgentCommand, Scope::Agents)).is_empty());
+    }
+
+    #[test]
+    fn some_rows_cannot_be_recorded_and_say_why() {
+        let row = |command, scope| Row {
+            command,
+            scope,
+            when: When::Always,
+        };
+        let (mac, omarchy) = (Layout::Mac, Layout::Omarchy);
+        assert_eq!(
+            fixed(mac, row(Command::MoveRow, Scope::Grid)),
+            Some(Fixed::Direction)
+        );
+        assert_eq!(
+            fixed(omarchy, row(Command::MoveInTree, Scope::Sidebar)),
+            Some(Fixed::Direction)
+        );
+        assert_eq!(
+            fixed(mac, row(Command::GoToConnectionWindow, Scope::Global)),
+            Some(Fixed::Digits)
+        );
+        assert_eq!(
+            fixed(omarchy, row(Command::SwitchTab, Scope::Global)),
+            Some(Fixed::Digits)
+        );
+        assert_eq!(
+            fixed(mac, row(Command::CloseTab, Scope::Global)),
+            Some(Fixed::System)
+        );
+        assert_eq!(
+            fixed(mac, row(Command::CopyCells, Scope::Grid)),
+            Some(Fixed::System)
+        );
+        assert_eq!(
+            fixed(mac, row(Command::UndoCell, Scope::Grid)),
+            Some(Fixed::System)
+        );
+        assert_eq!(
+            fixed(mac, row(Command::Settings, Scope::Global)),
+            Some(Fixed::System)
+        );
+        assert_eq!(fixed(omarchy, row(Command::Settings, Scope::Global)), None);
+        assert_eq!(
+            fixed(Layout::Windows, row(Command::Settings, Scope::Global)),
+            None
+        );
+        assert_eq!(
+            fixed(omarchy, row(Command::DuplicateRow, Scope::Grid)),
+            Some(Fixed::Others)
+        );
+        assert_eq!(fixed(mac, row(Command::DuplicateRow, Scope::Grid)), None);
+        assert_eq!(
+            fixed(mac, row(Command::Help, Scope::Global)),
+            Some(Fixed::Own)
+        );
+        let completing = Row {
+            command: Command::InsertCompletion,
+            scope: Scope::SqlEditor,
+            when: When::Completion,
+        };
+        assert_eq!(fixed(mac, completing), Some(Fixed::While));
+        assert_eq!(fixed(mac, row(Command::Format, Scope::SqlEditor)), None);
+        // Every row that can be recorded takes some kind of key.
+        let keymap = Keymap::default();
+        for layout in Layout::ALL {
+            for row in keymap.rows(layout) {
+                if fixed(layout, row).is_none() {
+                    assert!(!takes(layout, row).is_empty(), "{layout:?}: {row:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_systems_keys_are_its_own_in_each_look() {
+        let read = |keys| spell(keys).unwrap();
+        assert_eq!(reserved_by(Layout::Mac, &read("cmd+q")), Some(Owner::MacOs));
+        assert_eq!(
+            reserved_by(Layout::Mac, &read("alt+cmd+h")),
+            Some(Owner::MacOs)
+        );
+        assert_eq!(
+            reserved_by(Layout::Mac, &read("cmd+alt+h")),
+            Some(Owner::MacOs)
+        );
+        assert_eq!(reserved_by(Layout::Mac, &read("ctrl+c")), None);
+        assert_eq!(reserved_by(Layout::Mac, &read("cmd+j")), None);
+        // Windows reads Ctrl for Cmd.
+        assert_eq!(
+            reserved_by(Layout::Windows, &read("ctrl+c")),
+            Some(Owner::Windows)
+        );
+        assert_eq!(
+            reserved_by(Layout::Windows, &read("alt+f4")),
+            Some(Owner::Windows)
+        );
+        assert_eq!(reserved_by(Layout::Omarchy, &read("ctrl+c")), None);
+        for layout in Layout::ALL {
+            for keys in reserved(layout) {
+                assert!(spell(keys).is_ok(), "{keys}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_alone_will_do_only_as_a_function_key() {
+        let read = |keys| spell(keys).unwrap();
+        assert!(alone_will_do(&read("f5")));
+        assert!(alone_will_do(&read("f19")));
+        assert!(alone_will_do(&read("cmd+j")));
+        assert!(alone_will_do(&read("ctrl+alt+j")));
+        assert!(!alone_will_do(&read("shift+j")));
+        assert!(!alone_will_do(&read("enter")));
+        assert!(!alone_will_do(&read("j")));
+        assert!(!alone_will_do(&read(":w")));
     }
 
     #[test]
@@ -3146,6 +4159,12 @@ mod tests {
             key,
         };
         let vims = [ctrl(Key::W), ctrl(Key::H), ctrl(Key::U), ctrl(Key::R)];
+        let listed: Vec<Spelled> = VIM_INSERT.iter().map(|keys| spell(keys).unwrap()).collect();
+        let strokes: Vec<Stroke> = listed
+            .iter()
+            .flat_map(|spelled| presses(Layout::Omarchy, spelled).concat())
+            .collect();
+        assert_eq!(strokes, vims, "VIM_INSERT is vim's four");
         for entry in entries(&keymap, Layout::Omarchy) {
             let presses = presses(Layout::Omarchy, &entry.spelled);
             for stroke in presses.iter().flatten() {
@@ -3314,7 +4333,10 @@ mod tests {
         assert_eq!(mac(Command::PreviousError), "⌥⌘↑");
         assert_eq!(mac(Command::Format), "⇧⌘F");
         assert_eq!(mac(Command::Explain), "⌘E");
-        assert_eq!(mac(Command::ComparePreviousRun), "⌥⌘E");
+        // The brief of the Keyboard settings (open question 1): Explain
+        // analyze has the chord, and Compare with previous run none.
+        assert_eq!(mac(Command::ExplainAnalyze), "⌥⌘E");
+        assert_eq!(mac(Command::ComparePreviousRun), "");
         assert_eq!(mac(Command::GoToConnectionWindow), "⌘1…9");
         assert_eq!(omarchy(Command::GoToConnectionWindow), "ctrl+shift+1..9");
         assert_eq!(omarchy(Command::EditCell), "i, enter");
@@ -3503,7 +4525,14 @@ mod tests {
             ex(Scope::Grid, "history clear"),
             command(Command::ClearHistory)
         );
-        assert_eq!(ex(Scope::Grid, "keys default"), Claimed);
+        assert_eq!(
+            ex(Scope::Grid, "keys default"),
+            command(Command::KeysDefault)
+        );
+        assert_eq!(
+            ex(Scope::SqlEditor, "keys cheatsheet"),
+            command(Command::KeysCheatsheet)
+        );
         // Each in its own scope only, and `:w` never anything but a save.
         assert_eq!(ex(Scope::Grid, "rw"), Nothing);
         assert_eq!(ex(Scope::SqlEditor, "w"), Nothing);
