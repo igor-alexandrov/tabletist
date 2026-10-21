@@ -49,6 +49,9 @@ pub struct Shop {
 struct Inner {
     dir: tempfile::TempDir,
     connections: Mutex<Vec<Kept>>,
+    /// The comments the tests gave tables, by name, whatever their schema:
+    /// what PostgreSQL and MySQL would describe and SQLite cannot.
+    comments: Mutex<Vec<(String, String)>>,
     /// Whether the database is given the connection's timeout. Without it
     /// only the server's own timer ends a statement.
     database_times_out: AtomicBool,
@@ -75,6 +78,7 @@ impl Shop {
             inner: Arc::new(Inner {
                 dir,
                 connections: Mutex::default(),
+                comments: Mutex::default(),
                 database_times_out: AtomicBool::new(true),
                 reads_ended: AtomicUsize::new(0),
             }),
@@ -122,6 +126,14 @@ impl Shop {
         {
             kept.listed.sources.person.masked = masked.clone();
         }
+    }
+
+    /// Gives the table `table` a comment, as PostgreSQL and MySQL keep
+    /// one: its description carries it.
+    pub fn comment(&self, table: &str, words: &str) {
+        let mut comments = self.inner.comments.lock().unwrap();
+        comments.retain(|(name, _)| name != table);
+        comments.push((table.to_owned(), words.to_owned()));
     }
 
     /// Adds a rule of an administrator's policy to a listed connection,
@@ -236,7 +248,13 @@ impl Session for ShopSession {
     }
 
     async fn describe(&self, object: &ObjectRef) -> Result<Structure, Failure> {
-        Ok(self.connection.describe(object).await?)
+        let mut structure = self.connection.describe(object).await?;
+        let comments = self.shop.inner.comments.lock().unwrap();
+        structure.comment = comments
+            .iter()
+            .find(|(table, _)| *table == object.name)
+            .map(|(_, words)| words.clone());
+        Ok(structure)
     }
 
     async fn hidden(&self, sources: &Sources) -> Result<Hidden, Failure> {
