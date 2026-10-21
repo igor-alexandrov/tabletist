@@ -38,6 +38,11 @@ its name, or by its keys when you press them in it with Mod, Ctrl or Alt
 held, and **Changed** lists the keys you changed. **Export cheat sheet**
 saves the keys in force as a Markdown file.
 
+A few commands are not built yet, among them Ask AI, Explain and Commit:
+the pane lists them with the keys they will have, marked **Not built
+yet**, and those keys do nothing until the command is built. You can
+still change them. The cheat sheet marks them too.
+
 Some keys cannot be changed: they are dimmed. The keys you change are kept
 in `settings.toml`, in
 [tables of their own]({% link _reference/settings-and-files.md %}#the-keys).

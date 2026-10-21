@@ -486,13 +486,10 @@ fn key_row(
     let fixed = fixed(layout, row);
     let changed = app.keymap.changed(layout, row);
     let id = ui.id().with(("keyboard-row", row));
+    let built = row.command.info().built;
     let line = ui.interact(rect, id, Sense::click());
     let spoken = keyboard::spoken_keys(app, row);
-    let said = if changed {
-        format!("{name}, {scope}, {spoken}, {}", skin.say("changed"))
-    } else {
-        format!("{name}, {scope}, {spoken}")
-    };
+    let said = keyboard::said(app, row, [&name, &scope, &spoken]);
     line.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &said));
     ui.ctx().accesskit_node_builder(line.id, |node| {
         node.set_role(egui::accesskit::Role::Row);
@@ -589,7 +586,13 @@ fn key_row(
             }
         }
     }
-    widgets::paint_text(ui, action_x, middle, Text::one(look, role, &name, ink));
+    let width = widgets::paint_text(ui, action_x, middle, Text::one(look, role, &name, ink));
+    // A command nothing answers yet keeps its keys, and says so.
+    if !built {
+        let note = skin.say("not built yet");
+        let x = action_x + width + 8.0;
+        widgets::paint_text(ui, x, middle, Text::one(look, role, &note, palette.faint));
+    }
     // The keys are a button that records, as on the other looks: Enter on
     // the row does it from the keys.
     let sense = if fixed.is_some() {
