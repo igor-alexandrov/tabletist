@@ -39,19 +39,19 @@ and a fetch of its own (an action and backend path for one string).
 
 - **The table's comment**: at the very top of the view, over the label
   card (over Columns for a view, which has none). Secondary text, wrapped
-  at 640 pt (`HELP`) or the view's width, whichever is less. Laid out through `for_display`: line breaks stay, hidden
-  characters are written out. Nothing, and no space, without a comment.
+  at 640 pt (`HELP`) or the view's width, whichever is less. Trimmed, then laid out through `for_display`: line breaks stay, hidden
+  characters are written out. Nothing, and no space, without a comment or with one of only spaces.
 - **A Comment column** after Key, titled "Comment". Whether there is one is
   the engine's: a function matching `Driver` with every variant named,
   `Postgres` and `MySql` yes, `Sqlite` no. On the first two it always
   shows, empty or not, so an engine's tables keep one shape.
-- **Its cell**: the comment's first line, first cut to a local
+- **Its cell**: the comment's first line that is not blank, trimmed, first cut to a local
   `COMMENT_LINE_CHARS` (256, as `NAME_MAX_CHARS`: a PostgreSQL comment has
-  no limit, and the cell is measured every frame), then hidden characters written out (`escape_hidden`), then
+  no limit, and the cell is measured every frame), then put on one line with hidden characters written out (`format::one_line`), then
   cut with "…" to at most 320 pt by `grid::ellipsize` in the cell's font. Lines stay one high, so the stripes and the cursor's
-  fill are unchanged. When it was cut, or has more lines, the whole
-  comment (through `for_display`) shows on hover. The cell's accessible
-  label is the whole comment as `for_display` lays it out.
+  fill are unchanged. When it was cut, or has another line that is not blank, the whole
+  comment (trimmed, through `for_display`) shows on hover. The cell's
+  accessible label is the whole comment, trimmed, as `for_display` lays it out.
 - The terminal look draws the same column and paragraph with its own
   roles. A cut comment is read whole by hovering, or by a screen reader;
   no key shows it (left for later if asked for).
@@ -61,7 +61,7 @@ and a fetch of its own (an action and backend path for one string).
 - `grid::Column` gets `comment: Option<&'a str>`. The data view fills it
   from the structure it already holds, by column name. SQL results, the
   settings preview and the tests' columns pass `None`.
-- A header with a comment shows it on hover (through `for_display`),
+- A header with a comment shows it on hover (trimmed, through `for_display`),
   sortable or not, in every look. Its AccessKit node takes the comment as
   its description.
 

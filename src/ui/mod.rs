@@ -17,6 +17,8 @@ mod agent_settings_tests;
 mod appearance_settings_tests;
 pub mod cell_editor;
 #[cfg(test)]
+mod comment_tests;
+#[cfg(test)]
 mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;

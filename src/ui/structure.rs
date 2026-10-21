@@ -3,8 +3,11 @@
 //! foreign keys that point at it, and the ways to change that here: the
 //! chooser, the column under the view's cursor, a column's menu.
 
+use std::borrow::Cow;
+
 use egui::accesskit::Role;
 use egui::{CornerRadius, Frame, Rect, Sense, Stroke, WidgetInfo, WidgetType, vec2};
+use tabletist_db::Driver;
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
@@ -13,7 +16,8 @@ use crate::labels::{self, Refused, Resolved, Source};
 use crate::model::{Action, ConnTabId, Pane, TabId};
 use crate::theme::{self, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::{display_safe, for_display};
+use crate::ui::format::{NAME_MAX_CHARS, display_safe, for_display, one_line};
+use crate::ui::grid::ellipsize;
 use crate::ui::{focus, label_chooser, menu, states, widgets};
 
 /// One cell of a structure table: body text, or code.
@@ -30,6 +34,34 @@ fn cell(
         widgets::body(look)
     };
     widgets::label(ui, role, text, palette.text, look)
+}
+
+/// A column's comment in the Comment column: its first line, cut as
+/// [`comment_line`] cuts it, and the whole comment for a screen reader.
+/// Where the cell is, when what it shows leaves some of the comment out:
+/// the pointer is shown the whole there.
+fn comment_cell(
+    ui: &mut egui::Ui,
+    comment: Option<&str>,
+    look: &Look,
+    palette: &Palette,
+) -> Option<Rect> {
+    let Some(comment) = comment else {
+        cell(ui, "", false, look, palette);
+        return None;
+    };
+    let role = widgets::body(look);
+    let width = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let (shown, cut) = comment_line(comment, COMMENT_WIDTH, width);
+    let laid = Text::one(look, role, &shown, palette.text).layout(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(laid.size(), Sense::hover());
+    // Made only while a screen reader, or a test, reads the tree.
+    response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, for_display(comment.trim())));
+    if ui.is_rect_visible(rect) {
+        laid.paint(ui.painter(), rect.min);
+    }
+    cut.then_some(rect)
 }
 
 /// What labels the table's rows, as the view's line words it, and where
@@ -83,12 +115,67 @@ const BUTTON: f32 = 26.0;
 
 /// The widest the sentence under the label's line runs before it wraps,
 /// in the terminal look. In a card it has the card's room, and no less
-/// than `NARROW` in a window too narrow for the buttons beside it.
+/// than `NARROW` in a window too narrow for the buttons beside it. The
+/// table's comment wraps at it in every look.
 const HELP: f32 = 640.0;
 const NARROW: f32 = 240.0;
 
 /// The value tags' slot the label's tag is drawn in: their blue.
 const TAG: usize = 1;
+
+/// The most of a comment's first line the Comment column lays out, as
+/// many as of a name: a PostgreSQL comment has no limit, and the line is
+/// measured every frame.
+const COMMENT_LINE_CHARS: usize = NAME_MAX_CHARS;
+// `one_line` cuts past `CELL_MAX_CHARS` with a "…" of its own: a line
+// cut here must not be cut there again.
+const _: () = assert!(COMMENT_LINE_CHARS <= crate::ui::format::CELL_MAX_CHARS);
+
+/// The widest a comment runs in the Comment column.
+const COMMENT_WIDTH: f32 = 320.0;
+
+/// Whether the engine keeps a comment on a column, for the Columns table
+/// to have a place for it.
+fn keeps_comments(driver: Driver) -> bool {
+    match driver {
+        Driver::Postgres | Driver::MySql => true,
+        Driver::Sqlite => false,
+    }
+}
+
+/// What the Comment column shows of `comment`: its first line that is
+/// not blank, cut to `COMMENT_LINE_CHARS`, on one line with hidden
+/// characters written out, then cut with "…" to `max` points as `width`
+/// measures; and whether that leaves any of the comment out. A line that
+/// goes on, or a comment with another line that is not blank, ends in "…"
+/// too. Blank lines say nothing: a comment written in dollar quotes often
+/// starts with a line break.
+fn comment_line(comment: &str, max: f32, width: impl Fn(&str) -> f32) -> (String, bool) {
+    // Indented lines, as a comment in dollar quotes has, start at their
+    // words.
+    let mut lines = comment
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default();
+    let more = lines.next().is_some();
+    let (kept, long) = match first.char_indices().nth(COMMENT_LINE_CHARS) {
+        Some((at, _)) => (&first[..at], true),
+        None => (first, false),
+    };
+    // At most `CELL_MAX_CHARS`, as many as `kept` holds: no "…" of its own.
+    let escaped = one_line(kept);
+    if long || more {
+        // The "…" is part of what is cut, so there is always one.
+        let shown = ellipsize(&format!("{escaped}…"), max, false, &width).into_owned();
+        (shown, true)
+    } else {
+        let shown = ellipsize(&escaped, max, false, &width);
+        // `ellipsize` lends the text back only where it fits.
+        let cut = matches!(shown, Cow::Owned(_));
+        (shown.into_owned(), cut)
+    }
+}
 
 /// What the label's part of the view was asked this frame.
 #[derive(Default)]
@@ -327,6 +414,22 @@ fn quiet(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {
     widgets::label(ui, widgets::body(look), text, palette.secondary, look);
 }
 
+/// The table's own comment, over everything else of the view: its
+/// author's words, wrapped at `HELP` or the view's width.
+fn table_comment(ui: &mut egui::Ui, comment: &str, look: &Look, palette: &Palette) {
+    let wrap = HELP.min(ui.available_width());
+    Text::one(
+        look,
+        widgets::body(look),
+        &for_display(comment.trim()),
+        palette.secondary,
+    )
+    .wrap(wrap)
+    .layout(ui.ctx())
+    .label(ui);
+    ui.add_space(16.0);
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
@@ -354,6 +457,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // The view's cursor shows while the view has the keys.
     let cursor = (workspace.pane == Pane::Grid).then_some(object.structure_cursor);
     let dialect = workspace.driver.dialect();
+    // Where the engine keeps no comment, the view has no place for one.
+    let comments = keeps_comments(workspace.driver);
     let mut asked = Asked::default();
     if let Some(error) = super::data_view::shown_error(&object.structure) {
         egui::Frame::new()
@@ -375,6 +480,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 egui::Frame::new()
                     .inner_margin(egui::Margin::same(theme::PAD))
                     .show(ui, |ui| {
+                        // One of only spaces says nothing, and takes no
+                        // room.
+                        let comment = structure.comment.as_deref().map(str::trim);
+                        if let Some(comment) = comment.filter(|comment| !comment.is_empty()) {
+                            table_comment(ui, comment, &look, &palette);
+                        }
                         if let Some(label) = &label {
                             let table = (object.object.name.as_str(), refused.as_deref());
                             asked = label_part(ui, label, table, skin);
@@ -385,12 +496,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         // known: under the line's words.
                         let mut lines = Vec::with_capacity(structure.columns.len());
                         let mut fill = None;
+                        // Where each cut comment is drawn, by line.
+                        let mut cut = Vec::with_capacity(structure.columns.len());
                         let labelled = label.as_ref().and_then(|label| label.column.as_deref());
                         let columns = egui::Grid::new(("structure-columns", object_tab.0))
                             .striped(true)
                             .spacing([16.0, 6.0])
                             .show(ui, |ui| {
-                                for title in ["Name", "Type", "Nullable", "Default", "Key"] {
+                                let titles: &[&str] = if comments {
+                                    &["Name", "Type", "Nullable", "Default", "Key", "Comment"]
+                                } else {
+                                    &["Name", "Type", "Nullable", "Default", "Key"]
+                                };
+                                for title in titles {
                                     quiet(ui, &gettext(locale, title), &look, &palette);
                                 }
                                 ui.end_row();
@@ -425,6 +543,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                                         ""
                                     };
                                     cell(ui, key, false, &look, &palette);
+                                    if comments {
+                                        let comment = column.comment.as_deref();
+                                        cut.push(comment_cell(ui, comment, &look, &palette));
+                                    }
                                     ui.end_row();
                                 }
                             })
@@ -478,6 +600,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                             if response.clicked() || response.secondary_clicked() {
                                 actions.push(Action::SetStructureCursor { tab, id, line });
                                 actions.push(Action::GridKeys(tab));
+                            }
+                            // The whole of a cut comment under the pointer.
+                            // Over the line, which takes the clicks: a
+                            // widget under it would not be hovered.
+                            if let Some(Some(at)) = cut.get(line) {
+                                let id = ("structure-comment", object_tab.0, line);
+                                let tip = ui.interact(*at, ui.id().with(id), Sense::hover());
+                                if tip.hovered()
+                                    && let Some(comment) = &column.comment
+                                {
+                                    let _ = tip.on_hover_text(for_display(comment.trim()));
+                                }
                             }
                             if cursor == Some(line) {
                                 // A cursor that moved is brought into
@@ -719,4 +853,117 @@ fn heading(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {
     let role = TextRole::pick(look, TextRole::TableTitle, TextRole::OTableTitle);
     widgets::label(ui, role, text, palette.text, look);
     ui.add_space(4.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Eight points per character, "…" included.
+    fn width(text: &str) -> f32 {
+        text.chars().count() as f32 * 8.0
+    }
+
+    #[test]
+    fn a_short_comment_is_shown_whole() {
+        assert_eq!(
+            comment_line("Login address", 320.0, width),
+            ("Login address".to_owned(), false)
+        );
+    }
+
+    #[test]
+    fn a_long_line_is_cut_to_the_width() {
+        let (shown, cut) = comment_line(&"x".repeat(60), 320.0, width);
+        assert!(cut);
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(width(&shown) <= 320.0, "{shown}");
+    }
+
+    #[test]
+    fn a_line_just_too_wide_is_cut_and_says_so() {
+        // 41 characters at 8 points: one too many for 320.
+        let (shown, cut) = comment_line(&"x".repeat(41), 320.0, width);
+        assert!(cut);
+        assert_eq!(shown, format!("{}…", "x".repeat(39)));
+    }
+
+    #[test]
+    fn a_line_exactly_as_wide_as_the_column_is_not_cut() {
+        // 40 characters at 8 points: 320.
+        let line = "x".repeat(40);
+        assert_eq!(comment_line(&line, 320.0, width), (line, false));
+    }
+
+    #[test]
+    fn a_first_line_just_too_wide_of_more_lines_ends_in_one_ellipsis() {
+        // The "…" that says there is more is cut with the line: 41 and
+        // the "…" are 336 points, so two characters go for one "…", as
+        // they go from a line just too wide that has nothing after it.
+        let comment = format!("{}\nmore", "x".repeat(41));
+        let (shown, cut) = comment_line(&comment, 320.0, width);
+        assert!(cut);
+        assert_eq!(shown, format!("{}…", "x".repeat(39)));
+    }
+
+    #[test]
+    fn blank_lines_before_the_first_are_passed_by() {
+        assert_eq!(
+            comment_line("\n    Login address", 320.0, width),
+            ("Login address".to_owned(), false)
+        );
+    }
+
+    #[test]
+    fn blank_lines_after_the_only_one_are_not_more() {
+        assert_eq!(
+            comment_line("Login address\n\n", 320.0, width),
+            ("Login address".to_owned(), false)
+        );
+    }
+
+    #[test]
+    fn a_windows_line_end_ends_the_first_line() {
+        assert_eq!(
+            comment_line("Login address\r\nmore", 320.0, width),
+            ("Login address…".to_owned(), true)
+        );
+    }
+
+    #[test]
+    fn a_comment_of_more_lines_shows_its_first_and_says_there_is_more() {
+        assert_eq!(
+            comment_line("Login address\nUsed to sign in", 320.0, width),
+            ("Login address…".to_owned(), true)
+        );
+    }
+
+    #[test]
+    fn a_line_longer_than_the_limit_is_cut_there_before_it_is_measured() {
+        let (shown, cut) = comment_line(&"x".repeat(100_000), f32::INFINITY, width);
+        assert!(cut);
+        assert_eq!(shown.chars().count(), COMMENT_LINE_CHARS + 1);
+        assert!(shown.ends_with('…'));
+    }
+
+    #[test]
+    fn a_tab_is_a_space() {
+        assert_eq!(
+            comment_line("Login\taddress", f32::INFINITY, width),
+            ("Login address".to_owned(), false)
+        );
+    }
+
+    #[test]
+    fn hidden_characters_are_written_out() {
+        let (shown, _) = comment_line("a\u{200B}b", f32::INFINITY, width);
+        assert_eq!(shown, "a<U+200B>b");
+    }
+
+    #[test]
+    fn postgres_and_mysql_keep_comments_and_sqlite_does_not() {
+        assert!(keeps_comments(Driver::Postgres));
+        assert!(keeps_comments(Driver::MySql));
+        assert!(!keeps_comments(Driver::Sqlite));
+    }
 }
