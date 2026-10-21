@@ -1160,9 +1160,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         } else if let Some(index) = first([Command::PaneUp, Command::PaneDown])
             && let Some((tab, _)) = sql
         {
-            // With the keyboard nowhere, it counts from the script.
-            focus::neighbour(ctx, index == 1, &Region::STACKED, Some(Region::Editor));
-            if index == 1 {
+            // With the keyboard nowhere, it counts from the script, unless
+            // the person was in the tree. From any other region, nothing.
+            let start = (from != Region::Tree).then_some(Region::Editor);
+            let down = index == 1;
+            if focus::neighbour(ctx, down, &Region::STACKED, start) && down {
                 actions.push(Action::GridKeys(tab));
             }
         } else if let Some((tab, _)) = in_editor {
@@ -1179,8 +1181,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 .count
                     > 0
             };
-            if ctx.input_mut(results) {
-                focus::neighbour(ctx, true, &Region::STACKED, Some(Region::Editor));
+            let script = Some(Region::Editor);
+            if ctx.input_mut(results) && focus::neighbour(ctx, true, &Region::STACKED, script) {
                 actions.push(Action::GridKeys(tab));
             }
         }

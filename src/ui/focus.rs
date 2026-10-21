@@ -143,27 +143,34 @@ pub fn step(ctx: &egui::Context, forward: bool, among: Option<&[Region]>, from: 
 }
 
 /// Asks for the region next to the one the keyboard is in, as [`step`]
-/// does, among `among`. Past the last one (or before the first) there is
-/// none, and the keyboard stays where it is.
-pub fn neighbour(ctx: &egui::Context, forward: bool, among: &[Region], from: Option<Region>) {
-    ask(ctx, forward, Some(among), from, false);
+/// does, among `among`, and says whether there is one. Only from one of
+/// `among`: from elsewhere, and past the last one (or before the first),
+/// there is none, and the keyboard stays where it is.
+pub fn neighbour(
+    ctx: &egui::Context,
+    forward: bool,
+    among: &[Region],
+    from: Option<Region>,
+) -> bool {
+    ask(ctx, forward, Some(among), from, false)
 }
 
 /// F6's question, and its neighbour's: which region takes the keyboard
-/// next. Past the end it starts over where `wrap` says so.
+/// next, if any. Past the end it starts over where `wrap` says so, and
+/// from a region not `among` the ones stepped among.
 fn ask(
     ctx: &egui::Context,
     forward: bool,
     among: Option<&[Region]>,
     from: Option<Region>,
     wrap: bool,
-) {
+) -> bool {
     let at = ctx
         .memory(|memory| memory.focused())
         .and_then(|id| ctx.read_response(id))
         .map(|response| response.rect.center());
     let now = ctx.cumulative_frame_nr();
-    ctx.data_mut(|data| {
+    let asked = ctx.data_mut(|data| {
         let regions: &mut Regions = data.get_temp_mut_or_default(regions_id());
         let mut stops: Vec<Region> = regions
             .before
@@ -184,6 +191,11 @@ fn ask(
                     .map(|(region, _)| *region)
             })
             .or(from);
+        let outside =
+            current.is_some_and(|current| among.is_some_and(|among| !among.contains(&current)));
+        if outside && !wrap {
+            return false;
+        }
         let next = match (current, forward) {
             (Some(current), true) => stops.iter().find(|stop| **stop > current),
             (Some(current), false) => stops.iter().rev().find(|stop| **stop < current),
@@ -197,9 +209,11 @@ fn ask(
         };
         let next = next.or(again);
         regions.wanted = next.map(|region| (*region, now));
+        next.is_some()
     });
     // The region takes the keyboard when it is next drawn.
     ctx.request_repaint();
+    asked
 }
 
 /// Makes `response`'s widget a pane: one Tab stop for a list or a grid

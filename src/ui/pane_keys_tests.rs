@@ -130,3 +130,17 @@ fn a_tables_rows_have_no_pane_above_or_below() {
         assert_eq!(pane, crate::model::Pane::Grid);
     }
 }
+
+#[test]
+fn from_outside_the_stack_ctrl_j_and_ctrl_k_move_nothing() {
+    let (mut harness, tab, id) = ran(Look::omarchy(), "SELECT 1");
+    // The keyboard on the tree: out of the script, then to the left.
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert_eq!(press(&mut harness, Key::H), "Objects");
+    for key in [Key::J, Key::K] {
+        assert_eq!(press(&mut harness, key), "Objects", "{key:?}");
+        assert!(!in_script(&harness, tab, id), "{key:?}");
+        let pane = harness.app.workspace(tab).unwrap().pane;
+        assert_eq!(pane, crate::model::Pane::Tree, "{key:?}");
+    }
+}
