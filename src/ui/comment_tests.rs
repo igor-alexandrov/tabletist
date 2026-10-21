@@ -8,7 +8,7 @@ use tabletist_db::{ColumnInfo, Driver, Structure};
 
 use super::tests::hover;
 use crate::model::{Action, ObjectView};
-use crate::testing::{Harness, bounds, labels, page};
+use crate::testing::{Harness, bounds, labels, node, page};
 
 fn column(name: &str, comment: Option<&str>) -> ColumnInfo {
     ColumnInfo {
@@ -174,4 +174,37 @@ fn a_comment_is_said_without_the_blank_lines_around_it() {
     let columns = vec![column("id", None), column("email", Some(comment))];
     let mut harness = structure_view(Driver::Postgres, described(columns, None));
     assert!(harness.has("Login address"));
+}
+
+// Test 4 of the spec.
+#[test]
+fn a_columns_comment_is_its_headers_description_and_tooltip_in_the_grid() {
+    let mut harness = Harness::new();
+    harness.connect_fake();
+    harness.click("users");
+    harness.answer_rows(page(5, false));
+    let columns = vec![
+        column("id", None),
+        column("email", Some("Login address")),
+        column("meta", None),
+    ];
+    harness.answer_structure(described(columns, None));
+    let tree = harness.settle();
+    let description = |label: &str| {
+        let id = node(&tree, label, Role::Button).unwrap_or_else(|| panic!("{label}"));
+        let (_, found) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+        found.description().map(str::to_owned)
+    };
+    assert_eq!(description("email").as_deref(), Some("Login address"));
+    assert_eq!(description("id"), None);
+    // Not on screen until the pointer is over its header.
+    assert!(!labels(&tree).iter().any(|name| name == "Login address"));
+    let at = bounds(&tree, "email", Role::Button)
+        .expect("the email header")
+        .center();
+    assert!(
+        hover(&mut harness, at)
+            .iter()
+            .any(|name| name == "Login address")
+    );
 }

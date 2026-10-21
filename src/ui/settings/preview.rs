@@ -217,6 +217,7 @@ fn paint_grid(ui: &mut Ui, rect: Rect, settings: &Settings, look: &Look, palette
                 flexible: meta.name == "created_at",
                 sortable: false,
                 required: false,
+                comment: None,
             }
         })
         .collect();

@@ -1920,6 +1920,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                 // A result is in the order its statement gave it.
                 sortable: false,
                 required: false,
+                comment: None,
             }
         })
         .collect();

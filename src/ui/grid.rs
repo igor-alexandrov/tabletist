@@ -14,7 +14,7 @@ use crate::model::CellPos;
 use crate::theme::{DataFont, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus;
-use crate::ui::format::{Marks, array_items, display_safe};
+use crate::ui::format::{Marks, array_items, display_safe, for_display};
 use crate::ui::states::Tone;
 use crate::ui::widgets::virtual_rows;
 
@@ -68,6 +68,9 @@ pub struct Column<'a> {
     pub sortable: bool,
     /// A new row needs a value in it: the terminal's header says so.
     pub required: bool,
+    /// What the table's author wrote of the column: its header's tooltip,
+    /// and said after its name to a screen reader.
+    pub comment: Option<&'a str>,
 }
 
 /// A row as the grid needs it besides its cells.
@@ -1270,6 +1273,16 @@ pub fn show<'a>(
                 );
             }
             draw_header(ui, &painter, rect, column, pad, look, palette);
+            // The column's comment: said after its name, and shown under
+            // the pointer. Laid out only when it is asked for.
+            if let Some(comment) = column.comment {
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_description(for_display(comment.trim()));
+                });
+                if response.hovered() {
+                    let _ = response.on_hover_text(for_display(comment.trim()));
+                }
+            }
             let handle = Rect::from_min_max(
                 pos2(rect.right() - HANDLE_WIDTH / 2.0, top),
                 pos2(rect.right() + HANDLE_WIDTH / 2.0, top + header_height),
@@ -2021,6 +2034,7 @@ mod tests {
                 flexible: false,
                 sortable,
                 required: false,
+                comment: None,
             },
             Column {
                 name: "email",
@@ -2031,6 +2045,7 @@ mod tests {
                 flexible: false,
                 sortable,
                 required: false,
+                comment: None,
             },
         ]
     }
@@ -2995,6 +3010,7 @@ mod tests {
                 flexible: false,
                 sortable: true,
                 required: false,
+                comment: None,
             })
             .collect();
         // One frame of a 320 pt wide grid: its output, where each cell's
@@ -3115,6 +3131,7 @@ mod tests {
                 flexible: false,
                 sortable: true,
                 required: false,
+                comment: None,
             })
             .collect();
         let palette = crate::theme::Palette::dark();
@@ -3328,6 +3345,27 @@ mod tests {
         assert!(remembered(&ctx, id) && !has_widths());
         forget(&ctx, id);
         assert!(!remembered(&ctx, id) && !scrolled());
+    }
+
+    #[test]
+    fn a_header_says_its_columns_comment_after_its_name() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        ctx.enable_accesskit();
+        for sortable in [true, false] {
+            let mut columns = columns_that(sortable);
+            columns[1].comment = Some("Login address");
+            frame_of(&ctx, &columns, 3, vec![]);
+            let (_, tree) = frame_of(&ctx, &columns, 3, vec![]);
+            let role = if sortable { Role::Button } else { Role::Label };
+            let description = |label: &str| {
+                let id = crate::testing::node(&tree, label, role).expect(label);
+                let (_, found) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+                found.description().map(str::to_owned)
+            };
+            assert_eq!(description("email").as_deref(), Some("Login address"));
+            assert_eq!(description("id"), None);
+        }
     }
 
     #[test]
