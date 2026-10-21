@@ -241,8 +241,11 @@ Not every row can be recorded:
 - ⌫ (macOS, Windows) while recording, or `dd` on Omarchy's row, unbinds the
   row: every default key it had goes into `[keys.unbind]` and it shows "Not
   set".
-- Swap gives this row the key and the other row this row's keys of that
-  kind. The board's file (`"ctrl+d" = "set_default"`) cannot come from a
+- Swap is an exchange: this row gets the key, and the other row gets this
+  row's keys of that kind in the key's place, its other keys kept (Edit
+  cell keeps Return when it gives F2 away). It is offered only where both
+  rows' lines would stand. A row's reset puts back the defaults no other
+  row's line has taken since; one taken stays unbound. The board's file (`"ctrl+d" = "set_default"`) cannot come from a
   swap in this model: `Set DEFAULT` on Omarchy is typed letters, so it gets
   `dd`. A line of another kind than its row takes is refused when read.
 
@@ -258,13 +261,13 @@ Not every row can be recorded:
 | 6 | Reopen closed tabs ⇧⌘T / `u` | In the keymap, not built: the keys are claimed, nothing answers | Nothing reopens a closed tab yet (the start screen opens recents by number) |
 | 7 | Board rows `Next connection window`, `Reload schema`, `Focus inspector fields`, `Ask`, `Set NULL` and `Set DEFAULT` in Cell | The keymap's names and scopes: `Go to connection window`, `Reload`, `Open inspector / focus fields`, `Ask AI`, Set NULL and DEFAULT in Table | One keymap: the screen lists its names |
 | 8 | Menus show a change at once | macOS menus carry no key equivalent but Settings' ⌘, (fixed); the `?` list, hints, tooltips, quick open and the start screen read the keymap | `src/macos.rs` |
-| 9 | `:keys default` writes into "a new buffer" | `keys.default.toml` in the app's cache folder, written fresh each time and opened in `$EDITOR`, where it can be saved anywhere | The app has no buffers of text of its own but SQL editors, which hold SQL |
+| 9 | `:keys default` writes into "a new buffer" | `keys.default.toml` in the app's state folder, written fresh each time and opened in `$EDITOR`, where it can be saved anywhere | The app has no buffers of text of its own but SQL editors, which hold SQL |
 | 10 | Omarchy recording | Typed letters gather and end after 800 ms or on `enter`; a `:` line ends on `enter` only (a command's words take longer to type); a chord is taken at once; `enter` with nothing typed records `enter`; `backspace` takes back one character | A pause in the middle of `:keys default` is not the end of it |
 | 11 | Omarchy `h/l` "change scope column focus" | Move to the previous or the next group | The pane has one column the cursor can be in |
 | 12 | Omarchy board's file pane comment lines | Drawn as the pane's caption, not written into the file | The file holds only what the person changed; a comment the app wrote would stay after Reset all |
 | 13 | `super` | The window never receives Super on Linux, where Hyprland takes it. Cmd or Super held while recording is refused with the note, and a `super+` line in the file is an unknown key | egui reports Super only as the Mac's Cmd |
 | 14 | Omarchy refusals beyond the brief | Vim's insert keys (`ctrl+w`, `ctrl+h`, `ctrl+u`, `ctrl+r`) in the cell editor and the SQL editor; typed keys that start with a digit (a count) | "Insert-mode keys follow vim"; a count before `dd` deletes that many rows |
 | 15 | Settings › General's "file problems list" | An ignored key line joins the file's ignored lines: red in the Omarchy file pane, and counted, with its line numbers, in the footer of the macOS and Windows sheet | The sheet has no list, only that line; it now names the lines |
-| 16 | Windows | The sheet of macOS, Ctrl in the place of ⌘ (written `cmd` in the file, as the keymap does). Reserved: Alt+F4 and the text editing set (Ctrl+C, V, X, Z, Y, A) | The brief names two looks; Windows has the Mac's keys |
+| 16 | Windows | The sheet of macOS, Ctrl in the place of ⌘ (written `cmd` in the file, as the keymap does). Reserved: Alt+F4 and the text editing set (Ctrl+C, V, X, Z, Shift+Z, A); not Ctrl+Y, which is History outside a text field | The brief names two looks; Windows has the Mac's keys |
 | 17 | macOS board footer | The pane's footer is the board's (the vim note and Export cheat sheet), with the line of ignored lines above it when there are some. The settings file's path and links stay on the other panes | The board |
 | 18 | Changed rows | A row is changed when its keys differ from its defaults. The count is of rows | |

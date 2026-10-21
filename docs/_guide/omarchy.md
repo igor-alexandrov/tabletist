@@ -43,6 +43,8 @@ back.
 | `:agents log` | Show the Agents tab's log |
 | `:history` | Show the [History tab]({% link _guide/sql-editor.md %}#history) |
 | `:history clear` | Clear this connection's history, once you answer `y` |
+| `:keys default` | Open every key in force in your editor, as `settings.toml` spells them, commented: a file to copy lines from, written again each time and never read |
+| `:keys cheatsheet` | Save the keys in force as a Markdown cheat sheet, where you say |
 | `?` | The list of keys |
 
 Ctrl+P opens quick open from any pane: a picker at the top of the
@@ -319,13 +321,44 @@ stopped a run, `t` runs it again without one. Times read "45s", "1m" and
 | `j` `k` | Move |
 | `h` `l` | Change the option |
 | Space | Toggle the option |
-| Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Editor, Agents |
+| Ctrl+H, Ctrl+L | The pane before or after: General, Appearance, Editor, Keyboard, Agents |
 | Enter | On the Agents pane: show the Agents tab, Connections or the log, from the status, access or log row. On the Editor pane's keep row: show the History tab |
 | `y` | On the Agents pane: copy the command that connects Claude Code |
 | Ctrl+E | Open `settings.toml` in your editor |
 | `R` | Reset the option. The agent server's switch is left as it is |
 | `D`, `n` | On the Editor pane, once keep is set to don't keep: delete the history kept, or keep it |
 | Esc | Close |
+
+### Settings › Keyboard
+
+The Keyboard pane lists the commands by group, each with the scope its
+keys work in and the keys, and changes them: the defaults are the ones on
+this page.
+
+| Keys | Do |
+| --- | --- |
+| `j` `k` | Move |
+| `h` `l` | The group before or after |
+| Enter | Record new keys for the command |
+| `dd` | Unbind it: none of its keys does anything |
+| `R` | Put its keys back |
+| `/` | Filter the commands by name. Enter or Esc gives the keys back to the list |
+| `?` | Then press keys: list the commands they are keys of. Esc lists them all again |
+| Ctrl+E | Open `settings.toml` in your editor |
+| Esc | Close |
+
+While a command records, `press keys…` stands in its keys. A chord is
+taken at once. Letters gather into keys of several (`gd`), which end 800
+ms after the last letter or on Enter, and a line of the prompt (`:w`)
+ends on Enter; Backspace takes a letter back and Esc gives up. A command
+takes keys of the kind it has: Delete row typed letters, Toggle sidebar a
+chord, Save changes a line or a chord, and new keys of one kind leave its
+keys of the other. Super is never bound (Hyprland owns it), nor are `:`
+alone and Esc, nor vim's insert keys (`ctrl+w`, `ctrl+h`, `ctrl+u`,
+`ctrl+r`) in an editor, nor letters that start with a digit, which is a
+count. Keys another command has offer `[s] swap` where the exchange can
+stand: that command gives up the keys and gets the ones this one had. The file beside the list shows the keys' part of
+`settings.toml` as it is.
 
 The Mac's keys are in [Tabletist on macOS]({% link _guide/macos.md %}#the-keyboard),
 and the keys of the macOS and Windows looks together in
