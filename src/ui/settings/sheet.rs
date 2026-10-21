@@ -186,7 +186,7 @@ pub(super) fn show(
             // The footer's height before the content's: a window too short
             // for the sheet takes from the rows, which scroll, and the
             // footer stays.
-            let ignored = ignored_lines(ui, app.settings_file.invalid.len(), pane.width(), &skin);
+            let ignored = ignored_lines(ui, &app.settings_file.invalid, pane.width(), &skin);
             let foot = footer_height(ui, ignored.as_ref(), &skin);
             let limit = room.top() + height - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
@@ -1604,7 +1604,8 @@ fn reveal_words() -> &'static str {
 
 /// What the footer says while the app ignores `count` lines of the file,
 /// wrapped at `width`.
-fn ignored_lines(ui: &Ui, count: usize, width: f32, skin: &Skin) -> Option<Laid> {
+fn ignored_lines(ui: &Ui, ignored: &[usize], width: f32, skin: &Skin) -> Option<Laid> {
+    let count = ignored.len();
     if count == 0 {
         return None;
     }
@@ -1615,9 +1616,25 @@ fn ignored_lines(ui: &Ui, count: usize, width: f32, skin: &Skin) -> Option<Laid>
         "lines in the file could not be read and were ignored",
         lines,
     );
-    let said = format!("{count} {said}");
+    let said = format!("{count} {said}: {}", line_numbers(skin.locale, ignored));
     let text = Text::one(skin.look, TextRole::Secondary, &said, skin.palette.warning);
     Some(text.wrap(width).layout(ui.ctx()))
+}
+
+/// The numbers of the lines that were ignored, as the footer names them:
+/// the first ten, and how many more.
+fn line_numbers(locale: crate::i18n::Locale, ignored: &[usize]) -> String {
+    const NAMED: usize = 10;
+    let lines = u32::try_from(ignored.len()).unwrap_or(u32::MAX);
+    let mut numbers: Vec<String> = ignored
+        .iter()
+        .take(NAMED)
+        .map(ToString::to_string)
+        .collect();
+    if ignored.len() > NAMED {
+        numbers.push("…".to_owned());
+    }
+    ngettext(locale, "line {lines}", "lines {lines}", lines).replace("{lines}", &numbers.join(", "))
 }
 
 /// How tall the footer is: its rule, and its line between its padding,

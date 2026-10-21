@@ -484,7 +484,7 @@ fn a_zone_the_database_does_not_know_is_reported_in_both_looks() {
             own: false,
         }));
     harness.settle();
-    assert!(harness.has("1 line in the file could not be read and was ignored"));
+    assert!(harness.has("1 line in the file could not be read and was ignored: line 2"));
 }
 
 #[test]

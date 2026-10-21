@@ -31,6 +31,8 @@ mod commands;
 mod editing;
 mod history;
 mod key_picker;
+#[cfg(test)]
+mod keyboard_tests;
 mod labels;
 mod quick_open;
 #[cfg(test)]
@@ -107,7 +109,14 @@ pub struct App {
     pub look: crate::theme::Look,
     /// The keys in force: what the handler answers and what a label names.
     /// Shared with what is drawn, which reads a key's spelling from it.
+    /// The defaults with the person's keys laid over them, for the look's
+    /// layout ([`App::refresh_keymap`]).
     pub keymap: std::sync::Arc<crate::keymap::Keymap>,
+    /// The layout the keymap was made for: a look drawn with another one
+    /// has it made again before anything reads a key.
+    keymap_layout: Option<crate::keymap::Layout>,
+    /// The lines of the keys' tables the keymap did not take, and why.
+    pub keys_refused: Vec<crate::keymap::Refused>,
     pub themes: Catalog,
     pub tabs: Vec<ConnTab>,
     /// Index into `tabs`. Always valid: `tabs` is never empty.
@@ -313,6 +322,8 @@ impl App {
             palette: Palette::dark(),
             look,
             keymap: std::sync::Arc::default(),
+            keymap_layout: None,
+            keys_refused: Vec::new(),
             themes: Catalog::default(),
             tabs: Vec::new(),
             active: 0,
@@ -368,6 +379,7 @@ impl App {
             managed,
             next_id: 1,
         };
+        app.refresh_keymap();
         app.launch();
         // What an older version kept in connections.json is written as
         // this one keeps it, once, off the UI thread. So is a file in
@@ -3089,6 +3101,9 @@ impl App {
                 saved,
                 ..file
             };
+            // The text was read again: the lines the keymap did not take
+            // are marked again.
+            self.refresh_keymap();
             self.save_settings();
         }
     }
@@ -4975,10 +4990,34 @@ impl App {
             changed = changed.for_layout(self.layout());
         }
         let keys = self.settings.changed_keys(&changed);
-        if keys.is_empty() {
+        // The keymap's lines, which the keys' tables hold.
+        let shortcuts = self.settings.keys != changed.keys;
+        if keys.is_empty() && !shortcuts {
             return;
         }
-        let text = changed.write_into(&self.settings_file.text, &keys);
+        let mut text = changed.write_into(&self.settings_file.text, &keys);
+        if shortcuts {
+            text = changed.write_keys_into(&text);
+        }
+        self.take_written(text, changed);
+    }
+
+    /// Every table of the keys taken out of the file, and nothing else of
+    /// it changed: every key back to the keymap's own. The lines the
+    /// reader ignored in those tables go with them.
+    pub fn reset_all_keys(&mut self) {
+        let text = Settings::without_keys(&self.settings_file.text);
+        if text == self.settings_file.text {
+            return;
+        }
+        let mut changed = self.settings.clone();
+        changed.keys = crate::keymap::Overrides::default();
+        self.take_written(text, changed);
+    }
+
+    /// Takes `text`, written by the app from `changed`, as the file's:
+    /// applied, and saved.
+    fn take_written(&mut self, text: String, changed: Settings) {
         let loaded = Settings::from_toml_over(&text, &changed);
         let live = self.settings_file.live;
         let saved = self.settings_file.saved.take();
@@ -5012,12 +5051,41 @@ impl App {
         }
     }
 
+    /// Makes the keymap in force: the defaults with the settings' keys
+    /// laid over them for the look's layout. The lines it does not take
+    /// join the file's ignored ones, and are kept with why
+    /// ([`App::keys_refused`]). Called whenever the settings' text is
+    /// taken in, after [`App::settings_file`] has it.
+    pub fn refresh_keymap(&mut self) {
+        let layout = self.layout();
+        let (keymap, refused) = crate::keymap::Keymap::with(layout, &self.settings.keys);
+        let file = &mut self.settings_file;
+        for refusal in &refused {
+            let at = file
+                .key_lines
+                .iter()
+                .find(|(line, _)| *line == refusal.line)
+                .map(|(_, at)| *at);
+            if let Some(at) = at
+                && !file.invalid.contains(&at)
+            {
+                file.invalid.push(at);
+            }
+        }
+        file.invalid.sort_unstable();
+        self.keys_refused = refused;
+        self.keymap = std::sync::Arc::new(keymap);
+        self.keymap_layout = Some(layout);
+    }
+
     /// Replaces the settings and does what the ones that changed ask for.
     /// Every change comes through here, from the app or from the file, and
     /// nothing is written here: saving is [`App::change_settings`]'s.
     pub fn apply_settings(&mut self, new: Settings) {
         let was_on = self.agents_on();
         let old = std::mem::replace(&mut self.settings, new);
+        // The keys: the text they were read from is the file's now.
+        self.refresh_keymap();
         if old.timestamps != self.settings.timestamps {
             let full = self.settings.timestamps == crate::settings::Timestamps::Full;
             for tab in &mut self.tabs {
@@ -7286,7 +7354,11 @@ impl App {
         // Before anything is drawn: a close request that pending changes
         // hold back is asked about in this frame.
         self.hold_close(ui.ctx());
-        // Before anything names a key: the keymap its labels are read from.
+        // Before anything names a key: the keymap its labels are read from,
+        // made for the look's layout.
+        if self.keymap_layout != Some(self.layout()) {
+            self.refresh_keymap();
+        }
         crate::ui::keys::publish(ui.ctx(), &self.keymap);
         // Before the shortcuts take their keys: what the user works with.
         crate::ui::focus::begin_frame(ui.ctx());

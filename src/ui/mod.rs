@@ -1741,7 +1741,7 @@ value_tags   = true
     #[test]
     fn the_settings_sheet_counts_the_lines_the_app_ignores() {
         let mut harness = settings_sheet(crate::theme::Look::standard());
-        let ignored = "1 line in the file could not be read and was ignored";
+        let ignored = "1 line in the file could not be read and was ignored: line 2";
         assert!(!harness.has(ignored));
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::SettingsFile {
