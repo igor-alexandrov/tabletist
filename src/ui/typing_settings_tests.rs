@@ -5,10 +5,12 @@
 use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 
-use crate::model::{Action, ConnTabId};
+use crate::model::{Action, ConnTabId, SettingsPane};
 use crate::settings::OptionValue;
 use crate::testing::{Harness, bounds};
 use crate::theme::Look;
+
+use super::appearance_settings_tests::{settings_saves, shows};
 
 /// A connected fixture in `look`, with a new SQL editor that has the
 /// keyboard and holds `text`, its cursor at the end.
@@ -366,4 +368,60 @@ fn the_completion_list_hangs_under_a_word_that_starts_a_wrapped_row() {
         }
     }
     assert!(started > 0, "no length put the word at a row's start");
+}
+
+/// Settings on its Editor pane.
+fn on_the_pane(harness: &mut Harness) {
+    harness.app.apply(Action::ShowSettings);
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(SettingsPane::Editor));
+    harness.settle();
+}
+
+#[test]
+fn the_sheet_has_the_close_pairs_and_wrap_rows_and_sets_them() {
+    let mut harness = Harness::with_size(egui::vec2(1440.0, 1400.0));
+    harness.set_look(Look::macos());
+    on_the_pane(&mut harness);
+    // As the board orders them: after Autocomplete, and Wrap last.
+    let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
+    harness.settle();
+    assert!(top(&harness, "Autocomplete") < top(&harness, "Close brackets and quotes"));
+    assert!(top(&harness, "Close brackets and quotes") < top(&harness, "Line numbers"));
+    assert!(top(&harness, "Current line highlight") < top(&harness, "Wrap"));
+    let saves = settings_saves(&harness);
+    harness.click("Close brackets and quotes");
+    harness.click("Wrap");
+    harness.settle();
+    assert!(!harness.app.settings.close_pairs);
+    assert!(harness.app.settings.wrap);
+    assert_eq!(settings_saves(&harness), saves + 2);
+}
+
+#[test]
+fn the_screen_has_the_close_brackets_and_wrap_rows() {
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(Look::omarchy());
+    on_the_pane(&mut harness);
+    for words in ["close brackets", "wrap"] {
+        assert!(shows(&mut harness, words), "{words}");
+    }
+    let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
+    assert!(top(&harness, "autocomplete") < top(&harness, "close brackets"));
+    assert!(top(&harness, "close brackets") < top(&harness, "wrap"));
+    // On and off until set, as each row's box says.
+    let mark = |harness: &Harness, words: &str| {
+        let row = harness.painted_rect(words).expect(words);
+        harness
+            .text_rects
+            .iter()
+            .find(|(text, rect)| {
+                (text == "[x]" || text == "[ ]") && (rect.center().y - row.center().y).abs() < 4.0
+            })
+            .map(|(text, _)| text.clone())
+            .expect("the row's box")
+    };
+    assert_eq!(mark(&harness, "close brackets"), "[x]");
+    assert_eq!(mark(&harness, "wrap"), "[ ]");
 }

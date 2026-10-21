@@ -528,9 +528,7 @@ fn the_sheet_sets_each_editor_option_with_a_click() {
         assert!(shows(&mut harness, words), "{words}");
     }
     // The rows of what is not built yet are not there.
-    for words in ["Keybindings", "Wrap", "Close brackets and quotes"] {
-        assert!(!shows(&mut harness, words), "{words}");
-    }
+    assert!(!shows(&mut harness, "Keybindings"));
     let saves = settings_saves(&harness);
     harness.click("New tabs run in: Follow connection");
     harness.click("Row limit");
@@ -659,14 +657,18 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     type_key(&mut harness, Key::J, "j");
     harness.press(Key::Space, Modifiers::NONE);
     // Line numbers from relative to absolute; four spaces; completion on
-    // the key; keywords from the look's lower case to upper; leading
-    // commas, with space.
+    // the key; no closing brackets and wrapped lines, with space; keywords
+    // from the look's lower case to upper; leading commas, with space.
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::L, "l");
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::L, "l");
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::L, "l");
+    type_key(&mut harness, Key::J, "j");
+    harness.press(Key::Space, Modifiers::NONE);
+    type_key(&mut harness, Key::J, "j");
+    harness.press(Key::Space, Modifiers::NONE);
     type_key(&mut harness, Key::J, "j");
     type_key(&mut harness, Key::H, "h");
     type_key(&mut harness, Key::J, "j");
@@ -682,7 +684,9 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     assert_eq!(settings.autocomplete, Autocomplete::Manual);
     assert_eq!(settings.keywords, Some(KeywordCase::Upper));
     assert_eq!(settings.commas, crate::settings::Commas::Leading);
-    assert_eq!(settings_saves(&harness), saves + 9);
+    assert!(!settings.close_pairs);
+    assert!(settings.wrap);
+    assert_eq!(settings_saves(&harness), saves + 11);
     // The file has each of them, and R puts the cursor's back.
     let text = harness.app.settings_file.text.clone();
     assert!(
