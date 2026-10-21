@@ -140,6 +140,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | --- | --- |
 | Enter, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Mod+N | [Add a row]({% link _guide/editing-data.md %}#add-a-row), at the top of the grid, while a table's rows are in front |
+| Down | On the table's last row, on its last page: add a row below it |
 | Mod+D | [Duplicate the row]({% link _guide/editing-data.md %}#duplicate-a-row), as a new row at the top of the grid |
 | Backspace, Delete | [Delete the row]({% link _guide/editing-data.md %}#delete-a-row): mark it for deletion, or restore a marked row. A new row that is not saved yet is dropped |
 | Shift+Up, Shift+Down | Select the row above or below with the selected rows. Shift with a click selects through to the clicked row. Backspace then [deletes them all]({% link _guide/editing-data.md %}#delete-a-row) |
@@ -155,6 +156,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Alt+Backspace | Discard all pending changes |
 | Esc | With no cell being edited: discard all pending changes, asking first |
 | Mod+Shift+D | Show or hide the SQL of the pending changes |
+| Mod+Alt+Down, Mod+Alt+Up | Next and previous error: a cell to fix, or a row a save failed on. Past the last it starts again at the first |
 
 ## SQL editor
 
@@ -167,6 +169,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Shift+F | Format |
 | Tab, Shift+Tab | Indent, outdent: at the cursor, or every line of the selection |
 | Mod+Shift+M | Switch between read-only and read-write runs |
+| Mod+Alt+Down, Mod+Alt+Up | Put the cursor where the last run's error is, while the script is the one that ran |
 | Ctrl+Space, Mod+I | Complete |
 | Up, Down | Move in the completion list |
 | Tab | Accept the completion |
