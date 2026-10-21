@@ -95,6 +95,9 @@ pub enum Region {
 impl Region {
     /// The panes the terminal look steps between with ctrl+h and ctrl+l.
     pub const PANES: [Region; 4] = [Region::Tree, Region::Start, Region::Grid, Region::Panel];
+    /// The panes one above the other, which it steps between with ctrl+k
+    /// and ctrl+j: a SQL editor's script over its results.
+    pub const STACKED: [Region; 2] = [Region::Editor, Region::Grid];
 }
 
 /// Where the regions are, and which one F6 asked for.
@@ -136,6 +139,25 @@ pub fn claim(ui: &Ui, region: Region, response: &Response) {
 /// keyboard is in, among the ones on screen and in `among` if given. With
 /// the keyboard nowhere it counts from `from`.
 pub fn step(ctx: &egui::Context, forward: bool, among: Option<&[Region]>, from: Option<Region>) {
+    ask(ctx, forward, among, from, true);
+}
+
+/// Asks for the region next to the one the keyboard is in, as [`step`]
+/// does, among `among`. Past the last one (or before the first) there is
+/// none, and the keyboard stays where it is.
+pub fn neighbour(ctx: &egui::Context, forward: bool, among: &[Region], from: Option<Region>) {
+    ask(ctx, forward, Some(among), from, false);
+}
+
+/// F6's question, and its neighbour's: which region takes the keyboard
+/// next. Past the end it starts over where `wrap` says so.
+fn ask(
+    ctx: &egui::Context,
+    forward: bool,
+    among: Option<&[Region]>,
+    from: Option<Region>,
+    wrap: bool,
+) {
     let at = ctx
         .memory(|memory| memory.focused())
         .and_then(|id| ctx.read_response(id))
@@ -167,8 +189,13 @@ pub fn step(ctx: &egui::Context, forward: bool, among: Option<&[Region]>, from: 
             (Some(current), false) => stops.iter().rev().find(|stop| **stop < current),
             (None, _) => None,
         };
-        // Past the last one it starts over.
-        let next = next.or(if forward { stops.first() } else { stops.last() });
+        // Past the last one it starts over, where it wraps.
+        let again = match (wrap, forward) {
+            (false, _) => None,
+            (true, true) => stops.first(),
+            (true, false) => stops.last(),
+        };
+        let next = next.or(again);
         regions.wanted = next.map(|region| (*region, now));
     });
     // The region takes the keyboard when it is next drawn.

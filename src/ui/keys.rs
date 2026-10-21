@@ -1090,7 +1090,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // tree, the tabs, the table's header, the rows, the row panel), and
     // Shift+F6 back. The terminal look steps through its panes alone with
     // ctrl+l and ctrl+h, out of a text field: the keymap has those two for
-    // it only, in normal mode.
+    // it only, in normal mode. And up and down with ctrl+k and ctrl+j,
+    // where panes stand one above the other: a SQL editor's script over
+    // its results. From inside the script ctrl+j is Focus results.
     if let Some(workspace) = app.workspace(active) {
         use crate::ui::focus::{self, Region};
         let from = match workspace.pane {
@@ -1132,6 +1134,32 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                     actions.push(Action::FocusFields { tab, id });
                 }
                 _ => focus::step(ctx, index == 1, Some(&Region::PANES), Some(from)),
+            }
+        } else if let Some(index) = first([Command::PaneUp, Command::PaneDown])
+            && let Some((tab, _)) = sql
+        {
+            // With the keyboard nowhere, it counts from the script.
+            focus::neighbour(ctx, index == 1, &Region::STACKED, Some(Region::Editor));
+            if index == 1 {
+                actions.push(Action::GridKeys(tab));
+            }
+        } else if let Some((tab, _)) = in_editor {
+            let results = |input: &mut egui::InputState| {
+                let scope = Scope::SqlEditor;
+                asked(
+                    input,
+                    &app.keymap,
+                    layout,
+                    Command::FocusResults,
+                    scope,
+                    false,
+                )
+                .count
+                    > 0
+            };
+            if ctx.input_mut(results) {
+                focus::neighbour(ctx, true, &Region::STACKED, Some(Region::Editor));
+                actions.push(Action::GridKeys(tab));
             }
         }
     }

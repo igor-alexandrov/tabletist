@@ -61,6 +61,8 @@ pub mod label_chooser;
 mod label_tests;
 pub mod menu;
 pub mod object_tabs;
+#[cfg(test)]
+mod pane_keys_tests;
 pub mod password_prompt;
 pub mod pending_bar;
 pub mod picker;
