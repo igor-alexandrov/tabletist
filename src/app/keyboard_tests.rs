@@ -136,3 +136,20 @@ fn the_keymap_is_made_again_for_the_look_it_is_drawn_in() {
     };
     assert_eq!(app.keymap.keys_of(Layout::Omarchy, null), ["gx"]);
 }
+
+#[test]
+fn a_line_marked_in_one_look_is_not_marked_once_another_takes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = mac_app(dir.path());
+    edited(&mut app, "[keys.editor]\n\"cmd+alt+f\" = \"format\"\n");
+    assert!(app.settings_file.invalid.is_empty());
+    app.look = crate::theme::Look::omarchy();
+    app.refresh_keymap();
+    // Format is typed keys on Omarchy: the chord is refused there.
+    assert_eq!(app.settings_file.invalid, [2]);
+    app.look = crate::theme::Look::macos();
+    app.refresh_keymap();
+    assert!(app.settings_file.invalid.is_empty());
+    assert!(app.keys_refused.is_empty());
+    assert_eq!(format(&app), "⌥⌘F");
+}

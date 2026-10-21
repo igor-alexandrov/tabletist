@@ -286,6 +286,22 @@ pub(super) fn without_keys(text: &str) -> String {
             }
             end = next;
         }
+        // The comment lines right over the next table are that table's:
+        // they stay with it.
+        if end < working.len() {
+            let header_end = line_end(&working, start);
+            while end > header_end {
+                let above = line_start(&working, end - 1);
+                if above < header_end
+                    || !working[above..end]
+                        .trim_start_matches([' ', '\t'])
+                        .starts_with('#')
+                {
+                    break;
+                }
+                end = above;
+            }
+        }
         from..end
     };
     if headed(&keys.span()) {
@@ -543,6 +559,49 @@ pub(super) fn write(text: &str, overrides: &Overrides) -> String {
                 edits.push((lines, String::new()));
                 touched.push(table.path.clone());
                 continue;
+            }
+            // A list written over several lines, each key on a line of its
+            // own: the keys that go take their lines, comments and all, and
+            // the new ones go on lines over the closing bracket. Its other
+            // lines and their comments stay.
+            if working[value.span()].contains('\n') {
+                let mut own: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+                let mut alone = true;
+                for element in &read {
+                    let Some(keys) = element.get_ref().as_str().and_then(spelled) else {
+                        continue;
+                    };
+                    if want.iter().any(|wanted| same(keys, wanted)) {
+                        continue;
+                    }
+                    let span = element.span();
+                    let (start, end) = (
+                        line_start(&working, span.start),
+                        line_end(&working, span.end),
+                    );
+                    let before = &working[start..span.start];
+                    let after = working[span.end..end]
+                        .trim_start_matches([' ', '\t', ','])
+                        .trim_end_matches(['\r', '\n']);
+                    if !before.trim_matches([' ', '\t']).is_empty()
+                        || !(after.is_empty() || after.starts_with('#'))
+                    {
+                        alone = false;
+                        break;
+                    }
+                    own.push((start..end, String::new()));
+                }
+                let close = value.span().end.saturating_sub(1);
+                let at = line_start(&working, close);
+                if alone && working[at..close].trim_matches([' ', '\t']).is_empty() {
+                    for wanted in &want {
+                        if !have.iter().any(|keys| same(keys, wanted)) {
+                            own.push((at..at, format!("  {},{newline}", quoted(wanted))));
+                        }
+                    }
+                    edits.extend(own);
+                    continue;
+                }
             }
             let mut written: Vec<String> = want.iter().map(|keys| quoted(keys)).collect();
             written.extend(
@@ -877,6 +936,29 @@ sql = \"=\"
         assert_eq!(
             Settings::without_keys("[data]\npage_size = 500\n"),
             "[data]\npage_size = 500\n"
+        );
+    }
+
+    #[test]
+    fn a_list_over_several_lines_keeps_its_lines_and_comments() {
+        let text = "[keys.unbind]\ngrid = [\n  \"gd\",  # follow is mine\n  \"gs\",\n]\n";
+        let out = written(text, |keys| {
+            keys.unbinds.retain(|unbind| unbind.keys != "gs");
+            keys.unbinds.push(unbind(Scope::Grid, "grid", "x"));
+        });
+        assert_eq!(
+            out,
+            "[keys.unbind]\ngrid = [\n  \"gd\",  # follow is mine\n  \"x\",\n]\n"
+        );
+        assert!(Settings::from_toml(&out).invalid.is_empty());
+    }
+
+    #[test]
+    fn reset_all_keeps_the_comment_over_the_next_table() {
+        let text = "[keys.editor]\n\"f5\" = \"format\"\n# mine, before\n\n# how many rows a run brings\n[editor.run]\nlimit = 10\n";
+        assert_eq!(
+            Settings::without_keys(text),
+            "# how many rows a run brings\n[editor.run]\nlimit = 10\n"
         );
     }
 

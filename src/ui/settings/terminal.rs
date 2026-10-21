@@ -221,10 +221,20 @@ pub(super) fn show(
                     SettingsPane::General => rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Appearance => appearance_rows(ui, &settings, row, &skin, actions),
                     SettingsPane::Editor => editor_rows(ui, &settings, row, &skin, actions),
+                    SettingsPane::Keyboard => {
+                        super::keyboard_terminal::rows(ui, app, &dialog.keyboard, &skin, actions);
+                    }
                     SettingsPane::Agents => agent_rows(ui, app, &settings, row, &skin, actions),
                 });
             if let Some(beside) = beside {
-                file_pane::show(ui, beside, app, option, &skin);
+                let shown = match pane {
+                    SettingsPane::Keyboard => {
+                        let row = super::keyboard_terminal::cursor(app, &dialog.keyboard);
+                        file_pane::Shown::Keys(row)
+                    }
+                    _ => file_pane::Shown::Option(option),
+                };
+                file_pane::show(ui, beside, app, shown, &skin);
             }
             let opens = cursor.and_then(|cursor| opened(app, cursor).map(|opens| (cursor, opens)));
             let question = match &app.dialog {
@@ -233,6 +243,9 @@ pub(super) fn show(
             };
             match question {
                 Some(question) => history_question(ui, question, &skin, actions),
+                None if pane == SettingsPane::Keyboard => {
+                    keyboard_footer(ui, app, &dialog.keyboard, &skin, actions);
+                }
                 None => footer(ui, pane, option, opens, &settings, &skin, actions),
             }
         });
@@ -1715,6 +1728,112 @@ fn footer(
                 if command == Command::SettingsCopyCommand {
                     crate::ui::agents::copy_command(ui.ctx(), locale);
                 }
+                actions.extend(action.into_iter().flatten());
+            }
+        }
+    }
+}
+
+/// The Keyboard pane's footer: its keys, each a button too. While a row
+/// records, the keys that end and give up the recording.
+fn keyboard_footer(
+    ui: &mut Ui,
+    app: &App,
+    page: &crate::model::KeyboardPage,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin {
+        look,
+        palette,
+        locale,
+        ..
+    } = *skin;
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), FOOTER + 1.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, palette.panel);
+    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
+    let y = rect.top() + 1.0 + FOOTER / 2.0;
+    let cursor = super::keyboard_terminal::cursor(app, page);
+    // `$EDITOR` is a name: the look does not lower-case it.
+    let in_editor = skin
+        .say("open file in {editor}")
+        .replace("{editor}", "$EDITOR");
+    let keys: Vec<(Command, String, Option<Button<'_>>)> = if page.recording.is_some() {
+        vec![
+            (Command::SettingsOpenRow, skin.say("end"), None),
+            (
+                Command::SettingsClose,
+                skin.say("cancel"),
+                Some(("Cancel", Some(vec![Action::StopRecording]))),
+            ),
+        ]
+    } else {
+        let row = |action: fn(crate::keymap::Row) -> Action| cursor.map(|row| vec![action(row)]);
+        vec![
+            (Command::SettingsMove, skin.say("move"), None),
+            (Command::SettingsChange, skin.say("group"), None),
+            (
+                Command::SettingsOpenRow,
+                skin.say("record"),
+                Some((
+                    "Record",
+                    cursor.map(|row| vec![Action::RecordKeys(crate::model::Recorded::Row(row))]),
+                )),
+            ),
+            (
+                Command::SettingsUnbind,
+                skin.say("unbind"),
+                Some(("Unbind", row(Action::UnbindRow))),
+            ),
+            (
+                Command::SettingsReset,
+                skin.say("reset"),
+                Some(("Reset", row(Action::ResetRow))),
+            ),
+            (Command::SettingsFilter, skin.say("filter"), None),
+            (Command::SettingsFindKey, skin.say("find by key"), None),
+            (
+                Command::SettingsOpenFile,
+                in_editor,
+                Some(("Open file in editor", Some(vec![Action::EditSettingsFile]))),
+            ),
+            (
+                Command::SettingsClose,
+                skin.say("close"),
+                Some(("Close", Some(vec![Action::CloseDialog]))),
+            ),
+        ]
+    };
+    let width_of = |ui: &Ui, (command, what): (Command, &str)| {
+        let key = key(ui, look, command);
+        widgets::key_hints_width(ui, &[(&key, what, true)], 0.0, look, palette)
+    };
+    let room = rect.width() - 24.0;
+    let mut keys = keys;
+    let mut widths: Vec<f32> = keys
+        .iter()
+        .map(|(command, what, _)| width_of(ui, (*command, what)))
+        .collect();
+    while keys.len() > 1 && widths.iter().sum::<f32>() + 16.0 * (keys.len() - 1) as f32 > room {
+        let before_last = keys.len() - 2;
+        keys.remove(before_last);
+        widths.remove(before_last);
+    }
+    let mut left = rect.left() + 12.0;
+    for (command, what, button) in keys {
+        let key = key(ui, look, command);
+        let hint = [(&key, what.as_str(), true)];
+        let width = widgets::key_hints(ui, (left, y), &hint, 0.0, look, palette);
+        let place = Rect::from_min_max(
+            pos2(left, rect.top() + 5.0),
+            pos2(left + width, rect.bottom() - 4.0),
+        );
+        left += width + 16.0;
+        if let Some((name, action)) = button {
+            let name = gettext(locale, name);
+            if ButtonSpec::new(&name).hidden_at(ui, place).clicked() {
                 actions.extend(action.into_iter().flatten());
             }
         }

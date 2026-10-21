@@ -150,6 +150,7 @@ impl Why {
                 [Press::Typed] => "{name} takes typed keys",
                 [Press::Line] => "{name} takes a : line",
                 [Press::Chord] if omarchy => "{name} takes a chord",
+                [Press::Chord] if layout == Layout::Windows => "Add Ctrl or Alt",
                 [Press::Chord] => "Add ⌘, ⌃ or ⌥",
                 _ => "{name} takes other keys",
             },
@@ -249,6 +250,14 @@ pub fn refuse_key(layout: Layout, row: Row, spelled: &Spelled) -> Option<Why> {
     None
 }
 
+/// Whether `spelled` is one of `row`'s keys by default.
+fn own_default(layout: Layout, row: Row, spelled: &Spelled) -> bool {
+    defaults(layout, row)
+        .iter()
+        .filter_map(|keys| spell(keys).ok())
+        .any(|keys| same(layout, &keys, spelled))
+}
+
 impl Binding {
     fn bound_mut(&mut self, layout: Layout) -> &mut Bound {
         match layout {
@@ -328,9 +337,15 @@ impl Keymap {
             } else {
                 match spell(bind.keys) {
                     Err(_) => Some(Why::Kind(takes(layout, row))),
-                    Ok(spelled) => match refuse_key(layout, row, &spelled) {
-                        Some(why) => Some(why),
-                        None => {
+                    // A key the row has by default is its own whatever the
+                    // look says of new keys (Return edits a cell on macOS).
+                    Ok(spelled) => {
+                        let why = if own_default(layout, row, &spelled) {
+                            None
+                        } else {
+                            refuse_key(layout, row, &spelled)
+                        };
+                        if why.is_none() {
                             let press = Press::of(&spelled).expect("a key of a kind");
                             taken.push(Taken {
                                 index,
@@ -339,9 +354,9 @@ impl Keymap {
                                 spelled,
                                 press,
                             });
-                            None
                         }
-                    },
+                        why
+                    }
                 }
             };
             if let Some(why) = why {
@@ -395,18 +410,27 @@ fn lay(layout: Layout, unbinds: &[(Scope, Spelled)], taken: &[Taken]) -> Keymap 
         let mut changed = chords.len() != before;
         if !mine.is_empty() {
             let kinds: Vec<Press> = mine.iter().map(|bind| bind.press).collect();
+            let recorded = |chord: &Chord| {
+                let press = spell(chord.keys).ok().and_then(|keys| Press::of(&keys));
+                press.is_some_and(|press| kinds.contains(&press))
+            };
+            // The new keys stand where the first they replace stood: a
+            // line of the prompt recorded stays before a chord.
+            let mut at = chords.iter().position(recorded).unwrap_or(chords.len());
             // A key of a kind recorded goes, another command's written
             // beside the row's among them.
-            chords.retain(|chord| {
-                let press = spell(chord.keys).ok().and_then(|keys| Press::of(&keys));
-                !press.is_some_and(|press| kinds.contains(&press))
-            });
+            chords.retain(|chord| !recorded(chord));
+            at = at.min(chords.len());
             for bind in &mine {
                 if !chords.iter().any(|chord| chord.keys == bind.keys) {
-                    chords.push(Chord {
-                        keys: bind.keys,
-                        kind: Kind::Own,
-                    });
+                    chords.insert(
+                        at,
+                        Chord {
+                            keys: bind.keys,
+                            kind: Kind::Own,
+                        },
+                    );
+                    at += 1;
                 }
             }
             changed = true;
@@ -571,18 +595,33 @@ impl Overrides {
     }
 
     /// The overrides with `keys` recorded for `row`, where `other` has
-    /// them: `other` gets the keys `row` had of their kind, or none. The
-    /// line of `row` says what the key was.
+    /// them: an exchange. `other` loses `keys` and gets the keys `row` had
+    /// of their kind in their place; its other keys stay. The line of `row`
+    /// says whose the key was.
     pub fn swap(&self, layout: Layout, row: Row, keys: &'static str, other: Row) -> Self {
         let Some(press) = press_of(keys) else {
             return self.clone();
         };
         let (now, _) = Keymap::with(layout, self);
-        let old: Vec<&'static str> = now
-            .keys_of(layout, row)
-            .into_iter()
-            .filter(|keys| press_of(keys) == Some(press))
-            .collect();
+        let of_kind = |row: Row| -> Vec<&'static str> {
+            now.keys_of(layout, row)
+                .into_iter()
+                .filter(|keys| press_of(keys) == Some(press))
+                .collect()
+        };
+        let old = of_kind(row);
+        let mut given: Vec<&'static str> = Vec::new();
+        for kept in of_kind(other) {
+            if same_keys(layout, kept, keys) {
+                for old in &old {
+                    if !given.contains(old) {
+                        given.push(old);
+                    }
+                }
+            } else if !given.contains(&kept) {
+                given.push(kept);
+            }
+        }
         let mut next = self.record(layout, row, keys);
         let note = format!("after swap · was {}", other.command.id());
         if let Some(bind) = next
@@ -593,7 +632,74 @@ impl Overrides {
         {
             bind.note = Some(note);
         }
-        next.set_kind(layout, other, press, &old)
+        next.set_kind(layout, other, press, &given)
+    }
+
+    /// Whether the swap of `keys` from `other` to `row` stands: the keymap
+    /// takes both rows' lines. Where `row`'s old keys are a third row's,
+    /// it would not, and none is offered.
+    pub fn swaps(&self, layout: Layout, row: Row, keys: &'static str, other: Row) -> bool {
+        let next = self.swap(layout, row, keys, other);
+        let (_, refused) = Keymap::with(layout, &next);
+        let (_, before) = Keymap::with(layout, self);
+        refused.iter().all(|refusal| {
+            let Line::Bind(index) = refusal.line else {
+                return true;
+            };
+            let Some(bind) = next.binds.get(index) else {
+                return true;
+            };
+            let touched = [row, other]
+                .iter()
+                .any(|row| bind.scope == row.scope && bind.command == row.command);
+            // A line refused before the swap is no worse for it.
+            let refused_before = before.iter().any(|old| match old.line {
+                Line::Bind(at) => self.binds.get(at) == Some(bind),
+                Line::Unbind(_) => false,
+            });
+            !touched || refused_before
+        })
+    }
+
+    /// The overrides with `row` back at its defaults, but those another
+    /// row's line has taken since, which stay unbound: a reset never
+    /// takes a key from a row the person gave it to.
+    pub fn reset_free(&self, layout: Layout, row: Row) -> Self {
+        let mut next = self.reset(layout, row);
+        let (_, before) = Keymap::with(layout, self);
+        for _ in 0..defaults(layout, row).len() {
+            let (_, refused) = Keymap::with(layout, &next);
+            let taken: Vec<&'static str> = refused
+                .iter()
+                .filter(|refusal| matches!(refusal.why, Why::Taken(by) if by == row))
+                .filter(|refusal| !before.iter().any(|old| old.line == refusal.line))
+                .filter_map(|refusal| match refusal.line {
+                    Line::Bind(index) => next.binds.get(index).map(|bind| bind.keys),
+                    Line::Unbind(_) => None,
+                })
+                .collect();
+            let defaults = defaults(layout, row);
+            let lost: Vec<&'static str> = defaults
+                .into_iter()
+                .filter(|default| taken.iter().any(|keys| same_keys(layout, keys, default)))
+                .filter(|default| {
+                    !next.unbinds.iter().any(|unbind| {
+                        unbind.scope == row.scope && same_keys(layout, unbind.keys, default)
+                    })
+                })
+                .collect();
+            if lost.is_empty() {
+                break;
+            }
+            for keys in lost {
+                next.unbinds.push(Unbind {
+                    scope: row.scope,
+                    table: row.scope.table(layout),
+                    keys,
+                });
+            }
+        }
+        next
     }
 }
 
@@ -949,6 +1055,65 @@ mod tests {
                 keys: "cmd+alt+e",
             }]
         );
+    }
+
+    #[test]
+    fn a_swap_is_an_exchange_and_the_other_rows_other_keys_stay() {
+        let mac = Layout::Mac;
+        let reload = row(Command::Reload, Scope::Grid);
+        let edit = row(Command::EditCell, Scope::Grid);
+        let recorded = Overrides::default().record(mac, reload, "f2");
+        let (_, refused) = Keymap::with(mac, &recorded);
+        assert_eq!(refused[0].why, Why::Taken(edit));
+        assert!(Overrides::default().swaps(mac, reload, "f2", edit));
+        let swapped = Overrides::default().swap(mac, reload, "f2", edit);
+        let (keymap, refused) = Keymap::with(mac, &swapped);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(keymap.keys_of(mac, reload), ["f2"]);
+        // Return still edits a cell; ⌘R takes F2's place.
+        assert_eq!(keymap.keys_of(mac, edit), ["enter", "cmd+r"]);
+    }
+
+    #[test]
+    fn a_swap_that_would_not_stand_is_not_offered() {
+        let mac = Layout::Mac;
+        let add = row(Command::AddRow, Scope::Grid);
+        let sidebar = row(Command::ToggleSidebar, Scope::Global);
+        let (_, refused) = Keymap::with(mac, &Overrides::default().record(mac, add, "cmd+b"));
+        assert_eq!(refused[0].why, Why::Taken(sidebar));
+        // Toggle sidebar would get ⌘N, which is New connection's in the
+        // picker: the global scope is read there too.
+        assert!(!Overrides::default().swaps(mac, add, "cmd+b", sidebar));
+    }
+
+    #[test]
+    fn a_reset_leaves_a_default_another_row_was_given() {
+        let mac = Layout::Mac;
+        let format = row(Command::Format, Scope::SqlEditor);
+        let run_all = row(Command::RunAll, Scope::SqlEditor);
+        let lines = Overrides::default()
+            .unbind(mac, format)
+            .record(mac, run_all, "cmd+shift+f");
+        let (_, refused) = Keymap::with(mac, &lines);
+        assert!(refused.is_empty());
+        let reset = lines.reset_free(mac, format);
+        let (keymap, refused) = Keymap::with(mac, &reset);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(keymap.keys_of(mac, run_all), ["cmd+shift+f"]);
+        assert!(keymap.keys_of(mac, format).is_empty());
+        // With nothing taken, a reset is a reset.
+        let free = Overrides::default()
+            .unbind(mac, format)
+            .reset_free(mac, format);
+        assert!(free.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_names_the_looks_own_keys() {
+        let kind = Why::Kind(vec![Press::Chord]);
+        assert_eq!(kind.text(Layout::Mac), "Add ⌘, ⌃ or ⌥");
+        assert_eq!(kind.text(Layout::Windows), "Add Ctrl or Alt");
+        assert_eq!(kind.text(Layout::Omarchy), "{name} takes a chord");
     }
 
     #[test]

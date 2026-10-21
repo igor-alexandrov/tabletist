@@ -31,6 +31,7 @@ mod commands;
 mod editing;
 mod history;
 mod key_picker;
+mod keyboard;
 #[cfg(test)]
 mod keyboard_tests;
 mod labels;
@@ -39,6 +40,7 @@ mod quick_open;
 mod startup_tests;
 
 pub use commands::{About, RUNNABLE, Runnable, TabName};
+pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
 pub use quick_open::{
     Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
     setting_path,
@@ -117,6 +119,10 @@ pub struct App {
     keymap_layout: Option<crate::keymap::Layout>,
     /// The lines of the keys' tables the keymap did not take, and why.
     pub keys_refused: Vec<crate::keymap::Refused>,
+    /// The text the keymap was last made over, and the line numbers it
+    /// marked as ignored there: made again over the same text (another
+    /// look), those marks are its own to take back.
+    keys_marked: (String, Vec<usize>),
     pub themes: Catalog,
     pub tabs: Vec<ConnTab>,
     /// Index into `tabs`. Always valid: `tabs` is never empty.
@@ -324,6 +330,7 @@ impl App {
             keymap: std::sync::Arc::default(),
             keymap_layout: None,
             keys_refused: Vec::new(),
+            keys_marked: (String::new(), Vec::new()),
             themes: Catalog::default(),
             tabs: Vec::new(),
             active: 0,
@@ -1952,6 +1959,24 @@ impl App {
                 self.new_sql_tab(tab);
             }
             Action::ShowAgents(tab) => self.show_agents(tab),
+            action @ (Action::KeyboardSearch(_)
+            | Action::KeyboardFind(_)
+            | Action::KeyboardChanged(_)
+            | Action::KeyboardCursor(_)
+            | Action::KeyboardFiltering(_)
+            | Action::RecordKeys(_)
+            | Action::StopRecording
+            | Action::RecordTyped { .. }
+            | Action::RecordBack
+            | Action::RecordPress(_)
+            | Action::RecordNever(_)
+            | Action::UnbindRow(_)
+            | Action::ResetRow(_)
+            | Action::SwapKeys
+            | Action::AskResetAllKeys(_)
+            | Action::ResetAllKeys
+            | Action::ExportCheatSheet
+            | Action::KeysDefault) => self.keyboard_action(action),
             action @ (Action::ShowHistory(_)
             | Action::FilterHistory { .. }
             | Action::ShowHistoryLine { .. }
@@ -2281,6 +2306,11 @@ impl App {
                     // The row quick open asked for is the other pane's.
                     dialog.asked = None;
                     dialog.reveal = false;
+                    // A recording, the `/` line and Reset all's question end
+                    // with the Keyboard pane; its search stays for a return.
+                    dialog.keyboard.recording = None;
+                    dialog.keyboard.filtering = false;
+                    dialog.keyboard.resetting = false;
                 }
             }
             Action::ShowSetting(option) => {
@@ -4255,6 +4285,12 @@ impl App {
                     self.notice = Some(format!("Agents could not be served: {said}."));
                 }
             },
+            Event::KeysListOpened { path, error } => {
+                self.notice = Some(format!(
+                    "Could not open {} in the editor: {error}.",
+                    path.display()
+                ));
+            }
             Event::SettingsFileOpened { with, result } => {
                 if let Err(error) = result {
                     let path = self.dirs.settings_file();
@@ -5060,6 +5096,14 @@ impl App {
         let layout = self.layout();
         let (keymap, refused) = crate::keymap::Keymap::with(layout, &self.settings.keys);
         let file = &mut self.settings_file;
+        // Over the same text, the marks of the last make are taken back:
+        // the reader marked none of these lines, or they would not be the
+        // keymap's.
+        let (marked_text, marked) = std::mem::take(&mut self.keys_marked);
+        if marked_text == file.text {
+            file.invalid.retain(|line| !marked.contains(line));
+        }
+        let mut marks: Vec<usize> = Vec::new();
         for refusal in &refused {
             let at = file
                 .key_lines
@@ -5070,9 +5114,11 @@ impl App {
                 && !file.invalid.contains(&at)
             {
                 file.invalid.push(at);
+                marks.push(at);
             }
         }
         file.invalid.sort_unstable();
+        self.keys_marked = (file.text.clone(), marks);
         self.keys_refused = refused;
         self.keymap = std::sync::Arc::new(keymap);
         self.keymap_layout = Some(layout);

@@ -51,6 +51,8 @@ pub mod json_view;
 mod key_picker;
 #[cfg(test)]
 mod key_picker_tests;
+#[cfg(test)]
+mod keyboard_tests;
 pub mod keys;
 pub mod label_chooser;
 #[cfg(test)]

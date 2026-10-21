@@ -191,6 +191,13 @@ pub enum Command {
         path: PathBuf,
         text: String,
     },
+    /// Writes `text`, the full list of the keys, to `path` (never the
+    /// settings file) and opens it in the editor. A failure is answered
+    /// with [`Event::KeysListOpened`].
+    OpenKeysList {
+        path: PathBuf,
+        text: String,
+    },
     /// Reads the name of Omarchy's theme of the moment and the theme
     /// `pin` names, for the terminal look. Answered with [`Event::Theme`],
     /// which carries `asked`: reads end in any order.
@@ -400,6 +407,8 @@ pub enum Event {
         with: Opened,
         result: Result<(), String>,
     },
+    /// The full list of the keys could not be written or opened.
+    KeysListOpened { path: PathBuf, error: String },
     /// What came of an [`AgentsCommand`].
     Agents(AgentsEvent),
     /// What came of a [`HistoryCommand`].
@@ -2016,6 +2025,20 @@ impl Worker {
                     );
                 });
             }
+            Command::OpenKeysList { path, text } => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    let opened = crate::util::write_atomic(&path, text.as_bytes())
+                        .and_then(|()| start_editor(&path));
+                    if let Err(error) = opened {
+                        log::error!("could not open {}: {error}", path.display());
+                        outbox.emit(Event::KeysListOpened {
+                            path,
+                            error: error.to_string(),
+                        });
+                    }
+                });
+            }
             Command::ReadTheme { places, pin, asked } => {
                 let outbox = self.outbox.clone();
                 tokio::task::spawn_blocking(move || {
@@ -2099,6 +2122,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
+        | Command::OpenKeysList { .. }
         | Command::ReadTheme { .. }
         | Command::ReadFont { .. }
         | Command::ListFonts
@@ -2132,6 +2156,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
+        | Command::OpenKeysList { .. }
         | Command::ReadTheme { .. }
         | Command::ReadFont { .. }
         | Command::ListFonts
@@ -2223,6 +2248,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::LoadZones
         | Command::EditSettingsFile { .. }
         | Command::RevealSettingsFile { .. }
+        | Command::OpenKeysList { .. }
         | Command::ReadTheme { .. }
         | Command::ReadFont { .. }
         | Command::ListFonts
@@ -2510,6 +2536,7 @@ async fn run_session(
             | Command::LoadZones
             | Command::EditSettingsFile { .. }
             | Command::RevealSettingsFile { .. }
+            | Command::OpenKeysList { .. }
             | Command::ReadTheme { .. }
             | Command::ReadFont { .. }
             | Command::ListFonts
