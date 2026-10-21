@@ -2795,7 +2795,10 @@ fn letters(
             // A bracket that waited, and a key after it that is none of
             // its keys, or the key of something not built yet (`]c`):
             // the bracket steps the row, and the key is read again on its
-            // own.
+            // own. A key that edits, and the colon, are then dropped: the
+            // frame is not `alone` (it brought more than edits), as the
+            // step is applied after the frame and the edit would land on
+            // the row it leaves.
             Typed::Nothing | Typed::Claimed
                 if waiting.len() > 1
                     && let Some(step) = bracket_step(&waiting) =>

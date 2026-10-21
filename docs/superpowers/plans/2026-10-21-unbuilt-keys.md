@@ -88,7 +88,9 @@ planned when they come up.
     would never get its `e`. Decided with the user: while the panel shows
     and there is an error to go to (a grid's error, or a SQL editor's
     mark), a bracket waits for the key after it. `e` goes to the error;
-    any other key steps the row and is then read itself. With no error the
+    any other key steps the row and is then read itself, except a key that
+    edits and `:`, which are dropped: the step is applied after the frame,
+    so an edit read in it would land on the row left. With no error the
     bracket steps the row at once, as before.
   - In a SQL editor: the editor's one error mark (`SqlTab::error_mark`, the
     line and column the database named). Either key puts the editor's

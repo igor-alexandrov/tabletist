@@ -344,3 +344,18 @@ fn a_bracket_that_waited_steps_the_row_before_a_key_that_types_nothing() {
     harness.settle();
     assert_eq!(selected(&harness, tab, id), Some((0, 1)));
 }
+
+#[test]
+fn a_key_that_edits_after_a_bracket_that_waited_is_dropped() {
+    // The step is applied after the frame: the edit would land on the row
+    // the bracket leaves, so the letter is dropped, and the next one edits.
+    let (mut harness, tab, id) = two_rows_to_fix(Look::omarchy());
+    select(&mut harness, tab, id, (0, 1));
+    type_key(&mut harness, Key::CloseBracket, "]");
+    type_key(&mut harness, Key::I, "i");
+    assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+    assert!(edits(&harness, tab, id).editor.is_none(), "no editor yet");
+    type_key(&mut harness, Key::I, "i");
+    let editing = edits(&harness, tab, id).editor.as_ref().map(|e| e.cell.row);
+    assert_eq!(editing, Some(1), "the next i edits the row stepped to");
+}

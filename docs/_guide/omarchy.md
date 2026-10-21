@@ -204,7 +204,7 @@ says why.
 | Ctrl+Shift+R | Show or hide the row panel |
 | `j` `k` | Move between its fields |
 | Enter, `i` | Edit the field |
-| `[` `]` | Previous and next row, while the panel shows. Where there is an error to go to, the bracket waits for the key after it: `e` goes to the error, any other key steps the row and then does what it does |
+| `[` `]` | Previous and next row, while the panel shows. Where there is an error to go to, the bracket waits for the key after it: `e` goes to the error, and any other key steps the row. A key that moves then moves on from there; a key that edits, and `:`, are dropped, so the edit never lands on the row you left: press it again |
 | `za` | Fold the documents in it |
 | `cc`, `x`, `D`, `u` | Work on the field as they do on its cell |
 | Ctrl+H | Back to the grid, on that field's cell |
