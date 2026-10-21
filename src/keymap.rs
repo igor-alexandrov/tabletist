@@ -887,7 +887,7 @@ impl Command {
             C::PasteNewRows => info("Paste as new rows", "Paste as new rows", Editing).reserved(),
             C::AddRow => info("Add row", "Add row", Editing),
             C::AddRowAbove => info("Add row above", "Add row", Editing),
-            C::AddRowAtEnd => info("Add row after the last", "Add row", Editing).reserved(),
+            C::AddRowAtEnd => info("Add row after the last", "Add row", Editing),
             C::DuplicateRow => info("Duplicate row", "Duplicate row", Editing),
             C::YankRow => info("Yank the row", "Duplicate row", Editing),
             C::PutRow => info(

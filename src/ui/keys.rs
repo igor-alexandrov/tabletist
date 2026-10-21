@@ -1037,6 +1037,19 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                         actions.extend((0..presses).map(|_| Action::ExtendBy { tab, id, rows }));
                     }
                 }
+                // Down on a table's last row, on its last page, adds a
+                // row below it where the table takes one, in the looks
+                // with a key for it. A fresh press only: a held arrow
+                // that reaches the end adds no more, and stays there.
+                if let Some((tab, id)) = adds.filter(|&(tab, id)| on_last_row(app, tab, id)) {
+                    let pressed = on(input, Command::AddRowAtEnd, Scope::Grid);
+                    if pressed.fresh
+                        && let Some(row) = selection_row(app, tab, id)
+                    {
+                        let place = crate::edit::Place::Below(row);
+                        actions.push(Action::AddRow { tab, id, place });
+                    }
+                }
                 let page = 20;
                 let moves = [Command::MoveRow, Command::MoveColumn, Command::MovePage];
                 for command in moves {
@@ -1928,6 +1941,30 @@ fn delete_count(
         actions.push(Action::DeleteCount { tab, id, count });
     }
     said
+}
+
+/// The row the cursor of the table tab `id` is on.
+fn selection_row(app: &App, tab: ConnTabId, id: TabId) -> Option<usize> {
+    let object = app.workspace(tab)?.object_tab(id)?;
+    Some(object.selection?.row)
+}
+
+/// Whether the cursor of the table tab `id` is on the last row its Data
+/// view shows, on the last page: no row is under it to move to.
+fn on_last_row(app: &App, tab: ConnTabId, id: TabId) -> bool {
+    let Some(object) = app
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(id))
+    else {
+        return false;
+    };
+    let Some(page) = object.page().filter(|page| !page.has_more) else {
+        return false;
+    };
+    let order = crate::edit::Order::of(&object.edits.added, page.rows.len());
+    let place = object.selection.and_then(|cell| order.place(cell.row));
+    object.view == crate::model::ObjectView::Data
+        && place.is_some_and(|place| place + 1 == order.len())
 }
 
 /// Whether a visual selection of rows holds `command` back: what changes,

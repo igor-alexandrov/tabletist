@@ -176,7 +176,6 @@ fn fails(harness: &mut Harness, code: &str, message: &str, detail: &str) {
 /// INS-01d. Spec 1: "Grow: Down on the last row" adds an empty row on
 /// macOS.
 #[test]
-#[ignore = "INS-01d: Down on the last row adds no row yet"]
 fn down_on_the_last_row_adds_a_row() {
     let (mut harness, tab, id) = covers_in(Look::macos());
     select(&mut harness, tab, id, (2, 1));

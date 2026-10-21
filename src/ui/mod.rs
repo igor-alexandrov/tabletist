@@ -41,6 +41,8 @@ pub mod format;
 #[cfg(test)]
 mod format_settings_tests;
 pub mod grid;
+#[cfg(test)]
+mod grid_keys_tests;
 pub mod help;
 pub mod history;
 #[cfg(test)]
