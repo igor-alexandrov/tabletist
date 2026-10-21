@@ -451,16 +451,15 @@ fn key_row(
         middle,
         Text::one(look, TextRole::UiBody, &name, ink),
     );
-    // A command nothing answers yet keeps its keys, and says so.
+    // A command nothing answers yet keeps its keys, and says so where the
+    // Command column has room: a screen reader is told it always.
     if !built {
-        let role = TextRole::Secondary;
-        let note = skin.say("Not built yet");
-        widgets::paint_text(
-            ui,
-            name_x + width + 8.0,
-            middle,
-            Text::one(look, role, &note, palette.faint),
-        );
+        let said = skin.say("Not built yet");
+        let note = || Text::one(look, TextRole::Secondary, &said, palette.faint);
+        let x = name_x + width + 8.0;
+        if x + widgets::measure(ui, note()) <= scope_x - 8.0 {
+            widgets::paint_text(ui, x, middle, note());
+        }
     }
     widgets::paint_text(
         ui,

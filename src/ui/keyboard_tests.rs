@@ -458,6 +458,37 @@ fn wait_out(harness: &mut Harness) {
     harness.settle();
 }
 
+/// A command nothing answers yet is marked so after its name, in the
+/// Command column, in each look; a built one is not.
+#[test]
+fn a_command_not_built_yet_is_marked_after_its_name() {
+    let mut harness = keyboard(Look::macos());
+    harness.app.apply(Action::KeyboardSearch("ask ai".into()));
+    harness.settle();
+    let name = harness.painted_rect("Ask AI").expect("Ask AI");
+    let note = harness.painted_rect("Not built yet").expect("the note");
+    // The row's scope, not the Editor pane's name in the sidebar.
+    let scope = harness
+        .text_rects
+        .iter()
+        .find(|(text, rect)| text == "Editor" && rect.y_range().contains(note.center().y))
+        .map(|(_, rect)| *rect)
+        .expect("its scope");
+    assert!(name.right() < note.left() && note.right() < scope.left());
+    harness
+        .app
+        .apply(Action::KeyboardSearch("run statement".into()));
+    harness.settle();
+    assert!(harness.painted_rect("Not built yet").is_none());
+
+    let mut harness = keyboard(Look::omarchy());
+    harness.app.apply(Action::KeyboardSearch("ask ai".into()));
+    harness.settle();
+    let name = harness.painted_rect("ask ai").expect("ask ai");
+    let note = harness.painted_rect("not built yet").expect("the note");
+    assert!(name.right() < note.left());
+}
+
 /// Test 1, Omarchy: the rows of the look, by its groups, with its keys.
 #[test]
 fn omarchy_lists_its_rows_by_group_with_its_keys() {
