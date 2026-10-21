@@ -84,6 +84,22 @@ fn a_bracket_typed_as_the_window_sends_it_is_paired() {
 }
 
 #[test]
+fn a_bracket_typed_with_altgr_is_paired() {
+    // Windows sends AltGr as Ctrl+Alt: on a German keyboard, `[` is
+    // AltGr+8.
+    let (mut harness, tab) = editor(Look::macos(), "SELECT ARRAY");
+    let altgr = Modifiers::CTRL | Modifiers::ALT;
+    harness.frame(vec![
+        crate::testing::key(Key::Num8, altgr),
+        egui::Event::Text("[".into()),
+        crate::testing::release(Key::Num8, altgr),
+    ]);
+    harness.settle();
+    assert_eq!(text(&harness, tab), "SELECT ARRAY[]");
+    assert_eq!(cursor(&harness, tab), 13);
+}
+
+#[test]
 fn a_quote_is_paired_where_a_string_starts_and_nowhere_else() {
     let (mut harness, tab) = editor(Look::macos(), "SELECT ");
     type_chars(&mut harness, "'ebook'");

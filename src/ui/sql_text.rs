@@ -1091,14 +1091,18 @@ fn close_pairs(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
                 | egui::Event::Cut
                 | egui::Event::Ime(egui::ImeEvent::Commit(_)) => true,
                 // The text field's own editing keys, which the keymap does
-                // not hold, and any chord (undo, redo).
+                // not hold, and any chord (undo, redo); not Ctrl+Alt, which
+                // is AltGr on Windows, typing `[`, `{` or a backtick on
+                // German, French or Polish keyboards.
                 egui::Event::Key {
                     key,
                     pressed,
                     modifiers,
                     ..
                 } => {
-                    *pressed && (modifiers.command || modifiers.ctrl)
+                    *pressed
+                        && (modifiers.command || modifiers.ctrl)
+                        && !(modifiers.ctrl && modifiers.alt)
                         || *pressed
                             && matches!(
                                 key,
