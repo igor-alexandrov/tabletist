@@ -1,7 +1,7 @@
-//! Format: lays a script's queries out in river style and uppercases
-//! reserved words. It works on the tokens and never parses: only
-//! whitespace and the case of keywords change, and a check at the end
-//! holds it to that.
+//! Format: lays a script's queries out in river style and sets the case
+//! of reserved words, as a [`Style`] says. It works on the tokens and
+//! never parses: only whitespace and the case of keywords change, and a
+//! check at the end holds it to that.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -18,7 +18,8 @@ pub struct Formatted {
     pub cursor: usize,
 }
 
-/// The keywords Format uppercases: the ones that cannot be an unquoted
+/// The keywords whose case Format sets (upper case in the default style):
+/// the ones that cannot be an unquoted
 /// table name or alias where case would matter. Every one the MySQL
 /// dialect reads as a keyword is reserved in MySQL 5.7, MySQL 8 and
 /// MariaDB (the MySQL tests ask the server they run against); the words
@@ -93,8 +94,9 @@ pub const UPPERCASED: &[&str] = &[
     "WITH",
 ];
 
-/// Keywords that can be names, uppercased where the layout read them as
-/// structure, on the dialects that compare unquoted names without case.
+/// Keywords that can be names, in the style's case where the layout read
+/// them as structure, on the dialects that compare unquoted names without
+/// case.
 const STRUCTURE: &[&str] = &[
     "EXCEPT",
     "FULL",
@@ -125,9 +127,46 @@ const JOIN_LEADERS: &[&str] = &[
 /// The width of the river: `SELECT`.
 const RIVER: usize = 6;
 
-/// How far a `WHEN`, an `ELSE` and what follows them stand in from their
-/// `CASE`.
-const CASE_INDENT: usize = 4;
+/// How Format writes what it lays out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Style {
+    /// The case of the reserved words it would uppercase.
+    pub keywords: Case,
+    /// Where the comma between two items of a list that breaks goes.
+    pub commas: Commas,
+    /// How far a `WHEN`, an `ELSE` and what follows them stand in from
+    /// their `CASE`, in spaces.
+    pub case_indent: usize,
+}
+
+/// Today's style: reserved words in upper case, a comma at the end of its
+/// item's line, a `CASE`'s parts four in.
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            keywords: Case::Upper,
+            commas: Commas::Trailing,
+            case_indent: 4,
+        }
+    }
+}
+
+/// The case reserved words are written in: upper, lower, or as typed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Case {
+    Upper,
+    Lower,
+    Keep,
+}
+
+/// Where a list's comma goes when the list breaks: at the end of the line
+/// of the item before it, or at the start of the next item's, on the
+/// river's edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Commas {
+    Trailing,
+    Leading,
+}
 
 /// How deep queries in parentheses are laid out as blocks. The layout
 /// recurses once for each, so a script nested without end (a generated
@@ -136,16 +175,28 @@ const CASE_INDENT: usize = 4;
 const MAX_DEPTH: usize = 64;
 
 /// `script` with the statements `selection` overlaps formatted, or all of
-/// them when it is `None` or empty, and where `cursor` went. All three are
-/// byte offsets. `None` when there is nothing to change.
+/// them when it is `None` or empty, and where `cursor` went, in the
+/// default [`Style`]. All three are byte offsets. `None` when there is
+/// nothing to change.
 pub fn format(
     dialect: Dialect,
     script: &str,
     selection: Option<Range<usize>>,
     cursor: usize,
 ) -> Option<Formatted> {
+    format_with(dialect, script, selection, cursor, Style::default())
+}
+
+/// [`format()`], in `style`.
+pub fn format_with(
+    dialect: Dialect,
+    script: &str,
+    selection: Option<Range<usize>>,
+    cursor: usize,
+    style: Style,
+) -> Option<Formatted> {
     let tokens = tokenize(dialect, script);
-    let (region, laid) = laid_out(dialect, script, &tokens, selection)?;
+    let (region, laid) = laid_out(dialect, script, &tokens, selection, style)?;
     let text = [&script[..region.start], &laid, &script[region.end..]].concat();
     if text == script {
         return None;
@@ -171,6 +222,7 @@ fn laid_out(
     script: &str,
     tokens: &[Token],
     selection: Option<Range<usize>>,
+    style: Style,
 ) -> Option<(Range<usize>, String)> {
     let region = region(script, tokens, selection)?;
     // The indentation of its first line is Format's to set.
@@ -180,6 +232,7 @@ fn laid_out(
     let line = script[..region.start].rfind('\n').map_or(0, |end| end + 1);
     let mut layout = Layout {
         dialect,
+        style,
         items: items(script, tokens, &region),
         at: 0,
         writer: Writer {
@@ -413,6 +466,7 @@ impl Block {
 
 struct Layout<'a> {
     dialect: Dialect,
+    style: Style,
     items: Vec<Item<'a>>,
     /// The item to write next.
     at: usize,
@@ -532,8 +586,20 @@ impl<'a> Layout<'a> {
                 _ if item.is(",") => {
                     let list = block.frames.is_empty()
                         && matches!(block.clause, Clause::Select | Clause::With);
-                    self.put(&mut block, Place::Inline, false);
-                    block.broken = list;
+                    // A leading comma starts the next item's line, on the
+                    // river's edge: not where a comment follows it, which
+                    // would come between the two.
+                    let next = self.items.get(self.at + 1);
+                    let leads = list
+                        && self.style.commas == Commas::Leading
+                        && next.is_some_and(|next| next.kind != TokenKind::Comment);
+                    if leads {
+                        let edge = (block.base + RIVER).saturating_sub(1);
+                        self.put(&mut block, Place::Line(edge), false);
+                    } else {
+                        self.put(&mut block, Place::Inline, false);
+                        block.broken = list;
+                    }
                 }
                 _ => self.put(&mut block, Place::Inline, false),
             }
@@ -574,7 +640,8 @@ impl<'a> Layout<'a> {
         }
         if let Some(Frame::Case(column)) = block.frames.last().copied() {
             if is("WHEN") || is("ELSE") {
-                return self.put(block, Place::Line(column + CASE_INDENT), false);
+                let indent = self.style.case_indent;
+                return self.put(block, Place::Line(column + indent), false);
             }
             if is("END") {
                 block.frames.pop();
@@ -654,7 +721,8 @@ impl<'a> Layout<'a> {
         self.word(end, &["JOIN"]).then_some(end - at + 1)
     }
 
-    /// Whether the keyword at `index`, read as structure, is uppercased
+    /// Whether the keyword at `index`, read as structure, takes the style's
+    /// case
     /// though it can be a name: not on MySQL, where it may be an alias and
     /// an alias's case can matter.
     fn structure(&self, index: usize) -> bool {
@@ -679,7 +747,8 @@ impl<'a> Layout<'a> {
     }
 
     /// Writes the item at `at` and what separates it from the one before.
-    /// `structure`: it is a word read as structure, uppercased whatever
+    /// `structure`: it is a word read as structure, in the style's case
+    /// whatever
     /// the list says.
     fn put(&mut self, block: &mut Block, place: Place, structure: bool) {
         let at = self.at;
@@ -714,20 +783,25 @@ impl<'a> Layout<'a> {
         block.headed = false;
     }
 
-    /// The item's text, uppercased when it is a keyword on the list (or
-    /// `structure` says so) and not a name.
+    /// The item's text, in the style's case when it is a keyword on the
+    /// list (or `structure` says so) and not a name.
     fn cased(&self, index: usize, structure: bool) -> Cow<'a, str> {
         let item = self.items[index];
-        let upper = item.kind == TokenKind::Keyword
+        let reserved = item.kind == TokenKind::Keyword
             && !self.named(index)
             && (structure
                 || UPPERCASED
                     .iter()
                     .any(|word| word.eq_ignore_ascii_case(item.text)));
-        if upper && item.text.bytes().any(|byte| byte.is_ascii_lowercase()) {
-            Cow::Owned(item.text.to_ascii_uppercase())
-        } else {
-            Cow::Borrowed(item.text)
+        let bytes = item.text.bytes();
+        match self.style.keywords {
+            Case::Upper if reserved && bytes.clone().any(|byte| byte.is_ascii_lowercase()) => {
+                Cow::Owned(item.text.to_ascii_uppercase())
+            }
+            Case::Lower if reserved && bytes.clone().any(|byte| byte.is_ascii_uppercase()) => {
+                Cow::Owned(item.text.to_ascii_lowercase())
+            }
+            Case::Upper | Case::Lower | Case::Keep => Cow::Borrowed(item.text),
         }
     }
 
@@ -880,8 +954,18 @@ mod tests {
         script: &str,
         selection: Option<Range<usize>>,
     ) -> (String, Range<usize>) {
+        laid_in(dialect, script, selection, Style::default())
+    }
+
+    /// [`laid`], in `style`.
+    fn laid_in(
+        dialect: Dialect,
+        script: &str,
+        selection: Option<Range<usize>>,
+        style: Style,
+    ) -> (String, Range<usize>) {
         let old = tokenize(dialect, script);
-        let Some((region, laid)) = laid_out(dialect, script, &old, selection) else {
+        let Some((region, laid)) = laid_out(dialect, script, &old, selection, style) else {
             return (script.to_owned(), 0..0);
         };
         let result = [&script[..region.start], &laid, &script[region.end..]].concat();
@@ -937,13 +1021,41 @@ mod tests {
     /// has nothing to change. Checks what every result owes: the same
     /// tokens, and nothing left for a second pass.
     fn formatted(dialect: Dialect, script: &str) -> String {
-        let (result, _) = laid(dialect, script, None);
-        let checked = format(dialect, script, None, 0).map(|formatted| formatted.text);
+        formatted_in(dialect, script, Style::default())
+    }
+
+    /// [`formatted`], in `style`.
+    fn formatted_in(dialect: Dialect, script: &str, style: Style) -> String {
+        let (result, _) = laid_in(dialect, script, None, style);
+        let checked = format_with(dialect, script, None, 0, style).map(|formatted| formatted.text);
         assert_eq!(checked.as_deref().unwrap_or(script), result, "{script:?}");
         // The second pass is the layout's too: `format` returns `None` as
         // well for a layout its check refused.
-        assert_eq!(laid(dialect, &result, None).0, result, "{script:?}");
+        assert_eq!(
+            laid_in(dialect, &result, None, style).0,
+            result,
+            "{script:?}"
+        );
         result
+    }
+
+    /// Every style but the default: each case, each side of the comma, and
+    /// each indent the editor sets (two and four).
+    fn other_styles() -> Vec<Style> {
+        let mut all = Vec::new();
+        for keywords in [Case::Upper, Case::Lower, Case::Keep] {
+            for commas in [Commas::Trailing, Commas::Leading] {
+                for case_indent in [2, 4] {
+                    all.push(Style {
+                        keywords,
+                        commas,
+                        case_indent,
+                    });
+                }
+            }
+        }
+        all.retain(|style| *style != Style::default());
+        all
     }
 
     fn pg(script: &str) -> String {
@@ -1751,6 +1863,7 @@ mod tests {
             seed ^= seed << 17;
             (seed % below as u64) as usize
         };
+        let styles = other_styles();
         for _ in 0..2_000 {
             let mut script = String::new();
             for _ in 0..next(40) {
@@ -1771,8 +1884,112 @@ mod tests {
                 if !part.is_empty() {
                     assert_eq!(laid(dialect, &result, Some(part)).0, result, "{script:?}");
                 }
+                for style in &styles {
+                    formatted_in(dialect, &script, *style);
+                }
             }
         }
+    }
+
+    #[test]
+    fn keywords_are_written_in_the_style_s_case_and_names_never() {
+        let script = "Select Title, count(*) as n from Books where Genre in ('A') group by Title";
+        let style = |keywords| Style {
+            keywords,
+            ..Style::default()
+        };
+        assert_eq!(
+            formatted_in(Dialect::Postgres, script, style(Case::Lower)),
+            lines(&[
+                "select Title,",
+                "       count(*) as n",
+                "  from Books",
+                " where Genre in ('A')",
+                " group by Title",
+            ])
+        );
+        assert_eq!(
+            formatted_in(Dialect::Postgres, script, style(Case::Keep)),
+            lines(&[
+                "Select Title,",
+                "       count(*) as n",
+                "  from Books",
+                " where Genre in ('A')",
+                " group by Title",
+            ])
+        );
+        // A word read as structure is lowercased with the rest.
+        assert_eq!(
+            formatted_in(
+                Dialect::Postgres,
+                "SELECT 1 UNION SELECT 2 EXCEPT SELECT 3",
+                style(Case::Lower)
+            ),
+            lines(&["select 1", " union", "select 2", "except", "select 3"])
+        );
+    }
+
+    #[test]
+    fn leading_commas_stand_on_the_river_s_edge() {
+        let leading = Style {
+            commas: Commas::Leading,
+            ..Style::default()
+        };
+        assert_eq!(
+            formatted_in(
+                Dialect::Postgres,
+                "select p.name as publisher, count(*) as covers from book_covers c \
+                join publishers p on p.id = c.publisher_id group by p.name;",
+                leading
+            ),
+            lines(&[
+                "SELECT p.name AS publisher",
+                "     , count(*) AS covers",
+                "  FROM book_covers c",
+                "  JOIN publishers p ON p.id = c.publisher_id",
+                " GROUP BY p.name;",
+            ])
+        );
+        // A WITH's list too, and the select list of a query in
+        // parentheses at its own river; a comment after a comma keeps the
+        // comma where it is.
+        assert_eq!(
+            formatted_in(
+                Dialect::Postgres,
+                "with a as (select 1, 2), b as (select 3) select x, -- why\n y from a",
+                leading
+            ),
+            lines(&[
+                "  WITH a AS (SELECT 1",
+                "                  , 2)",
+                "     , b AS (SELECT 3)",
+                "SELECT x, -- why",
+                "       y",
+                "  FROM a",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_case_s_parts_stand_in_by_the_style_s_indent() {
+        let two = Style {
+            case_indent: 2,
+            ..Style::default()
+        };
+        assert_eq!(
+            formatted_in(
+                Dialect::Postgres,
+                "select case when stock = 0 then 'out' else 'ok' end from books",
+                two
+            ),
+            lines(&[
+                "SELECT CASE",
+                "         WHEN stock = 0 THEN 'out'",
+                "         ELSE 'ok'",
+                "       END",
+                "  FROM books",
+            ])
+        );
     }
 
     #[test]
