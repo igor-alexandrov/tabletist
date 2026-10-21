@@ -15,7 +15,7 @@ use crate::theme::Icon;
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec, Segment};
 
-use super::sheet::{After, Skin, label_column, row};
+use super::sheet::{After, Skin, asked, label_column, row};
 
 /// What a short window leaves of the pane under its title at the least.
 const ROWS_MIN: f32 = 56.0;
@@ -102,6 +102,7 @@ fn title(ui: &mut Ui, on: bool, skin: &Skin, actions: &mut Vec<Action>) {
         .wrap(words)
         .layout(ui.ctx());
     let height = name.height() + 2.0 + what.height();
+    let ground = ui.painter().add(egui::Shape::Noop);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     paint(ui, &name, pos2(rect.left(), rect.top()));
     paint(
@@ -121,6 +122,8 @@ fn title(ui: &mut Ui, on: bool, skin: &Skin, actions: &mut Vec<Action>) {
             !on,
         )));
     }
+    // Quick open's row of the switch is the title's.
+    asked(ui, ground, (rect, place), OptionId::AgentsOn, skin, actions);
 }
 
 /// Paints `text` with its top left at `at`, and names it for screen

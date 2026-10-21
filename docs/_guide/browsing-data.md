@@ -14,7 +14,9 @@ are listed above them.
 Quick open (Cmd+P on macOS, Ctrl+P on Windows and Omarchy) finds any
 table or view by name without the sidebar, in this connection or in every
 open one. On macOS and Windows the sidebar's "Find any object…" field
-opens it; in the Omarchy look `/` in the sidebar filters its list.
+opens it, and `>` typed first lists the commands instead (and, with a
+word after it, the settings); in the Omarchy look `/` in the sidebar
+filters its list.
 
 System schemas such as `pg_catalog` and `information_schema` are hidden.
 [A setting]({% link _reference/settings-and-files.md %}#the-settings-file)
@@ -31,6 +33,9 @@ tags.
 - **Pages.** The grid loads 1,000 rows at a time unless you change
   [Rows per page]({% link _reference/settings-and-files.md %}#the-settings-window)
   in Settings. Cmd/Ctrl+Alt+Left and Right move between pages.
+- **Moving.** The arrows move a cell at a time. Cmd/Ctrl with an arrow
+  goes to the first or last row, or the first or last column, in the
+  macOS and Windows looks.
 - **Sorting.** Click a column's header to sort by it: ascending, then
   descending, then not at all. The server does the sorting.
 - **Counts.** The footer shows the range you are looking at and the

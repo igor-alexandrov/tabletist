@@ -1,0 +1,364 @@
+//! The commands quick open runs (macOS, Windows): each a command of the
+//! keymap's, with the name quick open lists it by, what it says of where it
+//! acts, and what running it does. A command lists only where it applies
+//! now: a tab's commands with that tab in front, a save with something to
+//! save. The terminal look's commands stay on `:`.
+
+use crate::keymap::Command;
+use crate::model::{Action, ConnTabId, RunMode, Tab};
+
+use super::App;
+
+/// The commands quick open can run, in the order it lists them: the
+/// window's, then the tab's in front. Each is built, and does here what
+/// its key does in the window, but three: quick open's Reload reloads the
+/// schema, which the key does with the keyboard in the sidebar (on a
+/// table's rows it reloads them); its Review pending SQL shows the
+/// review, which the key shows and hides by turns; and its Agents shows
+/// the Agents tab, which the key does but where History has an agent's
+/// statement picked (there it shows that call).
+pub const RUNNABLE: [Command; 29] = [
+    Command::NewSqlTab,
+    Command::SwitchDatabase,
+    Command::ShowAgents,
+    Command::History,
+    Command::Reload,
+    Command::EditConnection,
+    Command::CloseConnection,
+    Command::NextConnection,
+    Command::PreviousConnection,
+    Command::Connections,
+    Command::NewConnection,
+    Command::ToggleSidebar,
+    Command::Settings,
+    Command::Help,
+    Command::LargerText,
+    Command::SmallerText,
+    Command::DefaultTextSize,
+    Command::CloseTab,
+    Command::NextTab,
+    Command::PreviousTab,
+    Command::FilterBar,
+    Command::ToggleInspector,
+    Command::ReviewSql,
+    Command::SaveChanges,
+    Command::DiscardChanges,
+    Command::RunAll,
+    Command::Format,
+    Command::ToggleSqlMode,
+    Command::CancelQuery,
+];
+
+/// What a command's row says after its name: where it acts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum About {
+    Nothing,
+    /// New SQL query on production, where a new editor opens read-only.
+    OpensReadOnly,
+    /// The window's connection (`Bookshop · dev`).
+    Connection,
+    /// The window's connection, and who is connected to its Agents tab.
+    Agents,
+    /// The tab in front.
+    Tab(TabName),
+}
+
+/// A tab as a command's row names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabName {
+    /// A table or view, by its name.
+    Object(String),
+    /// A SQL editor, by its number (`Query 2`).
+    Query(u32),
+    Agents,
+    History,
+}
+
+impl TabName {
+    fn of(tab: &Tab) -> Self {
+        match tab {
+            Tab::Object(object) => Self::Object(object.object.name.clone()),
+            Tab::Sql(sql) => Self::Query(sql.number),
+            Tab::Agents(_) => Self::Agents,
+            Tab::History(_) => Self::History,
+        }
+    }
+}
+
+/// A command quick open offers: the keymap's command, the name it is
+/// listed by (English: the caller translates it), and what its row says
+/// after the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Runnable {
+    pub command: Command,
+    pub name: &'static str,
+    pub about: About,
+}
+
+impl App {
+    /// The commands quick open offers in `tab`'s window, in the order of
+    /// [`RUNNABLE`], each where it applies now. None in the terminal look.
+    pub fn runnable(&self, tab: ConnTabId) -> Vec<Runnable> {
+        if self.look.terminal {
+            return Vec::new();
+        }
+        RUNNABLE
+            .into_iter()
+            .filter_map(|command| self.run_of(tab, command).map(|(runnable, _)| runnable))
+            .collect()
+    }
+
+    /// What running `command` in `tab`'s window does: the actions its key
+    /// pushes there ([`RUNNABLE`] says where not). None where it does not
+    /// apply now.
+    pub(super) fn command_actions(&self, tab: ConnTabId, command: Command) -> Option<Vec<Action>> {
+        self.run_of(tab, command).map(|(_, actions)| actions)
+    }
+
+    /// `command` as quick open offers it in `tab`'s window, and what
+    /// running it does; None where it does not apply now.
+    fn run_of(&self, tab: ConnTabId, command: Command) -> Option<(Runnable, Vec<Action>)> {
+        let workspace = self.workspace(tab)?;
+        // The tab in front, and the object or SQL editor it is.
+        let front = workspace.active_tab.and_then(|id| workspace.tab(id));
+        let object = front.and_then(Tab::as_object);
+        let sql = front.and_then(Tab::as_sql);
+        // Changes to save or drop: none while a save is under way, which
+        // the reducers refuse to touch.
+        let pending =
+            object.filter(|object| object.edits.pending() && object.edits.saving.is_none());
+        let in_front = || front.map(|tab| About::Tab(TabName::of(tab)));
+        let stepped = |larger| {
+            let terminal = self.look.terminal;
+            let settings = &self.settings;
+            settings.stepped_font_size(terminal, larger) != settings.font_size_in(terminal)
+        };
+        let (name, about, actions) = match command {
+            Command::NewSqlTab => {
+                let read_only = workspace.environment.is_production()
+                    && (self.settings.new_tab == crate::settings::NewTab::ReadOnly
+                        || RunMode::of_new_tab(workspace.sql_writes(), workspace.environment)
+                            == RunMode::ReadOnly);
+                let about = if read_only {
+                    About::OpensReadOnly
+                } else {
+                    About::Nothing
+                };
+                ("New SQL query", about, vec![Action::NewSqlTab(tab)])
+            }
+            // Where the server has another database to switch to.
+            Command::SwitchDatabase => {
+                let databases = workspace.databases.value.as_ref();
+                databases.filter(|databases| databases.len() > 1)?;
+                (
+                    "Switch database",
+                    About::Nothing,
+                    vec![Action::ShowDatabaseMenu(tab)],
+                )
+            }
+            // Where agents can reach the app.
+            Command::ShowAgents => {
+                if !crate::endpoint::AVAILABLE {
+                    return None;
+                }
+                ("Agents", About::Agents, vec![Action::ShowAgents(tab)])
+            }
+            Command::History => ("History", About::Connection, vec![Action::ShowHistory(tab)]),
+            Command::Reload => (
+                "Reload schema",
+                About::Connection,
+                vec![Action::RefreshTree(tab)],
+            ),
+            Command::EditConnection => {
+                self.connections.get(&workspace.conn_id)?;
+                let edit = Action::EditConnection(workspace.conn_id.clone());
+                ("Edit connection", About::Connection, vec![edit])
+            }
+            Command::CloseConnection => (
+                "Close connection",
+                About::Connection,
+                vec![Action::CloseConnTab(tab)],
+            ),
+            // Where there is another window to go to.
+            Command::NextConnection | Command::PreviousConnection => {
+                if self.tabs.len() < 2 {
+                    return None;
+                }
+                let (name, step) = match command {
+                    Command::NextConnection => ("Next connection", 1),
+                    _ => ("Previous connection", -1),
+                };
+                (name, About::Nothing, vec![Action::CycleConnTab(step)])
+            }
+            Command::Connections => ("Connections", About::Nothing, vec![Action::ShowConnections]),
+            Command::NewConnection => (
+                "New connection",
+                About::Nothing,
+                vec![Action::NewConnection],
+            ),
+            Command::ToggleSidebar => {
+                let name = if workspace.sidebar_hidden {
+                    "Show sidebar"
+                } else {
+                    "Hide sidebar"
+                };
+                (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
+            }
+            Command::Settings => ("Settings", About::Nothing, vec![Action::ShowSettings]),
+            Command::Help => ("Keyboard shortcuts", About::Nothing, vec![Action::ShowHelp]),
+            // Each where it changes the size: not at the end of the steps,
+            // nor back to the look's own where it is that already.
+            Command::LargerText => {
+                stepped(true).then_some(())?;
+                (
+                    "Larger text",
+                    About::Nothing,
+                    vec![Action::TextSize(Some(true))],
+                )
+            }
+            Command::SmallerText => {
+                stepped(false).then_some(())?;
+                (
+                    "Smaller text",
+                    About::Nothing,
+                    vec![Action::TextSize(Some(false))],
+                )
+            }
+            Command::DefaultTextSize => {
+                let terminal = self.look.terminal;
+                let default = crate::settings::FontSizes::of(terminal).default;
+                if self.settings.font_size_in(terminal) == default {
+                    return None;
+                }
+                (
+                    "Default text size",
+                    About::Nothing,
+                    vec![Action::TextSize(None)],
+                )
+            }
+            // The tab in front's.
+            Command::CloseTab => {
+                let id = front?.id();
+                ("Close tab", in_front()?, vec![Action::CloseTab { tab, id }])
+            }
+            Command::NextTab | Command::PreviousTab => {
+                if workspace.tabs.len() < 2 {
+                    return None;
+                }
+                let (name, step) = match command {
+                    Command::NextTab => ("Next tab", 1),
+                    _ => ("Previous tab", -1),
+                };
+                (name, About::Nothing, vec![Action::CycleTab { tab, step }])
+            }
+            // A table's rows: its Structure view has none to filter. An
+            // open bar takes the keyboard back.
+            Command::FilterBar => {
+                let object =
+                    object.filter(|object| object.view == crate::model::ObjectView::Data)?;
+                let filter = if object.filter.open {
+                    Action::FocusFilterBar(tab)
+                } else {
+                    Action::ToggleFilterBar(tab)
+                };
+                ("Filter rows", in_front()?, vec![filter])
+            }
+            // Where it has a row to show: a table's rows, or the row
+            // selected in a SQL editor's result.
+            Command::ToggleInspector => {
+                let data =
+                    object.is_some_and(|object| object.view == crate::model::ObjectView::Data);
+                let row = sql.is_some_and(|sql| sql.selected_row().is_some());
+                if !data && !row {
+                    return None;
+                }
+                let name = if workspace.row_panel {
+                    "Hide row panel"
+                } else {
+                    "Show row panel"
+                };
+                (name, in_front()?, vec![Action::ToggleRowPanel(tab)])
+            }
+            // A table's pending changes: shown, saved or dropped.
+            Command::ReviewSql => {
+                let object = pending.filter(|object| !object.edits.reviewing)?;
+                let id = object.id;
+                let review = Action::ReviewEdits {
+                    tab,
+                    id,
+                    show: true,
+                };
+                ("Review pending SQL", in_front()?, vec![review])
+            }
+            Command::SaveChanges => {
+                let id = pending?.id;
+                (
+                    "Save changes",
+                    in_front()?,
+                    vec![Action::WriteEdits { tab, id }],
+                )
+            }
+            Command::DiscardChanges => {
+                let id = pending?.id;
+                (
+                    "Discard all pending",
+                    in_front()?,
+                    vec![Action::DiscardEdits { tab, id }],
+                )
+            }
+            // A SQL editor's: a script to run or format, and its runs'
+            // mode where the connection allows writes.
+            Command::RunAll => {
+                // A script with a statement in it: comments alone run
+                // nothing.
+                let dialect = workspace.driver.dialect();
+                let statements = |sql: &crate::model::SqlTab| {
+                    !tabletist_db::sql::statements(dialect, &sql.text).is_empty()
+                };
+                let sql = sql.filter(|sql| statements(sql) && !sql.is_writing())?;
+                let run = Action::RunSql {
+                    tab,
+                    sql_tab: sql.id,
+                    all: true,
+                };
+                ("Run all", in_front()?, vec![run])
+            }
+            Command::Format => {
+                let sql = sql.filter(|sql| !sql.text.trim().is_empty())?;
+                let format = Action::FormatSql {
+                    tab,
+                    sql_tab: sql.id,
+                };
+                ("Format SQL", in_front()?, vec![format])
+            }
+            Command::ToggleSqlMode => {
+                let sql = sql.filter(|_| workspace.sql_writes().is_ok())?;
+                let name = match sql.mode {
+                    RunMode::ReadOnly => "Read-write tab",
+                    RunMode::ReadWrite => "Read-only tab",
+                };
+                let toggle = Action::ToggleSqlMode {
+                    tab,
+                    sql_tab: sql.id,
+                };
+                (name, in_front()?, vec![toggle])
+            }
+            // While something of the window loads or runs.
+            Command::CancelQuery => {
+                self.is_busy(tab).then_some(())?;
+                (
+                    "Cancel running query",
+                    About::Connection,
+                    vec![Action::CancelQuery(tab)],
+                )
+            }
+            _ => return None,
+        };
+        let runnable = Runnable {
+            command,
+            name,
+            about,
+        };
+        Some((runnable, actions))
+    }
+}

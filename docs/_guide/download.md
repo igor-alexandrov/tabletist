@@ -41,13 +41,25 @@ extract it and open `tabletist.exe`.
 ### Arch Linux and Omarchy
 
 The AUR packages (`tabletist-bin` and `tabletist`) are not published yet.
-Until they are, use the release archive below.
+Until they are, use the AppImage or the release archive below.
 
 ### Other distributions
 
-Download `tabletist-v<version>-x86_64-unknown-linux-gnu.tar.gz`, or the
-`aarch64` one. It holds the `tabletist` binary, a `.desktop` file and the
-icon.
+Download `tabletist-v<version>-x86_64-unknown-linux-gnu.AppImage`, or the
+`aarch64` one. It is one file that runs without installing anything. Make it
+executable and run it:
+
+```sh
+chmod +x tabletist-v<version>-x86_64-unknown-linux-gnu.AppImage
+./tabletist-v<version>-x86_64-unknown-linux-gnu.AppImage
+```
+
+An AppImage needs FUSE, which most desktops have. Without it, run it with
+`--appimage-extract-and-run`.
+
+To install Tabletist yourself instead, download
+`tabletist-v<version>-x86_64-unknown-linux-gnu.tar.gz`, or the `aarch64`
+one. It holds the `tabletist` binary, a `.desktop` file and the icon.
 
 The Linux binaries are built on Ubuntu 24.04 and need glibc 2.39 or newer
 (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system,

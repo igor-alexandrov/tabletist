@@ -66,7 +66,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev desktop-file-utils
       - name: MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -94,6 +94,11 @@ jobs:
               packaging/linux/dev.tabletist.Tabletist.svg "dist/$name/"
             (cd dist && tar czf "$name.tar.gz" "$name")
           fi
+      - name: AppImage
+        if: runner.os == 'Linux'
+        run: |
+          bash packaging/linux/appimage.sh "target/${{ matrix.target }}/release/tabletist" \
+            "dist/tabletist-${TAG}-${{ matrix.target }}.AppImage" "${TAG#v}"
       - name: Installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -111,6 +116,7 @@ jobs:
           name: ${{ matrix.target }}
           path: |
             dist/*.tar.gz
+            dist/*.AppImage
             dist/*.zip
             dist/*-setup.exe
           if-no-files-found: error

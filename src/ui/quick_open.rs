@@ -1,7 +1,8 @@
 //! Quick open (`⌘P`, Omarchy `ctrl+p`): a panel over the window that finds
 //! a table or view of the window's connection by name, or of every open
-//! connection (`⇥`, `tab`), and in the macOS and Windows looks starts a
-//! few commands. What it lists is [`App::quick_open_list`]'s; this draws
+//! connection (`⇥`, `tab`), and in the macOS and Windows looks runs a
+//! command or opens Settings at one of its rows (`>` first lists those
+//! alone). What it lists is [`App::quick_open_list`]'s; this draws
 //! it and reads its keys, which are its own while it is open (the window's
 //! handler does not run under a dialog). macOS: a floating panel 640 wide,
 //! 84 from the window's top, the window behind it not dimmed. Omarchy: the
@@ -15,7 +16,8 @@ use egui::{WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::ObjectKind;
 
 use crate::app::{
-    App, Found, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
+    About, App, Found, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
+    TabName,
 };
 use crate::env::{Environment, Platform, env_colors};
 use crate::i18n::{Locale, gettext};
@@ -79,6 +81,7 @@ struct Keys {
     open: Written,
     editor: Written,
     scope: Written,
+    commands: Written,
     number: Written,
     close: Written,
 }
@@ -90,6 +93,7 @@ fn keys(keymap: &Keymap, layout: Layout) -> Keys {
         open: key(Command::QuickOpenPick),
         editor: key(Command::QuickOpenPickInEditor),
         scope: key(Command::QuickOpenScope),
+        commands: key(Command::QuickOpenCommands),
         number: key(Command::QuickOpenNumber),
         close: key(Command::QuickOpenClose),
     }
@@ -112,6 +116,8 @@ struct Skin<'a> {
     agents: Option<String>,
     /// The commands' keys, as the window reads them.
     command_keys: &'a HashMap<Command, Written>,
+    /// The run key, as the window writes it: a setting's row names it.
+    run_key: Written,
     /// The key that opens the picked result, written on its row (macOS).
     open_key: String,
 }
@@ -148,6 +154,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let list = app.quick_open_list(open);
+    // The result picked, wherever the list has moved it: none where it
+    // is gone.
+    let picked = app.quick_open_picked(open, &list);
     let layout = app.layout();
     let keymap = app.keymap.clone();
     let keys = keys(&keymap, layout);
@@ -174,15 +183,25 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         };
         look.label(&said)
     });
-    let command_keys: HashMap<Command, Written> = [
-        Command::NewSqlTab,
-        Command::SwitchDatabase,
-        Command::ShowAgents,
-        Command::History,
-    ]
-    .into_iter()
-    .map(|command| (command, keymap.key_in(layout, command, Scope::Global)))
-    .collect();
+    // Each command's first key where a connection's window reads it: the
+    // whole window's, then the panes' (Format's is the SQL editor's). A key
+    // only Connections reads (Edit connection's) is none here, and so is
+    // Reload's: on a table's rows it reloads them, not the schema. A
+    // setting's row has the key of Settings.
+    let window_scopes = [Scope::Global, Scope::Grid, Scope::Sidebar, Scope::SqlEditor];
+    let command_keys: HashMap<Command, Written> = crate::app::RUNNABLE
+        .into_iter()
+        .chain([Command::Settings])
+        .filter(|command| *command != Command::Reload)
+        .map(|command| {
+            let key = window_scopes
+                .iter()
+                .map(|scope| keymap.key_in(layout, command, *scope))
+                .find(|key| !key.as_str().is_empty())
+                .unwrap_or_default();
+            (command, key)
+        })
+        .collect();
     let skin = Skin {
         look: &look,
         palette: &palette,
@@ -193,6 +212,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         here,
         agents,
         command_keys: &command_keys,
+        run_key: keymap.key(layout, Command::RunStatement),
         open_key: keys.open.as_str().to_owned(),
     };
     let mut actions = Vec::new();
@@ -202,6 +222,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // Nothing typed but spaces lists what nothing typed lists, numbers
     // and all.
     let nothing_typed = open.query.trim().is_empty();
+    // What follows the `>` of the commands alone.
+    let commands_query = app.quick_open_commands_query(open).map(str::to_owned);
     ctx.input_mut(|input| read_keys(input, &keymap, layout, nothing_typed, &mut actions));
     let Some(Dialog::QuickOpen(open)) = &mut app.dialog else {
         return;
@@ -231,11 +253,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if changed {
                 actions.push(Action::QuickOpenChanged);
             }
-            let selected = open.selected.min(list.items().count().saturating_sub(1));
+            let selected = picked.unwrap_or(usize::MAX);
             if list.is_empty() {
                 no_match(
                     ui,
-                    (&open.query, open.everywhere),
+                    (&open.query, open.everywhere, commands_query.as_deref()),
                     &keys,
                     &skin,
                     &mut actions,
@@ -675,32 +697,34 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
             }
         }
         QuickItem::Command { command, spans } => {
-            let name = gettext(skin.locale, command.name()).into_owned();
             let key = skin
                 .command_keys
                 .get(&command.command())
                 .map(|key| key.as_str().to_owned())
                 .unwrap_or_default();
-            let (icon, detail) = match command {
-                QuickCommand::NewSql { read_only } => {
-                    let detail = if *read_only {
-                        skin.say("opens read-only")
-                    } else {
-                        String::new()
+            // A screen reader hears which it is: a setting's row opens
+            // Settings, not the setting.
+            let (name, icon, detail, what) = match command {
+                QuickCommand::Run(runnable) => {
+                    let name = gettext(skin.locale, runnable.name).into_owned();
+                    let icon = match runnable.command {
+                        Command::NewSqlTab => Icon::Code,
+                        Command::SwitchDatabase => Icon::Database,
+                        Command::History => Icon::Clock,
+                        Command::Reload => Icon::RefreshCw,
+                        Command::Settings => Icon::Settings,
+                        _ => Icon::SquareTerminal,
                     };
-                    (Icon::Code, detail)
+                    (name, icon, about(&runnable.about, skin), "command")
                 }
-                QuickCommand::SwitchDatabase => (Icon::Database, String::new()),
-                QuickCommand::Agents => {
-                    let mut detail = skin.window_name(skin.here);
-                    if let Some(said) = &skin.agents {
-                        detail = format!("{detail} · {said}");
-                    }
-                    (Icon::SquareTerminal, detail)
+                QuickCommand::Setting(option) => {
+                    let name =
+                        crate::app::setting_path(skin.locale, skin.run_key.as_str(), *option);
+                    let detail = skin.say("jumps to the setting");
+                    (name, Icon::Settings, detail, "setting")
                 }
-                QuickCommand::History => (Icon::Clock, skin.window_name(skin.here)),
             };
-            let mut label = format!("{name}, {}", skin.say("command"));
+            let mut label = format!("{name}, {}", skin.say(what));
             for words in [&detail, &key] {
                 if !words.is_empty() {
                     label = format!("{label}, {words}");
@@ -722,6 +746,8 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                 QuickGroup::Tables => format!("{hidden} {}", skin.say("more tables")),
                 QuickGroup::Views if *hidden == 1 => skin.say("1 more view"),
                 QuickGroup::Views => format!("{hidden} {}", skin.say("more views")),
+                QuickGroup::Commands if *hidden == 1 => skin.say("1 more command"),
+                QuickGroup::Commands => format!("{hidden} {}", skin.say("more commands")),
                 QuickGroup::Connection(tab) => format!(
                     "{hidden} {} {}",
                     skin.say("more in"),
@@ -738,6 +764,26 @@ fn shown(item: &QuickItem, skin: &Skin<'_>) -> Shown {
                 more: true,
             }
         }
+    }
+}
+
+/// What a command's row says after its name: where it acts.
+fn about(about: &About, skin: &Skin<'_>) -> String {
+    match about {
+        About::Nothing => String::new(),
+        About::OpensReadOnly => skin.say("opens read-only"),
+        About::Connection => skin.window_name(skin.here),
+        About::Agents => {
+            let mut detail = skin.window_name(skin.here);
+            if let Some(said) = &skin.agents {
+                detail = format!("{detail} · {said}");
+            }
+            detail
+        }
+        About::Tab(TabName::Object(name)) => display_safe(name).into_owned(),
+        About::Tab(TabName::Query(number)) => format!("{} {number}", skin.say("Query")),
+        About::Tab(TabName::Agents) => skin.say("Agents"),
+        About::Tab(TabName::History) => skin.say("History"),
     }
 }
 
@@ -1027,16 +1073,28 @@ fn full_on_hover(response: &egui::Response, laid: &crate::typography::Laid, name
 }
 
 /// What the panel says when nothing matches: where it looked, and in this
-/// connection's scope a way to look in every open one.
+/// connection's scope a way to look in every open one. Where the commands
+/// alone are listed (`>`, `commands_query` what follows it), that no
+/// command matches.
 fn no_match(
     ui: &mut egui::Ui,
-    (query, everywhere): (&str, bool),
+    (query, everywhere, commands_query): (&str, bool, Option<&str>),
     keys: &Keys,
     skin: &Skin<'_>,
     actions: &mut Vec<Action>,
 ) {
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let query = query.trim();
+    if let Some(query) = commands_query {
+        let said =
+            gettext(locale, "No commands match “{query}”").replace("{query}", &display_safe(query));
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 96.0), Sense::hover());
+        let laid = Text::one(look, TextRole::UiBody, &said, palette.secondary).layout(ui.ctx());
+        let y = rect.top() + 36.0;
+        laid.paint_left(ui.painter(), rect.center().x - laid.width() / 2.0, y);
+        widgets::announce(ui, rect, &said);
+        return;
+    }
     let place = if everywhere {
         gettext(locale, "open connections").into_owned()
     } else if look.terminal {
@@ -1088,9 +1146,9 @@ fn no_match(
 }
 
 /// The key line under the list. macOS: `↑↓ move`, `↩ open`, `⌥↩ in SQL
-/// editor`, `⇥` and the scope it switches to, `esc close` at the right, on
-/// the sunken surface. Omarchy: the same in its words, `1..9 pick` only
-/// while nothing is typed.
+/// editor`, `> commands`, `⇥` and the scope it switches to, `esc close` at
+/// the right, on the sunken surface. Omarchy: the same in its words, but
+/// no `>`, and `1..9 pick` only while nothing is typed.
 fn footer(ui: &mut egui::Ui, everywhere: bool, nothing_typed: bool, keys: &Keys, skin: &Skin<'_>) {
     let (look, palette, locale) = (skin.look, skin.palette, skin.locale);
     let height = if look.terminal { 30.0 } else { 34.0 };
@@ -1110,10 +1168,11 @@ fn footer(ui: &mut egui::Ui, everywhere: bool, nothing_typed: bool, keys: &Keys,
     } else {
         word("All connections")
     };
-    let (moves, open, editor, pick, close) = (
+    let (moves, open, editor, commands, pick, close) = (
         word("move"),
         word("open"),
         word("in SQL editor"),
+        word("commands"),
         word("pick"),
         word("close"),
     );
@@ -1121,6 +1180,9 @@ fn footer(ui: &mut egui::Ui, everywhere: bool, nothing_typed: bool, keys: &Keys,
         vec![(&keys.moves, &moves, true), (&keys.open, &open, true)];
     if !keys.editor.as_str().is_empty() {
         hints.push((&keys.editor, &editor, true));
+    }
+    if !keys.commands.as_str().is_empty() {
+        hints.push((&keys.commands, &commands, true));
     }
     if look.terminal && nothing_typed && !keys.number.as_str().is_empty() {
         hints.push((&keys.number, &pick, true));

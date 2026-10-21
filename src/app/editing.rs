@@ -60,6 +60,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::RestoreRow { .. }
             | Action::RevertCell { .. }
             | Action::DiscardEdits { .. }
+            | Action::AskDiscard { .. }
             | Action::WriteEdits { .. }
             | Action::ReviewEdits { .. }
             | Action::SelectCell { .. }
@@ -391,6 +392,7 @@ impl App {
     pub(super) fn perform(&mut self, held: Held) {
         match held {
             Held::Action(action) => self.apply(*action),
+            Held::Nothing => {}
             Held::CloseWindow => {
                 let tabs = self.holding_edits();
                 if tabs.is_empty() {

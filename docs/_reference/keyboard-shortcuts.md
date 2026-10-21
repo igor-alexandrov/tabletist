@@ -28,7 +28,7 @@ In the picker:
 
 | Keys | Do |
 | --- | --- |
-| Arrows, Enter | Pick a connection |
+| Arrows, Enter | Pick a connection. Mod+Up and Mod+Down go to the first and the last |
 | Shift+Enter | Open it again |
 | Mod+N | New connection |
 | Mod+E | Edit |
@@ -50,7 +50,7 @@ In the connection dialog:
 
 | Keys | Do |
 | --- | --- |
-| Mod+P | Quick open (Ctrl+P in the Omarchy look too). In it, Up and Down move, Enter opens, Tab searches every open connection and Esc closes. On macOS and Windows, Alt+Enter opens a SQL editor reading the rows |
+| Mod+P | Quick open (Ctrl+P in the Omarchy look too). In it, Up and Down move, Enter opens, Tab searches every open connection and Esc closes. On macOS and Windows, Alt+Enter opens a SQL editor reading the rows, and `>` typed first lists the commands alone (and, with a word after it, the settings) |
 | Mod+B | Show or hide the sidebar |
 | Mod+Alt+A | Show the Agents tab |
 | Mod+Y | Show the [History tab]({% link _guide/sql-editor.md %}#history). Not while you type in a text field, where it is redo |
@@ -75,8 +75,10 @@ takes what you type (Mod+P opens the same search from anywhere):
 
 | Keys | Do |
 | --- | --- |
-| Arrows, Home, End, Enter | Move in the sidebar |
+| Arrows, Home, End, Enter | Move in the sidebar. Mod+Up and Mod+Down go to the top and the bottom, as Home and End do |
 | Arrows, Page Up, Page Down, Home, End | Move in the grid |
+| Mod+Up, Mod+Down | First and last row, as Home and End |
+| Mod+Left, Mod+Right | First and last column |
 | Mod+Alt+Left and Right | Previous and next page |
 | Mod+F | Filter bar |
 | Mod+R | Reload |
@@ -119,6 +121,7 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Z | Revert the cell |
 | Mod+S | Save all pending changes |
 | Mod+Alt+Backspace | Discard all pending changes |
+| Esc | With no cell being edited: discard all pending changes, asking first |
 | Mod+Shift+D | Show or hide the SQL of the pending changes |
 
 ## SQL editor

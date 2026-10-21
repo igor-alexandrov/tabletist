@@ -1119,13 +1119,17 @@ fn every_way_in_shows_one_history_tab_and_none_opens_it_by_itself() {
         matches!(
             item,
             crate::app::QuickItem::Command {
-                command: crate::app::QuickCommand::History,
+                command: crate::app::QuickCommand::Run(runnable),
                 ..
-            }
+            } if runnable.command == crate::keymap::Command::History
         )
     };
+    // The commands alone, History first; the setting of how much it keeps
+    // after it.
     let commands = listed(&mut harness, "> Hist");
-    assert_eq!(commands.len(), 1, "the commands alone");
+    let command =
+        |item: &crate::app::QuickItem| matches!(item, crate::app::QuickItem::Command { .. });
+    assert!(commands.iter().all(command), "the commands alone");
     assert!(history(&commands[0]));
     let index = listed(&mut harness, "> History").iter().position(history);
     harness.app.apply(Action::QuickOpenPick {

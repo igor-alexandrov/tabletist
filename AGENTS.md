@@ -178,9 +178,9 @@ other way round.
 1. Bump `version` in `Cargo.toml`, run `cargo update -p tabletist`, commit,
    and get the commit onto `main`.
 2. On that commit: `git tag -s v0.2.2 -m v0.2.2 && git push origin v0.2.2`.
-3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz`), Windows (x64,
-   arm64 `.zip` and `-setup.exe`) and macOS (universal `.dmg`), publishes a
-   GitHub release with `checksums.txt`, then updates the AUR. A tag with a
+3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz` and `.AppImage`),
+   Windows (x64, arm64 `.zip` and `-setup.exe`) and macOS (universal `.dmg`),
+   publishes a GitHub release with `checksums.txt`, then updates the AUR. A tag with a
    `-` (`v0.2.0-rc1`) is a pre-release and skips the AUR.
 
 Optional secrets (each step skips with a notice without them):
@@ -193,5 +193,7 @@ Optional secrets (each step skips with a notice without them):
 
 Dry run without publishing: `gh workflow run release.yml -f tag=v0.0.0-dry`.
 `packaging.yml` builds and installs the DMG, the Windows installer and the
-source AUR package whenever `packaging/` changes. Locally,
+source AUR package, and builds and runs the AppImage, whenever `packaging/`
+changes. `packaging/linux/appimage.sh` pins appimagetool and the AppImage
+runtime by version and SHA-256; move them together. Locally,
 `packaging/arch/render.sh` fills a PKGBUILD from a release's checksums.

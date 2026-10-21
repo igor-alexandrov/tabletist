@@ -2861,6 +2861,30 @@ value_tags   = true
     }
 
     #[test]
+    fn mod_up_and_down_go_to_the_ends_of_the_picker() {
+        let up = (Key::ArrowUp, Modifiers::COMMAND);
+        let down = (Key::ArrowDown, Modifiers::COMMAND);
+        let one_down = (Key::ArrowDown, Modifiers::NONE);
+        for (presses, connected) in [
+            // Nothing selected: Mod+Up picks the top, Mod+Down the bottom.
+            (vec![up, one_down], "Beta"),
+            (vec![down], "Gamma"),
+            (vec![down, up, one_down], "Beta"),
+        ] {
+            let mut harness = Harness::new();
+            for name in ["Alpha", "Beta", "Gamma"] {
+                add_saved(&mut harness, name);
+            }
+            for (key, modifiers) in presses {
+                harness.press(key, modifiers);
+            }
+            harness.press(Key::Enter, Modifiers::NONE);
+            let tab = harness.app.active_tab_id();
+            assert_eq!(harness.app.workspace(tab).unwrap().name, connected);
+        }
+    }
+
+    #[test]
     fn the_terminal_picker_deletes_only_on_dd() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
@@ -5667,6 +5691,12 @@ value_tags   = true
         harness.press(Key::PageUp, Modifiers::NONE);
         harness.press(Key::ArrowLeft, Modifiers::NONE);
         assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        harness.press(Key::ArrowDown, Modifiers::COMMAND);
+        harness.press(Key::ArrowRight, Modifiers::COMMAND);
+        assert_eq!(sql_selection(&harness, tab, id), at(29, 2));
+        harness.press(Key::ArrowUp, Modifiers::COMMAND);
+        harness.press(Key::ArrowLeft, Modifiers::COMMAND);
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
     }
 
     #[test]
@@ -7701,6 +7731,38 @@ value_tags   = true
         harness.click("Row 1");
         assert!(harness.has("Copy email"), "the panel shows the row");
         assert!(harness.has("Row 1"), "no key known yet, so its number");
+    }
+
+    #[test]
+    fn mod_arrows_go_to_the_first_and_last_row_and_column() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::COMMAND);
+        assert_eq!(selection(&harness, tab), at(4, 0));
+        harness.press(Key::ArrowRight, Modifiers::COMMAND);
+        assert_eq!(selection(&harness, tab), at(4, 2));
+        harness.press(Key::ArrowUp, Modifiers::COMMAND);
+        assert_eq!(selection(&harness, tab), at(0, 2));
+        harness.press(Key::ArrowLeft, Modifiers::COMMAND);
+        assert_eq!(selection(&harness, tab), at(0, 0));
+    }
+
+    #[test]
+    fn the_terminal_grid_does_not_read_mod_arrows() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::COMMAND);
+        harness.press(Key::ArrowRight, Modifiers::COMMAND);
+        assert_eq!(
+            selection(&harness, tab),
+            Some(crate::model::CellPos { row: 0, col: 0 })
+        );
     }
 
     #[test]
@@ -10447,6 +10509,25 @@ value_tags   = true
             workspace.object_tab(object_tab).unwrap().selection,
             Some(crate::model::CellPos { row: 1, col: 0 })
         );
+    }
+
+    #[test]
+    fn mod_up_and_down_go_to_the_ends_of_the_tree() {
+        let (mut harness, tab) = tree_harness();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, false));
+        let cursor = |harness: &Harness| harness.app.workspace(tab).unwrap().tree.cursor.clone();
+        let table = |name| {
+            Some(crate::model::TreeNode::Object(
+                tabletist_db::ObjectRef::new("main", name),
+                tabletist_db::ObjectKind::Table,
+            ))
+        };
+        assert_eq!(cursor(&harness), table("users"));
+        harness.press(Key::ArrowUp, Modifiers::COMMAND);
+        assert_eq!(cursor(&harness), table("orders"), "the top");
+        harness.press(Key::ArrowDown, Modifiers::COMMAND);
+        assert_eq!(cursor(&harness), table("users"), "the bottom");
     }
 
     #[test]
@@ -14152,6 +14233,24 @@ value_tags   = true
     }
 
     #[test]
+    fn mod_arrows_in_a_cell_editor_stay_in_its_text() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            for key in [Key::ArrowDown, Key::ArrowLeft, Key::ArrowUp] {
+                harness.press(key, Modifiers::COMMAND);
+            }
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            let cell = CellPos { row: 1, col: 1 };
+            let editing = edits(&harness, tab, id).editor.as_ref().map(|e| e.cell);
+            assert_eq!(editing, Some(cell), "{}", look.name);
+            let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+            assert_eq!(object.selection, Some(cell), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn enter_edits_the_cell_and_enter_again_commits_and_moves_down() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
@@ -14616,6 +14715,122 @@ value_tags   = true
             // With nothing pending the key sends nothing.
             harness.press(Key::S, Modifiers::COMMAND);
             assert_eq!(writes(&harness), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn esc_on_the_grid_asks_to_discard_and_discard_drops_the_set() {
+        use crate::model::Dialog;
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(
+                matches!(harness.app.dialog, Some(Dialog::Leave(_))),
+                "{}",
+                look.name
+            );
+            assert!(harness.has("Discard 1 change?"), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Esc again stays: the prompt's Esc is its Cancel.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Asked again, Discard drops the set.
+            harness.press(Key::Escape, Modifiers::NONE);
+            harness.click("Discard");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(!edits(&harness, tab, id).pending(), "{}", look.name);
+            // With nothing pending Esc asks nothing.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn esc_that_cancels_a_cell_edit_asks_nothing_until_pressed_again() {
+        use crate::model::Dialog;
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            select(&mut harness, tab, id, (3, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            // Held down: the press closes the editor, its repeats ask
+            // nothing.
+            harness.frame(vec![crate::testing::key(Key::Escape, Modifiers::NONE)]);
+            let repeat = egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: true,
+                modifiers: Modifiers::NONE,
+            };
+            harness.frame(vec![repeat.clone()]);
+            harness.frame(vec![repeat]);
+            harness.frame(vec![crate::testing::release(Key::Escape, Modifiers::NONE)]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // A second press asks.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(
+                matches!(harness.app.dialog, Some(Dialog::Leave(_))),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn esc_discards_at_once_when_dropping_edits_asks_nothing() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.settings.confirm_close_edits = false;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(!edits(&harness, tab, id).pending(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_looks_esc_on_the_grid_asks_nothing() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.settle();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
+    #[test]
+    fn esc_that_closes_a_list_over_the_grid_asks_nothing() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            with_database_picker(&mut harness, tab);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            harness.click("Database");
+            assert!(egui::Popup::is_any_open(&harness.ctx), "{}", look.name);
+            focus_grid(&mut harness, tab);
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!egui::Popup::is_any_open(&harness.ctx), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_pending_bar_writes_the_discard_key_beside_discard_all() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            let keys = key_of(&look, crate::keymap::Command::DiscardChanges);
+            assert!(painted(&harness, &keys), "{}: {keys}", look.name);
         }
     }
 

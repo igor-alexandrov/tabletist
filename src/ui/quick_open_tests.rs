@@ -8,7 +8,9 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use tabletist_db::{ObjectInfo, ObjectKind, ObjectRef};
 
-use crate::app::{QuickCommand, QuickHeading, QuickItem, QuickRow, StartRow};
+use crate::app::{
+    About, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickRow, Runnable, StartRow,
+};
 use crate::backend::Command;
 use crate::connections::SavedConnection;
 use crate::env::Environment;
@@ -134,7 +136,7 @@ fn listed(harness: &Harness) -> Vec<String> {
                 }
             },
             QuickRow::Item(QuickItem::Command { command, .. }) => {
-                format!("> {}", command.name())
+                format!("> {}", harness.app.command_name(command))
             }
             QuickRow::Item(QuickItem::More { hidden, .. }) => format!("+{hidden}"),
         })
@@ -547,9 +549,13 @@ fn the_commands_do_what_they_say() {
     let first = list.items().next().cloned();
     assert!(
         matches!(
-            first,
+            &first,
             Some(QuickItem::Command {
-                command: QuickCommand::NewSql { read_only: false },
+                command: QuickCommand::Run(Runnable {
+                    command: crate::keymap::Command::NewSqlTab,
+                    about: About::Nothing,
+                    ..
+                }),
                 ..
             })
         ),
@@ -826,8 +832,10 @@ fn a_dot_alone_matches_nothing() {
 fn the_pick_moves_from_where_it_shows() {
     let (mut harness, _tab) = bookshop(Look::macos());
     ask(&mut harness, Look::macos(), "cov");
+    // A pick held by no result, past the list's end.
     if let Some(Dialog::QuickOpen(open)) = &mut harness.app.dialog {
         open.selected = 7;
+        open.picked = None;
     }
     let count = harness
         .app
@@ -933,6 +941,7 @@ fn a_large_schema_answers_each_keystroke_within_a_frame() {
         caret: None,
         scrolled_to: None,
         scroll_offset: 0.0,
+        picked: None,
     };
     // Each keystroke of a query, and taking the names apart beside it, the
     // fastest of five tries of each taken as its time, so that a pause of
@@ -960,4 +969,469 @@ fn a_large_schema_answers_each_keystroke_within_a_frame() {
             "{typed}: {best:?}, taking the names apart {pass:?}"
         );
     }
+}
+
+/// The index among quick open's results of the one listed as `name`.
+fn result_named(harness: &Harness, name: &str) -> usize {
+    let list = harness.app.quick_open_list(quick_open(harness));
+    let names: Vec<String> = listed(harness)
+        .into_iter()
+        .filter(|name| !name.starts_with("# "))
+        .collect();
+    assert_eq!(names.len(), list.items().count());
+    names
+        .iter()
+        .position(|listed| listed == name)
+        .unwrap_or_else(|| panic!("{name} is not listed: {names:?}"))
+}
+
+/// Test 6: `>` lists the commands alone, and hides those that do not apply
+/// now.
+#[test]
+fn the_prefix_lists_the_commands_that_apply() {
+    let look = Look::macos();
+    let (mut harness, tab) = bookshop(look);
+    ask(&mut harness, look, ">");
+    let shown = listed(&harness);
+    assert_eq!(shown[0], "# Commands");
+    assert!(
+        shown[1..].iter().all(|name| name.starts_with("> ")),
+        "{shown:?}"
+    );
+    for offered in [
+        "> New SQL query",
+        "> Reload schema",
+        "> Edit connection",
+        "> Hide sidebar",
+        "> Settings",
+        "> Larger text",
+    ] {
+        assert!(shown.contains(&offered.to_owned()), "{offered}: {shown:?}");
+    }
+    // The start screen of the one window: no tab to close or filter,
+    // nothing to save or run, no other window, the text at its own size;
+    // and no setting's row until a word is typed.
+    for hidden in [
+        "> Close tab",
+        "> Next tab",
+        "> Filter rows",
+        "> Save changes",
+        "> Run all",
+        "> Next connection",
+        "> Default text size",
+        "> Cancel running query",
+    ] {
+        assert!(!shown.contains(&hidden.to_owned()), "{hidden}: {shown:?}");
+    }
+    assert!(!shown.iter().any(|name| name.starts_with("> Settings ›")));
+    // A row writes a key the window reads, as a screen reader hears it:
+    // New SQL query's; none for Edit connection and New connection, whose
+    // keys are the Connections picker's alone, nor for Reload schema, whose
+    // key on a table's rows reloads them.
+    let layout = crate::keymap::Layout::Mac;
+    let new_sql = harness
+        .app
+        .keymap
+        .key(layout, crate::keymap::Command::NewSqlTab);
+    let new_sql = format!("New SQL query, command, {}", new_sql.as_str());
+    for label in [
+        new_sql.as_str(),
+        "Edit connection, command, Bookshop · dev",
+        "New connection, command",
+        "Reload schema, command, Bookshop · dev",
+    ] {
+        assert!(harness.has(label), "{label}");
+    }
+    harness.press(Key::Escape, Modifiers::NONE);
+    // A table in front brings its own.
+    open_table(&mut harness, tab, "book_covers");
+    ask(&mut harness, look, ">");
+    let shown = listed(&harness);
+    assert!(shown.contains(&"> Close tab".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"> Filter rows".to_owned()), "{shown:?}");
+    assert!(!shown.contains(&"> Save changes".to_owned()), "{shown:?}");
+    harness.press(Key::Escape, Modifiers::NONE);
+    // What follows `>` finds commands, never a table: `reviews` matches
+    // `re` too.
+    ask(&mut harness, look, "> re");
+    let shown = listed(&harness);
+    assert_eq!(shown[1], "> Reload schema");
+    assert!(!shown.contains(&"reviews".to_owned()), "{shown:?}");
+}
+
+/// Test 6, its settings: a setting's row opens Settings at that row: its
+/// pane, the row on the selection's ground, its switch with the keyboard.
+#[test]
+fn a_setting_opens_settings_at_its_row() {
+    let look = Look::macos();
+    let (mut harness, _tab) = bookshop(look);
+    ask(&mut harness, look, "> re");
+    let restore = "> Settings › General › Restore tabs and filters";
+    let index = result_named(&harness, restore);
+    harness.app.apply(Action::QuickOpenPick {
+        index: Some(index),
+        in_editor: false,
+    });
+    harness.settle();
+    let Some(Dialog::Settings(dialog)) = &harness.app.dialog else {
+        panic!("Settings is not open");
+    };
+    assert_eq!(dialog.pane, crate::model::SettingsPane::General);
+    assert_eq!(focused(&mut harness), "Restore tabs and filters");
+    let grounded = |harness: &Harness| {
+        let label = harness
+            .painted_rect("Restore tabs and filters")
+            .expect("the row's label");
+        let selection = harness.app.palette.selection;
+        harness
+            .fills
+            .iter()
+            .any(|(rect, color)| *color == selection && rect.contains_rect(label))
+    };
+    assert!(grounded(&harness), "the row is on the selection's ground");
+    // The keyboard stays where it was put: it is given once.
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_ne!(focused(&mut harness), "Restore tabs and filters");
+    // Another pane leaves the row behind.
+    for pane in [
+        crate::model::SettingsPane::Appearance,
+        crate::model::SettingsPane::General,
+    ] {
+        harness.app.apply(Action::ShowSettingsPane(pane));
+        harness.settle();
+    }
+    assert!(!grounded(&harness));
+}
+
+/// A setting's row that the sheet shows only scrolled, in a short window,
+/// is scrolled to.
+#[test]
+fn a_setting_below_the_fold_is_scrolled_to() {
+    let look = Look::macos();
+    let mut harness = Harness::with_size(egui::vec2(1280.0, 560.0));
+    harness.set_look(look);
+    harness.connect_with(bookshop_dev(), bookshop_objects());
+    // Opened plainly, the sheet shows the row under its footer's line.
+    harness.app.apply(Action::ShowSettings);
+    harness.settle();
+    let row = harness.painted_rect("Disconnect when idle");
+    let footer = harness.painted_rect("Stored in").expect("the footer");
+    assert!(row.is_none_or(|row| row.top() > footer.top()), "{row:?}");
+    harness.app.apply(Action::CloseDialog);
+    harness.settle();
+    ask(&mut harness, look, "> idle");
+    let index = result_named(&harness, "> Settings › General › Disconnect when idle");
+    harness.app.apply(Action::QuickOpenPick {
+        index: Some(index),
+        in_editor: false,
+    });
+    harness.settle();
+    let row = harness
+        .painted_rect("Disconnect when idle")
+        .expect("the row's label");
+    let footer = harness.painted_rect("Stored in").expect("the footer");
+    assert!(row.bottom() < footer.top(), "{row:?} under {footer:?}");
+    assert_eq!(focused(&mut harness), "Disconnect when idle");
+}
+
+/// The commands quick open runs are the keymap's, built, each once; and
+/// each listed does what it names, here a few that change what shows.
+#[test]
+fn listed_commands_do_what_they_name() {
+    let mut seen = Vec::new();
+    for command in crate::app::RUNNABLE {
+        assert!(command.info().built, "{command:?}");
+        assert!(!seen.contains(&command), "{command:?} twice");
+        seen.push(command);
+    }
+    let look = Look::macos();
+    let (mut harness, tab) = bookshop(look);
+    let run = |harness: &mut Harness, name: &str| {
+        ask(harness, look, ">");
+        let index = result_named(harness, &format!("> {name}"));
+        harness.app.apply(Action::QuickOpenPick {
+            index: Some(index),
+            in_editor: false,
+        });
+        harness.settle();
+    };
+    run(&mut harness, "Hide sidebar");
+    assert!(harness.app.workspace(tab).unwrap().sidebar_hidden);
+    run(&mut harness, "Show sidebar");
+    assert!(!harness.app.workspace(tab).unwrap().sidebar_hidden);
+    run(&mut harness, "Larger text");
+    assert!(harness.app.settings.font_size.is_some());
+    run(&mut harness, "Default text size");
+    assert!(harness.app.settings.font_size.is_none());
+    open_table(&mut harness, tab, "book_covers");
+    open_table(&mut harness, tab, "authors");
+    let panel = harness.app.workspace(tab).unwrap().row_panel;
+    let name = if panel {
+        "Hide row panel"
+    } else {
+        "Show row panel"
+    };
+    run(&mut harness, name);
+    assert_eq!(harness.app.workspace(tab).unwrap().row_panel, !panel);
+    run(&mut harness, "Previous tab");
+    let workspace = harness.app.workspace(tab).unwrap();
+    let front = workspace.active_object_tab().unwrap();
+    assert_eq!(front.object.name, "book_covers");
+    run(&mut harness, "Close tab");
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert_eq!(workspace.tabs.len(), 1);
+    // A SQL editor's run and format, once it holds a script.
+    run(&mut harness, "New SQL query");
+    ask(&mut harness, look, ">");
+    assert!(!listed(&harness).contains(&"> Run all".to_owned()));
+    harness.press(Key::Escape, Modifiers::NONE);
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let id = workspace.active_tab.unwrap();
+    workspace.sql_tab_mut(id).unwrap().text = "select 1".into();
+    run(&mut harness, "Format SQL");
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert_eq!(workspace.sql_tab(id).unwrap().text, "SELECT 1");
+    run(&mut harness, "Settings");
+    assert!(matches!(harness.app.dialog, Some(Dialog::Settings(_))));
+}
+
+/// A Bookshop development window that writes, its start screen showing.
+fn bookshop_writable(look: Look) -> (Harness, ConnTabId) {
+    let mut harness = Harness::new();
+    harness.set_look(look);
+    let mut saved = bookshop_dev();
+    saved.read_only = Some(false);
+    let tab = harness.connect_with(saved, bookshop_with_publishers());
+    (harness, tab)
+}
+
+/// `book_covers` open on its rows, with a row deleted and not saved.
+fn covers_with_a_change(harness: &mut Harness, tab: ConnTabId) -> crate::model::TabId {
+    harness.app.apply(Action::OpenObject {
+        tab,
+        object: ObjectRef::new("main", "book_covers"),
+        kind: ObjectKind::Table,
+        pin: true,
+    });
+    harness.answer_structure(crate::testing::book_covers_structure());
+    harness.answer_rows(crate::testing::book_covers_page(3));
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+    harness.settle();
+    let cell = crate::model::CellPos { row: 1, col: 1 };
+    harness.app.apply(Action::SelectCell { tab, id, cell });
+    harness.app.apply(Action::DeleteRow { tab, id });
+    harness.settle();
+    id
+}
+
+/// Whether `book_covers` still holds its change.
+fn changed(harness: &Harness, tab: ConnTabId, id: crate::model::TabId) -> bool {
+    let workspace = harness.app.workspace(tab).unwrap();
+    workspace.object_tab(id).unwrap().edits.pending()
+}
+
+/// The pick is the command it was put on, not a place in the list, which
+/// changes by itself: a command that comes above it moves it, and one that
+/// goes leaves Enter nothing to open (a review finding: Enter ran the
+/// command that slid into its place).
+#[test]
+fn the_pick_holds_its_command_while_the_list_changes() {
+    let look = Look::macos();
+    let (mut harness, first) = bookshop_writable(look);
+    harness.app.apply(Action::ShowConnections);
+    let second = harness.connect_with(bookshop_production(), bookshop_objects());
+    ask(&mut harness, look, ">");
+    let next = result_named(&harness, "> Next connection");
+    for _ in 0..next {
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+    }
+    // The server's other databases come in: Switch database is listed
+    // above the pick.
+    let databases = Some(vec!["bookshop".into(), "bookshop_archive".into()]);
+    harness.app.workspace_mut(second).unwrap().databases.value = databases;
+    harness.settle();
+    assert_eq!(result_named(&harness, "> Next connection"), next + 1);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(harness.app.workspace(second).is_some(), "not closed");
+    assert_eq!(harness.app.active_tab_id(), first);
+    // A count in flight lists Cancel, after Discard all pending; the count
+    // ends before Enter.
+    let id = covers_with_a_change(&mut harness, first);
+    let request = Some(crate::backend::RequestId(9_999));
+    let workspace = harness.app.workspace_mut(first).unwrap();
+    workspace.object_tab_mut(id).unwrap().count.pending = request;
+    ask(&mut harness, look, ">");
+    let cancel = result_named(&harness, "> Cancel running query");
+    assert_eq!(cancel - 1, result_named(&harness, "> Discard all pending"));
+    for _ in 0..cancel {
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+    }
+    let workspace = harness.app.workspace_mut(first).unwrap();
+    workspace.object_tab_mut(id).unwrap().count.pending = None;
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(changed(&harness, first, id), "nothing discarded");
+    assert!(matches!(harness.app.dialog, Some(Dialog::QuickOpen(_))));
+    // The next move starts from where the pick stood.
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    let discard = result_named(&harness, "> Discard all pending");
+    let list = harness.app.quick_open_list(quick_open(&harness));
+    let picked = harness.app.quick_open_picked(quick_open(&harness), &list);
+    assert_eq!(picked, Some(discard));
+}
+
+/// A command that would do nothing is not listed: a save's three while a
+/// save is under way, Run all with comments alone (review findings).
+#[test]
+fn commands_with_nothing_to_do_are_not_listed() {
+    let look = Look::macos();
+    let (mut harness, tab) = bookshop_writable(look);
+    let id = covers_with_a_change(&mut harness, tab);
+    ask(&mut harness, look, ">");
+    let shown = listed(&harness);
+    assert!(shown.contains(&"> Save changes".to_owned()), "{shown:?}");
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    ask(&mut harness, look, ">");
+    let shown = listed(&harness);
+    for hidden in [
+        "> Save changes",
+        "> Discard all pending",
+        "> Review pending SQL",
+    ] {
+        assert!(!shown.contains(&hidden.to_owned()), "{hidden}: {shown:?}");
+    }
+    harness.press(Key::Escape, Modifiers::NONE);
+    // The Structure view has no rows to filter.
+    let view = crate::model::ObjectView::Structure;
+    harness.app.apply(Action::SetView {
+        tab,
+        object_tab: id,
+        view,
+    });
+    ask(&mut harness, look, ">");
+    assert!(!listed(&harness).contains(&"> Filter rows".to_owned()));
+    harness.press(Key::Escape, Modifiers::NONE);
+    // An empty editor has nothing to run or format, comments alone
+    // nothing to run.
+    harness.app.apply(Action::NewSqlTab(tab));
+    ask(&mut harness, look, ">");
+    let shown = listed(&harness);
+    assert!(!shown.contains(&"> Run all".to_owned()), "{shown:?}");
+    assert!(!shown.contains(&"> Format SQL".to_owned()), "{shown:?}");
+    harness.press(Key::Escape, Modifiers::NONE);
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let sql = workspace.active_tab.unwrap();
+    workspace.sql_tab_mut(sql).unwrap().text = "-- just a note".into();
+    ask(&mut harness, look, ">");
+    let shown = listed(&harness);
+    assert!(!shown.contains(&"> Run all".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"> Format SQL".to_owned()), "{shown:?}");
+    harness.press(Key::Escape, Modifiers::NONE);
+    // The text's size: no larger at the largest, and no default where
+    // the size set is the look's own.
+    for _ in 0..20 {
+        harness.app.apply(Action::TextSize(Some(true)));
+    }
+    ask(&mut harness, look, ">");
+    assert!(!listed(&harness).contains(&"> Larger text".to_owned()));
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.app.apply(Action::TextSize(None));
+    harness.app.apply(Action::TextSize(Some(true)));
+    harness.app.apply(Action::TextSize(Some(false)));
+    assert!(harness.app.settings.font_size.is_some());
+    ask(&mut harness, look, ">");
+    assert!(!listed(&harness).contains(&"> Default text size".to_owned()));
+}
+
+/// The Windows look lists the commands after `>` as macOS does; Omarchy
+/// types it, and finds nothing by it.
+#[test]
+fn the_prefix_in_the_windows_and_omarchy_looks() {
+    let look = Look::standard();
+    let (mut harness, _tab) = bookshop(look);
+    ask(&mut harness, look, "> new sql");
+    assert_eq!(listed(&harness)[1], "> New SQL query");
+    let look = Look::omarchy();
+    let (mut harness, _tab) = bookshop(look);
+    ask(&mut harness, look, ">");
+    assert_eq!(quick_open(&harness).query, ">");
+    assert!(listed(&harness).is_empty(), "{:?}", listed(&harness));
+}
+
+/// Another window brings the commands that go to it.
+#[test]
+fn the_next_window_is_offered_where_there_is_one() {
+    let look = Look::macos();
+    let (mut harness, _tab) = bookshop(look);
+    ask(&mut harness, look, ">");
+    assert!(!listed(&harness).contains(&"> Next connection".to_owned()));
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.app.apply(Action::ShowConnections);
+    harness.connect_with(bookshop_production(), bookshop_objects());
+    ask(&mut harness, look, ">");
+    let shown = listed(&harness);
+    assert!(shown.contains(&"> Next connection".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"> Previous connection".to_owned()));
+}
+
+/// Typed without `>`, the commands and settings that match come after the
+/// objects, folded after three as each kind of object is; with nothing
+/// typed, only the suggested three.
+#[test]
+fn the_commands_group_folds_after_three() {
+    let look = Look::macos();
+    let (mut harness, _tab) = bookshop(look);
+    ask(&mut harness, look, "");
+    let commands: Vec<String> = listed(&harness)
+        .into_iter()
+        .filter(|name| name.starts_with("> "))
+        .collect();
+    assert!(commands.len() <= 3, "{commands:?}");
+    harness.press(Key::Escape, Modifiers::NONE);
+    harness.app.apply(Action::ShowConnections);
+    harness.connect_with(bookshop_production(), bookshop_objects());
+    ask(&mut harness, look, "connection");
+    let list = harness.app.quick_open_list(quick_open(&harness));
+    let heading = list
+        .rows
+        .iter()
+        .position(|row| *row == QuickRow::Heading(QuickHeading::Commands))
+        .expect("the commands' heading");
+    let after = &list.rows[heading + 1..];
+    assert_eq!(after.len(), GROUP_SHOWN + 1, "{after:?}");
+    let Some(QuickRow::Item(QuickItem::More { group, hidden })) = after.last() else {
+        panic!("{after:?}");
+    };
+    assert_eq!(*group, QuickGroup::Commands);
+    assert!(*hidden > 0);
+    let more = list.items().count() - 1;
+    harness.app.apply(Action::QuickOpenPick {
+        index: Some(more),
+        in_editor: false,
+    });
+    let list = harness.app.quick_open_list(quick_open(&harness));
+    assert!(
+        list.items()
+            .all(|item| !matches!(item, QuickItem::More { .. }))
+    );
+}
+
+/// The footer has `> commands` on macOS; Omarchy's commands stay on `:`.
+/// What `>` finds nothing for is said.
+#[test]
+fn the_footer_names_the_prefix_and_no_command_is_said() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let (mut harness, _tab) = bookshop(look);
+        ask(&mut harness, look, "");
+        let hint = harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.ends_with(" commands"));
+        assert_eq!(hint, !look.terminal, "{}", look.name);
+    }
+    let look = Look::macos();
+    let (mut harness, _tab) = bookshop(look);
+    ask(&mut harness, look, "> zzz");
+    assert!(harness.painted_color("No commands match “zzz”").is_some());
 }

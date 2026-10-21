@@ -298,9 +298,9 @@ pub(crate) fn block_text(block: SaveBlock, to_fix: usize, locale: Locale) -> Str
 /// How many of its buttons the bar shows as they are, in the room it has.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Buttons {
-    /// Each one, Save with its key.
+    /// Each one, Save and Discard all with their keys.
     Whole,
-    /// Each one, Save without its key.
+    /// Each one, without their keys.
     Plain,
     /// Save, and the others in the menu under "…".
     Folded,
@@ -310,8 +310,9 @@ enum Buttons {
 /// panel: called after the footer, it stands above it.
 ///
 /// It is as wide as the grid, which a small window and the row panel leave
-/// little of. Save's key goes first, then what the bar says, and the
-/// buttons beside Save fold into a menu once they have no room themselves.
+/// little of. The keys of Save and Discard all go first, then what the
+/// bar says, and the buttons beside Save fold into a menu once they have
+/// no room themselves.
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let object = app
@@ -396,6 +397,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let more = gettext(locale, "More actions");
             let saves = crate::keymap::Command::SaveChanges;
             let keys = crate::ui::keys::written(ui.ctx(), &look, saves);
+            let discards = crate::keymap::Command::DiscardChanges;
+            let discard_keys = crate::ui::keys::written(ui.ctx(), &look, discards);
             let body = widgets::body(&look);
             let ctx = ui.ctx().clone();
             let width = move |role: TextRole, text: &str| role.width(&ctx, look.faces, text);
@@ -418,7 +421,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let busy_width = saving.then(|| RING + 6.0 + width(body, &busy));
             let note_width = note.as_ref().map(|note| width(body, note));
             let note_least = note_width.map(|width| width.min(NOTE_LEAST));
-            // All of it, whole: Save keeps its key only beside that.
+            // All of it, whole: the buttons keep their keys only beside that.
             let said_width = {
                 let counts = whole
                     .as_ref()
@@ -436,6 +439,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     button
                 }
             };
+            let discard_button = |keyed: bool| {
+                let button = ButtonSpec::new(&discard);
+                if keyed {
+                    button.shortcut(&discard_keys)
+                } else {
+                    button
+                }
+            };
             // One button under two names, so the keyboard stays on it.
             let review_name = if reviewing { &hide } else { &review };
             let review_button = || ButtonSpec::new(review_name).quiet().keyed("review-sql");
@@ -446,7 +457,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let room = full.width() - 2.0 * SIDE;
             let lead = DOT + 10.0;
             let buttons = {
-                let mut beside = BETWEEN + ButtonSpec::new(&discard).width(ui, &look);
+                let mut beside = 0.0;
                 if pending {
                     beside += BETWEEN + review_button().width(ui, &look);
                 }
@@ -456,8 +467,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 if saving {
                     beside += BETWEEN + cancel_button().width(ui, &look);
                 }
-                let keyed = save_button(true).width(ui, &look) + beside;
-                let plain = save_button(false).width(ui, &look) + beside;
+                let discard_width = |keyed: bool| BETWEEN + discard_button(keyed).width(ui, &look);
+                let keyed = save_button(true).width(ui, &look) + discard_width(true) + beside;
+                let plain = save_button(false).width(ui, &look) + discard_width(false) + beside;
                 if !(pending || saving) || lead + said_width + 2.0 * BETWEEN + keyed <= room {
                     Buttons::Whole
                 } else if lead + plain <= room {
@@ -538,7 +550,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 }
             } else if pending || saving {
                 // The reducer ignores it under a save: it is not offered.
-                let button = ButtonSpec::new(&discard);
+                let button = discard_button(buttons == Buttons::Whole);
                 let at = place(ui, &button);
                 let button = if saving {
                     button.disabled(&busy)

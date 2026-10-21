@@ -172,6 +172,12 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
             if history_menu.is_none() {
                 log::warn!("the menu bar has no place for a View menu");
             }
+            #[cfg(target_os = "macos")]
+            let quick_open_menu = crate::macos::QuickOpenMenu::attach(
+                &cc.egui_ctx,
+                &crate::i18n::gettext(app.locale, "View"),
+                &crate::i18n::gettext(app.locale, "Quick Open"),
+            );
             Ok(Box::new(Window {
                 app,
                 shot,
@@ -184,6 +190,8 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
                 settings_menu,
                 #[cfg(target_os = "macos")]
                 history_menu,
+                #[cfg(target_os = "macos")]
+                quick_open_menu,
             }))
         }),
     )
@@ -323,6 +331,9 @@ struct Window {
     /// macOS: View › History, which shows the window's History tab.
     #[cfg(target_os = "macos")]
     history_menu: Option<crate::macos::HistoryMenu>,
+    /// macOS: View › Quick Open, which opens quick open.
+    #[cfg(target_os = "macos")]
+    quick_open_menu: Option<crate::macos::QuickOpenMenu>,
 }
 
 impl Window {
@@ -401,6 +412,15 @@ impl eframe::App for Window {
             self.app
                 .actions
                 .push(crate::model::Action::ShowHistory(tab));
+        }
+        // Quick open, as ⌘P opens it: while it is open, its text selected.
+        #[cfg(target_os = "macos")]
+        if self
+            .quick_open_menu
+            .as_ref()
+            .is_some_and(crate::macos::QuickOpenMenu::take)
+        {
+            self.app.actions.push(crate::model::Action::OpenQuickOpen);
         }
         self.app.logic(ctx);
         self.drive_shot(ctx);

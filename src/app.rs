@@ -27,6 +27,7 @@ use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
+mod commands;
 mod editing;
 mod history;
 mod key_picker;
@@ -35,8 +36,10 @@ mod quick_open;
 #[cfg(test)]
 mod startup_tests;
 
+pub use commands::{About, RUNNABLE, Runnable, TabName};
 pub use quick_open::{
     Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
+    setting_path,
 };
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -940,12 +943,18 @@ impl App {
                         .selected
                         .as_ref()
                         .and_then(|selected| order.iter().position(|id| id == selected));
+                    let last = order.len() - 1;
+                    // With nothing selected Up starts at the bottom and
+                    // Down at the top, and a step to an end (Mod with an
+                    // arrow) goes to that end.
                     let next = match at {
-                        None if step < 0 => order.len() - 1,
-                        None => 0,
-                        Some(at) => {
-                            (at as isize + step).clamp(0, order.len() as isize - 1) as usize
-                        }
+                        None => match step {
+                            isize::MIN => 0,
+                            isize::MAX => last,
+                            step if step < 0 => last,
+                            _ => 0,
+                        },
+                        Some(at) => at.saturating_add_signed(step).min(last),
                     };
                     picker.selected = Some(order[next].clone());
                 }
@@ -1729,6 +1738,14 @@ impl App {
                     self.discard_edits(&[(tab, id)]);
                 }
             }
+            Action::AskDiscard { tab, id } => {
+                let pending = self
+                    .object_tab_mut(tab, id)
+                    .is_some_and(|object| object.edits.pending());
+                if pending {
+                    self.hold(Held::Nothing, vec![(tab, id)]);
+                }
+            }
             Action::DismissNote { tab, id } => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.note = None;
@@ -2255,6 +2272,39 @@ impl App {
                     // The question was about the other pane's options.
                     dialog.resetting = false;
                     dialog.history_question = None;
+                    // The row quick open asked for is the other pane's.
+                    dialog.asked = None;
+                    dialog.reveal = false;
+                }
+            }
+            Action::ShowSetting(option) => {
+                let pane = crate::model::SettingsPane::of(option);
+                if !crate::model::SettingsPane::listed().contains(&pane) {
+                    return;
+                }
+                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                    self.dialog = Some(Dialog::Settings(Box::default()));
+                    self.list_fonts();
+                }
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    let row = crate::model::SettingsRow::Option(option);
+                    // The terminal look's cursor, where its screen has the
+                    // row (it has none for some of the sheet's).
+                    if dialog.pane != pane {
+                        dialog.pane = pane;
+                        dialog.row = 0;
+                    }
+                    if let Some(at) = pane.rows().iter().position(|at| *at == row) {
+                        dialog.row = at;
+                    }
+                    dialog.resetting = false;
+                    dialog.asked = Some(option);
+                    dialog.reveal = true;
+                }
+            }
+            Action::SettingShown => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    dialog.reveal = false;
                 }
             }
             Action::ChooseAgentSetup(agent) => {
@@ -16450,6 +16500,7 @@ masked = ["orders.email"]
             };
             // The fake connection has a main.users too: name the schema.
             open.query = "shop.us".into();
+            harness.app.apply(Action::QuickOpenChanged);
             harness.app.apply(Action::QuickOpenPick {
                 index: None,
                 in_editor: false,

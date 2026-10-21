@@ -131,6 +131,8 @@ pub enum When {
     InspectorOpen,
     /// The SQL of the pending changes shows.
     Review,
+    /// The table on screen holds pending changes.
+    Pending,
     /// What the last save came to is still said.
     Note,
     /// The large editor is open.
@@ -471,6 +473,7 @@ commands! {
     DismissNote,
     SaveChanges,
     DiscardChanges,
+    AskDiscard,
     NextError,
     PreviousError,
     BooleanCycle,
@@ -555,6 +558,7 @@ commands! {
     QuickOpenPick,
     QuickOpenPickInEditor,
     QuickOpenScope,
+    QuickOpenCommands,
     QuickOpenNumber,
     QuickOpenClose,
     NextLabel,
@@ -819,6 +823,11 @@ impl Command {
             C::DismissNote => info("Dismiss what the last save came to", "", Editing),
             C::SaveChanges => info("Save changes", "Save changes", Editing),
             C::DiscardChanges => info("Discard all pending", "Discard all pending", Editing),
+            C::AskDiscard => info(
+                "Discard all pending, asking first",
+                "Discard all pending",
+                Editing,
+            ),
             C::NextError => info("Next error", ERRORS, Editing).reserved(),
             C::PreviousError => info("Previous error", ERRORS, Editing).reserved(),
             C::BooleanCycle => info("Boolean cycle", "Boolean cycle", Editing),
@@ -923,6 +932,7 @@ impl Command {
             C::QuickOpenPick => info("Open the one selected", "", Prompts),
             C::QuickOpenPickInEditor => info("Open the one selected in a SQL editor", "", Prompts),
             C::QuickOpenScope => info("Search this connection or every open one", "", Prompts),
+            C::QuickOpenCommands => info("List the commands alone", "", Prompts),
             C::QuickOpenNumber => info("Open a recent by its number", "", Prompts),
             C::QuickOpenClose => info("Close quick open", "", Prompts),
             C::NextLabel => info("Next line of the label chooser", "", Prompts),
@@ -1133,7 +1143,7 @@ pub const BINDINGS: &[Binding] = {
         bind(
             C::MoveInConnections,
             CONNECTIONS,
-            keys(&[k("up"), k("down")]),
+            keys(&[k("up"), k("down"), k("cmd+up"), k("cmd+down")]),
             keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
         ),
         bind(C::FilterConnections, CONNECTIONS, NONE, keys(&[k("/")])),
@@ -1279,6 +1289,8 @@ pub const BINDINGS: &[Binding] = {
                 k("right"),
                 k("home"),
                 k("end"),
+                k("cmd+up"),
+                k("cmd+down"),
             ]),
             keys(&[
                 k("j"),
@@ -1336,13 +1348,22 @@ pub const BINDINGS: &[Binding] = {
         bind(
             C::MoveColumn,
             ROWS,
-            keys(&[k("left"), k("right")]),
+            keys(&[k("left"), k("right"), k("cmd+left"), k("cmd+right")]),
             keys(&[k("h"), k("l"), k("left"), k("right")]).shown("h/l"),
         ),
+        // Mod with an arrow goes to the end it points at, as in a list
+        // and a spreadsheet on the Mac. The terminal look has its own.
         bind(
             C::MovePage,
             ROWS,
-            keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
+            keys(&[
+                k("pgup"),
+                k("pgdn"),
+                k("home"),
+                k("end"),
+                k("cmd+up"),
+                k("cmd+down"),
+            ]),
             keys(&[k("pgup"), k("pgdn"), k("home"), k("end")]),
         ),
         // A table's rows only: a result has one selected row.
@@ -1638,6 +1659,9 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+alt+backspace")]),
             keys(&[k(":e!")]),
         ),
+        // Esc on the rows asks before it drops them, as closing the tab
+        // does. The terminal look's Esc stays harmless: `:e!` drops them.
+        bind(C::AskDiscard, GRID, keys(&[k("esc")]), NONE).when(When::Pending),
         bind(
             C::NextError,
             GRID,
@@ -2057,6 +2081,10 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("tab")]),
         )
         .when(When::QuickOpen),
+        // Typed first, it lists the commands alone: what quick open reads
+        // from its field's text (macOS, Windows). Omarchy's commands stay
+        // on `:`.
+        bind(C::QuickOpenCommands, PROMPT, keys(&[k(">")]), NONE).when(When::QuickOpen),
         bind(C::QuickOpenNumber, PROMPT, NONE, keys(&[k("1..9")])).when(When::QuickOpen),
         bind(
             C::QuickOpenClose,

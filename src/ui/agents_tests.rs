@@ -181,15 +181,16 @@ fn every_way_in_shows_the_one_tab_and_none_opens_it_by_itself() {
     let Some(crate::model::Dialog::QuickOpen(open)) = &harness.app.dialog else {
         panic!("quick open");
     };
-    let agents = crate::app::QuickItem::Command {
-        command: crate::app::QuickCommand::Agents,
-        spans: std::iter::once(0..3).collect(),
-    };
-    let index = harness
-        .app
-        .quick_open_list(open)
-        .items()
-        .position(|item| *item == agents);
+    let index = harness.app.quick_open_list(open).items().position(|item| {
+        matches!(
+            item,
+            crate::app::QuickItem::Command {
+                command: crate::app::QuickCommand::Run(runnable),
+                spans,
+            } if runnable.command == crate::keymap::Command::ShowAgents
+                && spans.iter().eq(std::iter::once(&(0..3)))
+        )
+    });
     harness.app.apply(Action::QuickOpenPick {
         index,
         in_editor: false,

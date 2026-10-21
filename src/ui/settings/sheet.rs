@@ -95,6 +95,10 @@ pub(super) struct Skin<'a> {
     pub(super) connections: &'a [crate::connections::SavedConnection],
     /// The data fonts beyond the bundled faces, on macOS.
     pub(super) fonts: DataFonts<'a>,
+    /// The option quick open opened the window at, whose row is on the
+    /// selection's ground, and whether it is still to be scrolled to and
+    /// given the keyboard.
+    pub(super) asked: Option<(OptionId, bool)>,
 }
 
 /// The installed fonts macOS's data font menu lists after the bundled
@@ -135,6 +139,7 @@ pub(super) fn show(
             installed: &app.installed_fonts,
             missing: app.data_font_missing(),
         },
+        asked: dialog.asked.map(|option| (option, dialog.reveal)),
     };
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(NAV + 320.0);
@@ -192,15 +197,7 @@ pub(super) fn show(
                 SettingsPane::General => content(
                     &mut pane,
                     ("General", Some(GENERAL)),
-                    (
-                        &[
-                            ("Startup", &OptionId::STARTUP),
-                            ("Data", &OptionId::DATA),
-                            ("Safety", &OptionId::SAFETY),
-                        ],
-                        false,
-                        None,
-                    ),
+                    (SettingsPane::General.sections(), false, None),
                     // As the window shows them: what the look has where the
                     // settings do not say (the grouping of numbers).
                     &super::shown(app),
@@ -211,16 +208,7 @@ pub(super) fn show(
                 SettingsPane::Appearance => content(
                     &mut pane,
                     ("Appearance", Some(APPEARANCE)),
-                    (
-                        &[
-                            ("Theme", &OptionId::THEME),
-                            ("Text", &OptionId::TEXT),
-                            ("Grid", &OptionId::GRID),
-                            ("Environment color", &OptionId::ENVIRONMENT),
-                        ],
-                        true,
-                        None,
-                    ),
+                    (SettingsPane::Appearance.sections(), true, None),
                     &super::shown(app),
                     limit,
                     &skin,
@@ -235,12 +223,7 @@ pub(super) fn show(
                         ),
                     ),
                     (
-                        &[
-                            ("Running queries", &OptionId::RUNNING),
-                            ("Typing", &OptionId::TYPING),
-                            ("Format · {format}", &OptionId::FORMAT),
-                            ("History", &OptionId::HISTORY),
-                        ],
+                        SettingsPane::Editor.sections(),
                         false,
                         // Show History, which shows the window's tab.
                         Some((
@@ -502,6 +485,7 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
         TILE_PAD + TILE.y + 6.0 + line + TILE_PAD,
     );
     let height = 6.0 + tile.y + 12.0 + 1.0;
+    let ground = ui.painter().add(egui::Shape::Noop);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
     // The tiles in a Ui of their own, whose node is their parent in the
@@ -616,6 +600,8 @@ fn tiles(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action
     if at + hint.width() <= rect.right() {
         write(ui, at, top + tile.y / 2.0, &hint);
     }
+    let row = rect.with_max_y(rect.bottom() - 1.0);
+    asked(ui, ground, (row, place), OptionId::Theme, skin, actions);
 }
 
 /// How wide the rows' labels have it: `LABEL`, or what the widest small
@@ -697,6 +683,7 @@ pub(super) fn row(
     let words = name.height() + print.as_ref().map_or(0.0, |print| 2.0 + print.height());
     let inner = words.max(control_height(option, look));
     let height = ROW_PAD + inner + ROW_PAD + 1.0;
+    let ground = ui.painter().add(egui::Shape::Noop);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     if ruled {
         widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
@@ -742,6 +729,56 @@ pub(super) fn row(
     }
     let left = line.min_rect().right() + HINT_GAP;
     hint(ui, pos2(left, middle), rect.right(), option, settings, skin);
+    let row = rect.with_max_y(rect.bottom() - 1.0);
+    asked(ui, ground, (row, place), option, skin, actions);
+}
+
+/// Where `option` is the one quick open opened the window at: its row
+/// (`rect`) on the selection's ground, painted under what the row drew
+/// through `ground`. Once, as the window opens, the row is scrolled to the
+/// middle of what shows, and the first control in `place` takes the
+/// keyboard.
+pub(super) fn asked(
+    ui: &Ui,
+    ground: egui::layers::ShapeIdx,
+    (rect, place): (Rect, Rect),
+    option: OptionId,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Some((asked, reveal)) = skin.asked else {
+        return;
+    };
+    if asked != option {
+        return;
+    }
+    let fill = egui::epaint::RectShape::filled(rect, CornerRadius::same(6), skin.palette.selection);
+    ui.painter().set(ground, fill);
+    if !reveal {
+        return;
+    }
+    let center = Some(egui::Align::Center);
+    ui.scroll_to_rect_animation(rect, center, egui::style::ScrollAnimation::none());
+    // The keyboard comes to the sheet once it is the dialog on top: egui
+    // keeps quick open's layer a frame after it closes, and a control
+    // under it takes no keyboard.
+    let layer = ui.layer_id();
+    if ui.ctx().memory(|memory| memory.top_modal_layer()) != Some(layer) {
+        ui.ctx().request_repaint();
+        return;
+    }
+    // The controls are drawn by now: the first that takes the keyboard.
+    let first = ui.ctx().viewport(|viewport| {
+        let widgets = viewport.this_pass.widgets.get_layer(layer);
+        widgets
+            .filter(|widget| widget.enabled && widget.sense.is_focusable())
+            .find(|widget| place.contains(widget.rect.center()))
+            .map(|widget| widget.id)
+    });
+    if let Some(id) = first {
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+    actions.push(Action::SettingShown);
 }
 
 /// The data font the settings name, on its row, where it is no face the

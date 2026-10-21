@@ -25,8 +25,8 @@ use crate::settings::{
 };
 
 /// The label of an option's row. English: the caller translates, and the
-/// terminal look lower-cases.
-pub(super) fn label(option: OptionId) -> &'static str {
+/// terminal look lower-cases. Quick open lists the rows by it.
+pub(crate) fn label(option: OptionId) -> &'static str {
     match option {
         OptionId::OnLaunch => "On launch",
         OptionId::RestoreTabs => "Restore tabs and filters",
