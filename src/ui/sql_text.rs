@@ -1227,6 +1227,18 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let paired = close_pairs(ui, sql_tab, field);
     let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
     let formatted = formatted || indented || paired;
+    // The cursor put somewhere from outside (an error's mark): set before
+    // the field is drawn, which then draws it there.
+    let moved = sql_tab.go_to.take().is_some_and(|at| {
+        let at = sql_tab.text.floor_char_boundary(at);
+        let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+        let cursor = CCursor::new(char_index(&sql_tab.text, at));
+        state.cursor.set_char_range(Some(CCursorRange::one(cursor)));
+        egui::TextEdit::store_state(ui.ctx(), field.id, state);
+        sql_tab.cursor = at;
+        sql_tab.selected = None;
+        true
+    });
     // The field fills the pane, so a click under the last line lands in
     // it: whole lines, and the rest as bottom padding. (egui sizes a text
     // edit in lines of its font.)
@@ -1305,13 +1317,15 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         && let Some(caret) = caret
     {
         ui.scroll_to_rect(caret.expand(1.5), None);
-    } else if formatted && let Some(caret) = caret {
+    } else if (formatted || moved)
+        && let Some(caret) = caret
+    {
         // The cursor's line moved with the layout. The field scrolls to
         // its cursor after an edit of its own, not after this one, so
         // bring it into view here.
         ui.scroll_to_rect(caret, None);
     }
-    if inserted || formatted {
+    if inserted || formatted || moved {
         // One more frame: what is drawn before the editor (the footer's
         // line and column) and the gutter read the script and the cursor
         // before the row went in or the script was formatted.

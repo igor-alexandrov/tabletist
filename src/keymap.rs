@@ -929,8 +929,8 @@ impl Command {
                 "Discard all pending",
                 Editing,
             ),
-            C::NextError => info("Next error", ERRORS, Editing).reserved(),
-            C::PreviousError => info("Previous error", ERRORS, Editing).reserved(),
+            C::NextError => info("Next error", ERRORS, Editing),
+            C::PreviousError => info("Previous error", ERRORS, Editing),
             C::BooleanCycle => info("Boolean cycle", "Boolean cycle", Editing),
             C::StepUp => info("Step up", STEP, Editing).reserved(),
             C::StepDown => info("Step down", STEP, Editing).reserved(),
@@ -1522,9 +1522,10 @@ pub const BINDINGS: &[Binding] = {
         ),
         // From the rows too, while the inspector shows: its header offers
         // the brackets, and `j` and `k` are the rows' there. A bracket
-        // also begins the keys of the errors and the changes (`]e`, `]c`),
-        // which nothing answers yet; with the inspector open the bracket
-        // is its own, at once.
+        // also begins the keys of the errors and the changes (`]e`, `]c`).
+        // With the inspector open the bracket is its own, at once, except
+        // where there is an error to go to: the letters (`ui::keys`) then
+        // wait for the key after it.
         bind(C::PreviousRow, ROWS, NONE, keys(&[k("[")])).when(When::InspectorOpen),
         bind(C::NextRow, ROWS, NONE, keys(&[k("]")])).when(When::InspectorOpen),
         bind(
@@ -4418,7 +4419,8 @@ mod tests {
         // while it shows. Without it they begin other keys on the grid.
         assert_eq!(omarchy(Scope::Inspector, "]"), command(Command::NextRow));
         assert_eq!(omarchy(Scope::Grid, "]"), Waiting);
-        assert_eq!(omarchy(Scope::Grid, "]e"), Claimed);
+        assert_eq!(omarchy(Scope::Grid, "]e"), command(Command::NextError));
+        assert_eq!(omarchy(Scope::Grid, "]c"), Claimed);
         let inspector = |when: When| when == When::InspectorOpen;
         for scope in [Scope::Grid, Scope::Results] {
             assert_eq!(

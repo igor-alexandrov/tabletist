@@ -644,6 +644,15 @@ pub enum Action {
         rows: isize,
         cols: isize,
     },
+    /// Next error (`forward`) or Previous error: in a table's grid the
+    /// cursor goes to the next or the previous error of the set, round to
+    /// the first or the last; in a SQL editor its cursor goes to the error
+    /// mark of its last run.
+    NextError {
+        tab: ConnTabId,
+        id: TabId,
+        forward: bool,
+    },
     ToggleRowPanel(ConnTabId),
     /// Refetch the active object tab (and its structure if loaded). Does
     /// nothing on a SQL editor.
@@ -4868,6 +4877,8 @@ pub struct SqlTab {
     pub fields: Option<RowFields>,
     /// Focus the editor on the next frame.
     pub focus_editor: bool,
+    /// Put the editor's cursor at this byte on the next frame.
+    pub go_to: Option<usize>,
     /// The completion list, while it is open.
     pub completion: Option<Completion>,
     /// A list was asked for and is not worked out yet:
@@ -4901,6 +4912,7 @@ impl std::fmt::Debug for SqlTab {
             .field("split", &self.split)
             .field("selection", &self.selection)
             .field("focus_editor", &self.focus_editor)
+            .field("go_to", &self.go_to)
             .field("format", &self.format)
             .finish_non_exhaustive()
     }
@@ -4928,6 +4940,7 @@ impl SqlTab {
             selection: None,
             fields: None,
             focus_editor: true,
+            go_to: None,
             completion: None,
             completion_wanted: None,
             format: false,
@@ -5169,6 +5182,27 @@ impl SqlTab {
             .map_or(0, |line| line.chars().count())
             + 1;
         (line, column)
+    }
+
+    /// The byte of the text at its 1-based `line` and `column` (in
+    /// characters), or at the start of the line with no column. A place
+    /// past the end of the line or of the text is its end.
+    pub fn offset_of(&self, line: usize, column: Option<usize>) -> usize {
+        let mut start = 0;
+        for _ in 1..line {
+            match self.text[start..].find('\n') {
+                Some(at) => start += at + 1,
+                None => return self.text.len(),
+            }
+        }
+        let end = self.text[start..]
+            .find('\n')
+            .map_or(self.text.len(), |at| start + at);
+        let into = column.unwrap_or(1).saturating_sub(1);
+        let mut chars = self.text[start..end]
+            .char_indices()
+            .map(|(at, _)| start + at);
+        chars.nth(into).unwrap_or(end)
     }
 
     /// Where the last run failed: the editor line, and the column when the
