@@ -129,6 +129,7 @@ keyboard.
 | Keys | Do |
 | --- | --- |
 | Arrows | Move |
+| Cmd+Up, Cmd+Down | The first and the last connection |
 | Return | Connect, or show the connection if it is open already |
 | Shift+Return | Open it again |
 | Cmd+N | New connection |
@@ -153,6 +154,7 @@ keyboard.
 | Keys | Do |
 | --- | --- |
 | Arrows, Home, End | Move |
+| Cmd+Up, Cmd+Down | The top and the bottom, as Home and End |
 | Return | Open the table or view |
 | Cmd+R | Reload the list |
 
@@ -161,6 +163,8 @@ keyboard.
 | Keys | Do |
 | --- | --- |
 | Arrows, Page Up, Page Down, Home, End | Move in the grid |
+| Cmd+Up, Cmd+Down | First and last row, as Home and End |
+| Cmd+Left, Cmd+Right | First and last column |
 | Cmd+Option+Left and Right | Previous and next page |
 | Cmd+F | Filter bar |
 | Cmd+C | Copy the cell |

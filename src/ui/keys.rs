@@ -141,6 +141,28 @@ fn clipboard_event(event: &egui::Event, key: Key) -> bool {
     )
 }
 
+/// The arrow of the chord spelled `keys` when Mod alone is held with it
+/// (Cmd on the Mac, Ctrl on Windows): a chord that goes to the end its
+/// arrow points at, as in a list or a spreadsheet. Any other key, the
+/// arrow alone, or one with something else held: `None`.
+fn to_end(keys: &'static str) -> Option<Key> {
+    let Ok(Spelled::Strokes(strokes)) = crate::keymap::spell(keys) else {
+        return None;
+    };
+    let [Stroke::Key { mods, key }] = strokes.as_slice() else {
+        return None;
+    };
+    let arrow = matches!(
+        key,
+        Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight
+    );
+    let mod_alone = Mods {
+        cmd: true,
+        ..Mods::default()
+    };
+    (arrow && *mods == mod_alone).then_some(*key)
+}
+
 /// Whether `event` is a press of the chord spelled `keys`, and whether a
 /// fresh one (a held key's repeat is a press too). `held` is what the frame
 /// holds: a clipboard event says nothing of it itself, and one with
@@ -962,8 +984,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                     "right" => TreeKey::Right,
                     "home" => TreeKey::Home,
                     "end" => TreeKey::End,
-                    // A letter: read with the letters.
-                    _ => continue,
+                    _ => match to_end(keys) {
+                        Some(Key::ArrowUp) => TreeKey::Home,
+                        Some(Key::ArrowDown) => TreeKey::End,
+                        // A letter: read with the letters.
+                        _ => continue,
+                    },
                 };
                 if presses(input, layout, keys).count > 0 {
                     actions.push(Action::TreeKey { tab, key });
@@ -1024,8 +1050,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                             "pgdn" => (page, 0),
                             "home" => (isize::MIN, 0),
                             "end" => (isize::MAX, 0),
-                            // A letter: read with the letters.
-                            _ => continue,
+                            _ => match to_end(keys) {
+                                Some(Key::ArrowUp) => (isize::MIN, 0),
+                                Some(Key::ArrowDown) => (isize::MAX, 0),
+                                Some(Key::ArrowLeft) => (0, isize::MIN),
+                                Some(Key::ArrowRight) => (0, isize::MAX),
+                                // A letter: read with the letters.
+                                _ => continue,
+                            },
                         };
                         if presses(input, layout, keys).count > 0 {
                             actions.push(Action::MoveSelection {
@@ -2211,7 +2243,11 @@ fn letters(
             let step = match keys {
                 "up" => -1,
                 "down" => 1,
-                _ => continue,
+                _ => match to_end(keys) {
+                    Some(Key::ArrowUp) => isize::MIN,
+                    Some(Key::ArrowDown) => isize::MAX,
+                    _ => continue,
+                },
             };
             if ctx.input_mut(|input| presses(input, layout, keys)).count > 0 {
                 actions.push(Action::MovePickerSelection { tab, step });

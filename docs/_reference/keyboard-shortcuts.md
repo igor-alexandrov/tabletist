@@ -28,7 +28,7 @@ In the picker:
 
 | Keys | Do |
 | --- | --- |
-| Arrows, Enter | Pick a connection |
+| Arrows, Enter | Pick a connection. Mod+Up and Mod+Down go to the first and the last |
 | Shift+Enter | Open it again |
 | Mod+N | New connection |
 | Mod+E | Edit |
@@ -75,8 +75,10 @@ takes what you type (Mod+P opens the same search from anywhere):
 
 | Keys | Do |
 | --- | --- |
-| Arrows, Home, End, Enter | Move in the sidebar |
+| Arrows, Home, End, Enter | Move in the sidebar. Mod+Up and Mod+Down go to the top and the bottom, as Home and End do |
 | Arrows, Page Up, Page Down, Home, End | Move in the grid |
+| Mod+Up, Mod+Down | First and last row, as Home and End |
+| Mod+Left, Mod+Right | First and last column |
 | Mod+Alt+Left and Right | Previous and next page |
 | Mod+F | Filter bar |
 | Mod+R | Reload |
