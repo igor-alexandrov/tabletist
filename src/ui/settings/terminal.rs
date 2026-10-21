@@ -440,7 +440,7 @@ fn heading(ui: &mut Ui, text: &'static str, top: f32, skin: &Skin) {
         ui,
         place.left() + ROW_SIDE,
         place.top() + top + 12.0 + line / 2.0,
-        Text::one(look, role, &skin.say(text), palette.dim),
+        Text::one(look, role, &skin.label(ui.ctx(), text), palette.dim),
     );
 }
 
@@ -541,6 +541,7 @@ fn editor_rows(
     let shown: Vec<OptionId> = [
         &OptionId::RUNNING[..],
         &OptionId::TERMINAL_TYPING[..],
+        &OptionId::FORMAT[..],
         &OptionId::HISTORY[..],
     ]
     .concat();
@@ -549,6 +550,12 @@ fn editor_rows(
     for (heading_text, top, options) in [
         ("Running queries", 8.0, &OptionId::RUNNING[..]),
         ("Typing", 12.0, &OptionId::TERMINAL_TYPING[..]),
+        // The board's: "format · = in normal mode".
+        (
+            "Format · {format} in normal mode",
+            12.0,
+            &OptionId::FORMAT[..],
+        ),
         ("History", 12.0, &OptionId::HISTORY[..]),
     ] {
         heading(ui, heading_text, top, skin);

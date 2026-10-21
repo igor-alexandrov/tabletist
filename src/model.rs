@@ -2913,9 +2913,12 @@ impl SettingsPane {
                 ("Grid", &OptionId::GRID),
                 ("Environment color", &OptionId::ENVIRONMENT),
             ],
+            // `{format}` is the editor's Format key, as the keymap writes
+            // it for the look.
             Self::Editor => &[
                 ("Running queries", &OptionId::RUNNING),
                 ("Typing", &OptionId::TYPING),
+                ("Format · {format}", &OptionId::FORMAT),
                 ("History", &OptionId::HISTORY),
             ],
             Self::Keyboard | Self::Agents => &[],
@@ -2997,7 +3000,10 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::Timeout),
                 SettingsRow::Option(OptionId::RunScope),
                 SettingsRow::Option(OptionId::LineNumbers),
+                SettingsRow::Option(OptionId::Indent),
                 SettingsRow::Option(OptionId::Autocomplete),
+                SettingsRow::Option(OptionId::Keywords),
+                SettingsRow::Option(OptionId::Commas),
                 SettingsRow::Option(OptionId::HistoryKeep),
             ],
             // The pane has a cursor of its own, by row of the keymap.

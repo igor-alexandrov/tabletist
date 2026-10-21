@@ -14,10 +14,17 @@ use crate::model::{Action, Completion, ConnTabId, Fetch, SqlTab, TabId, TextPrin
 use crate::testing::{Harness, key, release};
 use crate::ui::sql_text::TOKENIZED;
 
+/// Keywords offered in lower case, as these tests were written for: the
+/// case typed, lower here, before Settings › Editor set one.
+fn lower_keywords(harness: &mut Harness) {
+    harness.app.settings.keywords = Some(crate::settings::KeywordCase::Lower);
+}
+
 /// A connected fixture workspace showing an empty SQL editor that has the
 /// keyboard.
 fn editor() -> (Harness, ConnTabId) {
     let mut harness = Harness::new();
+    lower_keywords(&mut harness);
     let tab = harness.connect_fake();
     harness.press(Key::T, Modifiers::COMMAND);
     (harness, tab)
@@ -166,7 +173,7 @@ fn a_list_asked_for_by_hand_opens_on_an_empty_word() {
     harness.settle();
     let open = list(&harness, tab).expect("a list");
     assert!(open.manual);
-    assert_eq!(open.candidates[0].label, "ALL");
+    assert_eq!(open.candidates[0].label, "all");
     // It goes on as its word is typed, still by hand.
     type_text(&mut harness, "s");
     assert_eq!(labels(&harness, tab), ["select", "set", "show", "skip"]);
@@ -323,7 +330,7 @@ fn a_list_opened_on_an_empty_word_stays_when_its_word_is_typed_and_deleted() {
     assert_eq!(sql(&harness, tab).text, "");
     // The whole list again, still by hand.
     let open = list(&harness, tab).expect("a list");
-    assert_eq!(open.candidates[0].label, "ALL");
+    assert_eq!(open.candidates[0].label, "all");
     assert!(open.manual);
     assert_eq!(open.typed, "");
 }
@@ -541,7 +548,7 @@ fn ctrl_space_opens_the_list_by_hand() {
     harness.press(Key::Space, ctrl());
     let open = list(&harness, tab).expect("a list");
     assert!(open.manual);
-    assert_eq!(open.candidates[0].label, "ALL");
+    assert_eq!(open.candidates[0].label, "all");
     assert_eq!(sql(&harness, tab).text, "");
 }
 
@@ -1524,7 +1531,7 @@ fn mod_i_opens_the_list_by_hand() {
         harness.press(Key::I, held);
         let open = list(&harness, tab).unwrap_or_else(|| panic!("no list for {held:?}"));
         assert!(open.manual, "{held:?}");
-        assert_eq!(open.candidates[0].label, "ALL", "{held:?}");
+        assert_eq!(open.candidates[0].label, "all", "{held:?}");
         // The editor never saw the key.
         assert_eq!(sql(&harness, tab).text, "", "{held:?}");
         assert!(editor_has_keyboard(&harness, tab), "{held:?}");
@@ -1671,7 +1678,13 @@ fn a_list_with_no_place_closes_once_the_caret_is_in_the_pane() {
         schemas: &[],
         columns: &columns,
     };
-    let listed = crate::completion::list(&site, "se", false, &catalog);
+    let listed = crate::completion::list(
+        &site,
+        "se",
+        false,
+        &catalog,
+        crate::settings::KeywordCase::Lower,
+    );
     assert!(!listed.candidates.is_empty());
     let of = (TextPrint::of(&sql_tab.text), sql_tab.cursor, generation);
     let open = Completion::new(false, of, site, "se".into(), listed, false);
@@ -1685,7 +1698,7 @@ fn a_list_with_no_place_closes_once_the_caret_is_in_the_pane() {
     assert!(list(&harness, tab).is_none());
     assert!(editor_has_keyboard(&harness, tab));
     harness.press(Key::Tab, Modifiers::NONE);
-    assert_eq!(sql(&harness, tab).text, format!("{before}\t"));
+    assert_eq!(sql(&harness, tab).text, format!("{before}  "));
 }
 
 #[test]
@@ -1806,6 +1819,7 @@ fn a_list_that_shrinks_is_drawn_at_once_where_it_stays() {
     // typed word left it a single row, and once that has settled.
     let run = |height: f32, lines: usize| {
         let mut harness = Harness::with_size(egui::vec2(1280.0, height));
+        lower_keywords(&mut harness);
         harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
         paste(&mut harness, &"\n".repeat(lines));
@@ -1846,6 +1860,8 @@ fn format_leaves_no_list_of_the_script_as_it_was() {
         paste(&mut harness, script);
         type_text(&mut harness, "fr");
         assert_eq!(labels(&harness, tab), ["from"]);
+        // Upper case from here, so that Format has keywords to change.
+        harness.app.settings.keywords = Some(crate::settings::KeywordCase::Upper);
         (harness, tab)
     };
     // An open list is of the script on screen, once a frame is over.
@@ -1865,10 +1881,10 @@ fn format_leaves_no_list_of_the_script_as_it_was() {
     no_stale_list(&harness, tab);
     harness.settle();
     assert!(list(&harness, tab).is_some_and(|list| list.is_of_text("SELECT 1 fr")));
-    assert_eq!(labels(&harness, tab), ["from"]);
+    assert_eq!(labels(&harness, tab), ["FROM"]);
     assert!(editor_has_keyboard(&harness, tab));
     harness.press(Key::Tab, Modifiers::NONE);
-    assert_eq!(sql(&harness, tab).text, "SELECT 1 from");
+    assert_eq!(sql(&harness, tab).text, "SELECT 1 FROM");
 
     // Format moves the word: the list closes.
     let (mut harness, tab) = completing("select a,b ");
@@ -2431,6 +2447,7 @@ fn a_schema_and_a_table_and_a_dot_offer_its_columns() {
 #[test]
 fn a_table_tabs_structure_fills_the_columns() {
     let mut harness = Harness::new();
+    lower_keywords(&mut harness);
     let tab = harness.connect_fake();
     harness.click("users");
     harness.answer_rows(crate::testing::page(5, false));
@@ -2459,6 +2476,7 @@ fn a_table_tabs_structure_fills_the_columns() {
 #[test]
 fn a_table_tabs_structure_that_failed_leaves_its_columns_to_be_asked_for() {
     let mut harness = Harness::new();
+    lower_keywords(&mut harness);
     let tab = harness.connect_fake();
     harness.click("users");
     harness.answer_rows(crate::testing::page(5, false));

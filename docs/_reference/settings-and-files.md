@@ -52,9 +52,12 @@ open SQL editor follows each change at once.
 | **Row limit** | 100, 500, 1,000, 5,000 or 10,000 rows for each statement, or No limit. The rows past the limit are not fetched; nothing is added to your SQL. **Show all** under a cut result fetches the rest | 1,000 |
 | **Timeout** | 5, 15 or 30 seconds, 1 or 5 minutes, or Off. A run still going then is cancelled and rolled back; Cancel works either way. **Run without timeout** runs a stopped run again with none | 30 s |
 | **⌘↩ runs** (Omarchy: ctrl+enter runs) | Statement at cursor, or Whole tab: every statement in order, stopping at the first error. A selection always runs what it selects, whichever is set | Statement at cursor |
-| **Autocomplete** | As you type, On Ctrl+Space (the list opens only when you ask), or Off | As you type |
+| **Indent** | 2 spaces, 4 spaces or Tab: what Tab puts in at the cursor, or at the start of every line a selection touches, and Shift+Tab takes off them; and how far Format sets a `CASE`'s `WHEN` and `ELSE` in (four for Tab: the layout is set in spaces) | 2 spaces |
+| **Autocomplete** | As you type, On Ctrl+Space (the list opens only when you ask), or Off. Keywords are offered in the case **Keywords** sets, upper case with Keep | As you type |
 | **Line numbers** | On or off on macOS and Windows; relative, absolute or off in the Omarchy look. On writes `absolute`; a `relative` set in the file shows as on and stays | On (absolute) on macOS and Windows, relative in the Omarchy look |
 | **Current line highlight** (macOS and Windows) | On or off: the line the cursor is on is filled while the editor has the keyboard. The Omarchy look has no row: it follows the key, set in the file | On |
+| **Keywords** (in Format · Cmd/Ctrl+Shift+F; Omarchy: format · `=` in normal mode) | UPPERCASE, lowercase or Keep: the case Format writes reserved words in. Keep leaves them as you typed them. Names, strings and comments never change | UPPERCASE on macOS and Windows, lowercase in the Omarchy look |
+| **Commas** | Trailing (at the end of an item's line) or Leading (at the start of the next item's, on the edge of the river), in the lists Format breaks: a `SELECT`'s and a `WITH`'s. A comma with a comment after it, on its line or the next, stays at the end of its line | Trailing |
 | **Keep query history** (Omarchy: keep) | The last 100, 1,000 or 10,000 statements of each connection, on this computer, or Don't keep: every statement run from the SQL editor, a grid's save, a filter or sort you set, and agents' runs, as the [History tab]({% link _guide/sql-editor.md %}#history) shows them. Results are never kept. Don't keep records nothing more, and asks whether to delete what is kept (Omarchy: `D` deletes, `n` keeps). **Show History** beside it (Omarchy: Enter) shows the window's History tab | Last 1,000 |
 
 The other keys of the four `[editor.…]` tables are read and kept now, and
@@ -172,14 +175,14 @@ bar = "tint"
 | `editor.run.run` | `"statement"` or `"all"`: what Cmd/Ctrl+Return runs | `"statement"` |
 | `editor.run.confirm_unsafe_writes` | `true` or `false`. Read and kept; not acted on yet | `true` |
 | `editor.typing.keys` | `"standard"` or `"vim"`. Read and kept; not acted on yet | Not set: standard on macOS and Windows, vim in the Omarchy look |
-| `editor.typing.indent` | `2`, `4` or `"tab"`. Read and kept; not acted on yet | `2` |
+| `editor.typing.indent` | `2`, `4` or `"tab"` | `2` |
 | `editor.typing.autocomplete` | `"typing"`, `"manual"` or `"off"` | `"typing"` |
 | `editor.typing.close_pairs` | `true` or `false`. Read and kept; not acted on yet | `true` |
 | `editor.typing.line_numbers` | `"absolute"`, `"relative"` or `"off"` | Not set: absolute on macOS and Windows, relative in the Omarchy look |
 | `editor.typing.highlight_line` | `true` or `false` | `true` |
 | `editor.typing.wrap` | `true` or `false`. Read and kept; not acted on yet | `false` |
-| `editor.format.keywords` | `"upper"`, `"lower"` or `"keep"`. Read and kept; not acted on yet | Not set: upper on macOS and Windows, lower in the Omarchy look |
-| `editor.format.commas` | `"trailing"` or `"leading"`. Read and kept; not acted on yet | `"trailing"` |
+| `editor.format.keywords` | `"upper"`, `"lower"` or `"keep"` | Not set: upper on macOS and Windows, lower in the Omarchy look |
+| `editor.format.commas` | `"trailing"` or `"leading"` | `"trailing"` |
 | `editor.history.keep` | 0 to 100000 statements kept for each connection, from every source; `0` keeps none. A smaller number deletes the oldest past it | `1000` |
 | `appearance.interface_size` | `"small"`, `"default"` or `"large"`, on macOS and Windows | `"default"` |
 | `appearance.font` | On macOS the data's face, `"IBM Plex Mono"`, `"JetBrains Mono"` or the family name of an installed font (`"Menlo"`); `"monospace"` is IBM Plex Mono too, and a name no installed font has is drawn as IBM Plex Mono, which the window says. Windows draws its data in Inter, whatever it says. In the Omarchy look a fontconfig name (`"Fira Code"`); `"monospace"` is the system's. Written once you set it | Not set: IBM Plex Mono, or the system's monospace |

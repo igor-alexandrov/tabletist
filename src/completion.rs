@@ -8,6 +8,7 @@ use tabletist_db::complete::{Expects, PHRASES, Site, Source};
 use tabletist_db::{ColumnInfo, Dialect, ObjectInfo, ObjectKind, ObjectRef};
 
 use crate::model::{Fetch, Tree};
+use crate::settings::KeywordCase;
 
 /// How many candidates a list keeps; the rest are only counted. Every
 /// keyword and phrase of a dialect fits, so a list opened by hand on an
@@ -317,14 +318,22 @@ pub fn needs(site: &Site, catalog: &Catalog<'_>) -> Vec<Need> {
 
 /// What `site` offers for the `typed` part of its word, from `catalog`.
 /// `manual` says the list was asked for by hand.
-pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog<'_>) -> Listed {
+/// Keywords are offered in `case`, Settings › Editor's keyword case:
+/// upper case for Keep.
+pub fn list(
+    site: &Site,
+    typed: &str,
+    manual: bool,
+    catalog: &Catalog<'_>,
+    case: KeywordCase,
+) -> Listed {
     #[cfg(test)]
     LISTED.with(|count| count.set(count.get() + 1));
     let dialect = catalog.dialect;
     let mut found: Vec<(Group, Candidate)> = Vec::new();
     match target(site, manual, catalog) {
         Target::Nothing => {}
-        Target::Keywords => keywords(&mut found, typed, dialect),
+        Target::Keywords => keywords(&mut found, typed, dialect, case),
         Target::Columns {
             objects,
             tables: with_tables,
@@ -356,7 +365,7 @@ pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog<'_>) -> Li
                 }
             }
             if with_keywords {
-                keywords(&mut found, typed, dialect);
+                keywords(&mut found, typed, dialect, case);
             }
         }
         Target::Tables => tables(&mut found, site, typed, catalog),
@@ -425,10 +434,10 @@ fn object(
     })
 }
 
-/// Adds the keywords and phrases that start with `typed`.
-fn keywords(found: &mut Vec<(Group, Candidate)>, typed: &str, dialect: Dialect) {
+/// Adds the keywords and phrases that start with `typed`, in `case`.
+fn keywords(found: &mut Vec<(Group, Candidate)>, typed: &str, dialect: Dialect, case: KeywordCase) {
     let words = tabletist_db::sql::keywords(dialect).chain(PHRASES);
-    let words = words.filter_map(|word| keyword(word, typed));
+    let words = words.filter_map(|word| keyword(word, typed, case));
     found.extend(words.map(|candidate| (KEYWORDS, candidate)));
 }
 
@@ -454,15 +463,14 @@ fn name(name: &str, kind: Kind, typed: &str, dialect: Dialect) -> Option<Candida
     })
 }
 
-/// `word` as a candidate when it starts with `typed`, in the case typed:
-/// lower case when every typed letter is lower case, upper case otherwise.
-fn keyword(word: &str, typed: &str) -> Option<Candidate> {
+/// `word` as a candidate when it starts with `typed`, whatever its case,
+/// written in `case`: upper case for Keep, which keeps what Format writes
+/// and has no case of its own to give a word not typed yet.
+fn keyword(word: &str, typed: &str, case: KeywordCase) -> Option<Candidate> {
     let matched = find_ignoring_case(word, typed).filter(|found| found.start == 0)?;
-    let lower = typed.chars().any(char::is_lowercase) && !typed.chars().any(char::is_uppercase);
-    let label = if lower {
-        word.to_lowercase()
-    } else {
-        word.to_owned()
+    let label = match case {
+        KeywordCase::Lower => word.to_lowercase(),
+        KeywordCase::Upper | KeywordCase::Keep => word.to_uppercase(),
     };
     Some(Candidate {
         kind: Kind::Keyword,
@@ -600,7 +608,7 @@ mod tests {
             columns: &columns,
             ..catalog(Dialect::Postgres, &tree, Some("public"), &schemas)
         };
-        list(&site, &typed, false, &catalog).candidates
+        list(&site, &typed, false, &catalog, KeywordCase::Lower).candidates
     }
 
     fn labels_of(candidates: &[Candidate]) -> Vec<&str> {
@@ -653,7 +661,7 @@ mod tests {
         let (tree, schemas) = shop();
         let (site, typed) = site_at(marked);
         let catalog = catalog(Dialect::Postgres, &tree, bare, &schemas);
-        list(&site, &typed, false, &catalog)
+        list(&site, &typed, false, &catalog, KeywordCase::Lower)
             .candidates
             .into_iter()
             .map(|c| (c.label, c.insert, c.kind))
@@ -743,7 +751,7 @@ mod tests {
         let offered = |marked: &str| {
             let (site, typed) = site_at(marked);
             let catalog = catalog(Dialect::Postgres, &tree, Some("public"), &schemas);
-            let listed = list(&site, &typed, false, &catalog);
+            let listed = list(&site, &typed, false, &catalog, KeywordCase::Lower);
             let rows = listed.candidates.into_iter();
             rows.map(|c| (c.label, c.insert)).collect::<Vec<_>>()
         };
@@ -1152,7 +1160,7 @@ mod tests {
         let (site, typed) = site_at(marked);
         let tree = Tree::default();
         let catalog = catalog(dialect, &tree, None, &[]);
-        let listed = list(&site, &typed, manual, &catalog);
+        let listed = list(&site, &typed, manual, &catalog, KeywordCase::Lower);
         listed.candidates.into_iter().map(|c| c.label).collect()
     }
 
@@ -1177,24 +1185,33 @@ mod tests {
     }
 
     #[test]
-    fn keywords_follow_the_case_that_is_typed() {
-        assert_eq!(keywords_at("sel|", false), ["select"]);
-        assert_eq!(keywords_at("SEL|", false), ["SELECT"]);
-        assert_eq!(keywords_at("Sel|", false), ["SELECT"]);
-        // Nothing typed: upper case, in order, phrases among them.
+    fn keywords_are_offered_in_the_settings_case_whatever_is_typed() {
+        let (site, typed) = site_at("Sel|");
+        let tree = Tree::default();
+        let sqlite = catalog(Dialect::Sqlite, &tree, None, &[]);
+        let labels = |case| -> Vec<String> {
+            let listed = list(&site, &typed, false, &sqlite, case);
+            listed.candidates.into_iter().map(|c| c.label).collect()
+        };
+        assert_eq!(labels(KeywordCase::Upper), ["SELECT"]);
+        assert_eq!(labels(KeywordCase::Lower), ["select"]);
+        // Keep has no case for a word not typed yet: upper, as Format's.
+        assert_eq!(labels(KeywordCase::Keep), ["SELECT"]);
+        assert_eq!(keywords_at("SEL|", false), ["select"]);
+        // Nothing typed: in order, phrases among them.
         let all = keywords_at("|", true);
-        assert_eq!(all[0], "ALL");
-        assert!(all.contains(&"GROUP BY".to_owned()));
+        assert_eq!(all[0], "all");
+        assert!(all.contains(&"group by".to_owned()));
         // Keywords and phrases must fit under KEPT, or the last ones fall
         // out of the list: in every dialect, each with its own words.
         let (site, typed) = site_at("|");
         let tree = Tree::default();
         for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
             let catalog = catalog(dialect, &tree, None, &[]);
-            let listed = list(&site, &typed, true, &catalog);
+            let listed = list(&site, &typed, true, &catalog, KeywordCase::Lower);
             assert_eq!(listed.more, 0, "{dialect:?}");
             let last = listed.candidates.last().map(|c| c.label.as_str());
-            assert_eq!(last, Some("WITH"), "{dialect:?}");
+            assert_eq!(last, Some("with"), "{dialect:?}");
         }
     }
 
@@ -1208,7 +1225,7 @@ mod tests {
     fn a_keyword_typed_in_any_case_is_what_is_typed() {
         assert_eq!(
             keywords_at("SELECT * FROM users WHERE Is|", false)[..3],
-            ["IS", "IS NOT NULL", "IS NULL"]
+            ["is", "is not null", "is null"]
         );
         assert!(keyword_row("FROM").is_typed("From"));
         assert!(keyword_row("FROM").is_typed("from"));
@@ -1278,7 +1295,7 @@ mod tests {
         let rows = |marked: &str| {
             let (site, typed) = site_at(marked);
             let catalog = catalog(Dialect::Postgres, &tree, Some("public"), &schemas);
-            let listed = list(&site, &typed, false, &catalog);
+            let listed = list(&site, &typed, false, &catalog, KeywordCase::Lower);
             let only_repeats = listed.only_repeats(&typed);
             let rows = listed.candidates.into_iter();
             let rows = rows.map(|c| (c.is_typed(&typed), c.insert));
@@ -1342,7 +1359,7 @@ mod tests {
         let (site, typed) = site_at("sel|");
         let tree = Tree::default();
         let catalog = catalog(Dialect::Sqlite, &tree, None, &[]);
-        let listed = list(&site, &typed, false, &catalog);
+        let listed = list(&site, &typed, false, &catalog, KeywordCase::Lower);
         assert_eq!(
             listed.candidates,
             [Candidate {

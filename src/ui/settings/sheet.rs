@@ -413,7 +413,7 @@ fn content(
     };
     // The first heading stays over the rows as they scroll; the others
     // scroll with their rows, 14 under the last row before them.
-    widgets::section_label(&skin.say(first), look, palette)
+    widgets::section_label(&said(ui.ctx(), look, skin.locale, first), look, palette)
         .layout(ui.ctx())
         .label(ui);
     ui.add_space(2.0);
@@ -435,9 +435,13 @@ fn content(
             for (nth, (heading, options)) in sections.iter().enumerate() {
                 if nth > 0 {
                     ui.add_space(14.0);
-                    widgets::section_label(&skin.say(heading), look, palette)
-                        .layout(ui.ctx())
-                        .label(ui);
+                    widgets::section_label(
+                        &said(ui.ctx(), look, skin.locale, heading),
+                        look,
+                        palette,
+                    )
+                    .layout(ui.ctx())
+                    .label(ui);
                     ui.add_space(2.0);
                 }
                 for option in options.iter().copied() {

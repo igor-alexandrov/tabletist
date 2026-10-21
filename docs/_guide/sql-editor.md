@@ -82,17 +82,26 @@ back.
 ## Format
 
 **Format** (Cmd/Ctrl+Shift+F; in the Omarchy look Esc, then `=`) lays
-queries out in river style and
-uppercases reserved words. It formats the statements in the selection, or
-the whole script when nothing is selected. Only whitespace and the case of
-keywords change.
+queries out in river style, with reserved words in the case
+**Settings › Editor** sets (upper case on macOS and Windows and lower
+case in the Omarchy look until you choose, or as you typed them), the
+commas of a `SELECT`'s or a `WITH`'s list trailing or leading, and a
+`CASE`'s parts in by the indent set. It formats the statements in the selection, or the whole
+script when nothing is selected. Only whitespace and the case of
+keywords change, and one undo takes it back.
+
+Tab puts in an indent (two spaces until you set four or a tab), at the
+start of every line a selection touches when there is one (blank lines
+stay blank), and Shift+Tab takes one off. While the completion list is
+open, Tab accepts its row first.
 
 ## Completion
 
 Keywords, schemas, tables, views and the columns of the tables in your
 statement are offered while you type. Ctrl+Space asks for the list
 anywhere, and so does Cmd/Ctrl+I on macOS and Windows. **Settings ›
-Editor** can have the list open only when you ask, or never.
+Editor** can have the list open only when you ask, or never, and sets
+the case keywords are offered in.
 
 {% include shot.html file="macos-sql-complete" alt="The completion list under a table name being typed, offering the tables that match" %}
 

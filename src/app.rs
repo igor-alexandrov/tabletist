@@ -6341,7 +6341,8 @@ impl App {
             return changed;
         };
         let catalog = catalog_of(workspace, &schemas);
-        let listed = crate::completion::list(&site, &typed, manual, &catalog);
+        let case = self.settings.keywords_in(self.look.terminal);
+        let listed = crate::completion::list(&site, &typed, manual, &catalog, case);
         let loading = needs.iter().any(|need| workspace.is_loading(need));
         // The generation after asking: asking changed it.
         let of = (print, cursor, workspace.catalog_generation);
