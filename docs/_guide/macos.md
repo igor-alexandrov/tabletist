@@ -44,8 +44,8 @@ launch, are on the
   Appearance setting while it runs. **Settings › Appearance** can keep it
   light or dark whatever the system says.
 - **The app menu has the usual two.** **Tabletist → About Tabletist**
-  shows the version and the licenses of the fonts it bundles, and
-  **Tabletist → Settings…** opens Settings. **View → History** shows the
+  shows the version, a link to the source code and the licenses of the
+  fonts it bundles, and **Tabletist → Settings…** opens Settings. **View → History** shows the
   window's [History tab]({% link _guide/sql-editor.md %}#history), and
   **View → Quick Open** opens quick open.
 - **The sidebar's SQL Editor button has a clock.** Its main part opens a
