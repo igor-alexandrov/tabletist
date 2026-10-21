@@ -1,0 +1,2 @@
+# Signed bytes: a checkout must not change line endings (tests/update_release.rs).
+tests/fixtures/update/** -text
