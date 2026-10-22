@@ -76,7 +76,11 @@ takes a `keymap::Written`, which only the keymap makes; `tests/keys.rs`
 finds a key spelled by hand anywhere else. A command that is not built yet
 is in the keymap with its keys and `built: false`: nothing answers it, and
 nothing else can have its keys. The keymap's own tests are generated from
-its data: no two commands share a key where both could be read.
+its data: no two commands share a key where both could be read. Vim's
+modes in the SQL editor are typing, as a text field's keys are: their
+letters are the engine's (`src/vim.rs`), and Esc, Enter, the arrows and
+the field's own deleting chords are the field's; vim's chords (`VimRedo`,
+`VimNormal`) are in the keymap.
 
 Add a focused regression test for every behaviour change. UI behaviour is
 tested headlessly through `src/testing.rs` (AccessKit tree + events). Do not

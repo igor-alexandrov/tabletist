@@ -607,6 +607,8 @@ commands! {
     ReadOnlyTab = "read_only_tab",
     ReadWriteTab = "read_write_tab",
     WriteNothing = "write_nothing",
+    VimRedo = "vim_redo",
+    VimNormal = "vim_normal",
     ToggleSqlMode = "toggle_sql_mode",
     Commit = "commit",
     Rollback = "rollback",
@@ -976,6 +978,8 @@ impl Command {
             C::ReadOnlyTab => info("Read-only tab", MODE, Sql),
             C::ReadWriteTab => info("Read-write tab", MODE, Sql),
             C::WriteNothing => info("Write (nothing to write in the editor)", "", Sql),
+            C::VimRedo => info("Redo (vim's normal mode)", "", Sql),
+            C::VimNormal => info("Normal mode (vim), as Esc", "", Sql),
             C::ToggleSqlMode => info("Read-only or read-write runs", "", Sql),
             C::Commit => info("Commit", "Commit", Sql).reserved(),
             C::Rollback => info("Rollback", "Rollback", Sql).reserved(),
@@ -2003,6 +2007,20 @@ pub const BINDINGS: &[Binding] = {
         ),
         // Vim's `:w` in the SQL editor: it never writes to the database.
         bind(C::WriteNothing, SQL_EDITOR, NONE, keys(&[k(":w")])),
+        // Vim's chords in the SQL editor, where the keybindings are vim's:
+        // its letters are the editor's own, as a text field's keys are.
+        bind(
+            C::VimRedo,
+            SQL_EDITOR,
+            keys(&[k("ctrl+r")]).normal(),
+            keys(&[k("ctrl+r")]).normal(),
+        ),
+        bind(
+            C::VimNormal,
+            SQL_EDITOR,
+            keys(&[k("ctrl+[")]).any(),
+            keys(&[k("ctrl+[")]).any(),
+        ),
         bind(
             C::ToggleSqlMode,
             SQL_EDITOR,

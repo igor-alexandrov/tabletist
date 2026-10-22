@@ -271,7 +271,8 @@ A save can ask you something first. Each question has its own keys:
 | Ctrl+Enter | Run the statement at the cursor, the whole script or the selection, as Settings › Editor says |
 | Ctrl+Shift+Enter | Run all |
 | Ctrl+C | Cancel the run, while one runs. With none running it copies |
-| Esc | In insert mode, normal mode. In normal mode, leave the editor: the letters below are read from then on |
+| Esc, Ctrl+[ | In insert mode, normal mode. In normal mode, leave the editor: the letters below are read from then on |
+| Ctrl+R | In normal mode: redo |
 | vim's keys | In normal and visual mode: moves, `d` `c` `y`, `p`, `u` and Ctrl+R, `v` and `V`, as the [SQL Editor guide]({% link _guide/sql-editor.md %}#vim) lists them |
 | Ctrl+J | Give the keyboard to the results. Ctrl+K gives it back to the script |
 | `]e`, `[e` | Put the cursor where the last run's error is, while the script is the one that ran |

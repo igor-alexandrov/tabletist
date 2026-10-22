@@ -1257,26 +1257,57 @@ enum Read {
     Take(Vec<vim::Input>),
 }
 
-/// How vim in `mode` reads `event`. In insert mode it takes Esc (and
-/// Ctrl+[, vim's other Esc) alone, unless `held` (an open completion list
-/// takes it). Out of it, the characters typed and the keys that move or
-/// edit; the field keeps its chords (copy, paste, select all, undo), but
-/// not vim's deletions of insert mode nor Tab, which type nothing here. A
-/// held Esc is not normal mode's: the keyboard does not leave with it.
-fn vim_input(event: &egui::Event, mode: vim::Mode, held: bool) -> Read {
+/// Vim's chords as the keymap has them in the SQL editor (`VimRedo`,
+/// `VimNormal`): its letters, and the field's own keys, are the editor's.
+struct VimChords {
+    layout: crate::keymap::Layout,
+    /// What the frame holds.
+    held: egui::Modifiers,
+    redo: Vec<&'static str>,
+    normal: Vec<&'static str>,
+}
+
+impl VimChords {
+    fn of(ui: &Ui, look: &Look) -> Self {
+        use crate::keymap::{Command, Layout, Scope};
+        let keymap = crate::ui::keys::published(ui.ctx());
+        let layout = Layout::of(look);
+        let chords = |command, normal| -> Vec<&'static str> {
+            keymap
+                .chords_now(layout, command, Scope::SqlEditor, normal)
+                .collect()
+        };
+        Self {
+            layout,
+            held: ui.input(|input| input.modifiers),
+            redo: chords(Command::VimRedo, true),
+            normal: chords(Command::VimNormal, false),
+        }
+    }
+
+    fn pressed(&self, event: &egui::Event, chords: &[&'static str]) -> bool {
+        chords
+            .iter()
+            .any(|keys| crate::ui::keys::press_of(self.layout, self.held, event, keys).is_some())
+    }
+}
+
+/// How vim in `mode` reads `event`. In insert mode it takes Esc (and the
+/// keymap's `VimNormal`, Ctrl+[) alone, unless `held` (an open completion
+/// list takes it). Out of it, the characters typed and the keys that move
+/// or edit, and `VimRedo`; the field keeps its chords (copy, paste, select
+/// all, undo), but not vim's deletions of insert mode nor Tab, which type
+/// nothing here. A held Esc is not normal mode's: the keyboard does not
+/// leave with it.
+fn vim_input(event: &egui::Event, mode: vim::Mode, held: bool, chords: &VimChords) -> Read {
     use egui::{Event, Key};
     use vim::Input;
-    let escape = |key: &Key, modifiers: &egui::Modifiers| {
-        *key == Key::Escape || (modifiers.ctrl && *key == Key::OpenBracket)
-    };
+    let escape = |key: &Key| *key == Key::Escape || chords.pressed(event, &chords.normal);
     if mode == vim::Mode::Insert {
         return match event {
             Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } if escape(key, modifiers) && !held => Read::Take(vec![Input::Escape]),
+                key, pressed: true, ..
+            } if escape(key) && !held => Read::Take(vec![Input::Escape]),
             _ => Read::Keep,
         };
     }
@@ -1298,7 +1329,7 @@ fn vim_input(event: &egui::Event, mode: vim::Mode, held: bool) -> Read {
             if !pressed {
                 return Read::Keep;
             }
-            if escape(key, modifiers) {
+            if escape(key) {
                 return if *repeat {
                     Read::Drop
                 } else {
@@ -1309,7 +1340,7 @@ fn vim_input(event: &egui::Event, mode: vim::Mode, held: bool) -> Read {
                 // AltGr on Windows: its character comes as text.
                 return Read::Drop;
             }
-            if modifiers.ctrl && !modifiers.mac_cmd && *key == Key::R {
+            if chords.pressed(event, &chords.redo) {
                 return Read::Take(vec![Input::Redo]);
             }
             // The field's chords that delete (a word, to a line's end) have
@@ -1426,6 +1457,7 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
         .unwrap_or_default();
     let time = ui.input(|input| input.time);
     let unit = indent_unit(field.indent);
+    let chords = VimChords::of(ui, field.look);
     let (mut kept, mut later) = (Vec::new(), Vec::new());
     // The field has events of this frame to read first.
     let mut field_first = false;
@@ -1437,7 +1469,7 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
         if mode.is_visual() && matches!(event, egui::Event::Cut | egui::Event::Paste(_)) {
             sql_tab.vim.to_normal();
         }
-        let inputs = match vim_input(&event, sql_tab.vim.mode, field.hold_escape) {
+        let inputs = match vim_input(&event, sql_tab.vim.mode, field.hold_escape, &chords) {
             Read::Keep => {
                 field_first |= edits(&event);
                 kept.push(event);
