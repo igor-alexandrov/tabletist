@@ -378,6 +378,29 @@ fn the_terminal_editors_rows_are_described_by_their_hints() {
 }
 
 #[test]
+fn a_hint_left_out_for_want_of_room_still_describes_its_row() {
+    let hint = "caps results you browse · show all and exports get every row";
+    // As wide as the rows' columns and a little of the hint: the hint is
+    // whole or left out, and here it is left out.
+    let mut harness = Harness::with_size(egui::vec2(900.0, 1400.0));
+    harness.set_look(Look::omarchy());
+    harness.app.apply(Action::ShowSettings);
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(SettingsPane::Editor));
+    let tree = harness.settle();
+    assert!(
+        !harness.painted.iter().any(|(text, _)| text.contains(hint)),
+        "the hint is painted"
+    );
+    let found = controls(&tree, &name(&harness, OptionId::RowLimit));
+    assert!(!found.is_empty(), "no controls of the row limit");
+    for node in found {
+        assert_eq!(node.description(), Some(hint), "{:?}", node.label());
+    }
+}
+
+#[test]
 fn the_terminal_agents_rows_are_described_by_their_hints() {
     if !SettingsPane::listed().contains(&SettingsPane::Agents) {
         return;
