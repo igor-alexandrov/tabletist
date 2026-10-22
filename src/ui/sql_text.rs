@@ -563,6 +563,10 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         state.cursor.set_char_range(Some(CCursorRange::one(at)));
         egui::TextEdit::store_state(ui.ctx(), editor, state);
         sql_tab.cursor = byte_offset(&sql_tab.text, at.index.0);
+        // A cursor put there ends vim's visual selection.
+        if sql_tab.vim.mode.is_visual() {
+            sql_tab.vim.to_normal();
+        }
         ui.memory_mut(|memory| memory.request_focus(editor));
         edited.focused = true;
     }
@@ -1367,15 +1371,30 @@ fn edits(event: &egui::Event) -> bool {
 /// editor or `:`, the frame's keys are nobody's.
 fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool) {
     let later_id = field.id.with("vim later");
-    if !field.vim || !ui.memory(|memory| memory.has_focus(field.id)) {
-        ui.data_mut(|data| data.remove_temp::<Vec<egui::Event>>(later_id));
-        return (false, false);
-    }
-    // A press leaves visual mode: the pointer selects as it does anywhere,
-    // and what visual mode selected goes (a press on the text sets its own).
-    let pressed = sql_tab.vim.mode.is_visual() && ui.input(|input| input.pointer.any_pressed());
+    // A press on the script leaves visual mode, with the keyboard here or
+    // coming back with the press: the pointer selects as it does anywhere,
+    // and what visual mode selected goes (the press sets its own). A press
+    // anywhere else (Run, the results) leaves it be: Run runs the visual
+    // selection. The gutter's press leaves it too, in `show`.
+    let pane = ui.clip_rect();
+    let pressed = field.vim
+        && sql_tab.vim.mode.is_visual()
+        && ui.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(event, egui::Event::PointerButton { pos, pressed: true, .. }
+                    if pane.contains(*pos))
+            })
+        });
     if pressed {
         sql_tab.vim.to_normal();
+        let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+        let head = CCursorRange::one(CCursor::new(sql_tab.vim.head()));
+        state.cursor.set_char_range(Some(head));
+        egui::TextEdit::store_state(ui.ctx(), field.id, state);
+    }
+    if !field.vim || !ui.memory(|memory| memory.has_focus(field.id)) {
+        ui.data_mut(|data| data.remove_temp::<Vec<egui::Event>>(later_id));
+        return (pressed, false);
     }
     let waited: Vec<egui::Event> = ui
         .data_mut(|data| data.remove_temp(later_id))
@@ -1386,12 +1405,7 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
         events
     });
     let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
-    let mut changed = false;
-    if pressed {
-        let head = CCursorRange::one(CCursor::new(sql_tab.vim.head()));
-        state.cursor.set_char_range(Some(head));
-        changed = true;
-    }
+    let mut changed = pressed;
     if sql_tab.vim.mode == vim::Mode::Normal
         && let Some(range) = state.cursor.char_range()
         && range.is_empty()

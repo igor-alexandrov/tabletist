@@ -219,6 +219,73 @@ fn a_visual_selection_is_what_runs() {
 }
 
 #[test]
+fn a_press_on_run_runs_the_visual_selection_and_one_on_the_script_ends_it() {
+    let (mut harness, tab) = editor(Look::macos(), "SELECT 1;\nSELECT 2;");
+    set(&mut harness, OptionValue::EditorKeys(Some(EditorKeys::Vim)));
+    // Both lines, the cursor on the second.
+    keys(&mut harness, "ggVj");
+    // By the pointer, as a mouse does: the press, then the release a frame
+    // later, on the button.
+    let tree = harness.settle();
+    let run = crate::testing::bounds(&tree, "Run", egui::accesskit::Role::Button)
+        .expect("the Run button")
+        .center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: run,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(run), button(true)]);
+    harness.frame(vec![button(false)]);
+    harness.settle();
+    let sent = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            crate::backend::Command::RunSql { statements, .. } => Some(
+                statements
+                    .iter()
+                    .map(|statement| statement.text.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .expect("a run");
+    assert_eq!(
+        sent,
+        ["SELECT 1", "SELECT 2"],
+        "the selection, not the cursor's statement"
+    );
+    assert_eq!(mode(&harness, tab), Mode::VisualLine);
+    // A press on the script ends visual mode.
+    let tree = harness.settle();
+    let field = crate::testing::bounds(&tree, "SQL", egui::accesskit::Role::MultilineTextInput)
+        .expect("the editor");
+    let at = field.center();
+    harness.frame(vec![
+        egui::Event::PointerMoved(at),
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        },
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    harness.settle();
+    assert_eq!(mode(&harness, tab), Mode::Normal);
+}
+
+#[test]
 fn equals_formats_the_cursor_s_statement_and_gg_equals_g_the_tab() {
     let script = "select 1 from t;\nselect 2 from u;";
     let (mut harness, tab) = editor(Look::omarchy(), script);
@@ -506,6 +573,15 @@ fn the_screen_leads_typing_with_the_keybindings_row_and_its_hint() {
     let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
     assert!(top(&harness, "typing") < top(&harness, "keybindings"));
     assert!(top(&harness, "keybindings") < top(&harness, "line numbers"));
+    // The standard keys have no mode to show.
+    set(
+        &mut harness,
+        OptionValue::EditorKeys(Some(EditorKeys::Standard)),
+    );
+    assert!(!shows(
+        &mut harness,
+        "-- INSERT -- shown in the status line"
+    ));
     // Vim first, as the board draws them, and the look's.
     assert!(top(&harness, "vim") == top(&harness, "standard"));
     let left = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).left();

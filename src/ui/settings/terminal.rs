@@ -1580,12 +1580,19 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             }
         }
         OptionId::ConfirmUnsafeWrites => dim(&skin.say("connections that allow writes")),
-        // Vim's own words for the mode, in its case.
-        OptionId::EditorKeys => Text::new(look).add(role, "-- INSERT --", palette.dim).add(
-            role,
-            &format!(" {}", skin.say("shown in the status line")),
-            palette.dim,
-        ),
+        // Vim's own words for the mode, in its case; the standard keys
+        // have no mode to show.
+        OptionId::EditorKeys => {
+            if settings.editor_keys_in(true) == crate::settings::EditorKeys::Vim {
+                Text::new(look).add(role, "-- INSERT --", palette.dim).add(
+                    role,
+                    &format!(" {}", skin.say("shown in the status line")),
+                    palette.dim,
+                )
+            } else {
+                Text::new(look)
+            }
+        }
         OptionId::Autocomplete => dim(&skin.say("schema objects")),
         OptionId::HistoryKeep => {
             dim(&skin.say("per connection · sql, saves, filters, agents · never results"))
