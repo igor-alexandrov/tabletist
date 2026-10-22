@@ -4,11 +4,13 @@
 
 use egui::{Key, Modifiers};
 
-use crate::model::{Action, ConnTabId, RunMode};
+use crate::model::{Action, ConnTabId, RunMode, SettingsPane};
 use crate::settings::{EditorKeys, OptionValue};
 use crate::testing::Harness;
 use crate::theme::Look;
 use crate::vim::Mode;
+
+use super::appearance_settings_tests::shows;
 
 /// A connected fixture in `look`, with a new SQL editor that has the
 /// keyboard and holds `text`, its cursor at the end. A new tab types: in
@@ -448,4 +450,42 @@ fn ct_to_the_next_character_changes_what_is_between() {
     keys(&mut harness, "$hct)n");
     assert_eq!(mode(&harness, tab), Mode::Insert);
     assert_eq!(text(&harness, tab), "select count(n)");
+}
+
+/// Settings on its Editor pane.
+fn on_the_pane(harness: &mut Harness) {
+    harness.app.apply(Action::ShowSettings);
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(SettingsPane::Editor));
+    harness.settle();
+}
+
+#[test]
+fn the_sheet_leads_typing_with_the_keybindings_row() {
+    let mut harness = Harness::with_size(egui::vec2(1440.0, 1400.0));
+    harness.set_look(Look::macos());
+    on_the_pane(&mut harness);
+    let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
+    assert!(top(&harness, "TYPING") < top(&harness, "Keybindings"));
+    assert!(top(&harness, "Keybindings") < top(&harness, "Indent"));
+    harness.click("Keybindings: Vim");
+    assert_eq!(harness.app.settings.editor_keys, Some(EditorKeys::Vim));
+}
+
+#[test]
+fn the_screen_leads_typing_with_the_keybindings_row_and_its_hint() {
+    let mut harness = Harness::with_size(egui::vec2(1920.0, 1080.0));
+    harness.set_look(Look::omarchy());
+    on_the_pane(&mut harness);
+    for words in ["keybindings", "-- INSERT -- shown in the status line"] {
+        assert!(shows(&mut harness, words), "{words}");
+    }
+    let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
+    assert!(top(&harness, "typing") < top(&harness, "keybindings"));
+    assert!(top(&harness, "keybindings") < top(&harness, "line numbers"));
+    // Vim first, as the board draws them, and the look's.
+    assert!(top(&harness, "vim") == top(&harness, "standard"));
+    let left = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).left();
+    assert!(left(&harness, "vim") < left(&harness, "standard"));
 }

@@ -379,7 +379,7 @@ fn the_screen_has_the_confirm_row_after_the_run_key_and_toggles_it() {
     let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
     let row = "confirm write without where";
     // After the run key's row, by its hint.
-    assert!(top(&harness, "a selection always wins") < top(&harness, row));
+    assert!(top(&harness, "a visual selection always wins") < top(&harness, row));
     assert!(top(&harness, row) < top(&harness, "line numbers"));
     assert!(shows(&mut harness, "connections that allow writes"));
     // Down to it from the first row: new tabs, limit, timeout, run key.

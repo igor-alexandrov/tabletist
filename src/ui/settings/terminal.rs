@@ -1571,9 +1571,21 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
         OptionId::RowLimit => {
             dim(&skin.say("caps results you browse · show all and exports get every row"))
         }
-        OptionId::RunScope => dim(&skin.say("a selection always wins")),
+        // A selection is visual mode's where the keys are vim's.
+        OptionId::RunScope => {
+            if settings.editor_keys_in(true) == crate::settings::EditorKeys::Vim {
+                dim(&skin.say("a visual selection always wins"))
+            } else {
+                dim(&skin.say("a selection always wins"))
+            }
+        }
         OptionId::ConfirmUnsafeWrites => dim(&skin.say("connections that allow writes")),
-        OptionId::EditorKeys => dim(&skin.say("-- INSERT -- shown in the status line")),
+        // Vim's own words for the mode, in its case.
+        OptionId::EditorKeys => Text::new(look).add(role, "-- INSERT --", palette.dim).add(
+            role,
+            &format!(" {}", skin.say("shown in the status line")),
+            palette.dim,
+        ),
         OptionId::Autocomplete => dim(&skin.say("schema objects")),
         OptionId::HistoryKeep => {
             dim(&skin.say("per connection · sql, saves, filters, agents · never results"))

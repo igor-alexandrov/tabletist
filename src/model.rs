@@ -3068,6 +3068,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::Timeout),
                 SettingsRow::Option(OptionId::RunScope),
                 SettingsRow::Option(OptionId::ConfirmUnsafeWrites),
+                SettingsRow::Option(OptionId::EditorKeys),
                 SettingsRow::Option(OptionId::LineNumbers),
                 SettingsRow::Option(OptionId::Indent),
                 SettingsRow::Option(OptionId::Autocomplete),

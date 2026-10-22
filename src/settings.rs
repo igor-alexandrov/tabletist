@@ -1074,9 +1074,6 @@ impl OptionId {
         Self::Commas,
         Self::HistoryKeep,
     ];
-    /// The Editor pane's options whose features are not built yet: no row
-    /// draws them, and their keys are read, kept and reset.
-    pub const EDITOR_LATER: [OptionId; 1] = [Self::EditorKeys];
     /// The Editor pane's Running queries section, in both looks.
     pub const RUNNING: [OptionId; 5] = [
         Self::NewTab,
@@ -1086,7 +1083,8 @@ impl OptionId {
         Self::ConfirmUnsafeWrites,
     ];
     /// Its Typing section on macOS and Windows.
-    pub const TYPING: [OptionId; 6] = [
+    pub const TYPING: [OptionId; 7] = [
+        Self::EditorKeys,
         Self::Indent,
         Self::Autocomplete,
         Self::ClosePairs,
@@ -1096,7 +1094,8 @@ impl OptionId {
     ];
     /// The terminal look's, as its board orders them, with no row for the
     /// cursor's line.
-    pub const TERMINAL_TYPING: [OptionId; 5] = [
+    pub const TERMINAL_TYPING: [OptionId; 6] = [
+        Self::EditorKeys,
         Self::LineNumbers,
         Self::Indent,
         Self::Autocomplete,
@@ -4649,7 +4648,6 @@ bar = \"label\"  # tint | label
                 sections,
                 &OptionId::FORMAT[..],
                 &OptionId::HISTORY[..],
-                &OptionId::EDITOR_LATER[..],
             ]
             .concat()
             .into_iter()
