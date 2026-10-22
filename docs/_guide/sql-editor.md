@@ -92,7 +92,8 @@ back.
 
 ## Format
 
-**Format** (Cmd/Ctrl+Shift+F; in the Omarchy look Esc, then `=`) lays
+**Format** (Cmd/Ctrl+Shift+F; in the Omarchy look `=` with the keyboard
+out of the text, and with [vim keys](#vim) `==` and `gg=G`) lays
 queries out in river style, with reserved words in the case
 **Settings › Editor** sets (upper case on macOS and Windows and lower
 case in the Omarchy look until you choose, or as you typed them), the
@@ -110,6 +111,44 @@ A bracket or a quote you type gets its closing one, which you type over,
 or delete with Backspace while the pair is empty. Typed over a selection,
 the two go round it. **Settings › Editor** turns this off. There, Wrap
 wraps long lines at the editor's width, each numbered once.
+
+## Vim
+
+With **Settings › Editor › Keybindings** set to Vim (the Omarchy look's
+own), the editor has vim's modes. A new tab is in insert mode, where you
+type as in any editor and the status line (on macOS and Windows, the
+footer) says `-- INSERT --`. Esc (or Ctrl+[) goes to normal mode, where
+the cursor is a block and keys are commands; Esc there gives the keyboard
+up, to the results and the sidebar, where the keys of the results and of
+the error marks (`]e`, `[e`) work. Coming back, the editor is in the mode
+it was left in.
+
+In normal mode:
+
+- Moves, each with a count before it: `h` `j` `k` `l`, `w` `b` `e` and
+  `W` `B` `E`, `0` `^` `$`, `gg` and `G` (to a line with a count), `f`
+  `F` `t` `T` with `;` and `,`, `%` to the matching bracket, and `{` `}`
+  to the next blank line.
+- Into insert mode: `i` `a` `I` `A` `o` `O`, and `s` `S` `C`.
+- `d`, `c` and `y` with a move (`dw`, `c$`, `y2j`), or twice for whole
+  lines (`dd`, `cc`, `yy`); `>` and `<` indent and outdent the same way;
+  `x` `X` `D` `Y`, `p` `P` to put back what was deleted or yanked, `J`
+  to join lines, `r` to replace a character, `~` to change its case.
+- `u` undoes and Ctrl+R redoes: a command is a step, and so is an
+  insert, from the key that started it to Esc. Moving the cursor is not.
+- `==` formats the statement at the cursor, `gg=G` the whole script, and
+  `=` with a move the statements it covers.
+- `:` opens the Omarchy look's command line, as `:ro` and `:rw` use, and
+  gives the keyboard back to the editor after. `:w` does nothing: the
+  editor has nothing to save, and never writes to the database.
+
+`v` selects by character and `V` by line; the moves stretch the
+selection, `o` goes to its other end, and `d` (or `x`), `c` (or `s`),
+`y`, `>`, `<`, `=`, `J`, `~`, `u`, `U` and `p` act on it. What a visual
+selection holds is what Run runs. Text objects (`iw`, `i(`), `.`,
+search, registers, marks, macros and paging (`Ctrl+F`, `Ctrl+D`) are not
+there; the field's own keys (copy, paste, select all, Page Up and Page
+Down) work in every mode.
 
 ## Completion
 

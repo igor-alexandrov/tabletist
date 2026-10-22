@@ -20,7 +20,9 @@ dialogs and of the lists that open in an editor.
 
 A letter does its job when no text field has the keyboard. While a field
 has it, letters are typed into the field, and Esc gives the keyboard
-back.
+back. With vim keybindings (the look's own), the SQL editor has vim's
+modes besides: there Esc goes from insert mode to normal mode, and a
+second Esc gives the keyboard back.
 
 ### Everywhere
 
@@ -33,7 +35,7 @@ back.
 | Ctrl+Shift+D | Switch database, where the server has another |
 | Alt+1 to 9 | Go to that tab |
 | Ctrl+Shift+[ and ] | Previous and next tab |
-| Ctrl+W | Close the tab. While you type in a field it deletes a word instead |
+| Ctrl+W | Close the tab. While you type in a field it deletes a word instead; in the SQL editor's normal mode it does neither |
 | Ctrl+B | Show or hide the sidebar |
 | Ctrl+H, Ctrl+L | Move between the parts of the window |
 | Ctrl+K, Ctrl+J | In a SQL editor: up to the script, down to its results |
@@ -269,12 +271,13 @@ A save can ask you something first. Each question has its own keys:
 | Ctrl+Enter | Run the statement at the cursor, the whole script or the selection, as Settings › Editor says |
 | Ctrl+Shift+Enter | Run all |
 | Ctrl+C | Cancel the run, while one runs. With none running it copies |
-| Esc | Leave the editor: the letters below are read from then on |
+| Esc | In insert mode, normal mode. In normal mode, leave the editor: the letters below are read from then on |
+| vim's keys | In normal and visual mode: moves, `d` `c` `y`, `p`, `u` and Ctrl+R, `v` and `V`, as the [SQL Editor guide]({% link _guide/sql-editor.md %}#vim) lists them |
 | Ctrl+J | Give the keyboard to the results. Ctrl+K gives it back to the script |
 | `]e`, `[e` | Put the cursor where the last run's error is, while the script is the one that ran |
-| `=` | Format, with the keyboard out of the text |
+| `=` | Format, with the keyboard out of the text. In normal mode, `==` formats the statement at the cursor and `gg=G` all of it |
 | Tab, Shift+Tab | Indent, outdent, in the text: at the cursor, or every line of the selection |
-| `:ro`, `:rw` | Read-only and read-write runs, with the keyboard out of the text |
+| `:ro`, `:rw` | Read-only and read-write runs, from normal mode or with the keyboard out of the text |
 | Ctrl+Space | Complete |
 | `y`; `n`, Enter or Esc | When the status line asks before a run that changes every row of a table (an `UPDATE` or a `DELETE` without `WHERE`, a `TRUNCATE`): run it; do not |
 
