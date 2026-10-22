@@ -646,7 +646,20 @@ pub(crate) fn block_cursor(
     let Some(cursor) = output.cursor_range else {
         return;
     };
-    let caret = output.galley.pos_from_cursor(cursor.primary);
+    block_cursor_at(ui, output, cursor.primary, role, look, palette);
+}
+
+/// The block over the character at `at`: the SQL editor's in vim's
+/// visual mode, whose cursor is not the field's.
+pub(crate) fn block_cursor_at(
+    ui: &Ui,
+    output: &egui::text_edit::TextEditOutput,
+    at: egui::text::CCursor,
+    role: TextRole,
+    look: &Look,
+    palette: &Palette,
+) {
+    let caret = output.galley.pos_from_cursor(at);
     let block = Rect::from_min_size(
         output.galley_pos + caret.min.to_vec2(),
         vec2(role.width(ui.ctx(), look.faces, "0"), caret.height()),

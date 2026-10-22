@@ -20,6 +20,7 @@ use crate::settings::Indent;
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
+use crate::vim;
 
 /// The script's and the line numbers' role: monospace in every look.
 fn role(look: &Look) -> TextRole {
@@ -347,11 +348,25 @@ fn format_script(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     };
     let formatted =
         sql::format::format_with(field.dialect, &sql_tab.text, selection, cursor, field.style);
+    // Vim's `=` selects the lines it formats: its cursor, kept, is what
+    // stays, not the lines.
+    let vim_cursor: Option<usize> =
+        ui.data_mut(|data| data.remove_temp(field.id.with("vim format")));
     let Some(formatted) = formatted else {
+        if let Some(at) = vim_cursor {
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(at))));
+            egui::TextEdit::store_state(ui.ctx(), field.id, state);
+            sql_tab.selected = None;
+        }
         return false;
     };
     let at = |text: &str, byte: usize| CCursorRange::one(CCursor::new(char_index(text, byte)));
-    let before = typed.unwrap_or_else(|| at(&sql_tab.text, sql_tab.cursor));
+    let before = match vim_cursor {
+        Some(cursor) => CCursorRange::one(CCursor::new(cursor)),
+        None => typed.unwrap_or_else(|| at(&sql_tab.text, sql_tab.cursor)),
+    };
     let after = at(&formatted.text, formatted.cursor);
     // The text as typed and the text as formatted, both: undo gives the
     // first back whole, and redo the second.
@@ -433,6 +448,8 @@ struct Edited {
     /// undo, a deletion or an input method's text while it is composed.
     /// Only text the field takes counts (see `edit`).
     typed: bool,
+    /// `:` typed in vim's normal or visual mode.
+    prompt: bool,
 }
 
 impl Edited {
@@ -474,6 +491,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let wraps = app.settings.wrap;
     let highlight = app.settings.highlight_line;
     let pairs = app.settings.close_pairs;
+    let vim = app.settings.editor_keys_in(look.terminal) == crate::settings::EditorKeys::Vim;
     let Some(workspace) = app.workspace_mut(tab) else {
         return;
     };
@@ -507,6 +525,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         // editor's again.
         hold_escape: sql_tab.completion.as_ref().is_some_and(|list| !list.accept),
         pairs,
+        vim,
     };
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
@@ -570,6 +589,11 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     }
     if edited.typed {
         app.actions.push(Action::SqlTyped { tab, sql_tab: id });
+    }
+    // Vim's `:`: the prompt the terminal look has. (The macOS look has
+    // none.)
+    if edited.prompt && look.terminal {
+        app.actions.push(Action::EditorCommand { tab, sql_tab: id });
     }
     let spot = Spot {
         tab,
@@ -751,6 +775,9 @@ struct Field<'a> {
     indent: Indent,
     /// Long lines wrap at the pane's width.
     wraps: bool,
+    /// The keybindings are vim's: the field has normal, insert and visual
+    /// modes.
+    vim: bool,
 }
 
 /// How Format writes, as the settings have it in `look`: its keyword case
@@ -1216,17 +1243,322 @@ fn close_pairs(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     false
 }
 
+/// What vim does with one of the frame's events.
+enum Read {
+    /// The field's, as it is.
+    Keep,
+    /// Nobody's: a key's press whose character comes as text.
+    Drop,
+    /// Vim's.
+    Take(Vec<vim::Input>),
+}
+
+/// How vim in `mode` reads `event`. In insert mode it takes Esc (and
+/// Ctrl+[, vim's other Esc) alone, unless `held` (an open completion list
+/// takes it). Out of it, the characters typed and the keys that move or
+/// edit; the field keeps its chords (copy, paste, select all, undo), but
+/// not vim's deletions of insert mode nor Tab, which type nothing here. A
+/// held Esc is not normal mode's: the keyboard does not leave with it.
+fn vim_input(event: &egui::Event, mode: vim::Mode, held: bool) -> Read {
+    use egui::{Event, Key};
+    use vim::Input;
+    let escape = |key: &Key, modifiers: &egui::Modifiers| {
+        *key == Key::Escape || (modifiers.ctrl && *key == Key::OpenBracket)
+    };
+    if mode == vim::Mode::Insert {
+        return match event {
+            Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } if escape(key, modifiers) && !held => Read::Take(vec![Input::Escape]),
+            _ => Read::Keep,
+        };
+    }
+    match event {
+        Event::Text(text) | Event::Ime(egui::ImeEvent::Commit(text)) => Read::Take(
+            text.chars()
+                .filter(|c| !matches!(c, '\n' | '\r'))
+                .map(Input::Char)
+                .collect(),
+        ),
+        Event::Ime(_) => Read::Drop,
+        Event::Key {
+            key,
+            pressed,
+            repeat,
+            modifiers,
+            ..
+        } => {
+            if !pressed {
+                return Read::Keep;
+            }
+            if escape(key, modifiers) {
+                return if *repeat {
+                    Read::Drop
+                } else {
+                    Read::Take(vec![Input::Escape])
+                };
+            }
+            if modifiers.ctrl && modifiers.alt {
+                // AltGr on Windows: its character comes as text.
+                return Read::Drop;
+            }
+            if modifiers.ctrl && !modifiers.mac_cmd && *key == Key::R {
+                return Read::Take(vec![Input::Redo]);
+            }
+            // The field's chords that delete (a word, to a line's end) have
+            // nothing to delete in normal mode.
+            let deletes = matches!(key, Key::Backspace | Key::Delete)
+                || (modifiers.ctrl && matches!(key, Key::W | Key::H | Key::U | Key::K));
+            if modifiers.any() && deletes {
+                return Read::Drop;
+            }
+            if modifiers.command || modifiers.ctrl {
+                return Read::Keep;
+            }
+            let input = match key {
+                Key::Enter => Input::Enter,
+                Key::Backspace => Input::Backspace,
+                Key::Delete => Input::Delete,
+                Key::ArrowLeft => Input::Left,
+                Key::ArrowRight => Input::Right,
+                Key::ArrowUp => Input::Up,
+                Key::ArrowDown => Input::Down,
+                Key::Home => Input::Home,
+                Key::End => Input::End,
+                // The field pages, as in every mode.
+                Key::PageUp | Key::PageDown => return Read::Keep,
+                _ => return Read::Drop,
+            };
+            Read::Take(vec![input])
+        }
+        _ => Read::Keep,
+    }
+}
+
+/// Whether the field, reading `event`, may change the script or the
+/// cursor.
+fn edits(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::Cut
+            | egui::Event::Ime(_)
+            | egui::Event::Key { pressed: true, .. }
+    )
+}
+
+/// Where the keybindings are vim's, before the field reads the frame: in
+/// normal and visual mode the frame's keys go to vim, whose edits go in
+/// as edits from outside, and whose format Format carries out; in insert
+/// mode Esc goes back to normal mode. Normal mode's cursor stays on a
+/// character. Returns whether the script or the cursor changed, and
+/// whether `:` was typed. (Vim keeps its own undo history: the field's
+/// counts cursor moves.)
+///
+/// The frame's events are read in order, each in the mode the ones before
+/// it left. A key of vim's after one the field is to read (typing, or a
+/// chord), or after a format, which Format carries out after this, would
+/// read the script before them: it and what follows wait for the next
+/// frame, where the keymap has read its own already. After Esc out of the
+/// editor or `:`, the frame's keys are nobody's.
+fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool) {
+    let later_id = field.id.with("vim later");
+    if !field.vim || !ui.memory(|memory| memory.has_focus(field.id)) {
+        ui.data_mut(|data| data.remove_temp::<Vec<egui::Event>>(later_id));
+        return (false, false);
+    }
+    // A press leaves visual mode: the pointer selects as it does anywhere,
+    // and what visual mode selected goes (a press on the text sets its own).
+    let pressed = sql_tab.vim.mode.is_visual() && ui.input(|input| input.pointer.any_pressed());
+    if pressed {
+        sql_tab.vim.to_normal();
+    }
+    let waited: Vec<egui::Event> = ui
+        .data_mut(|data| data.remove_temp(later_id))
+        .unwrap_or_default();
+    let events = ui.input_mut(|input| {
+        let mut events = waited;
+        events.append(&mut input.events);
+        events
+    });
+    let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+    let mut changed = false;
+    if pressed {
+        let head = CCursorRange::one(CCursor::new(sql_tab.vim.head()));
+        state.cursor.set_char_range(Some(head));
+        changed = true;
+    }
+    if sql_tab.vim.mode == vim::Mode::Normal
+        && let Some(range) = state.cursor.char_range()
+        && range.is_empty()
+    {
+        // A click or an undo may leave it after a line's last character.
+        let at = vim::clamp(&sql_tab.text, range.primary.index.0);
+        if at != range.primary.index.0 {
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(at))));
+            changed = true;
+        }
+    }
+    let mut prompt = false;
+    let register_id = Id::new("vim register");
+    let mut register: vim::Register = ui
+        .data(|data| data.get_temp(register_id))
+        .unwrap_or_default();
+    let time = ui.input(|input| input.time);
+    let unit = indent_unit(field.indent);
+    let (mut kept, mut later) = (Vec::new(), Vec::new());
+    // The field has events of this frame to read first.
+    let mut field_first = false;
+    let mut queue = events.into_iter();
+    while let Some(event) = queue.next() {
+        let mode = sql_tab.vim.mode;
+        // A cut or a paste ends visual mode: the selection is the field's
+        // to take.
+        if mode.is_visual() && matches!(event, egui::Event::Cut | egui::Event::Paste(_)) {
+            sql_tab.vim.to_normal();
+        }
+        let inputs = match vim_input(&event, sql_tab.vim.mode, field.hold_escape) {
+            Read::Keep => {
+                field_first |= edits(&event);
+                kept.push(event);
+                continue;
+            }
+            Read::Drop => continue,
+            Read::Take(inputs) => inputs,
+        };
+        if field_first {
+            later.push(event);
+            later.extend(queue.by_ref());
+            break;
+        }
+        let (mut waits, mut done) = (false, false);
+        for input in inputs {
+            let cursor = if sql_tab.vim.mode.is_visual() {
+                sql_tab.vim.head()
+            } else {
+                state.cursor.char_range().map_or_else(
+                    || char_index(&sql_tab.text, sql_tab.cursor),
+                    |range| range.primary.index.0,
+                )
+            };
+            let step = sql_tab
+                .vim
+                .key(&sql_tab.text, cursor, input, &mut register, unit);
+            if let Some(text) = &step.text {
+                // Undo puts the cursor back, not a selection.
+                let before = CCursorRange::one(CCursor::new(cursor));
+                let range = vim_range(text, &step, sql_tab.vim.mode);
+                let before = (before, std::mem::replace(&mut sql_tab.text, text.clone()));
+                outside_edit(&mut state, time, &before, &(range, text.clone()));
+            } else {
+                let range = vim_range(&sql_tab.text, &step, sql_tab.vim.mode);
+                state.cursor.set_char_range(Some(range));
+            }
+            changed = true;
+            match step.then {
+                Some(vim::Then::Format(lines)) => {
+                    // Format formats the statements a selection touches,
+                    // or with none every one.
+                    let whole = lines.start == 0 && lines.end >= sql_tab.text.chars().count();
+                    let range = if whole {
+                        CCursorRange::one(CCursor::new(lines.start))
+                    } else {
+                        CCursorRange::two(CCursor::new(lines.end), CCursor::new(lines.start))
+                    };
+                    state.cursor.set_char_range(Some(range));
+                    sql_tab.format = true;
+                    // Format's undo, and where it leaves nothing to do,
+                    // put the cursor back, not the lines.
+                    ui.data_mut(|data| data.insert_temp(field.id.with("vim format"), cursor));
+                    waits = true;
+                }
+                Some(vim::Then::Prompt) => {
+                    prompt = true;
+                    done = true;
+                }
+                Some(vim::Then::Leave) => {
+                    ui.memory_mut(|memory| memory.surrender_focus(field.id));
+                    done = true;
+                }
+                None => {}
+            }
+        }
+        if done {
+            sql_tab.vim.to_normal();
+            break;
+        }
+        if waits {
+            later.extend(queue.by_ref());
+            break;
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(register_id, register));
+    if !later.is_empty() {
+        ui.data_mut(|data| data.insert_temp(later_id, later));
+        ui.ctx().request_repaint();
+    }
+    if changed {
+        if let Some(range) = state.cursor.char_range() {
+            sql_tab.cursor = byte_offset(&sql_tab.text, range.primary.index.0);
+        }
+        egui::TextEdit::store_state(ui.ctx(), field.id, state);
+    }
+    ui.input_mut(|input| input.events = kept);
+    (changed, prompt)
+}
+
+/// The field's cursor for vim's `step` in `text`, now in `mode`: the
+/// cursor, or in visual mode the selection, whose ends' characters are in
+/// it (by line, whole lines).
+fn vim_range(text: &str, step: &vim::Step, mode: vim::Mode) -> CCursorRange {
+    let one = |at: usize| CCursorRange::one(CCursor::new(at));
+    let Some(anchor) = step.anchor else {
+        return one(step.cursor);
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let length = chars.len();
+    let (cursor, forward) = (step.cursor, step.cursor >= anchor);
+    let (low, high) = (anchor.min(cursor), anchor.max(cursor));
+    let (start, end) = if mode == vim::Mode::VisualLine {
+        let start = chars[..low.min(length)]
+            .iter()
+            .rposition(|c| *c == '\n')
+            .map_or(0, |at| at + 1);
+        let end = chars[high.min(length)..]
+            .iter()
+            .position(|c| *c == '\n')
+            .map_or(length, |at| high + at);
+        (start, end)
+    } else {
+        (low, (high + 1).min(length))
+    };
+    if forward {
+        CCursorRange::two(CCursor::new(start), CCursor::new(end))
+    } else {
+        CCursorRange::two(CCursor::new(end), CCursor::new(start))
+    }
+}
+
 /// The text field itself: edits the tab's text and reports its cursor.
 fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let inserted = insert_completion(ui.ctx(), field.id, sql_tab);
     let focus = std::mem::take(&mut sql_tab.focus_editor);
+    // Vim's normal and visual modes take the frame's keys before the
+    // field, and the edits that follow, before Tab and the pairs read it.
+    let (vimmed, prompt) = vim_keys(ui, sql_tab, field);
     // Before the field is drawn, so this frame shows the formatted text.
     // An indent is an outside edit too: what the field shows, and where
     // its caret goes, follow as after Format.
     let indented = indent_script(ui, sql_tab, field);
     let paired = close_pairs(ui, sql_tab, field);
     let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
-    let formatted = formatted || indented || paired;
+    let formatted = formatted || indented || paired || vimmed;
     // The cursor put somewhere from outside (an error's mark): set before
     // the field is drawn, which then draws it there.
     let moved = sql_tab.go_to.take().is_some_and(|at| {
@@ -1267,6 +1599,13 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     } else {
         f32::INFINITY
     };
+    // Out of insert mode vim's cursor is a block, drawn below: egui's
+    // caret is not.
+    let block = field.vim && sql_tab.vim.mode != vim::Mode::Insert;
+    let caret_stroke = ui.visuals().text_cursor.stroke;
+    if block {
+        ui.visuals_mut().text_cursor.stroke.color = Color32::TRANSPARENT;
+    }
     let output = egui::TextEdit::multiline(&mut sql_tab.text)
         .id(field.id)
         .font(font)
@@ -1277,6 +1616,26 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         .desired_rows(rows as usize)
         .layouter(&mut layouter)
         .show(ui);
+    ui.visuals_mut().text_cursor.stroke = caret_stroke;
+    if block && output.response.has_focus() {
+        let at = if sql_tab.vim.mode.is_visual() {
+            sql_tab.vim.head()
+        } else {
+            output
+                .state
+                .cursor
+                .char_range()
+                .map_or(0, |range| range.primary.index.0)
+        };
+        crate::ui::cell_editor::block_cursor_at(
+            ui,
+            &output,
+            CCursor::new(at),
+            role(field.look),
+            field.look,
+            field.palette,
+        );
+    }
     crate::ui::focus::region(ui, crate::ui::focus::Region::Editor, output.response.rect);
     crate::ui::focus::claim(ui, crate::ui::focus::Region::Editor, &output.response);
     // The script fills its pane: the caret says where the keyboard is.
@@ -1331,7 +1690,9 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         // before the row went in or the script was formatted.
         ui.ctx().request_repaint();
     }
-    if field.hold_escape && output.response.has_focus() {
+    // Vim's Esc is its own: insert mode's goes to normal mode, and normal
+    // mode's leaves the editor when `vim_keys` says so.
+    if (field.hold_escape || field.vim) && output.response.has_focus() {
         // The field set its own filter while it drew (the arrows and Tab).
         // egui replaces the whole filter, so those are named again. The
         // filter is read at the start of the next pass, so holding Esc takes
@@ -1354,7 +1715,13 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     // line, drawn before the editor, say where the cursor is a frame later
     // (egui draws one after any event).
     if let Some(range) = output.state.cursor.range(&output.galley) {
-        sql_tab.cursor = byte_offset(&sql_tab.text, range.primary.index.0);
+        // In vim's visual mode the selection runs one past the cursor.
+        let cursor = if field.vim && sql_tab.vim.mode.is_visual() {
+            sql_tab.vim.head()
+        } else {
+            range.primary.index.0
+        };
+        sql_tab.cursor = byte_offset(&sql_tab.text, cursor);
         let [start, end] = range.sorted_cursors();
         let byte = |cursor: CCursor| byte_offset(&sql_tab.text, cursor.index.0);
         sql_tab.selected = (start != end).then(|| byte(start)..byte(end));
@@ -1362,6 +1729,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let typed = output.response.changed() && ui.input(|input| input.events.iter().any(is_typed));
     Edited {
         typed,
+        prompt,
         focused: output.response.has_focus(),
         origin: output.galley_pos,
         caret,
@@ -1685,6 +2053,7 @@ mod tests {
                     palette: &palette,
                     hold_escape,
                     pairs: false,
+                    vim: false,
                     style: sql::format::Style::default(),
                     // A tab character: what Tab put in before the setting.
                     indent: Indent::Tab,

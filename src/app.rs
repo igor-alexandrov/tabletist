@@ -1128,6 +1128,14 @@ impl App {
                     workspace.focus_where = true;
                 }
             }
+            Action::EditorCommand { tab, sql_tab } => {
+                self.apply(Action::OpenCommand(tab));
+                if let Some(workspace) = self.workspace_mut(tab)
+                    && workspace.command.is_some()
+                {
+                    workspace.command_returns = Some(sql_tab);
+                }
+            }
             Action::OpenCommand(tab) => {
                 // The keys do not run under a dialog, and neither does
                 // the prompt they open.
@@ -1135,6 +1143,7 @@ impl App {
                     return;
                 }
                 if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.command_returns = None;
                     workspace.command = Some(String::new());
                     workspace.focus_command = true;
                     workspace.command_error = None;
@@ -1151,9 +1160,23 @@ impl App {
                     workspace.save_refused = false;
                     workspace.review_refused = false;
                     workspace.label_refused = None;
+                    workspace.command_returns = None;
                 }
             }
-            Action::RunCommand(tab) => self.run_command(tab),
+            Action::EscapeCommand(tab) => {
+                let returns = self
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.command_returns);
+                self.apply(Action::CloseCommand(tab));
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.command_returns = returns;
+                }
+                self.command_closed(tab);
+            }
+            Action::RunCommand(tab) => {
+                self.run_command(tab);
+                self.command_closed(tab);
+            }
             Action::ClearSort { tab, object_tab } => {
                 if let Some(object) = self.object_tab_mut(tab, object_tab)
                     && !object.query.sort.is_empty()
@@ -5141,6 +5164,18 @@ impl App {
         let old = std::mem::replace(&mut self.settings, new);
         // The keys: the text they were read from is the file's now.
         self.refresh_keymap();
+        let terminal = self.look.terminal;
+        if old.editor_keys_in(terminal) != self.settings.editor_keys_in(terminal) {
+            // Other keybindings: every editor in normal mode, as vim
+            // starts.
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    for sql in workspace.sql_tabs_mut() {
+                        sql.vim.to_normal();
+                    }
+                }
+            }
+        }
         if old.timestamps != self.settings.timestamps {
             let full = self.settings.timestamps == crate::settings::Timestamps::Full;
             for tab in &mut self.tabs {
@@ -20209,15 +20244,16 @@ masked = ["orders.email"]
             run(&mut harness, tab, "nope");
             harness.app.apply(Action::CloseCommand(tab));
             assert_eq!(prompt(&harness, tab), (None, None));
-            // With a SQL editor in front there is no table to write: the
-            // lines are a table's, and no command there.
+            // With a SQL editor in front there is no table to write: `e!`
+            // is a table's, and no command there, and `w` (vim's write)
+            // does nothing.
             type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
             harness.app.apply(Action::NewSqlTab(tab));
-            for line in ["w", "e!"] {
+            for (line, refused) in [("w", None), ("e!", Some("e!".to_owned()))] {
                 run(&mut harness, tab, line);
                 assert_eq!(writes(&harness), 1);
                 assert_eq!(pending(&harness), 1);
-                assert_eq!(prompt(&harness, tab), (None, Some(line.to_owned())));
+                assert_eq!(prompt(&harness, tab), (None, refused));
             }
         }
 

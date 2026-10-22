@@ -242,7 +242,7 @@ fn the_keyboard_goes_back_only_where_it_was() {
     // Out of the text in the terminal look, the run key still runs; the
     // answer leaves the keyboard out of the text.
     let (mut harness, tab, id) = editor(Look::omarchy(), RunMode::ReadWrite, "delete from users");
-    harness.press(Key::Escape, Modifiers::NONE);
+    harness.leave_editor();
     harness.settle();
     assert!(!harness.ctx.text_edit_focused());
     run_key(&mut harness);

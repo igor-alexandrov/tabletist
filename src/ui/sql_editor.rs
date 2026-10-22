@@ -1206,6 +1206,10 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let summary = run_summary(sql, locale);
     let note = end_note(sql, locale);
     let version = workspace.server_version.value.clone();
+    // Vim's mode leads, where the editor has the keyboard.
+    let mode = vim_mode(app, ui.ctx(), tab)
+        .and_then(crate::vim::Mode::label)
+        .map(|label| gettext(locale, label).into_owned());
     egui::Panel::bottom(Id::new(("sql-footer", tab.0, id.0)))
         .exact_size(33.0)
         .resizable(false)
@@ -1235,6 +1239,7 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 start
                     .into_iter()
                     .chain(end)
+                    .chain(mode.as_deref())
                     .map(|text| width(text) + gap)
                     .sum::<f32>()
                     + width(&cursor)
@@ -1254,6 +1259,10 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 x -= gap;
             }
             let mut x = left;
+            if let Some(mode) = &mode {
+                let text = Text::one(&look, role, mode, palette.accent);
+                x += widgets::paint_label(ui, x, center, text) + gap;
+            }
             for piece in start {
                 x += widgets::paint_label(ui, x, center, text(piece)) + gap;
             }
@@ -1261,6 +1270,15 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 widgets::paint_label(ui, x, center, text(piece));
             }
         });
+}
+
+/// Vim's mode in the SQL editor in front, while it has the keyboard and
+/// the keybindings are vim's.
+pub fn vim_mode(app: &App, ctx: &egui::Context, tab: ConnTabId) -> Option<crate::vim::Mode> {
+    let vim = app.settings.editor_keys_in(app.look.terminal) == crate::settings::EditorKeys::Vim;
+    let sql = app.workspace(tab)?.active_sql_tab()?;
+    let editor = super::sql_text::editor_id(tab, sql.id);
+    (vim && ctx.memory(|memory| memory.has_focus(editor))).then_some(sql.vim.mode)
 }
 
 /// The right end of the terminal's status line on an editor: "ln 12:21 ·
@@ -1511,10 +1529,12 @@ mod tests {
         assert_eq!(mode_of(&harness, tab, id), RunMode::ReadWrite);
         line(&mut harness, "ro");
         // A table's lines are no commands of an editor's, and the lines
-        // of what is not built yet are claimed and do nothing.
+        // of what is not built yet are claimed and do nothing. Vim's `:w`
+        // does nothing and says nothing.
         for text in ["w", "e!", "diff", "commit", "rollback", "12"] {
             line(&mut harness, text);
-            assert_eq!(refused(&harness).as_deref(), Some(text));
+            let said = (text != "w").then_some(text);
+            assert_eq!(refused(&harness).as_deref(), said);
             assert_eq!(mode_of(&harness, tab, id), RunMode::ReadOnly, "{text}");
         }
     }

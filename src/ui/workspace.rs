@@ -2024,8 +2024,11 @@ fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // keyboard for any other reason the prompt is closed: it is
             // open only while it is typed into.
             let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
             if response.lost_focus() && enter {
                 actions.push(Action::RunCommand(tab));
+            } else if response.lost_focus() && escape {
+                actions.push(Action::EscapeCommand(tab));
             } else if !response.has_focus() {
                 actions.push(Action::CloseCommand(tab));
             }
@@ -2150,6 +2153,10 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
     let editor = super::sql_editor::status_summary(app, tab);
     let on_editor = editor.is_some();
+    // Vim's mode, where the editor has the keyboard: the line starts with
+    // it, as vim's does, and out of normal mode Esc goes to normal mode.
+    let vim_mode = super::sql_editor::vim_mode(app, ui.ctx(), tab);
+    let to_normal = vim_mode.is_some_and(|mode| mode != crate::vim::Mode::Normal);
     // The Structure view of the table in front shows: the line names
     // that view's keys in the rows' place. The keys that choose what
     // labels the table's rows are named where there is anything to
@@ -2310,7 +2317,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 "run",
                 "run all",
                 "cancel",
-                "leave editor",
+                if to_normal { "normal" } else { "leave editor" },
                 "tables",
                 "complete",
             ]
@@ -2512,8 +2519,23 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if on_editor {
                 // The toolbar says the transaction is read-only; the line
                 // has no editing keys to strike out.
-                let shown = fit(rect.right() - 12.0 - summary_width - gap);
-                let at = (rect.left() + 12.0, y);
+                let mut left = rect.left() + 12.0;
+                if let Some(mode) =
+                    vim_mode.and_then(|mode| mode.label().map(|label| (mode, label)))
+                {
+                    let (mode, label) = mode;
+                    let color = if mode == crate::vim::Mode::Insert {
+                        palette.success
+                    } else {
+                        palette.magenta
+                    };
+                    let label = gettext(locale, label);
+                    let text = Text::one(&look, TextRole::OModeLine, &label, color);
+                    left += widgets::paint_label(ui, left, y, text) + gap;
+                }
+                let shown =
+                    fit(rect.right() - 12.0 - summary_width - gap - (left - rect.left() - 12.0));
+                let at = (left, y);
                 widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
                 widgets::paint_text_right(
                     ui,

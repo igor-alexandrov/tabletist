@@ -270,7 +270,7 @@ fn the_error_keys_put_a_sql_editors_cursor_on_its_errors_mark() {
     }
     // The terminal's letters, out of the script.
     let (mut harness, tab, id) = failed_run(Look::omarchy(), SCRIPT, Some(position));
-    harness.press(Key::Escape, Modifiers::NONE);
+    harness.leave_editor();
     harness.settle();
     assert!(!in_script(&harness, tab, id));
     to_error(&mut harness, true);

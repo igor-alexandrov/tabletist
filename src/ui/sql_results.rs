@@ -2881,7 +2881,7 @@ mod tests {
             look.name
         );
         if look.terminal {
-            harness.press(Key::Escape, Modifiers::NONE);
+            harness.leave_editor();
             harness.press(letter, Modifiers::NONE);
         } else {
             harness.click(name);
@@ -3109,7 +3109,7 @@ mod tests {
         use crate::model::RunMode;
         let (mut harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
         let sent = runs_sent(&harness);
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         // The key goes down and stays down. Its first event allows writes,
         // and the card's letter then means "run again": the repeats of the
         // same press must not take that for an answer.
@@ -3479,8 +3479,11 @@ mod tests {
             .filter(|(at, _)| *at > top)
             .collect();
         found.sort_by(|(a, _), (b, _)| a.total_cmp(b));
-        // The cursor's place is the first thing under the pane.
-        let under = |text: &str| text.starts_with("Ln ") || text.starts_with("ln ");
+        // The cursor's place is the first thing under the pane, or the
+        // terminal's line starts with vim's mode.
+        let under = |text: &str| {
+            text.starts_with("Ln ") || text.starts_with("ln ") || text.starts_with("-- ")
+        };
         let bottom = found
             .iter()
             .find(|(_, text)| under(text))

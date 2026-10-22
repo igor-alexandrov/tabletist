@@ -177,8 +177,17 @@ pub enum Action {
     FocusWhere(ConnTabId),
     /// Open the terminal look's `:` prompt in the status line.
     OpenCommand(ConnTabId),
+    /// Open the prompt from a SQL editor in vim's normal mode, which gets
+    /// the keyboard back when the prompt closes.
+    EditorCommand {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// Close the prompt, and take away what it said of its last line.
     CloseCommand(ConnTabId),
+    /// Close the prompt with Esc: as `CloseCommand`, and a SQL editor
+    /// that opened it gets the keyboard back.
+    EscapeCommand(ConnTabId),
     /// Run what the prompt holds: `w` writes the pending changes of the
     /// table on screen, `e!` discards them, and anything else is not a
     /// command.
@@ -1210,6 +1219,9 @@ pub struct Workspace {
     pub command: Option<String>,
     /// Focus the prompt on the next frame.
     pub focus_command: bool,
+    /// The SQL tab whose editor opened the prompt from vim's normal mode:
+    /// the keyboard goes back to it when the prompt closes.
+    pub command_returns: Option<TabId>,
     /// What the prompt was given that is not a command, until the next
     /// key.
     pub command_error: Option<String>,
@@ -4935,6 +4947,10 @@ pub struct SqlTab {
     /// Format the script on the next frame: the editor does it, where the
     /// selection and the undo history are.
     pub format: bool,
+    /// Vim's mode in the editor, a command typed in part and vim's undo
+    /// history, where the keybindings are vim's. A new tab is for typing: it opens in insert
+    /// mode.
+    pub vim: crate::vim::Vim,
     /// The text the last run that finished started with. Its error mark
     /// names a line of that text, so it holds only while the text is that.
     ran_text: Option<TextPrint>,
@@ -4992,6 +5008,7 @@ impl SqlTab {
             completion: None,
             completion_wanted: None,
             format: false,
+            vim: crate::vim::Vim::new(crate::vim::Mode::Insert),
             ran_text: None,
             ran_mode: tabletist_db::ScriptMode::ReadOnly,
         }
@@ -5385,6 +5402,7 @@ impl Workspace {
             focus_where: false,
             command: None,
             focus_command: false,
+            command_returns: None,
             command_error: None,
             save_refused: false,
             review_refused: false,

@@ -92,7 +92,7 @@ fn ctrl_k_takes_it_back_up_to_the_script_and_ctrl_j_down_again() {
     assert!(in_script(&harness, tab, id), "up again: the script");
     // Out of the script with Esc, the keys are normal mode's: ctrl+j is
     // the pane below.
-    harness.press(Key::Escape, Modifiers::NONE);
+    harness.leave_editor();
     harness.settle();
     assert!(!in_script(&harness, tab, id));
     assert_eq!(press(&mut harness, Key::J), "Rows");
@@ -135,7 +135,7 @@ fn a_tables_rows_have_no_pane_above_or_below() {
 fn from_outside_the_stack_ctrl_j_and_ctrl_k_move_nothing() {
     let (mut harness, tab, id) = ran(Look::omarchy(), "SELECT 1");
     // The keyboard on the tree: out of the script, then to the left.
-    harness.press(Key::Escape, Modifiers::NONE);
+    harness.leave_editor();
     assert_eq!(press(&mut harness, Key::H), "Objects");
     for key in [Key::J, Key::K] {
         assert_eq!(press(&mut harness, key), "Objects", "{key:?}");
