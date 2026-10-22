@@ -1496,6 +1496,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                     structure,
                     &look,
                 );
+                let comment = structure
+                    .and_then(|structure| {
+                        structure
+                            .columns
+                            .iter()
+                            .find(|info| info.name == column.name)
+                    })
+                    .and_then(|info| info.comment.as_deref());
                 Column {
                     name: &column.name,
                     type_line,
@@ -1505,6 +1513,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                     flexible: column.kind == ValueKind::Json,
                     sortable: true,
                     required: false,
+                    comment,
                 }
             })
             .enumerate()

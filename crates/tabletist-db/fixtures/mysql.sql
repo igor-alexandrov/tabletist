@@ -20,7 +20,7 @@ CREATE TABLE users (
     mood ENUM('happy', 'sad'),
     birthday DATE,
     alarm TIME
-);
+) COMMENT = 'People who sign in';
 CREATE INDEX users_name_idx ON users (name);
 INSERT INTO users VALUES
     (1, 'ada@example.com', 'Ada Lovelace', '2026-01-02 09:00:00', 1, '{"plan": "pro"}', X'89504E47', 99.5, 123456789012.34, 18446744073709551615, 'happy', '1815-12-10', '07:30:00'),

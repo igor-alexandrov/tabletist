@@ -90,7 +90,14 @@ A foreign key has a link next to it that opens the row it points to.
 Switch a table from **Data** to **Structure** to read its columns, indexes
 and foreign keys.
 
-{% include shot.html file="macos-structure" alt="The Structure view of a table: the label for foreign keys, then its columns, indexes and foreign keys" %}
+{% include shot.html file="macos-structure" alt="The Structure view of a table: its comment, the label for foreign keys, then its columns with their comments and its indexes" %}
+
+On PostgreSQL and MySQL the view shows the comments written on the table
+and its columns. The table's comment stands above everything else. Each
+column's is in the **Comment** column, on one line: hold the pointer over
+a comment that is cut to read all of it. SQLite keeps no comments, so its
+tables have no Comment column. In a table's grid, hold the pointer over
+a column's header to read its comment.
 
 Above the columns, **Label for foreign keys** names the column that this
 table's rows are read by in the list of a foreign key that points at it,

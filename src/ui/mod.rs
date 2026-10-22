@@ -17,6 +17,8 @@ mod agent_settings_tests;
 mod appearance_settings_tests;
 pub mod cell_editor;
 #[cfg(test)]
+mod comment_tests;
+#[cfg(test)]
 mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;
@@ -8070,6 +8072,7 @@ value_tags   = true
             }],
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            comment: None,
         };
         harness.answer_structure(structure);
         assert!(harness.has("Columns"));
@@ -12258,6 +12261,7 @@ value_tags   = true
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            comment: None,
         });
         harness.answer_rows(RowPage {
             columns: names

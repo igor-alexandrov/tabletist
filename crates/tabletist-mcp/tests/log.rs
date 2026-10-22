@@ -277,6 +277,8 @@ async fn the_log_holds_nothing_a_database_holds() {
         "INSERT INTO customers (id, name, email) VALUES (900, '{marker}', '{marker}@example.com');
          ALTER TABLE customers ADD COLUMN tier TEXT DEFAULT '{marker}';"
     ));
+    // A table's comment is text a database holds, as its rows are.
+    shop.comment("customers", &marker);
     let (server, log) = server(&shop);
     let agent = Agent::connect(&server).await;
     let calls = [

@@ -753,12 +753,25 @@ impl Adapter for Conn {
                 })
             })
             .collect::<Result<_>>()?;
+        // The comment on the table or view itself. PostgreSQL keeps no empty
+        // one (`COMMENT ON ... IS ''` drops it), and an empty one would be
+        // none.
+        let comment: Option<String> = match self
+            .catalog("SELECT obj_description($1, 'pg_class')", &[&oid])
+            .await?
+            .first()
+        {
+            Some(row) => column(row, 0)?,
+            None => None,
+        }
+        .filter(|comment: &String| !comment.is_empty());
         Ok(Structure {
             columns,
             primary_key: self.primary_key(object).await?,
             indexes,
             foreign_keys,
             referenced_by,
+            comment,
         })
     }
 

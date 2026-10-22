@@ -26,6 +26,7 @@ CREATE TABLE users (
     uid uuid
 );
 COMMENT ON COLUMN users.email IS 'Login address';
+COMMENT ON TABLE users IS 'People who sign in';
 CREATE INDEX users_name_idx ON users (name);
 
 INSERT INTO users VALUES
@@ -76,7 +77,9 @@ INSERT INTO big SELECT i, 'row ' || i, i % 10 FROM generate_series(1, 100000) AS
 ANALYZE big;
 
 CREATE VIEW active_users AS SELECT id, email FROM users WHERE active;
+COMMENT ON VIEW active_users IS 'Users who can sign in';
 CREATE MATERIALIZED VIEW user_counts AS SELECT active, count(*) AS n FROM users GROUP BY active;
+COMMENT ON MATERIALIZED VIEW user_counts IS 'Users by whether they are active';
 
 CREATE SCHEMA billing;
 CREATE TABLE billing.invoices (

@@ -154,6 +154,9 @@ pub struct Structure {
     /// The foreign keys that point at the table, its own among them where
     /// it points at itself.
     pub referenced_by: Vec<ReferencingKey>,
+    /// The comment on the table or view itself, where its author wrote
+    /// one. SQLite keeps none.
+    pub comment: Option<String>,
 }
 
 impl Structure {

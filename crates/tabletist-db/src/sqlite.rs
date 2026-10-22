@@ -1020,6 +1020,7 @@ impl Adapter for Conn {
                 indexes: indexes(connection, &object)?,
                 foreign_keys: foreign_keys(connection, &object)?,
                 referenced_by: referencing_keys(connection, &object)?,
+                comment: None,
             })
         })
         .await
