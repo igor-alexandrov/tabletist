@@ -175,6 +175,8 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Tab | Accept the completion |
 | Enter | Accept the completion, except when it stays a line break: [the SQL Editor guide says when]({% link _guide/sql-editor.md %}#completion) |
 | Esc | Close the completion list |
+| Ctrl+[ | With [vim keybindings]({% link _guide/sql-editor.md %}#vim): as Esc |
+| Ctrl+R | With vim keybindings, in normal mode: redo |
 
 In the [History tab]({% link _guide/sql-editor.md %}#history):
 

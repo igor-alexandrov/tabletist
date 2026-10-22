@@ -153,3 +153,19 @@ fn a_line_marked_in_one_look_is_not_marked_once_another_takes_it() {
     assert!(app.keys_refused.is_empty());
     assert_eq!(format(&app), "⌥⌘F");
 }
+
+#[test]
+fn vim_s_redo_in_the_sql_editor_is_moved_by_a_line_of_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = mac_app(dir.path());
+    let redo = |app: &App| {
+        app.keymap
+            .key_in(Layout::Mac, Command::VimRedo, Scope::SqlEditor)
+            .as_str()
+            .to_owned()
+    };
+    assert_eq!(redo(&app), "⌃R");
+    edited(&mut app, "[keys.editor]\n\"ctrl+y\" = \"vim_redo\"\n");
+    assert_eq!(redo(&app), "⌃Y");
+    assert!(app.settings_file.invalid.is_empty());
+}

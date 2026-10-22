@@ -104,14 +104,12 @@ fn every_rows_controls_are_described_by_its_small_print() {
             }
         }
         // Every row that has small print, as each look lists its rows:
-        // the terminal look has no interface size, and the Editor pane has
-        // no row yet for some of its options.
+        // the terminal look has no interface size.
         described.sort_by_key(|option| OptionId::ALL.iter().position(|all| all == option));
         let expected: Vec<OptionId> = OptionId::ALL
             .into_iter()
             .filter(|option| small_print(*option).is_some())
             .filter(|option| !(look.terminal && *option == OptionId::InterfaceSize))
-            .filter(|option| !OptionId::EDITOR_LATER.contains(option))
             .collect();
         assert_eq!(described, expected, "in {}", look.name);
     }

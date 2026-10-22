@@ -308,6 +308,59 @@ impl Harness {
         self.settle();
     }
 
+    /// Esc out of a SQL editor, as one leaves it: where the keybindings
+    /// are vim's and the editor types (insert mode), the first Esc goes to
+    /// normal mode and a second leaves. Anywhere else, Esc once.
+    pub fn leave_editor(&mut self) {
+        self.settle();
+        let inserting = self.vim_inserting();
+        self.press(egui::Key::Escape, egui::Modifiers::NONE);
+        if inserting {
+            self.press(egui::Key::Escape, egui::Modifiers::NONE);
+        }
+    }
+
+    /// Puts a SQL editor that has the keyboard in vim's normal mode into
+    /// insert mode (`i`), as one does to type. Anywhere else, nothing.
+    pub fn start_typing(&mut self) {
+        self.settle();
+        let terminal = self.app.look.terminal;
+        if self.app.settings.editor_keys_in(terminal) != crate::settings::EditorKeys::Vim {
+            return;
+        }
+        let normal = self.app.tabs.iter().any(|tab| {
+            self.app.workspace(tab.id).is_some_and(|workspace| {
+                workspace.sql_tabs().any(|sql| {
+                    let editor = crate::ui::sql_text::editor_id(tab.id, sql.id);
+                    sql.vim.mode == crate::vim::Mode::Normal
+                        && self.ctx.memory(|memory| memory.has_focus(editor))
+                })
+            })
+        });
+        if normal {
+            self.frame(vec![egui::Event::Text("i".into())]);
+            self.settle();
+        }
+    }
+
+    /// Whether a SQL editor has the keyboard in vim's insert mode.
+    pub fn vim_inserting(&self) -> bool {
+        let terminal = self.app.look.terminal;
+        if self.app.settings.editor_keys_in(terminal) != crate::settings::EditorKeys::Vim {
+            return false;
+        }
+        self.app.tabs.iter().any(|tab| {
+            let Some(workspace) = self.app.workspace(tab.id) else {
+                return false;
+            };
+            workspace.sql_tabs().any(|sql| {
+                let editor = crate::ui::sql_text::editor_id(tab.id, sql.id);
+                sql.vim.mode == crate::vim::Mode::Insert
+                    && self.ctx.memory(|memory| memory.has_focus(editor))
+            })
+        })
+    }
+
     /// The color the last frame painted `text` in.
     pub fn painted_color(&self, text: &str) -> Option<egui::Color32> {
         self.painted
