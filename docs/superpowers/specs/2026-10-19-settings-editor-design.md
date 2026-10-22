@@ -549,6 +549,65 @@ vim") and that Esc in normal mode leaves the editor.
    visual delete; `ct)` beside the cursor.
 8. The row in both looks, first in Typing, setting the key.
 
+## Step 8: Preview
+
+Date: 2026-10-22. Step 7 is merged (#214).
+
+### What it is
+
+- The SQL editor itself (`sql_text`'s field, gutter and bands, split out
+  of `show` as `draw_text` and `draw_lines`), drawn by `sql_text::preview`
+  over a `SqlTab` of its own that the window keeps in egui's memory. The
+  boards' query (publishers and `book_covers`), typed with keywords of
+  both cases so that Keep shows, as Format lays it out with the settings;
+  the cursor at the start of its third line's words, as the boards light
+  that line, put back there (out of visual mode) when a setting changes
+  the text.
+- Read-only: the field reads a `&str`, so typing and pasting change
+  nothing; Tab, the pairs, vim's edits and insert mode are dropped (and
+  vim's register, the editors', is not filled); the cursor, selection,
+  copy and vim's moves work. AccessKit: a multiline text input named
+  "Editor preview", read-only.
+- While it has the keyboard its border is in the accent, and Esc (with
+  either keybindings) gives the keyboard up, the next closing the window.
+  On the Omarchy screen the screen's letters and Esc are the preview's
+  then; its chords (Ctrl+E, the panes') stay the screen's.
+- Its state starts again (the cursor on line 3) when it was not drawn the
+  frame before: the window reopened, or another pane shown between. It
+  claims no focus region of the workspace's.
+- One Tab stop: no gutter to press, and Tab moves on (the focus filter
+  keeps Esc for vim, not Tab).
+- Live: keywords' case and commas (Format's), line numbers (absolute,
+  relative, off), the cursor's line (lit without the keyboard, as the
+  boards draw it, until turned off), wrap, and vim's block cursor without
+  the keyboard. No statement bar (the boards draw none).
+- As tall as its text, measured from the laid-out rows of the frame
+  before (an estimate before the first). In a card bordered as the
+  Appearance preview's.
+- macOS: under History, a "Preview" heading, at the sheet's end (the
+  sheet scrolls to it). Omarchy: a "preview" heading under history, no
+  row of the cursor's (as Appearance's preview).
+- Nothing reaches the backend.
+
+### Tests (headless)
+
+1. Both looks: the read-only field with the boards' query in each look's
+   case; the numbers 1-5 on macOS, 2 1 3 1 2 on Omarchy.
+2. Keywords, commas, relative and no numbers, the cursor's line off, vim's
+   block cursor: each shows as set.
+3. Wrap at a narrow window: the field taller, five numbers still.
+4. Typing, `dd`, a paste, Backspace change nothing in either look; Tab
+   leaves it; no run is sent.
+5. Omarchy: vim's moves in the preview move it and not the screen's
+   cursor, change no setting; `i` is no insert mode; Ctrl+L still changes
+   the pane; the cursor's number in the warning's colour.
+6. Both looks, both keybindings: Esc leaves the preview, a second closes
+   the window. With a connection open, the run keys send nothing. Shift+Tab
+   comes back in one press. Reopened, it starts on line 3 again.
+7. Vim's register untouched; the block cursor after Tab; a settings
+   change ends visual mode; Keep shows otherwise than upper and lower
+   case.
+
 ## Out of scope
 
 - The other Settings tabs.
