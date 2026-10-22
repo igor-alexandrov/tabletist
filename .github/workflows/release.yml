@@ -100,8 +100,11 @@ jobs:
       - name: AppImage
         if: runner.os == 'Linux'
         run: |
-          bash packaging/linux/appimage.sh "target/${{ matrix.target }}/release/tabletist" \
-            "dist/tabletist-${TAG}-${{ matrix.target }}.AppImage" "${TAG#v}"
+          # tabletist-0.2.3-x86_64.AppImage: the name fastframe-update
+          # downloads for an AppImage, with no v and the processor alone.
+          target="${{ matrix.target }}"
+          bash packaging/linux/appimage.sh "target/${target}/release/tabletist" \
+            "dist/tabletist-${TAG#v}-${target%%-*}.AppImage" "${TAG#v}"
       - name: Installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -318,7 +321,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx checksums.txt.sig
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+            | grep -qx checksums.txt.sig \
+            || { echo "::error::checksums.txt.sig is not attached to the draft release ${TAG}"; exit 1; }
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
   aur:
