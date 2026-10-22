@@ -84,7 +84,10 @@ jobs:
         run: |
           name="tabletist-${TAG}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp README.md LICENSE "dist/$name/"
+          # The marker tells the updater this copy came from the download
+          # page and may replace itself. The AUR's tabletist-bin unpacks the
+          # same archive but does not install it.
+          cp README.md LICENSE packaging/tabletist-portable.txt "dist/$name/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/tabletist.exe" "dist/$name/"
             (cd dist && 7z a "$name.zip" "$name" >/dev/null)

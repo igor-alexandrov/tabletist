@@ -125,3 +125,18 @@ fn the_release_script_signs_only_with_the_built_in_keys_pair() {
     assert!(!run(Some(&signing)).status.success());
     assert!(!signature.exists());
 }
+
+/// fastframe-dirs reads `<slug>-<kind>.txt` and compares its trimmed text
+/// with `<slug>-<kind>-v1`. Without a marker, a copy on Linux or Windows
+/// never updates itself.
+#[test]
+fn the_markers_hold_what_the_updater_reads() {
+    assert_eq!(
+        include_str!("../packaging/tabletist-portable.txt").trim(),
+        "tabletist-portable-v1"
+    );
+    assert_eq!(
+        include_str!("../packaging/windows/tabletist-installer.txt").trim(),
+        "tabletist-installer-v1"
+    );
+}

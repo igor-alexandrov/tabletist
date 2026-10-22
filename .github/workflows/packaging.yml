@@ -134,9 +134,23 @@ jobs:
           # A GUI program: check the exit code, there is no console output.
           $run = Start-Process "$app\tabletist.exe" -ArgumentList '--version' -Wait -PassThru
           if ($run.ExitCode -ne 0) { throw "tabletist --version exited $($run.ExitCode)" }
+          $marker = "$app\tabletist-installer.txt"
+          if (-not (Test-Path $marker)) { throw "no installer marker" }
+          $text = (Get-Content $marker -Raw).Trim()
+          if ($text -ne 'tabletist-installer-v1') { throw "the installer marker says $text" }
+          # What an update leaves beside the app goes with the uninstall.
+          $staging = "$app\.tabletist-update-0123456789abcdef"
+          New-Item -ItemType Directory $staging | Out-Null
+          Set-Content "$staging\result.txt" 'ok'
           Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
-          Start-Sleep -Seconds 3
+          # The uninstaller starts a copy of itself from %TEMP% and returns,
+          # so -Wait does not cover its work: wait for the folder to go.
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Test-Path $app) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
           if (Test-Path "$app\tabletist.exe") { throw "still installed after uninstall" }
+          if (Test-Path $staging) { throw "an update's staging folder is left after uninstall" }
+          # A staging folder left behind would keep the folder too.
+          if (Test-Path $app) { throw "$app is left after uninstall" }
 
   appimage:
     name: Linux AppImage (${{ matrix.target }})
