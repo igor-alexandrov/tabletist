@@ -235,9 +235,53 @@ jobs:
             security delete-keychain "$RUNNER_TEMP/signing.keychain-db"
           fi
 
+  # Signs checksums.txt for the app's updater (fastframe-update), which
+  # downloads nothing from a release whose signature does not verify. The
+  # only job that sees the signing key: it runs no cargo and has a read-only
+  # token, and its environment gives the key to v* tags alone. Without the
+  # key it fails, and nothing is published: no updater could install an
+  # unsigned release.
+  sign:
+    name: Checksums and signature
+    needs: [build, macos]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          # Everything but the unsigned macOS binary, which the DMG replaces,
+          # and this job's own output from an earlier attempt.
+          pattern: "!{macos-universal-binary,checksums}"
+          merge-multiple: true
+      # The source archive, so source packages check the same checksums.
+      - name: Source archive and checksums
+        run: |
+          rm -f dist/checksums.txt dist/checksums.txt.sig
+          curl --fail --location --retry 3 \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" \
+            --output "dist/tabletist-${TAG}-source.tar.gz"
+          (cd dist && sha256sum * > checksums.txt && cat checksums.txt)
+      - name: Sign checksums
+        env:
+          TABLETIST_UPDATE_SIGNING_KEY: ${{ secrets.TABLETIST_UPDATE_SIGNING_KEY }}
+        run: bash packaging/sign-checksums.sh dist/checksums.txt assets/update-public-key.hex
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: |
+            dist/checksums.txt
+            dist/checksums.txt.sig
+            dist/tabletist-*-source.tar.gz
+          if-no-files-found: error
+
   publish:
     name: GitHub release
-    needs: [build, macos]
+    needs: sign
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # The only job that writes: it creates the release.
@@ -250,20 +294,29 @@ jobs:
           # Everything but the unsigned macOS binary, which the DMG replaces.
           pattern: "!macos-universal-binary"
           merge-multiple: true
-      # The source archive, so source packages check the same checksums.
-      - name: Source archive and checksums
+      # From the sign job, with the source archive.
+      - name: The checksums are signed
         run: |
-          curl --fail --location --retry 3 \
-            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" \
-            --output "dist/tabletist-${TAG}-source.tar.gz"
-          (cd dist && sha256sum * > checksums.txt && cat checksums.txt)
+          test "$(wc -c < dist/checksums.txt.sig)" -eq 64
+          (cd dist && sha256sum --check --strict checksums.txt)
+          cat dist/checksums.txt
+      # Created as a draft so it is never public without its checksums.txt.sig.
       - uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: dist/*
           name: Tabletist ${{ env.TAG }}
           generate_release_notes: true
           # v0.2.0-rc1 is a pre-release.
           prerelease: ${{ contains(env.TAG, '-') }}
+      # Public only now, with every file and the signature uploaded. Here,
+      # not later: the aur job downloads checksums.txt from the public release.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx checksums.txt.sig
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
   aur:
     name: AUR
