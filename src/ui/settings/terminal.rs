@@ -529,8 +529,7 @@ fn appearance_rows(
 }
 
 /// The Editor pane's options, a row each, under the headings of their
-/// groups, as far as they are built. Their columns line up across the
-/// groups.
+/// groups, then its preview. Their columns line up across the groups.
 fn editor_rows(
     ui: &mut Ui,
     settings: &Settings,
@@ -573,6 +572,17 @@ fn editor_rows(
             index += 1;
         }
     }
+    // Under the options, the editor's preview, no row of the cursor's: 4
+    // over and under it, as far in as the rows' words.
+    heading(ui, "Preview", 12.0, skin);
+    ui.add_space(4.0);
+    super::editor_preview::show(
+        ui,
+        ROW_SIDE,
+        settings,
+        (skin.look, skin.palette, skin.locale),
+    );
+    ui.add_space(4.0);
 }
 
 /// The colours the theme gave, eight of them as the board has them, and

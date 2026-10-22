@@ -12,6 +12,7 @@ mod keyboard_sheet;
 mod keyboard_terminal;
 #[cfg(test)]
 pub(crate) use keyboard_sheet::search_id as keyboard_search_id;
+mod editor_preview;
 mod preview;
 mod sheet;
 mod terminal;
@@ -727,7 +728,17 @@ fn asked(keymap: &Keymap, event: &egui::Event, held: egui::Modifiers, free: bool
 /// before it left: the cursor where they moved it, an option as they set
 /// it. `j` then `l` changes the row `j` moved to, and `l` twice steps
 /// twice.
-fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut Vec<Action>) {
+///
+/// While the editor's preview has the keyboard (`preview`), its letters
+/// and Esc are its own, as in the editor: only the chords that open the
+/// file and change the pane are the screen's.
+fn keys(
+    app: &App,
+    ctx: &egui::Context,
+    dialog: &SettingsDialog,
+    preview: bool,
+    actions: &mut Vec<Action>,
+) {
     let free = !super::focus::on_control(ctx);
     // As `App::apply` will have them once it has run the actions so far.
     let mut cursor = dialog.row;
@@ -742,6 +753,9 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
             let Some(asked) = asked(&keymap, event, held, free) else {
                 return true;
             };
+            if preview && !matches!(asked, Asked::Edit | Asked::Pane { .. }) {
+                return true;
+            }
             let repeat = matches!(event, egui::Event::Key { repeat: true, .. });
             match asked {
                 // A fresh press only: every repeat of a key held down
@@ -846,6 +860,12 @@ fn keys(app: &App, ctx: &egui::Context, dialog: &SettingsDialog, actions: &mut V
     }
 }
 
+/// The editor preview's text field, for the tests.
+#[cfg(test)]
+pub(crate) fn editor_preview_field() -> egui::Id {
+    editor_preview::field_id()
+}
+
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::Settings(dialog)) = &app.dialog else {
         return;
@@ -863,10 +883,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         // The screen's keys act on its cursor. The sheet has none: its
         // controls are reached with Tab. The Keyboard pane's are its own,
         // and its `/` line's field has them while it is open.
-        if !keyboard {
-            keys(app, ctx, dialog, &mut actions);
-        } else if dialog.keyboard.recording.is_none() && !dialog.keyboard.filtering {
-            keyboard_terminal::keys(app, ctx, dialog, &mut actions);
+        // The editor's preview, while it has the keyboard, has the
+        // screen's letters and Esc: they are its own, as in the editor.
+        let in_preview = ctx.memory(|memory| memory.has_focus(editor_preview::field_id()));
+        if keyboard {
+            if dialog.keyboard.recording.is_none() && !dialog.keyboard.filtering {
+                keyboard_terminal::keys(app, ctx, dialog, &mut actions);
+            }
+        } else {
+            keys(app, ctx, dialog, in_preview, &mut actions);
         }
         terminal::show(app, ctx, dialog, &mut actions);
     } else {
