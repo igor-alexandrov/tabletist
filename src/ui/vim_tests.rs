@@ -123,6 +123,28 @@ fn normal_mode_edits_in_undo_steps_and_puts_back_what_it_took() {
 }
 
 #[test]
+fn a_tab_opened_with_a_query_undoes_no_further_back_than_it() {
+    let mut harness = Harness::new();
+    harness.set_look(Look::omarchy());
+    let tab = harness.connect_fake();
+    // As a history entry or a table's "open in editor" does: a new tab,
+    // and its text set before it draws.
+    harness.app.apply(Action::NewSqlTab(tab));
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let id = workspace.active_tab.unwrap();
+    workspace.sql_tab_mut(id).unwrap().text = "select 1".into();
+    harness.settle();
+    escape(&mut harness);
+    keys(&mut harness, "u");
+    assert_eq!(text(&harness, tab), "select 1");
+    // What is typed after it is a step of its own.
+    keys(&mut harness, "A2");
+    escape(&mut harness);
+    keys(&mut harness, "u");
+    assert_eq!(text(&harness, tab), "select 1");
+}
+
+#[test]
 fn ctrl_w_in_normal_mode_deletes_nothing_and_closes_no_tab() {
     let (mut harness, tab) = editor(Look::omarchy(), "select 1");
     escape(&mut harness);

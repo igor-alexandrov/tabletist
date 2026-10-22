@@ -232,17 +232,28 @@ struct Target {
 }
 
 impl Vim {
-    /// Vim in `mode`, as an editor opens: with an empty script, which
-    /// undo goes back to.
+    /// Vim in `mode`, as an editor opens. Its history starts with the
+    /// script the editor first shows ([`Vim::start`]).
     pub fn new(mode: Mode) -> Self {
         Self {
             mode,
-            history: History {
-                seen: Some((String::new(), 0)),
-                ..History::default()
-            },
             ..Self::default()
         }
+    }
+
+    /// Starts the history at `text` where it has not started: the oldest
+    /// change undo goes back to. The editor calls it as it draws, so a tab
+    /// opened with a query (from the history, say) starts at that query.
+    pub fn start(&mut self, text: &str) {
+        if self.history.seen.is_none() {
+            self.history.seen = Some((text.to_owned(), 0));
+        }
+    }
+
+    /// Starts the history over at `text`: the keybindings changed.
+    pub fn start_over(&mut self, text: &str) {
+        self.history = History::default();
+        self.start(text);
     }
 
     /// Whether a command is typed in part: Esc then ends it, and the
@@ -1547,6 +1558,7 @@ mod tests {
         let mut script: String = text.chars().filter(|c| *c != '|').collect();
         let mut cursor = at;
         let mut vim = Vim::default();
+        vim.start(&script);
         let mut then = None;
         let mut rest = keys;
         while !rest.is_empty() {
@@ -1834,6 +1846,36 @@ mod tests {
         assert_eq!(text("|abc", "xu~<c-r>"), "A|bc");
         // `==` on an empty line formats nothing.
         assert_eq!(run("a\n|\nb", "==").2, None);
+    }
+
+    #[test]
+    fn the_history_starts_at_the_script_first_shown() {
+        // Opened with a query: Esc and `u` find nothing older.
+        let mut vim = Vim::new(Mode::Insert);
+        vim.start("select 1");
+        let mut register = Register::default();
+        let step = vim.key("select 1", 8, Input::Escape, &mut register, "  ");
+        let step = vim.key(
+            "select 1",
+            step.cursor,
+            Input::Char('u'),
+            &mut register,
+            "  ",
+        );
+        assert_eq!(step.text, None);
+        // Typed after it opened: `u` takes the typing out, not the query.
+        let mut vim = Vim::new(Mode::Insert);
+        vim.start("select 1");
+        vim.start("select 12");
+        let step = vim.key("select 12", 9, Input::Escape, &mut register, "  ");
+        let step = vim.key(
+            "select 12",
+            step.cursor,
+            Input::Char('u'),
+            &mut register,
+            "  ",
+        );
+        assert_eq!(step.text.as_deref(), Some("select 1"));
     }
 
     #[test]

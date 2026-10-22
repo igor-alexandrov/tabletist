@@ -5167,11 +5167,13 @@ impl App {
         let terminal = self.look.terminal;
         if old.editor_keys_in(terminal) != self.settings.editor_keys_in(terminal) {
             // Other keybindings: every editor in normal mode, as vim
-            // starts.
+            // starts, its history starting at its script.
             for tab in &mut self.tabs {
                 if let ConnTabContent::Workspace(workspace) = &mut tab.content {
                     for sql in workspace.sql_tabs_mut() {
                         sql.vim.to_normal();
+                        let text = sql.text.clone();
+                        sql.vim.start_over(&text);
                     }
                 }
             }

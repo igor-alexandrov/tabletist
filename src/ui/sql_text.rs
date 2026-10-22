@@ -1551,6 +1551,10 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let focus = std::mem::take(&mut sql_tab.focus_editor);
     // Vim's normal and visual modes take the frame's keys before the
     // field, and the edits that follow, before Tab and the pairs read it.
+    // Its history starts at the script the editor first shows.
+    if field.vim {
+        sql_tab.vim.start(&sql_tab.text);
+    }
     let (vimmed, prompt) = vim_keys(ui, sql_tab, field);
     // Before the field is drawn, so this frame shows the formatted text.
     // An indent is an outside edit too: what the field shows, and where
