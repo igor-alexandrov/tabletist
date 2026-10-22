@@ -278,6 +278,7 @@ A save can ask you something first. Each question has its own keys:
 | `=` | Format, with the keyboard out of the text. In normal mode, `==` formats the statement at the cursor and `gg=G` all of it |
 | Tab, Shift+Tab | Indent, outdent, in the text: at the cursor, or every line of the selection |
 | `:ro`, `:rw` | Read-only and read-write runs, from normal mode or with the keyboard out of the text |
+| `:w` | Nothing: vim's write, where the editor has nothing to write, and never writes to the database |
 | Ctrl+Space | Complete |
 | `y`; `n`, Enter or Esc | When the status line asks before a run that changes every row of a table (an `UPDATE` or a `DELETE` without `WHERE`, a `TRUNCATE`): run it; do not |
 

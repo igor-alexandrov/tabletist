@@ -1851,11 +1851,6 @@ impl App {
             None if workspace.history_in_front() => Scope::History,
             None => Scope::SqlEditor,
         };
-        // Vim's `:w` in a SQL editor: there is nothing to write, and it
-        // never writes to the database.
-        if scope == Scope::SqlEditor && line == "w" {
-            return;
-        }
         // The Structure view's own lines hold while it shows.
         let structure = workspace
             .active_object_tab()
@@ -1944,6 +1939,9 @@ impl App {
                 };
                 Action::SetSqlMode { tab, sql_tab, mode }
             }
+            // Vim's `:w` in a SQL editor: nothing to write, and it never
+            // writes to the database.
+            (Typed::Command(Command::WriteNothing), None) => return,
             _ => return refused(self),
         };
         // As from a key: under a question about the changes it is dropped.

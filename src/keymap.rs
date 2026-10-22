@@ -606,6 +606,7 @@ commands! {
     KeepHistory = "keep_history",
     ReadOnlyTab = "read_only_tab",
     ReadWriteTab = "read_write_tab",
+    WriteNothing = "write_nothing",
     ToggleSqlMode = "toggle_sql_mode",
     Commit = "commit",
     Rollback = "rollback",
@@ -974,6 +975,7 @@ impl Command {
             C::KeepHistory => info("Keep the history, as asked", "", Prompts),
             C::ReadOnlyTab => info("Read-only tab", MODE, Sql),
             C::ReadWriteTab => info("Read-write tab", MODE, Sql),
+            C::WriteNothing => info("Write (nothing to write in the editor)", "", Sql),
             C::ToggleSqlMode => info("Read-only or read-write runs", "", Sql),
             C::Commit => info("Commit", "Commit", Sql).reserved(),
             C::Rollback => info("Rollback", "Rollback", Sql).reserved(),
@@ -1999,6 +2001,8 @@ pub const BINDINGS: &[Binding] = {
             control("segmented switch"),
             keys(&[k(":rw")]),
         ),
+        // Vim's `:w` in the SQL editor: it never writes to the database.
+        bind(C::WriteNothing, SQL_EDITOR, NONE, keys(&[k(":w")])),
         bind(
             C::ToggleSqlMode,
             SQL_EDITOR,
@@ -4559,7 +4563,7 @@ mod tests {
         );
         // Each in its own scope only, and `:w` never anything but a save.
         assert_eq!(ex(Scope::Grid, "rw"), Nothing);
-        assert_eq!(ex(Scope::SqlEditor, "w"), Nothing);
+        assert_eq!(ex(Scope::SqlEditor, "w"), command(Command::WriteNothing));
         assert_eq!(ex(Scope::Grid, "wq"), Nothing);
         assert_eq!(ex(Scope::Grid, "q!"), Nothing);
         assert_eq!(ex(Scope::Grid, "W"), Nothing);

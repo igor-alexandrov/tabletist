@@ -434,7 +434,7 @@ impl Vim {
                 .saturating_mul(10)
                 .saturating_add(digit);
             self.pending = Pending {
-                count: Some(count.min(100_000)),
+                count: Some(count.min(COUNTS)),
                 ..pending
             };
             return;
@@ -646,7 +646,7 @@ impl Vim {
                 .saturating_mul(10)
                 .saturating_add(digit);
             self.pending = Pending {
-                count: Some(count.min(100_000)),
+                count: Some(count.min(COUNTS)),
                 ..pending
             };
             return;
@@ -857,8 +857,11 @@ impl Vim {
             'w' | 'W' => {
                 let (mut to, mut last) = (cursor, cursor);
                 for _ in 0..count {
-                    last = to;
-                    to = word_start(t, to, key == 'W');
+                    let next = word_start(t, to, key == 'W');
+                    if next == to {
+                        break;
+                    }
+                    (last, to) = (to, next);
                 }
                 // After an operator, the last word moved over ends the
                 // text at its line's end, not at the next line's first
@@ -872,14 +875,22 @@ impl Vim {
             'e' | 'E' => {
                 let mut to = cursor;
                 for _ in 0..count {
-                    to = word_end(t, to, key == 'E');
+                    let next = word_end(t, to, key == 'E');
+                    if next == to {
+                        break;
+                    }
+                    to = next;
                 }
                 along(to, Kind::Inclusive)
             }
             'b' | 'B' => {
                 let mut to = cursor;
                 for _ in 0..count {
-                    to = word_back(t, to, key == 'B');
+                    let next = word_back(t, to, key == 'B');
+                    if next == to {
+                        break;
+                    }
+                    to = next;
                 }
                 along(to, Kind::Exclusive)
             }
@@ -901,14 +912,22 @@ impl Vim {
             '}' => {
                 let mut to = cursor;
                 for _ in 0..count {
-                    to = paragraph(t, to, true);
+                    let next = paragraph(t, to, true);
+                    if next == to {
+                        break;
+                    }
+                    to = next;
                 }
                 along(to, Kind::Exclusive)
             }
             '{' => {
                 let mut to = cursor;
                 for _ in 0..count {
-                    to = paragraph(t, to, false);
+                    let next = paragraph(t, to, false);
+                    if next == to {
+                        break;
+                    }
+                    to = next;
                 }
                 along(to, Kind::Exclusive)
             }
@@ -1059,7 +1078,7 @@ impl Vim {
                     let body: String = t.c[s..e].iter().collect();
                     if (first_line..=last_line).contains(&line) && !body.trim().is_empty() {
                         if operator == Operator::Indent {
-                            for _ in 0..count.max(1) {
+                            for _ in 0..count.clamp(1, SHIFTS) {
                                 out.push_str(indent);
                             }
                             out.push_str(&body);
@@ -1097,8 +1116,19 @@ impl Vim {
 /// The count of an operator and its motion: `2d3w` deletes six words.
 fn total(pending: &Pending) -> usize {
     let before = pending.operator.map_or(1, |(_, count)| count);
-    before.saturating_mul(pending.count.unwrap_or(1)).max(1)
+    before
+        .saturating_mul(pending.count.unwrap_or(1))
+        .clamp(1, COUNTS)
 }
+
+/// The largest count: one typed, or an operator's times its motion's.
+const COUNTS: usize = 100_000;
+
+/// The most text one `p` puts in: its count gives way to it.
+const PUT_BYTES: usize = 16 << 20;
+
+/// The most indents one shift puts in.
+const SHIFTS: usize = 100;
 
 /// Line `line` (from 1, past the last is the last) as a motion to its
 /// first character that is not blank.
@@ -1154,7 +1184,8 @@ fn put(
     if register.text.is_empty() {
         return;
     }
-    let text = register.text.repeat(count.max(1));
+    let count = count.clamp(1, (PUT_BYTES / register.text.len()).max(1));
+    let text = register.text.repeat(count);
     if register.lines {
         if after {
             let end = t.line_end(cursor);
@@ -1435,7 +1466,7 @@ fn flip(c: char) -> char {
 /// has, where it has fewer.
 fn outdent<'a>(body: &'a str, indent: &str, count: usize) -> &'a str {
     let mut rest = body;
-    for _ in 0..count {
+    for _ in 0..count.min(SHIFTS) {
         if let Some(after) = rest.strip_prefix(indent) {
             rest = after;
         } else if let Some(after) = rest.strip_prefix('\t') {
@@ -1846,6 +1877,28 @@ mod tests {
         assert_eq!(text("|abc", "xu~<c-r>"), "A|bc");
         // `==` on an empty line formats nothing.
         assert_eq!(run("a\n|\nb", "==").2, None);
+    }
+
+    #[test]
+    fn large_counts_are_cut_to_what_can_be_done_at_once() {
+        // An operator's count times its motion's: capped, and the moves
+        // stop at the script's end.
+        let started = std::time::Instant::now();
+        assert_eq!(text("|a b c", "99999d99999w"), "|");
+        assert_eq!(text("a b |c", "99999b"), "|a b c");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // A put of a large yank, many times: no more than its bytes.
+        let register = Register {
+            text: "x".repeat(1 << 20),
+            lines: false,
+        };
+        let (put, _, _, _) = run_with("|a", "99999p", register);
+        assert!(put.len() <= PUT_BYTES + 2, "{}", put.len());
+        // A shift: no more than its indents.
+        assert_eq!(text("|a", "99999>>").len(), "  |a".len());
+        let shifted = text("|a", "v99999>");
+        assert_eq!(shifted.trim_start().len(), "|a".len());
+        assert!(shifted.len() <= SHIFTS * 2 + 2, "{}", shifted.len());
     }
 
     #[test]
