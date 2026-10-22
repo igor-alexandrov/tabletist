@@ -1939,10 +1939,32 @@ impl App {
                 };
                 Action::SetSqlMode { tab, sql_tab, mode }
             }
+            // Vim's `:w` in a SQL editor: nothing to write, and it never
+            // writes to the database.
+            (Typed::Command(Command::WriteNothing), None) => return,
             _ => return refused(self),
         };
         // As from a key: under a question about the changes it is dropped.
         self.apply(action);
+    }
+
+    /// After the prompt closes with Enter or Esc: a SQL editor that opened
+    /// it from vim's normal mode gets the keyboard back, while it is still
+    /// in front. (Closed by anything else, the keyboard is where that put
+    /// it.)
+    pub(super) fn command_closed(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        if workspace.command.is_some() {
+            return;
+        }
+        if let Some(id) = workspace.command_returns.take()
+            && workspace.active_tab == Some(id)
+            && let Some(sql) = workspace.sql_tab_mut(id)
+        {
+            sql.focus_editor = true;
+        }
     }
 
     /// Shows or hides the Review SQL of the tab. Shown, it takes the text

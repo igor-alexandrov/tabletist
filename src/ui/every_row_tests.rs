@@ -242,7 +242,7 @@ fn the_keyboard_goes_back_only_where_it_was() {
     // Out of the text in the terminal look, the run key still runs; the
     // answer leaves the keyboard out of the text.
     let (mut harness, tab, id) = editor(Look::omarchy(), RunMode::ReadWrite, "delete from users");
-    harness.press(Key::Escape, Modifiers::NONE);
+    harness.leave_editor();
     harness.settle();
     assert!(!harness.ctx.text_edit_focused());
     run_key(&mut harness);
@@ -379,7 +379,7 @@ fn the_screen_has_the_confirm_row_after_the_run_key_and_toggles_it() {
     let top = |harness: &Harness, words: &str| harness.painted_rect(words).expect(words).top();
     let row = "confirm write without where";
     // After the run key's row, by its hint.
-    assert!(top(&harness, "a selection always wins") < top(&harness, row));
+    assert!(top(&harness, "a visual selection always wins") < top(&harness, row));
     assert!(top(&harness, row) < top(&harness, "line numbers"));
     assert!(shows(&mut harness, "connections that allow writes"));
     // Down to it from the first row: new tabs, limit, timeout, run key.

@@ -19,7 +19,7 @@ An agent has three tools:
 | Tool | What it does |
 | --- | --- |
 | `list_connections` | Lists the connections you allowed agents, with what each is and its limits |
-| `describe_schema` | Names a connection's tables and views, and describes the columns and keys of those it asks about |
+| `describe_schema` | Names a connection's tables and views, and describes the columns, keys and comments of those it asks about |
 | `run_query` | Runs one `SELECT`, `WITH … SELECT`, `VALUES` or `EXPLAIN` of one, and returns its rows |
 
 Every read runs in a read-only transaction that is rolled back, with the
@@ -173,7 +173,9 @@ database**. What the sidebar has not loaded is not known, and not marked.
 What agents get of a masked column:
 
 - `describe_schema` gives its name and type, marked masked, and leaves
-  out its default, its comment and the values it may hold.
+  out its default, its comment and the values it may hold. It leaves
+  out the comment of the column's table too, and of a view that reads
+  it.
 - `run_query` answers `•••` for every value, an empty one too, where a
   query selects the column as it is.
 - A query that filters, joins, sorts, groups or computes on it is

@@ -30,14 +30,15 @@ pub fn tool() -> Tool {
                       with a rough count of each one's rows, and the names of its other \
                       schemas. With `tables` (at most 20 names): each one's columns with their \
                       types, its primary key, its foreign keys and the keys that point at it, \
-                      and its indexes. Write a table of another schema as schema.table. A \
-                      table the person hides from you is left out of the list, and named under \
-                      `hidden` when you ask for it. A column marked `masked` may be selected, \
-                      and answers •••, but not filtered, joined, sorted or computed on, and \
-                      neither may any column of its name, in any table; its default, its \
-                      comment and the values it may hold are left out. A view marked \
-                      `reads_masked` may not be read: it reads such a column, or on MySQL \
-                      reads its table.",
+                      its indexes and its comment. Write a table of another schema as \
+                      schema.table. A table the person hides from you is left out of the list, \
+                      and named under `hidden` when you ask for it. A column marked `masked` \
+                      may be selected, and answers •••, but not filtered, joined, sorted or \
+                      computed on, and neither may any column of its name, in any table; its \
+                      default, its comment and the values it may hold are left out, and so is \
+                      the comment of its table. A view marked `reads_masked` may not be read: \
+                      it reads such a column, or on MySQL reads its table, and its comment \
+                      is left out.",
         input: schema(
             json!({
                 "connection": {
@@ -360,8 +361,28 @@ fn table(
         entry.insert("schema".into(), json!(object.schema));
     }
     entry.insert("kind".into(), json!(kind(object_kind)));
-    if let Some(column) = hidden.reads_masked(&object.schema, &object.name) {
+    let reads_masked = hidden.reads_masked(&object.schema, &object.name);
+    if let Some(column) = &reads_masked {
         entry.insert("reads_masked".into(), json!(column));
+    }
+    // The table's comment is its author's words, as a column's is, and
+    // may give a value of a masked column of it as an example: a table
+    // with one, or a view that reads one, says none. Its columns are
+    // asked too, as each is below: an entry names a table the catalog
+    // read before it was made.
+    let masks = hidden
+        .masks_table(Some(&object.schema), &object.name)
+        .is_some()
+        || structure.columns.iter().any(|column| {
+            hidden
+                .masks(Some(&object.schema), &object.name, &column.name)
+                .is_some()
+        });
+    if !masks
+        && reads_masked.is_none()
+        && let Some(comment) = &structure.comment
+    {
+        entry.insert("comment".into(), answer::text(comment));
     }
     let columns: Vec<Json> = structure
         .columns
@@ -465,6 +486,37 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_table_the_catalog_does_not_list_keeps_its_comment_back_for_its_masked_column() {
+        use tabletist_db::agent::{Catalog, ColumnName, Tables};
+        use tabletist_db::{ColumnInfo, Dialect};
+        // A table made after the catalog was read: only the masked
+        // column's entry names it.
+        let masked: Vec<ColumnName> = vec!["orders.email".parse().unwrap()];
+        let hidden = Hidden::masking(
+            Dialect::Postgres,
+            &Catalog::default(),
+            &Tables::All,
+            &masked,
+        );
+        let column = |name: &str| ColumnInfo {
+            name: name.into(),
+            type_name: "text".into(),
+            comment: Some(format!("For example the {name} of ada@example.com")),
+            ..ColumnInfo::default()
+        };
+        let structure = Structure {
+            columns: vec![column("id"), column("email")],
+            comment: Some("Orders, by the email of ada@example.com".into()),
+            ..Structure::default()
+        };
+        let orders = ObjectRef::new("public", "orders");
+        let entry = table(&orders, ObjectKind::Table, false, &structure, &hidden);
+        assert_eq!(entry["columns"][1]["masked"], json!(true));
+        assert!(entry["columns"][1].get("comment").is_none());
+        assert!(entry.get("comment").is_none(), "{entry}");
+    }
 
     #[test]
     fn a_masked_columns_type_is_told_without_the_values_mysql_writes_into_it() {

@@ -274,7 +274,7 @@ fn the_terminal_looks_letters_take_the_links_on_screen() {
     let before = runs_sent(&harness);
     // In the editor's text a letter is typed; out of it, `t` offers
     // nothing here and `a` shows all.
-    harness.press(Key::Escape, Modifiers::NONE);
+    harness.leave_editor();
     harness.press(Key::T, Modifiers::NONE);
     assert_eq!(runs_sent(&harness), before);
     harness.press(Key::A, Modifiers::NONE);

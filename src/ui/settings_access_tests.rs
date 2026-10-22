@@ -110,13 +110,11 @@ fn every_rows_controls_are_described_by_its_small_print() {
             }
         }
         // Every row that has small print, or words beside its control in
-        // its place: the Editor pane has no row yet for some of its
-        // options.
+        // its place.
         described.sort_by_key(|option| OptionId::ALL.iter().position(|all| all == option));
         let expected: Vec<OptionId> = OptionId::ALL
             .into_iter()
             .filter(|option| helper(*option).is_some())
-            .filter(|option| !OptionId::EDITOR_LATER.contains(option))
             .collect();
         assert_eq!(described, expected, "in {}", look.name);
     }
@@ -353,10 +351,16 @@ fn the_terminal_editors_rows_are_described_by_their_hints() {
                 Some("caps results you browse · show all and exports get every row"),
             ),
             (OptionId::Timeout, None),
-            (OptionId::RunScope, Some("a selection always wins")),
+            // The terminal look's keys are vim's: a selection is visual
+            // mode's.
+            (OptionId::RunScope, Some("a visual selection always wins")),
             (
                 OptionId::ConfirmUnsafeWrites,
                 Some("connections that allow writes"),
+            ),
+            (
+                OptionId::EditorKeys,
+                Some("-- INSERT -- shown in the status line"),
             ),
             (OptionId::LineNumbers, None),
             (OptionId::Indent, None),

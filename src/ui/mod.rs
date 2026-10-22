@@ -17,6 +17,8 @@ mod agent_settings_tests;
 mod appearance_settings_tests;
 pub mod cell_editor;
 #[cfg(test)]
+mod comment_tests;
+#[cfg(test)]
 mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;
@@ -101,6 +103,8 @@ pub mod toast;
 #[cfg(test)]
 mod typing_settings_tests;
 pub mod value_tags;
+#[cfg(test)]
+mod vim_tests;
 pub mod widgets;
 pub mod workspace;
 pub mod write_prompts;
@@ -2996,7 +3000,7 @@ value_tags   = true
         harness.copy(true);
         assert!(!on_picker(&harness), "from the SQL editor");
         // Out of the text it shows the connections, as from the rows.
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         assert!(!harness.ctx.text_edit_focused());
         harness.copy(true);
         assert!(on_picker(&harness));
@@ -5135,10 +5139,11 @@ value_tags   = true
             type_text(&mut harness, "\nSELECT 1");
             assert_eq!(bars(&harness), none + 1, "{}", look.name);
             // It stays with the statement when the keys leave the editor.
-            harness.press(Key::Escape, Modifiers::NONE);
+            harness.leave_editor();
             assert_eq!(bars(&harness), none + 1, "{}", look.name);
             let editor = editor_rect(&mut harness);
             click_at(&mut harness, editor.center());
+            harness.start_typing();
             for _ in 0.."SELECT 1".len() {
                 harness.press(Key::Backspace, Modifiers::NONE);
             }
@@ -5152,7 +5157,7 @@ value_tags   = true
             let (mut harness, tab) = sql_harness(look);
             harness.settle();
             type_text(&mut harness, "SELECT 1;\nSELECT 2;\nSELECT 3");
-            harness.press(Key::Escape, Modifiers::NONE);
+            harness.leave_editor();
             assert!(!harness.ctx.text_edit_focused());
             // Left of the text, beside its first line.
             let editor = editor_rect(&mut harness);
@@ -5160,6 +5165,7 @@ value_tags   = true
             click_at(&mut harness, egui::pos2(gutter, editor.top() + 12.0));
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             assert_eq!(active_sql(&harness, tab).line_col(), (1, 1));
+            harness.start_typing();
             type_text(&mut harness, "x");
             assert!(active_sql(&harness, tab).text.starts_with("xSELECT 1;"));
             // With the keys in the editor, a press there keeps them. Under
@@ -5411,7 +5417,7 @@ value_tags   = true
             assert!(painted(&harness, keys), "{keys} in {}", look.name);
             // The editor gives the keys up (Esc); the button formats and
             // gives them back.
-            harness.press(Key::Escape, Modifiers::NONE);
+            harness.leave_editor();
             assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
             harness.click("Format");
             assert_eq!(active_sql(&harness, tab).text, "SELECT 1", "{}", look.name);
@@ -5426,7 +5432,7 @@ value_tags   = true
         harness.settle();
         type_text(&mut harness, "select 1");
         assert!(!harness.has("Format"));
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         type_key(&mut harness, Key::Equals, "=");
         assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
         assert!(harness.ctx.text_edit_focused());
@@ -5445,7 +5451,7 @@ value_tags   = true
         harness.press(Key::F, COMMAND_SHIFT);
         assert_eq!(active_sql(&harness, tab).text, "select 1=");
         harness.press(Key::Backspace, Modifiers::NONE);
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         type_key(&mut harness, Key::Equals, "=");
         assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
         // The other looks type it wherever they are.
@@ -5753,7 +5759,7 @@ value_tags   = true
         let tab = harness.connect_fake();
         let id = with_sql_result(&mut harness, tab, 3);
         let at = |row, col| Some(crate::model::CellPos { row, col });
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         harness.press(Key::J, Modifiers::NONE);
         harness.press(Key::J, Modifiers::NONE);
         harness.press(Key::L, Modifiers::NONE);
@@ -6727,7 +6733,7 @@ value_tags   = true
         harness.settle();
         assert!(harness.ctx.text_edit_focused());
         // The first Esc only leaves the editor; the next one closes the panel.
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         assert!(!harness.ctx.text_edit_focused());
         assert!(open(&harness));
         assert!(panel_shows(&mut harness));
@@ -8070,6 +8076,7 @@ value_tags   = true
             }],
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            comment: None,
         };
         harness.answer_structure(structure);
         assert!(harness.has("Columns"));
@@ -12258,6 +12265,7 @@ value_tags   = true
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            comment: None,
         });
         harness.answer_rows(RowPage {
             columns: names
@@ -16427,7 +16435,7 @@ value_tags   = true
         assert_eq!(harness.copied.as_deref(), Some("user2@example.com"));
         type_key(&mut harness, Key::Slash, "/");
         assert!(harness.ctx.text_edit_focused(), "the WHERE line");
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
 
         // A SQL editor's result: Enter is its row panel's still, and the
         // letters that edit do nothing there.
@@ -16436,7 +16444,7 @@ value_tags   = true
         let tab = harness.connect_fake_as(false);
         let sql = with_sql_result(&mut harness, tab, 3);
         let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         type_key(&mut harness, Key::J, "j");
         type_key(&mut harness, Key::L, "l");
         assert_eq!(

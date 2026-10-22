@@ -839,6 +839,52 @@ async fn describe_schema_marks_a_masked_column_and_a_view_that_reads_one() {
 }
 
 #[tokio::test]
+async fn describe_schema_says_a_tables_comment_unless_it_could_give_a_masked_value() {
+    let shop = Shop::new();
+    shop.comment("orders", "One order of a customer");
+    shop.comment("recent_orders", "The orders of the last thirty days");
+    shop.comment("customer_names", "Who ordered");
+    let (server, _log) = server(&shop);
+    let agent = Agent::connect(&server).await;
+    let comments = |answer: &Json| -> Vec<Option<String>> {
+        let tables = answer["tables"].as_array().unwrap();
+        tables
+            .iter()
+            .map(|table| {
+                table
+                    .get("comment")
+                    .and_then(Json::as_str)
+                    .map(str::to_owned)
+            })
+            .collect()
+    };
+    let asked = json!({
+        "connection": DEV,
+        "tables": ["orders", "recent_orders", "customer_names", "order_items"],
+    });
+    let called = agent.call("describe_schema", asked.clone()).await;
+    assert_eq!(
+        comments(called.answer()),
+        [
+            Some("One order of a customer".to_owned()),
+            Some("The orders of the last thirty days".to_owned()),
+            Some("Who ordered".to_owned()),
+            None,
+        ]
+    );
+    // A table's comment is its author's words and may give a value of its
+    // masked column as an example, as a column's comment may: the table
+    // with the column and the view that reads it say none.
+    shop.mask(DEV, &["orders.email"]);
+    let called = agent.call("describe_schema", asked).await;
+    assert_eq!(
+        comments(called.answer()),
+        [None, None, Some("Who ordered".to_owned()), None]
+    );
+    agent.close().await;
+}
+
+#[tokio::test]
 async fn run_query_answers_a_masked_column_as_dots_and_refuses_a_use_of_it() {
     let shop = Shop::new();
     let (server, log) = server(&shop);

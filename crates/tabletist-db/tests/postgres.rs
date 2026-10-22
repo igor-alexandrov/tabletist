@@ -224,6 +224,36 @@ async fn users_structure_has_types_defaults_comments_key_and_indexes() {
 }
 
 #[tokio::test]
+async fn a_table_and_a_view_say_their_own_comments() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let comment = |name: &'static str| {
+        let connection = &connection;
+        async move {
+            connection
+                .describe(&ObjectRef::new("public", name))
+                .await
+                .unwrap()
+                .comment
+        }
+    };
+    assert_eq!(
+        comment("users").await.as_deref(),
+        Some("People who sign in")
+    );
+    assert_eq!(
+        comment("active_users").await.as_deref(),
+        Some("Users who can sign in")
+    );
+    assert_eq!(
+        comment("user_counts").await.as_deref(),
+        Some("Users by whether they are active")
+    );
+    assert_eq!(comment("orders").await, None);
+}
+
+#[tokio::test]
 async fn enums_and_check_lists_describe_their_allowed_values() {
     let Some(connection) = connect().await else {
         return;

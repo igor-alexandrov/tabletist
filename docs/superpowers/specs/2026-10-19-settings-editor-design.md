@@ -46,7 +46,7 @@ beside the options, and an edit in `$EDITOR` comes back live.
 | Omarchy hint "ctrl+w toggles per tab" | ":ro / :rw per tab" | Igor's choice. |
 | macOS row-limit small print "Adds LIMIT to results you browse; exports get everything"; Omarchy hint "exports get everything" | Step 1: "Caps the rows of results you browse" / "caps results you browse" | Nothing adds `LIMIT`, and the editor's results have no export or copy-all to get everything. Step 2 adds Show all; the words follow what is there. |
 | macOS subtitle "The SQL editor: how queries run, how typing behaves, and what is remembered." | The title alone until History is built (step 6) | Until then it says what the pane does not have. As Appearance did. |
-| Omarchy hint "a visual selection always wins" | "a selection always wins" until vim (step 7) | There is no visual mode before it. |
+| Omarchy hint "a visual selection always wins" | "a selection always wins" until vim (step 7); since, as drawn where the keys are vim's | There is no visual mode before it, nor with the standard keys. |
 | The macOS board puts Row limit and Timeout on one row, and Line numbers, Current line and Wrap on one row of three switches | A row each, labelled as the prompt's table has them | The prompt wins where the two differ; each control is then named by its own setting's label. |
 | "Autocomplete never queries the database while you type" | Names the sidebar has not loaded yet are read once, the first time a statement names them, and kept, as today | Without it a table's columns are not offered until the tree is opened. Typing with everything loaded sends nothing, which the test checks. |
 | Every row at once | A row each time its feature is built (Delivery) | Igor's choice. |
@@ -470,6 +470,84 @@ writes" on Omarchy. Its words are step 1's, there already.
 4. Omarchy: the question in the status line's place; `n`, `N`, Enter and
    Esc cancel and type nothing; `y` runs.
 5. The row in both looks, last in Running queries, setting the key.
+
+## Step 7: Vim
+
+Date: 2026-10-21. Step 5 is merged (#212). Igor chose the scope ("core
+vim") and that Esc in normal mode leaves the editor.
+
+### The row
+
+- macOS, Typing, first: **Keybindings**, Standard · Vim (the board's).
+- Omarchy, typing, first: **keybindings**, `vim  standard`, with the hint
+  `-- INSERT -- shown in the status line` (the mode in vim's case).
+- Defaults as step 1 has them: Standard on macOS and Windows, Vim on
+  Omarchy. The ⌘↩ runs row's Omarchy hint reads "a visual selection
+  always wins" where the keys are vim's.
+
+### What vim does
+
+- An engine of its own (`src/vim.rs`, no egui in it): a key, the script
+  and the cursor in; the edit, the cursor or the visual selection, and
+  what the editor does next (undo, redo, format, the prompt, leave) out.
+- Normal mode: counts; `h j k l w b e W B E 0 ^ $ gg G f F t T ; , % { }`;
+  `i a I A o O`; `x X D C Y s S p P J r ~`; `d c y > < =` with a motion or
+  doubled; `u` and Ctrl+R; `:`. Visual by character (`v`) and by line
+  (`V`): the motions move it, `o` swaps its ends, `d x c s y > < = J ~ u U
+  p` act on it. One unnamed register, shared by the editors.
+- Not: text objects, `.`, search, other registers, marks, macros.
+- In the field: the keymap reads the frame first, as ever; then, before
+  egui's text edit, normal and visual mode's keys go to the engine and
+  out of the frame (a key's press with its text is one key, and an input
+  method's text is keys; the field's chords stay, but Ctrl+W, Ctrl+H and
+  Ctrl+U, insert mode's deletions, the field's other deleting chords and
+  Tab do nothing; Page Up and Page Down are the field's). The frame's
+  events are read in order, each in the mode the ones before left; a key
+  of vim's after one the field reads, or after a format, waits for the
+  next frame, so that it reads the script they leave; after Esc out of
+  the editor or `:`, the frame's keys are nobody's. An edit is an outside
+  edit. Vim keeps its own undo history, as egui's counts cursor moves: a
+  command is a step, an insert from the key that started it to Esc is
+  one, and so is what changed from outside between two keys; `u` and
+  Ctrl+R walk it, and a move keeps the redo. Esc is held by
+  the focus filter; normal mode's Esc with nothing typed gives the
+  keyboard up, but not a held one. Ctrl+[ is Esc. In insert mode the
+  field types, and Esc goes to normal mode, unless an open completion
+  list takes it.
+- Each SQL tab has its mode; a new tab opens in insert mode. A change of
+  keybindings puts every tab in normal mode at once and leaves the
+  keyboard where it is.
+- Normal and visual mode draw a block cursor (the cell editor's); egui's
+  caret is hidden. A visual selection is the field's selection, so Run
+  runs it. A press with the pointer, a cut and a paste leave visual mode;
+  an undo puts the cursor back, not a selection.
+- `==` formats the statement at the cursor, `gg=G` the script, `=` with a
+  motion or over a visual selection the statements its lines touch; on
+  an empty line, nothing. It leaves the cursor, not the lines selected.
+- `:` opens the Omarchy prompt; the editor gets the keyboard back when it
+  closes with Enter or Esc, while its tab is in front. `:w` in a SQL
+  editor does nothing and says nothing.
+- The mode: Omarchy's status line starts with `-- INSERT --`, `-- VISUAL
+  --` or `-- VISUAL LINE --` (nothing in normal mode, as vim), and its
+  Esc hint reads "normal" in insert mode; the macOS footer starts with it.
+
+### Tests (headless)
+
+1. The engine, by unit tests: each motion, operator, count, insert key,
+   put, join, replace, case, visual mode, and what it asks of the editor.
+2. A new tab types in insert mode; Esc to normal mode keeps the keyboard
+   and steps back; a second Esc leaves; the status line's mode and hint.
+3. `dd`, `p`, `u`, Ctrl+R, `cw` in the editor, each an undo step; Ctrl+W
+   does nothing in normal mode.
+4. `V` is the selection Run runs; `ve` by character; Esc leaves it.
+5. `==` and `gg=G`; `:` opens the prompt, `:ro` sets the tab and gives the
+   keyboard back; `:w` does nothing.
+6. An open completion list takes Esc; switching the keybindings applies
+   at once in both directions; macOS's footer and block cursor.
+7. Keys in one frame across a mode change and after an undo; Tab, a held
+   Esc and Ctrl+[ in normal mode; a cut in visual mode; undo after a
+   visual delete; `ct)` beside the cursor.
+8. The row in both looks, first in Typing, setting the key.
 
 ## Out of scope
 

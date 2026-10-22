@@ -527,9 +527,8 @@ fn the_sheet_sets_each_editor_option_with_a_click() {
     ] {
         assert!(shows(&mut harness, words), "{words}");
     }
-    // The rows of what is not built yet are not there.
-    assert!(!shows(&mut harness, "Keybindings"));
     let saves = settings_saves(&harness);
+    harness.click("Keybindings: Vim");
     harness.click("New tabs run in: Follow connection");
     harness.click("Row limit");
     harness.click("Row limit 500");
@@ -548,7 +547,8 @@ fn the_sheet_sets_each_editor_option_with_a_click() {
     assert_eq!(settings.autocomplete, Autocomplete::Off);
     assert_eq!(settings.line_numbers, Some(LineNumbers::Off));
     assert!(!settings.highlight_line);
-    assert_eq!(settings_saves(&harness), saves + 7);
+    assert_eq!(settings.editor_keys, Some(crate::settings::EditorKeys::Vim));
+    assert_eq!(settings_saves(&harness), saves + 8);
     // On again, the numbers are each line's own.
     harness.click("Line numbers");
     assert_eq!(
@@ -639,7 +639,8 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
         read_only.as_str(),
         "per tab",
         "caps results you browse · show all and exports get every row",
-        "a selection always wins",
+        // Vim's, the look's keys: a selection is visual mode's.
+        "a visual selection always wins",
         "connections that allow writes",
         "schema objects",
     ] {
@@ -660,6 +661,9 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     // Writes without WHERE asked about no more, with space.
     type_key(&mut harness, Key::J, "j");
     harness.press(Key::Space, Modifiers::NONE);
+    // The standard keys in place of the look's vim.
+    type_key(&mut harness, Key::J, "j");
+    type_key(&mut harness, Key::L, "l");
     // Line numbers from relative to absolute; four spaces; completion on
     // the key; no closing brackets and wrapped lines, with space; keywords
     // from the look's lower case to upper; leading commas, with space.
@@ -691,7 +695,11 @@ fn the_screen_sets_each_editor_option_with_its_keys() {
     assert!(!settings.close_pairs);
     assert!(settings.wrap);
     assert!(!settings.confirm_unsafe_writes);
-    assert_eq!(settings_saves(&harness), saves + 12);
+    assert_eq!(
+        settings.editor_keys,
+        Some(crate::settings::EditorKeys::Standard)
+    );
+    assert_eq!(settings_saves(&harness), saves + 13);
     // The file has each of them, and R puts the cursor's back.
     let text = harness.app.settings_file.text.clone();
     assert!(
@@ -775,9 +783,10 @@ fn the_run_scope_is_a_radio_group_named_with_the_run_key_and_described() {
             .collect();
         assert_eq!(buttons.len(), 2, "{}", look.name);
         for button in buttons {
-            // The terminal look's is its hint, as it paints it.
+            // The terminal look's is its hint, as it paints it: its keys
+            // are vim's, whose selection is visual mode's.
             let said = if look.terminal {
-                "a selection always wins"
+                "a visual selection always wins"
             } else {
                 "A selection always wins"
             };

@@ -114,7 +114,7 @@ fn keep_leaves_the_case_as_typed_and_names_strings_and_comments_alone() {
 #[test]
 fn the_terminal_look_formats_in_lower_case_until_set() {
     let (mut harness, tab) = editor(Look::omarchy(), "SELECT 1 FROM t");
-    harness.press(Key::Escape, Modifiers::NONE);
+    harness.leave_editor();
     super::tests::type_key(&mut harness, Key::Equals, "=");
     harness.settle();
     assert_eq!(text(&harness, tab), "select 1\n  from t");
@@ -246,7 +246,7 @@ fn tab_is_not_the_editor_s_without_the_keyboard() {
         let (mut harness, tab) = editor(look, "SELECT 1");
         // Esc gives the keyboard up: Omarchy's normal mode, and the other
         // looks' editor left.
-        harness.press(Key::Escape, Modifiers::NONE);
+        harness.leave_editor();
         harness.press(Key::Tab, Modifiers::NONE);
         harness.press(Key::Tab, Modifiers::SHIFT);
         harness.settle();
