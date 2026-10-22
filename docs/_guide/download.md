@@ -9,7 +9,8 @@ The newest stable version is on the
 page. Every version, pre-releases included, is on the
 [releases page](https://github.com/igor-alexandrov/tabletist/releases).
 Each release lists its files with a `checksums.txt`, which you can use to
-check that a download was not damaged or changed.
+check that a download was not damaged or changed, and `checksums.txt.sig`,
+its signature by the Tabletist release key.
 
 ## macOS
 
@@ -45,13 +46,13 @@ Until they are, use the AppImage or the release archive below.
 
 ### Other distributions
 
-Download `tabletist-v<version>-x86_64-unknown-linux-gnu.AppImage`, or the
+Download `tabletist-<version>-x86_64.AppImage`, or the
 `aarch64` one. It is one file that runs without installing anything. Make it
 executable and run it:
 
 ```sh
-chmod +x tabletist-v<version>-x86_64-unknown-linux-gnu.AppImage
-./tabletist-v<version>-x86_64-unknown-linux-gnu.AppImage
+chmod +x tabletist-<version>-x86_64.AppImage
+./tabletist-<version>-x86_64.AppImage
 ```
 
 An AppImage needs FUSE, which most desktops have. Without it, run it with

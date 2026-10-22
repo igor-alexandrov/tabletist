@@ -105,10 +105,9 @@ The guide and the reference are on the website:
   `xattr -dr com.apple.quarantine /Applications/Tabletist.app`.
 - **Windows:** run `tabletist-v<version>-x86_64-pc-windows-msvc-setup.exe`
   (or the `aarch64` one on ARM). No administrator rights needed.
-- **Other Linux:** download
-  `tabletist-v<version>-x86_64-unknown-linux-gnu.AppImage` (or the `aarch64`
-  one), make it executable and run it. Or take the release `.tar.gz`, which
-  holds the binary, a `.desktop` file and the icon.
+- **Other Linux:** download `tabletist-<version>-x86_64.AppImage` (or the
+  `aarch64` one), make it executable and run it. Or take the release
+  `.tar.gz`, which holds the binary, a `.desktop` file and the icon.
 
 The Linux release binaries are built on Ubuntu 24.04 and need glibc 2.39 or
 newer (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system,

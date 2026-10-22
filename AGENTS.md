@@ -179,10 +179,28 @@ other way round.
 1. Bump `version` in `Cargo.toml`, run `cargo update -p tabletist`, commit,
    and get the commit onto `main`.
 2. On that commit: `git tag -s v0.2.2 -m v0.2.2 && git push origin v0.2.2`.
-3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz` and `.AppImage`),
-   Windows (x64, arm64 `.zip` and `-setup.exe`) and macOS (universal `.dmg`),
-   publishes a GitHub release with `checksums.txt`, then updates the AUR. A tag with a
-   `-` (`v0.2.0-rc1`) is a pre-release and skips the AUR.
+3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz`, and `.AppImage`
+   named `tabletist-<version>-<arch>.AppImage`), Windows (x64, arm64 `.zip`
+   and `-setup.exe`) and macOS (universal `.dmg`), signs `checksums.txt`
+   (`checksums.txt.sig`), publishes a GitHub release with both, then updates
+   the AUR. A tag with a `-` (`v0.2.0-rc1`) is a pre-release and skips the AUR.
+
+Required: `TABLETIST_UPDATE_SIGNING_KEY`, an Ed25519 private key (PEM) in
+the `release-signing` environment, which only `v*` tags may use. The
+`sign` job signs `checksums.txt` with it and checks the signature against
+`assets/update-public-key.hex`, the key the app has built in; without it,
+or with another key, the release stops before anything is published. The
+key is in 1Password. Never commit it, and never replace
+`assets/update-public-key.hex` alone: installed copies trust only the key
+they were built with.
+
+Whoever can push a `v*` tag runs `release.yml` as it is at that tag, with
+the key: keep `v*` tags to the owner (a tag ruleset), or give the
+environment a required reviewer. `publish` creates the release as a draft
+and makes it public only once `checksums.txt.sig` is attached. When only
+the AUR job failed, use "Re-run failed jobs": "Re-run all jobs" builds,
+signs and uploads everything again, and takes the release back to a
+draft while it does.
 
 Optional secrets (each step skips with a notice without them):
 

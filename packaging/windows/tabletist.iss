@@ -71,6 +71,13 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "{#Binary}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+; Tells the updater this copy came from the installer, wherever it was put.
+Source: "tabletist-installer.txt"; DestDir: "{app}"; Flags: ignoreversion
+
+[UninstallDelete]
+; The updater keeps the last update's staging folder beside the app until
+; the next update (fastframe-update); it goes with the app.
+Type: filesandordirs; Name: "{app}\.tabletist-update-*"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"

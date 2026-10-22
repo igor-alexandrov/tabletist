@@ -170,6 +170,10 @@ windows-native-keyring-store = { version = "1.1", default-features = false }
 # A paused clock (`start_paused`) for the backend test that reads the waits
 # between two cancels, which grow to seconds: they pass at once, and exactly.
 tokio = { version = "1", features = ["test-util"] }
+# Checks that what packaging/sign-checksums.sh signs with OpenSSL verifies
+# under ring, as fastframe-update verifies it (tests/update_release.rs).
+# Already in the tree through rustls.
+ring = "0.17"
 
 [build-dependencies]
 fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0", features = ["build"] }
