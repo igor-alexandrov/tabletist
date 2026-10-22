@@ -228,6 +228,39 @@ fn a_value_of_macos_is_the_desktop_here_and_stays_in_the_file() {
 }
 
 #[test]
+fn a_pin_found_nowhere_is_read_out_and_describes_the_themes_choices() {
+    let mut harness = following();
+    with_theme(&mut harness, Theme::Pinned("Gone".into()));
+    read(&mut harness, "Gone", None);
+    on_the_pane(&mut harness);
+    let said = "“Gone” not found · following omarchy";
+    let tree = harness.settle();
+    assert!(super::settings_access_tests::heard(&tree, said));
+    for choice in ["Theme", "Theme: follow omarchy", "Theme: pin"] {
+        let role = if choice == "Theme" {
+            Role::Button
+        } else {
+            Role::RadioButton
+        };
+        let id = crate::testing::node(&tree, choice, role).unwrap_or_else(|| panic!("{choice}"));
+        let (_, node) = tree
+            .nodes
+            .iter()
+            .find(|(node, _)| *node == id)
+            .expect(choice);
+        assert_eq!(node.description(), Some(said), "{choice}");
+    }
+    // Followed again: the warning is gone, and nothing else is read out.
+    with_theme(&mut harness, Theme::Unset);
+    let tree = harness.settle();
+    assert!(!super::settings_access_tests::heard(&tree, said));
+    assert!(!tree.nodes.iter().any(
+        |(_, node)| node.live() == Some(egui::accesskit::Live::Polite)
+            && node.label().is_some_and(|label| label.starts_with("now:"))
+    ),);
+}
+
+#[test]
 fn a_pin_found_nowhere_is_said_beside_it() {
     let mut harness = following();
     with_theme(&mut harness, Theme::Pinned("Gone".into()));
