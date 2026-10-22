@@ -367,10 +367,17 @@ fn table(
     }
     // The table's comment is its author's words, as a column's is, and
     // may give a value of a masked column of it as an example: a table
-    // with one, or a view that reads one, says none.
+    // with one, or a view that reads one, says none. Its columns are
+    // asked too, as each is below: an entry names a table the catalog
+    // read before it was made.
     let masks = hidden
         .masks_table(Some(&object.schema), &object.name)
-        .is_some();
+        .is_some()
+        || structure.columns.iter().any(|column| {
+            hidden
+                .masks(Some(&object.schema), &object.name, &column.name)
+                .is_some()
+        });
     if !masks
         && reads_masked.is_none()
         && let Some(comment) = &structure.comment
@@ -479,6 +486,37 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_table_the_catalog_does_not_list_keeps_its_comment_back_for_its_masked_column() {
+        use tabletist_db::agent::{Catalog, ColumnName, Tables};
+        use tabletist_db::{ColumnInfo, Dialect};
+        // A table made after the catalog was read: only the masked
+        // column's entry names it.
+        let masked: Vec<ColumnName> = vec!["orders.email".parse().unwrap()];
+        let hidden = Hidden::masking(
+            Dialect::Postgres,
+            &Catalog::default(),
+            &Tables::All,
+            &masked,
+        );
+        let column = |name: &str| ColumnInfo {
+            name: name.into(),
+            type_name: "text".into(),
+            comment: Some(format!("For example the {name} of ada@example.com")),
+            ..ColumnInfo::default()
+        };
+        let structure = Structure {
+            columns: vec![column("id"), column("email")],
+            comment: Some("Orders, by the email of ada@example.com".into()),
+            ..Structure::default()
+        };
+        let orders = ObjectRef::new("public", "orders");
+        let entry = table(&orders, ObjectKind::Table, false, &structure, &hidden);
+        assert_eq!(entry["columns"][1]["masked"], json!(true));
+        assert!(entry["columns"][1].get("comment").is_none());
+        assert!(entry.get("comment").is_none(), "{entry}");
+    }
 
     #[test]
     fn a_masked_columns_type_is_told_without_the_values_mysql_writes_into_it() {
