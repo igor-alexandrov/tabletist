@@ -3584,7 +3584,9 @@ mod tests {
                         None,
                         None,
                         |row, col| Cell {
-                            text: format!("r{row}c{col}-{}", "x".repeat(30)).into(),
+                            // A narrow key, and an email column wider
+                            // than the grid.
+                            text: format!("r{row}c{col}-{}", "x".repeat(col * 30)).into(),
                             ..Default::default()
                         },
                     );
@@ -3624,5 +3626,34 @@ mod tests {
         // its column does.
         assert_eq!(email.left(), key.right());
         assert_eq!(email.right(), widths[0] + widths[1] - half);
+        // Over the email header's hidden half, clear of the key's handle,
+        // the pointer is the key header's, and so is a click.
+        let hovered = |col: usize| {
+            ctx.read_response(egui::Id::new("grid").with(("header", col)))
+                .expect("the header")
+                .hovered()
+        };
+        let y = header_height(&look) / 2.0;
+        let covered = egui::pos2(key.right() - HANDLE_WIDTH, y);
+        assert!(covered.x > widths[0] - half, "over the email header");
+        frame(vec![egui::Event::PointerMoved(covered)]);
+        frame(vec![]);
+        assert!(hovered(0) && !hovered(1));
+        let press = |pressed| egui::Event::PointerButton {
+            pos: covered,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![press(true)]);
+        let (up, _) = frame(vec![press(false)]);
+        assert_eq!(up.sort_clicked, Some(0));
+        // Where it shows, it is the email header's.
+        frame(vec![egui::Event::PointerMoved(egui::pos2(
+            email.center().x,
+            y,
+        ))]);
+        frame(vec![]);
+        assert!(!hovered(0) && hovered(1));
     }
 }
