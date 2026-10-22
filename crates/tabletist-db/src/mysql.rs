@@ -442,10 +442,11 @@ impl Adapter for Conn {
         }
         // The comment on the table itself. MySQL writes `VIEW` there for
         // every view, and a warning for one that no longer works: nobody
-        // wrote either, so a view has none.
+        // wrote either, so a view has none. A system view is one too, as
+        // the listing takes it.
         let comment = self
             .catalog::<String>(
-                "SELECT CASE WHEN table_type = 'VIEW' THEN '' \
+                "SELECT CASE WHEN table_type LIKE '%VIEW' THEN '' \
                         ELSE COALESCE(table_comment, '') END \
                  FROM information_schema.tables \
                  WHERE table_schema = ? AND table_name = ?",
