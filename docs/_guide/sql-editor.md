@@ -136,6 +136,7 @@ In normal mode:
   to join lines, `r` to replace a character, `~` to change its case.
 - `u` undoes and Ctrl+R redoes: a command is a step, and so is an
   insert, from the key that started it to Esc. Moving the cursor is not.
+  The last 100 steps are kept, fewer for a very large script.
 - `==` formats the statement at the cursor, `gg=G` the whole script, and
   `=` with a move the statements it covers.
 - `:` opens the Omarchy look's command line, as `:ro` and `:rw` use, and

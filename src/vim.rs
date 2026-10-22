@@ -145,15 +145,20 @@ impl std::fmt::Debug for History {
 }
 
 impl History {
-    /// The most steps kept.
-    const KEPT: usize = 1000;
+    /// The most steps kept, as egui's history keeps.
+    const KEPT: usize = 100;
+    /// The most bytes of scripts the steps hold together: each is a whole
+    /// script, so a large one keeps fewer. The latest step stays whatever
+    /// its size.
+    const BYTES: usize = 16 << 20;
 
     /// `before` (a script and its cursor) as a step to undo to; nothing
     /// is left to redo.
     fn push(&mut self, before: (String, usize)) {
         self.undo.push(before);
-        if self.undo.len() > Self::KEPT {
-            self.undo.remove(0);
+        let mut bytes: usize = self.undo.iter().map(|(text, _)| text.len()).sum();
+        while self.undo.len() > Self::KEPT || (bytes > Self::BYTES && self.undo.len() > 1) {
+            bytes -= self.undo.remove(0).0.len();
         }
         self.redo.clear();
     }
@@ -901,7 +906,7 @@ impl Vim {
     }
 
     /// A motion typed, alone or after an operator.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // the key, its script and cursor, and what it acts with
     fn finish_motion(
         &mut self,
         t: &Text<'_>,
@@ -949,7 +954,7 @@ impl Vim {
     }
 
     /// `operator` over `range` (whole lines where `lines`).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // the key, its script and cursor, and what it acts with
     fn operate(
         &mut self,
         t: &Text<'_>,
@@ -1829,6 +1834,30 @@ mod tests {
         assert_eq!(text("|abc", "xu~<c-r>"), "A|bc");
         // `==` on an empty line formats nothing.
         assert_eq!(run("a\n|\nb", "==").2, None);
+    }
+
+    #[test]
+    fn the_history_keeps_a_hundred_steps_and_no_more_than_its_bytes() {
+        let mut history = History::default();
+        for n in 0..150 {
+            history.push((n.to_string(), 0));
+        }
+        assert_eq!(history.undo.len(), History::KEPT);
+        assert_eq!(history.undo[0].0, "50", "the oldest go first");
+        // Large scripts: as many as the bytes allow, and the latest always.
+        let large = "x".repeat(History::BYTES / 3);
+        for _ in 0..5 {
+            history.push((large.clone(), 0));
+        }
+        let bytes: usize = history.undo.iter().map(|(text, _)| text.len()).sum();
+        assert!(bytes <= History::BYTES, "{bytes}");
+        assert_eq!(
+            history.undo.last().map(|(text, _)| text.len()),
+            Some(large.len())
+        );
+        let mut history = History::default();
+        history.push(("x".repeat(History::BYTES + 1), 0));
+        assert_eq!(history.undo.len(), 1);
     }
 
     #[test]
