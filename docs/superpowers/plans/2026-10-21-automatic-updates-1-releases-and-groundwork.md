@@ -311,12 +311,14 @@ Insert before `publish:` in `.github/workflows/release.yml`:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          # Everything but the unsigned macOS binary, which the DMG replaces.
-          pattern: "!macos-universal-binary"
+          # Everything but the unsigned macOS binary, which the DMG replaces,
+          # and this job's own output from an earlier attempt.
+          pattern: "!{macos-universal-binary,checksums}"
           merge-multiple: true
       # The source archive, so source packages check the same checksums.
       - name: Source archive and checksums
         run: |
+          rm -f dist/checksums.txt dist/checksums.txt.sig
           curl --fail --location --retry 3 \
             "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" \
             --output "dist/tabletist-${TAG}-source.tar.gz"
@@ -344,10 +346,26 @@ In the `publish` job, change `needs: [build, macos]` to `needs: sign`, and repla
       - name: The checksums are signed
         run: |
           test "$(wc -c < dist/checksums.txt.sig)" -eq 64
+          (cd dist && sha256sum --check --strict checksums.txt)
           cat dist/checksums.txt
 ```
 
-`publish` keeps downloading every artifact but `macos-universal-binary`, which now includes `checksums`.
+`publish` keeps downloading every artifact but `macos-universal-binary`, which now includes `checksums`. The `sha256sum --check` makes the files about to be published the ones that were signed.
+
+Then give `softprops/action-gh-release` `draft: true`, with the comment `# Created as a draft so it is never public without its checksums.txt.sig.`, and add a last step to `publish`:
+
+```yaml
+      # Public only now, with every file and the signature uploaded. Here,
+      # not later: the aur job downloads checksums.txt from the public release.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+            | grep -qx checksums.txt.sig \
+            || { echo "::error::checksums.txt.sig is not attached to the draft release ${TAG}"; exit 1; }
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+```
 
 - [ ] **Step 3: Check the workflow parses**
 
