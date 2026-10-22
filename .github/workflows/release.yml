@@ -86,7 +86,11 @@ jobs:
           mkdir -p "dist/$name"
           # The marker tells the updater this copy came from the download
           # page and may replace itself. The AUR's tabletist-bin unpacks the
-          # same archive but does not install it.
+          # same archive but does not install it. omastore.toml runs the
+          # unpacked folder as it is, marker included: before the updater is
+          # turned on (automatic updates, step 2), it either refuses copies
+          # the store installed or the store's copies update themselves on
+          # purpose. Until then nothing reads the marker.
           cp README.md LICENSE packaging/tabletist-portable.txt "dist/$name/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/tabletist.exe" "dist/$name/"
