@@ -140,14 +140,15 @@ impl Skin<'_> {
     }
 }
 
-/// A row's value: the row, where its column starts, and whether the cursor
-/// is on it.
+/// A row's value: the row, where its column starts, whether the cursor is
+/// on it, and the hint the row paints, which describes its controls.
 #[derive(Clone, Copy)]
-struct Cell {
+struct Cell<'a> {
     index: usize,
     row: Rect,
     left: f32,
     on_cursor: bool,
+    described: Option<&'a str>,
 }
 
 pub(super) fn show(
@@ -1244,7 +1245,11 @@ fn text_row(
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
-    let (row, left, right, _) = row_frame(ui, (index, name), on_cursor, skin, actions);
+    let hint = hint.layout(ui.ctx());
+    let (row, left, right, button) = row_frame(ui, (index, name), on_cursor, skin, actions);
+    if let Some(button) = &button {
+        describe(ui, button, painted(&hint));
+    }
     let y = row.center().y;
     let label_width = label_width.min(right - left);
     let value_width = value_width.min(right - left - label_width);
@@ -1256,10 +1261,22 @@ fn text_row(
         Rect::from_min_size(pos2(at, row.top()), vec2(value.width(), ROW)),
         value.galley.text(),
     );
-    let hint = hint.layout(ui.ctx());
     let hint_left = at + value_width.max(value.width());
     if hint_left + hint.width() <= right {
         hint.paint_left(ui.painter(), hint_left, y);
+    }
+    // A row the cursor never stops on has no button to describe: its hint
+    // is said as its value is, painted or not.
+    if button.is_none()
+        && let Some(said) = painted(&hint)
+    {
+        let left = hint_left.min(right);
+        let width = hint.width().min(right - left).max(1.0);
+        widgets::announce(
+            ui,
+            Rect::from_min_size(pos2(left, row.top()), vec2(width, ROW)),
+            said,
+        );
     }
 }
 
@@ -1275,6 +1292,10 @@ fn option_row(
     actions: &mut Vec<Action>,
 ) {
     let locale = skin.locale;
+    // The hint is whole or left out: it tells nothing cut short. What it
+    // says describes the row's controls, painted or not.
+    let hint = hint(ui, option, settings, skin).layout(ui.ctx());
+    let described = painted(&hint);
     // The row's button comes before its values', so that a click on a
     // value is the value's.
     let (row, left, right, button) = row_frame(
@@ -1286,7 +1307,7 @@ fn option_row(
     );
     let y = row.center().y;
     if let Some(button) = &button {
-        describe(ui, button, option, skin);
+        describe(ui, button, described);
     }
     // A stepped option has no button that is its value: its row says it.
     if let Some(button) = button
@@ -1321,6 +1342,7 @@ fn option_row(
         row,
         left: left + label_width,
         on_cursor,
+        described,
     };
     match option {
         OptionId::PageSize
@@ -1374,11 +1396,32 @@ fn option_row(
             check(ui, cell, option, settings, skin, actions);
         }
     }
-    // The hint is whole or left out: it tells nothing cut short.
-    let hint = hint(ui, option, settings, skin).layout(ui.ctx());
     let hint_left = cell.left + value_width;
     if hint_left + hint.width() <= right {
         hint.paint_left(ui.painter(), hint_left, y);
+    }
+    // A warning is read out as it appears, over a point of the row, which
+    // has nothing to press, as the data view says its counts.
+    if warns(option, skin)
+        && let Some(said) = described
+    {
+        let at = pos2(hint_left.min(right), row.top());
+        widgets::announce_polite(ui, Rect::from_min_size(at, vec2(1.0, 1.0)), said);
+    }
+}
+
+/// What a hint laid out says, where it says anything.
+fn painted(hint: &crate::typography::Laid) -> Option<&str> {
+    Some(hint.galley.text()).filter(|said| !said.is_empty())
+}
+
+/// Whether `option`'s hint is a warning: a font or a pinned theme that is
+/// not found, drawn as something else.
+fn warns(option: OptionId, skin: &Skin) -> bool {
+    match option {
+        OptionId::Font => skin.font.missing.is_some(),
+        OptionId::Theme => matches!(skin.desktop.pin, Some((_, PinState::Missing))),
+        _ => false,
     }
 }
 
@@ -1447,7 +1490,7 @@ fn stepper(
         drawn: cell.on_cursor,
     };
     for (place, step) in places.into_iter().zip([fewer, more]) {
-        choice(ui, place, cell.index, step, press, skin, actions);
+        choice(ui, place, cell, step, press, skin, actions);
     }
 }
 
@@ -1482,15 +1525,7 @@ fn check(
         let press = Press::Value {
             set: value == current,
         };
-        choice(
-            &mut group,
-            place,
-            cell.index,
-            (word, value),
-            press,
-            skin,
-            actions,
-        );
+        choice(&mut group, place, cell, (word, value), press, skin, actions);
     }
 }
 
@@ -1863,7 +1898,7 @@ enum Press {
 fn choice(
     ui: &mut Ui,
     place: Rect,
-    index: usize,
+    cell: Cell,
     (word, value): (Said, OptionValue),
     press: Press,
     skin: &Skin,
@@ -1887,9 +1922,9 @@ fn choice(
     if let Press::Value { set } = press {
         button.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, set, &name));
     }
-    describe(ui, &button, value.option(), skin);
+    describe(ui, &button, cell.described);
     if button.clicked() {
-        actions.push(Action::SelectSettingsRow(index));
+        actions.push(Action::SelectSettingsRow(cell.index));
         // The theme it shows already: a value of the other looks', shown
         // as the desktop followed, stays in the file.
         let shown = matches!(press, Press::Value { set: true });
@@ -1899,14 +1934,13 @@ fn choice(
     }
 }
 
-/// Gives `option`'s small print, where it has one, to `control` as its
-/// description: what a screen reader reads after its name, as the macOS
-/// look's controls have it. In the case its name has, not the look's.
-fn describe(ui: &Ui, control: &egui::Response, option: OptionId, skin: &Skin) {
-    if let Some(print) = super::helper(option) {
-        let said = gettext(skin.locale, print);
+/// Gives a row's hint, where it has one, to `control` as its description:
+/// what a screen reader reads after its name, as the macOS look's controls
+/// have their small print. The words as the row paints them.
+fn describe(ui: &Ui, control: &egui::Response, hint: Option<&str>) {
+    if let Some(said) = hint {
         ui.ctx().accesskit_node_builder(control.id, |node| {
-            node.set_description(said.as_ref());
+            node.set_description(said);
         });
     }
 }
@@ -1974,15 +2008,7 @@ fn segments(
         let press = Press::Value {
             set: value == current,
         };
-        choice(
-            &mut group,
-            place,
-            cell.index,
-            (word, value),
-            press,
-            skin,
-            actions,
-        );
+        choice(&mut group, place, cell, (word, value), press, skin, actions);
     }
 }
 

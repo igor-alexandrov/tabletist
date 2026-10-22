@@ -775,9 +775,15 @@ fn the_run_scope_is_a_radio_group_named_with_the_run_key_and_described() {
             .collect();
         assert_eq!(buttons.len(), 2, "{}", look.name);
         for button in buttons {
+            // The terminal look's is its hint, as it paints it.
+            let said = if look.terminal {
+                "a selection always wins"
+            } else {
+                "A selection always wins"
+            };
             assert_eq!(
                 button.description(),
-                Some("A selection always wins"),
+                Some(said),
                 "{:?} in {}",
                 button.label(),
                 look.name

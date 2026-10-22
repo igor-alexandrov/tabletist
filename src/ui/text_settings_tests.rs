@@ -359,6 +359,46 @@ fn the_screen_says_the_font_fontconfig_drew_and_one_it_has_not() {
     assert!(!file(&harness).contains("font ="));
 }
 
+#[test]
+fn a_font_not_found_is_read_out_and_describes_its_row() {
+    let mut harness = terminal();
+    harness.app.change_settings(|settings| {
+        settings.font = Some("Fira Code".into());
+    });
+    harness.app.desktop_font = Read {
+        asked: Some("Fira Code".into()),
+        faces: None,
+        family: Some("JetBrainsMono Nerd Font".into()),
+        missing: true,
+    };
+    on_the_pane(&mut harness);
+    let said = "“Fira Code” not found · now: jetbrainsmono nerd font";
+    let tree = harness.settle();
+    assert!(super::settings_access_tests::heard(&tree, said));
+    let row = crate::testing::node(&tree, "Font", egui::accesskit::Role::Button).expect("the row");
+    let (_, row) = tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == row)
+        .expect("the row");
+    assert_eq!(row.description(), Some(said));
+    // Found, it is no warning: the row says what fontconfig drew, and
+    // nothing is read out.
+    harness.app.desktop_font.missing = false;
+    harness.app.desktop_font.family = Some("Fira Code".into());
+    let tree = harness.settle();
+    assert!(!super::settings_access_tests::heard(&tree, said));
+    let found = "now: fira code, from fontconfig";
+    assert!(!super::settings_access_tests::heard(&tree, found));
+    let row = crate::testing::node(&tree, "Font", egui::accesskit::Role::Button).expect("the row");
+    let (_, row) = tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == row)
+        .expect("the row");
+    assert_eq!(row.description(), Some(found));
+}
+
 /// Whether the entry called `label` is told to a screen reader as the
 /// one in use.
 fn current(harness: &mut Harness, label: &str) -> Option<bool> {
