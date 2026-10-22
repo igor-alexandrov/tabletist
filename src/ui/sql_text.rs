@@ -1336,12 +1336,14 @@ fn vim_input(event: &egui::Event, mode: vim::Mode, held: bool, chords: &VimChord
                     Read::Take(vec![Input::Escape])
                 };
             }
+            // Before AltGr's drop: a redo may be set to a chord with Ctrl
+            // and Alt.
+            if chords.pressed(event, &chords.redo) {
+                return Read::Take(vec![Input::Redo]);
+            }
             if modifiers.ctrl && modifiers.alt {
                 // AltGr on Windows: its character comes as text.
                 return Read::Drop;
-            }
-            if chords.pressed(event, &chords.redo) {
-                return Read::Take(vec![Input::Redo]);
             }
             // The field's chords that delete (a word, to a line's end) have
             // nothing to delete in normal mode.
@@ -1880,6 +1882,22 @@ mod tests {
         let empty = &galleys[1];
         assert_eq!(empty.rows.len(), 1);
         assert_eq!(empty.rows[0].height(), galley.rows[0].height());
+    }
+
+    #[test]
+    fn vim_s_redo_set_to_a_chord_with_ctrl_and_alt_is_read_and_altgr_is_not() {
+        let held = egui::Modifiers::CTRL | egui::Modifiers::ALT;
+        let chords = VimChords {
+            layout: crate::keymap::Layout::Omarchy,
+            held,
+            redo: vec!["ctrl+alt+r"],
+            normal: vec!["ctrl+["],
+        };
+        let press = |key| crate::testing::key(key, held);
+        let read = |key| vim_input(&press(key), vim::Mode::Normal, false, &chords);
+        assert!(matches!(read(egui::Key::R), Read::Take(inputs) if inputs == [vim::Input::Redo]));
+        // AltGr with another key: its character comes as text.
+        assert!(matches!(read(egui::Key::Num8), Read::Drop));
     }
 
     #[test]
