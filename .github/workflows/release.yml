@@ -165,7 +165,9 @@ jobs:
     name: macOS universal app
     needs: macos-build
     runs-on: macos-latest
-    timeout-minutes: 60
+    # Notarizing waits on Apple's queue: the team's first dry run spent 52
+    # minutes in it.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
