@@ -19,10 +19,10 @@ Apple Silicon and Intel. Open it and drag **Tabletist** to **Applications**.
 
 ### First open on macOS
 
-Releases are signed and notarized only when they are built with the Apple
-signing secrets, and macOS blocks an unsigned build on first launch. For an
-unsigned build only: try to open it once, then click **Open Anyway** in
-**System Settings → Privacy & Security**, or run:
+Releases are signed with a Developer ID and notarized by Apple, so macOS
+opens them like any other app. Older releases were not, and macOS blocks
+them on first launch. For one of those: try to open it once, then click
+**Open Anyway** in **System Settings → Privacy & Security**, or run:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Tabletist.app

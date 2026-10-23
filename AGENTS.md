@@ -206,11 +206,21 @@ the AUR job failed, use "Re-run failed jobs": "Re-run all jobs" builds,
 signs and uploads everything again, and takes the release back to a
 draft while it does.
 
-Optional secrets (each step skips with a notice without them):
+Required for a tag, the Apple secrets, which sign and notarize the macOS app:
 
 - `APPLE_CERTIFICATE_P12` (base64), `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`: sign the app and DMG with a Developer ID.
 - `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`: notarize and staple.
+
+`packaging/macos/signing-plan.sh` fails a tag without all six, before
+anything is signed: the pages tell people a release opens without Gatekeeper
+asking. A dry run without them builds an ad-hoc signed app, and a dry run
+with them checks the notarized DMG as a release does. The certificate is a
+Developer ID Application one; when it expires, export the new one and
+replace the first three together.
+
+Optional secret (its step skips with a notice without it):
+
 - `AUR_SSH_KEY`: push `tabletist-bin` and `tabletist` to the AUR. The AUR's
   host key is pinned in `release.yml`; update it there if the AUR rotates it.
 

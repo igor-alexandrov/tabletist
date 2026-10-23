@@ -6,8 +6,10 @@
 # Signing takes APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD and
 # APPLE_SIGNING_IDENTITY; notarizing takes those and APPLE_ID, APPLE_TEAM_ID
 # and APPLE_APP_PASSWORD. Writes sign=true or sign=false to $GITHUB_OUTPUT.
-# A partial set warns, naming what is missing, and the release still ships:
-# signed but not notarized, or ad-hoc signed.
+# With REQUIRE_SIGNING=true (a release) every one of them must be set, or it
+# fails naming what is missing: a release is signed and notarized. Otherwise
+# (a dry run) a partial set warns and ships what it can: signed but not
+# notarized, or ad-hoc signed.
 set -euo pipefail
 
 signing=(APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY)
@@ -29,6 +31,11 @@ missing_notary="$(missing "${notary[@]}")"
 missing_all="$(missing "${signing[@]}" "${notary[@]}")"
 everything="$(IFS=,; echo "${signing[*]},${notary[*]}" | sed 's/,/, /g')"
 output="${GITHUB_OUTPUT:-/dev/null}"
+
+if [ "${REQUIRE_SIGNING:-false}" = "true" ] && [ -n "$missing_all" ]; then
+    echo "::error::A release is signed and notarized, but $missing_all not set."
+    exit 1
+fi
 
 if [ -z "$missing_signing" ]; then
     echo "sign=true" >> "$output"
