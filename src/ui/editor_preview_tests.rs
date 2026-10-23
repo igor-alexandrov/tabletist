@@ -461,3 +461,27 @@ fn shift_tab_comes_back_to_the_preview_in_one_press() {
     harness.press(Key::Tab, Modifiers::SHIFT);
     assert!(focused(&harness), "the gutter is no stop of its own");
 }
+
+#[test]
+fn the_card_is_the_preview_s_focus_ring_which_focus_paints() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let mut harness = pane(look);
+        into_preview(&mut harness);
+        let field = place(&mut harness);
+        let (rect, ring) = crate::ui::focus::hinted(&harness.ctx).expect("a ring asked for");
+        let radius = if look.terminal { 3 } else { 10 };
+        assert_eq!(
+            ring,
+            crate::ui::focus::Ring::Field { radius },
+            "{}",
+            look.name
+        );
+        // The card the field sits in: round it, from further left.
+        assert!(rect.intersects(field), "{} {rect:?} {field:?}", look.name);
+        assert!(
+            rect.left() < field.left(),
+            "{} {rect:?} {field:?}",
+            look.name
+        );
+    }
+}

@@ -53,6 +53,14 @@ struct Hint {
     clip: Rect,
 }
 
+/// The ring the focused widget asked for this frame, and where it goes:
+/// for the tests.
+#[cfg(test)]
+pub(crate) fn hinted(ctx: &egui::Context) -> Option<(Rect, Ring)> {
+    ctx.data(|data| data.get_temp::<Hint>(hint_id()))
+        .map(|hint| (hint.rect, hint.ring))
+}
+
 fn visible_id() -> Id {
     Id::new("focus-visible")
 }

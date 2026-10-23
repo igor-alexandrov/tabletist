@@ -450,6 +450,8 @@ struct Edited {
     typed: bool,
     /// `:` typed in vim's normal or visual mode.
     prompt: bool,
+    /// The field's own.
+    response: egui::Response,
 }
 
 impl Edited {
@@ -625,15 +627,16 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
 /// settings have it now, read-only and named "Editor preview". Its cursor's
 /// line is lit whether or not it has the keyboard, and it has no statement
 /// bar and no gutter to press: one Tab stop. Nothing of it reaches a
-/// database. Returns how tall the field is that shows all of the script:
-/// the preview's height from the next frame on.
+/// database. Returns how tall the field is that shows all of the script
+/// (the preview's height from the next frame on), and the field's
+/// response, for the ring that shows it has the keyboard.
 pub fn preview(
     ui: &mut Ui,
     sql_tab: &mut SqlTab,
     id: Id,
     settings: &crate::settings::Settings,
     (look, palette, locale): (&Look, &Palette, Locale),
-) -> f32 {
+) -> (f32, egui::Response) {
     let shown = Shown::of(settings, *look, *palette, locale);
     let lines = sql_tab.text.bytes().filter(|b| *b == b'\n').count() + 1;
     let gutter = Gutter::new(ui, &shown.look, lines, shown.numbering.shown());
@@ -650,7 +653,7 @@ pub fn preview(
     };
     draw_lines(ui, &shown, &gutter, &place, &edited, &lines, true);
     // The rows as laid out, with the field's 8 above and under them.
-    edited.galley.rect.height() + 16.0
+    (edited.galley.rect.height() + 16.0, edited.response)
 }
 
 /// How tall the preview is that shows all of `text` before it has drawn:
@@ -1883,12 +1886,15 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         crate::ui::focus::claim(ui, crate::ui::focus::Region::Editor, &output.response);
     }
     // The script fills its pane: the caret says where the keyboard is.
-    crate::ui::focus::hint(
-        ui,
-        &output.response,
-        output.response.rect,
-        crate::ui::focus::Ring::Own,
-    );
+    // (The preview's card is its ring: `editor_preview` asks for it.)
+    if !field.read_only {
+        crate::ui::focus::hint(
+            ui,
+            &output.response,
+            output.response.rect,
+            crate::ui::focus::Ring::Own,
+        );
+    }
     // The name only: the field keeps the role and the value egui gave it.
     ui.ctx().accesskit_node_builder(field.id, |node| {
         node.set_label(field.name);
@@ -1978,6 +1984,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     Edited {
         typed,
         prompt,
+        response: output.response.response.clone(),
         focused: output.response.has_focus(),
         origin: output.galley_pos,
         caret,

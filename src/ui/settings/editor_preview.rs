@@ -109,7 +109,7 @@ pub(super) fn show(
             .max_rect(card.shrink(1.0)),
     );
     inside.set_clip_rect(card.shrink(1.0).intersect(ui.clip_rect()));
-    let shown = crate::ui::sql_text::preview(
+    let (shown, response) = crate::ui::sql_text::preview(
         &mut inside,
         &mut tab,
         field_id(),
@@ -120,14 +120,17 @@ pub(super) fn show(
         ui.data_mut(|data| data.insert_temp(height_id, shown));
         ui.ctx().request_repaint();
     }
-    // The card's border, as the Appearance pane's preview has it; in the
-    // accent while the preview has the keyboard, which its letters then
-    // move.
+    // The card's border, as the Appearance pane's preview has it. While
+    // the preview has the keyboard, which its letters then move, the card
+    // is a text field's ring: `focus` paints it.
     let radius = if look.terminal { 3 } else { 10 };
-    let focused = ui.memory(|memory| memory.has_focus(field_id()));
-    let border = if focused {
-        palette.accent
-    } else if look.terminal {
+    crate::ui::focus::hint(
+        ui,
+        &response,
+        card,
+        crate::ui::focus::Ring::Field { radius },
+    );
+    let border = if look.terminal {
         palette.outline
     } else {
         palette.border
