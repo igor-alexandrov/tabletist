@@ -1160,7 +1160,8 @@ fn lead_at(text: &str, at: usize) -> &str {
 }
 
 /// Whether `event` is a line break as the field takes it: Enter pressed,
-/// with Shift or without (egui's return key, matched logically).
+/// alone or with Shift or Alt, not with Command or Ctrl (egui's return
+/// key, matched logically).
 fn is_line_break(event: &egui::Event) -> bool {
     matches!(
         event,
