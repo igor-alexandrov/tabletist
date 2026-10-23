@@ -958,6 +958,29 @@ mod tests {
     }
 
     #[test]
+    fn a_recorded_key_is_the_menu_s_key() {
+        // The sidebar's toggle has one line (GLOBAL), so the recorded chord
+        // is its only one. (Format would not do: its large editor's line
+        // keeps its own chord, and two chords show none.)
+        let mac = Layout::Mac;
+        let sidebar = row(Command::ToggleSidebar, Scope::Global);
+        let recorded = Overrides::default().record(mac, sidebar, "cmd+alt+b");
+        let (keymap, refused) = Keymap::with(mac, &recorded);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(
+            keymap.menu_key(Command::ToggleSidebar, mac),
+            Some(crate::keymap::MenuKey {
+                mods: crate::keymap::Mods {
+                    cmd: true,
+                    alt: true,
+                    ..Default::default()
+                },
+                key: egui::Key::B,
+            })
+        );
+    }
+
+    #[test]
     fn recording_gives_a_row_a_key_and_its_default_back_writes_nothing() {
         let mac = Layout::Mac;
         let format = row(Command::Format, Scope::SqlEditor);
