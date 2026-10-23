@@ -44,9 +44,11 @@ fn tab(ui: &Ui) -> Arc<Mutex<SqlTab>> {
     let last: Option<u64> = ui.data(|data| data.get_temp(drawn));
     ui.data_mut(|data| {
         data.insert_temp(drawn, frame);
-        // A new tab's text is empty: `show` sets its query and cursor.
+        // A new tab's text is empty: `show` sets its query and cursor. Its
+        // height is estimated again, as the layout may have changed.
         if last.is_some_and(|last| last + 1 < frame) {
             data.remove::<Arc<Mutex<SqlTab>>>(field_id().with("tab"));
+            data.remove::<f32>(field_id().with("height"));
         }
     });
     ui.data_mut(|data| {
