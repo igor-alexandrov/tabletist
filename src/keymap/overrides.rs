@@ -981,6 +981,36 @@ mod tests {
     }
 
     #[test]
+    fn two_recorded_chords_show_no_menu_key() {
+        // Format's SQL editor line takes a new chord and its cell editor
+        // line keeps `cmd+shift+f`: two chords, so the menu shows none.
+        let mac = Layout::Mac;
+        let format = row(Command::Format, Scope::SqlEditor);
+        let recorded = Overrides::default().record(mac, format, "cmd+alt+f");
+        let (keymap, refused) = Keymap::with(mac, &recorded);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(keymap.menu_key(Command::Format, mac), None);
+    }
+
+    #[test]
+    fn a_recorded_chord_without_cmd_or_ctrl_shows_no_menu_key() {
+        let mac = Layout::Mac;
+        let sidebar = row(Command::ToggleSidebar, Scope::Global);
+        let recorded = Overrides::default().record(mac, sidebar, "alt+b");
+        let (keymap, refused) = Keymap::with(mac, &recorded);
+        assert!(refused.is_empty(), "{refused:?}");
+        // The key is the command's (the line took it), yet no menu shows it.
+        assert!(
+            keymap
+                .of(Command::ToggleSidebar)
+                .flat_map(|binding| binding.bound(mac).chords.iter())
+                .any(|chord| chord.keys == "alt+b"),
+            "the recorded key stands"
+        );
+        assert_eq!(keymap.menu_key(Command::ToggleSidebar, mac), None);
+    }
+
+    #[test]
     fn recording_gives_a_row_a_key_and_its_default_back_writes_nothing() {
         let mac = Layout::Mac;
         let format = row(Command::Format, Scope::SqlEditor);

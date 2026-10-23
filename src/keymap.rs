@@ -2805,7 +2805,9 @@ impl EditItem {
     }
 }
 
-/// One chord as a menu shows it beside an item.
+/// One chord as a menu shows it beside an item. It is spelled as the Mac
+/// column spells it: on Windows the keymap's Cmd is Ctrl, so a caller folds
+/// Cmd into Ctrl itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MenuKey {
     pub mods: Mods,
@@ -2843,7 +2845,8 @@ impl Keymap {
     /// no single press (a sequence, a count, a line of the prompt, a typed
     /// character), or a press with neither Cmd nor Ctrl held: AppKit would
     /// take that from every text field, and a key it gives back carries no
-    /// text.
+    /// text. Spellings are compared as written, so on Windows `cmd+t` and
+    /// `ctrl+t` count as two chords and show none.
     pub fn menu_key(&self, command: Command, layout: Layout) -> Option<MenuKey> {
         if !command.info().built {
             return None;
@@ -4978,8 +4981,21 @@ mod tests {
             })
         );
         // Two lines with the same chord are one chord.
-        let format = keymap.menu_key(Command::Format, Layout::Mac);
-        assert!(format.is_some(), "Format SQL shows its chord");
+        assert_eq!(
+            keymap.menu_key(Command::Format, Layout::Mac),
+            Some(MenuKey {
+                mods: held(true, true),
+                key: Key::F
+            })
+        );
+        // Not built yet: Explain has a chord on the Mac and shows none.
+        assert!(!Command::Explain.info().built);
+        assert!(
+            keymap
+                .of(Command::Explain)
+                .any(|binding| !binding.mac.chords.is_empty())
+        );
+        assert_eq!(keymap.menu_key(Command::Explain, Layout::Mac), None);
         // No key on the Mac.
         assert_eq!(keymap.menu_key(Command::SwitchDatabase, Layout::Mac), None);
         // A typed character, not a chord.
@@ -5036,7 +5052,9 @@ mod tests {
             })
         );
         for item in EditItem::ALL {
-            assert!(keymap.edit_key(item, Layout::Mac).is_some(), "{item:?}");
+            for layout in [Layout::Mac, Layout::Windows] {
+                assert!(keymap.edit_key(item, layout).is_some(), "{item:?}");
+            }
             // Omarchy keeps none: Super is Hyprland's.
             assert_eq!(keymap.edit_key(item, Layout::Omarchy), None);
         }
