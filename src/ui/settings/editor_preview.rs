@@ -1,9 +1,10 @@
 //! Settings › Editor's preview: the SQL editor itself, over the boards'
 //! Bookshop query (publishers and `book_covers`) as Format lays it out with
 //! the settings, read-only. It shows every setting as it is set: the
-//! keybindings' cursor, the line numbers, the cursor's line, wrap, and the
-//! keywords' case and the commas. Its own state (the cursor, vim's mode) is
-//! the window's, in egui's memory: nothing of it reaches the backend.
+//! keybindings' cursor, the line numbers, the cursor's line, wrap, the
+//! keywords' case and the commas, and the indent (its `CASE`'s parts). Its
+//! own state (the cursor, vim's mode) is the window's, in egui's memory:
+//! nothing of it reaches the backend.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -18,9 +19,12 @@ use crate::settings::Settings;
 use crate::theme::{Look, Palette};
 
 /// The boards' query, as typed: Format lays it out. Its keywords are of
-/// both cases, so that Keep shows otherwise than upper and lower case.
-const QUERY: &str = "SELECT p.name AS publisher, count(*) as covers from book_covers c \
-                     JOIN publishers p on p.id = c.publisher_id GROUP BY p.name;";
+/// both cases, so that Keep shows otherwise than upper and lower case, and
+/// its `CASE` (not the boards') stands in by the indent.
+const QUERY: &str = "SELECT p.name AS publisher, count(*) as covers, \
+                     sum(CASE WHEN c.kind = 'front' then 1 else 0 END) as fronts \
+                     from book_covers c JOIN publishers p on p.id = c.publisher_id \
+                     GROUP BY p.name;";
 
 /// The preview's text field: the editor's state is kept by it.
 pub(crate) fn field_id() -> Id {
@@ -77,7 +81,7 @@ pub(super) fn show(
     if tab.text != text {
         // The settings changed the query's layout: the cursor goes back
         // to where the boards have it, the start of the third line's
-        // words (`FROM book_covers c`).
+        // words (`sum(CASE`).
         let third = text.match_indices('\n').nth(1).map_or(0, |(at, _)| at + 1);
         let words = third + text[third..].len() - text[third..].trim_start_matches(' ').len();
         // Out of visual mode too: the cursor is where it is put now.

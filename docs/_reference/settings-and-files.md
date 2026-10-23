@@ -46,7 +46,8 @@ are made in the app, so it needs no connection and reads no database.
 A third pane, **Editor**, sets how the SQL editor runs and types. Every
 open SQL editor follows each change at once, and so does the preview
 under the options: the SQL editor itself over a query of the Bookshop's,
-laid out as Format would with the Keywords and Commas set, and showing
+laid out as Format would with the Keywords, Commas and Indent set (its
+`CASE` stands in two or four: a tab looks as four spaces), and showing
 the keybindings' cursor, the line numbers, the cursor's line and wrap as
 set. It can be read, selected and copied, not changed, and it never
 reaches a database. While it has the keyboard its border is in the
