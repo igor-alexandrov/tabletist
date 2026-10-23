@@ -15,4 +15,5 @@ workspace = true
 egui = "0.36"
 # The window the bar attaches to on Windows; eframe already builds it.
 raw-window-handle = "0.6"
+# Warns when muda refuses an item's key or the bar cannot attach.
 log = "0.4"

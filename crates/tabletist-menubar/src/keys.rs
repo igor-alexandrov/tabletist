@@ -27,7 +27,8 @@ pub enum Via {
 /// The key-down AppKit was handling when an item was chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyDown {
-    /// `charactersIgnoringModifiers`: Shift still applies to it.
+    /// `charactersIgnoringModifiers`: Shift still applies to it. It is the
+    /// layout's character, so `via_of` does not compare it.
     pub chars: String,
     pub cmd: bool,
     pub ctrl: bool,
@@ -35,11 +36,15 @@ pub struct KeyDown {
     pub shift: bool,
 }
 
-/// Whether `down` is the key equivalent of an item whose key is `key`.
-/// Only a press holding Cmd or Ctrl can be one (every menu key does), with
-/// the same modifiers exactly, and, without Shift, the same character:
-/// with Shift the character is the shifted one, which depends on the
-/// keyboard, so the modifiers decide.
+/// Whether `down` is the key equivalent of an item whose key is `key`:
+/// the item has a key that holds Cmd or Ctrl, and the press holds the same
+/// four modifiers exactly. The character is not compared: it is the
+/// layout's (`н` for Cmd and the physical Y key on a Russian layout, `&`
+/// for the 1 key on AZERTY) while AppKit still matched the item's key
+/// equivalent. Only a key equivalent holds Cmd or Ctrl: Return in an open
+/// menu, the Help menu's search and Ctrl+F2 hold neither, and AppKit
+/// chooses the item whose equivalent matches, so no other chord can have
+/// chosen it.
 pub fn via_of(down: Option<&KeyDown>, key: Option<Shortcut>) -> Via {
     let (Some(down), Some(key)) = (down, key) else {
         return Via::Click;
@@ -48,9 +53,7 @@ pub fn via_of(down: Option<&KeyDown>, key: Option<Shortcut>) -> Via {
         && down.ctrl == key.ctrl
         && down.alt == key.alt
         && down.shift == key.shift;
-    let same =
-        key.shift || character(key.key).is_some_and(|char| down.chars.eq_ignore_ascii_case(&char));
-    if (key.cmd || key.ctrl) && held && same {
+    if (key.cmd || key.ctrl) && held {
         Via::Key
     } else {
         Via::Click
@@ -61,6 +64,11 @@ pub fn via_of(down: Option<&KeyDown>, key: Option<Shortcut>) -> Via {
 /// `charactersIgnoringModifiers`: a letter in lower case, a digit or a
 /// mark as a US keyboard types it, and AppKit's own for the named keys
 /// (`NSUpArrowFunctionKey` and its kin are U+F700 on).
+// Only the tests use it until Task 3's accelerators do; that task removes this.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the accelerators of the next task use it")
+)]
 pub(crate) fn character(key: egui::Key) -> Option<String> {
     use egui::Key as K;
     let named = match key {
@@ -69,6 +77,7 @@ pub(crate) fn character(key: egui::Key) -> Option<String> {
         K::Escape => "\u{1b}",
         K::Backspace => "\u{7f}",
         K::Space => " ",
+        K::Quote => "'",
         // egui's name for it is the minus sign, U+2212.
         K::Minus => "-",
         K::ArrowUp => "\u{F700}",
@@ -87,6 +96,7 @@ pub(crate) fn character(key: egui::Key) -> Option<String> {
         K::F10 => "\u{F70D}",
         K::F11 => "\u{F70E}",
         K::F12 => "\u{F70F}",
+        K::Insert => "\u{F727}",
         K::Delete => "\u{F728}",
         K::Home => "\u{F729}",
         K::End => "\u{F72B}",
@@ -128,6 +138,10 @@ mod tests {
         }
     }
 
+    fn with_alt(down: KeyDown) -> KeyDown {
+        KeyDown { alt: true, ..down }
+    }
+
     #[test]
     fn an_item_s_own_key_equivalent_is_a_key() {
         let history = cmd(egui::Key::Y);
@@ -135,10 +149,52 @@ mod tests {
             via_of(Some(&down("y", true, false, false)), Some(history)),
             Via::Key
         );
-        // AppKit hands the character as typed: Cmd keeps it lower case.
+        // Caps Lock gives the capital: the character is not compared.
         assert_eq!(
             via_of(Some(&down("Y", true, false, false)), Some(history)),
             Via::Key
+        );
+    }
+
+    #[test]
+    fn the_layout_s_character_does_not_matter() {
+        let history = cmd(egui::Key::Y);
+        // Cmd and the physical Y key on a Russian layout: AppKit still
+        // matches the item's `y`.
+        assert_eq!(
+            via_of(Some(&down("н", true, false, false)), Some(history)),
+            Via::Key
+        );
+    }
+
+    #[test]
+    fn a_key_without_cmd_or_ctrl_is_always_a_click() {
+        let refresh = Shortcut {
+            key: egui::Key::F5,
+            cmd: false,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        };
+        assert_eq!(
+            via_of(Some(&down("\u{F708}", false, false, false)), Some(refresh)),
+            Via::Click
+        );
+    }
+
+    #[test]
+    fn other_modifiers_held_make_a_click() {
+        let history = cmd(egui::Key::Y);
+        assert_eq!(
+            via_of(
+                Some(&with_alt(down("y", true, false, false))),
+                Some(history)
+            ),
+            Via::Click
+        );
+        assert_eq!(
+            via_of(Some(&down("y", true, false, true)), Some(history)),
+            Via::Click
         );
     }
 
@@ -150,11 +206,6 @@ mod tests {
         // Return in an open menu, the Help menu's search, Ctrl+F2 and on.
         assert_eq!(
             via_of(Some(&down("\r", false, false, false)), Some(history)),
-            Via::Click
-        );
-        // Another chord.
-        assert_eq!(
-            via_of(Some(&down("j", true, false, false)), Some(history)),
             Via::Click
         );
         // The right letter with other modifiers.
@@ -191,6 +242,7 @@ mod tests {
         assert_eq!(character(egui::Key::A).as_deref(), Some("a"));
         assert_eq!(character(egui::Key::OpenBracket).as_deref(), Some("["));
         assert_eq!(character(egui::Key::Num1).as_deref(), Some("1"));
+        assert_eq!(character(egui::Key::Quote).as_deref(), Some("'"));
         // egui names Minus with U+2212; AppKit types the hyphen.
         assert_eq!(character(egui::Key::Minus).as_deref(), Some("-"));
     }
