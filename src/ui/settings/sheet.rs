@@ -197,7 +197,7 @@ pub(super) fn show(
                 SettingsPane::General => content(
                     &mut pane,
                     ("General", Some(GENERAL)),
-                    (SettingsPane::General.sections(), false, None),
+                    (SettingsPane::General.sections(), Preview::None, None),
                     // As the window shows them: what the look has where the
                     // settings do not say (the grouping of numbers).
                     &super::shown(app),
@@ -208,7 +208,7 @@ pub(super) fn show(
                 SettingsPane::Appearance => content(
                     &mut pane,
                     ("Appearance", Some(APPEARANCE)),
-                    (SettingsPane::Appearance.sections(), true, None),
+                    (SettingsPane::Appearance.sections(), Preview::Grid, None),
                     &super::shown(app),
                     limit,
                     &skin,
@@ -224,7 +224,7 @@ pub(super) fn show(
                     ),
                     (
                         SettingsPane::Editor.sections(),
-                        false,
+                        Preview::Editor,
                         // Show History, which shows the window's tab.
                         Some((
                             OptionId::HistoryKeep,
@@ -258,8 +258,9 @@ pub(super) fn show(
             let bottom = limit.max(rows) + foot;
             // The last row leaves its rule to the footer's: where there is
             // room between them, it has one of its own. The preview, which
-            // ends the Appearance pane, has its border.
-            if rows < limit - 0.5 && dialog.pane != SettingsPane::Appearance {
+            // ends the Appearance and Editor panes, has its border.
+            let previewed = matches!(dialog.pane, SettingsPane::Appearance | SettingsPane::Editor);
+            if rows < limit - 0.5 && !previewed {
                 let across = egui::Rangef::new(room.left() + NAV + SIDE, room.right() - SIDE);
                 widgets::hline(ui, across, rows - 0.5, skin.palette.surface);
             }
@@ -368,11 +369,21 @@ const GENERAL: &str =
 const APPEARANCE: &str =
     "Theme, type and how dense the grid is. The preview updates as you change things.";
 
-/// A pane's sections, each its heading and its options; whether it has
-/// the preview; and the button after one of its rows.
+/// The preview that ends a pane, where it has one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Preview {
+    None,
+    /// Appearance's: a connection's bar and two rows of a table.
+    Grid,
+    /// Editor's: the SQL editor over the boards' query.
+    Editor,
+}
+
+/// A pane's sections, each its heading and its options; the preview it
+/// has; and the button after one of its rows.
 type Sections<'a> = (
     &'a [(&'static str, &'a [OptionId])],
-    bool,
+    Preview,
     Option<(OptionId, After<'a>)>,
 );
 
@@ -468,14 +479,18 @@ fn content(
             }
             // Under the options, 14 under the last of them, the preview,
             // and 14 under it.
-            if preview {
+            if preview != Preview::None {
                 let name = skin.say("Preview");
                 ui.add_space(14.0);
                 widgets::section_label(&name, look, palette)
                     .layout(ui.ctx())
                     .label(ui);
                 ui.add_space(2.0);
-                super::preview::show(ui, (&name, 0.0), settings, look, palette);
+                if preview == Preview::Grid {
+                    super::preview::show(ui, (&name, 0.0), settings, look, palette);
+                } else {
+                    super::editor_preview::show(ui, 0.0, settings, (look, palette, skin.locale));
+                }
                 ui.add_space(14.0);
             }
         });

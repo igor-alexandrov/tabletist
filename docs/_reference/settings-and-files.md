@@ -44,7 +44,15 @@ are made in the app, so it needs no connection and reads no database.
 | **Window header** (Omarchy: connection bar) | Tint + stripe (Omarchy: tint + label), or Stripe only (Omarchy: label only). Production keeps its tint either way | Tint + stripe |
 
 A third pane, **Editor**, sets how the SQL editor runs and types. Every
-open SQL editor follows each change at once.
+open SQL editor follows each change at once, and so does the preview
+under the options: the SQL editor itself over a query of the Bookshop's,
+laid out as Format would with the Keywords and Commas set, and showing
+the keybindings' cursor, the line numbers, the cursor's line and wrap as
+set. It can be read, selected and copied, not changed, and it never
+reaches a database. While it has the keyboard its border is in the
+accent, and Esc gives the keyboard back before a second closes the
+window; on the Omarchy screen its letters are the preview's then, and
+only Ctrl+E and the pane keys are the screen's.
 
 | Option | Choices | Default |
 | --- | --- | --- |
@@ -58,14 +66,11 @@ open SQL editor follows each change at once.
 | **Autocomplete** | As you type, On Ctrl+Space (the list opens only when you ask), or Off. Keywords are offered in the case **Keywords** sets, upper case with Keep | As you type |
 | **Close brackets and quotes** (Omarchy: close brackets) | On or off. On, `(`, `[`, `{` and a quote (and a backtick, which quotes names on MySQL and SQLite) get their closing one after the cursor where nothing follows that it would split off. A quote is not paired inside a word, right after the same quote, or inside a string, a quoted name or a comment. A closing one typed before its twin steps over it, and Backspace takes both out while the pair is empty. Typed over a selection, the two go round it, which stays selected and undoes in one step. A paste, an input method's text, or two characters arriving at once go in as they come | On |
 | **Line numbers** | On or off on macOS and Windows; relative, absolute or off in the Omarchy look. On writes `absolute`; a `relative` set in the file shows as on and stays | On (absolute) on macOS and Windows, relative in the Omarchy look |
-| **Current line highlight** (macOS and Windows) | On or off: the line the cursor is on is filled while the editor has the keyboard. The Omarchy look has no row: it follows the key, set in the file | On |
+| **Current line highlight** (macOS and Windows) | On or off: the line the cursor is on is filled while the editor has the keyboard (in the preview, with the keyboard or without it). Off, no line is filled, in the preview either. The Omarchy look has no row: it follows the key, set in the file | On |
 | **Wrap** | On or off. On, a line longer than the editor wraps at its width and the editor scrolls down alone. The line keeps one number, on its first row, and a click in the gutter beside any of its rows puts the cursor at its start. Off, long lines scroll sideways | Off |
 | **Keywords** (in Format · Cmd/Ctrl+Shift+F; Omarchy: format · `=` in normal mode) | UPPERCASE, lowercase or Keep: the case Format writes reserved words in. Keep leaves them as you typed them. Names, strings and comments never change | UPPERCASE on macOS and Windows, lowercase in the Omarchy look |
 | **Commas** | Trailing (at the end of an item's line) or Leading (at the start of the next item's, on the edge of the river), in the lists Format breaks: a `SELECT`'s and a `WITH`'s. A comma with a comment after it, on its line or the next, stays at the end of its line | Trailing |
 | **Keep query history** (Omarchy: keep) | The last 100, 1,000 or 10,000 statements of each connection, on this computer, or Don't keep: every statement run from the SQL editor, a grid's save, a filter or sort you set, and agents' runs, as the [History tab]({% link _guide/sql-editor.md %}#history) shows them. Results are never kept. Don't keep records nothing more, and asks whether to delete what is kept (Omarchy: `D` deletes, `n` keeps). **Show History** beside it (Omarchy: Enter) shows the window's History tab | Last 1,000 |
-
-The other keys of the four `[editor.…]` tables are read and kept now, and
-take effect in a later version.
 
 On macOS and Windows the Editor pane's **Clear history…** deletes the
 history of every connection, once you say so; a History tab's own clears

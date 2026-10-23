@@ -450,6 +450,8 @@ struct Edited {
     typed: bool,
     /// `:` typed in vim's normal or visual mode.
     prompt: bool,
+    /// The field's own.
+    response: egui::Response,
 }
 
 impl Edited {
@@ -484,14 +486,80 @@ fn line_rows(galley: &Galley) -> Vec<usize> {
     starts
 }
 
+/// How the editor draws, as the settings and the look have them.
+struct Shown {
+    look: Look,
+    palette: Palette,
+    locale: Locale,
+    numbering: crate::settings::LineNumbers,
+    style: sql::format::Style,
+    indent: Indent,
+    wraps: bool,
+    highlight: bool,
+    pairs: bool,
+    vim: bool,
+}
+
+impl Shown {
+    fn of(
+        settings: &crate::settings::Settings,
+        look: Look,
+        palette: Palette,
+        locale: Locale,
+    ) -> Self {
+        Self {
+            numbering: settings.line_numbers_in(look.terminal),
+            style: format_style(settings, &look),
+            indent: settings.indent,
+            wraps: settings.wrap,
+            highlight: settings.highlight_line,
+            pairs: settings.close_pairs,
+            vim: settings.editor_keys_in(look.terminal) == crate::settings::EditorKeys::Vim,
+            look,
+            palette,
+            locale,
+        }
+    }
+
+    /// The text field named `name` beside `gutter`: one that edits, or
+    /// with `read_only` the preview's.
+    fn field<'a>(
+        &'a self,
+        (id, name): (Id, &'a str),
+        gutter: &Gutter,
+        dialect: Dialect,
+        hold_escape: bool,
+        read_only: bool,
+    ) -> Field<'a> {
+        Field {
+            id,
+            name,
+            left: gutter.text_left,
+            dialect,
+            look: &self.look,
+            palette: &self.palette,
+            style: self.style,
+            indent: self.indent,
+            wraps: self.wraps,
+            hold_escape,
+            pairs: self.pairs,
+            vim: self.vim,
+            read_only,
+        }
+    }
+}
+
+/// Where the editor draws: its pane, the text's part of it beside the
+/// gutter, and the slot behind the text the bands go in.
+struct Place {
+    pane: Rect,
+    text_pane: Rect,
+    backdrop: egui::layers::ShapeIdx,
+}
+
 pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
-    let (look, palette, locale) = (app.look, app.palette, app.locale);
-    let numbering = app.settings.line_numbers_in(look.terminal);
-    let (style, indent) = (format_style(&app.settings, &look), app.settings.indent);
-    let wraps = app.settings.wrap;
-    let highlight = app.settings.highlight_line;
-    let pairs = app.settings.close_pairs;
-    let vim = app.settings.editor_keys_in(look.terminal) == crate::settings::EditorKeys::Vim;
+    let shown = Shown::of(&app.settings, app.look, app.palette, app.locale);
+    let locale = shown.locale;
     let Some(workspace) = app.workspace_mut(tab) else {
         return;
     };
@@ -500,42 +568,135 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let Some(sql_tab) = workspace.sql_tab_mut(id) else {
         return;
     };
-    let pane = ui.max_rect();
     let lines = sql_tab.text.bytes().filter(|b| *b == b'\n').count() + 1;
-    let gutter = Gutter::new(ui, &look, lines, numbering.shown());
+    let gutter = Gutter::new(ui, &shown.look, lines, shown.numbering.shown());
     let editor = editor_id(tab, id);
+    let name = gettext(locale, "SQL");
+    // An open completion list takes Esc: the editor keeps the keyboard.
+    // Not one whose row this frame inserts: Esc is the editor's again.
+    let hold_escape = sql_tab.completion.as_ref().is_some_and(|list| !list.accept);
+    let field = shown.field((editor, &name), &gutter, dialect, hold_escape, false);
+    let (mut edited, place) = draw_text(ui, sql_tab, (&field, &gutter), locale);
+    // The open completion list, and the characters its word starts and
+    // ends at. (After the field drew: a list whose row was accepted went
+    // in there and is off the tab, so the one here is open.)
+    let completing = sql_tab.completion.as_ref().map(|list| {
+        let word = &list.site.word;
+        let start = char_index(&sql_tab.text, word.start);
+        let end = char_index(&sql_tab.text, word.end);
+        (list.clone(), start..end)
+    });
+    let (cursor_line, _) = sql_tab.line_col();
+    let error_line = sql_tab.error_mark().map(|(line, _)| line);
+    // The statement Run executes, from the tokens the colours came from.
+    let parsed = parsed(ui.ctx(), editor, dialect, &shown.palette, &sql_tab.text);
+    // The first row of each line: a wrapped line has more than one.
+    let starts = line_rows(&edited.galley);
+    let statement = sql::statement_at(&parsed.statements, sql_tab.cursor)
+        .and_then(|statement| edited.span(&starts, &statement_lines(statement)));
+    if edited.focused && tree_has_arrows {
+        app.actions
+            .push(Action::SqlEditorFocused { tab, sql_tab: id });
+    }
+    if edited.typed {
+        app.actions.push(Action::SqlTyped { tab, sql_tab: id });
+    }
+    // Vim's `:`: the prompt the terminal look has. (The macOS look has
+    // none.)
+    if edited.prompt && shown.look.terminal {
+        app.actions.push(Action::EditorCommand { tab, sql_tab: id });
+    }
+    let spot = Spot {
+        tab,
+        sql_tab: id,
+        text_pane: place.text_pane,
+        locale,
+    };
+    let asked = completion_list(ui, completing.as_ref(), &mut edited, &field, &spot);
+    app.actions.extend(asked);
+    let lines = Lines {
+        starts: &starts,
+        cursor: cursor_line,
+        error: error_line,
+        statement,
+    };
+    draw_lines(ui, &shown, &gutter, &place, &edited, &lines, false);
+}
+
+/// Settings › Editor's preview: `sql_tab`'s script in the editor, as the
+/// settings have it now, read-only and named "Editor preview". Its cursor's
+/// line is lit whether or not it has the keyboard, and it has no statement
+/// bar and no gutter to press: one Tab stop. Nothing of it reaches a
+/// database. Returns how tall the field is that shows all of the script
+/// (the preview's height from the next frame on), and the field's
+/// response, for the ring that shows it has the keyboard.
+pub fn preview(
+    ui: &mut Ui,
+    sql_tab: &mut SqlTab,
+    id: Id,
+    settings: &crate::settings::Settings,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> (f32, egui::Response) {
+    let shown = Shown::of(settings, *look, *palette, locale);
+    let lines = sql_tab.text.bytes().filter(|b| *b == b'\n').count() + 1;
+    let gutter = Gutter::new(ui, &shown.look, lines, shown.numbering.shown());
+    let name = gettext(locale, "Editor preview");
+    let field = shown.field((id, &name), &gutter, Dialect::Postgres, false, true);
+    let (edited, place) = draw_text(ui, sql_tab, (&field, &gutter), locale);
+    let starts = line_rows(&edited.galley);
+    let (cursor_line, _) = sql_tab.line_col();
+    let lines = Lines {
+        starts: &starts,
+        cursor: cursor_line,
+        error: None,
+        statement: None,
+    };
+    draw_lines(ui, &shown, &gutter, &place, &edited, &lines, true);
+    // The rows as laid out, with the field's 8 above and under them.
+    (edited.galley.rect.height() + 16.0, edited.response)
+}
+
+/// How tall the preview is that shows all of `text` before it has drawn:
+/// its lines in the field's font, with the field's 8 above and under them.
+pub fn preview_height(ui: &Ui, look: &Look, text: &str) -> f32 {
+    let font = role(look).font_id(look.faces);
+    let line = ui.fonts_mut(|fonts| fonts.row_height(&font)) + ui.spacing().extra_text_line_spacing;
+    let lines = text.bytes().filter(|b| *b == b'\n').count() + 1;
+    lines as f32 * line + 16.0
+}
+
+/// The editor's text field, scrolling beside the gutter, and the gutter's
+/// press (not the preview's).
+fn draw_text(
+    ui: &mut Ui,
+    sql_tab: &mut SqlTab,
+    (field, gutter): (&Field<'_>, &Gutter),
+    locale: Locale,
+) -> (Edited, Place) {
+    let pane = ui.max_rect();
+    let editor = field.id;
     // Behind the text: filled in once the rows are laid out.
     let backdrop = ui.painter().add(Shape::Noop);
     // The text scrolls beside the gutter, which stays put: both ways, or
     // down alone where it wraps.
     let text_pane = Rect::from_min_max(pos2(pane.left() + gutter.width, pane.top()), pane.max);
-    let name = gettext(locale, "SQL");
-    let field = Field {
-        id: editor,
-        name: &name,
-        left: gutter.text_left,
-        dialect,
-        look: &look,
-        palette: &palette,
-        style,
-        indent,
-        wraps,
-        // An open completion list takes Esc: the editor keeps the
-        // keyboard. Not one whose row this frame inserts: Esc is the
-        // editor's again.
-        hold_escape: sql_tab.completion.as_ref().is_some_and(|list| !list.accept),
-        pairs,
-        vim,
-    };
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
     // Wrapped, the lines never run past the pane: it scrolls down alone.
-    let scrolled = egui::ScrollArea::new([!wraps, true])
+    let scrolled = egui::ScrollArea::new([!field.wraps, true])
         .id_salt("scroll")
         .auto_shrink([false, false])
-        .show(&mut child, |ui| edit(ui, sql_tab, &field));
+        .show(&mut child, |ui| edit(ui, sql_tab, field));
     ui.data_mut(|data| data.insert_temp(editor, ScrollId(scrolled.id)));
     let mut edited = scrolled.inner;
+    let place = Place {
+        pane,
+        text_pane,
+        backdrop,
+    };
+    if field.read_only {
+        return (edited, place);
+    }
     // The gutter is the editor's too: a press on it gives the editor the
     // keys, with the cursor at the start of the line pressed. (After the
     // field, which gives the keys up when a press lands outside it.)
@@ -570,58 +731,47 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         ui.memory_mut(|memory| memory.request_focus(editor));
         edited.focused = true;
     }
-    // The open completion list, and the characters its word starts and
-    // ends at. (After the field drew: a list whose row was accepted went
-    // in there and is off the tab, so the one here is open.)
-    let completing = sql_tab.completion.as_ref().map(|list| {
-        let word = &list.site.word;
-        let start = char_index(&sql_tab.text, word.start);
-        let end = char_index(&sql_tab.text, word.end);
-        (list.clone(), start..end)
-    });
-    let (cursor_line, _) = sql_tab.line_col();
-    let error_line = sql_tab.error_mark().map(|(line, _)| line);
-    // The statement Run executes, from the tokens the colours came from.
-    let parsed = parsed(ui.ctx(), editor, dialect, &palette, &sql_tab.text);
-    // The first row of each line: a wrapped line has more than one.
-    let starts = line_rows(&edited.galley);
-    let statement = sql::statement_at(&parsed.statements, sql_tab.cursor)
-        .and_then(|statement| edited.span(&starts, &statement_lines(statement)));
-    if edited.focused && tree_has_arrows {
-        app.actions
-            .push(Action::SqlEditorFocused { tab, sql_tab: id });
-    }
-    if edited.typed {
-        app.actions.push(Action::SqlTyped { tab, sql_tab: id });
-    }
-    // Vim's `:`: the prompt the terminal look has. (The macOS look has
-    // none.)
-    if edited.prompt && look.terminal {
-        app.actions.push(Action::EditorCommand { tab, sql_tab: id });
-    }
-    let spot = Spot {
-        tab,
-        sql_tab: id,
-        text_pane,
-        locale,
-    };
-    let asked = completion_list(ui, completing.as_ref(), &mut edited, &field, &spot);
-    app.actions.extend(asked);
+    (edited, place)
+}
+
+/// What the gutter and the bands mark: each line's first row, the
+/// cursor's line, the line of the last run's error, and the rows of the
+/// statement Run executes.
+struct Lines<'a> {
+    starts: &'a [usize],
+    cursor: usize,
+    error: Option<usize>,
+    statement: Option<egui::Rangef>,
+}
+
+/// Behind the text, the statement's band and bar and the cursor's line;
+/// in the gutter, the numbers of the rows in sight. With `always`, the
+/// cursor's line is lit without the keyboard too (the preview).
+fn draw_lines(
+    ui: &Ui,
+    shown: &Shown,
+    gutter: &Gutter,
+    place: &Place,
+    edited: &Edited,
+    lines: &Lines<'_>,
+    always: bool,
+) {
+    let (look, palette, pane) = (&shown.look, &shown.palette, place.pane);
     let across = |x: egui::Rangef, y| Rect::from_x_y_ranges(x, y);
     let fill = |rect, color| Shape::rect_filled(rect, CornerRadius::ZERO, color);
     let mut behind = Vec::new();
     // macOS: a faint band behind the statement, the gutter included, and a
     // bar beside it. The terminal: the bar alone, in the accent.
-    if let Some(y) = statement
+    if let Some(y) = lines.statement
         && !look.terminal
     {
         behind.push(fill(across(pane.x_range(), y), palette.panel));
     }
     // The cursor's line, over the band, while the editor has the keys,
     // unless the settings turn it off.
-    if edited.focused
-        && highlight
-        && let Some(y) = edited.span(&starts, &(cursor_line..=cursor_line))
+    if (edited.focused || always)
+        && shown.highlight
+        && let Some(y) = edited.span(lines.starts, &(lines.cursor..=lines.cursor))
     {
         let color = if look.terminal {
             palette.selection
@@ -630,13 +780,13 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         };
         behind.push(fill(across(pane.x_range(), y), color));
     }
-    if let Some(y) = statement {
+    if let Some(y) = lines.statement {
         let bar = egui::Rangef::new(pane.left() + gutter.bar.min, pane.left() + gutter.bar.max);
-        behind.push(fill(across(bar, y), bar_color(&look, &palette)));
+        behind.push(fill(across(bar, y), bar_color(look, palette)));
     }
-    ui.painter().set(backdrop, Shape::Vec(behind));
+    ui.painter().set(place.backdrop, Shape::Vec(behind));
     // The numbers of the rows in sight, where the gutter has numbers.
-    if !numbering.shown() {
+    if !shown.numbering.shown() {
         return;
     }
     let clip = ui.clip_rect();
@@ -649,13 +799,13 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         if top > clip.bottom() {
             break;
         }
-        let Ok(line) = starts.binary_search(&index) else {
+        let Ok(line) = lines.starts.binary_search(&index) else {
             continue;
         };
         let line = line + 1;
-        let color = if error_line == Some(line) {
+        let color = if lines.error == Some(line) {
             palette.danger
-        } else if line == cursor_line {
+        } else if line == lines.cursor {
             // The terminal's one absolute number stands out.
             if look.terminal {
                 palette.warning
@@ -667,13 +817,13 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         } else {
             palette.faint
         };
-        let relative = numbering == crate::settings::LineNumbers::Relative;
-        let number = gutter_number(line, cursor_line, relative);
+        let relative = shown.numbering == crate::settings::LineNumbers::Relative;
+        let number = gutter_number(line, lines.cursor, relative);
         widgets::paint_text_right(
             ui,
             pane.left() + gutter.numbers_right,
             top + row.height() / 2.0,
-            Text::one(&look, role(&look), &number.to_string(), color),
+            Text::one(look, role(look), &number.to_string(), color),
         );
     }
 }
@@ -782,12 +932,17 @@ struct Field<'a> {
     /// The keybindings are vim's: the field has normal, insert and visual
     /// modes.
     vim: bool,
+    /// The preview's: the text cannot change, and Tab moves on.
+    read_only: bool,
 }
 
 /// How Format writes, as the settings have it in `look`: its keyword case
 /// and commas, and a `CASE`'s parts in by the indent (four spaces for a
 /// tab: the river is set in spaces).
-fn format_style(settings: &crate::settings::Settings, look: &Look) -> sql::format::Style {
+pub(crate) fn format_style(
+    settings: &crate::settings::Settings,
+    look: &Look,
+) -> sql::format::Style {
     use crate::settings::{Commas, KeywordCase};
     use sql::format::Case;
     sql::format::Style {
@@ -1454,9 +1609,14 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
     }
     let mut prompt = false;
     let register_id = Id::new("vim register");
-    let mut register: vim::Register = ui
-        .data(|data| data.get_temp(register_id))
-        .unwrap_or_default();
+    // The preview's yanks and deletes are its own: the editors' register
+    // is not theirs to fill.
+    let mut register: vim::Register = if field.read_only {
+        vim::Register::default()
+    } else {
+        ui.data(|data| data.get_temp(register_id))
+            .unwrap_or_default()
+    };
     let time = ui.input(|input| input.time);
     let unit = indent_unit(field.indent);
     let chords = VimChords::of(ui, field.look);
@@ -1498,6 +1658,13 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
             let step = sql_tab
                 .vim
                 .key(&sql_tab.text, cursor, input, &mut register, unit);
+            if field.read_only && (step.text.is_some() || sql_tab.vim.mode == vim::Mode::Insert) {
+                // The preview's text does not change: what would change it
+                // is dropped, and so is insert mode, which has nothing to
+                // type; vim stays in normal mode.
+                sql_tab.vim.to_normal();
+                continue;
+            }
             if let Some(text) = &step.text {
                 // Undo puts the cursor back, not a selection.
                 let before = CCursorRange::one(CCursor::new(cursor));
@@ -1510,6 +1677,7 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
             }
             changed = true;
             match step.then {
+                Some(vim::Then::Format(_)) if field.read_only => {}
                 Some(vim::Then::Format(lines)) => {
                     // Format formats the statements a selection touches,
                     // or with none every one.
@@ -1546,7 +1714,9 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
             break;
         }
     }
-    ui.data_mut(|data| data.insert_temp(register_id, register));
+    if !field.read_only {
+        ui.data_mut(|data| data.insert_temp(register_id, register));
+    }
     if !later.is_empty() {
         ui.data_mut(|data| data.insert_temp(later_id, later));
         ui.ctx().request_repaint();
@@ -1604,11 +1774,21 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         sql_tab.vim.start(&sql_tab.text);
     }
     let (vimmed, prompt) = vim_keys(ui, sql_tab, field);
+    // The preview's Esc, with the standard keys, gives the keyboard up and
+    // is taken: the next closes the window. (Vim's is `vim_keys`'.)
+    if field.read_only
+        && !field.vim
+        && ui.memory(|memory| memory.has_focus(field.id))
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        ui.memory_mut(|memory| memory.surrender_focus(field.id));
+    }
     // Before the field is drawn, so this frame shows the formatted text.
     // An indent is an outside edit too: what the field shows, and where
     // its caret goes, follow as after Format.
-    let indented = indent_script(ui, sql_tab, field);
-    let paired = close_pairs(ui, sql_tab, field);
+    // The preview's text does not change.
+    let indented = !field.read_only && indent_script(ui, sql_tab, field);
+    let paired = !field.read_only && close_pairs(ui, sql_tab, field);
     let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
     let formatted = formatted || indented || paired || vimmed;
     // The cursor put somewhere from outside (an error's mark): set before
@@ -1658,18 +1838,29 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     if block {
         ui.visuals_mut().text_cursor.stroke.color = Color32::TRANSPARENT;
     }
-    let output = egui::TextEdit::multiline(&mut sql_tab.text)
+    // The preview's text, which the field reads and cannot change.
+    let kept = field.read_only.then(|| sql_tab.text.clone());
+    let mut fixed: &str = kept.as_deref().unwrap_or_default();
+    let buffer: &mut dyn egui::TextBuffer = if field.read_only {
+        &mut fixed
+    } else {
+        &mut sql_tab.text
+    };
+    let output = egui::TextEdit::multiline(buffer)
         .id(field.id)
         .font(font)
-        // Tab indents; Esc gives the keys up unless `hold_escape`.
-        .lock_focus(true)
+        // Tab indents; Esc gives the keys up unless `hold_escape`. The
+        // preview's Tab moves on: it is one stop.
+        .lock_focus(!field.read_only)
         .frame(egui::Frame::new().inner_margin(margin))
         .desired_width(width)
         .desired_rows(rows as usize)
         .layouter(&mut layouter)
         .show(ui);
     ui.visuals_mut().text_cursor.stroke = caret_stroke;
-    if block && output.response.has_focus() {
+    // The preview shows vim's cursor without the keyboard too: the mode
+    // the keybindings give.
+    if block && (output.response.has_focus() || field.read_only) {
         let at = if sql_tab.vim.mode.is_visual() {
             sql_tab.vim.head()
         } else {
@@ -1688,18 +1879,28 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
             field.palette,
         );
     }
-    crate::ui::focus::region(ui, crate::ui::focus::Region::Editor, output.response.rect);
-    crate::ui::focus::claim(ui, crate::ui::focus::Region::Editor, &output.response);
+    // The workspace's editor region, which F6 and the pane keys move to:
+    // not the preview's.
+    if !field.read_only {
+        crate::ui::focus::region(ui, crate::ui::focus::Region::Editor, output.response.rect);
+        crate::ui::focus::claim(ui, crate::ui::focus::Region::Editor, &output.response);
+    }
     // The script fills its pane: the caret says where the keyboard is.
-    crate::ui::focus::hint(
-        ui,
-        &output.response,
-        output.response.rect,
-        crate::ui::focus::Ring::Own,
-    );
+    // (The preview's card is its ring: `editor_preview` asks for it.)
+    if !field.read_only {
+        crate::ui::focus::hint(
+            ui,
+            &output.response,
+            output.response.rect,
+            crate::ui::focus::Ring::Own,
+        );
+    }
     // The name only: the field keeps the role and the value egui gave it.
     ui.ctx().accesskit_node_builder(field.id, |node| {
         node.set_label(field.name);
+        if field.read_only {
+            node.set_read_only();
+        }
     });
     if focus {
         output.response.request_focus();
@@ -1744,7 +1945,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     }
     // Vim's Esc is its own: insert mode's goes to normal mode, and normal
     // mode's leaves the editor when `vim_keys` says so.
-    if (field.hold_escape || field.vim) && output.response.has_focus() {
+    if (field.hold_escape || field.vim || field.read_only) && output.response.has_focus() {
         // The field set its own filter while it drew (the arrows and Tab).
         // egui replaces the whole filter, so those are named again. The
         // filter is read at the start of the next pass, so holding Esc takes
@@ -1754,7 +1955,8 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
             memory.set_focus_lock_filter(
                 field.id,
                 egui::EventFilter {
-                    tab: true,
+                    // The preview's Tab moves on: it is one stop.
+                    tab: !field.read_only,
                     horizontal_arrows: true,
                     vertical_arrows: true,
                     escape: true,
@@ -1782,6 +1984,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     Edited {
         typed,
         prompt,
+        response: output.response.response.clone(),
         focused: output.response.has_focus(),
         origin: output.galley_pos,
         caret,
@@ -2122,6 +2325,7 @@ mod tests {
                     hold_escape,
                     pairs: false,
                     vim: false,
+                    read_only: false,
                     style: sql::format::Style::default(),
                     // A tab character: what Tab put in before the setting.
                     indent: Indent::Tab,
