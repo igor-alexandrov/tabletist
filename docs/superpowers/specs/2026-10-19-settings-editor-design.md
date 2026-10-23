@@ -139,6 +139,8 @@ its place, as Rows per page shows one.
 8. **Preview.** The real editor with the board's Bookshop query
    (publishers and `book_covers`), read-only, named "Editor preview", one
    Tab stop, showing every setting live; it never reaches the backend.
+9. **Indent shown, and Enter.** A `CASE` in the preview's query, so the
+   indent shows; Enter keeps the line's indentation.
 
 ## Step 1: the pane and the run
 
@@ -607,6 +609,70 @@ Date: 2026-10-22. Step 7 is merged (#214).
 7. Vim's register untouched; the block cursor after Tab; a settings
    change ends visual mode; Keep shows otherwise than upper and lower
    case.
+
+## Step 9: Indent in the preview, and Enter
+
+Date: 2026-10-22. Step 8 is #216.
+
+Asked: "Indentation settings do not affect the editor preview and
+probably do not affect the editor itself." Headless tests
+(`indent_settings_tests`) showed Tab, Shift+Tab, vim's `>` and `<`, and
+Format's `CASE` follow the setting in both looks; Enter keeps no
+indentation at all (the new line starts at its line's start); vim's
+`o` and `O` keep the line's own; Tab in vim's normal mode puts in
+nothing; the preview's query has no `CASE`, so it is the same for every
+value. Chosen: a `CASE` in the preview's query, and Enter keeping the
+line's indentation.
+
+### What it is
+
+- **The preview's query** gains a `CASE`, in a sum the Bookshop can run:
+  `sum(CASE WHEN c.kind = 'front' then 1 else 0 END) as fronts`, after
+  the count. Format sets its `WHEN` and `ELSE` two in for 2 spaces, four
+  for 4 spaces and Tab. Its `then` and `else` are typed in lower case
+  among upper-case keywords, so Keep still shows. Nine lines, not five;
+  the cursor stays at the start of the third line's words, now the
+  `sum(CASE` line.
+- **Enter** in the SQL editor starts the new line with the leading spaces
+  and tabs of the line it breaks, up to the cursor (with a selection, of
+  the line the selection starts on): what is after the cursor keeps its
+  column. Whatever Indent is set: it is the line's own whitespace, not an
+  indent of the setting's. Shift+Enter too (the field takes it as Enter).
+  With vim, in insert mode; in normal mode Enter is still a move. The
+  preview changes nothing.
+- The indentation is typed with the line break, as Tab's text at the
+  cursor is: it undoes with what is typed beside it.
+- Read against the script as the frame starts: Enter after an event of
+  the same frame that may change the script or the cursor (typing, a
+  key), and what follows it, wait for the next frame, as vim's keys do.
+  One stash of the field's holds what waits, vim's and Enter's.
+- Completion's Enter, which accepts a row, is the list's as before.
+
+### Departures, for a yes or a no
+
+| Asked, or the boards | Built | Why |
+|---|---|---|
+| The boards' preview: five lines, line 3 `FROM book_covers c` lit | Nine lines with the `CASE`; the cursor and the lit line stay on line 3, now `sum(CASE` (the other way: find the `FROM` line) | The rule step 8 built; the lit line sits on what Indent moves |
+| "Indent shows in the preview" | 2 spaces and 4 spaces differ; 4 spaces and Tab look the same | Format sets Tab's `CASE` in four spaces (the river is spaces), and egui draws a tab four spaces wide |
+| "Enter keeps the line's indentation" | The line's own whitespace up to the cursor, whatever Indent is set; no more after `(` or `CASE` | What an editor without a parser does; Format sets the rest |
+| (a line of only whitespace) | Enter after it leaves the whitespace there, and the new line has it too | Nothing else trims a line's end |
+| (vim's `r` then Enter) | A bare line break, as now | Vim's own, without `autoindent` |
+
+### Tests (headless)
+
+1. Both looks: the preview's query with its `CASE`, its `WHEN` 13 in for
+   2 spaces and 15 for 4 spaces and Tab, with either commas; the numbers
+   1-9 on macOS and relative on Omarchy around line 3.
+2. Both looks, both keybindings, each indent: Enter after an indented
+   line starts the next at the same column; at the line's start it adds
+   nothing; inside the leading whitespace what follows keeps its column;
+   over a selection, the start's line's.
+3. Typing and Enter, and two Enters, in one frame: in order, each line
+   indented.
+4. An open list: Enter on what is typed is a line break with the
+   indentation and closes the list; Enter on a row accepts it.
+5. Vim's normal mode: Enter moves and types nothing. The preview: Enter
+   changes nothing.
 
 ## Out of scope
 
