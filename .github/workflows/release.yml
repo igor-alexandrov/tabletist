@@ -165,7 +165,9 @@ jobs:
     name: macOS universal app
     needs: macos-build
     runs-on: macos-latest
-    timeout-minutes: 60
+    # Notarizing waits on Apple's queue: the team's first dry run spent 52
+    # minutes in it.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -173,12 +175,14 @@ jobs:
           name: macos-universal-binary
           path: universal
       # With the Developer ID certificate, its password and identity in the
-      # secrets, sign for real, and with the notary secrets too, notarize;
-      # without them the app is ad-hoc signed and the DMG unsigned. A partial
-      # set warns and ships what it can.
+      # secrets, sign for real, and with the notary secrets too, notarize.
+      # A tag fails without all six: a release is signed and notarized. A
+      # dry run without them is ad-hoc signed with the DMG unsigned, and a
+      # partial set warns and ships what it can.
       - name: Signing plan
         id: plan
         env:
+          REQUIRE_SIGNING: ${{ github.event_name == 'push' }}
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -231,6 +235,19 @@ jobs:
           mkdir -p dist
           bash packaging/macos/bundle.sh universal/tabletist dist/Tabletist.app "${TAG#v}"
           bash packaging/macos/dmg.sh dist/Tabletist.app "dist/tabletist-${TAG}-macos-universal.dmg"
+      # What a person's Mac checks on the first open of a download: the
+      # DMG's stapled ticket, and the app inside as Gatekeeper sees it.
+      - name: Gatekeeper accepts the DMG and the app
+        if: env.NOTARY_PROFILE != ''
+        run: |
+          dmg="dist/tabletist-${TAG}-macos-universal.dmg"
+          mount="$RUNNER_TEMP/tabletist-dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose "$dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+          trap 'hdiutil detach "$mount"' EXIT
+          codesign --verify --strict --deep --verbose=2 "$mount/Tabletist.app"
+          spctl --assess --type execute --verbose "$mount/Tabletist.app"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-universal
