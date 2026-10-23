@@ -104,8 +104,10 @@ keywords change, and one undo takes it back.
 
 Tab puts in an indent (two spaces until you set four or a tab), at the
 start of every line a selection touches when there is one (blank lines
-stay blank), and Shift+Tab takes one off. While the completion list is
-open, Tab accepts its row first.
+stay blank), and Shift+Tab takes one off. Enter starts the new line
+with the spaces and tabs the line it breaks starts with, so what follows
+the cursor keeps its column. While the completion list is open, Tab
+accepts its row first.
 
 A bracket or a quote you type gets its closing one, which you type over,
 or delete with Backspace while the pair is empty. Typed over a selection,

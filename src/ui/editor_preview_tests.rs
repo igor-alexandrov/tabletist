@@ -5,7 +5,7 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 
 use crate::model::{Action, SettingsPane};
-use crate::settings::{Commas, EditorKeys, KeywordCase, LineNumbers, OptionValue};
+use crate::settings::{Commas, EditorKeys, Indent, KeywordCase, LineNumbers, OptionValue};
 use crate::testing::{Harness, bounds};
 use crate::theme::Look;
 
@@ -93,21 +93,59 @@ fn the_preview_is_the_boards_query_read_only_in_each_look_s_case() {
     let (text, read_only) = preview(&mut harness);
     assert_eq!(
         text,
-        "SELECT p.name AS publisher,\n       count(*) AS covers\n  FROM book_covers c\n  JOIN publishers p ON p.id = c.publisher_id\n GROUP BY p.name;"
+        [
+            "SELECT p.name AS publisher,",
+            "       count(*) AS covers,",
+            "       sum(CASE",
+            "             WHEN c.kind = 'front' THEN 1",
+            "             ELSE 0",
+            "           END) AS fronts",
+            "  FROM book_covers c",
+            "  JOIN publishers p ON p.id = c.publisher_id",
+            " GROUP BY p.name;",
+        ]
+        .join("\n")
     );
     assert!(read_only);
-    assert_eq!(numbers(&mut harness), ["1", "2", "3", "4", "5"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    );
     // Omarchy: lower case, and the cursor's line the one absolute number.
     let mut harness = pane(Look::omarchy());
     let (text, read_only) = preview(&mut harness);
     assert!(text.starts_with("select p.name as publisher,"), "{text}");
     assert!(read_only);
-    assert_eq!(numbers(&mut harness), ["2", "1", "3", "1", "2"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["2", "1", "3", "1", "2", "3", "4", "5", "6"]
+    );
     // The cursor's one absolute number in the warning's colour.
     assert_eq!(
         harness.painted_color("3"),
         Some(harness.app.palette.warning)
     );
+}
+
+#[test]
+fn the_preview_s_case_stands_in_by_the_indent_set() {
+    for look in [Look::macos(), Look::omarchy()] {
+        let mut harness = pane(look);
+        for commas in [Commas::Trailing, Commas::Leading] {
+            set(&mut harness, OptionValue::Commas(commas));
+            for (indent, columns) in [(Indent::Two, 13), (Indent::Four, 15), (Indent::Tab, 15)] {
+                set(&mut harness, OptionValue::Indent(indent));
+                let (text, _) = preview(&mut harness);
+                let when = text
+                    .lines()
+                    .find(|line| line.trim_start().to_lowercase().starts_with("when"))
+                    .expect("a WHEN");
+                let case = format!("{} {commas:?} {indent:?}", look.name);
+                assert_eq!(when.len() - when.trim_start().len(), columns, "{case}");
+                assert!(!text.contains('\t'), "{case}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -127,7 +165,10 @@ fn the_preview_follows_each_setting_as_it_is_set() {
         &mut harness,
         OptionValue::LineNumbers(Some(LineNumbers::Relative)),
     );
-    assert_eq!(numbers(&mut harness), ["2", "1", "3", "1", "2"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["2", "1", "3", "1", "2", "3", "4", "5", "6"]
+    );
     set(
         &mut harness,
         OptionValue::LineNumbers(Some(LineNumbers::Off)),
@@ -168,7 +209,7 @@ fn wrap_lays_the_preview_s_long_line_out_in_rows_numbered_once() {
     harness.settle();
     let unwrapped = place(&mut harness).height();
     set(&mut harness, OptionValue::Wrap(true));
-    // Rows past the five lines: the long one wraps.
+    // Rows past the nine lines: the long one wraps.
     let wrapped = place(&mut harness).height();
     assert!(wrapped > unwrapped + 10.0, "{unwrapped} {wrapped}");
     set(
@@ -176,7 +217,10 @@ fn wrap_lays_the_preview_s_long_line_out_in_rows_numbered_once() {
         OptionValue::LineNumbers(Some(LineNumbers::Absolute)),
     );
     // As many numbers as lines, whatever the rows.
-    assert_eq!(numbers(&mut harness), ["1", "2", "3", "4", "5"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    );
 }
 
 #[test]
@@ -210,6 +254,7 @@ fn nothing_typed_changes_the_preview_and_tab_moves_on() {
         }
         harness.frame(vec![egui::Event::Paste("DROP TABLE books;".into())]);
         harness.press(Key::Backspace, Modifiers::NONE);
+        harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(preview(&mut harness).0, before, "{}", look.name);
         // One stop: Tab takes the keyboard on.
         harness.press(Key::Tab, Modifiers::NONE);
@@ -356,13 +401,19 @@ fn a_settings_change_puts_the_cursor_back_out_of_visual_mode() {
         &mut harness,
         egui::pos2(field.center().x, field.top() + 12.0),
     );
-    assert_eq!(numbers(&mut harness), ["1", "1", "2", "3", "4"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["1", "1", "2", "3", "4", "5", "6", "7", "8"]
+    );
     letter(&mut harness, 'v');
     set(
         &mut harness,
         OptionValue::Keywords(Some(KeywordCase::Lower)),
     );
-    assert_eq!(numbers(&mut harness), ["2", "1", "3", "1", "2"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["2", "1", "3", "1", "2", "3", "4", "5", "6"]
+    );
     assert!(!state(&harness, |tab| tab.vim.mode.is_visual()));
 }
 
@@ -420,7 +471,10 @@ fn the_preview_starts_again_where_the_boards_have_it_when_the_window_opens_again
     into_preview(&mut harness);
     letter(&mut harness, 'g');
     letter(&mut harness, 'g');
-    assert_eq!(numbers(&mut harness), ["1", "1", "2", "3", "4"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["1", "1", "2", "3", "4", "5", "6", "7", "8"]
+    );
     harness.app.apply(Action::CloseDialog);
     harness.settle();
     harness.app.apply(Action::ShowSettings);
@@ -428,7 +482,10 @@ fn the_preview_starts_again_where_the_boards_have_it_when_the_window_opens_again
         .app
         .apply(Action::ShowSettingsPane(SettingsPane::Editor));
     harness.settle();
-    assert_eq!(numbers(&mut harness), ["2", "1", "3", "1", "2"]);
+    assert_eq!(
+        numbers(&mut harness),
+        ["2", "1", "3", "1", "2", "3", "4", "5", "6"]
+    );
 }
 
 #[test]

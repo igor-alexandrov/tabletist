@@ -56,6 +56,8 @@ pub mod history;
 mod history_tests;
 pub mod host_key_prompt;
 #[cfg(test)]
+mod indent_settings_tests;
+#[cfg(test)]
 mod insert_audit_tests;
 pub mod json_text;
 pub mod json_view;
