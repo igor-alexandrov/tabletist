@@ -254,6 +254,7 @@ fn nothing_typed_changes_the_preview_and_tab_moves_on() {
         }
         harness.frame(vec![egui::Event::Paste("DROP TABLE books;".into())]);
         harness.press(Key::Backspace, Modifiers::NONE);
+        harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(preview(&mut harness).0, before, "{}", look.name);
         // One stop: Tab takes the keyboard on.
         harness.press(Key::Tab, Modifiers::NONE);
