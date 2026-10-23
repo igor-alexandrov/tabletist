@@ -5785,6 +5785,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tabletist-menubar"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "log",
+ "raw-window-handle",
+]
+
+[[package]]
 name = "tabletist-sqlite-ffi"
 version = "0.1.0"
 dependencies = [

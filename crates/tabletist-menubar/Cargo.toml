@@ -1,0 +1,18 @@
+[package]
+name = "tabletist-menubar"
+version = "0.1.0"
+description = "Tabletist's native menu bar on macOS and Windows, built with muda"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# `egui::Key`, the key a `Shortcut` names: the app's keymap reads keys as
+# egui does. The crate draws nothing.
+egui = "0.36"
+# The window the bar attaches to on Windows; eframe already builds it.
+raw-window-handle = "0.6"
+log = "0.4"

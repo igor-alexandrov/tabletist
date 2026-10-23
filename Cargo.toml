@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/tabletist-appkit", "crates/tabletist-db", "crates/tabletist-mcp", "crates/tabletist-sqlite-ffi"]
+members = [".", "crates/tabletist-appkit", "crates/tabletist-menubar", "crates/tabletist-db", "crates/tabletist-mcp", "crates/tabletist-sqlite-ffi"]
 resolver = "3"
 
 [workspace.package]
