@@ -1,5 +1,6 @@
 // Renders a promotional video: the director's timeline drawn by index.html
-// in a headless Chrome, a screenshot a frame, encoded by ffmpeg.
+// in a headless Chrome, a screenshot a frame, its sound by audio.js, encoded
+// and mixed by ffmpeg.
 // contrib/promo/make runs it:
 //
 //   node contrib/promo/render.cjs <work dir> <out.mp4> [--final] [--still <seconds>...]
@@ -59,15 +60,22 @@ async function main() {
     return;
   }
 
+  const audio = path.join(work, "audio.wav");
+  const sound = await page.evaluate(timeline => renderAudio(timeline), timeline);
+  fs.writeFileSync(audio, Buffer.from(sound, "base64"));
+
   const rate = final ? 4 * timeline.fps : timeline.fps;
   const ffmpeg = spawn(
     "ffmpeg",
     [
       "-loglevel", "error", "-y",
       "-f", "image2pipe", "-framerate", String(rate), "-c:v", "png", "-i", "-",
+      "-i", audio,
+      "-map", "0:v", "-map", "1:a",
       ...(final ? ["-vf", `tmix=frames=4,fps=${timeline.fps}`] : []),
       "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart", video,
+      "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
+      "-shortest", "-movflags", "+faststart", video,
     ],
     { stdio: ["pipe", "inherit", "inherit"] },
   );
