@@ -196,6 +196,18 @@ test("a command shows its keycap, and makes its sounds", () => {
   assert.ok(kinds.includes("key") && kinds.includes("tick") && kinds.includes("bell"), kinds.join());
 });
 
+test("the camera's moves make no sound", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "click", rect: [1000, 600, 1100, 640] },
+    { scene: 0, frame: 2, kind: "hold", seconds: 3 },
+    { scene: 0, frame: 2, kind: "click", rect: [20, 100, 120, 120] },
+  ];
+  const { timed, outro } = place(record(events));
+  assert.ok(film(timed, outro, outro + 1).moves.length > 1, "the camera moved");
+  const kinds = new Set(schedule(record(events)).sounds.map(s => s.kind));
+  assert.deepEqual([...kinds].sort(), ["bell", "click"]);
+});
+
 test("an event the director does not know stops it", () => {
   assert.throws(() => place(record([{ scene: 0, frame: 1, kind: "teleport" }])), /teleport/);
 });

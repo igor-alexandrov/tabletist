@@ -156,9 +156,6 @@
       && Math.abs(want.zoom - target.zoom) / target.zoom < 0.15;
   }
 
-  const distance = (a, b) =>
-    Math.hypot((a.x - b.x) / WIDTH, (a.y - b.y) / HEIGHT) + Math.abs(Math.log(b.zoom / a.zoom));
-
   // One frame of a critically damped spring, solved exactly: from rest it
   // never overshoots.
   function spring(pos, vel, target, dt) {
@@ -188,7 +185,7 @@
   }
 
   // Where the camera and the spotlight are, a frame at a time, and when
-  // the camera set off for somewhere new (for the whooshes). Until `hold`
+  // the camera set off for somewhere new. Until `hold`
   // the camera shows the whole window. The spotlight does not wait for the
   // camera: it lights the event of the moment. When the action stops, both
   // let go and show the whole window.
@@ -211,7 +208,7 @@
         if (near.length) want = view(near.map(aim));
       }
       if (want && want !== target && !(want !== WHOLE && target !== WHOLE && resting(target, want))) {
-        moves.push({ at: t, far: distance(target, want) });
+        moves.push({ at: t });
         target = want;
       }
       const drift = target === WHOLE && since !== null ? DRIFT * (t - since) : 0;
@@ -264,19 +261,15 @@
     return frames;
   }
 
-  // What is heard when: a key for each character and key, a click, a
-  // whoosh for each camera move by how far it goes, a tick under a keycap,
-  // a bell on the outro.
-  function sounds(timed, moves, outro, random) {
+  // What is heard when: a key for each character and key, a click, a tick
+  // under a keycap, a bell on the outro. The camera's moves are silent.
+  function sounds(timed, outro, random) {
     const all = [];
     for (const e of timed) {
       if (e.kind === "type") all.push({ at: e.at, kind: "key", gain: 0.55 + 0.35 * random() });
       if (e.kind === "press") all.push({ at: e.at, kind: "key", gain: 0.9 });
       if (e.kind === "command") all.push({ at: e.at, kind: "key", gain: 1 }, { at: e.at, kind: "tick", gain: 0.8 });
       if (e.kind === "click") all.push({ at: e.at, kind: "click", gain: 1 });
-    }
-    for (const move of moves) {
-      if (move.far > 0.08) all.push({ at: move.at, kind: "whoosh", gain: clamp(move.far, 0.2, 1) });
     }
     all.push({ at: outro, kind: "bell", gain: 1 });
     return all.sort((a, b) => a.at - b.at);
@@ -291,7 +284,7 @@
     const duration = outro + 2 * bar;
     // The camera holds the wide shot while the window rises, and a moment after.
     const intro = { from: 0, to: bar };
-    const { camera, spot, moves } = film(timed, outro, duration, intro.to + beat / 2);
+    const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2);
     return {
       title: record.title,
       tempo: record.tempo,
@@ -309,7 +302,7 @@
       pointer: point(timed, duration),
       clicks: timed.filter(e => e.kind === "click").map(e => ({ at: e.at, x: e.where.x, y: e.where.y })),
       keycaps: timed.filter(e => e.kind === "command").map(e => ({ at: e.at, until: e.at + KEYCAP, keys: e.keys })),
-      sounds: sounds(timed, moves, outro, seeded(`${record.title} keys`)),
+      sounds: sounds(timed, outro, seeded(`${record.title} keys`)),
     };
   }
 

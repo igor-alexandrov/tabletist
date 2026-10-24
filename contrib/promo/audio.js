@@ -260,30 +260,6 @@
       tap(tools, into, at, 2200, 0.8 * gain);
       tap(tools, into, at + 0.07, 2900, 0.45 * gain);
     },
-    // Air sweeping past, from one side to the other: longer for a longer move.
-    whoosh({ ctx, noise, random }, into, at, gain) {
-      const length = 0.4 + 0.35 * gain;
-      const source = ctx.createBufferSource();
-      source.buffer = noise;
-      source.loop = true;
-      const filter = ctx.createBiquadFilter();
-      filter.type = "bandpass";
-      filter.Q.value = 0.9;
-      filter.frequency.setValueAtTime(300, at);
-      filter.frequency.exponentialRampToValueAtTime(2200, at + length * 0.55);
-      filter.frequency.exponentialRampToValueAtTime(500, at + length);
-      const level = ctx.createGain();
-      level.gain.setValueAtTime(0.0001, at);
-      level.gain.exponentialRampToValueAtTime(0.45 * gain, at + length * 0.5);
-      level.gain.exponentialRampToValueAtTime(0.0001, at + length);
-      const panner = ctx.createStereoPanner();
-      const side = random() < 0.5 ? -1 : 1;
-      panner.pan.setValueAtTime(-0.4 * side, at);
-      panner.pan.linearRampToValueAtTime(0.4 * side, at + length);
-      source.connect(filter).connect(level).connect(panner).connect(into());
-      source.start(at, random() * 0.5);
-      source.stop(at + length + 0.05);
-    },
     // A low, soft note under a keycap.
     tick({ ctx }, into, at, gain) {
       for (const [times, level] of [[1, 0.14], [2, 0.05], [3, 0.025]]) {

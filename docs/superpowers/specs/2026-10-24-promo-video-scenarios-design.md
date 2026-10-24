@@ -292,11 +292,10 @@ as WAV:
   The pad is alone under the intro, the rest comes in from the first scene,
   and the last chord rings out over the outro.
 - The effects, on the events: a key click for each character and key, each
-  a little different in pitch and level; a mouse click; a whoosh for each
-  camera move, louder and longer the farther it goes; a low tick under a
-  keycap; a bell on the outro. The clicks and whooshes are loud enough to
-  stand out over the music (a click's taps at 0.8 and 0.45, a whoosh at up
-  to 0.45, through effects at 0.9 against the music's 0.55).
+  a little different in pitch and level; a mouse click; a low tick under a
+  keycap; a bell on the outro. The camera's moves make no sound. The clicks
+  are loud enough to stand out over the music (their taps at 0.8 and 0.45,
+  through effects at 0.9 against the music's 0.55).
 - The music ducks under each effect. ffmpeg normalizes the mix to −14 LUFS
   (`loudnorm`), the level the social platforms play at, and writes it as
   AAC at 192 kb/s into the MP4.
