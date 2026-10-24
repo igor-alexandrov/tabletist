@@ -1742,18 +1742,22 @@ impl Harness {
         harness
     }
 
-    /// Settles, renders the last frame, and writes it to `path` as PNG.
-    pub fn shot(&mut self, path: &std::path::Path) {
+    /// Settles and renders the last frame.
+    pub fn render(&mut self) -> image::RgbaImage {
         use egui_kittest::TestRenderer as _;
         self.settle();
         self.settle();
         let output = self.last.take().expect("a frame ran");
-        let image = self
-            .renderer
+        self.renderer
             .as_mut()
             .expect("made with for_shots")
             .render(&self.ctx, &output)
-            .expect("rendered");
+            .expect("rendered")
+    }
+
+    /// Settles, renders the last frame, and writes it to `path` as PNG.
+    pub fn shot(&mut self, path: &std::path::Path) {
+        let image = self.render();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("shots directory");
         }
