@@ -1,0 +1,294 @@
+<!doctype html>
+<!-- The promotional video's composition. render.cjs opens this page, gives
+     it the director's timeline and the app's frames (target/promo/<name>/,
+     from src/promo/runner.rs) and asks for every frame of the video with
+     renderAt(seconds). Nothing here runs on a clock: a time always draws
+     the same picture. -->
+<meta charset="utf-8">
+<title>Tabletist promo</title>
+<style>
+  @font-face { font-family: "Plex"; src: url("../../assets/fonts/IBMPlexSans-Variable.ttf"); font-weight: 100 700; }
+  @font-face { font-family: "Plex Mono"; src: url("../../assets/fonts/IBMPlexMono-Medium.ttf"); font-weight: 500; }
+  @font-face { font-family: "Keys"; src: url("../../assets/fonts/NotoSansSymbols2-Keys.ttf"); }
+  :root { --ink: #f4f3ee; --dim: #a9a79e; --blue: #3b82f6; --deep: #1d4ed8; --night: #121311; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--night); }
+  body { font-family: "Plex", sans-serif; color: var(--ink); }
+  #stage { position: absolute; inset: 0; overflow: hidden;
+    background:
+      radial-gradient(1200px 700px at 50% 108%, rgba(59,130,246,.34), transparent 70%),
+      radial-gradient(900px 600px at 12% -10%, rgba(29,78,216,.22), transparent 70%),
+      var(--night); }
+  #grid { position: absolute; inset: -80px; opacity: .5;
+    background-image:
+      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+    background-size: 80px 80px;
+    mask-image: radial-gradient(closest-side, #000 30%, transparent 100%); }
+
+  #window { position: absolute; left: 0; top: 0; width: 1400px; height: 875px;
+    transform-origin: 0 0; border-radius: 16px; overflow: hidden; will-change: transform;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 50px 120px rgba(0,0,0,.65), 0 12px 30px rgba(0,0,0,.5); }
+  #shot { display: block; width: 100%; height: 100%; }
+  #lights { position: absolute; left: 23px; top: 22px; display: flex; gap: 9.4px; }
+  #lights i { width: 14px; height: 14px; border-radius: 50%; display: block;
+    box-shadow: inset 0 0 0 .5px rgba(0,0,0,.25); }
+
+  #scrim { position: absolute; left: 0; right: 0; bottom: 0; height: 330px;
+    background: linear-gradient(transparent, rgba(12,13,12,.9) 52%, rgba(12,13,12,.98)); }
+  #caption { position: absolute; left: 0; right: 0; bottom: 62px; height: 96px;
+    display: flex; align-items: center; justify-content: center; gap: 30px; }
+  /* The line stays in the middle; the keycap hangs off its left. */
+  #say { position: relative; display: flex; align-items: center; }
+  #key { position: absolute; right: calc(100% + 30px); }
+  #line { font-size: 66px; font-weight: 600; letter-spacing: -.02em; white-space: nowrap; }
+  #line span { display: inline-block; white-space: pre; }
+  #key { font-family: "Plex", "Keys", sans-serif; font-size: 42px; font-weight: 600;
+    padding: 12px 24px; border-radius: 16px; color: #fff; white-space: nowrap;
+    background: linear-gradient(var(--blue), var(--deep));
+    box-shadow: 0 6px 0 #173a9e, 0 16px 30px rgba(29,78,216,.45); }
+
+  .card { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; }
+  .card svg { width: 230px; height: 230px; filter: drop-shadow(0 30px 60px rgba(29,78,216,.55)); }
+  .name { font-size: 150px; font-weight: 700; letter-spacing: -.035em; line-height: 1; margin-top: 34px; }
+  .tag { font-size: 46px; font-weight: 450; color: var(--dim); margin-top: 26px; letter-spacing: -.01em; }
+  .tag b { color: var(--ink); font-weight: 600; }
+  #title:not([hidden]) + .tag { margin-top: 44px; }
+  .url { font-family: "Plex Mono", monospace; font-size: 40px; margin-top: 46px;
+    padding: 16px 34px; border-radius: 999px; color: #fff;
+    background: rgba(59,130,246,.18); box-shadow: inset 0 0 0 2px rgba(59,130,246,.7); }
+  /* The whole window, dim but for a soft-edged hole that drawSpot cuts
+     with its mask. */
+  #spot { position: absolute; inset: 0; pointer-events: none; background: rgb(6, 8, 12);
+    mask-composite: exclude, intersect, add; }
+  #pointer { position: absolute; left: 0; top: 0; width: 26px; height: 38px;
+    transform-origin: 2.3px 2.3px; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
+  #ripple { position: absolute; border-radius: 50%; pointer-events: none;
+    border: 3px solid rgba(255,255,255,.9); box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
+  #line .word { display: inline-block; overflow: hidden; vertical-align: bottom; padding-bottom: .08em; }
+  #line .word > span { display: inline-block; }
+</style>
+
+<div id="stage">
+  <div id="grid"></div>
+
+  <div id="window">
+    <img id="shot" alt="">
+    <div id="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <div id="spot"></div>
+    <div id="ripple"></div>
+    <svg id="pointer" viewBox="0 0 17 25"><path d="M1.5 1.5 L1.5 20.5 L6 16.2 L9.2 23.2 L12.4 21.8 L9.3 15 L15.2 15 Z"
+      fill="#000" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>
+  </div>
+
+  <div id="scrim"></div>
+  <div id="caption"><div id="say"><div id="key"></div><div id="line"></div></div></div>
+
+  <div class="card" id="intro">
+    <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon"/></svg>
+    <div class="name">Tabletist</div>
+    <div class="tag">A small, fast, native database client.</div>
+  </div>
+
+  <div class="card" id="outro">
+    <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon"/></svg>
+    <div class="name">Tabletist</div>
+    <div class="tag" id="title"></div>
+    <div class="tag"><b>PostgreSQL</b> · <b>MySQL</b> · <b>SQLite</b></div>
+    <div class="tag" style="margin-top:10px">macOS · Linux · Windows</div>
+    <div class="url">igor.works/tabletist</div>
+  </div>
+</div>
+
+<!-- assets/icon/tabletist.svg -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <clipPath id="table"><rect x="208" y="248" width="608" height="528" rx="72"/></clipPath>
+    <g id="icon">
+      <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
+      <g clip-path="url(#table)">
+        <rect x="208" y="248" width="608" height="528" fill="#fff" fill-opacity=".16"/>
+        <rect x="208" y="248" width="608" height="152" fill="#fff"/>
+      </g>
+      <rect x="236" y="276" width="552" height="472" rx="46" fill="none" stroke="#fff" stroke-width="56"/>
+      <line x1="424" y1="400" x2="424" y2="748" stroke="#fff" stroke-width="48"/>
+      <line x1="236" y1="516" x2="788" y2="516" stroke="#fff" stroke-width="40"/>
+      <line x1="236" y1="632" x2="788" y2="632" stroke="#fff" stroke-width="40"/>
+    </g>
+  </defs>
+</svg>
+
+<script src="director.js"></script>
+<script src="audio.js"></script>
+<script>
+// What the page draws: the director's timeline (T) and the app's frames,
+// given by load(). renderAt(seconds) draws that moment, and nothing here
+// runs on a clock.
+
+const $ = id => document.getElementById(id);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const mix = (a, b, k) => a + (b - a) * k;
+const inOut = k => (k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+const out = k => 1 - Math.pow(1 - k, 4);
+const back = k => 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2);
+// How far `t` is through the `length` seconds that start at `from`.
+const span = (t, from, length) => clamp((t - from) / length);
+const escape = text => text.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+
+// The window's pixels to a point of the app, and where it rests.
+const S = 1400 / 1200, LEFT = 260, TOP = 40;
+
+let T = null, frames = [], shown = null, said = undefined;
+
+// A per-frame list at `t`: between two of its frames, the mix of both (so
+// --final's subframes move smoothly).
+function sample(list, t) {
+  const at = clamp(t * T.fps, 0, list.length - 1), i = Math.floor(at), k = at - i;
+  const a = list[i], b = list[Math.min(i + 1, list.length - 1)];
+  const value = {};
+  for (const key in a) value[key] = mix(a[key], b[key], k);
+  return value;
+}
+
+// The last of `list` (in time order) that has begun by `t`.
+function latest(list, t, at = item => item.at) {
+  let found = null;
+  for (const item of list) {
+    if (at(item) > t + 1e-6) break;
+    found = item;
+  }
+  return found;
+}
+
+function drawWindow(t) {
+  const el = $("window");
+  const rise = out(span(t, T.intro.to - T.beat, .8));
+  const leave = inOut(span(t, T.outro - .1, .6));
+  const hidden = rise === 0 || leave === 1;
+  el.style.visibility = hidden ? "hidden" : "visible";
+  if (hidden) return;
+  const { x, y, zoom } = sample(T.camera, t);
+  // Zoomed in, the point looked at comes to the middle of the picture.
+  const pull = clamp((zoom - 1) * 3);
+  const sx = mix(LEFT + x * S, 960, pull), sy = mix(TOP + y * S, 470, pull);
+  const size = zoom * mix(.92, 1, rise) * mix(1, .86, leave);
+  const dx = sx - x * S * size, dy = sy - y * S * size + (1 - rise) * 160 + leave * 40;
+  el.style.opacity = rise * (1 - leave);
+  el.style.filter = leave ? `blur(${leave * 18}px)` : "none";
+  el.style.transform = `translate(${dx}px, ${dy}px) scale(${size})`;
+}
+
+// The part of the window that matters stays bright; the rest dims.
+// The hole is a band across times a band down, each ramping over FEATHER
+// window pixels either side of its edge, taken out of a full layer.
+const FEATHER = 22;
+function drawSpot(t) {
+  const { x0, y0, x1, y1, alpha } = sample(T.spot, t);
+  const el = $("spot");
+  const band = (to, a, b) =>
+    `linear-gradient(${to}, transparent ${a - FEATHER}px, #000 ${a + FEATHER}px, #000 ${b - FEATHER}px, transparent ${b + FEATHER}px)`;
+  el.style.maskImage =
+    `linear-gradient(#000, #000), ${band("to bottom", y0 * S, y1 * S)}, ${band("to right", x0 * S, x1 * S)}`;
+  el.style.opacity = (.3 * alpha).toFixed(3);
+}
+
+function drawPointer(t) {
+  const { x, y, shown, press } = sample(T.pointer, t);
+  const el = $("pointer");
+  el.style.opacity = shown;
+  el.style.transform = `translate(${x * S - 2.3}px, ${y * S - 2.3}px) scale(${mix(1, .86, press)})`;
+  const click = latest(T.clicks, t);
+  const ripple = $("ripple");
+  const k = click ? span(t, click.at, .45) : 1;
+  ripple.style.opacity = k < 1 ? (1 - k) * .55 : 0;
+  if (click && k < 1) {
+    const size = mix(12, 64, out(k));
+    ripple.style.width = ripple.style.height = `${size}px`;
+    ripple.style.left = `${click.x * S - size / 2}px`;
+    ripple.style.top = `${click.y * S - size / 2}px`;
+  }
+}
+
+function drawCaption(t) {
+  const scene = T.scenes.find(s => s.caption && t >= s.from && t < s.to) || null;
+  const line = $("line"), key = $("key");
+  if (said !== scene) {
+    said = scene;
+    line.innerHTML = scene
+      ? scene.caption.split(" ").map(w => `<span class="word"><span>${escape(w)}</span></span>`).join(" ")
+      : "";
+  }
+  let words = 0;
+  if (scene) {
+    const gone = span(t, scene.to - .35, .25);
+    words = span(t, scene.from, .3) * (1 - gone);
+    [...line.children].forEach((word, i) => {
+      const k = out(span(t, scene.from + .05 + i * .06, .45));
+      word.firstChild.style.transform = `translateY(${(1 - k) * 105}%)`;
+      word.firstChild.style.filter = `blur(${(1 - k) * 8}px)`;
+      word.style.opacity = (k > 0 ? 1 : 0) * (1 - gone);
+    });
+  }
+  const cap = latest(T.keycaps, t);
+  const on = cap && t < cap.until + .2;
+  key.style.display = on ? "block" : "none";
+  let keys = 0;
+  if (on) {
+    const pop = span(t, cap.at, .35);
+    keys = clamp(pop * 4) * (1 - span(t, cap.until, .2));
+    key.textContent = cap.keys;
+    // Without a caption, the keycap takes the middle itself.
+    key.style.right = scene ? "" : `${-key.offsetWidth / 2}px`;
+    key.style.opacity = keys;
+    key.style.transform = `scale(${back(pop)})`;
+  }
+  $("scrim").style.opacity = Math.max(words, keys);
+}
+
+// A card's pieces come in a half beat apart, and leave together.
+function drawCard(el, t, from, to) {
+  const gone = to === null ? 0 : inOut(span(t, to, .4));
+  const on = t >= from - .01 && gone < 1;
+  el.style.visibility = on ? "visible" : "hidden";
+  if (!on) return;
+  [...el.children].forEach((piece, i) => {
+    const k = span(t, from + i * T.beat / 2, .55);
+    const size = i === 0 ? back(k) : 1;
+    piece.style.opacity = clamp(k * 2.5) * (1 - gone);
+    piece.style.transform =
+      `translateY(${(1 - out(k)) * (i ? 50 : 0) - gone * 90}px) scale(${size * mix(1, .94, gone)})`;
+  });
+}
+
+async function renderAt(t) {
+  const now = latest(T.frames, t, frame => frame[0]);
+  const file = frames[now ? now[1] : 0];
+  if (file !== shown) {
+    shown = file;
+    $("shot").src = file;
+    await $("shot").decode();
+  }
+  drawWindow(t);
+  drawSpot(t);
+  drawPointer(t);
+  drawCaption(t);
+  // The intro is mostly gone before the window rises through it.
+  drawCard($("intro"), t, .08, T.intro.to - T.beat - .15);
+  drawCard($("outro"), t, T.outro + .1, null);
+  $("grid").style.transform = `translateY(${-t * 4}px)`;
+}
+
+// `timeline` is the director's; `files` are the app's frames, in order.
+async function load(timeline, files) {
+  T = timeline;
+  frames = files;
+  $("title").textContent = T.title;
+  $("title").hidden = T.title === "Tabletist";
+  await document.fonts.ready;
+  await renderAt(0);
+}
+</script>
