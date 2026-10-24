@@ -10960,6 +10960,26 @@ value_tags   = true
         asked
     }
 
+    /// Double-clicks where `open` says, in a window that is not maximized
+    /// and in one that is, each in a harness of its own (its clock stands
+    /// still, so a second double-click would read as more clicks), and
+    /// asserts that the first maximizes the window and the second restores
+    /// it.
+    #[cfg(not(target_os = "macos"))]
+    fn assert_double_click_toggles_maximized(open: impl Fn(&mut Harness) -> egui::Pos2) {
+        for maximized in [false, true] {
+            let mut harness = Harness::new();
+            harness.maximized = maximized;
+            let at = open(&mut harness);
+            harness.settle();
+            let asked = double_click(&mut harness, at);
+            assert!(
+                asked.contains(&egui::ViewportCommand::Maximized(!maximized)),
+                "maximized {maximized}: {asked:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_space_beside_the_mac_window_buttons_moves_the_window() {
         let mut harness = Harness::new();
@@ -10975,32 +10995,31 @@ value_tags   = true
         assert_press_and_move_drags(&mut harness, egui::pos2(900.0, 18.0));
     }
 
+    #[test]
+    fn dragging_the_connection_bar_moves_the_window() {
+        let mut harness = Harness::new();
+        mac_title_bar(&mut harness);
+        harness.connect_fake();
+        harness.settle();
+        let line = crate::ui::workspace::bar_line(&harness.app, 1.0);
+        assert_press_and_move_drags(&mut harness, egui::pos2(700.0, line));
+    }
+
     // macOS hands a double-click to fastframe-titlebar, which does what
     // System Settings says through AppKit.
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn a_double_click_on_the_pickers_header_maximizes_the_window() {
-        let mut harness = Harness::new();
-        harness.settle();
-        let asked = double_click(&mut harness, egui::pos2(900.0, 18.0));
-        assert!(
-            asked.contains(&egui::ViewportCommand::Maximized(true)),
-            "{asked:?}"
-        );
+    fn a_double_click_on_the_pickers_header_maximizes_and_restores_the_window() {
+        assert_double_click_toggles_maximized(|_| egui::pos2(900.0, 18.0));
     }
 
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn a_double_click_on_the_connection_bar_maximizes_the_window() {
-        let mut harness = Harness::new();
-        harness.connect_fake();
-        harness.settle();
-        let line = crate::ui::workspace::bar_line(&harness.app, 1.0);
-        let asked = double_click(&mut harness, egui::pos2(700.0, line));
-        assert!(
-            asked.contains(&egui::ViewportCommand::Maximized(true)),
-            "{asked:?}"
-        );
+    fn a_double_click_on_the_connection_bar_maximizes_and_restores_the_window() {
+        assert_double_click_toggles_maximized(|harness| {
+            harness.connect_fake();
+            egui::pos2(700.0, crate::ui::workspace::bar_line(&harness.app, 1.0))
+        });
     }
 
     /// A tab with a page of `users` whose connection is then lost.
