@@ -1,0 +1,33 @@
+# One feature, explained: filtering a table without SQL.
+title = "Filter without SQL"
+tempo = 104
+
+[[scene]]
+caption = "Every table opens ready to filter."
+steps = [
+  { open = "books" },
+  { command = "filter_bar" },
+]
+
+[[scene]]
+caption = "Pick a column, type what you're after."
+steps = [
+  { click = "Filter column" },
+  { click = "title" },
+  { click = "Filter operator" },
+  { click = "contains" },
+  { click = "Value" },
+  { type = "the" },
+  { press = "enter" },
+  { hold = 0.8 },
+]
+
+[[scene]]
+# The filter applies on Enter, so the rows narrow once, and this scene
+# walks what is left.
+caption = "Twelve rows down to three. No SQL written."
+steps = [
+  { click = "The Salt Road" },
+  { command = "move_row", key = "down", times = 2 },
+  { hold = 0.8 },
+]

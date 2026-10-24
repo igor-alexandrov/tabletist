@@ -112,9 +112,63 @@ test("the spotlight follows the action while the camera rests", () => {
   });
 });
 
+test("the pointer stays hidden while the keys go, from the first", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "point", rect: [300, 96, 520, 120] },
+    { scene: 0, frame: 2, kind: "click", rect: [300, 96, 520, 120] },
+    ...typing("select title from books", 3),
+  ];
+  const timeline = schedule(record(events));
+  const keys = place(record(events)).timed.filter(e => e.kind === "type");
+  const from = Math.ceil((keys[0].at + 0.15) * FPS), to = Math.floor(keys[keys.length - 1].at * FPS);
+  for (let i = from; i <= to; i++) {
+    assert.equal(timeline.pointer[i].shown, 0, `the pointer shows at ${i / FPS} s`);
+  }
+});
+
+test("when the action stops, the camera and the spotlight let go", () => {
+  const timed = [{ kind: "click", at: 1, rect: [1000, 600, 1100, 640] }];
+  const { camera, spot } = film(timed, 10, 6);
+  assert.ok(camera[Math.round(1.6 * FPS)].zoom > 1.3, "the camera went in for the click");
+  // Back to the whole window, drifting in a little.
+  const after = Math.round(4 * FPS);
+  assert.ok(camera[after].zoom < 1.05 && camera[after].zoom > 1, `zoom ${camera[after].zoom}`);
+  assert.ok(Math.abs(camera[after].x - 600) < 2 && Math.abs(camera[after].y - 375) < 2, JSON.stringify(camera[after]));
+  assert.ok(spot[after].alpha < 0.01, `the spotlight is still on: ${spot[after].alpha}`);
+});
+
+test("the camera stays in when the next step comes soon", () => {
+  const timed = [
+    { kind: "click", at: 1, rect: [1000, 600, 1100, 640] },
+    { kind: "click", at: 3, rect: [1000, 640, 1100, 680] },
+  ];
+  const { camera } = film(timed, 10, 4);
+  for (let i = Math.round(1.6 * FPS); i < Math.round(3 * FPS); i++) {
+    assert.ok(camera[i].zoom > 1.3, `zoom ${camera[i].zoom} at ${i / FPS} s`);
+  }
+});
+
+test("typing in a wide field is framed at the field's left", () => {
+  const editor = [305, 146, 1200, 398];
+  const timed = [0, 1, 2, 3].map(i => ({ kind: "type", text: "s", at: 1 + i / 13, rect: editor }));
+  const { camera } = film(timed, 10, 2);
+  const now = camera[Math.round(1.25 * FPS)];
+  assert.ok(now.zoom > 1.15, `zoom ${now.zoom}`);
+  assert.ok(now.x < 600, `the camera looks at x ${now.x}, right of the window's middle`);
+});
+
+test("a key after typing waits a moment", () => {
+  const events = [...typing("the"), { scene: 0, frame: 4, kind: "press", keys: "↩" }];
+  const timed = place(record(events)).timed;
+  const [last, enter] = timed.slice(-2);
+  assert.equal(enter.kind, "press");
+  assert.ok(enter.at - last.at >= 0.25, `${enter.at - last.at} s`);
+});
+
 test("the spring never overshoots", () => {
   const timed = [{ kind: "click", at: 1, rect: [1000, 600, 1100, 640] }];
-  const { camera } = film(timed, 10, 4);
+  // One move: filmed until the action stops and the camera pulls back.
+  const { camera } = film(timed, 10, 1.9);
   const xs = camera.map(c => c.x);
   for (let i = 1; i < xs.length; i++) assert.ok(xs[i] >= xs[i - 1] - 1e-9, `x went back at frame ${i}`);
   const target = camera[camera.length - 1].x;

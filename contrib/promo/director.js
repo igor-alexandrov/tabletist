@@ -24,8 +24,20 @@
   // How long a result stays after a scene's last step.
   const SETTLE = 0.6;
   const KEYCAP = 0.8;
+  // The pause between the last typed character and a key (Enter, Run).
+  const AFTER_TYPING = 0.3;
   // The spotlight lights an event a moment before it happens.
   const GLOW = 0.1;
+  // Once the action has been quiet this long, and stays quiet for at least
+  // QUIET, the camera pulls back and the spotlight lets go: the result is
+  // seen whole, as it would be on the screen.
+  const REVEAL = 0.9, QUIET = 2.4;
+  // While it shows the whole window so, the camera drifts in this much a
+  // second, so a held shot is not a frozen one.
+  const DRIFT = 0.015;
+  // Typing goes from a field's left edge: of a wide field (the SQL editor)
+  // the camera frames that much of its left.
+  const TYPE_SPAN = 400;
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 
@@ -84,6 +96,8 @@
             break;
           case "command":
           case "press":
+            // A hand that has typed takes a moment before the key that ends it.
+            if (timed.length && timed[timed.length - 1].kind === "type") now += AFTER_TYPING;
             timed.push({ ...event, at: now });
             now += 0.35;
             break;
@@ -156,30 +170,53 @@
     }
   }
 
+  // What the camera frames of an event: its rect, but of a wide field
+  // being typed in, only the left part, where the text goes.
+  function aim(event) {
+    const [x0, y0, x1, y1] = event.rect;
+    return event.kind === "type" ? [x0, y0, Math.min(x1, x0 + TYPE_SPAN), y1] : event.rect;
+  }
+
+  // Since when the action has stopped at `t`, or null: the last thing
+  // done is REVEAL seconds old, and nothing is done for another QUIET
+  // seconds after it.
+  function quiet(acts, t) {
+    const last = latest(acts, e => e.at <= t);
+    if (!last || t - last.at < REVEAL) return null;
+    const next = acts.find(e => e.at > t);
+    return !next || next.at - last.at >= QUIET ? last.at + REVEAL : null;
+  }
+
   // Where the camera and the spotlight are, a frame at a time, and when
   // the camera set off for somewhere new (for the whooshes). Until `hold`
   // the camera shows the whole window. The spotlight does not wait for the
-  // camera: it lights the event of the moment.
+  // camera: it lights the event of the moment. When the action stops, both
+  // let go and show the whole window.
   function film(timed, outro, duration, hold = 0) {
     const framed = timed.filter(e => e.rect);
+    const acts = timed.filter(e => e.kind !== "point");
     let target = WHOLE;
     const pos = { x: WHOLE.x, y: WHOLE.y, zoom: 1 }, vel = { x: 0, y: 0, zoom: 0 };
     const spot = { ...WHOLE.area }, spotVel = { x0: 0, y0: 0, x1: 0, y1: 0, alpha: 0 };
     const camera = [], spots = [], moves = [];
     for (let i = 0, n = Math.round(duration * FPS); i < n; i++) {
       const t = i / FPS;
+      const ending = t >= outro - LEAD;
+      const since = ending ? null : quiet(acts, t);
+      const still = ending || since !== null;
       let want = null;
-      if (t >= outro - LEAD || t < hold) want = WHOLE;
+      if (still || t < hold) want = WHOLE;
       else {
         const near = framed.filter(e => e.at > t - BEHIND && e.at <= t + LEAD + AHEAD);
-        if (near.length) want = view(near.map(e => e.rect));
+        if (near.length) want = view(near.map(aim));
       }
       if (want && want !== target && !(want !== WHOLE && target !== WHOLE && resting(target, want))) {
         moves.push({ at: t, far: distance(target, want) });
         target = want;
       }
-      spring(pos, vel, { x: target.x, y: target.y, zoom: target.zoom }, 1 / FPS);
-      const now = t >= outro - LEAD ? null : latest(framed, e => e.at <= t + GLOW);
+      const drift = target === WHOLE && since !== null ? DRIFT * (t - since) : 0;
+      spring(pos, vel, { x: target.x, y: target.y, zoom: target.zoom + drift }, 1 / FPS);
+      const now = still ? null : latest(framed, e => e.at <= t + GLOW);
       const [x0, y0, x1, y1] = now ? now.rect : [];
       spring(spot, spotVel, now ? lit(x0, y0, x1, y1) : WHOLE.area, 1 / FPS);
       camera.push({ ...pos });
@@ -216,8 +253,10 @@
       const before = index === 0 ? -Infinity : trips[index - 1].at;
       const returns = index === 0 || typing.some(e => e.at > before && e.at <= trip.leaves);
       const appear = returns ? clamp((t - trip.leaves) / 0.15, 0, 1) : 1;
-      const typed = latest(typing, e => e.at <= t);
-      const hidden = typed && typed.at > trip.leaves ? clamp((t - typed.at) / 0.15, 0, 1) : 0;
+      // Hidden from the first key after the trip, as macOS hides it, until
+      // the next trip.
+      const typed = typing.find(e => e.at > trip.leaves && e.at <= t);
+      const hidden = typed ? clamp((t - typed.at) / 0.15, 0, 1) : 0;
       const click = latest(clicks, e => e.at - 0.06 <= t);
       const press = click && t < click.at + 0.1 ? 1 : 0;
       frames.push({ x, y, shown: appear * (1 - hidden), press });

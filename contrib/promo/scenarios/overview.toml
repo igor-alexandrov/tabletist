@@ -1,0 +1,46 @@
+# What Tabletist is, in four scenes: the video for a release's posts.
+title = "Tabletist"
+tempo = 112
+
+[[scene]]
+caption = "Open a table. It's just there."
+steps = [
+  { open = "books" },
+  { click = "Lanterns" },
+  { command = "move_row", key = "down", times = 3 },
+]
+
+[[scene]]
+caption = "Filter without writing SQL."
+steps = [
+  { command = "filter_bar" },
+  { click = "Filter column" },
+  { click = "title" },
+  { click = "Filter operator" },
+  { click = "contains" },
+  { click = "Value" },
+  { type = "the" },
+  { press = "enter" },
+  { hold = 0.6 },
+]
+
+[[scene]]
+caption = "Edit. Review. Then save."
+steps = [
+  { click = "The Quiet Ledger" },
+  { command = "edit_cell" },
+  { type = " (2nd ed.)" },
+  { press = "enter" },
+  { command = "review_sql" },
+  { hold = 0.8 },
+]
+
+[[scene]]
+caption = "Or just write the SQL."
+steps = [
+  { command = "new_sql_tab" },
+  # The editor keeps the line above's indent, so every line starts flush.
+  { type = "SELECT title, price\nFROM books\nWHERE in_print\nORDER BY price DESC;" },
+  { command = "run_statement" },
+  { hold = 0.8 },
+]
