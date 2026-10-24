@@ -24,6 +24,8 @@
   // How long a result stays after a scene's last step.
   const SETTLE = 0.6;
   const KEYCAP = 0.8;
+  // The spotlight lights an event a moment before it happens.
+  const GLOW = 0.1;
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 
@@ -108,6 +110,9 @@
     return { timed, scenes, outro: t, beat, bar };
   }
 
+  // The lit area round a box: a little room on each side.
+  const lit = (x0, y0, x1, y1) => ({ x0: x0 - 12, y0: y0 - 8, x1: x1 + 12, y1: y1 + 8, alpha: 1 });
+
   // What the camera looks at to frame `rects`: their middle, zoomed so they
   // fill about half the picture, kept inside the window.
   function view(rects) {
@@ -119,7 +124,7 @@
       x: clamp((x0 + x1) / 2, half.x, WIDTH - half.x),
       y: clamp((y0 + y1) / 2, half.y, HEIGHT - half.y),
       zoom,
-      area: { x0: x0 - 12, y0: y0 - 8, x1: x1 + 12, y1: y1 + 8, alpha: 1 },
+      area: lit(x0, y0, x1, y1),
     };
   }
 
@@ -152,8 +157,10 @@
   }
 
   // Where the camera and the spotlight are, a frame at a time, and when
-  // the camera set off for somewhere new (for the whooshes).
-  function film(timed, outro, duration) {
+  // the camera set off for somewhere new (for the whooshes). Until `hold`
+  // the camera shows the whole window. The spotlight does not wait for the
+  // camera: it lights the event of the moment.
+  function film(timed, outro, duration, hold = 0) {
     const framed = timed.filter(e => e.rect);
     let target = WHOLE;
     const pos = { x: WHOLE.x, y: WHOLE.y, zoom: 1 }, vel = { x: 0, y: 0, zoom: 0 };
@@ -162,7 +169,7 @@
     for (let i = 0, n = Math.round(duration * FPS); i < n; i++) {
       const t = i / FPS;
       let want = null;
-      if (t >= outro - LEAD) want = WHOLE;
+      if (t >= outro - LEAD || t < hold) want = WHOLE;
       else {
         const near = framed.filter(e => e.at > t - BEHIND && e.at <= t + LEAD + AHEAD);
         if (near.length) want = view(near.map(e => e.rect));
@@ -172,7 +179,9 @@
         target = want;
       }
       spring(pos, vel, { x: target.x, y: target.y, zoom: target.zoom }, 1 / FPS);
-      spring(spot, spotVel, target.area, 1 / FPS);
+      const now = t >= outro - LEAD ? null : latest(framed, e => e.at <= t + GLOW);
+      const [x0, y0, x1, y1] = now ? now.rect : [];
+      spring(spot, spotVel, now ? lit(x0, y0, x1, y1) : WHOLE.area, 1 / FPS);
       camera.push({ ...pos });
       spots.push({ ...spot });
     }
@@ -241,7 +250,9 @@
     }
     const { timed, scenes, outro, beat, bar } = place(record);
     const duration = outro + 2 * bar;
-    const { camera, spot, moves } = film(timed, outro, duration);
+    // The camera holds the wide shot while the window rises, and a moment after.
+    const intro = { from: 0, to: bar };
+    const { camera, spot, moves } = film(timed, outro, duration, intro.to + beat / 2);
     return {
       title: record.title,
       tempo: record.tempo,
@@ -250,7 +261,7 @@
       bar,
       duration,
       size: [WIDTH, HEIGHT],
-      intro: { from: 0, to: bar },
+      intro,
       outro,
       frames: [[0, 0], ...timed.map(e => [e.at, e.frame])].sort((a, b) => a[0] - b[0]),
       scenes,
