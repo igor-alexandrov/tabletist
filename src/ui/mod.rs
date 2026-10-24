@@ -10919,47 +10919,107 @@ value_tags   = true
         assert!(name.y1 < 40.0, "in the title bar: {name:?}");
     }
 
+    /// A primary press at `pos`, or its release.
+    fn primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// Presses at `at` and moves the pointer 30 points right, and asserts
+    /// that the window was asked to move in the frame each platform asks
+    /// in: macOS on the press, as AppKit takes a drag only then, and the
+    /// others once the pointer moves.
+    fn assert_press_and_move_drags(harness: &mut Harness, at: egui::Pos2) {
+        harness.frame(vec![egui::Event::PointerMoved(at)]);
+        harness.frame(vec![primary(at, true)]);
+        let pressed = harness.viewport_commands.clone();
+        harness.frame(vec![egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))]);
+        let moved = harness.viewport_commands.clone();
+        let drag = egui::ViewportCommand::StartDrag;
+        if cfg!(target_os = "macos") {
+            assert!(pressed.contains(&drag), "on the press: {pressed:?}");
+        } else {
+            assert!(!pressed.contains(&drag), "not before a move: {pressed:?}");
+            assert!(moved.contains(&drag), "on the move: {moved:?}");
+        }
+    }
+
+    /// Clicks twice at `at`, and what the window was asked meanwhile.
+    #[cfg(not(target_os = "macos"))]
+    fn double_click(harness: &mut Harness, at: egui::Pos2) -> Vec<egui::ViewportCommand> {
+        harness.frame(vec![egui::Event::PointerMoved(at)]);
+        let mut asked = Vec::new();
+        for pressed in [true, false, true, false] {
+            harness.frame(vec![primary(at, pressed)]);
+            asked.extend(harness.viewport_commands.iter().cloned());
+        }
+        asked
+    }
+
+    /// Double-clicks where `open` says, in a window that is not maximized
+    /// and in one that is, each in a harness of its own (its clock stands
+    /// still, so a second double-click would read as more clicks), and
+    /// asserts that the first maximizes the window and the second restores
+    /// it.
+    #[cfg(not(target_os = "macos"))]
+    fn assert_double_click_toggles_maximized(open: impl Fn(&mut Harness) -> egui::Pos2) {
+        for maximized in [false, true] {
+            let mut harness = Harness::new();
+            harness.maximized = maximized;
+            let at = open(&mut harness);
+            harness.settle();
+            let asked = double_click(&mut harness, at);
+            assert!(
+                asked.contains(&egui::ViewportCommand::Maximized(!maximized)),
+                "maximized {maximized}: {asked:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_space_beside_the_mac_window_buttons_moves_the_window() {
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
         harness.settle();
-        let at = egui::pos2(76.0, 20.0);
-        harness.frame(vec![egui::Event::PointerMoved(at)]);
-        harness.frame(vec![egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }]);
-        harness.frame(vec![egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))]);
-        assert!(
-            harness
-                .viewport_commands
-                .contains(&egui::ViewportCommand::StartDrag)
-        );
+        assert_press_and_move_drags(&mut harness, egui::pos2(76.0, 20.0));
     }
 
     #[test]
     fn dragging_the_empty_tab_bar_moves_the_window() {
         let mut harness = Harness::new();
         harness.settle();
-        let at = egui::pos2(900.0, 18.0);
-        harness.frame(vec![egui::Event::PointerMoved(at)]);
-        harness.frame(vec![egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }]);
-        harness.frame(vec![egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))]);
-        assert!(
-            harness
-                .viewport_commands
-                .contains(&egui::ViewportCommand::StartDrag),
-            "{:?}",
-            harness.viewport_commands
-        );
+        assert_press_and_move_drags(&mut harness, egui::pos2(900.0, 18.0));
+    }
+
+    #[test]
+    fn dragging_the_connection_bar_moves_the_window() {
+        let mut harness = Harness::new();
+        mac_title_bar(&mut harness);
+        harness.connect_fake();
+        harness.settle();
+        let line = crate::ui::workspace::bar_line(&harness.app, 1.0);
+        assert_press_and_move_drags(&mut harness, egui::pos2(700.0, line));
+    }
+
+    // macOS hands a double-click to fastframe-titlebar, which does what
+    // System Settings says through AppKit.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_double_click_on_the_pickers_header_maximizes_and_restores_the_window() {
+        assert_double_click_toggles_maximized(|_| egui::pos2(900.0, 18.0));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_double_click_on_the_connection_bar_maximizes_and_restores_the_window() {
+        assert_double_click_toggles_maximized(|harness| {
+            harness.connect_fake();
+            egui::pos2(700.0, crate::ui::workspace::bar_line(&harness.app, 1.0))
+        });
     }
 
     /// A tab with a page of `users` whose connection is then lost.
