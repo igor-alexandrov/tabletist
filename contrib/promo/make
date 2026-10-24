@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Makes a promotional video from a scenario:
+#
+#   contrib/promo/make contrib/promo/scenarios/overview.toml [--final] [--still <seconds>...] [--frames-only] [--reuse]
+#
+# It writes target/promo/<name>.mp4 (stills beside it) and keeps its
+# working files in target/promo/<name>/. It needs ffmpeg, Node and Google
+# Chrome (CHROME names another); puppeteer-core is installed into
+# target/promo/ on the first run. The scenario's format: contrib/promo/README.md.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+if [[ $# -lt 1 ]]; then
+  sed -n '2,9p' "$0"
+  exit 2
+fi
+scenario=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+shift
+name=$(basename "$scenario" .toml)
+out=$root/target/promo
+
+reuse=false
+frames_only=false
+render=()
+for arg in "$@"; do
+  case $arg in
+    --reuse) reuse=true ;;
+    --frames-only) frames_only=true ;;
+    *) render+=("$arg") ;;
+  esac
+done
+
+if ! $reuse || [[ ! -f $out/$name/events.json ]]; then
+  (cd "$root" && PROMO_SCENARIO=$scenario cargo test --locked --features shots --lib \
+    promo::runner::film -- --ignored --exact --nocapture)
+fi
+$frames_only && exit 0
+
+puppeteer=25.13.0
+installed=$out/node_modules/puppeteer-core/package.json
+if [[ ! -f $installed ]] || ! grep -q "\"version\": \"$puppeteer\"" "$installed"; then
+  npm install --prefix "$out" --no-audit --no-fund "puppeteer-core@$puppeteer"
+fi
+NODE_PATH=$out/node_modules node "$root/contrib/promo/render.cjs" \
+  "$out/$name" "$out/$name.mp4" ${render[@]+"${render[@]}"}
