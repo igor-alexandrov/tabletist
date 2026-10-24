@@ -115,7 +115,7 @@ take it, or a label that is not there stops the run.
 
 The message starts with the file, the scene and the step, for example:
 
-    scenarios/smoke.toml, scene 2, step 3: the step changed nothing on screen
+    /path/to/contrib/promo/scenarios/overview.toml, scene 2, step 3: the step changed nothing on screen
 
 (Scenes and steps count from 1.) The frames written up to the failing step
 are in `target/promo/<name>/frames/`. Open the last one to see where the app
@@ -127,5 +127,5 @@ Start with `--frames-only`: it plays the steps and writes the frames, and
 that is where a scenario goes wrong. Once it passes, render. While tuning
 the look and the sound, add `--reuse` to skip the steps.
 
-`scenarios/smoke.toml` is a few seconds that go through every kind of step.
-Use it to check that the pipeline works.
+`scenarios/smoke.toml` is a few seconds: an open, a click, a command and a
+hold. Use it to check that the pipeline works.
