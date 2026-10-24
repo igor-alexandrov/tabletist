@@ -2337,7 +2337,7 @@ mod mock {
             let palette = screen.palette();
             let mut harness = Harness::for_shots(screen.size(), screen.design_scale(), true, look);
             harness.app.palette = palette;
-            crate::theme::apply(&harness.ctx, &palette, &look);
+            harness.app.apply_style(&harness.ctx);
             screen.stage(&mut harness);
             harness.shot(&out(&format!("mock-{}.png", screen.name())));
         }
