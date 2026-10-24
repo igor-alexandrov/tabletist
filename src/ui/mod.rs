@@ -10929,16 +10929,23 @@ value_tags   = true
         }
     }
 
-    /// Presses at `at` and moves the pointer 30 points right, and what the
-    /// window was asked meanwhile: macOS asks for the drag on the press,
-    /// the others once the pointer moves.
-    fn press_and_move(harness: &mut Harness, at: egui::Pos2) -> Vec<egui::ViewportCommand> {
+    /// Presses at `at` and moves the pointer 30 points right, and asserts
+    /// that the window was asked to move in the frame each platform asks
+    /// in: macOS on the press, as AppKit takes a drag only then, and the
+    /// others once the pointer moves.
+    fn assert_press_and_move_drags(harness: &mut Harness, at: egui::Pos2) {
         harness.frame(vec![egui::Event::PointerMoved(at)]);
         harness.frame(vec![primary(at, true)]);
-        let mut asked = harness.viewport_commands.clone();
+        let pressed = harness.viewport_commands.clone();
         harness.frame(vec![egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))]);
-        asked.extend(harness.viewport_commands.iter().cloned());
-        asked
+        let moved = harness.viewport_commands.clone();
+        let drag = egui::ViewportCommand::StartDrag;
+        if cfg!(target_os = "macos") {
+            assert!(pressed.contains(&drag), "on the press: {pressed:?}");
+        } else {
+            assert!(!pressed.contains(&drag), "not before a move: {pressed:?}");
+            assert!(moved.contains(&drag), "on the move: {moved:?}");
+        }
     }
 
     /// Clicks twice at `at`, and what the window was asked meanwhile.
@@ -10958,22 +10965,14 @@ value_tags   = true
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
         harness.settle();
-        let asked = press_and_move(&mut harness, egui::pos2(76.0, 20.0));
-        assert!(
-            asked.contains(&egui::ViewportCommand::StartDrag),
-            "{asked:?}"
-        );
+        assert_press_and_move_drags(&mut harness, egui::pos2(76.0, 20.0));
     }
 
     #[test]
     fn dragging_the_empty_tab_bar_moves_the_window() {
         let mut harness = Harness::new();
         harness.settle();
-        let asked = press_and_move(&mut harness, egui::pos2(900.0, 18.0));
-        assert!(
-            asked.contains(&egui::ViewportCommand::StartDrag),
-            "{asked:?}"
-        );
+        assert_press_and_move_drags(&mut harness, egui::pos2(900.0, 18.0));
     }
 
     // macOS hands a double-click to fastframe-titlebar, which does what
