@@ -196,7 +196,9 @@ the `release-signing` environment, which only `v*` tags may use. The
 or with another key, the release stops before anything is published. The
 key is in 1Password. Never commit it, and never replace
 `assets/update-public-key.hex` alone: installed copies trust only the key
-they were built with.
+they were built with. The environment's deployment rule is `v*` of type
+tag, not branch: GitHub matches a branch rule against branch names only,
+so with one every tag is refused and the release stops at `sign`.
 
 Whoever can push a `v*` tag runs `release.yml` as it is at that tag, with
 the key: keep `v*` tags to the owner (a tag ruleset), or give the
