@@ -118,6 +118,16 @@ impl App {
     /// `command` as quick open offers it in `tab`'s window, and what
     /// running it does; None where it does not apply now.
     fn run_of(&self, tab: ConnTabId, command: Command) -> Option<(Runnable, Vec<Action>)> {
+        if let Some((name, about, actions)) = self.window_run(command) {
+            return Some((
+                Runnable {
+                    command,
+                    name,
+                    about,
+                },
+                actions,
+            ));
+        }
         let workspace = self.workspace(tab)?;
         // The tab in front, and the object or SQL editor it is.
         let front = workspace.active_tab.and_then(|id| workspace.tab(id));
@@ -128,11 +138,6 @@ impl App {
         let pending =
             object.filter(|object| object.edits.pending() && object.edits.saving.is_none());
         let in_front = || front.map(|tab| About::Tab(TabName::of(tab)));
-        let stepped = |larger| {
-            let terminal = self.look.terminal;
-            let settings = &self.settings;
-            settings.stepped_font_size(terminal, larger) != settings.font_size_in(terminal)
-        };
         let (name, about, actions) = match command {
             Command::NewSqlTab => {
                 let read_only = workspace.environment.is_production()
@@ -190,12 +195,6 @@ impl App {
                 };
                 (name, About::Nothing, vec![Action::CycleConnTab(step)])
             }
-            Command::Connections => ("Connections", About::Nothing, vec![Action::ShowConnections]),
-            Command::NewConnection => (
-                "New connection",
-                About::Nothing,
-                vec![Action::NewConnection],
-            ),
             Command::ToggleSidebar => {
                 let name = if workspace.sidebar_hidden {
                     "Show sidebar"
@@ -203,38 +202,6 @@ impl App {
                     "Hide sidebar"
                 };
                 (name, About::Nothing, vec![Action::ToggleSidebar(tab)])
-            }
-            Command::Settings => ("Settings", About::Nothing, vec![Action::ShowSettings]),
-            Command::Help => ("Keyboard shortcuts", About::Nothing, vec![Action::ShowHelp]),
-            // Each where it changes the size: not at the end of the steps,
-            // nor back to the look's own where it is that already.
-            Command::LargerText => {
-                stepped(true).then_some(())?;
-                (
-                    "Larger text",
-                    About::Nothing,
-                    vec![Action::TextSize(Some(true))],
-                )
-            }
-            Command::SmallerText => {
-                stepped(false).then_some(())?;
-                (
-                    "Smaller text",
-                    About::Nothing,
-                    vec![Action::TextSize(Some(false))],
-                )
-            }
-            Command::DefaultTextSize => {
-                let terminal = self.look.terminal;
-                let default = crate::settings::FontSizes::of(terminal).default;
-                if self.settings.font_size_in(terminal) == default {
-                    return None;
-                }
-                (
-                    "Default text size",
-                    About::Nothing,
-                    vec![Action::TextSize(None)],
-                )
             }
             // The tab in front's.
             Command::CloseTab => {
@@ -360,5 +327,57 @@ impl App {
             about,
         };
         Some((runnable, actions))
+    }
+
+    /// The commands of the window, not of a connection: they apply on the
+    /// connection picker too, which has no workspace.
+    fn window_run(&self, command: Command) -> Option<(&'static str, About, Vec<Action>)> {
+        let stepped = |larger| {
+            let terminal = self.look.terminal;
+            let settings = &self.settings;
+            settings.stepped_font_size(terminal, larger) != settings.font_size_in(terminal)
+        };
+        let run = match command {
+            Command::Connections => ("Connections", About::Nothing, vec![Action::ShowConnections]),
+            Command::NewConnection => (
+                "New connection",
+                About::Nothing,
+                vec![Action::NewConnection],
+            ),
+            Command::Settings => ("Settings", About::Nothing, vec![Action::ShowSettings]),
+            Command::Help => ("Keyboard shortcuts", About::Nothing, vec![Action::ShowHelp]),
+            // Each where it changes the size: not at the end of the steps,
+            // nor back to the look's own where it is that already.
+            Command::LargerText => {
+                stepped(true).then_some(())?;
+                (
+                    "Larger text",
+                    About::Nothing,
+                    vec![Action::TextSize(Some(true))],
+                )
+            }
+            Command::SmallerText => {
+                stepped(false).then_some(())?;
+                (
+                    "Smaller text",
+                    About::Nothing,
+                    vec![Action::TextSize(Some(false))],
+                )
+            }
+            Command::DefaultTextSize => {
+                let terminal = self.look.terminal;
+                let default = crate::settings::FontSizes::of(terminal).default;
+                if self.settings.font_size_in(terminal) == default {
+                    return None;
+                }
+                (
+                    "Default text size",
+                    About::Nothing,
+                    vec![Action::TextSize(None)],
+                )
+            }
+            _ => return None,
+        };
+        Some(run)
     }
 }

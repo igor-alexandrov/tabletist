@@ -35,12 +35,14 @@ mod keyboard;
 #[cfg(test)]
 mod keyboard_tests;
 mod labels;
+mod menu;
 mod quick_open;
 #[cfg(test)]
 mod startup_tests;
 
 pub use commands::{About, RUNNABLE, Runnable, TabName};
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
+pub use menu::ItemState;
 pub use quick_open::{
     Found, GROUP_SHOWN, QuickCommand, QuickHeading, QuickItem, QuickList, QuickRow, StartRow,
     setting_path,
