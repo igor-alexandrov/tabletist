@@ -5761,6 +5761,7 @@ dependencies = [
  "tabletist-appkit",
  "tabletist-db",
  "tabletist-mcp",
+ "tabletist-menubar",
  "tempfile",
  "tokio",
  "tokio-util",

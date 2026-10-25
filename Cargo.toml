@@ -80,6 +80,9 @@ tabletist-db = { path = "crates/tabletist-db" }
 # The MCP server agents reach the saved connections through. The backend
 # runs it, and is its gateway to the databases (src/backend/agents.rs).
 tabletist-mcp = { path = "crates/tabletist-mcp" }
+# The menu bar on macOS and Windows, built with muda from `src/menu.rs`'s
+# model. Empty elsewhere.
+tabletist-menubar = { path = "crates/tabletist-menubar" }
 # `CancellationToken`: how the server tells its gateway that a call is
 # over. In the tree through tabletist-mcp, which hands one to every call.
 tokio-util = "0.7"
