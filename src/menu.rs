@@ -13,7 +13,7 @@ mod tests;
 
 pub use bar::Bar;
 pub use replay::Replay;
-pub use tabletist_menubar::{Native, Role};
+pub use tabletist_menubar::{Native, Role, Via};
 
 use crate::keymap::{Command, EditItem, Keymap, Layout, MenuKey};
 
@@ -264,5 +264,41 @@ pub fn key_of(keymap: &Keymap, layout: Layout, item: Item) -> Option<MenuKey> {
         Item::QuickOpen => keymap.menu_key(Command::FindObject, layout),
         Item::Edit(edit) => keymap.edit_key(edit, layout),
         Item::About | Item::Exit | Item::Native(_) | Item::Separator => None,
+    }
+}
+
+/// What a choice of `item` (made `via`, `key` its menu key) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handling {
+    /// Into the frame's input as the press of `key` (`Replay`).
+    Replay(MenuKey, Via),
+    /// A click: `App::choose`, or `Window::logic` for Exit and Paste.
+    Click,
+    /// Nothing: a command the app greys, chosen by a key or a script.
+    Ignore,
+}
+
+/// What a choice of `item` does, kept apart from muda so it is tested
+/// headlessly.
+pub fn handling(app: &crate::app::App, item: Item, via: Via, key: Option<MenuKey>) -> Handling {
+    match (item, via, key) {
+        // The window reads the clipboard: never a replay.
+        (Item::Edit(EditItem::Paste), _, _) => Handling::Click,
+        // Clicked or by key, the Edit items are the presses they stand for.
+        (Item::Edit(_), _, Some(key)) => Handling::Replay(key, via),
+        // A command's key, given back where the keymap reads it; under a
+        // dialog that does not (`⌘,` over the shortcuts), a click.
+        (Item::Command(command), Via::Key, Some(key)) if app.key_reaches(command) => {
+            Handling::Replay(key, Via::Key)
+        }
+        // Quick open's key is read while quick open is open (it selects
+        // the typed text), so it needs no dialog rule.
+        (Item::QuickOpen, Via::Key, Some(key)) => Handling::Replay(key, Via::Key),
+        // On macOS an item stays enabled for AppKit outside an open menu
+        // (the crate's `NSMenuDelegate`), so a key the keymap would not
+        // read here (⌘T under a dialog) or a script can choose one the app
+        // greys: it does nothing, as without a menu.
+        _ if !app.menu_state(item).enabled => Handling::Ignore,
+        _ => Handling::Click,
     }
 }
