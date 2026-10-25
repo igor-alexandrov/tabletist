@@ -6,8 +6,17 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
-[lints]
-workspace = true
+# The workspace forbids unsafe code. AppKit takes a disabled item's key
+# equivalent and performs nothing, so on macOS an item is greyed only while
+# its menu is open, which takes a delegate for NSMenu: an Objective-C class
+# the crate defines, with methods the compiler cannot check. So this crate
+# carries the workspace's lints with `unsafe_code` lowered to `deny`,
+# allowed only in `src/macos/opening.rs`, each use with a SAFETY note.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"
 
 [dependencies]
 # `egui::Key`, the key a `Shortcut` names: the app's keymap reads keys as
@@ -17,3 +26,29 @@ egui = "0.36"
 raw-window-handle = "0.6"
 # Warns when muda refuses an item's key or the bar cannot attach.
 log = "0.4"
+
+# The menu bar itself, on macOS (and Windows, from Task 9). Its GTK crates
+# are optional and Linux-only: with default features off, Linux builds
+# neither muda nor GTK. It adds keyboard-types, crossbeam-channel and
+# dpi from crates.io (winit's fork carries its own); its objc2 crates are
+# the ones winit builds.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }
+# The event AppKit was handling when an item was chosen (`macos.rs`), and
+# the delegate that greys a menu's items while it is open
+# (`macos/opening.rs`): the versions winit and tabletist-appkit build.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder"] }
+
+# The AppKit test reads the bar back from NSApp's menus and makes its own
+# key events (`NSGraphicsContext` is the feature that method needs).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSGraphicsContext"] }
+
+# AppKit's menus belong to the main thread, which the test harness keeps
+# for itself: this test has its own `main`.
+[[test]]
+name = "macos_menu"
+harness = false
