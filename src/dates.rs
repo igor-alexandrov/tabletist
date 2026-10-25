@@ -133,30 +133,92 @@ pub enum Stored {
     Text { separator: char },
     /// Whole seconds since 1970 (UTC).
     Seconds,
-    /// Julian day numbers (REAL), as SQLite's `julianday()` gives them:
-    /// days and their fraction since noon UTC on 24 November 4714 BC.
+    /// Milliseconds since 1970 (UTC), as some libraries write them.
+    Millis,
+    /// Julian day numbers, as SQLite's `julianday()` gives them: days and
+    /// their fraction since noon UTC on 24 November 4714 BC. A whole one,
+    /// a noon, is kept as an INTEGER.
     Days,
+    /// A day's number written as its digits: `20260115`.
+    Compact,
+    /// Numbers of no form told apart here (or of several): a new value is
+    /// ISO 8601 text, which says what it is.
+    Unknown,
+}
+
+/// The Julian days of 0000-01-01 and 9999-12-31, at midnight UTC.
+const JULIAN_DAYS: std::ops::RangeInclusive<f64> = 1_721_059.5..=5_373_484.5;
+/// The last second of 9999, in seconds since 1970.
+const LAST_SECOND: i64 = 253_402_300_799;
+/// The least a value of milliseconds is taken to be (3 March 1973): as
+/// seconds it would be a day past the year 5000.
+const LEAST_MILLIS: i64 = 100_000_000_000;
+
+/// The day a number such as `20260115` is, years 1000 to 9999.
+fn compact_day(number: i64) -> Option<Date> {
+    let (year, month, day) = (number / 10_000, number / 100 % 100, number % 100);
+    if !(1000..=9999).contains(&year) {
+        return None;
+    }
+    Date::new(year as i16, month as i8, day as i8).ok()
 }
 
 impl Stored {
-    /// How the first value of `values` that is not NULL is kept.
+    /// How the values of `values` are kept, by the first that is not
+    /// NULL: text, or numbers, whose form all of the page's decide.
     pub fn of<'a>(values: impl IntoIterator<Item = &'a Value>) -> Self {
+        let mut values = values
+            .into_iter()
+            .filter(|value| !value.is_null())
+            .peekable();
+        match values.peek() {
+            // The NULLs were left out.
+            None | Some(Value::Null) => return Self::Fresh,
+            Some(Value::Text(text)) => {
+                let separator = match text.as_bytes().get(10) {
+                    Some(b'T') => 'T',
+                    _ => ' ',
+                };
+                return Self::Text { separator };
+            }
+            Some(Value::Bool(_) | Value::Bytes(_)) => return Self::Fresh,
+            Some(Value::Int(_) | Value::Float(_)) => {}
+        }
+        let (mut whole, mut real) = (Vec::new(), Vec::new());
         for value in values {
             match value {
-                Value::Null => {}
-                Value::Int(_) => return Self::Seconds,
-                Value::Float(_) => return Self::Days,
-                Value::Text(text) => {
-                    let separator = match text.as_bytes().get(10) {
-                        Some(b'T') => 'T',
-                        _ => ' ',
-                    };
-                    return Self::Text { separator };
-                }
-                Value::Bool(_) | Value::Bytes(_) => return Self::Fresh,
+                Value::Int(number) => whole.push(*number),
+                Value::Float(number) => real.push(*number),
+                Value::Null | Value::Bool(_) | Value::Text(_) | Value::Bytes(_) => {}
             }
         }
-        Self::Fresh
+        Self::of_numbers(&whole, &real)
+    }
+
+    /// The form whole numbers `whole` and real ones `real` are all of.
+    fn of_numbers(whole: &[i64], real: &[f64]) -> Self {
+        let julian = |number: f64| JULIAN_DAYS.contains(&number);
+        let all = |test: &dyn Fn(i64) -> bool| whole.iter().all(|number| test(*number));
+        if !real.is_empty() {
+            let days = real.iter().all(|number| julian(*number));
+            return if days && all(&|number| julian(number as f64)) {
+                Self::Days
+            } else {
+                Self::Unknown
+            };
+        }
+        if all(&|number| compact_day(number).is_some()) {
+            Self::Compact
+        } else if all(&|number| julian(number as f64)) {
+            // As seconds these are days of early 1970.
+            Self::Days
+        } else if all(&|number| (LEAST_MILLIS..=LAST_SECOND * 1000 + 999).contains(&number.abs())) {
+            Self::Millis
+        } else if all(&|number| number.abs() <= LAST_SECOND) {
+            Self::Seconds
+        } else {
+            Self::Unknown
+        }
     }
 }
 
@@ -191,6 +253,11 @@ impl Column {
             Dialect::Sqlite => Stored::of(values),
             Dialect::Postgres | Dialect::MySql => Stored::Fresh,
         };
+        // A number such as `20260115` is a day's, and no time's.
+        let stored = match (stored, kind) {
+            (Stored::Compact, Kind::Timestamp | Kind::Zoned | Kind::Time { .. }) => Stored::Unknown,
+            (stored, _) => stored,
+        };
         Some(Self {
             dialect,
             kind,
@@ -218,6 +285,24 @@ pub enum Order {
 }
 
 impl Order {
+    /// The order of the locale for times, as POSIX decides it: `LC_ALL`
+    /// where it is set, whatever region it names or none (`C`); else
+    /// `LC_TIME`; else the first of the system's `languages` that names a
+    /// region.
+    pub fn of_locale(all: Option<&str>, time: Option<&str>, languages: &[String]) -> Self {
+        let region = |tag: &str| fastframe_i18n::LanguageTag::parse(tag).and_then(|tag| tag.region);
+        let (all, time) = (
+            all.filter(|all| !all.is_empty()),
+            time.filter(|time| !time.is_empty()),
+        );
+        let found = match (all, time) {
+            (Some(all), _) => region(all),
+            (None, Some(time)) => region(time),
+            (None, None) => languages.iter().find_map(|tag| region(tag)),
+        };
+        Self::of_region(found.as_deref())
+    }
+
     /// The order of the region `region` (`us`, `de`, `jp`: lower case, as
     /// `fastframe_i18n::LanguageTag` gives it), by CLDR's short date
     /// patterns. Day first where it is not known.
@@ -549,6 +634,11 @@ fn special(text: &str, column: &Column) -> Result<Option<Moment>, Refusal> {
 fn numbered(text: &str, stored: Stored) -> Option<Result<Timestamp, Refusal>> {
     let moment = match stored {
         Stored::Seconds => Timestamp::from_second(text.parse::<i64>().ok()?),
+        Stored::Millis => Timestamp::from_millisecond(text.parse::<i64>().ok()?),
+        Stored::Compact => {
+            let day = compact_day(text.parse::<i64>().ok()?)?;
+            day.to_zoned(TimeZone::UTC).map(|zoned| zoned.timestamp())
+        }
         Stored::Days => {
             let days = text.parse::<f64>().ok().filter(|days| days.is_finite())?;
             let millis = ((days - JULIAN_EPOCH) * MILLIS_A_DAY).round();
@@ -557,7 +647,7 @@ fn numbered(text: &str, stored: Stored) -> Option<Result<Timestamp, Refusal>> {
             }
             Timestamp::from_millisecond(millis as i64)
         }
-        Stored::Fresh | Stored::Text { .. } => return None,
+        Stored::Fresh | Stored::Text { .. } | Stored::Unknown => return None,
     };
     Some(moment.map_err(|_| Refusal::Years))
 }
@@ -1200,10 +1290,12 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
                 offset: None,
             };
             reading.literal = match column.stored {
-                Stored::Seconds | Stored::Days => {
+                Stored::Seconds | Stored::Millis | Stored::Days | Stored::Compact => {
                     number_of(date.to_datetime(Time::midnight()), None, column.stored)
                 }
-                Stored::Fresh | Stored::Text { .. } => era(written_date(date, column.dialect)),
+                Stored::Fresh | Stored::Text { .. } | Stored::Unknown => {
+                    era(written_date(date, column.dialect))
+                }
             };
         }
         Kind::Time { offset: keeps } => {
@@ -1227,9 +1319,9 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             let day = Date::default();
             let at = rounded(day.to_datetime(time), digits);
             let digits = match column.stored {
-                Stored::Seconds => 0,
-                Stored::Days => digits.min(3),
-                Stored::Fresh | Stored::Text { .. } => digits,
+                Stored::Seconds | Stored::Compact => 0,
+                Stored::Millis | Stored::Days => digits.min(3),
+                Stored::Fresh | Stored::Text { .. } | Stored::Unknown => digits,
             };
             reading.digits = digits;
             if at.date() != day {
@@ -1250,15 +1342,17 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
                 reading.literal = match column.stored {
                     // Seconds of the day; a Julian day of 1 January 2000,
                     // the day SQLite's `julianday('09:30')` gives a time.
-                    Stored::Seconds | Stored::Days => {
-                        let (year, stored) = match column.stored {
-                            Stored::Days => (2000, Stored::Days),
-                            _ => (1970, Stored::Seconds),
+                    Stored::Seconds | Stored::Millis | Stored::Days => {
+                        let year = match column.stored {
+                            Stored::Days => 2000,
+                            _ => 1970,
                         };
                         let epoch = Date::new(year, 1, 1).unwrap_or_default();
-                        number_of(epoch.to_datetime(time), None, stored)
+                        number_of(epoch.to_datetime(time), None, column.stored)
                     }
-                    Stored::Fresh | Stored::Text { .. } => written_time(time, digits),
+                    Stored::Fresh | Stored::Text { .. } | Stored::Compact | Stored::Unknown => {
+                        written_time(time, digits)
+                    }
                 };
             }
             if let Some(offset) = parts.offset {
@@ -1276,9 +1370,9 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             }
             let date = date.unwrap_or_else(|| clock.today_in(&clock.zone));
             let digits = match column.stored {
-                Stored::Seconds => 0,
-                Stored::Days => digits.min(3),
-                Stored::Fresh | Stored::Text { .. } => digits,
+                Stored::Seconds | Stored::Compact => 0,
+                Stored::Millis | Stored::Days => digits.min(3),
+                Stored::Fresh | Stored::Text { .. } | Stored::Unknown => digits,
             };
             reading.digits = digits;
             let at = rounded(date.to_datetime(time.unwrap_or(Time::midnight())), digits);
@@ -1290,11 +1384,18 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             };
             let separator = match column.stored {
                 Stored::Text { separator } => separator,
-                Stored::Fresh | Stored::Seconds | Stored::Days => ' ',
+                Stored::Fresh
+                | Stored::Seconds
+                | Stored::Millis
+                | Stored::Days
+                | Stored::Compact
+                | Stored::Unknown => ' ',
             };
             reading.literal = match column.stored {
-                Stored::Seconds | Stored::Days => number_of(at, parts.offset, column.stored),
-                Stored::Fresh | Stored::Text { .. } => {
+                Stored::Seconds | Stored::Millis | Stored::Days => {
+                    number_of(at, parts.offset, column.stored)
+                }
+                Stored::Fresh | Stored::Text { .. } | Stored::Compact | Stored::Unknown => {
                     let (day, bc) = written_date(at.date(), column.dialect);
                     let mut written =
                         format!("{day}{separator}{}", written_time(at.time(), digits));
@@ -1326,7 +1427,14 @@ fn number_of(at: DateTime, offset: Option<Offset>, stored: Stored) -> String {
     };
     match stored {
         Stored::Days => (moment.as_millisecond() as f64 / MILLIS_A_DAY + JULIAN_EPOCH).to_string(),
-        Stored::Seconds | Stored::Fresh | Stored::Text { .. } => moment.as_second().to_string(),
+        Stored::Millis => moment.as_millisecond().to_string(),
+        Stored::Compact => {
+            let day = moment.to_zoned(TimeZone::UTC).date();
+            format!("{:04}{:02}{:02}", day.year(), day.month(), day.day())
+        }
+        Stored::Seconds | Stored::Fresh | Stored::Text { .. } | Stored::Unknown => {
+            moment.as_second().to_string()
+        }
     }
 }
 
@@ -1450,7 +1558,9 @@ fn fraction_digits(time: Time) -> u8 {
 /// it is in UTC. `None` for any other.
 pub fn opened(value: &Value, column: &Column) -> Option<String> {
     let number = match (value, column.stored) {
-        (Value::Int(seconds), Stored::Seconds) => seconds.to_string(),
+        (Value::Int(number), Stored::Seconds | Stored::Millis | Stored::Compact) => {
+            number.to_string()
+        }
         (Value::Float(days), Stored::Days) => days.to_string(),
         (Value::Int(days), Stored::Days) => days.to_string(),
         _ => return None,
@@ -1590,6 +1700,19 @@ mod tests {
         assert_eq!(Order::of_region(Some("gb")), Order::DayMonth);
         assert_eq!(Order::of_region(Some("jp")), Order::YearMonth);
         assert_eq!(Order::of_region(None), Order::DayMonth);
+        // `LC_ALL` decides where it is set, a region or none; then
+        // `LC_TIME`; then the system's languages.
+        let languages = ["ja-JP".to_owned(), "en-US".to_owned()];
+        let of = |all, time| Order::of_locale(all, time, &languages);
+        assert_eq!(of(Some("C"), Some("en_US.UTF-8")), Order::DayMonth);
+        assert_eq!(
+            of(Some("en_US.UTF-8"), Some("de_DE.UTF-8")),
+            Order::MonthDay
+        );
+        assert_eq!(of(Some(""), Some("en_US.UTF-8")), Order::MonthDay);
+        assert_eq!(of(None, Some("C")), Order::DayMonth);
+        assert_eq!(of(None, None), Order::YearMonth);
+        assert_eq!(Order::of_locale(None, None, &[]), Order::DayMonth);
     }
 
     #[test]
@@ -2106,6 +2229,74 @@ mod tests {
             );
         }
         assert!(read("2026-01-15 09:30", &unnamed, &clock()).is_ok());
+    }
+
+    #[test]
+    fn sqlite_numbers_are_told_apart_by_every_value_of_the_page() {
+        let of = |values: &[Value]| Stored::of(values);
+        // A whole Julian day (a noon) first, a fraction after it.
+        assert_eq!(
+            of(&[Value::Int(2_461_337), Value::Float(2_461_337.5)]),
+            Stored::Days
+        );
+        assert_eq!(of(&[Value::Int(2_461_337)]), Stored::Days);
+        assert_eq!(of(&[Value::Int(1_792_800_000_000)]), Stored::Millis);
+        assert_eq!(
+            of(&[Value::Int(20_260_115), Value::Int(20_261_024)]),
+            Stored::Compact
+        );
+        assert_eq!(
+            of(&[Value::Int(1_792_800_000), Value::Int(0)]),
+            Stored::Seconds
+        );
+        // Seconds beside milliseconds, a real beside seconds: no one form.
+        assert_eq!(
+            of(&[Value::Int(1_792_800_000), Value::Int(1_792_800_000_000)]),
+            Stored::Unknown
+        );
+        assert_eq!(
+            of(&[Value::Float(2_461_337.5), Value::Int(1_792_800_000)]),
+            Stored::Unknown
+        );
+        assert_eq!(
+            of(&[Value::Null, Value::Text("2026-10-24".into()), Value::Int(1)]),
+            Stored::Text { separator: ' ' }
+        );
+        let lite = Dialect::Sqlite;
+        let column = |type_name: &str, values: &[Value]| {
+            Column::of(lite, type_name, None, values.iter()).unwrap()
+        };
+        let read_as = |column: &Column, typed: &str| read(typed, column, &clock()).unwrap().literal;
+        // A whole Julian day is a noon: 2461337 is noon on 23 October.
+        let noon = column("DATE", &[Value::Int(2_461_337)]);
+        assert_eq!(
+            opened(&Value::Int(2_461_337), &noon).as_deref(),
+            Some("2026-10-23")
+        );
+        assert_eq!(read_as(&noon, "25 Oct 2026"), "2461338.5");
+        let millis = column("DATETIME", &[Value::Int(1_792_800_000_000)]);
+        assert_eq!(
+            opened(&Value::Int(1_792_800_000_000), &millis).as_deref(),
+            Some("2026-10-24 00:00:00")
+        );
+        assert_eq!(read_as(&millis, "2026-10-24 08:00:00.25"), "1792828800250");
+        let compact = column("DATE", &[Value::Int(20_260_115)]);
+        assert_eq!(
+            opened(&Value::Int(20_260_115), &compact).as_deref(),
+            Some("2026-01-15")
+        );
+        assert_eq!(read_as(&compact, "25 Oct 2026"), "20261025");
+        // A number such as 20260115 is a day's, no time's: in a timestamp it
+        // is of no form known, and a new value is text.
+        assert_eq!(
+            column("DATETIME", &[Value::Int(20_260_115)]).stored,
+            Stored::Unknown
+        );
+        let unknown = column(
+            "DATE",
+            &[Value::Int(1_792_800_000), Value::Int(1_792_800_000_000)],
+        );
+        assert_eq!(read_as(&unknown, "25 Oct 2026"), "2026-10-25");
     }
 
     #[test]

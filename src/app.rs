@@ -5674,22 +5674,19 @@ impl App {
     }
 }
 
-/// The order the system's locale writes a day's numbers in, by its region:
-/// that of the locale for times where one is set (`LC_ALL`, `LC_TIME`),
-/// else of the first language the system prefers that names one. Day
-/// first in a test, whatever the machine's.
+/// The order the system's locale writes a day's numbers in
+/// ([`crate::dates::Order::of_locale`]). Day first in a test, whatever the
+/// machine's.
 fn date_order() -> crate::dates::Order {
     if cfg!(test) {
         return crate::dates::Order::DayMonth;
     }
-    let times = ["LC_ALL", "LC_TIME"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok());
-    let region = times
-        .chain(fastframe_i18n::system_languages().iter().cloned())
-        .filter_map(|tag| fastframe_i18n::LanguageTag::parse(&tag))
-        .find_map(|tag| tag.region);
-    crate::dates::Order::of_region(region.as_deref())
+    let variable = |name: &str| std::env::var(name).ok();
+    crate::dates::Order::of_locale(
+        variable("LC_ALL").as_deref(),
+        variable("LC_TIME").as_deref(),
+        fastframe_i18n::system_languages(),
+    )
 }
 
 /// The computer's time zone, or UTC where it cannot be found. Tests have

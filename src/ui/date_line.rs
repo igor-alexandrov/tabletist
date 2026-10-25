@@ -272,7 +272,12 @@ fn reading_words(reading: &Reading, column: &Column, locale: Locale) -> String {
             Stored::Fresh => say("stored as text"),
             Stored::Text { .. } => say("stored as text, like the other rows"),
             Stored::Seconds => say("stored as seconds since 1970, like the other rows"),
+            Stored::Millis => say("stored as milliseconds since 1970, like the other rows"),
             Stored::Days => say("stored as a Julian day, like the other rows"),
+            Stored::Compact => say("stored as a number such as 20260115, like the other rows"),
+            Stored::Unknown => {
+                say("stored as text: the other rows hold numbers of a form not known here")
+            }
         });
     }
     parts.join(" · ")

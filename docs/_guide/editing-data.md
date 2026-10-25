@@ -132,10 +132,11 @@ The line says the limits of a type, and refuses what is outside them:
   typed: give a date or set NULL.
 
 SQLite keeps a date as text or as a number. A new value is written the
-way the column's values already are: seconds since 1970 where they are
-whole numbers, a Julian day (as `julianday()` gives it) where they are
-real numbers, and ISO 8601 text otherwise or where there are none
-(`2026-01-15` or `2026-01-15 09:30:00`). A time kept as a number is
+way the column's values already are, as the values on the page tell it:
+a Julian day (as `julianday()` gives it, a noon as a whole number), seconds
+or milliseconds since 1970, or a day's digits (`20260115`), and ISO 8601
+text where they are text, where there are none, or where their numbers
+are of no one form (`2026-01-15` or `2026-01-15 09:30:00`). A time kept as a number is
 seconds of the day, or the Julian day of its time on 1 January 2000. A
 value kept as a number opens as the day, the time, or both, that it is.
 The values you do not edit keep theirs.
