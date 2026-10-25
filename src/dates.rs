@@ -153,6 +153,9 @@ const LAST_SECOND: i64 = 253_402_300_799;
 /// The least a value of milliseconds is taken to be (3 March 1973): as
 /// seconds it would be a day past the year 5000.
 const LEAST_MILLIS: i64 = 100_000_000_000;
+/// [`LEAST_MILLIS`], to compare a value's size with: the size of the least
+/// `i64` has no `i64` to hold it.
+const MILLIS: u64 = LEAST_MILLIS as u64;
 
 /// The day a number such as `20260115` is, years 1000 to 9999.
 fn compact_day(number: i64) -> Option<Date> {
@@ -212,9 +215,11 @@ impl Stored {
         } else if all(&|number| julian(number as f64)) {
             // As seconds these are days of early 1970.
             Self::Days
-        } else if all(&|number| (LEAST_MILLIS..=LAST_SECOND * 1000 + 999).contains(&number.abs())) {
+        } else if all(&|number| {
+            (MILLIS..=LAST_SECOND as u64 * 1000 + 999).contains(&number.unsigned_abs())
+        }) {
             Self::Millis
-        } else if all(&|number| number.abs() <= LAST_SECOND) {
+        } else if all(&|number| number.unsigned_abs() <= LAST_SECOND as u64) {
             Self::Seconds
         } else {
             Self::Unknown
@@ -640,7 +645,7 @@ fn numbered(text: &str, stored: Stored) -> Option<Result<Timestamp, Refusal>> {
         Stored::Seconds => Timestamp::from_second(text.parse::<i64>().ok()?),
         Stored::Millis => {
             let millis = text.parse::<i64>().ok()?;
-            if millis.abs() < LEAST_MILLIS {
+            if millis.unsigned_abs() < MILLIS {
                 return None;
             }
             Timestamp::from_millisecond(millis)
@@ -2332,6 +2337,13 @@ mod tests {
             read("2026", &millis, &clock()),
             Err(Refusal::NotRead(Kind::Timestamp))
         );
+        // The least whole number there is, typed or held, is refused, and
+        // nothing overflows on the way.
+        assert_eq!(
+            read(&i64::MIN.to_string(), &millis, &clock()),
+            Err(Refusal::Years)
+        );
+        assert_eq!(Stored::of(&[Value::Int(i64::MIN)]), Stored::Unknown);
     }
 
     #[test]
