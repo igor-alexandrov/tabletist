@@ -83,6 +83,9 @@ tabletist-mcp = { path = "crates/tabletist-mcp" }
 # The menu bar on macOS and Windows, built with muda from `src/menu.rs`'s
 # model. Empty elsewhere.
 tabletist-menubar = { path = "crates/tabletist-menubar" }
+# The window the menu bar attaches to (`src/menu/bar.rs`), which eframe's
+# creation context hands out; eframe already builds this version.
+raw-window-handle = "0.6"
 # `CancellationToken`: how the server tells its gateway that a call is
 # over. In the tree through tabletist-mcp, which hands one to every call.
 tokio-util = "0.7"
@@ -155,9 +158,8 @@ security-framework = "3.7"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSToolbar", "NSControl", "NSButton", "objc2-core-foundation"] }
-# The app menu's About and Settings items, and the installed fonts CoreText
-# lists for the data font: the AppKit and CoreText calls that need unsafe
-# code, kept in a crate of their own because this one forbids it.
+# The installed fonts CoreText lists for the data font: CoreText calls that
+# need unsafe code, kept in a crate of their own because this one forbids it.
 tabletist-appkit = { path = "crates/tabletist-appkit" }
 # Quit (Cmd+Q, the app menu, the Dock) reaches the app as a close request for
 # its window, which a tab with pending changes holds back to ask first

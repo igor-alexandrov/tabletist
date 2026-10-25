@@ -143,55 +143,22 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
             if demo {
                 demo_setup(&mut app);
             }
-            // The menu bar is up by now: winit builds it before the window.
-            #[cfg(target_os = "macos")]
-            let about_menu = crate::macos::AboutMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "About Tabletist"),
-            );
-            #[cfg(target_os = "macos")]
-            if about_menu.is_none() {
-                log::warn!("the app menu has no About item to take over");
+            // The menu bar is up by now: winit builds its own before the
+            // window, and this one takes its place.
+            let menu = crate::menu::Bar::attach(cc, &app, &cc.egui_ctx);
+            // macOS only for now: tabletist-menubar does not attach on
+            // Windows yet, and a warning at every launch there would say
+            // nothing. Windows joins once it attaches.
+            if menu.is_none() && cfg!(target_os = "macos") {
+                log::warn!("the menu bar could not be attached");
             }
-            #[cfg(target_os = "macos")]
-            let settings_menu = crate::macos::SettingsMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "Settings…"),
-            );
-            #[cfg(target_os = "macos")]
-            if settings_menu.is_none() {
-                log::warn!("the app menu has no place for a Settings item");
-            }
-            #[cfg(target_os = "macos")]
-            let history_menu = crate::macos::HistoryMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "View"),
-                &crate::i18n::gettext(app.locale, "History"),
-            );
-            #[cfg(target_os = "macos")]
-            if history_menu.is_none() {
-                log::warn!("the menu bar has no place for a View menu");
-            }
-            #[cfg(target_os = "macos")]
-            let quick_open_menu = crate::macos::QuickOpenMenu::attach(
-                &cc.egui_ctx,
-                &crate::i18n::gettext(app.locale, "View"),
-                &crate::i18n::gettext(app.locale, "Quick Open"),
-            );
             Ok(Box::new(Window {
                 app,
                 shot,
                 demo,
                 #[cfg(target_os = "macos")]
                 title_bar: None,
-                #[cfg(target_os = "macos")]
-                about_menu,
-                #[cfg(target_os = "macos")]
-                settings_menu,
-                #[cfg(target_os = "macos")]
-                history_menu,
-                #[cfg(target_os = "macos")]
-                quick_open_menu,
+                menu,
             }))
         }),
     )
@@ -321,19 +288,8 @@ struct Window {
     /// exists.
     #[cfg(target_os = "macos")]
     title_bar: Option<crate::macos::UnifiedTitleBar>,
-    /// macOS: the app menu's About item, which opens the About dialog.
-    #[cfg(target_os = "macos")]
-    about_menu: Option<crate::macos::AboutMenu>,
-    /// macOS: the app menu's Settings item, which opens the Settings
-    /// window.
-    #[cfg(target_os = "macos")]
-    settings_menu: Option<crate::macos::SettingsMenu>,
-    /// macOS: View › History, which shows the window's History tab.
-    #[cfg(target_os = "macos")]
-    history_menu: Option<crate::macos::HistoryMenu>,
-    /// macOS: View › Quick Open, which opens quick open.
-    #[cfg(target_os = "macos")]
-    quick_open_menu: Option<crate::macos::QuickOpenMenu>,
+    /// macOS and Windows: the menu bar.
+    menu: Option<crate::menu::Bar>,
 }
 
 impl Window {
@@ -378,49 +334,29 @@ impl eframe::App for Window {
         !self.demo
     }
 
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Before the frame's `logic`: a key a menu took goes back into
+        // this frame's input.
+        if let Some(menu) = &mut self.menu {
+            menu.input(raw, &self.app);
+        }
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // The same dialog the shortcuts dialog's About button opens.
-        #[cfg(target_os = "macos")]
-        if self
-            .about_menu
-            .as_ref()
-            .is_some_and(crate::macos::AboutMenu::take)
-        {
-            self.app.actions.push(crate::model::Action::ShowAbout);
-        }
-        // The same window `Mod+,` opens. AppKit takes that key for the
-        // item before egui sees it, so on macOS the key arrives here; where
-        // the item could not be added, the key handler still has it. Asked
-        // for while it is open, the window stays as it is, so a press that
-        // reached both would still open it once.
-        #[cfg(target_os = "macos")]
-        if self
-            .settings_menu
-            .as_ref()
-            .is_some_and(crate::macos::SettingsMenu::take)
-        {
-            self.app.actions.push(crate::model::Action::ShowSettings);
-        }
-        // The History tab of the connection in front, as ⌘Y shows it.
-        #[cfg(target_os = "macos")]
-        if self
-            .history_menu
-            .as_ref()
-            .is_some_and(crate::macos::HistoryMenu::take)
-        {
-            let tab = self.app.active_tab_id();
-            self.app
-                .actions
-                .push(crate::model::Action::ShowHistory(tab));
-        }
-        // Quick open, as ⌘P opens it: while it is open, its text selected.
-        #[cfg(target_os = "macos")]
-        if self
-            .quick_open_menu
-            .as_ref()
-            .is_some_and(crate::macos::QuickOpenMenu::take)
-        {
-            self.app.actions.push(crate::model::Action::OpenQuickOpen);
+        let clicks = self
+            .menu
+            .as_mut()
+            .map(crate::menu::Bar::clicks)
+            .unwrap_or_default();
+        for item in clicks {
+            match crate::menu::window_command(item) {
+                Some(command) => {
+                    ctx.send_viewport_cmd(command);
+                    // A paste lands in the next frame's input.
+                    ctx.request_repaint();
+                }
+                None => self.app.choose(item),
+            }
         }
         self.app.logic(ctx);
         self.drive_shot(ctx);
@@ -448,6 +384,11 @@ impl eframe::App for Window {
         if let Some(title_bar) = &self.title_bar {
             let zoom = ui.ctx().zoom_factor();
             title_bar.place_buttons(crate::ui::window_buttons_line(&self.app, zoom) * zoom);
+        }
+        // After the frame's actions (`frame_ui` applies them): what is
+        // enabled now, and the keys if the keymap or the look changed.
+        if let Some(menu) = &mut self.menu {
+            menu.sync(&self.app);
         }
     }
 }

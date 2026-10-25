@@ -5,10 +5,68 @@
 //! front, a save with something to save. The terminal look's commands stay
 //! on `:`.
 
+use std::cell::RefCell;
+
+use tabletist_db::Dialect;
+
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, RunMode, Tab};
 
 use super::App;
+
+/// Whether a script has a statement, for the script last asked about.
+/// Run All applies only where one has, and the menu bar asks after every
+/// frame: tokenizing a script of 5,000 lines takes over a millisecond in
+/// a release build, and its text changes only on edits.
+#[derive(Default)]
+pub struct Scripts(RefCell<Option<Asked>>);
+
+/// A script asked about, and the answer.
+struct Asked {
+    dialect: Dialect,
+    text: String,
+    runs: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread tokenized a script for Run All.
+    static TOKENIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Scripts {
+    /// Whether `text`, in `dialect`, has a statement to run: comments
+    /// alone run nothing.
+    pub fn runs(&self, dialect: Dialect, text: &str) -> bool {
+        let mut asked = self.0.borrow_mut();
+        if let Some(asked) = asked.as_ref()
+            && asked.dialect == dialect
+            && asked.text == text
+        {
+            return asked.runs;
+        }
+        #[cfg(test)]
+        TOKENIZED.with(|count| count.set(count.get() + 1));
+        let runs = !tabletist_db::sql::statements(dialect, text).is_empty();
+        match asked.as_mut() {
+            // The last script's room, for the next.
+            Some(asked) => {
+                asked.dialect = dialect;
+                asked.text.clear();
+                asked.text.push_str(text);
+                asked.runs = runs;
+            }
+            None => {
+                *asked = Some(Asked {
+                    dialect,
+                    text: text.to_owned(),
+                    runs,
+                });
+            }
+        }
+        runs
+    }
+}
 
 /// The commands quick open can run, in the order it lists them: the
 /// window's, then the tab's in front. Each is built, and does here what
@@ -282,8 +340,7 @@ impl App {
                 let sql = sql.filter(|sql| !sql.is_writing())?;
                 // A script with a statement in it: comments alone run
                 // nothing.
-                let dialect = workspace.driver.dialect();
-                if tabletist_db::sql::statements(dialect, &sql.text).is_empty() {
+                if !self.scripts.runs(workspace.driver.dialect(), &sql.text) {
                     return None;
                 }
                 let run = Action::RunSql {
@@ -383,5 +440,32 @@ impl App {
             _ => return None,
         };
         Some(run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_script_is_tokenized_again_only_when_its_text_or_dialect_changes() {
+        let scripts = Scripts::default();
+        let tokenized = || TOKENIZED.with(std::cell::Cell::get);
+        let start = tokenized();
+        // `#` starts a comment in MySQL only: elsewhere it is code.
+        assert!(!scripts.runs(Dialect::MySql, "# note"));
+        assert_eq!(tokenized(), start + 1);
+        // Asked again, the answer is the one kept.
+        assert!(!scripts.runs(Dialect::MySql, "# note"));
+        assert_eq!(tokenized(), start + 1);
+        // The same text in another dialect is another question.
+        assert!(scripts.runs(Dialect::Postgres, "# note"));
+        assert_eq!(tokenized(), start + 2);
+        // An edit is tokenized once.
+        assert!(scripts.runs(Dialect::Postgres, "# note\nselect 1"));
+        assert!(scripts.runs(Dialect::Postgres, "# note\nselect 1"));
+        assert_eq!(tokenized(), start + 3);
+        assert!(!scripts.runs(Dialect::Postgres, "-- only a comment"));
+        assert_eq!(tokenized(), start + 4);
     }
 }

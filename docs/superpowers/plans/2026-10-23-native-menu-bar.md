@@ -2853,6 +2853,11 @@ Expected on Windows: compile errors (muda is not built there yet).
   `RawWindowHandle` is `Copy` and not `Send`; `MenuBar` stays on the
   main thread (in `Window`), so that is fine.
 
+- `src/entrypoint.rs`: the warning "the menu bar could not be attached"
+  is gated on `cfg!(target_os = "macos")` (Task 7, while Windows had no
+  bar to attach); take the gate off, so it warns wherever
+  `menu::Platform::current()` has a bar.
+
 The app installs no accelerator table and no message hook: the menu
 writes its keys, and the keys stay egui's.
 

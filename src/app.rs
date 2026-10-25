@@ -156,6 +156,9 @@ pub struct App {
     /// start screen's search: built when first searched, and again once
     /// the catalog changes.
     indexes: quick_open::Indexes,
+    /// Whether the script last asked about has a statement: Run All's
+    /// check, which the menu bar makes after every frame.
+    scripts: commands::Scripts,
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
@@ -346,6 +349,7 @@ impl App {
             writes_session,
             recents,
             indexes: Default::default(),
+            scripts: Default::default(),
             dialog: None,
             pending_secrets: HashMap::new(),
             pending_stores: HashMap::new(),

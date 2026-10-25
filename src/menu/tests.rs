@@ -1,15 +1,18 @@
 //! The menu bar's model, which items are enabled, what a click does, and
 //! what a replayed key gives egui. Headless.
 
+use std::collections::HashMap;
+
 use egui::{Event, Key, Modifiers};
-use tabletist_menubar::Via;
+use tabletist_menubar::{Entry, Via};
 
 use crate::app::{App, RUNNABLE};
-use crate::keymap::{Command, EditItem, MenuKey, Mods};
+use crate::keymap::{Command, EditItem, MenuKey, Mods, Row, Scope, When};
 use crate::model::{Action, ConnTabId, Dialog};
 use crate::testing::Harness;
 
-use super::{Handling, Item, Platform, Replay, bar, handling};
+use super::bar::{Change, Described, Feed, Id, Keyed, changes, describe, keys_of, route};
+use super::{Handling, Item, Platform, Replay, bar, handling, key_of, window_command};
 
 fn items(platform: Platform) -> Vec<Item> {
     bar(platform)
@@ -809,5 +812,326 @@ fn an_edit_item_without_a_key_is_greyed_but_paste() {
     assert_eq!(
         handling(&harness.app, copy, Via::Click, None),
         Handling::Ignore
+    );
+}
+
+#[test]
+fn the_bar_described_has_each_item_once_as_built() {
+    let harness = Harness::new();
+    let app = &harness.app;
+    for platform in [Platform::MacOs, Platform::Windows] {
+        let described = describe(platform, app);
+        let menus = bar(platform);
+        assert_eq!(described.menus.len(), menus.len());
+        for (built, menu) in described.menus.iter().zip(&menus) {
+            // Windows gives each menu an access key.
+            let title = match platform {
+                Platform::MacOs => menu.title.to_owned(),
+                Platform::Windows => format!("&{}", menu.title),
+            };
+            assert_eq!(built.title, title);
+            assert_eq!(built.entries.len(), menu.items.len(), "{}", menu.title);
+            for (entry, &item) in built.entries.iter().zip(&menu.items) {
+                match (entry, item) {
+                    (Entry::Separator, Item::Separator) => {}
+                    (Entry::Native(native, title), Item::Native(of)) => {
+                        assert_eq!(*native, of);
+                        assert_eq!(title.as_deref(), Some(super::title(item, false)));
+                    }
+                    (Entry::Item { id, title, key }, item) => {
+                        assert_eq!(described.items.get(id), Some(&item));
+                        assert_eq!(title, super::title(item, false));
+                        let state = described.shown[id];
+                        assert!(state.enabled, "{item:?}");
+                        assert_eq!(state.title, super::title(item, false));
+                        // The keymap's key, as the menu shows it.
+                        let of = key_of(&app.keymap, app.layout(), item);
+                        assert_eq!(key.map(|key| key.key), of.map(|key| key.key));
+                        assert_eq!(key.map(|key| key.cmd), of.map(|key| key.mods.cmd));
+                    }
+                    (_, item) => panic!("{platform:?}: {item:?} described as another entry"),
+                }
+            }
+        }
+        // Every item but the separators and the platform's own has an id.
+        let ours = menus
+            .iter()
+            .flat_map(|menu| &menu.items)
+            .filter(|item| !matches!(item, Item::Separator | Item::Native(_)))
+            .count();
+        assert_eq!(described.items.len(), ours);
+        assert_eq!(described.shown.len(), ours);
+    }
+}
+
+/// The id `platform`'s bar gives `item`.
+fn id_of(items: &HashMap<Id, Item>, item: Item) -> Id {
+    let found = items.iter().find(|(_, of)| **of == item);
+    *found.expect("the item is in the bar").0
+}
+
+#[test]
+fn a_choice_is_routed_as_menu_handling_says() {
+    let (mut harness, tab) = sql_editor();
+    {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        workspace.sql_tab_mut(id).unwrap().text = "select 1".into();
+    }
+    harness.settle();
+    let app = &harness.app;
+    let Described { mut items, .. } = describe(Platform::MacOs, app);
+    let keys = keys_of(&items, app);
+    let run_all = id_of(&items, Item::Command(Command::RunAll));
+    let settings = id_of(&items, Item::Command(Command::Settings));
+    let save = id_of(&items, Item::Command(Command::SaveChanges));
+    let paste = id_of(&items, Item::Edit(EditItem::Paste));
+    let run_key = keys[&run_all].expect("Run All has a chord");
+    let save_key = keys[&save].expect("Save has a chord");
+    let (presses, clicks) = route(
+        app,
+        &items,
+        &keys,
+        vec![
+            // A key is given back as it was pressed.
+            (run_all, Via::Key),
+            // A click runs the command.
+            (settings, Via::Click),
+            // Nothing to save: greyed, so a click does nothing, but the
+            // key goes where it goes without a menu.
+            (save, Via::Click),
+            (save, Via::Key),
+            // The window reads the clipboard.
+            (paste, Via::Key),
+        ],
+    );
+    assert_eq!(presses, [(run_key, Via::Key), (save_key, Via::Key)]);
+    assert_eq!(
+        clicks,
+        [
+            Item::Command(Command::Settings),
+            Item::Edit(EditItem::Paste)
+        ]
+    );
+    // An id the bar no longer has is passed over.
+    items.remove(&settings);
+    let (presses, clicks) = route(app, &items, &keys, vec![(settings, Via::Click)]);
+    assert!(presses.is_empty() && clicks.is_empty());
+}
+
+#[test]
+fn the_bar_is_told_only_what_changed() {
+    let mut harness = Harness::new();
+    let Described {
+        items, mut shown, ..
+    } = describe(Platform::MacOs, &harness.app);
+    let close = id_of(&items, Item::Command(Command::CloseConnection));
+    let sidebar = id_of(&items, Item::Command(Command::ToggleSidebar));
+    // Built, every item is enabled: on the picker a connection's are not.
+    let first = changes(&mut shown, &items, &harness.app);
+    assert!(first.contains(&Change::Enabled(close, false)), "{first:?}");
+    assert!(!first.contains(&Change::Enabled(
+        id_of(&items, Item::Command(Command::Settings)),
+        false
+    )));
+    // As it was, nothing.
+    assert_eq!(changes(&mut shown, &items, &harness.app), []);
+    // Connected, the sidebar shown: enabled, and its title says so.
+    let tab = harness.connect_fake();
+    harness.settle();
+    let connected = changes(&mut shown, &items, &harness.app);
+    assert!(
+        connected.contains(&Change::Enabled(close, true)),
+        "{connected:?}"
+    );
+    assert!(
+        connected.contains(&Change::Enabled(sidebar, true)),
+        "{connected:?}"
+    );
+    assert!(
+        connected.contains(&Change::Title(sidebar, "Hide Sidebar")),
+        "{connected:?}"
+    );
+    harness.app.apply(Action::ToggleSidebar(tab));
+    harness.settle();
+    assert_eq!(
+        changes(&mut shown, &items, &harness.app),
+        [Change::Title(sidebar, "Show Sidebar")]
+    );
+}
+
+#[test]
+fn the_bar_is_built_again_only_when_an_item_s_key_changed() {
+    let mut harness = Harness::new();
+    let Described { items, .. } = describe(Platform::MacOs, &harness.app);
+    let mut keyed = Keyed::new(&items, &harness.app);
+    // The same keymap and look: nothing to ask.
+    assert_eq!(keyed.rekey(&items, &harness.app), None);
+    // Every settings change makes a new keymap: the keys are as they were.
+    let before = harness.app.keymap.clone();
+    harness
+        .app
+        .change_settings(|settings| settings.page_size = 500);
+    assert!(!std::sync::Arc::ptr_eq(&before, &harness.app.keymap));
+    assert_eq!(keyed.rekey(&items, &harness.app), None);
+    // A key taken away is a key changed: muda cannot take it off the
+    // item, so the bar is built again. (The sidebar's toggle has one
+    // line, so unbinding it leaves no key.)
+    let row = Row {
+        command: Command::ToggleSidebar,
+        scope: Scope::Global,
+        when: When::Always,
+    };
+    let layout = harness.app.layout();
+    let unbound = harness.app.settings.keys.unbind(layout, row);
+    harness
+        .app
+        .change_settings(|settings| settings.keys = unbound);
+    let changed = keyed.rekey(&items, &harness.app).expect("a key changed");
+    let sidebar = id_of(&items, Item::Command(Command::ToggleSidebar));
+    assert!(keyed.keys[&sidebar].is_some());
+    assert_eq!(changed[&sidebar], None);
+    let unchanged = |id: &Id| changed[id] == keyed.keys[id];
+    assert!(items.keys().filter(|id| **id != sidebar).all(unchanged));
+    // The keymap is recorded though the keys are not kept (a rebuild muda
+    // refused): it is asked once.
+    assert_eq!(keyed.rekey(&items, &harness.app), None);
+    keyed.keys = changed;
+    // Another look writes other keys with the same keymap.
+    harness.app.look = crate::theme::Look::omarchy();
+    assert!(keyed.rekey(&items, &harness.app).is_some());
+}
+
+#[test]
+fn run_all_is_enabled_as_each_edit_leaves_the_script() {
+    let (mut harness, tab) = sql_editor();
+    let run_all = Item::Command(Command::RunAll);
+    let set = |harness: &mut Harness, text: &str| {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        workspace.sql_tab_mut(id).unwrap().text = text.into();
+    };
+    // Comments alone run nothing; the answer follows each edit.
+    for (text, runs) in [
+        ("-- nothing yet", false),
+        ("-- nothing yet\nselect 1", true),
+        ("-- nothing yet\nselect 1", true),
+        ("", false),
+    ] {
+        set(&mut harness, text);
+        assert_eq!(harness.app.menu_state(run_all).enabled, runs, "{text:?}");
+    }
+}
+
+/// A frame's input as winit gives it: `events`, with the window focused
+/// or not and minimized or not.
+fn input(events: Vec<Event>, focused: bool, minimized: bool) -> egui::RawInput {
+    let mut raw = egui::RawInput {
+        focused,
+        events,
+        ..Default::default()
+    };
+    let info = raw.viewports.entry(raw.viewport_id).or_default();
+    info.minimized = Some(minimized);
+    info.occluded = Some(false);
+    raw
+}
+
+/// A frame's input as eframe's `prepare_raw_input` makes it after a frame
+/// of `logic` alone: that frame's input, the hook's events among them,
+/// then the new.
+fn refed(kept: Vec<Event>, mut new: egui::RawInput) -> egui::RawInput {
+    let mut events = kept;
+    events.append(&mut new.events);
+    new.events = events;
+    new
+}
+
+#[test]
+fn a_minimized_or_unfocused_frame_replays_nothing() {
+    let undo = cmd_key(Key::Z, false);
+    let mut feed = Feed::default();
+    // Clicked: the chord's modifiers held for this frame, then let go.
+    let mut raw = input(Vec::new(), true, false);
+    assert!(feed.input(&mut raw, &[(undo, Via::Click)]));
+    assert_eq!(raw.events.len(), 3, "{:?}", raw.events);
+    feed.drawn();
+    // Minimized: a frame of `logic` alone. A key and a click are dropped,
+    // and the restore waits.
+    let mut raw = input(Vec::new(), true, true);
+    assert!(!feed.input(&mut raw, &[(undo, Via::Key), (undo, Via::Click)]));
+    assert_eq!(raw.events, []);
+    // Back, eframe hands the kept input over again: what winit says is
+    // held comes back.
+    let mut raw = refed(raw.events, input(Vec::new(), true, false));
+    assert!(!feed.input(&mut raw, &[]));
+    assert_eq!(raw.events, [Event::ModifiersChanged(Modifiers::NONE)]);
+    feed.drawn();
+    // Not focused: a key down reaches nothing, as without a menu.
+    let mut raw = input(Vec::new(), false, false);
+    assert!(!feed.input(&mut raw, &[(undo, Via::Key)]));
+    assert_eq!(raw.events, []);
+}
+
+#[test]
+fn a_frame_kept_undrawn_is_not_read_again() {
+    let undo = cmd_key(Key::Z, false);
+    let mut feed = Feed::default();
+    let winit = vec![Event::ModifiersChanged(Modifiers::NONE)];
+    let mut raw = input(winit, true, false);
+    assert!(feed.input(&mut raw, &[(undo, Via::Click)]));
+    let ours = raw.events.clone();
+    assert!(
+        ours.contains(&Event::ModifiersChanged(held(undo))),
+        "{ours:?}"
+    );
+    // No pass drew it (a redraw the compositor held back): eframe hands
+    // it over again, and its events go to egui once, as they were.
+    let mut raw = refed(raw.events, input(Vec::new(), true, false));
+    assert!(!feed.input(&mut raw, &[(undo, Via::Key)]));
+    assert_eq!(raw.events, ours);
+    feed.drawn();
+    // The next frame lets the chord's modifiers go: what winit said is
+    // held, not the replay's.
+    let mut raw = input(Vec::new(), true, false);
+    assert!(!feed.input(&mut raw, &[]));
+    assert_eq!(raw.events, [Event::ModifiersChanged(Modifiers::NONE)]);
+}
+
+#[test]
+fn exit_and_paste_are_the_window_s_and_the_rest_the_app_s() {
+    assert_eq!(
+        window_command(Item::Exit),
+        Some(egui::ViewportCommand::Close)
+    );
+    assert_eq!(
+        window_command(Item::Edit(EditItem::Paste)),
+        Some(egui::ViewportCommand::RequestPaste)
+    );
+    for platform in [Platform::MacOs, Platform::Windows] {
+        for item in items(platform) {
+            if !matches!(item, Item::Exit | Item::Edit(EditItem::Paste)) {
+                assert_eq!(window_command(item), None, "{item:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn about_and_quick_open_clicked_push_their_actions() {
+    let mut harness = Harness::new();
+    harness.app.actions.clear();
+    harness.app.choose(Item::About);
+    assert!(
+        matches!(harness.app.actions.as_slice(), [Action::ShowAbout]),
+        "{:?}",
+        harness.app.actions
+    );
+    harness.app.actions.clear();
+    harness.app.choose(Item::QuickOpen);
+    assert!(
+        matches!(harness.app.actions.as_slice(), [Action::OpenQuickOpen]),
+        "{:?}",
+        harness.app.actions
     );
 }

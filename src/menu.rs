@@ -267,6 +267,23 @@ pub fn key_of(keymap: &Keymap, layout: Layout, item: Item) -> Option<MenuKey> {
     }
 }
 
+/// What the window does for a click on `item`, where the window, not the
+/// app, does it: Exit closes it as its close button does (pending changes
+/// ask first), and Paste has it read the clipboard and hand egui a paste.
+/// None for the app's items (`App::choose`).
+pub fn window_command(item: Item) -> Option<egui::ViewportCommand> {
+    match item {
+        Item::Exit => Some(egui::ViewportCommand::Close),
+        Item::Edit(EditItem::Paste) => Some(egui::ViewportCommand::RequestPaste),
+        Item::Edit(_)
+        | Item::Command(_)
+        | Item::About
+        | Item::QuickOpen
+        | Item::Native(_)
+        | Item::Separator => None,
+    }
+}
+
 /// What a menu choice does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handling {
