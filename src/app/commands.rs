@@ -39,6 +39,9 @@ impl Scripts {
     /// alone run nothing.
     pub fn runs(&self, dialect: Dialect, text: &str) -> bool {
         let mut asked = self.0.borrow_mut();
+        // The dialect is part of the cache's key, not a decision per
+        // engine: AGENTS.md's rule against `==` on `Dialect` is about the
+        // latter.
         if let Some(asked) = asked.as_ref()
             && asked.dialect == dialect
             && asked.text == text

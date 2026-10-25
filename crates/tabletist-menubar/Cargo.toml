@@ -22,7 +22,8 @@ unwrap_used = "warn"
 # `egui::Key`, the key a `Shortcut` names: the app's keymap reads keys as
 # egui does. The crate draws nothing.
 egui = "0.36"
-# The window the bar attaches to on Windows; eframe already builds it.
+# The window the bar attaches to (`MenuBar::attach` takes it on every
+# platform; macOS reads none of it); eframe already builds it.
 raw-window-handle = "0.6"
 # Warns when muda refuses an item's key or the bar cannot attach.
 log = "0.4"

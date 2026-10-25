@@ -288,7 +288,7 @@ struct Window {
     /// exists.
     #[cfg(target_os = "macos")]
     title_bar: Option<crate::macos::UnifiedTitleBar>,
-    /// macOS and Windows: the menu bar.
+    /// The menu bar, where the platform has one.
     menu: Option<crate::menu::Bar>,
 }
 

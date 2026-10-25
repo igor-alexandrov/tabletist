@@ -331,7 +331,6 @@ impl Bar {
             // next input.
             self.ctx.request_repaint();
         }
-        // On Windows a rebuild sets the window's menu twice.
         if let Some(keys) = self.keyed.rekey(&self.items, app)
             && let Some(platform) = Platform::current()
         {

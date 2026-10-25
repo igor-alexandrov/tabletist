@@ -93,6 +93,10 @@ Every task ends with all four passing and one commit. Commits are signed
     keyboard sends, so ⇧⌘[ and ⇧⌘] (Previous and Next Tab) get no key
     equivalent; the keys still work through the keymap. The crate drops
     such a key when it builds an item.
+12. **An Edit item with no key is greyed, Paste excepted.** The spec keeps
+    Edit items always enabled, but in the Omarchy look `edit_key` is None
+    (`reserved(Omarchy)` is empty), so a click would replay nothing. Paste
+    stays enabled: the window reads the clipboard (Task 6's review).
 
 ## Files
 
