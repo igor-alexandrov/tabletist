@@ -36,6 +36,13 @@ fn promo() -> PathBuf {
 struct Record {
     title: String,
     tempo: u32,
+    /// The voice that says the lines, as `say -v` names it.
+    voice: String,
+    /// The lines said over the intro card and over the outro's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intro: Option<Card>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outro: Option<Card>,
     size: [f32; 2],
     scale: f32,
     scenes: Vec<SceneRecord>,
@@ -50,6 +57,15 @@ struct SceneRecord {
     slide: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    /// What the voice says over the scene.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    say: Option<String>,
+}
+
+/// The intro or the outro card: what the voice says over it.
+#[derive(Serialize)]
+struct Card {
+    say: String,
 }
 
 /// One thing that happened, the frame that shows it, and where.
@@ -436,21 +452,26 @@ fn film() {
     let record = Record {
         title: scenario.title.clone(),
         tempo: scenario.tempo,
+        voice: scenario.voice.clone(),
+        intro: scenario.intro.clone().map(|say| Card { say }),
+        outro: scenario.outro.clone().map(|say| Card { say }),
         size: [SIZE.x, SIZE.y],
         scale: SCALE,
         scenes: scenario
             .scenes
             .iter()
             .map(|scene| match scene {
-                Scene::Shot { caption, .. } => SceneRecord {
+                Scene::Shot { caption, say, .. } => SceneRecord {
                     caption: caption.clone(),
                     slide: None,
                     text: None,
+                    say: say.clone(),
                 },
-                Scene::Slide { title, text } => SceneRecord {
+                Scene::Slide { title, text, say } => SceneRecord {
                     caption: None,
                     slide: Some(title.clone()),
                     text: text.clone(),
+                    say: say.clone(),
                 },
             })
             .collect(),

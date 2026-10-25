@@ -17,7 +17,8 @@
   // The camera frames what happens from BEHIND seconds ago to
   // LEAD + AHEAD seconds on, so it is there as the action starts.
   const LEAD = 0.25, AHEAD = 0.6, BEHIND = 0.4;
-  const ZOOM = [1, 1.7];
+  // Gentle: the app stays whole enough to read, as a person would show it.
+  const ZOOM = [1, 1.25];
   // The spring's angular frequency: it settles in about half a second.
   const OMEGA = 2 * Math.PI * 1.1;
   const READ_WORD = 0.3, READ_LEAST = 1.6;
@@ -25,6 +26,20 @@
   // app moves, and the card's coming and going, but never less than
   // SLIDE_LEAST.
   const SLIDE_WORD = 0.22, SLIDE_BUILD = 0.9, SLIDE_LEAST = 2.2;
+  // A line the voice says starts this far into its shot, and its scene
+  // keeps this much room after it.
+  const VOICE_IN = 0.2, VOICE_ROOM = 0.4;
+  // A slide's line starts once its headline is up: index.html raises the
+  // headline from HEADLINE.start into the slide, a word every
+  // HEADLINE.word seconds, each taking HEADLINE.rise to be read.
+  const HEADLINE = { start: 0.3, word: 0.07, rise: 0.35 };
+  // The intro's and the outro's lines start once the card's big line is in.
+  const CARD_VOICE = 0.6;
+  // How long the outro stays after its line.
+  const OUTRO_TAIL = 1.2;
+  // A subtitle holds this many words at most; a longer line is split.
+  const SUBTITLE_WORDS = 9;
+  const LEADING = /^(a|an|and|as|at|by|for|from|in|it|like|of|on|or|so|the|to|with|you|your)$/i;
   // How long a result stays after a scene's last step.
   const SETTLE = 0.4;
   // How long a click, a command or a key holds before the next step.
@@ -73,24 +88,47 @@
     return found;
   }
 
-  // When each event happens, scene by scene, and when the scenes are.
+  const words = text => text.trim().split(/\s+/).length;
+
+  // What the voice says of `owner` (a scene, the intro, the outro) and how
+  // long it takes, or null where it says nothing. render.cjs measures each
+  // line before the director runs.
+  function spoken(owner) {
+    if (!owner || !owner.say) return null;
+    if (!owner.speech) throw new Error(`a line to say was not measured: "${owner.say}"`);
+    return { text: owner.say, file: owner.speech.file, seconds: owner.speech.seconds };
+  }
+
+  // A line said from `at`: when it ends, with its room after.
+  const heard = (voice, at) => (voice ? at + voice.seconds + VOICE_ROOM : 0);
+
+  // When each event happens, scene by scene, and when the scenes are, and
+  // the lines the voice says.
   function place(record) {
     const beat = 60 / record.tempo, bar = 4 * beat;
     const random = seeded(record.title);
-    const timed = [], scenes = [];
+    const timed = [], scenes = [], voices = [];
     let pointer = { x: WIDTH * 0.7, y: HEIGHT * 0.75 };
-    // The intro is a bar.
-    let t = bar;
+    // The intro is a bar, or as long as its line and the beat its card
+    // takes to leave.
+    const opening = spoken(record.intro);
+    if (opening) voices.push({ at: CARD_VOICE, ...opening });
+    let t = Math.max(bar, onGrid(heard(opening, CARD_VOICE) + beat, bar / 2));
+    const intro = { from: 0, to: t };
     record.scenes.forEach((scene, index) => {
       const from = t;
+      const voice = spoken(scene);
       // A slide: the app is away, and only the words take time.
       if (scene.slide) {
-        const words = `${scene.slide} ${scene.text || ""}`.trim().split(/\s+/).length;
-        const to = onGrid(from + Math.max(SLIDE_LEAST, SLIDE_WORD * words + SLIDE_BUILD), bar / 2);
+        const at = from + HEADLINE.start + HEADLINE.word * (words(scene.slide) - 1) + HEADLINE.rise;
+        if (voice) voices.push({ at, ...voice });
+        const reading = from + Math.max(SLIDE_LEAST, SLIDE_WORD * words(`${scene.slide} ${scene.text || ""}`) + SLIDE_BUILD);
+        const to = onGrid(Math.max(reading, heard(voice, at)), bar / 2);
         scenes.push({ from, to, caption: null, slide: { title: scene.slide, text: scene.text || null } });
         t = to;
         return;
       }
+      if (voice) voices.push({ at: from + VOICE_IN, ...voice });
       let now = from + beat / 2;
       for (const event of record.events.filter(e => e.scene === index)) {
         switch (event.kind) {
@@ -129,15 +167,66 @@
         }
       }
       now += SETTLE;
-      const words = scene.caption ? scene.caption.split(/\s+/).length : 0;
-      const reading = scene.caption ? Math.max(READ_LEAST, READ_WORD * words) : 0;
+      // A line said takes the caption's place: the subtitles show it.
+      const caption = voice ? null : scene.caption || null;
+      const reading = caption ? Math.max(READ_LEAST, READ_WORD * words(caption)) : 0;
       // A scene ends on a half bar: the next starts on the beat, without
       // waiting out a whole bar.
-      const to = onGrid(Math.max(now, from + reading), bar / 2);
-      scenes.push({ from, to, caption: scene.caption || null, slide: null });
+      const to = onGrid(Math.max(now, from + reading, heard(voice, from + VOICE_IN)), bar / 2);
+      scenes.push({ from, to, caption, slide: null });
       t = to;
     });
-    return { timed, scenes, outro: t, beat, bar };
+    const closing = spoken(record.outro);
+    if (closing) voices.push({ at: t + CARD_VOICE, ...closing });
+    // The outro is a bar and a half, or as long as its line and a breath.
+    const ending = closing ? onGrid(CARD_VOICE + closing.seconds + OUTRO_TAIL, bar / 2) : 0;
+    const duration = t + Math.max(1.5 * bar, ending);
+    return { timed, scenes, voices, intro, outro: t, duration, beat, bar };
+  }
+
+  // A line's words in pieces of SUBTITLE_WORDS at most and 4 at least,
+  // about 7, a break after a sentence or a comma where one is near: the
+  // split that costs least, each piece costing its distance from 7
+  // squared and 2, less 8 for ending a sentence, 4 a clause, and 4 more
+  // for ending on a little word that leads into the next ("and", "the").
+  function chunks(text) {
+    const all = text.trim().split(/\s+/), n = all.length;
+    if (n <= SUBTITLE_WORDS) return [all];
+    const cost = (from, to) => {
+      const end = to < n ? all[to - 1] : "";
+      const bonus = /[.!?]$/.test(end) ? 8 : /[,;:]$/.test(end) ? 4 : 0;
+      const hanging = LEADING.test(end) ? 4 : 0;
+      return (to - from - 7) ** 2 + 2 - bonus + hanging;
+    };
+    // best[i]: the cheapest split of the first i words, and its last break.
+    const best = [{ cost: 0, from: null }];
+    for (let to = 1; to <= n; to++) {
+      best[to] = { cost: Infinity, from: null };
+      for (let from = Math.max(0, to - SUBTITLE_WORDS); from <= to - 4; from++) {
+        if (best[from].cost === Infinity) continue;
+        const c = best[from].cost + cost(from, to);
+        if (c < best[to].cost) best[to] = { cost: c, from };
+      }
+    }
+    const pieces = [];
+    for (let to = n; to > 0; to = best[to].from) pieces.unshift(all.slice(best[to].from, to));
+    return pieces;
+  }
+
+  // The subtitles of the lines: each line in chunks, each chunk timed by
+  // its share of the line's words. The last stays until the line ends.
+  function subtitles(voices) {
+    const all = [];
+    for (const voice of voices) {
+      const pieces = chunks(voice.text), total = pieces.flat().length;
+      let from = voice.at;
+      pieces.forEach((piece, k) => {
+        const to = k === pieces.length - 1 ? voice.at + voice.seconds : from + (voice.seconds * piece.length) / total;
+        all.push({ from, to, text: piece.join(" ") });
+        from = to;
+      });
+    }
+    return all;
   }
 
   // The lit area round a box: a little room on each side.
@@ -300,10 +389,8 @@
     if (record.size[0] !== WIDTH || record.size[1] !== HEIGHT) {
       throw new Error(`the window is ${record.size.join("x")} points, not ${WIDTH}x${HEIGHT}`);
     }
-    const { timed, scenes, outro, beat, bar } = place(record);
-    const duration = outro + 1.5 * bar;
+    const { timed, scenes, voices, intro, outro, duration, beat, bar } = place(record);
     // The camera holds the wide shot while the window rises, and a moment after.
-    const intro = { from: 0, to: bar };
     const slides = scenes.filter(scene => scene.slide);
     const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2, slides);
     return {
@@ -324,6 +411,8 @@
       clicks: timed.filter(e => e.kind === "click").map(e => ({ at: e.at, x: e.where.x, y: e.where.y })),
       keycaps: timed.filter(e => e.kind === "command").map(e => ({ at: e.at, until: e.at + KEYCAP, keys: e.keys })),
       sounds: sounds(timed, outro, slides, seeded(`${record.title} keys`)),
+      voices: voices.map(({ at, file, seconds, text }) => ({ at, file, seconds, text })),
+      subtitles: subtitles(voices),
     };
   }
 

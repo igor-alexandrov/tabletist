@@ -1,8 +1,11 @@
 # Promotional videos from scenarios
 
-A scenario is a TOML file: captions and steps, with no times in it. The
-command turns it into a 1920x1080, 60 fps MP4 with music and sound effects.
-The design is `docs/superpowers/specs/2026-10-24-promo-video-scenarios-design.md`.
+A scenario is a TOML file: what a voice says, captions and steps, with no
+times in it. The command turns it into a 1920x1080, 60 fps MP4: the app in
+the light theme, large on a bright stage, a voice saying each scene's line
+with subtitles under it, light music beneath, and blue cards to open and
+close it, the last one asking you to download Tabletist. The design is
+`docs/superpowers/specs/2026-10-24-promo-video-scenarios-design.md`.
 
 Scenarios live in `contrib/promo/scenarios/`.
 
@@ -15,6 +18,12 @@ It writes `target/promo/filtering.mp4` and keeps its working files in
 `target/promo/node_modules` on its first run, so the repository has no
 `package.json` and Cargo has no new crate. It needs ffmpeg, Node and Chrome
 (`CHROME` names another one).
+
+The voice is macOS's own: `say` speaks each line into
+`target/promo/<name>/voice/`, so a scenario with lines renders on a Mac
+only. Its voice has to be installed. If it is not, the render stops and
+says so: add it in System Settings > Accessibility > Spoken Content >
+System voice > Manage Voices. `say -v '?'` lists the installed ones.
 
 - `--final`: motion blur, four frames rendered and blended into each. A
   draft takes about a quarter of the time.
@@ -30,12 +39,17 @@ Renders need a GPU and Chrome, so they run on a Mac, by hand.
 ## The scenario
 
 ```toml
-title    = "Filtering"     # the end card says it; the video is named after the file
+title    = "Filtering"     # the intro card says it; the video is named after the file
 database = "bookshop"      # the Bookshop fixture, or a path to a SQLite file
 tempo    = 128             # the music's beats per minute; a scene ends on a half bar
+voice    = "Ava (Premium)" # the voice that says the lines, as `say -v` names it
+
+[intro]
+say = "Here's how to find the rows you need, without writing any SQL."
 
 [[scene]]
 caption = "Open a table. It's just there."
+say = "Click a table, and it's right there."
 steps = [
   { open = "books" },
   { click = "Lanterns" },
@@ -55,6 +69,9 @@ steps = [
   { press = "enter" },
   { hold = 1.0 },
 ]
+
+[outro]
+say = "Tabletist is free. Download it today."
 ```
 
 The filter bar opens on the table's first column with `=`, so the second
@@ -67,9 +84,17 @@ is also a column header: the menu's item is taken, see Labels).
   another SQLite file. Every SQLite session is read-only: nothing is written
   to it.
 - `tempo`: 80 to 160.
+- `voice`: `Ava (Premium)` unless the scenario names another.
 - A scene has a `caption` (optional: a scene without one is a move between
-  two) and its `steps`. The intro and outro cards are not scenes: every
-  video has them.
+  two), a `say` (optional) and its `steps`. The intro and outro cards are
+  not scenes: every video has them, and `[intro]` and `[outro]` may each
+  give one a `say`.
+- `say` is a line the voice says, first person and casual: what you gain,
+  not what the button is called. It starts 0.2 s into its shot, as the
+  steps start, and the scene lasts until it is said, with 0.4 s to spare.
+  It shows as subtitles at the bottom while it is said, a piece of six to
+  nine words at a time, and a shot that has one shows no caption. A
+  scenario with no lines at all keeps its captions, and has no voice.
 - A scene can be a slide instead: a feature named on a card of its own,
   with the app away. It has a `slide` (the headline) and may have a `text`
   (one line under it), and no caption and no steps:
@@ -80,11 +105,32 @@ is also a column header: the menu's item is taken, see Labels).
   text = "Every command has a key, and the keys are yours to change."
   ```
 
-  The window blurs away as for the outro, the headline rises word by word,
-  its line follows a beat later, and the window comes back for the next
-  scene as it left. Under a slide the drums rest, and a soft bell marks it.
+  A blue curtain rises over the app as for the outro, the headline rises
+  word by word, its line follows a beat later, and the curtain lifts away
+  for the next scene. A slide's `say` starts once the headline is up, and
+  a slide that has one reads best with no `text`: the subtitles say it.
+  Under a slide the drums rest, and a soft bell marks it.
 
 The look is macOS, in the light theme. The Omarchy look is not in this.
+
+## What a video looks and sounds like
+
+- The intro is a full-bleed blue card (the icon's gradient) with the icon,
+  the `title` and the tagline in bold white. Its curtain lifts away to the
+  app.
+- The app fills most of the picture, about 1700 pixels wide, on a light
+  stage with a soft shadow. The camera stays plain: it moves in gently
+  (1.25 times at most) on what is happening, and back out to the whole
+  window when the action stops. Nothing is dimmed.
+- Keycaps spring in for a `command`, above the subtitles when there are
+  some. The pointer moves on a slight arc and clicks with a blue ripple.
+- The outro is the blue card again: "Download Tabletist. It's free.", the
+  engines and the platforms, and `igor.works/tabletist` in a white pill.
+- The music is synthesized, light and upbeat, in the scenario's tempo: an
+  airy pad, a round bass on the beat, a crisp pluck, a light kick, a clap
+  on beats 2 and 4, and hats. It goes down 10 dB under the voice, and a
+  little under each click and key. The mix is normalized to -14 LUFS, and
+  the same scenario always gives the same sound, to the sample.
 
 ## Where a video starts
 

@@ -1,10 +1,15 @@
 # What Tabletist is, in four scenes and two slides: the video for a
-# release's posts.
+# release's posts. A voice says each line, and the captions are for a
+# render without one.
 title = "Tabletist"
 tempo = 128
 
+[intro]
+say = "Meet Tabletist, a small, fast database client. Let's take a look."
+
 [[scene]]
 caption = "Open a table. It's just there."
+say = "Click a table, and it's right there. The arrow keys take you through the rows."
 steps = [
   { open = "books" },
   { click = "Lanterns" },
@@ -13,10 +18,11 @@ steps = [
 
 [[scene]]
 slide = "Keyboard first."
-text = "Every command has a key, and the keys are yours to change."
+say = "Every command has a key, and the keys are yours to change."
 
 [[scene]]
 caption = "Filter without writing SQL."
+say = "Looking for something? Filter on any column, without writing a line of SQL."
 steps = [
   { command = "filter_bar" },
   { click = "Filter column" },
@@ -31,6 +37,7 @@ steps = [
 
 [[scene]]
 caption = "Edit. Review. Then save."
+say = "Edit right in the grid, read the exact SQL, and save when you're happy."
 steps = [
   { click = "The Quiet Ledger" },
   { command = "edit_cell" },
@@ -42,10 +49,11 @@ steps = [
 
 [[scene]]
 slide = "Safe by default."
-text = "Edits wait for your review. SQL runs read-only until you say so."
+say = "Your edits wait until you save, and SQL runs read-only until you say so."
 
 [[scene]]
 caption = "Or just write the SQL."
+say = "And when you'd rather just write SQL, it's right there too."
 steps = [
   { command = "new_sql_tab" },
   # The editor keeps the line above's indent, so every line starts flush.
@@ -53,3 +61,6 @@ steps = [
   { command = "run_statement" },
   { hold = 0.8 },
 ]
+
+[outro]
+say = "Tabletist is free. Download it today."

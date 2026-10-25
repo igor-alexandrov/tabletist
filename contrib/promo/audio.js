@@ -1,19 +1,24 @@
-// The sound of a promotional video: music in the timeline's tempo and the
-// effects on its events, rendered offline (no clock, no speakers) and
-// returned as a 16-bit WAV in base64. index.html loads it after
-// director.js; render.cjs calls renderAudio(timeline). Seeded: a timeline
-// always sounds the same.
+// The sound of a promotional video: the voice's lines, music in the
+// timeline's tempo under them, and the effects on its events, rendered
+// offline (no clock, no speakers) and returned as a 16-bit WAV in base64.
+// index.html loads it after director.js; render.cjs calls
+// renderAudio(timeline). Seeded: a timeline always sounds the same.
 
 (function () {
   "use strict";
 
   const RATE = 48000;
   // The music's level, which the effects duck.
-  const MUSIC = 0.55;
-  // D major: Dmaj7, Bm7, Gmaj7, A6, a bar each, as MIDI notes; the outro
-  // rings on Dmaj9.
-  const CHORDS = [[50, 54, 57, 61], [47, 50, 54, 57], [43, 47, 50, 54], [45, 49, 52, 54]];
-  const LAST = [50, 57, 61, 64];
+  const MUSIC = 0.85;
+  // The voice's level, and how far the music goes down under it: 10 dB.
+  const VOICE = 0.9;
+  const UNDER = Math.pow(10, -10 / 20);
+  // D major, bright and plain: D, A, Bm7, G(add9), a bar each, as MIDI
+  // notes above middle C, with the bass's root under each; the outro rings
+  // on D(add9).
+  const CHORDS = [[62, 66, 69, 74], [61, 64, 69, 73], [62, 66, 69, 71], [62, 67, 69, 71]];
+  const ROOTS = [38, 45, 47, 43];
+  const LAST = [62, 66, 69, 76];
   const hz = note => 440 * Math.pow(2, (note - 69) / 12);
 
   async function renderAudio(timeline) {
@@ -37,10 +42,14 @@
     wet.gain.value = 0.3;
     room.connect(wet).connect(mix());
 
+    // The music: its level ducked a little under each effect, then the
+    // whole of it ducked under the voice.
     const music = ctx.createGain();
     music.gain.value = MUSIC;
-    music.connect(mix());
-    music.connect(room);
+    const under = ctx.createGain();
+    music.connect(under);
+    under.connect(mix());
+    under.connect(room);
     const fx = ctx.createGain();
     fx.gain.value = 0.9;
     fx.connect(mix());
@@ -54,7 +63,51 @@
       EFFECTS[sound.kind](tools, effect, sound.at, sound.gain);
       duck(music.gain, sound.at, sound.kind);
     }
+    await speak(ctx, mix(), timeline.voices);
+    beneath(under.gain, timeline.voices);
     return wav(await ctx.startRendering());
+  }
+
+  // The voice's lines, each its own WAV (render.cjs's, from macOS's say),
+  // played at its time, dry: a voice in the room sounds far away. A
+  // highpass takes out what is under a voice, and nothing of it is lost.
+  async function speak(ctx, into, voices) {
+    if (voices.length === 0) return;
+    const level = ctx.createGain();
+    level.gain.value = VOICE;
+    const clean = ctx.createBiquadFilter();
+    clean.type = "highpass";
+    clean.frequency.value = 90;
+    clean.connect(level).connect(into);
+    const line = mixer(ctx, clean);
+    for (const voice of voices) {
+      const response = await fetch(voice.file);
+      if (!response.ok) throw new Error(`${voice.file}: ${response.status}`);
+      const source = ctx.createBufferSource();
+      source.buffer = await ctx.decodeAudioData(await response.arrayBuffer());
+      source.connect(line());
+      source.start(voice.at);
+    }
+  }
+
+  // The music goes down UNDER while the voice speaks: from a quarter of a
+  // second before a line, back up over half a second after it. Lines less
+  // than a second apart keep it down between them.
+  function beneath(gain, voices) {
+    const spans = [];
+    for (const voice of voices) {
+      const from = voice.at - 0.05, to = voice.at + voice.seconds + 0.1;
+      const last = spans[spans.length - 1];
+      if (last && from - last.to < 1) last.to = Math.max(last.to, to);
+      else spans.push({ from, to });
+    }
+    gain.setValueAtTime(1, 0);
+    for (const { from, to } of spans) {
+      gain.setValueAtTime(1, Math.max(0, from - 0.25));
+      gain.linearRampToValueAtTime(UNDER, from);
+      gain.setValueAtTime(UNDER, to);
+      gain.linearRampToValueAtTime(1, to + 0.5);
+    }
   }
 
   // The same sum on every render. Chrome adds the connections into one input
@@ -92,8 +145,8 @@
     return buffer;
   }
 
-  // The pad alone under the intro; bass, kick, hats and the arpeggio from
-  // the first scene; the last chord ringing out over the outro.
+  // The pad alone under the intro; bass, kick, clap, hats and the plucks
+  // from the first scene; the last chord ringing out over the outro.
   function band(tools, into, timeline) {
     const { ctx, random } = tools;
     const { beat, bar, duration, outro } = timeline;
@@ -101,10 +154,10 @@
     bed.connect(into);
     const voice = mixer(ctx, bed);
     bed.gain.setValueAtTime(0, 0);
-    bed.gain.linearRampToValueAtTime(1, timeline.intro.to * 0.8);
+    bed.gain.linearRampToValueAtTime(1, Math.min(bar, timeline.intro.to) * 0.8);
     bed.gain.setValueAtTime(1, duration - bar);
     bed.gain.linearRampToValueAtTime(0, duration - 0.05);
-    // Under a slide the drums and the arpeggio rest: the pad and the bass
+    // Under a slide the drums and the plucks rest: the pad and the bass
     // hold it, a breath between two scenes.
     const slides = timeline.scenes.filter(scene => scene.slide);
     const rests = at => slides.some(card => at >= card.from - 1e-6 && at < card.to - 1e-6);
@@ -112,74 +165,103 @@
     // one: the bar it starts in is cut there, and the last chord takes over.
     for (let at = 0; at < outro - 1e-6; at += bar) {
       const length = Math.min(bar, outro - at);
-      const chord = CHORDS[Math.round(at / bar) % CHORDS.length];
+      const index = Math.round(at / bar) % CHORDS.length;
+      const chord = CHORDS[index];
       pad(ctx, voice, chord, at, length);
       if (at < timeline.intro.to - 1e-6) continue;
-      bass(ctx, voice, chord[0] - 12, at, length);
-      arp(ctx, voice, chord, at, beat, length, rests);
       for (let k = 0; k * beat < length - 1e-6; k++) {
         const on = at + k * beat, off = on + beat / 2;
+        bass(ctx, voice, ROOTS[index], on, beat);
         if (k % 2 === 0 && !rests(on)) kick(ctx, voice, on);
+        if (k % 2 === 1 && !rests(on)) clap(tools, voice, on);
         if ((k + 0.5) * beat < length - 1e-6 && !rests(off)) hat(tools, voice, off, random());
       }
+      plucks(ctx, voice, chord, at, beat, length, rests);
     }
     pad(ctx, voice, LAST, outro, duration - outro);
+    bass(ctx, voice, ROOTS[0], outro, Math.min(bar, duration - outro));
   }
 
-  // Detuned saws through a slow lowpass: warm, wide, quiet.
+  // Detuned saws, open and airy: a lowpass high up that breathes over the
+  // bar, and a highpass that leaves the low end to the bass and the voice.
   function pad(ctx, into, chord, at, length) {
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.Q.value = 0.7;
-    filter.frequency.setValueAtTime(700, at);
-    filter.frequency.linearRampToValueAtTime(1500, at + length * 0.6);
-    filter.frequency.linearRampToValueAtTime(900, at + length);
+    filter.Q.value = 0.5;
+    filter.frequency.setValueAtTime(2200, at);
+    filter.frequency.linearRampToValueAtTime(4800, at + length * 0.5);
+    filter.frequency.linearRampToValueAtTime(2800, at + length);
+    const air = ctx.createBiquadFilter();
+    air.type = "highpass";
+    air.frequency.value = 280;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, at);
-    gain.gain.linearRampToValueAtTime(0.05, at + 0.35);
-    gain.gain.setValueAtTime(0.05, at + length - 0.1);
-    gain.gain.linearRampToValueAtTime(0, at + length + 0.6);
-    filter.connect(gain).connect(into());
+    gain.gain.linearRampToValueAtTime(0.03, at + 0.2);
+    gain.gain.setValueAtTime(0.03, at + length - 0.1);
+    gain.gain.linearRampToValueAtTime(0, at + length + 0.5);
+    filter.connect(air).connect(gain).connect(into());
     const strings = mixer(ctx, filter);
     for (const note of chord) {
-      for (const cents of [-7, 7]) {
+      for (const cents of [-6, 6]) {
         const osc = ctx.createOscillator();
         osc.type = "sawtooth";
         osc.frequency.value = hz(note);
         osc.detune.value = cents;
         osc.connect(strings());
         osc.start(at);
-        osc.stop(at + length + 0.7);
+        osc.stop(at + length + 0.6);
       }
     }
   }
 
-  function bass(ctx, into, note, at, length) {
+  // A round bass on each beat, short enough to bounce.
+  function bass(ctx, into, note, at, beat) {
     const osc = ctx.createOscillator();
-    osc.type = "sine";
+    osc.type = "triangle";
     osc.frequency.value = hz(note);
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0, at);
-    gain.gain.linearRampToValueAtTime(0.18, at + 0.02);
-    gain.gain.setValueAtTime(0.18, at + length - 0.08);
-    gain.gain.linearRampToValueAtTime(0, at + length);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.2, at + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + beat * 0.8);
     osc.connect(gain).connect(into());
     osc.start(at);
-    osc.stop(at + length + 0.01);
+    osc.stop(at + beat * 0.8 + 0.01);
   }
 
-  // A felt kick: a sine falling in pitch, gone in a third of a second.
+  // A light kick: a sine falling in pitch, gone in a quarter of a second.
   function kick(ctx, into, at) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.frequency.setValueAtTime(110, at);
-    osc.frequency.exponentialRampToValueAtTime(42, at + 0.12);
+    osc.frequency.setValueAtTime(130, at);
+    osc.frequency.exponentialRampToValueAtTime(50, at + 0.1);
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(0.5, at + 0.004);
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.38);
+    gain.gain.exponentialRampToValueAtTime(0.4, at + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.26);
     osc.connect(gain).connect(into());
     osc.start(at);
-    osc.stop(at + 0.4);
+    osc.stop(at + 0.28);
+  }
+
+  // A clap on beats 2 and 4: three quick bursts of noise and a short tail,
+  // as hands that do not quite meet at once.
+  function clap({ ctx, noise, random }, into, at) {
+    const source = ctx.createBufferSource();
+    source.buffer = noise;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.value = 1600;
+    filter.Q.value = 0.9;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, at);
+    for (const k of [0, 1, 2]) {
+      const hit = at + k * 0.011;
+      gain.gain.setValueAtTime(0.32, hit);
+      gain.gain.exponentialRampToValueAtTime(0.04, hit + 0.009);
+    }
+    gain.gain.setValueAtTime(0.16, at + 0.033);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.2);
+    source.connect(filter).connect(gain).connect(into());
+    source.start(at, random() * 0.7, 0.22);
   }
 
   function hat({ ctx, noise }, into, at, random) {
@@ -187,41 +269,49 @@
     source.buffer = noise;
     const filter = ctx.createBiquadFilter();
     filter.type = "highpass";
-    filter.frequency.value = 7000;
+    filter.frequency.value = 8000;
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.035 + 0.02 * random, at);
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.05);
+    gain.gain.setValueAtTime(0.04 + 0.02 * random, at);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.045);
     source.connect(filter).connect(gain).connect(into());
-    source.start(at, random * 0.5, 0.06);
+    source.start(at, random * 0.5, 0.05);
   }
 
-  // Eighths over the chord, an octave up, left and right in turn, for
+  // Eighths over the chord, up and down it, left and right in turn, for
   // `length` seconds, but none where the music `rests`.
-  function arp(ctx, into, chord, at, beat, length, rests) {
-    [0, 1, 2, 3, 1, 2, 3, 2].forEach((n, i) => {
-      if ((i * beat) / 2 < length - 1e-6 && !rests(at + (i * beat) / 2)) {
-        pluck(ctx, into, hz(chord[n] + 12), at + (i * beat) / 2, i % 2 ? 0.35 : -0.35);
+  function plucks(ctx, into, chord, at, beat, length, rests) {
+    [0, 2, 1, 3, 2, 1, 3, 2].forEach((n, i) => {
+      const on = at + (i * beat) / 2;
+      if ((i * beat) / 2 < length - 1e-6 && !rests(on)) {
+        pluck(ctx, into, hz(chord[n] + 12), on, i % 2 ? 0.3 : -0.3);
       }
     });
   }
 
+  // A crisp pluck: a square and a saw an octave apart, its brightness
+  // snapping shut in a tenth of a second.
   function pluck(ctx, into, freq, at, pan) {
-    const osc = ctx.createOscillator();
-    osc.type = "triangle";
-    osc.frequency.value = freq;
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.setValueAtTime(4000, at);
-    filter.frequency.exponentialRampToValueAtTime(600, at + 0.25);
+    filter.Q.value = 2;
+    filter.frequency.setValueAtTime(7000, at);
+    filter.frequency.exponentialRampToValueAtTime(900, at + 0.12);
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(0.07, at + 0.005);
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.4);
+    gain.gain.exponentialRampToValueAtTime(0.045, at + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
     const panner = ctx.createStereoPanner();
     panner.pan.value = pan;
-    osc.connect(filter).connect(gain).connect(panner).connect(into());
-    osc.start(at);
-    osc.stop(at + 0.45);
+    filter.connect(gain).connect(panner).connect(into());
+    const tone = mixer(ctx, filter);
+    for (const [type, times] of [["square", 1], ["sawtooth", 2]]) {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.value = freq * times;
+      osc.connect(tone());
+      osc.start(at);
+      osc.stop(at + 0.3);
+    }
   }
 
   // A short burst of noise around `freq`: half of a mouse click.

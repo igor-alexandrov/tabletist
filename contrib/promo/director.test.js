@@ -102,7 +102,9 @@ test("the wide shot is held until half a beat after the intro", () => {
   for (let i = 0; i < Math.round(until * FPS); i++) {
     assert.ok(Math.abs(timeline.camera[i].zoom - 1) < 1e-9, `zoom ${timeline.camera[i].zoom} at ${i / FPS} s`);
   }
-  assert.ok(timeline.camera[Math.round((until + 1) * FPS)].zoom > 1.2, "the camera goes in after the hold");
+  // The zoom goes no further than 1.25, and the camera is soon back out.
+  const after = timeline.camera.slice(Math.round(until * FPS), Math.round((until + 1) * FPS));
+  assert.ok(Math.max(...after.map(c => c.zoom)) > 1.2, "the camera goes in after the hold");
 });
 
 test("the spotlight follows the action while the camera rests", () => {
@@ -145,7 +147,7 @@ test("the pointer stays hidden while the keys go, from the first", () => {
 test("when the action stops, the camera and the spotlight let go", () => {
   const timed = [{ kind: "click", at: 1, rect: [1000, 600, 1100, 640] }];
   const { camera, spot } = film(timed, 10, 6);
-  assert.ok(camera[Math.round(1.6 * FPS)].zoom > 1.3, "the camera went in for the click");
+  assert.ok(camera[Math.round(1.6 * FPS)].zoom > 1.2, "the camera went in for the click");
   // Back to the whole window, drifting in a little.
   const after = Math.round(4 * FPS);
   assert.ok(camera[after].zoom < 1.05 && camera[after].zoom > 1, `zoom ${camera[after].zoom}`);
@@ -160,7 +162,7 @@ test("the camera stays in when the next step comes soon", () => {
   ];
   const { camera } = film(timed, 10, 4);
   for (let i = Math.round(1.6 * FPS); i < Math.round(2.4 * FPS); i++) {
-    assert.ok(camera[i].zoom > 1.3, `zoom ${camera[i].zoom} at ${i / FPS} s`);
+    assert.ok(camera[i].zoom > 1.2, `zoom ${camera[i].zoom} at ${i / FPS} s`);
   }
 });
 
@@ -256,4 +258,122 @@ test("the camera shows the whole window for a slide, and a bell marks it", () =>
 
 test("an event the director does not know stops it", () => {
   assert.throws(() => place(record([{ scene: 0, frame: 1, kind: "teleport" }])), /teleport/);
+});
+
+// A line the voice says, as render.cjs measures it.
+const said = (say, seconds, file = "file:///voice/01.wav") => ({ say, speech: { file, seconds } });
+
+test("a long line lengthens its scene, with room after it, on a half bar", () => {
+  const events = [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }];
+  const quiet = place(record(events)).scenes[0];
+  const { scenes, bar } = place(record(events, [{ caption: null, ...said("A long line.", 6) }]));
+  const scene = scenes[0];
+  assert.ok(scene.to - scene.from > quiet.to - quiet.from, "the scene is no longer");
+  assert.ok(scene.to >= scene.from + 0.2 + 6 + 0.4 - 1e-9, `${scene.to - scene.from} s`);
+  assert.ok(scene.to < scene.from + 0.2 + 6 + 0.4 + bar / 2, `${scene.to - scene.from} s`);
+  assert.equal(scene.to % (bar / 2), 0);
+});
+
+test("a short line changes nothing", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "command", keys: "⌘F", rect },
+    { scene: 0, frame: 1, kind: "hold", seconds: 3 },
+  ];
+  const quiet = place(record(events, [{ caption: null }]));
+  const spoken = place(record(events, [{ caption: null, ...said("Short.", 0.8) }]));
+  assert.deepEqual(spoken.scenes.map(s => [s.from, s.to]), quiet.scenes.map(s => [s.from, s.to]));
+  assert.deepEqual(spoken.timed, quiet.timed);
+});
+
+test("a line starts 0.2 s into a shot, and a slide's once its headline is up", () => {
+  const timeline = schedule(record(
+    [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }],
+    [
+      { caption: null, ...said("Open a table.", 1, "file:///v/01.wav") },
+      { ...slide("Keyboard first.", null), ...said("Every command has a key.", 1.5, "file:///v/02.wav") },
+    ],
+  ));
+  const [shot, card] = timeline.scenes;
+  assert.equal(timeline.voices.length, 2);
+  assert.deepEqual(timeline.voices[0], { at: shot.from + 0.2, file: "file:///v/01.wav", seconds: 1, text: "Open a table." });
+  const up = timeline.voices[1].at - card.from;
+  assert.ok(up >= 0.5 && up <= 1.2, `the line starts ${up} s into the slide`);
+  assert.equal(timeline.voices[1].text, "Every command has a key.");
+});
+
+test("the steps and the line run at the same time", () => {
+  const events = [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }];
+  const quiet = place(record(events)).timed;
+  const spoken = place(record(events, [{ caption: null, ...said("A line.", 5) }])).timed;
+  assert.deepEqual(spoken, quiet);
+});
+
+test("the intro and the outro may have a line, and wait for it", () => {
+  const events = [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }];
+  const plain = schedule(record(events));
+  const spoken = schedule({
+    ...record(events),
+    intro: said("Here is what is new in Tabletist. Let's jump in.", 3, "file:///v/00.wav"),
+    outro: said("Tabletist is free. Download it today.", 4, "file:///v/02.wav"),
+  });
+  const [intro, outro] = [spoken.voices[0], spoken.voices[spoken.voices.length - 1]];
+  assert.equal(intro.file, "file:///v/00.wav");
+  assert.ok(intro.at > 0 && intro.at < 1, `the intro's line at ${intro.at}`);
+  assert.ok(spoken.intro.to >= intro.at + 3 + 0.4, `the intro ends at ${spoken.intro.to}`);
+  assert.equal(spoken.intro.to % (spoken.bar / 2), 0);
+  assert.equal(spoken.scenes[0].from, spoken.intro.to);
+  assert.ok(outro.at >= spoken.outro, "the outro's line starts with the outro");
+  assert.ok(spoken.duration >= outro.at + 4 + 1, `the video ends ${spoken.duration - outro.at - 4} s after the line`);
+  assert.ok(spoken.duration - spoken.outro >= plain.duration - plain.outro);
+});
+
+test("a line that was not measured stops the director", () => {
+  assert.throws(
+    () => place(record([{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }], [{ caption: null, say: "Hi." }])),
+    /Hi\./,
+  );
+});
+
+test("a spoken shot shows its line as subtitles, not its caption", () => {
+  const timeline = schedule(record(
+    [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }],
+    [{ caption: "Open a table.", ...said("Open a table, and it is just there.", 2) }],
+  ));
+  assert.equal(timeline.scenes[0].caption, null);
+  assert.equal(timeline.subtitles.length, 1);
+  const [sub] = timeline.subtitles;
+  assert.equal(sub.text, "Open a table, and it is just there.");
+  assert.equal(sub.from, timeline.voices[0].at);
+  assert.ok(sub.to >= sub.from + 2, `${sub.to - sub.from} s`);
+});
+
+test("a scenario that says nothing keeps its captions", () => {
+  const timeline = schedule(record([{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }]));
+  assert.equal(timeline.scenes[0].caption, "Open a table.");
+  assert.deepEqual(timeline.voices, []);
+  assert.deepEqual(timeline.subtitles, []);
+});
+
+test("a long line is split into subtitles of six to nine words, timed by their words", () => {
+  const line = "Every save is one transaction. It never overwrites someone else's change, and production always asks first.";
+  const timeline = schedule(record(
+    [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }],
+    [{ caption: null, ...said(line, 8) }],
+  ));
+  const subs = timeline.subtitles;
+  const counts = subs.map(s => s.text.split(" ").length);
+  assert.ok(subs.length >= 2, `${subs.length} subtitles`);
+  assert.ok(counts.every(n => n >= 4 && n <= 10), counts.join());
+  assert.equal(subs.map(s => s.text).join(" "), line);
+  // A break falls after a full stop or a comma where one is near.
+  assert.ok(subs[0].text.endsWith("transaction."), subs[0].text);
+  const words = line.split(" ").length, at = timeline.voices[0].at;
+  let from = at;
+  subs.forEach((sub, i) => {
+    assert.ok(Math.abs(sub.from - from) < 1e-9, `subtitle ${i} starts at ${sub.from}`);
+    const share = (8 * counts[i]) / words;
+    if (i < subs.length - 1) assert.ok(Math.abs(sub.to - sub.from - share) < 1e-9, `subtitle ${i}`);
+    from = sub.to;
+  });
+  assert.ok(subs[subs.length - 1].to >= at + 8 - 1e-9);
 });

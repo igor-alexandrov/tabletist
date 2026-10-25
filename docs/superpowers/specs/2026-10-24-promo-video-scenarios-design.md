@@ -7,9 +7,17 @@ music and sound. It replaces the hard-coded video of the
 twice, once in Rust and once in JavaScript, each with its own timing.
 
 Each video is 1920x1080 at 60 fps, H.264 with AAC sound, for social posts
-and the website. Nothing a video needs is fetched or licensed: the music and
-the sound effects are synthesized, and the data is the Bookshop's unless the
-scenario names another file.
+and the website. Nothing a video needs is fetched or licensed: the voice is
+macOS's own, the music and the sound effects are synthesized, and the data
+is the Bookshop's unless the scenario names another file.
+
+The videos follow 37signals' "What's new in Basecamp 5": a real voice
+narrates, first person and casual ("Let's jump in."); the light app fills
+the frame; the title and end cards are full-bleed brand blue with bold
+white type; the camera is plain, the app at full size with small zooms at
+most; light, upbeat music runs under the voice; and the video ends on a
+call to action. The first cut, dark and spotlit with captions and no voice,
+did not make anyone want to download the app.
 
 ## The scenario
 
@@ -19,16 +27,24 @@ Scenarios live in `contrib/promo/scenarios/`:
   filter, an edit and its review, and a query written in a SQL tab.
 - `filtering.toml`, one feature explained: the filter bar's column,
   operator and value picked and typed, and the rows that are left walked.
+- `whats-new.toml`, what is new since 0.2: Quick open, editing and its
+  review, saves, rows added, duplicated and deleted, foreign keys searched,
+  Format, history, agents and Settings.
 - `smoke.toml`, a few seconds (an open, a click, a command and a hold),
   for checking the pipeline.
 
 ```toml
-title    = "Filtering"     # the end card says it; the video is named after the file
+title    = "Filtering"     # the intro card says it; the video is named after the file
 database = "bookshop"      # the Bookshop fixture, or a path to a SQLite file
 tempo    = 128             # the music's beats per minute; a scene ends on a half bar
+voice    = "Ava (Premium)" # the voice that says the lines, as `say -v` names it
+
+[intro]
+say = "Here's how to find the rows you need, without writing any SQL."
 
 [[scene]]
 caption = "Open a table. It's just there."
+say = "Click a table, and it's right there."
 steps = [
   { open = "books" },
   { click = "Lanterns" },
@@ -48,6 +64,9 @@ steps = [
   { press = "enter" },
   { hold = 1.0 },
 ]
+
+[outro]
+say = "Tabletist is free. Download it today."
 ```
 
 - `database`: `bookshop` (the default) is the Bookshop the site's
@@ -57,9 +76,17 @@ steps = [
   scenario, names another SQLite file, as the Fizzy video did by request.
   The file is opened read-only: nothing is written to it.
 - `tempo`: 80 to 160.
+- `voice`: the macOS voice that says the lines, `Ava (Premium)` unless the
+  scenario names another. An empty one is an error.
 - A scene has a `caption` (optional: a scene without one is a move between
-  two) and its `steps`. The intro and outro cards are not scenes: every
-  video has them.
+  two), a `say` (optional) and its `steps`. The intro and outro cards are
+  not scenes: every video has them. `[intro]` and `[outro]` take only a
+  `say`, the line said over the card.
+- `say`, on a shot, a slide, the intro or the outro, is a line the voice
+  says: what you gain, said as a person would, not what the button is
+  called. An empty one is an error. A shot that has one shows it as
+  subtitles instead of its caption; a scenario with no line keeps its
+  captions as before.
 - A scene can be a slide instead: a feature named on a card of its own,
   with the app away. It has a `slide` (the headline) and may have a `text`
   (one line under it), and no caption and no steps:
@@ -70,9 +97,11 @@ steps = [
   text = "Every command has a key, and the keys are yours to change."
   ```
 
-  The window blurs away as for the outro, the headline rises word by word,
-  its line follows a beat later, and the window comes back for the next
-  scene as it left. Under a slide the drums rest, and a soft bell marks it.
+  A blue curtain rises over the app as for the outro, the headline rises
+  word by word, its line follows a beat later, and the curtain lifts away
+  for the next scene. Under a slide the drums rest, and a soft bell marks
+  it. A slide with a `say` reads best with only its headline: the
+  subtitles carry the rest.
 
 The look is macOS, light. The Omarchy look (its window, its vim SQL editor,
 its multi-stroke and `:` keys) is not in this.
@@ -140,7 +169,10 @@ It writes `target/promo/filtering.mp4` and keeps its working files in
 `target/promo/node_modules` on its first run, at the version `make` pins,
 and again whenever the installed one is another, so the repository has no
 `package.json` and Cargo has no new crate. It needs ffmpeg, Node and Chrome
-(`CHROME` names another one).
+(`CHROME` names another one). A scenario with lines needs macOS, for
+`say`, and its voice installed (System Settings > Accessibility > Spoken
+Content > System voice > Manage Voices); without the voice, the render
+stops and says where to add it.
 
 - `--final`: motion blur, four frames rendered and blended into each (below).
   A draft takes about a quarter of the time.
@@ -224,12 +256,24 @@ An ignored test behind the `shots` feature:
   read-only stops it with the scenario's file. No video comes out half
   right.
 
+### Narration: `render.cjs` and `say`
+
+Before the director runs, `render.cjs` speaks each line of the record
+(the intro's, the scenes' in order, the outro's) with
+`say -v <voice> -o <work>/voice/NN.aiff "<line>"`, makes each a 48 kHz WAV
+with ffmpeg (Chrome decodes no AIFF), and measures it with ffprobe. Each
+line's owner in the record gets `speech`, the WAV's `file://` URL and its
+seconds, and the director times the scenes round them. `say` gives the same
+samples for the same voice and line, so a render sounds the same each time.
+
 ### 2. The director: `contrib/promo/director.js`
 
 A pure function from the events and the tempo to a timeline. Nothing else
 decides time; the picture and the sound both read its output.
 
-- The intro is a bar. A scene starts on a half bar and its first step
+- The intro is a bar, or, with a line, long enough for the line (from
+  0.6 s, once the title is in), its 0.4 s of room and a beat, on a half
+  bar. A scene starts on a half bar and its first step
   half a beat later, so a caption's first word lands on a beat. The outro
   is a bar and a half after the last scene, and the music's last chord
   starts with it, in the middle of a bar if need be.
@@ -244,6 +288,20 @@ decides time; the picture and the sound both read its output.
 - A scene lasts at least as long as its caption takes to read (0.3 s a word,
   1.6 s at least), and is rounded up to the next half bar of the tempo:
   a whole bar left too long a still tail.
+- A line said starts 0.2 s into its shot, at the same time as the steps,
+  which it does not move; a slide's starts once its headline is up (0.3 s,
+  0.07 s a word, and 0.35 s for the last to rise). A scene with a line
+  lasts at least until the line ends and 0.4 s more, rounded up to a half
+  bar as ever. A short line changes nothing. The outro's line starts 0.6 s
+  into it, and the video ends 1.2 s after the line, on a half bar, or a
+  bar and a half after the outro starts, whichever is later. The timeline
+  lists the lines as `voices: [{ at, file, seconds, text }]`.
+- Subtitles: each line in pieces of four to nine words, about seven, the
+  split chosen that costs least, a piece costing its distance from seven
+  squared, less for ending a sentence or a clause, more for ending on a
+  word that leads into the next ("and", "the"). Each piece lasts its share
+  of the line's words; the last ends with the line. A shot with a line
+  shows no caption.
 - A slide lasts its words at 0.22 s each (`SLIDE_WORD`: read faster than a
   caption watched with the app) and 0.9 s for the card to come and go, 2.2 s
   at least, rounded up to a half bar. The camera shows the whole window
@@ -252,7 +310,8 @@ decides time; the picture and the sound both read its output.
   beat after the intro.
 - Then it frames the union of the rects of the events from 0.4 s ago to
   0.85 s on, so it is there as the action starts. It zooms so that area
-  fills about half the picture, between 1 and 1.7 times. It holds still
+  fills about half the picture, between 1 and 1.25 times: gently, so the
+  app stays whole enough to read. It holds still
   while that area stays inside the middle third at about the same zoom (a
   dead zone, so typing along a line does not drag it), and moves on a
   critically damped spring, which never overshoots.
@@ -260,7 +319,8 @@ decides time; the picture and the sound both read its output.
   400 points (`TYPE_SPAN`), where the text goes.
 - The spotlight does not wait for the camera: on its own spring, it lights
   the latest event with a rect, 0.1 s before it happens, with a little
-  room round it.
+  room round it. The picture no longer draws it (nothing is dimmed); the
+  timeline keeps it as where the action is.
 - The reveal: once the action has been quiet for `REVEAL` (0.6 s), and the
   next action is at least `QUIET` (1.6 s) after the last, the camera pulls
   back to the whole window and the spotlight lets go, so the result is seen
@@ -273,8 +333,10 @@ decides time; the picture and the sound both read its output.
 - It is tested with `node --test` (`contrib/promo/director.test.js`):
   beats, bars, reading time, the typing's seed, the pointer, the dead zone,
   the wide shot, the spotlight, the reveal, the typing span, the pause
-  after typing, the spring, the keycaps and their sounds, and that the same
-  input gives the same timeline.
+  after typing, the spring, the keycaps and their sounds, that the same
+  input gives the same timeline, the lines' times and the scenes they
+  lengthen or leave alone, the intro's and outro's lines, and the
+  subtitles' pieces and times.
 
 ### 3. The composer: `contrib/promo/index.html`, `render.cjs`, `audio.js`
 
@@ -284,25 +346,32 @@ pipes them to ffmpeg, as on the old branch.
 
 The picture:
 
-- The window: the app's frame for that moment, with the window's shadow
-  and traffic lights, moved by the director's camera.
+- The stage: near-white, with a breath of blue at the top.
+- The window: the app's frame for that moment, 1680 pixels wide in the
+  middle of the picture, with a soft natural shadow and traffic lights,
+  moved by the director's camera.
 - The pointer: a macOS-style cursor, drawn by the composer where the
-  director puts it. It presses with a ripple.
-- The spotlight: a feathered mask over the window that dims all but the
-  lit area by 14%: on the light theme much more reads as grey.
+  director puts it. It presses with a blue ripple.
 - Keycaps: a `command`'s keys spring in with a small overshoot on its
-  sound, and stay 0.8 s. A keycap hangs off the left of the caption, which
-  holds still in the middle; without a caption, the keycap takes the
-  middle.
-- Captions: the words rise one after another through a mask with a short
-  blur, under a soft scrim at the bottom.
-- Cards: the intro (icon, name, "A small, fast, native database client.")
-  and the outro (the title, the engines, the platforms,
-  `igor.works/tabletist`) build piece by piece on beats. The window rises
-  in from the intro and leaves into the outro with a slight blur.
-- Slides: the window leaves as for the outro; the headline rises word by
-  word through masks, its line a beat later, both balanced on their lines;
-  the card leaves as the window comes back.
+  sound, and stay 0.8 s: brand blue with a white rim, which reads on the
+  light app. A keycap hangs off the left of the caption, which holds
+  still in the middle; without a caption, the keycap takes the middle,
+  above the subtitles when there are some.
+- Subtitles: white words in a dark, rounded, slightly translucent box at
+  the bottom, a piece at a time, fading in with the line and out after it.
+- Captions, in a scenario with no lines: the words rise one after another
+  through a mask with a short blur, in the same dark box.
+- Cards ride a full-bleed blue curtain, the icon's gradient (`#3b82f6` to
+  `#1d4ed8`), with bold white type, and the icon in white. The intro (the
+  icon, the scenario's title, "A small, fast, native database client.")
+  builds piece by piece on beats, then its curtain lifts away and the
+  window settles in under it. The outro's curtain rises over the app: the
+  icon, "Download Tabletist. It's free.", the engines and the platforms
+  smaller, and `igor.works/tabletist` in a white pill. Tabletist is
+  MIT-licensed and free to download.
+- Slides: the curtain rises over the app as for the outro; the headline
+  rises word by word through masks, its line a beat later, both balanced
+  on their lines; the curtain lifts away for the next scene.
 - Motion blur, with `--final`: every frame is rendered four times, at four
   times the frame rate, and ffmpeg's `tmix` blends each four into one.
 
@@ -310,18 +379,29 @@ The sound is rendered by `audio.js` in the same Chrome, with an
 `OfflineAudioContext` at 48 kHz, from the director's timeline, and written
 as WAV:
 
-- The music, in the scenario's tempo: four chords on a warm pad (detuned
-  saws through a slow lowpass), a sine bass, a soft plucked arpeggio, a
-  felt kick and light noise hats, through a room and a gentle compressor.
-  The pad is alone under the intro, the rest comes in from the first scene,
-  the drums and the arpeggio rest under a slide, and the last chord rings
-  out over the outro.
+- The voice: each line's WAV, played at its time, dry (not into the room),
+  through a highpass at 90 Hz.
+- The music, in the scenario's tempo, light and upbeat so it sits under a
+  voice: I, V, vi, IV in D (D, A, Bm7, G add9) on an airy pad (detuned
+  saws through a lowpass that breathes between 2.2 and 4.8 kHz, and a
+  highpass at 280 Hz that leaves the low end alone), a round triangle bass
+  on each beat, a crisp pluck (a square and a saw an octave apart, its
+  filter snapping shut in a tenth of a second) in eighths up and down the
+  chord, a light kick on 1 and 3, a clap on 2 and 4 (three quick bursts
+  of noise and a short tail), and hats on the off-beats, through a room and
+  a gentle compressor. The pad is alone under the intro, the rest comes in
+  from the first scene, the drums and the plucks rest under a slide, and
+  the last chord rings out over the outro.
 - The effects, on the events: a key click for each character and key, each
   a little different in pitch and level; a mouse click; a low tick under a
   keycap; a soft bell as a slide comes in; a bell on the outro. The
   camera's moves make no sound. The clicks
   are loud enough to stand out over the music (their taps at 0.8 and 0.45,
   through effects at 0.9 against the music's 0.55).
+- The music goes down 10 dB under the voice, ramping over a quarter of a
+  second before a line and half a second after it, and stays down between
+  lines less than a second apart. Before loudness is set, the voice sits
+  about 8 dB over the music, 18 dB over it while ducked.
 - The music ducks under each effect. ffmpeg normalizes the mix to −14 LUFS
   (`loudnorm`), the level the social platforms play at, and writes it as
   AAC at 192 kb/s into the MP4.
@@ -348,7 +428,7 @@ newest first, as from the file. Clearing and trimming it do nothing.
 ## Testing
 
 - Rust, in the normal suite: the scenario's parsing and its errors (an
-  unknown step, an unknown or unbuilt command id, a `key` that is not one
+  empty `say` or `voice`, an unknown step, an unknown or unbuilt command id, a `key` that is not one
   of the command's keys, a key that is not one press, a tempo out of
   range, a file's errors naming it); the choice of a label's node; and
   that the app's caret blinks and the harness's does not. The tests spell
@@ -362,7 +442,7 @@ The renders need a GPU and Chrome, and are not part of CI.
 
 ## Not in this
 
-Voiceover, the Omarchy look, vertical (9:16) videos, a music track from a
+A recorded human voice, the Omarchy look, vertical (9:16) videos, a music track from a
 file, and scenarios drafted by a model from prose.
 
 ## Order of the work

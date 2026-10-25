@@ -9,10 +9,14 @@
 // and frames/. --final renders four frames for each one and has ffmpeg
 // blend them (motion blur). --still writes those moments as PNG beside the
 // video's path instead.
+//
+// The lines the voice says are spoken first, by macOS's `say`, into
+// <work dir>/voice/, and measured, so the director can time the scenes
+// round them.
 
 "use strict";
 
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const puppeteer = require("puppeteer-core");
@@ -20,6 +24,51 @@ const { schedule } = require("./director.js");
 
 const chrome =
   process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+// The names of the voices `say` has, as `say -v '?'` lists them:
+// "Ava (Premium)       en_US    # Hello! My name is Ava."
+function installed() {
+  return execFileSync("say", ["-v", "?"], { encoding: "utf8" })
+    .split("\n")
+    .map(line => /^(.+?)\s+[a-z]{2,3}_\w+\s+#/.exec(line))
+    .filter(Boolean)
+    .map(found => found[1]);
+}
+
+// Each line the record says spoken into <work>/voice/NN.aiff, in the
+// record's voice, then made a 48 kHz WAV for Chrome (which decodes no
+// AIFF), and measured with ffprobe. Each line's owner (a scene, the intro,
+// the outro) gets `speech`: the WAV's file:// URL and its seconds.
+function speak(record, work) {
+  const owners = [record.intro, ...record.scenes, record.outro].filter(owner => owner && owner.say);
+  if (owners.length === 0) return;
+  if (process.platform !== "darwin") {
+    throw new Error("the voice is macOS's say: a scenario with lines to say renders on a Mac");
+  }
+  if (!installed().includes(record.voice)) {
+    throw new Error(
+      `the voice "${record.voice}" is not installed. Add it in System Settings > Accessibility > ` +
+        "Spoken Content > System voice > Manage Voices, or name an installed one (say -v '?').",
+    );
+  }
+  const dir = path.join(work, "voice");
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir);
+  owners.forEach((owner, index) => {
+    const name = path.join(dir, String(index + 1).padStart(2, "0"));
+    execFileSync("say", ["-v", record.voice, "-o", `${name}.aiff`, owner.say]);
+    execFileSync("ffmpeg", [
+      "-loglevel", "error", "-y", "-i", `${name}.aiff`,
+      "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", `${name}.wav`,
+    ]);
+    const seconds = Number(execFileSync("ffprobe", [
+      "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", `${name}.wav`,
+    ], { encoding: "utf8" }));
+    if (!(seconds > 0)) throw new Error(`${name}.wav has no length: ${seconds}`);
+    owner.speech = { file: "file://" + `${name}.wav`, seconds };
+    console.log(`${path.basename(name)}  ${seconds.toFixed(2)} s  ${owner.say}`);
+  });
+}
 
 async function main() {
   const args = process.argv.slice(2);
@@ -30,6 +79,7 @@ async function main() {
   if (!work || !video) throw new Error("usage: render.cjs <work dir> <out.mp4> [--final] [--still <seconds>...]");
 
   const record = JSON.parse(fs.readFileSync(path.join(work, "events.json"), "utf8"));
+  speak(record, work);
   const timeline = schedule(record);
   fs.writeFileSync(path.join(work, "timeline.json"), JSON.stringify(timeline));
   const frames = fs

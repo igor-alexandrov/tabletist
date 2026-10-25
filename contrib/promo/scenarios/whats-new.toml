@@ -1,12 +1,17 @@
 # What is new since 0.2.0, one feature a scene or a slide: the video for
 # the 0.3 release. Features that need a save, a second window or an agent
-# are slides; the rest are filmed.
-title = "New since 0.2"
+# are slides; the rest are filmed. A voice says each line, and the
+# captions are for a render without one.
+title = "New in Tabletist 0.3"
 tempo = 128
+
+[intro]
+say = "Here's what's new in Tabletist. Let's jump in."
 
 # 0.3.0: the start screen, and Quick open.
 [[scene]]
 caption = "Jump to any table."
+say = "Hit Command P, type a few letters, and you're in. Getting around has never been faster."
 steps = [
   { command = "find_object" },
   { type = "boo" },
@@ -14,9 +19,11 @@ steps = [
   { hold = 0.4 },
 ]
 
-# 0.2.0: editing in the grid, and Review SQL before a save.
+# 0.2.0: editing in the grid, and Review SQL before a save. Review is
+# there before a save, not forced on it: Save writes without it.
 [[scene]]
 caption = "Edit in place. Review the SQL."
+say = "Spot a typo? Fix it right in the grid. Nothing is written until you save, and you can read the SQL first."
 steps = [
   { click = "Small Engines" },
   { command = "edit_cell" },
@@ -29,13 +36,14 @@ steps = [
 # 0.2.0: what a save promises.
 [[scene]]
 slide = "Saves you can trust."
-text = "One transaction. Never over someone else's change. Production asks first."
+say = "Every save is one transaction. It never overwrites someone else's change, and production always asks first."
 
 # 0.2.2 and 0.3.0: new, duplicated and deleted rows. The row deleted is
 # near the top, so it stays in sight once the new rows push the rest down.
 # The last, added, is left with its title being edited, for the next scene.
 [[scene]]
 caption = "Delete, duplicate and add rows."
+say = "Delete a row, duplicate one, or add a new one, each with a single key."
 steps = [
   { click = "A Field Guide to Fog" },
   { command = "delete_row" },
@@ -49,6 +57,7 @@ steps = [
 # title, Tab moves the editor to author_id, and "ara" narrows the authors.
 [[scene]]
 caption = "Foreign keys search as you type."
+say = "Foreign keys are smart now. Start typing, and Tabletist searches the table they point to."
 steps = [
   { type = "Paper Moons" },
   { command = "commit_next" },
@@ -60,6 +69,7 @@ steps = [
 # never typed.
 [[scene]]
 caption = "Write SQL. Format it with one key."
+say = "Prefer SQL? Write it however you like. Brackets close themselves, and one key tidies it all up."
 steps = [
   { command = "new_sql_tab" },
   { type = "select title, price from books where price < (select avg(price) from books" },
@@ -72,6 +82,7 @@ steps = [
 # the keyboard, so Esc leaves it first; the arrow shows the statement whole.
 [[scene]]
 caption = "Every query you ran, kept."
+say = "And every query you run is kept, so you can always find it again."
 steps = [
   { press = "esc" },
   { command = "history" },
@@ -82,9 +93,13 @@ steps = [
 # 0.3.0: agents over MCP.
 [[scene]]
 slide = "Agents, read-only."
-text = "Claude Code and Cursor read the databases you choose, over MCP. Writes are refused."
+say = "Coding agents like Claude Code and Cursor can read your databases too. Read-only, and only the ones you allow."
 
-# 0.2.0 and 0.3.0: Settings, keys, vim.
+# 0.2.0 and 0.3.0: Settings (its Appearance pane picks the theme, the
+# text and the grids), keys, vim.
 [[scene]]
 slide = "Make it yours."
-text = "Five Settings panes. Rebind any key. Vim in the SQL editor."
+say = "Oh, one more. Rebind any key, pick your look, or switch on Vim."
+
+[outro]
+say = "Tabletist is free. Download it today."

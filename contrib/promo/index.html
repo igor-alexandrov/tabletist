@@ -10,62 +10,67 @@
   @font-face { font-family: "Plex"; src: url("../../assets/fonts/IBMPlexSans-Variable.ttf"); font-weight: 100 700; }
   @font-face { font-family: "Plex Mono"; src: url("../../assets/fonts/IBMPlexMono-Medium.ttf"); font-weight: 500; }
   @font-face { font-family: "Keys"; src: url("../../assets/fonts/NotoSansSymbols2-Keys.ttf"); }
-  :root { --ink: #f4f3ee; --dim: #a9a79e; --blue: #3b82f6; --deep: #1d4ed8; --night: #121311; }
+  /* --s is the window's pixels to a point of the app: load() sets it. */
+  :root { --ink: #fff; --blue: #3b82f6; --deep: #1d4ed8; --s: 1.4; }
   * { box-sizing: border-box; margin: 0; }
-  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--night); }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #f3f6fb; }
   body { font-family: "Plex", sans-serif; color: var(--ink); }
+  /* A bright desk, a breath of blue at the top. */
   #stage { position: absolute; inset: 0; overflow: hidden;
     background:
-      radial-gradient(1200px 700px at 50% 108%, rgba(59,130,246,.34), transparent 70%),
-      radial-gradient(900px 600px at 12% -10%, rgba(29,78,216,.22), transparent 70%),
-      var(--night); }
-  #grid { position: absolute; inset: -80px; opacity: .5;
-    background-image:
-      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
-    background-size: 80px 80px;
-    mask-image: radial-gradient(closest-side, #000 30%, transparent 100%); }
+      radial-gradient(1500px 700px at 50% -12%, rgba(59,130,246,.16), transparent 70%),
+      linear-gradient(#f6f8fc, #e8eef8); }
 
-  #window { position: absolute; left: 0; top: 0; width: 1400px; height: 875px;
-    transform-origin: 0 0; border-radius: 16px; overflow: hidden; will-change: transform;
-    box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 50px 120px rgba(0,0,0,.65), 0 12px 30px rgba(0,0,0,.5); }
+  #window { position: absolute; left: 0; top: 0; transform-origin: 0 0; border-radius: 14px;
+    overflow: hidden; will-change: transform;
+    box-shadow: 0 0 0 1px rgba(15,23,42,.10), 0 24px 70px rgba(15,23,42,.16), 0 6px 18px rgba(15,23,42,.08); }
   #shot { display: block; width: 100%; height: 100%; }
-  #lights { position: absolute; left: 23px; top: 22px; display: flex; gap: 9.4px; }
-  #lights i { width: 14px; height: 14px; border-radius: 50%; display: block;
+  #lights { position: absolute; left: calc(19.7px * var(--s)); top: calc(18.9px * var(--s));
+    display: flex; gap: calc(8px * var(--s)); }
+  #lights i { width: calc(12px * var(--s)); height: calc(12px * var(--s)); border-radius: 50%; display: block;
     box-shadow: inset 0 0 0 .5px rgba(0,0,0,.25); }
 
-  #scrim { position: absolute; left: 0; right: 0; bottom: 0; height: 330px;
-    background: linear-gradient(transparent, rgba(12,13,12,.9) 52%, rgba(12,13,12,.98)); }
-  #caption { position: absolute; left: 0; right: 0; bottom: 62px; height: 96px;
-    display: flex; align-items: center; justify-content: center; gap: 30px; }
+  /* Captions and subtitles: white words in a dark, rounded box, over the
+     app or a card alike. */
+  .box { color: #fff; background: rgba(15,23,42,.80); border-radius: 18px;
+    box-shadow: 0 10px 30px rgba(15,23,42,.18); }
+  #caption { position: absolute; left: 0; right: 0; bottom: 56px; height: 96px;
+    display: flex; align-items: center; justify-content: center; }
   /* The line stays in the middle; the keycap hangs off its left. */
   #say { position: relative; display: flex; align-items: center; }
-  #key { position: absolute; right: calc(100% + 30px); }
-  #line { font-size: 66px; font-weight: 600; letter-spacing: -.02em; white-space: nowrap; }
+  #line { font-size: 54px; font-weight: 600; letter-spacing: -.015em; white-space: nowrap;
+    padding: 10px 30px 14px; }
+  #line:empty { display: none; }
   #line span { display: inline-block; white-space: pre; }
-  #key { font-family: "Plex", "Keys", sans-serif; font-size: 42px; font-weight: 600;
-    padding: 12px 24px; border-radius: 16px; color: #fff; white-space: nowrap;
+  #key { position: absolute; right: calc(100% + 26px); font-family: "Plex", "Keys", sans-serif;
+    font-size: 44px; font-weight: 600; padding: 12px 26px; border-radius: 16px; color: #fff; white-space: nowrap;
     background: linear-gradient(var(--blue), var(--deep));
-    box-shadow: 0 6px 0 #173a9e, 0 16px 30px rgba(29,78,216,.45); }
+    box-shadow: 0 0 0 3px #fff, 0 6px 0 3px #1e3a8a, 0 18px 36px rgba(15,23,42,.30); }
+  #sub { position: absolute; left: 50%; bottom: 52px; max-width: 1500px; width: max-content;
+    font-size: 44px; font-weight: 500; line-height: 1.25; letter-spacing: -.005em; text-align: center;
+    padding: 12px 30px 15px; transform: translateX(-50%); }
 
-  .card { position: absolute; inset: 0; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; text-align: center; }
-  .card svg { width: 230px; height: 230px; filter: drop-shadow(0 30px 60px rgba(29,78,216,.55)); }
-  .name { font-size: 150px; font-weight: 700; letter-spacing: -.035em; line-height: 1; margin-top: 34px; }
-  .tag { font-size: 46px; font-weight: 450; color: var(--dim); margin-top: 26px; letter-spacing: -.01em; }
-  .tag b { color: var(--ink); font-weight: 600; }
-  #title:not([hidden]) + .tag { margin-top: 44px; }
-  .url { font-family: "Plex Mono", monospace; font-size: 40px; margin-top: 46px;
-    padding: 16px 34px; border-radius: 999px; color: #fff;
-    background: rgba(59,130,246,.18); box-shadow: inset 0 0 0 2px rgba(59,130,246,.7); }
-  /* The whole window, dim but for a soft-edged hole that drawSpot cuts
-     with its mask. */
-  #spot { position: absolute; inset: 0; pointer-events: none; background: rgb(6, 8, 12);
-    mask-composite: exclude, intersect, add; }
-  #pointer { position: absolute; left: 0; top: 0; width: 26px; height: 38px;
-    transform-origin: 2.3px 2.3px; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
+  #pointer { position: absolute; left: 0; top: 0; width: calc(22.3px * var(--s)); height: calc(32.6px * var(--s));
+    transform-origin: calc(2px * var(--s)) calc(2px * var(--s)); filter: drop-shadow(0 2px 3px rgba(0,0,0,.3)); }
   #ripple { position: absolute; border-radius: 50%; pointer-events: none;
-    border: 3px solid rgba(255,255,255,.9); box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
+    border: 4px solid rgba(59,130,246,.9); background: rgba(59,130,246,.12); }
+
+  /* The cards ride a full-bleed blue curtain that rises over the app and
+     lifts away again. */
+  #curtain { position: absolute; inset: 0; overflow: hidden; will-change: transform;
+    background:
+      radial-gradient(1100px 700px at 15% 0%, rgba(255,255,255,.14), transparent 70%),
+      linear-gradient(160deg, var(--blue), var(--deep)); }
+  .card { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding-bottom: 40px; }
+  .card svg { width: 200px; height: 200px; filter: drop-shadow(0 24px 40px rgba(15,23,42,.35)); }
+  .name { font-size: 132px; font-weight: 700; letter-spacing: -.035em; line-height: 1.04;
+    margin-top: 40px; max-width: 1600px; text-wrap: balance; }
+  .tag { font-size: 46px; font-weight: 500; color: rgba(255,255,255,.86); margin-top: 28px; letter-spacing: -.01em; }
+  .small { font-size: 36px; margin-top: 12px; color: rgba(255,255,255,.74); }
+  .url { font-family: "Plex Mono", monospace; font-size: 42px; margin-top: 50px;
+    padding: 16px 40px 18px; border-radius: 999px; color: var(--deep); background: #fff;
+    box-shadow: 0 16px 40px rgba(15,23,42,.28); }
   .word { display: inline-block; overflow: hidden; vertical-align: bottom; padding-bottom: .08em; }
   .word > span { display: inline-block; }
   /* A slide: a headline and the line under it. */
@@ -75,39 +80,37 @@
 </style>
 
 <div id="stage">
-  <div id="grid"></div>
-
   <div id="window">
     <img id="shot" alt="">
     <div id="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
-    <div id="spot"></div>
     <div id="ripple"></div>
     <svg id="pointer" viewBox="0 0 17 25"><path d="M1.5 1.5 L1.5 20.5 L6 16.2 L9.2 23.2 L12.4 21.8 L9.3 15 L15.2 15 Z"
       fill="#000" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>
   </div>
 
-  <div id="scrim"></div>
-  <div id="caption"><div id="say"><div id="key"></div><div id="line"></div></div></div>
+  <div id="curtain">
+    <div class="card" id="intro">
+      <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon-white"/></svg>
+      <div class="name" id="title"></div>
+      <div class="tag">A small, fast, native database client.</div>
+    </div>
 
-  <div class="card" id="intro">
-    <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon"/></svg>
-    <div class="name">Tabletist</div>
-    <div class="tag">A small, fast, native database client.</div>
+    <div class="card" id="slide">
+      <div class="headline" id="headline"></div>
+      <div class="tag" id="text"></div>
+    </div>
+
+    <div class="card" id="outro">
+      <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon-white"/></svg>
+      <div class="name">Download Tabletist. It's free.</div>
+      <div class="tag">PostgreSQL · MySQL · SQLite</div>
+      <div class="tag small">macOS · Linux · Windows</div>
+      <div class="url">igor.works/tabletist</div>
+    </div>
   </div>
 
-  <div class="card" id="slide">
-    <div class="headline" id="headline"></div>
-    <div class="tag" id="text"></div>
-  </div>
-
-  <div class="card" id="outro">
-    <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon"/></svg>
-    <div class="name">Tabletist</div>
-    <div class="tag" id="title"></div>
-    <div class="tag"><b>PostgreSQL</b> · <b>MySQL</b> · <b>SQLite</b></div>
-    <div class="tag" style="margin-top:10px">macOS · Linux · Windows</div>
-    <div class="url">igor.works/tabletist</div>
-  </div>
+  <div id="caption"><div id="say"><div id="key"></div><div id="line" class="box"></div></div></div>
+  <div id="sub" class="box"></div>
 </div>
 
 <!-- assets/icon/tabletist.svg -->
@@ -127,6 +130,19 @@
       <line x1="424" y1="400" x2="424" y2="748" stroke="#fff" stroke-width="48"/>
       <line x1="236" y1="516" x2="788" y2="516" stroke="#fff" stroke-width="40"/>
       <line x1="236" y1="632" x2="788" y2="632" stroke="#fff" stroke-width="40"/>
+    </g>
+    <!-- The same icon in reverse, white with a blue table, for the blue
+         cards. -->
+    <g id="icon-white">
+      <rect x="32" y="32" width="960" height="960" rx="216" fill="#fff"/>
+      <g clip-path="url(#table)">
+        <rect x="208" y="248" width="608" height="528" fill="#2563eb" fill-opacity=".12"/>
+        <rect x="208" y="248" width="608" height="152" fill="url(#bg)"/>
+      </g>
+      <rect x="236" y="276" width="552" height="472" rx="46" fill="none" stroke="url(#bg)" stroke-width="56"/>
+      <line x1="424" y1="400" x2="424" y2="748" stroke="#2563eb" stroke-width="48"/>
+      <line x1="236" y1="516" x2="788" y2="516" stroke="#2563eb" stroke-width="40"/>
+      <line x1="236" y1="632" x2="788" y2="632" stroke="#2563eb" stroke-width="40"/>
     </g>
   </defs>
 </svg>
@@ -148,10 +164,11 @@ const back = k => 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2);
 const span = (t, from, length) => clamp((t - from) / length);
 const escape = text => text.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 
-// The window's pixels to a point of the app, and where it rests.
-const S = 1400 / 1200, LEFT = 260, TOP = 40;
+// The window fills most of the picture: its pixels to a point of the app,
+// and where it rests, in the middle.
+const WIDE = 1680, S = WIDE / 1200, LEFT = (1920 - WIDE) / 2, TOP = (1080 - 750 * S) / 2;
 
-let T = null, frames = [], shown = null, said = undefined;
+let T = null, frames = [], shown = null, said = undefined, subbed = undefined;
 
 // A per-frame list at `t`: between two of its frames, the mix of both (so
 // --final's subframes move smoothly).
@@ -177,121 +194,148 @@ function latest(list, t, at = item => item.at) {
 const masked = text =>
   text.split(" ").map(w => `<span class="word"><span>${escape(w)}</span></span>`).join(" ");
 
-// How far the window is gone for a slide: it leaves as the slide comes in,
-// as it does for the outro, and comes back as the slide goes.
-function away(t) {
-  const card = T.scenes.find(s => s.slide && t >= s.from - .1 && t < s.to + .7);
-  if (!card) return 0;
-  return inOut(span(t, card.from - .1, .5)) * (1 - out(span(t, card.to - .25, .7)));
+// The blue curtain the cards are on: where it is at `t`, as a share of
+// the picture's height, 0 where it covers everything, 1 below the
+// picture, -1 above it. It covers the intro, rises over the app for each
+// slide and for the outro, and lifts away upwards after the intro and
+// after each slide. Cards one after another (two slides, a slide and the
+// outro) share one curtain: it stays, and only their words change.
+const RISE = .5, LIFT = .55;
+let curtains = [];
+function hang() {
+  const cards = [{ from: -Infinity, to: T.intro.to }, ...T.scenes.filter(s => s.slide), { from: T.outro, to: Infinity }];
+  curtains = [];
+  for (const { from, to } of cards) {
+    const last = curtains[curtains.length - 1];
+    if (last && Math.abs(last.to - from) < 1e-6) last.to = to;
+    else curtains.push({ from, to });
+  }
+}
+function curtain(t) {
+  const hung = curtains.find(c => t >= c.from - .1 && t < c.to + LIFT);
+  if (!hung) return 1;
+  if (t < hung.to - .3) return hung.from === -Infinity ? 0 : 1 - inOut(span(t, hung.from - .1, RISE));
+  return -inOut(span(t, hung.to - .3, LIFT));
 }
 
-function drawWindow(t) {
+// A card's words go as it ends, with the curtain or before the next card's.
+const going = (t, to) => 1 - inOut(span(t, to - .3, .25));
+
+function drawWindow(t, cover) {
   const el = $("window");
-  const rise = out(span(t, T.intro.to - T.beat, .8));
-  const leave = Math.max(inOut(span(t, T.outro - .1, .6)), away(t));
-  const hidden = rise === 0 || leave === 1;
+  const hidden = cover === 0;
   el.style.visibility = hidden ? "hidden" : "visible";
   if (hidden) return;
   const { x, y, zoom } = sample(T.camera, t);
-  // Zoomed in, the point looked at comes to the middle of the picture.
+  // Zoomed in, the point looked at comes towards the middle of the picture.
   const pull = clamp((zoom - 1) * 3);
-  const sx = mix(LEFT + x * S, 960, pull), sy = mix(TOP + y * S, 470, pull);
-  const size = zoom * mix(.92, 1, rise) * mix(1, .86, leave);
-  const dx = sx - x * S * size, dy = sy - y * S * size + (1 - rise) * 160 + leave * 40;
-  el.style.opacity = rise * (1 - leave);
-  el.style.filter = leave ? `blur(${leave * 18}px)` : "none";
+  const sx = mix(LEFT + x * S, 960, pull), sy = mix(TOP + y * S, 540, pull);
+  // As a curtain lifts, the window settles from a touch smaller.
+  const settle = cover < 0 ? 1 + cover : 0;
+  const size = zoom * mix(1, .97, settle);
+  const dx = sx - x * S * size, dy = sy - y * S * size;
   el.style.transform = `translate(${dx}px, ${dy}px) scale(${size})`;
 }
 
-// The part of the window that matters stays bright; the rest dims.
-// The hole is a band across times a band down, each ramping over FEATHER
-// window pixels either side of its edge, taken out of a full layer.
-const FEATHER = 22;
-// How dark the rest gets. The light theme greys at much more than this.
-const DIM = .14;
-function drawSpot(t) {
-  const { x0, y0, x1, y1, alpha } = sample(T.spot, t);
-  const el = $("spot");
-  const band = (to, a, b) =>
-    `linear-gradient(${to}, transparent ${a - FEATHER}px, #000 ${a + FEATHER}px, #000 ${b - FEATHER}px, transparent ${b + FEATHER}px)`;
-  el.style.maskImage =
-    `linear-gradient(#000, #000), ${band("to bottom", y0 * S, y1 * S)}, ${band("to right", x0 * S, x1 * S)}`;
-  el.style.opacity = (DIM * alpha).toFixed(3);
+function drawCurtain(cover) {
+  const el = $("curtain");
+  el.style.visibility = Math.abs(cover) >= 1 ? "hidden" : "visible";
+  el.style.transform = `translateY(${cover * 100}%)`;
 }
 
 function drawPointer(t) {
   const { x, y, shown, press } = sample(T.pointer, t);
   const el = $("pointer");
   el.style.opacity = shown;
-  el.style.transform = `translate(${x * S - 2.3}px, ${y * S - 2.3}px) scale(${mix(1, .86, press)})`;
+  el.style.transform = `translate(${(x - 2) * S}px, ${(y - 2) * S}px) scale(${mix(1, .86, press)})`;
   const click = latest(T.clicks, t);
   const ripple = $("ripple");
   const k = click ? span(t, click.at, .45) : 1;
-  ripple.style.opacity = k < 1 ? (1 - k) * .55 : 0;
+  ripple.style.opacity = k < 1 ? (1 - k) * .8 : 0;
   if (click && k < 1) {
-    const size = mix(12, 64, out(k));
+    const size = mix(14, 70, out(k));
     ripple.style.width = ripple.style.height = `${size}px`;
     ripple.style.left = `${click.x * S - size / 2}px`;
     ripple.style.top = `${click.y * S - size / 2}px`;
   }
 }
 
-function drawCaption(t) {
+// What the voice is saying, at the bottom, a piece at a time: it fades in
+// with the line and out after it, and changes words with no fuss between
+// two pieces of one line.
+function drawSubtitle(t) {
+  const sub = T.subtitles.find(s => t >= s.from - .12 && t < s.to + .2) || null;
+  const el = $("sub");
+  if (subbed !== sub) {
+    subbed = sub;
+    el.textContent = sub ? sub.text : "";
+  }
+  if (!sub) {
+    el.style.visibility = "hidden";
+    return 0;
+  }
+  const prev = T.subtitles.find(s => Math.abs(s.to - sub.from) < 1e-6);
+  const next = T.subtitles.find(s => Math.abs(s.from - sub.to) < 1e-6);
+  const k = (prev ? 1 : span(t, sub.from - .12, .15)) * (next ? 1 : 1 - span(t, sub.to + .05, .15));
+  el.style.visibility = "visible";
+  el.style.opacity = k;
+  el.style.transform = `translateX(-50%) translateY(${(1 - k) * 10}px)`;
+  return el.offsetHeight;
+}
+
+function drawCaption(t, below) {
   const scene = T.scenes.find(s => s.caption && t >= s.from && t < s.to) || null;
   const line = $("line"), key = $("key");
   if (said !== scene) {
     said = scene;
-    line.innerHTML = scene
-      ? masked(scene.caption)
-      : "";
+    line.innerHTML = scene ? masked(scene.caption) : "";
   }
-  let words = 0;
+  // Over a subtitle, the keycap stands above it.
+  $("caption").style.bottom = `${below ? 52 + below + 26 : 56}px`;
   if (scene) {
     const gone = span(t, scene.to - .35, .25);
-    words = span(t, scene.from, .3) * (1 - gone);
+    line.style.opacity = span(t, scene.from, .2) * (1 - gone);
     [...line.children].forEach((word, i) => {
       const k = out(span(t, scene.from + .05 + i * .06, .45));
       word.firstChild.style.transform = `translateY(${(1 - k) * 105}%)`;
       word.firstChild.style.filter = `blur(${(1 - k) * 8}px)`;
-      word.style.opacity = (k > 0 ? 1 : 0) * (1 - gone);
+      word.style.opacity = k > 0 ? 1 : 0;
     });
   }
   const cap = latest(T.keycaps, t);
   const on = cap && t < cap.until + .2;
   key.style.display = on ? "block" : "none";
-  let keys = 0;
   if (on) {
     const pop = span(t, cap.at, .35);
-    keys = clamp(pop * 4) * (1 - span(t, cap.until, .2));
     key.textContent = cap.keys;
     // Without a caption, the keycap takes the middle itself.
     key.style.right = scene ? "" : `${-key.offsetWidth / 2}px`;
-    key.style.opacity = keys;
+    key.style.opacity = clamp(pop * 4) * (1 - span(t, cap.until, .2));
     key.style.transform = `scale(${back(pop)})`;
   }
-  $("scrim").style.opacity = Math.max(words, keys);
 }
 
-// A card's pieces come in a half beat apart, and leave together.
-function drawCard(el, t, from, to) {
-  const gone = to === null ? 0 : inOut(span(t, to, .4));
-  const on = t >= from - .01 && gone < 1;
+// A card's pieces come in a half beat apart, and go together as it ends.
+function drawCard(el, t, from, until) {
+  const on = t >= from - .01 && t < until;
   el.style.visibility = on ? "visible" : "hidden";
   if (!on) return;
+  el.style.opacity = until === Infinity ? 1 : going(t, until);
   [...el.children].forEach((piece, i) => {
     const k = span(t, from + i * T.beat / 2, .55);
     const size = i === 0 ? back(k) : 1;
-    piece.style.opacity = clamp(k * 2.5) * (1 - gone);
-    piece.style.transform =
-      `translateY(${(1 - out(k)) * (i ? 50 : 0) - gone * 90}px) scale(${size * mix(1, .94, gone)})`;
+    piece.style.opacity = clamp(k * 2.5);
+    piece.style.transform = `translateY(${(1 - out(k)) * (i ? 50 : 0)}px) scale(${size})`;
   });
 }
 
-// A slide's headline rises word by word, its line comes in a beat later,
-// and both leave together as the window comes back.
+// A slide's headline rises word by word once the curtain is nearly up
+// (the director starts its line as the headline is in: HEADLINE there),
+// and its line comes in a beat later. They go as the slide ends.
 let carded = null;
 function drawSlide(t) {
-  const card = T.scenes.find(s => s.slide && t >= s.from && t < s.to + .4) || null;
+  // Of two slides one after the other, the second, once it has begun.
+  const card = T.scenes.filter(s => s.slide && t >= s.from - .1 && t < s.to).pop() || null;
   const el = $("slide");
   if (carded !== card) {
     carded = card;
@@ -303,7 +347,7 @@ function drawSlide(t) {
   }
   el.style.visibility = card ? "visible" : "hidden";
   if (!card) return;
-  const start = card.from + .25;
+  const start = card.from + .3;
   [...$("headline").children].forEach((word, i) => {
     const k = out(span(t, start + i * .07, .5));
     word.firstChild.style.transform = `translateY(${(1 - k) * 105}%)`;
@@ -313,9 +357,7 @@ function drawSlide(t) {
   const k = span(t, start + T.beat, .55);
   $("text").style.opacity = clamp(k * 2.5);
   $("text").style.transform = `translateY(${(1 - out(k)) * 40}px)`;
-  const gone = inOut(span(t, card.to - .35, .4));
-  el.style.opacity = 1 - gone;
-  el.style.transform = `translateY(${-gone * 60}px) scale(${mix(1, .96, gone)})`;
+  el.style.opacity = going(t, card.to);
 }
 
 async function renderAt(t) {
@@ -326,23 +368,26 @@ async function renderAt(t) {
     $("shot").src = file;
     await $("shot").decode();
   }
-  drawWindow(t);
-  drawSpot(t);
+  const cover = curtain(t);
+  drawWindow(t, cover);
+  drawCurtain(cover);
   drawPointer(t);
-  drawCaption(t);
+  drawCaption(t, drawSubtitle(t));
   drawSlide(t);
-  // The intro is mostly gone before the window rises through it.
-  drawCard($("intro"), t, .08, T.intro.to - T.beat - .15);
-  drawCard($("outro"), t, T.outro + .1, null);
-  $("grid").style.transform = `translateY(${-t * 4}px)`;
+  drawCard($("intro"), t, .08, T.intro.to);
+  drawCard($("outro"), t, T.outro + .1, Infinity);
 }
 
 // `timeline` is the director's; `files` are the app's frames, in order.
 async function load(timeline, files) {
   T = timeline;
   frames = files;
+  document.documentElement.style.setProperty("--s", S);
+  const el = $("window");
+  el.style.width = `${1200 * S}px`;
+  el.style.height = `${750 * S}px`;
   $("title").textContent = T.title;
-  $("title").hidden = T.title === "Tabletist";
+  hang();
   await document.fonts.ready;
   await renderAt(0);
 }

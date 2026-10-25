@@ -18,6 +18,11 @@ pub struct Scenario {
     pub database: Database,
     /// The music's beats per minute; a scene ends on a half bar.
     pub tempo: u32,
+    /// The voice that says the lines, as macOS `say -v` names it.
+    pub voice: String,
+    /// The line said over the intro card, and the one over the outro's.
+    pub intro: Option<String>,
+    pub outro: Option<String>,
     pub scenes: Vec<Scene>,
 }
 
@@ -31,14 +36,20 @@ pub enum Database {
 
 #[derive(Debug, PartialEq)]
 pub enum Scene {
-    /// The app, played: a caption under it, and the steps that move it.
+    /// The app, played: a caption under it, the line the voice says, and
+    /// the steps that move it.
     Shot {
         caption: Option<String>,
+        say: Option<String>,
         steps: Vec<Step>,
     },
-    /// A feature named on a card of its own, the app away: a headline and
-    /// a line under it.
-    Slide { title: String, text: Option<String> },
+    /// A feature named on a card of its own, the app away: a headline, a
+    /// line under it, and the line the voice says.
+    Slide {
+        title: String,
+        text: Option<String>,
+        say: Option<String>,
+    },
 }
 
 /// One press of a key with what is held, as the keymap spells it.
@@ -73,6 +84,10 @@ pub enum Step {
 const TEMPO: u32 = 128;
 const TEMPOS: std::ops::RangeInclusive<u32> = 80..=160;
 
+/// The voice when the scenario names none: installed with macOS, in its
+/// Premium quality from System Settings.
+const VOICE: &str = "Ava (Premium)";
+
 /// The longest `hold`, in seconds.
 const LONGEST_HOLD: f64 = 10.0;
 
@@ -98,6 +113,17 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
     if file.scenes.is_empty() {
         return Err("a scenario needs a [[scene]]".into());
     }
+    let voice = file.voice.unwrap_or_else(|| VOICE.into());
+    if voice.trim().is_empty() {
+        return Err("voice is empty".into());
+    }
+    let card = |card: Option<RawCard>, name: &str| match card {
+        Some(RawCard { say }) if say.trim().is_empty() => Err(format!("the {name}'s say is empty")),
+        Some(RawCard { say }) => Ok(Some(say)),
+        None => Ok(None),
+    };
+    let intro = card(file.intro, "intro")?;
+    let outro = card(file.outro, "outro")?;
     let database = match file.database.as_deref() {
         None | Some("bookshop") => Database::Bookshop,
         Some(path) => Database::File(dir.join(path)),
@@ -116,6 +142,9 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
         title: file.title,
         database,
         tempo: file.tempo,
+        voice,
+        intro,
+        outro,
         scenes,
     })
 }
@@ -128,8 +157,18 @@ struct File {
     database: Option<String>,
     #[serde(default = "tempo")]
     tempo: u32,
+    voice: Option<String>,
+    intro: Option<RawCard>,
+    outro: Option<RawCard>,
     #[serde(rename = "scene", default)]
     scenes: Vec<RawScene>,
+}
+
+/// The intro or the outro card, which only takes a line to say.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCard {
+    say: String,
 }
 
 fn tempo() -> u32 {
@@ -144,6 +183,7 @@ struct RawScene {
     steps: Vec<RawStep>,
     slide: Option<String>,
     text: Option<String>,
+    say: Option<String>,
 }
 
 impl RawScene {
@@ -155,7 +195,11 @@ impl RawScene {
             steps,
             slide,
             text,
+            say,
         } = self;
+        if say.as_deref().is_some_and(|say| say.trim().is_empty()) {
+            return Err(": say is empty".into());
+        }
         let Some(title) = slide else {
             if text.is_some() {
                 return Err(": only a slide has text".into());
@@ -171,7 +215,11 @@ impl RawScene {
                         .map_err(|error| format!(", step {}: {error}", step + 1))
                 })
                 .collect::<Result<_, _>>()?;
-            return Ok(Scene::Shot { caption, steps });
+            return Ok(Scene::Shot {
+                caption,
+                say,
+                steps,
+            });
         };
         if !steps.is_empty() || caption.is_some() {
             return Err(": a slide has no steps and no caption".into());
@@ -182,7 +230,7 @@ impl RawScene {
         if text.as_deref().is_some_and(|text| text.trim().is_empty()) {
             return Err(": a slide's text is empty".into());
         }
-        Ok(Scene::Slide { title, text })
+        Ok(Scene::Slide { title, text, say })
     }
 }
 
@@ -329,7 +377,7 @@ mod tests {
 
     /// A scene of the app played: its caption and its steps.
     fn shot(scene: &Scene) -> (Option<&str>, &[Step]) {
-        let Scene::Shot { caption, steps } = scene else {
+        let Scene::Shot { caption, steps, .. } = scene else {
             panic!("not a shot: {scene:?}");
         };
         (caption.as_deref(), steps)
@@ -533,6 +581,95 @@ steps = [{ command = "filter_bar" }]
     }
 
     #[test]
+    fn a_scene_may_say_a_line_in_the_voice_the_scenario_names() {
+        let scenario = read(
+            r#"
+title = "T"
+voice = "Samantha"
+
+[intro]
+say = "Here is what is new."
+
+[[scene]]
+caption = "Open a table."
+say = "Open a table, and it's just there."
+steps = [{ hold = 1 }]
+
+[[scene]]
+slide = "Keyboard first."
+say = "Every command has a key."
+
+[[scene]]
+steps = [{ hold = 1 }]
+
+[outro]
+say = "Download it today."
+"#,
+        )
+        .unwrap();
+        assert_eq!(scenario.voice, "Samantha");
+        assert_eq!(scenario.intro.as_deref(), Some("Here is what is new."));
+        assert_eq!(scenario.outro.as_deref(), Some("Download it today."));
+        let Scene::Shot { say, .. } = &scenario.scenes[0] else {
+            panic!("not a shot: {:?}", scenario.scenes[0]);
+        };
+        assert_eq!(say.as_deref(), Some("Open a table, and it's just there."));
+        assert_eq!(
+            scenario.scenes[1],
+            Scene::Slide {
+                title: "Keyboard first.".into(),
+                text: None,
+                say: Some("Every command has a key.".into()),
+            }
+        );
+        let Scene::Shot { say, .. } = &scenario.scenes[2] else {
+            panic!("not a shot: {:?}", scenario.scenes[2]);
+        };
+        assert_eq!(*say, None);
+    }
+
+    #[test]
+    fn the_voice_is_ava_unless_the_scenario_says() {
+        let scenario = read("title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n").unwrap();
+        assert_eq!(scenario.voice, "Ava (Premium)");
+        assert_eq!(scenario.intro, None);
+        assert_eq!(scenario.outro, None);
+    }
+
+    #[test]
+    fn a_line_to_say_and_a_voice_are_not_empty() {
+        for (text, said) in [
+            (
+                "title = \"T\"\n[[scene]]\nsay = \"\"\nsteps = [{ hold = 1 }]\n",
+                "scene 1: say is empty",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nslide = \"S\"\nsay = \"  \"\n",
+                "scene 1: say is empty",
+            ),
+            (
+                "title = \"T\"\n[intro]\nsay = \" \"\n[[scene]]\nsteps = [{ hold = 1 }]\n",
+                "the intro's say is empty",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n[outro]\nsay = \"\"\n",
+                "the outro's say is empty",
+            ),
+            (
+                "title = \"T\"\nvoice = \"\"\n[[scene]]\nsteps = [{ hold = 1 }]\n",
+                "voice is empty",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n[outro]\ncaption = \"x\"\n",
+                "unknown field",
+            ),
+        ] {
+            let error = read(text).unwrap_err();
+            assert!(error.contains(said), "{text}: {error}");
+        }
+    }
+
+    #[test]
     fn a_slide_is_a_scene_of_its_own() {
         let scenario = read(
             r#"
@@ -555,6 +692,7 @@ steps = [{ hold = 1 }]
             Scene::Slide {
                 title: "Keyboard first.".into(),
                 text: Some("Every command has a key.".into()),
+                say: None,
             }
         );
         assert_eq!(
@@ -562,6 +700,7 @@ steps = [{ hold = 1 }]
             Scene::Slide {
                 title: "Small.".into(),
                 text: None,
+                say: None,
             }
         );
         assert_eq!(shot(&scenario.scenes[2]).1, [Step::Hold(1.0)]);

@@ -1,9 +1,14 @@
-# One feature, explained: filtering a table without SQL.
+# One feature, explained: filtering a table without SQL. A voice says each
+# line, and the captions are for a render without one.
 title = "Filter without SQL"
 tempo = 120
 
+[intro]
+say = "Here's how to find the rows you need, without writing any SQL."
+
 [[scene]]
 caption = "Every table opens ready to filter."
+say = "Open a table, and the filter bar is one key away."
 steps = [
   { open = "books" },
   { command = "filter_bar" },
@@ -11,6 +16,7 @@ steps = [
 
 [[scene]]
 caption = "Pick a column, type what you're after."
+say = "Pick a column, pick how it should match, and type what you're after."
 steps = [
   { click = "Filter column" },
   { click = "title" },
@@ -26,8 +32,12 @@ steps = [
 # The filter applies on Enter, so the rows narrow once, and this scene
 # walks what is left.
 caption = "Twelve rows down to three. No SQL written."
+say = "Twelve books down to three, and you never wrote a line of SQL."
 steps = [
   { click = "The Salt Road" },
   { command = "move_row", key = "down", times = 2 },
   { hold = 0.8 },
 ]
+
+[outro]
+say = "Tabletist is free. Download it today."
