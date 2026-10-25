@@ -10,6 +10,7 @@
   @font-face { font-family: "Plex"; src: url("../../assets/fonts/IBMPlexSans-Variable.ttf"); font-weight: 100 700; }
   @font-face { font-family: "Plex Mono"; src: url("../../assets/fonts/IBMPlexMono-Medium.ttf"); font-weight: 500; }
   @font-face { font-family: "Keys"; src: url("../../assets/fonts/NotoSansSymbols2-Keys.ttf"); }
+  @font-face { font-family: "JetBrains Mono"; src: url("../../assets/fonts/JetBrainsMono-Variable.ttf"); font-weight: 100 800; }
   /* --s is the window's pixels to a point of the app: load() sets it. */
   :root { --ink: #fff; --blue: #3b82f6; --deep: #1d4ed8; --s: 1.2; }
   * { box-sizing: border-box; margin: 0; }
@@ -29,19 +30,6 @@
     display: flex; gap: calc(8px * var(--s)); }
   #lights i { width: calc(12px * var(--s)); height: calc(12px * var(--s)); border-radius: 50%; display: block;
     box-shadow: inset 0 0 0 .5px rgba(0,0,0,.25); }
-
-  /* Omarchy: a Hyprland window in Tokyo Night, square, in its 2 px
-     border of the accent, on a dark desk with a breath of the accent at
-     the top. No traffic lights: Hyprland draws no title bar. */
-  body.omarchy { background: #13141c; }
-  .omarchy #stage {
-    background:
-      radial-gradient(1500px 700px at 50% -12%, rgba(122,162,247,.20), transparent 70%),
-      linear-gradient(#1a1b26, #0e0e14); }
-  .omarchy #window { border-radius: 0;
-    box-shadow: 0 0 0 calc(2px * var(--s)) #7aa2f7, 0 24px 70px rgba(0,0,0,.45); }
-  .omarchy #lights { display: none; }
-  .omarchy #label { box-shadow: 0 0 0 4px rgba(122,162,247,.9), 0 22px 50px rgba(0,0,0,.45); }
 
   /* Captions and subtitles: white words in a dark, rounded box, over the
      app or a card alike. */
@@ -109,6 +97,49 @@
     padding: 20px 46px 26px; border-radius: 999px; color: #fff;
     background: linear-gradient(160deg, var(--blue), var(--deep));
     box-shadow: 0 0 0 4px rgba(255,255,255,.9), 0 22px 50px rgba(29,78,216,.40), 0 6px 16px rgba(15,23,42,.18); }
+
+  /* Omarchy: everything in Tokyo Night and the terminal's type, square,
+     edged in the accent as Hyprland edges a window. The window has no
+     traffic lights: Hyprland draws no title bar. The cards are dark, the
+     icon is its own blue on them, and a flash card ends in a block
+     cursor. */
+  body.omarchy { --ink: #c0caf5; --accent: #7aa2f7; --muted: #a9b1d6; --dim: #565f89;
+    --night: #1a1b26; --deeper: #13141c; --raised: #24283b;
+    background: var(--deeper); font-family: "JetBrains Mono", monospace; }
+  .omarchy #stage {
+    background:
+      radial-gradient(1500px 700px at 50% -12%, rgba(122,162,247,.18), transparent 70%),
+      linear-gradient(var(--night), #0e0e14); }
+  .omarchy #window { border-radius: 0;
+    box-shadow: 0 0 0 calc(2px * var(--s)) var(--accent), 0 24px 70px rgba(0,0,0,.45); }
+  .omarchy #lights { display: none; }
+  .omarchy #ripple { border-color: rgba(122,162,247,.9); background: rgba(122,162,247,.14); }
+  .omarchy .box { color: var(--ink); background: rgba(19,20,28,.92); border-radius: 0;
+    box-shadow: 0 0 0 2px #414868, 0 10px 30px rgba(0,0,0,.35); }
+  .omarchy #key { font-family: "JetBrains Mono", "Keys", monospace; border-radius: 0; color: var(--accent);
+    background: var(--raised); box-shadow: 0 0 0 3px var(--accent), 0 18px 36px rgba(0,0,0,.40); }
+  .omarchy #curtain {
+    background:
+      radial-gradient(1100px 700px at 15% 0%, rgba(122,162,247,.16), transparent 70%),
+      radial-gradient(900px 600px at 100% 100%, rgba(187,154,247,.10), transparent 70%),
+      linear-gradient(160deg, var(--night), var(--deeper)); }
+  .omarchy .card svg { filter: drop-shadow(0 24px 40px rgba(0,0,0,.45)); }
+  .omarchy .name, .omarchy .headline, .omarchy #flash .phrase { letter-spacing: -.03em; }
+  .omarchy .name { font-size: 112px; }
+  .omarchy #intro.hook .name { font-size: 136px; letter-spacing: -.035em; line-height: 1.08; max-width: 1700px; }
+  .omarchy .headline { font-size: 104px; max-width: 1700px; }
+  .omarchy #flash .phrase { font-size: 140px; max-width: 1760px; }
+  .omarchy .tag { color: var(--muted); font-size: 40px; }
+  .omarchy #intro.hook .tag { color: var(--accent); font-size: 48px; }
+  .omarchy .small { color: var(--dim); font-size: 32px; }
+  .omarchy #count { color: var(--accent); }
+  .omarchy #phrase::after { content: ""; display: inline-block; width: .55em; height: .8em;
+    margin-left: .12em; vertical-align: -.04em; background: var(--accent); }
+  .omarchy .url { font-family: "JetBrains Mono", monospace; border-radius: 0; color: var(--accent);
+    background: var(--night); box-shadow: 0 0 0 3px var(--accent), 0 16px 40px rgba(0,0,0,.40); }
+  .omarchy #label { font-size: 64px; letter-spacing: -.02em; border-radius: 0; color: var(--ink);
+    background: var(--night);
+    box-shadow: 0 0 0 4px var(--accent), 0 22px 50px rgba(0,0,0,.45); }
 </style>
 
 <div id="stage">
@@ -529,6 +560,10 @@ async function load(timeline, files) {
   T = timeline;
   frames = files;
   document.body.classList.toggle("omarchy", T.look === "omarchy");
+  // On Omarchy's dark cards the icon is its own blue, not reversed.
+  if (T.look === "omarchy") {
+    for (const use of document.querySelectorAll(".card svg use")) use.setAttribute("href", "#icon");
+  }
   document.documentElement.style.setProperty("--s", S);
   const el = $("window");
   el.style.width = `${1200 * S}px`;

@@ -189,8 +189,11 @@ A scenario with no `beats` sounds and moves as before.
 light theme, under its title bar. `look = "omarchy"` films it in the
 Omarchy look, in Tokyo Night as the site's screenshots show it: no title
 bar, and the window is square, in Hyprland's 2 px border of the accent, on
-a dark desk. `scenarios/whats-new-omarchy.toml` is the What's new reel in
-it.
+a dark desk. The rest of the video follows it: the cards are Tokyo Night
+with the icon in its own blue, every word is in JetBrains Mono, the label,
+keycaps, subtitles and address are square boxes edged in the accent, a
+hook's number is in the accent, and a flash card ends in a block cursor.
+`scenarios/whats-new-omarchy.toml` is the What's new reel in it.
 
 The steps press the look's keys. On Omarchy many are vim's letters or a
 line of the `:` prompt, and a `command` presses them as they are spelled:
