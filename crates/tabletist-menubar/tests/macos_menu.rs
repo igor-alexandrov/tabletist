@@ -69,6 +69,14 @@ fn main() {
                     }),
                 },
                 Entry::Item {
+                    id: 6,
+                    title: "Find".to_owned(),
+                    key: Some(Shortcut {
+                        shift: true,
+                        ..cmd(egui::Key::F)
+                    }),
+                },
+                Entry::Item {
                     id: 5,
                     title: "Next Connection".to_owned(),
                     key: Some(Shortcut {
@@ -109,7 +117,13 @@ fn main() {
         .expect("View");
     assert_eq!(
         titles(&view),
-        ["History", "Greyed", "Previous Tab", "Next Connection"]
+        [
+            "History",
+            "Greyed",
+            "Previous Tab",
+            "Find",
+            "Next Connection"
+        ]
     );
     let history = view.itemAtIndex(0).expect("History");
     assert_eq!(history.keyEquivalent().to_string(), "y");
@@ -181,6 +195,13 @@ fn main() {
     );
     assert_eq!(bar.chosen(), [(5, Via::Click)]);
 
+    // A letter with Shift keeps its key. Only what the item holds is
+    // read: a synthetic event with Shift does not match as a real one
+    // does (⇧⌘Z sent as `Z` matches no `z` with Shift).
+    let find = view.itemAtIndex(3).expect("Find");
+    assert_eq!(find.keyEquivalent().to_string(), "f");
+    assert_eq!(find.keyEquivalentModifierMask(), shift_cmd);
+
     // A title changes in place.
     bar.set_title(2, "Show History");
     assert_eq!(history.title().to_string(), "Show History");
@@ -203,6 +224,20 @@ fn main() {
         !main.performKeyEquivalent(&key("y", NSEventModifierFlags::Command, 16)),
         "⌘Y is gone"
     );
+
+    // The rebuilt menu has its own delegate, which greys its items.
+    let view = main
+        .itemAtIndex(0)
+        .and_then(|holder| holder.submenu())
+        .expect("View");
+    let delegate = view.delegate().expect("the rebuilt View menu's delegate");
+    let history = view.itemAtIndex(0).expect("History");
+    bar.set_enabled(2, false);
+    assert!(history.isEnabled(), "greyed only while its menu is open");
+    delegate.menuWillOpen(&view);
+    assert!(!history.isEnabled(), "greyed in the open menu");
+    delegate.menuDidClose(&view);
+    assert!(history.isEnabled(), "enabled again once the menu closes");
 
     println!("macos_menu: ok");
 }

@@ -1,11 +1,11 @@
 //! The muda side: the bar built from the app's description, and muda's
 //! one event handler routed to the bar attached last.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
-use std::sync::{Mutex, Once, mpsc};
+use std::sync::{Mutex, Once, PoisonError, mpsc};
 
 use muda::{Menu as MudaMenu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use raw_window_handle::RawWindowHandle;
@@ -29,19 +29,19 @@ fn route(event: MenuEvent) {
     let down = crate::macos::key_down();
     #[cfg(not(target_os = "macos"))]
     let down = None;
-    let Ok(route) = ROUTE.lock() else {
-        return;
-    };
+    // A `Route` holds nothing a panic could leave half made.
+    let route = ROUTE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(route) = route.as_ref() {
         let _ = route.send.send((event.id, down));
         (route.wake)();
     }
 }
 
-/// An item, and the state the app wants it in.
+/// An item, the state the app wants it in, and the title it shows.
 struct Slot {
     item: MenuItem,
     wanted: Cell<bool>,
+    title: RefCell<String>,
     /// Whether its menu is open: on macOS an item is greyed only then.
     #[cfg(target_os = "macos")]
     open: Rc<Cell<bool>>,
@@ -49,9 +49,11 @@ struct Slot {
 
 impl Slot {
     fn want(&self, enabled: bool) {
-        self.wanted.set(enabled);
+        if self.wanted.replace(enabled) == enabled {
+            return;
+        }
         // AppKit takes a disabled item's key equivalent and performs
-        // nothing; enabled, the key reaches the app. `Shown` greys the
+        // nothing; enabled, the key reaches the app. `MenuItems` greys the
         // item when its menu opens.
         #[cfg(target_os = "macos")]
         if !self.open.get() {
@@ -59,17 +61,26 @@ impl Slot {
         }
         self.item.set_enabled(enabled);
     }
+
+    fn retitle(&self, title: &str) {
+        let mut shown = self.title.borrow_mut();
+        if *shown != title {
+            title.clone_into(&mut shown);
+            self.item.set_text(title);
+        }
+    }
 }
 
-/// A menu's items, which its delegate greys while AppKit shows it open.
+/// A menu's items, and whether AppKit shows it open: its delegate greys
+/// them then.
 #[cfg(target_os = "macos")]
-pub(crate) struct Shown {
+pub(crate) struct MenuItems {
     open: Rc<Cell<bool>>,
     slots: Vec<Rc<Slot>>,
 }
 
 #[cfg(target_os = "macos")]
-impl Shown {
+impl MenuItems {
     pub(crate) fn opened(&self) {
         self.open.set(true);
         for slot in &self.slots {
@@ -94,7 +105,7 @@ struct Built<T> {
     roles: Vec<(Role, Submenu)>,
     /// Each menu's items, in the bar's order.
     #[cfg(target_os = "macos")]
-    shown: Vec<Rc<Shown>>,
+    menus: Vec<Rc<MenuItems>>,
     /// The menus' delegates, which NSMenu holds weakly: `put` makes them.
     #[cfg(target_os = "macos")]
     openings: Vec<objc2::rc::Retained<crate::macos::Opening>>,
@@ -107,7 +118,7 @@ fn build<T: Copy + Eq + Hash>(menus: Vec<Menu<T>>) -> Option<Built<T>> {
     let mut keys = HashMap::new();
     let mut roles = Vec::new();
     #[cfg(target_os = "macos")]
-    let mut shown = Vec::new();
+    let mut opened = Vec::new();
     for described in menus {
         let submenu = Submenu::new(&described.title, true);
         #[cfg(target_os = "macos")]
@@ -129,6 +140,7 @@ fn build<T: Copy + Eq + Hash>(menus: Vec<Menu<T>>) -> Option<Built<T>> {
                     let slot = Rc::new(Slot {
                         item,
                         wanted: Cell::new(true),
+                        title: RefCell::new(title),
                         #[cfg(target_os = "macos")]
                         open: open.clone(),
                     });
@@ -145,7 +157,7 @@ fn build<T: Copy + Eq + Hash>(menus: Vec<Menu<T>>) -> Option<Built<T>> {
         menu.append(&submenu).ok()?;
         roles.push((described.role, submenu));
         #[cfg(target_os = "macos")]
-        shown.push(Rc::new(Shown { open, slots }));
+        opened.push(Rc::new(MenuItems { open, slots }));
     }
     Some(Built {
         menu,
@@ -154,7 +166,7 @@ fn build<T: Copy + Eq + Hash>(menus: Vec<Menu<T>>) -> Option<Built<T>> {
         keys,
         roles,
         #[cfg(target_os = "macos")]
-        shown,
+        menus: opened,
         #[cfg(target_os = "macos")]
         openings: Vec::new(),
     })
@@ -178,7 +190,7 @@ fn put<T>(built: &mut Built<T>, window: Option<RawWindowHandle>) -> Option<()> {
                 Role::Help => submenu.set_as_help_menu_for_nsapp(),
             }
         }
-        built.openings = crate::macos::watch(&built.shown);
+        built.openings = crate::macos::watch(&built.menus);
     }
     Some(())
 }
@@ -189,17 +201,19 @@ pub(crate) struct Bar<T> {
     chosen: mpsc::Receiver<(MenuId, Option<KeyDown>)>,
 }
 
-impl<T: Copy + Eq + Hash + Send + 'static> Bar<T> {
+impl<T: Copy + Eq + Hash + 'static> Bar<T> {
     pub(crate) fn attach(
         window: Option<RawWindowHandle>,
         menus: Vec<Menu<T>>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Option<Self> {
         let mut built = build(menus)?;
+        // Before the bar is shown: muda keeps the first handler it is
+        // given, and an event before it would keep none.
+        HANDLER.call_once(|| MenuEvent::set_event_handler(Some(route)));
         put(&mut built, window)?;
         let (send, chosen) = mpsc::channel();
-        HANDLER.call_once(|| MenuEvent::set_event_handler(Some(route)));
-        *ROUTE.lock().ok()? = Some(Route {
+        *ROUTE.lock().unwrap_or_else(PoisonError::into_inner) = Some(Route {
             send,
             wake: Box::new(wake),
         });
@@ -230,7 +244,7 @@ impl<T: Copy + Eq + Hash + Send + 'static> Bar<T> {
 
     pub(crate) fn set_title(&mut self, id: T, title: &str) {
         if let Some(slot) = self.built.items.get(&id) {
-            slot.item.set_text(title);
+            slot.retitle(title);
         }
     }
 
@@ -292,7 +306,7 @@ fn accelerator(key: Shortcut) -> Option<muda::accelerator::KeyAccelerator> {
         K::F12 => Some(NamedKey::F12),
         _ => None,
     };
-    let key_ = match named {
+    let logical = match named {
         Some(named) => Key::Named(named),
         None => Key::Character(crate::keys::character(key.key)?),
     };
@@ -309,7 +323,7 @@ fn accelerator(key: Shortcut) -> Option<muda::accelerator::KeyAccelerator> {
     if key.shift {
         mods |= Modifiers::SHIFT;
     }
-    Some(KeyAccelerator::new(mods, key_))
+    Some(KeyAccelerator::new(mods, logical))
 }
 
 /// Whether `key` holds Shift with a mark: AppKit matches `[` with Shift

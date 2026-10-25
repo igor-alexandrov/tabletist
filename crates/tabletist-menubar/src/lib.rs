@@ -58,7 +58,8 @@ pub struct Menu<T> {
     pub entries: Vec<Entry<T>>,
 }
 
-/// The menu bar, attached. Dropped, its items are gone with it.
+/// The menu bar, attached. Dropped, its items are gone with it: on macOS
+/// NSApp is left with no main menu, not even winit's.
 pub struct MenuBar<T> {
     #[cfg(target_os = "macos")]
     bar: native::Bar<T>,
@@ -68,7 +69,7 @@ pub struct MenuBar<T> {
     _ids: std::marker::PhantomData<T>,
 }
 
-impl<T: Copy + Eq + Hash + Send + 'static> MenuBar<T> {
+impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
     /// Builds the bar and attaches it: to NSApp on macOS, where `window` is
     /// not read. `wake` runs, on the main thread, after each choice.
     /// `None` off macOS, or if muda refuses an item.
