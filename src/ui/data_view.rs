@@ -1750,6 +1750,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 pick = Some(Action::PickerNull { tab, id });
             }
         }
+        // A date or time cell's line, under it, while it is in sight.
+        if !large
+            && let (Some(editor), Some(target)) = (editor.as_deref_mut(), &target)
+            && let Some(anchor) = hangs
+        {
+            let skin = (&look, &palette, locale);
+            crate::ui::date_line::under(ui, anchor, editor, target, &mut outcome, skin);
+        }
         if large
             && let (Some(editor), Some(target)) = (editor, &target)
             && let Some(anchor) = output.editing_rect
@@ -1973,6 +1981,7 @@ pub(super) fn editor_target(
         now: table
             .column(cell.col)
             .is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
+        dates: table.dates(cell.col),
         keys: keys.clone(),
         search: object
             .edits

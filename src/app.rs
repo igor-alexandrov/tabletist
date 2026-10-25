@@ -100,6 +100,12 @@ pub struct App {
     /// The computer's time zone as the app found it at its start: what the
     /// System zone of the settings is.
     pub system_zone: jiff::tz::TimeZone,
+    /// The order the person writes a day's numbers in (`15/01/2026`), by
+    /// the region of the system's locale, as the app found it at its start.
+    pub date_order: crate::dates::Order,
+    /// A time the clock is stopped at, for a test: `None` reads the
+    /// system's clock. What `today` and `now` typed into a date are.
+    pub stopped_clock: Option<jiff::Timestamp>,
     /// The time zone database, once the backend has read it
     /// (`Command::LoadZones`): the zone menu's names, and each zone.
     pub zones: Option<std::sync::Arc<crate::zones::Zones>>,
@@ -322,6 +328,8 @@ impl App {
             settings,
             settings_file,
             system_zone: system_zone(),
+            date_order: date_order(),
+            stopped_clock: None,
             named_zone,
             zones: None,
             locale: Locale::default(),
@@ -699,6 +707,17 @@ impl App {
         self.settings
             .tz
             .resolve(&self.system_zone, self.zones.as_deref())
+    }
+
+    /// What a date typed into an editor is read at: the time it is, the
+    /// zone of the settings (the system's until a named one is read), and
+    /// the order the person writes a day's numbers in.
+    pub fn date_clock(&self) -> crate::dates::Clock {
+        crate::dates::Clock {
+            now: self.stopped_clock.unwrap_or_else(jiff::Timestamp::now),
+            zone: self.zone().unwrap_or_else(|| self.system_zone.clone()),
+            order: self.date_order,
+        }
     }
 
     /// Gives every workspace the zone of the settings, and has the row
@@ -1586,10 +1605,11 @@ impl App {
                 }
             }
             Action::EditorTyped { tab, id } => {
-                let problem = self.editor_problem(tab, id);
+                let (problem, moment) = self.editor_problem(tab, id);
                 let delay = self.lookup_delay;
                 if let Some(editor) = self.editor_mut(tab, id) {
                     editor.problem = problem;
+                    editor.moment = moment;
                     editor.touched = true;
                     // The row panel's field wraps, and Enter commits it: a
                     // line break can only be pasted into it. Its text is
@@ -5620,6 +5640,24 @@ impl App {
     }
 }
 
+/// The order the system's locale writes a day's numbers in, by its region:
+/// that of the locale for times where one is set (`LC_ALL`, `LC_TIME`),
+/// else of the first language the system prefers that names one. Day
+/// first in a test, whatever the machine's.
+fn date_order() -> crate::dates::Order {
+    if cfg!(test) {
+        return crate::dates::Order::DayMonth;
+    }
+    let times = ["LC_ALL", "LC_TIME"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok());
+    let region = times
+        .chain(fastframe_i18n::system_languages().iter().cloned())
+        .filter_map(|tag| fastframe_i18n::LanguageTag::parse(&tag))
+        .find_map(|tag| tag.region);
+    crate::dates::Order::of_region(region.as_deref())
+}
+
 /// The computer's time zone, or UTC where it cannot be found. Tests have
 /// UTC whatever the computer they run on says, so what they show does not
 /// depend on it: a test of the System zone sets `App::system_zone`.
@@ -7453,7 +7491,8 @@ impl App {
                 None => {
                     workspace.status = SessionStatus::Idle;
                     // The version it was asked for, where it had not
-                    // answered, is asked of the next session.
+                    // answered, is asked of the next session, and so is
+                    // its zone.
                     workspace.server_version.pending = None;
                     due.push(workspace.session);
                 }
@@ -18975,8 +19014,10 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(row, 4), "DEFAULT");
             let edits = &object(&harness, tab, id).edits;
             assert!(!edits.cells.contains_key(&(row, 4)));
-            // The time of the save goes out in the row's INSERT.
-            type_into(&mut harness, tab, id, at(row, 4), "now");
+            // The time of the save goes out in the row's INSERT. `now`
+            // alone is the time by the clock, as the line under the editor
+            // says: the database's is `now()`.
+            type_into(&mut harness, tab, id, at(row, 4), "now()");
             type_into(&mut harness, tab, id, at(row, 1), "9100000000000000004");
             let before = harness.app.backend.sent.len();
             harness.app.apply(Action::WriteEdits { tab, id });
@@ -21163,6 +21204,7 @@ masked = ["orders.email"]
                         top: false,
                         touched: true,
                         problem: None,
+                        moment: None,
                         picker: None,
                         select: false,
                     });

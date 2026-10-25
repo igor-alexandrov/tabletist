@@ -23,6 +23,9 @@ mod complete_tests;
 pub mod conflict_prompt;
 pub mod connect_dialog;
 pub mod data_view;
+pub mod date_line;
+#[cfg(test)]
+mod date_tests;
 #[cfg(test)]
 mod delete_many_tests;
 #[cfg(test)]

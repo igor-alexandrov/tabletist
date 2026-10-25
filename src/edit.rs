@@ -15,6 +15,9 @@ use tabletist_db::{
 use crate::backend::RequestId;
 use crate::model::{CellPos, ObjectTab, Workspace};
 
+/// UTC, for a `timestamptz` whose zone is not known yet.
+static UTC: jiff::tz::TimeZone = jiff::tz::TimeZone::UTC;
+
 /// The largest value an editor opens, and the largest it keeps, in bytes
 /// of its text: a field that held megabytes would be laid out every frame.
 pub const MAX_EDIT_BYTES: usize = 256 * 1024;
@@ -181,6 +184,22 @@ impl Table<'_> {
             .columns
             .iter()
             .find(|column| column.name == *name)
+    }
+
+    /// The page's column `col` as an editor reads dates and times for it,
+    /// where it keeps them: the zone a PostgreSQL `timestamptz` is shown
+    /// in, and the values SQLite's follow.
+    pub fn dates(&self, col: usize) -> Option<crate::dates::Column> {
+        let column = self.column(col)?;
+        let values = self.page.rows.iter().filter_map(|row| row.get(col));
+        // A `timestamptz` in UTC while the settings' zone is not read yet
+        // (or is one the database does not know): it is sent with an
+        // offset all the same, which the server reads as it is.
+        let zone = match self.dialect {
+            Dialect::Postgres => Some(self.zone.unwrap_or(&UTC)),
+            Dialect::MySql | Dialect::Sqlite => None,
+        };
+        crate::dates::Column::of(self.dialect, &column.type_name, zone, values)
     }
 
     /// The column's class, by the type the structure gives it.
@@ -682,6 +701,20 @@ pub enum Problem {
     TooLong { max: u32 },
     /// Over `MAX_EDIT_BYTES`: more than an editor opens.
     TooLarge,
+    /// No day or time the column takes, or one it does not hold.
+    Moment(crate::dates::Refusal),
+}
+
+impl Problem {
+    /// Whether the problem is a warning more than a fault: a time the
+    /// zone's clocks skip, which the line offers a way out of, or MySQL's
+    /// zero date. The text is not taken all the same.
+    pub fn warns(&self) -> bool {
+        matches!(
+            self,
+            Self::Moment(crate::dates::Refusal::Gap { .. } | crate::dates::Refusal::Zero)
+        )
+    }
 }
 
 /// Whether `text` is a value `column` takes, as far as the app can tell
@@ -997,21 +1030,6 @@ pub fn shows_in_zone(dialect: Dialect) -> bool {
     }
 }
 
-/// Whether a column of `type_name` keeps a moment with its offset, so that
-/// a value typed into it without one is read in the server session's zone
-/// (PostgreSQL's `timestamptz`). MySQL's `TIMESTAMP` and SQLite's dates
-/// keep no offset: what is typed is what is kept.
-pub fn keeps_offset(dialect: Dialect, type_name: &str) -> bool {
-    match dialect {
-        Dialect::Postgres => {
-            let name = type_name.trim().to_ascii_lowercase();
-            name.starts_with("timestamptz")
-                || (name.starts_with("timestamp") && name.ends_with("with time zone"))
-        }
-        Dialect::MySql | Dialect::Sqlite => false,
-    }
-}
-
 /// What `text`, typed into a cell of `column`, is as the cell's new value.
 /// A word is a keyword only where the column is not text, and only where
 /// the column can take it: NULL where it may be NULL, DEFAULT where it has
@@ -1051,6 +1069,27 @@ pub fn typed_as(dialect: Dialect, column: &ColumnInfo, text: &str) -> NewValue {
         return NewValue::Now;
     }
     NewValue::Text(text.to_owned())
+}
+
+/// What `text`, typed into the cell of the page's column `col`, reads as
+/// where the column keeps dates or times: `None` for any other column, and
+/// for a keyword whose value the database makes (NULL, DEFAULT, `now()`).
+/// The word `now` alone is read here, as the time by `clock`: the
+/// database's own time is `now()`.
+pub fn moment(
+    table: &Table<'_>,
+    col: usize,
+    text: &str,
+    clock: &crate::dates::Clock,
+) -> Option<Result<crate::dates::Reading, crate::dates::Refusal>> {
+    let column = table.column(col)?;
+    let dates = table.dates(col)?;
+    match typed_as(table.dialect, column, text) {
+        NewValue::Text(_) => {}
+        NewValue::Now if text.trim().eq_ignore_ascii_case("now") => {}
+        NewValue::Null | NewValue::Default { .. } | NewValue::Now => return None,
+    }
+    Some(crate::dates::read(text, &dates, clock))
 }
 
 /// What stands against `text` as a value typed into a cell of `column`.
@@ -1452,6 +1491,10 @@ pub struct Editor {
     pub touched: bool,
     /// What the text fails, kept up to date by `Action::EditorTyped`.
     pub problem: Option<Problem>,
+    /// What the text reads as, where the column keeps dates or times:
+    /// what the line under the editor says, and, read once, what a commit
+    /// stores. Kept up to date with `problem`.
+    pub moment: Option<Result<crate::dates::Reading, crate::dates::Refusal>>,
     /// The search of the table a foreign key cell points at, while the
     /// editor is the small field of such a cell.
     pub picker: Option<crate::key_picker::Picker>,
@@ -4293,6 +4336,7 @@ mod tests {
             top: false,
             touched: false,
             problem: None,
+            moment: None,
             picker: None,
             select: false,
         });
@@ -5683,6 +5727,7 @@ mod tests {
             top: false,
             touched: true,
             problem: None,
+            moment: None,
             picker: None,
             select: false,
         });
