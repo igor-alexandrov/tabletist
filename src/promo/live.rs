@@ -1,6 +1,6 @@
 //! The app's backend, answered by a real SQLite session reading the
 //! scenario's file. Every SQLite session is `query_only`: nothing is
-//! written, saved or stored.
+//! written, saved or stored. The query history is kept in memory.
 
 #![allow(clippy::unwrap_used)]
 
@@ -8,15 +8,18 @@ use std::path::Path;
 
 use tabletist_db::{Access, ConnectSpec, Connection, Secrets, StopFlag};
 
-use crate::backend::{Command, Event};
+use crate::backend::{Command, Event, HistoryCommand, HistoryEvent};
+use crate::history::Entry;
 use crate::model::Action;
 use crate::testing::Harness;
 
-/// The file's connection and how many of the app's commands it answered.
+/// The file's connection, how many of the app's commands it answered, and
+/// the statements the history was given, oldest first.
 pub struct Live {
     runtime: tokio::runtime::Runtime,
     connection: Connection,
     answered: usize,
+    history: Vec<Entry>,
 }
 
 impl Live {
@@ -33,6 +36,7 @@ impl Live {
             runtime,
             connection,
             answered: 0,
+            history: Vec::new(),
         })
     }
 
@@ -47,6 +51,7 @@ impl Live {
             self.answered += 1;
             let connection = &self.connection;
             let run = &self.runtime;
+            let history = &mut self.history;
             let event = match command {
                 Command::Connect {
                     session,
@@ -139,6 +144,19 @@ impl Live {
                     )),
                     cancel: None,
                 }),
+                Command::History(HistoryCommand::Append { entry, .. }) => {
+                    history.push(entry.as_ref().clone());
+                    None
+                }
+                Command::History(HistoryCommand::Load {
+                    connection,
+                    keep,
+                    asked,
+                    ..
+                }) => Some(Event::History(HistoryEvent::Loaded {
+                    asked: *asked,
+                    result: Ok(super::history::newest(history, connection, *keep)),
+                })),
                 // Nothing is written, saved, stored, watched or closed here.
                 Command::Write { .. }
                 | Command::Test { .. }
@@ -157,7 +175,11 @@ impl Live {
                 | Command::ListFonts
                 | Command::Flush { .. }
                 | Command::Agents(_)
-                | Command::History(_) => None,
+                | Command::History(
+                    HistoryCommand::Clear { .. }
+                    | HistoryCommand::Trim { .. }
+                    | HistoryCommand::Held { .. },
+                ) => None,
             };
             if let Some(event) = event {
                 harness.app.apply(Action::Backend(event));

@@ -333,10 +333,17 @@ as WAV:
 
 ## The data
 
-The runner writes the Bookshop to `target/promo/bookshop.sqlite` with
-`tabletist_db::fixtures::write_sqlite_bookshop` when the scenario asks for
-it, removing the last run's file first (the helper refuses one that
-exists). There is one Bookshop to keep, and no `sqlite3` binary is needed.
+The runner writes the Bookshop to `/tmp/bookshop.sqlite` (the temporary
+directory off Unix) with `tabletist_db::fixtures::write_sqlite_bookshop`
+when the scenario asks for it, removing the last run's file first (the
+helper refuses one that exists). The History tab shows a statement's
+database as the file's whole path, so it is a short one that names no
+person's checkout. There is one Bookshop to keep, and no `sqlite3`
+binary is needed.
+
+The query history is kept in memory for the run, not in a file: each
+statement the app adds is kept, and the History tab reads a connection's
+newest first, as from the file. Clearing and trimming it do nothing.
 
 ## Testing
 

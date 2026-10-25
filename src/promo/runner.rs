@@ -365,13 +365,25 @@ fn corners(rect: egui::Rect) -> [f32; 4] {
     [rect.min.x, rect.min.y, rect.max.x, rect.max.y]
 }
 
+/// Where the Bookshop is written for a run.
+#[cfg(unix)]
+fn bookshop_dir() -> PathBuf {
+    PathBuf::from("/tmp")
+}
+
+#[cfg(not(unix))]
+fn bookshop_dir() -> PathBuf {
+    std::env::temp_dir()
+}
+
 /// The SQLite file the scenario at `file` names, and the connection's
 /// name.
 fn database(file: &Path, database: &Database) -> (PathBuf, String) {
     match database {
         Database::Bookshop => {
-            let path = promo().join("bookshop.sqlite");
-            std::fs::create_dir_all(promo()).unwrap();
+            // The History tab shows the file's whole path: a short one,
+            // not the checkout's, which names whoever filmed it.
+            let path = bookshop_dir().join("bookshop.sqlite");
             // The fixture refuses a file that is there.
             let _ = std::fs::remove_file(&path);
             tabletist_db::fixtures::write_sqlite_bookshop(&path).unwrap();

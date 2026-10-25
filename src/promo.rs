@@ -3,6 +3,7 @@
 //! what happened in each, then `contrib/promo/render.cjs` for the video.
 //! The design: docs/superpowers/specs/2026-10-24-promo-video-scenarios-design.md.
 
+mod history;
 mod pick;
 mod scenario;
 

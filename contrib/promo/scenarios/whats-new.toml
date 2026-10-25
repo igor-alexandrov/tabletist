@@ -1,0 +1,90 @@
+# What is new since 0.2.0, one feature a scene or a slide: the video for
+# the 0.3 release. Features that need a save, a second window or an agent
+# are slides; the rest are filmed.
+title = "New since 0.2"
+tempo = 128
+
+# 0.3.0: the start screen, and Quick open.
+[[scene]]
+caption = "Jump to any table."
+steps = [
+  { command = "find_object" },
+  { type = "boo" },
+  { press = "enter" },
+  { hold = 0.4 },
+]
+
+# 0.2.0: editing in the grid, and Review SQL before a save.
+[[scene]]
+caption = "Edit in place. Review the SQL."
+steps = [
+  { click = "Small Engines" },
+  { command = "edit_cell" },
+  { type = ", Revised" },
+  { press = "enter" },
+  { command = "review_sql" },
+  { hold = 0.8 },
+]
+
+# 0.2.0: what a save promises.
+[[scene]]
+slide = "Saves you can trust."
+text = "One transaction. Never over someone else's change. Production asks first."
+
+# 0.2.2 and 0.3.0: new, duplicated and deleted rows. The row deleted is
+# near the top, so it stays in sight once the new rows push the rest down.
+# The last, added, is left with its title being edited, for the next scene.
+[[scene]]
+caption = "Delete, duplicate and add rows."
+steps = [
+  { click = "A Field Guide to Fog" },
+  { command = "delete_row" },
+  { click = "Lanterns" },
+  { command = "duplicate_row" },
+  { command = "add_row" },
+  { hold = 0.4 },
+]
+
+# 0.3.0: a foreign key searches the table it points at. The new row gets a
+# title, Tab moves the editor to author_id, and "ara" narrows the authors.
+[[scene]]
+caption = "Foreign keys search as you type."
+steps = [
+  { type = "Paper Moons" },
+  { command = "commit_next" },
+  { type = "ara" },
+  { hold = 0.8 },
+]
+
+# 0.3.0: Format, and brackets that close themselves: the subquery's ")" is
+# never typed.
+[[scene]]
+caption = "Write SQL. Format it with one key."
+steps = [
+  { command = "new_sql_tab" },
+  { type = "select title, price from books where price < (select avg(price) from books" },
+  { command = "format" },
+  { command = "run_statement" },
+  { hold = 0.6 },
+]
+
+# 0.3.0: query history. History's key is not read while the SQL editor has
+# the keyboard, so Esc leaves it first; the arrow shows the statement whole.
+[[scene]]
+caption = "Every query you ran, kept."
+steps = [
+  { press = "esc" },
+  { command = "history" },
+  { command = "move_in_history", key = "down" },
+  { hold = 1.0 },
+]
+
+# 0.3.0: agents over MCP.
+[[scene]]
+slide = "Agents, read-only."
+text = "Claude Code and Cursor read the databases you choose, over MCP. Writes are refused."
+
+# 0.2.0 and 0.3.0: Settings, keys, vim.
+[[scene]]
+slide = "Make it yours."
+text = "Five Settings panes. Rebind any key. Vim in the SQL editor."
