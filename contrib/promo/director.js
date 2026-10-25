@@ -59,6 +59,15 @@
   // Typing goes from a field's left edge: of a wide field (the SQL editor)
   // the camera frames that much of its left.
   const TYPE_SPAN = 400;
+  // A scene with `beats` lasts exactly that many. A shot of that kind is a
+  // cut: its steps are squeezed into all but TAIL of it, so the result
+  // shows, and the camera, set straight on its framing at the cut, pushes
+  // in by PUSH over it.
+  const TAIL = 0.15, PUSH = 0.06;
+  // An intro with `beats` is a hook: its line starts at once.
+  const HOOK_VOICE = 0.2;
+  // In a cut, typing is a flurry: a key is heard at most this often.
+  const KEY_GAP = 0.05;
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 
@@ -102,6 +111,9 @@
   // A line said from `at`: when it ends, with its room after.
   const heard = (voice, at) => (voice ? at + voice.seconds + VOICE_ROOM : 0);
 
+  // Whether a scene, the intro or the outro lasts a fixed number of beats.
+  const fixed = owner => Boolean(owner && owner.beats);
+
   // When each event happens, scene by scene, and when the scenes are, and
   // the lines the voice says.
   function place(record) {
@@ -110,53 +122,73 @@
     const timed = [], scenes = [], voices = [];
     let pointer = { x: WIDTH * 0.7, y: HEIGHT * 0.75 };
     // The intro is a bar, or as long as its line and the beat its card
-    // takes to leave.
+    // takes to leave; with beats, exactly that many, its line running on
+    // into the first scene if it is longer.
     const opening = spoken(record.intro);
-    if (opening) voices.push({ at: CARD_VOICE, ...opening });
-    let t = Math.max(bar, onGrid(heard(opening, CARD_VOICE) + beat, bar / 2));
-    const intro = { from: 0, to: t };
+    let t;
+    if (fixed(record.intro)) {
+      if (opening) voices.push({ at: HOOK_VOICE, ...opening });
+      t = record.intro.beats * beat;
+    } else {
+      if (opening) voices.push({ at: CARD_VOICE, ...opening });
+      t = Math.max(bar, onGrid(heard(opening, CARD_VOICE) + beat, bar / 2));
+    }
+    const named = record.intro || {};
+    const intro = { from: 0, to: t, title: named.title || null, text: named.text || null };
     record.scenes.forEach((scene, index) => {
       const from = t;
       const voice = spoken(scene);
+      // A flash card: exactly its beats, whatever it says.
+      if (scene.slide && fixed(scene)) {
+        if (voice) voices.push({ at: from + VOICE_IN, ...voice });
+        const to = from + scene.beats * beat;
+        scenes.push({ from, to, caption: null, slide: { title: scene.slide, text: scene.text || null }, beats: scene.beats });
+        t = to;
+        return;
+      }
       // A slide: the app is away, and only the words take time.
       if (scene.slide) {
         const at = from + HEADLINE.start + HEADLINE.word * (words(scene.slide) - 1) + HEADLINE.rise;
         if (voice) voices.push({ at, ...voice });
         const reading = from + Math.max(SLIDE_LEAST, SLIDE_WORD * words(`${scene.slide} ${scene.text || ""}`) + SLIDE_BUILD);
         const to = onGrid(Math.max(reading, heard(voice, at)), bar / 2);
-        scenes.push({ from, to, caption: null, slide: { title: scene.slide, text: scene.text || null } });
+        scenes.push({ from, to, caption: null, slide: { title: scene.slide, text: scene.text || null }, beats: null });
         t = to;
         return;
       }
       if (voice) voices.push({ at: from + VOICE_IN, ...voice });
-      let now = from + beat / 2;
+      // A cut's steps are placed from its start, then squeezed into it.
+      const cut = fixed(scene);
+      const own = [];
+      let now = cut ? 0 : from + beat / 2;
       for (const event of record.events.filter(e => e.scene === index)) {
         switch (event.kind) {
           case "point": {
             const to = centre(event.rect);
             const far = Math.hypot(to.x - pointer.x, to.y - pointer.y);
             const travel = clamp(0.28 + far / 2200, 0.28, 0.55);
-            timed.push({ ...event, at: now + travel, leaves: now, origin: pointer, target: to });
+            own.push({ ...event, at: now + travel, leaves: now, origin: pointer, target: to });
             pointer = to;
             now += travel;
             break;
           }
           case "click":
             now += 0.1;
-            timed.push({ ...event, at: now, where: pointer });
+            own.push({ ...event, at: now, where: pointer });
             now += STEP;
             break;
           case "command":
           case "press":
             // A hand that has typed takes a moment before the key that ends it.
-            if (timed.length && timed[timed.length - 1].kind === "type") now += AFTER_TYPING;
-            timed.push({ ...event, at: now });
+            const before = own.length ? own[own.length - 1] : timed[timed.length - 1];
+            if (before && before.kind === "type") now += AFTER_TYPING;
+            own.push({ ...event, at: now });
             now += STEP;
             break;
           case "type": {
             const pause = /\s/.test(event.text) ? 1.4 : 1;
             now += (pause * (0.6 + 0.9 * random())) / TYPE_RATE;
-            timed.push({ ...event, at: now });
+            own.push({ ...event, at: now });
             break;
           }
           case "hold":
@@ -166,22 +198,46 @@
             throw new Error(`an event the director does not know: ${event.kind}`);
         }
       }
-      now += SETTLE;
       // A line said takes the caption's place: the subtitles show it.
       const caption = voice ? null : scene.caption || null;
+      const label = scene.label || null;
+      if (cut) {
+        // Exactly its beats: what took longer than all but its TAIL is
+        // made faster, the pointer's trips with it; what is quicker keeps
+        // its pace.
+        const to = from + scene.beats * beat;
+        const k = now > 0 ? Math.min(1, ((1 - TAIL) * (to - from)) / now) : 1;
+        const squeezed = x => from + x * k;
+        for (const event of own) {
+          const placed = { ...event, at: squeezed(event.at), cut: true };
+          if (event.kind === "point") placed.leaves = squeezed(event.leaves);
+          timed.push(placed);
+        }
+        scenes.push({ from, to, caption, label, slide: null, beats: scene.beats });
+        t = to;
+        return;
+      }
+      timed.push(...own);
+      now += SETTLE;
       const reading = caption ? Math.max(READ_LEAST, READ_WORD * words(caption)) : 0;
       // A scene ends on a half bar: the next starts on the beat, without
       // waiting out a whole bar.
       const to = onGrid(Math.max(now, from + reading, heard(voice, from + VOICE_IN)), bar / 2);
-      scenes.push({ from, to, caption, slide: null });
+      scenes.push({ from, to, caption, label, slide: null, beats: null });
       t = to;
     });
     const closing = spoken(record.outro);
     if (closing) voices.push({ at: t + CARD_VOICE, ...closing });
-    // The outro is a bar and a half, or as long as its line and a breath.
+    // The outro is a bar and a half, or as long as its line and a breath;
+    // with beats, exactly that many.
     const ending = closing ? onGrid(CARD_VOICE + closing.seconds + OUTRO_TAIL, bar / 2) : 0;
-    const duration = t + Math.max(1.5 * bar, ending);
-    return { timed, scenes, voices, intro, outro: t, duration, beat, bar };
+    const duration = t + (fixed(record.outro) ? record.outro.beats * beat : Math.max(1.5 * bar, ending));
+    // The hard cuts: wherever something of fixed length ends and another
+    // of fixed length, or the outro, starts. No curtain moves there, and
+    // the camera does not spring across it.
+    const parts = [{ to: intro.to, fixed: fixed(record.intro) }, ...scenes.map(scene => ({ to: scene.to, fixed: Boolean(scene.beats) }))];
+    const cuts = parts.filter((part, i) => part.fixed && (i + 1 === parts.length || parts[i + 1].fixed)).map(part => part.to);
+    return { timed, scenes, voices, intro, outro: t, duration, beat, bar, cuts };
   }
 
   // A line's words in pieces of SUBTITLE_WORDS at most and 4 at least,
@@ -233,11 +289,11 @@
   const lit = (x0, y0, x1, y1) => ({ x0: x0 - 12, y0: y0 - 8, x1: x1 + 12, y1: y1 + 8, alpha: 1 });
 
   // What the camera looks at to frame `rects`: their middle, zoomed so they
-  // fill about half the picture, kept inside the window.
-  function view(rects) {
+  // fill about half the picture (`most` at most), kept inside the window.
+  function view(rects, most = ZOOM[1]) {
     const x0 = Math.min(...rects.map(r => r[0])), y0 = Math.min(...rects.map(r => r[1]));
     const x1 = Math.max(...rects.map(r => r[2])), y1 = Math.max(...rects.map(r => r[3]));
-    const zoom = clamp(0.5 / Math.max((x1 - x0) / WIDTH, (y1 - y0) / HEIGHT, 1e-3), ZOOM[0], ZOOM[1]);
+    const zoom = clamp(0.5 / Math.max((x1 - x0) / WIDTH, (y1 - y0) / HEIGHT, 1e-3), ZOOM[0], most);
     const half = { x: WIDTH / 2 / zoom, y: HEIGHT / 2 / zoom };
     return {
       x: clamp((x0 + x1) / 2, half.x, WIDTH - half.x),
@@ -293,16 +349,29 @@
   // the camera set off for somewhere new. Until `hold`
   // the camera shows the whole window. The spotlight does not wait for the
   // camera: it lights the event of the moment. When the action stops, both
-  // let go and show the whole window.
-  function film(timed, outro, duration, hold = 0, away = []) {
+  // let go and show the whole window. In each of `shots`, the cuts, it is
+  // set straight on the cut's framing at its first frame, and pushes in.
+  function film(timed, outro, duration, hold = 0, away = [], shots = []) {
     const framed = timed.filter(e => e.rect);
     const acts = timed.filter(e => e.kind !== "point");
     let target = WHOLE;
     const pos = { x: WHOLE.x, y: WHOLE.y, zoom: 1 }, vel = { x: 0, y: 0, zoom: 0 };
     const spot = { ...WHOLE.area }, spotVel = { x0: 0, y0: 0, x1: 0, y1: 0, alpha: 0 };
     const camera = [], spots = [], moves = [];
+    let cutting = null;
     for (let i = 0, n = Math.round(duration * FPS); i < n; i++) {
       const t = i / FPS;
+      const shot = shots.find(s => t >= s.from - 1e-9 && t < s.to - 1e-9) || null;
+      if (shot) {
+        if (shot !== cutting) {
+          moves.push({ at: t });
+          target = shot.view;
+          for (const k of Object.keys(vel)) vel[k] = 0;
+        }
+        const k = (t - shot.from) / (shot.to - shot.from);
+        Object.assign(pos, { x: shot.view.x, y: shot.view.y, zoom: shot.view.zoom * (1 + PUSH * k) });
+      }
+      cutting = shot;
       // For the outro and for a slide, the window is away: the camera
       // shows it whole, so it comes back as it left.
       const ending = t >= outro - LEAD || away.some(card => t >= card.from - LEAD && t < card.to);
@@ -314,12 +383,12 @@
         const near = framed.filter(e => e.at > t - BEHIND && e.at <= t + LEAD + AHEAD);
         if (near.length) want = view(near.map(aim));
       }
-      if (want && want !== target && !(want !== WHOLE && target !== WHOLE && resting(target, want))) {
+      if (!shot && want && want !== target && !(want !== WHOLE && target !== WHOLE && resting(target, want))) {
         moves.push({ at: t });
         target = want;
       }
       const drift = target === WHOLE && since !== null ? DRIFT * (t - since) : 0;
-      spring(pos, vel, { x: target.x, y: target.y, zoom: target.zoom + drift }, 1 / FPS);
+      if (!shot) spring(pos, vel, { x: target.x, y: target.y, zoom: target.zoom + drift }, 1 / FPS);
       const now = still ? null : latest(framed, e => e.at <= t + GLOW);
       const [x0, y0, x1, y1] = now ? now.rect : [];
       spring(spot, spotVel, now ? lit(x0, y0, x1, y1) : WHOLE.area, 1 / FPS);
@@ -369,18 +438,25 @@
   }
 
   // What is heard when: a key for each character and key, a click, a tick
-  // under a keycap, a soft bell as a slide comes in, a bell on the outro.
-  // The camera's moves are silent.
-  function sounds(timed, outro, slides, random) {
+  // under a keycap, a soft bell as a slide comes in, a bell on the outro,
+  // and in a reel a hit with it. In a cut, typing is heard a key every
+  // KEY_GAP at most. The camera's moves are silent.
+  function sounds(timed, outro, slides, random, reel) {
     const all = [];
+    let key = -Infinity;
     for (const e of timed) {
-      if (e.kind === "type") all.push({ at: e.at, kind: "key", gain: 0.55 + 0.35 * random() });
+      if (e.kind === "type" && !(e.cut && e.at - key < KEY_GAP)) {
+        all.push({ at: e.at, kind: "key", gain: 0.55 + 0.35 * random() });
+        key = e.at;
+      }
       if (e.kind === "press") all.push({ at: e.at, kind: "key", gain: 0.9 });
       if (e.kind === "command") all.push({ at: e.at, kind: "key", gain: 1 }, { at: e.at, kind: "tick", gain: 0.8 });
+      if (e.kind === "press" || e.kind === "command") key = e.at;
       if (e.kind === "click") all.push({ at: e.at, kind: "click", gain: 1 });
     }
     for (const card of slides) all.push({ at: card.from, kind: "bell", gain: 0.45 });
     all.push({ at: outro, kind: "bell", gain: 1 });
+    if (reel) all.push({ at: outro, kind: "hit", gain: 1 });
     return all.sort((a, b) => a.at - b.at);
   }
 
@@ -389,10 +465,18 @@
     if (record.size[0] !== WIDTH || record.size[1] !== HEIGHT) {
       throw new Error(`the window is ${record.size.join("x")} points, not ${WIDTH}x${HEIGHT}`);
     }
-    const { timed, scenes, voices, intro, outro, duration, beat, bar } = place(record);
+    const { timed, scenes, voices, intro, outro, duration, beat, bar, cuts } = place(record);
     // The camera holds the wide shot while the window rises, and a moment after.
     const slides = scenes.filter(scene => scene.slide);
-    const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2, slides);
+    // The cuts, each framed on all its events.
+    const shots = scenes.flatMap((scene, index) => {
+      if (!scene.beats || scene.slide) return [];
+      const rects = timed.filter(e => e.scene === index && e.rect).map(aim);
+      const framing = rects.length ? view(rects, ZOOM[1] / (1 + PUSH)) : WHOLE;
+      return [{ from: scene.from, to: scene.to, view: framing }];
+    });
+    const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2, slides, shots);
+    const reel = scenes.some(scene => scene.beats);
     return {
       title: record.title,
       tempo: record.tempo,
@@ -409,8 +493,14 @@
       spot,
       pointer: point(timed, duration),
       clicks: timed.filter(e => e.kind === "click").map(e => ({ at: e.at, x: e.where.x, y: e.where.y })),
-      keycaps: timed.filter(e => e.kind === "command").map(e => ({ at: e.at, until: e.at + KEYCAP, keys: e.keys })),
-      sounds: sounds(timed, outro, slides, seeded(`${record.title} keys`)),
+      // A keycap in a cut goes with it.
+      keycaps: timed.filter(e => e.kind === "command").map(e =>
+        e.cut
+          ? { at: e.at, until: Math.min(e.at + KEYCAP, scenes[e.scene].to), keys: e.keys, cut: true }
+          : { at: e.at, until: e.at + KEYCAP, keys: e.keys }),
+      sounds: sounds(timed, outro, slides.filter(card => !card.beats), seeded(`${record.title} keys`), reel),
+      reel,
+      cuts,
       voices: voices.map(({ at, file, seconds, text }) => ({ at, file, seconds, text })),
       subtitles: subtitles(voices),
     };

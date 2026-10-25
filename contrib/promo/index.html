@@ -11,7 +11,7 @@
   @font-face { font-family: "Plex Mono"; src: url("../../assets/fonts/IBMPlexMono-Medium.ttf"); font-weight: 500; }
   @font-face { font-family: "Keys"; src: url("../../assets/fonts/NotoSansSymbols2-Keys.ttf"); }
   /* --s is the window's pixels to a point of the app: load() sets it. */
-  :root { --ink: #fff; --blue: #3b82f6; --deep: #1d4ed8; --s: 1.4; }
+  :root { --ink: #fff; --blue: #3b82f6; --deep: #1d4ed8; --s: 1.2; }
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 1920px; height: 1080px; overflow: hidden; background: #f3f6fb; }
   body { font-family: "Plex", sans-serif; color: var(--ink); }
@@ -77,6 +77,22 @@
   .headline { font-size: 124px; font-weight: 700; letter-spacing: -.035em; line-height: 1.08;
     max-width: 1560px; text-wrap: balance; }
   #text { max-width: 1320px; margin-top: 40px; font-size: 52px; line-height: 1.3; text-wrap: balance; }
+  /* The hook: an intro with words of its own, in bigger type. */
+  #intro.hook svg { width: 150px; height: 150px; }
+  #intro.hook .name { font-size: 172px; letter-spacing: -.045em; line-height: 1; margin-top: 44px; max-width: 1500px; }
+  #intro.hook .tag { font-size: 54px; font-weight: 600; margin-top: 36px; }
+  /* A flash card: one big phrase, alone on the blue. */
+  #flash .phrase { font-size: 176px; font-weight: 700; letter-spacing: -.045em; line-height: 1;
+    max-width: 1600px; text-wrap: balance; }
+  /* A cut's label: big white words in a blue pill at the lower left, in
+     the band under the window (above a subtitle, when the scene has one),
+     so it hides none of what the cut shows. load() lines it up with the
+     window's left edge. */
+  #label { position: absolute; left: 240px; bottom: 17px; transform-origin: 0 100%;
+    font-size: 76px; font-weight: 700; letter-spacing: -.03em; line-height: 1; white-space: nowrap;
+    padding: 20px 46px 26px; border-radius: 999px; color: #fff;
+    background: linear-gradient(160deg, var(--blue), var(--deep));
+    box-shadow: 0 0 0 4px rgba(255,255,255,.9), 0 22px 50px rgba(29,78,216,.40), 0 6px 16px rgba(15,23,42,.18); }
 </style>
 
 <div id="stage">
@@ -92,13 +108,15 @@
     <div class="card" id="intro">
       <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon-white"/></svg>
       <div class="name" id="title"></div>
-      <div class="tag">A small, fast, native database client.</div>
+      <div class="tag" id="tagline">A small, fast, native database client.</div>
     </div>
 
     <div class="card" id="slide">
       <div class="headline" id="headline"></div>
       <div class="tag" id="text"></div>
     </div>
+
+    <div class="card" id="flash"><div class="phrase" id="phrase"></div></div>
 
     <div class="card" id="outro">
       <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon-white"/></svg>
@@ -109,6 +127,7 @@
     </div>
   </div>
 
+  <div id="label"></div>
   <div id="caption"><div id="say"><div id="key"></div><div id="line" class="box"></div></div></div>
   <div id="sub" class="box"></div>
 </div>
@@ -164,16 +183,26 @@ const back = k => 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2);
 const span = (t, from, length) => clamp((t - from) / length);
 const escape = text => text.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 
-// The window fills most of the picture: its pixels to a point of the app,
-// and where it rests, in the middle.
-const WIDE = 1680, S = WIDE / 1200, LEFT = (1920 - WIDE) / 2, TOP = (1080 - 750 * S) / 2;
+// The window fills the picture above a band kept for the subtitles, so a
+// subtitle never covers the app's own bottom bar: its pixels to a point of
+// the app, where it rests, and where a zoomed-in point comes to.
+const BAND = 156, MARGIN = 24;
+const S = (1080 - BAND - MARGIN) / 750, WIDE = 1200 * S;
+const LEFT = (1920 - WIDE) / 2, TOP = MARGIN, MIDDLE = TOP + 375 * S;
 
 let T = null, frames = [], shown = null, said = undefined, subbed = undefined;
 
+// Whether `at` is a hard cut: no curtain moves there, and nothing is mixed
+// across it.
+const hard = at => T.cuts.some(cut => Math.abs(cut - at) < 1e-6);
+
 // A per-frame list at `t`: between two of its frames, the mix of both (so
-// --final's subframes move smoothly).
+// --final's subframes move smoothly), but across a hard cut, the frame on
+// `t`'s side of it.
 function sample(list, t) {
-  const at = clamp(t * T.fps, 0, list.length - 1), i = Math.floor(at), k = at - i;
+  const at = clamp(t * T.fps, 0, list.length - 1), i = Math.floor(at);
+  const cut = T.cuts.find(c => c > i / T.fps + 1e-9 && c <= (i + 1) / T.fps + 1e-9);
+  const k = cut === undefined ? at - i : t >= cut - 1e-9 ? 1 : 0;
   const a = list[i], b = list[Math.min(i + 1, list.length - 1)];
   const value = {};
   for (const key in a) value[key] = mix(a[key], b[key], k);
@@ -199,7 +228,8 @@ const masked = text =>
 // picture, -1 above it. It covers the intro, rises over the app for each
 // slide and for the outro, and lifts away upwards after the intro and
 // after each slide. Cards one after another (two slides, a slide and the
-// outro) share one curtain: it stays, and only their words change.
+// outro) share one curtain: it stays, and only their words change. At a
+// hard cut it does not move: it is there, or it is gone.
 const RISE = .5, LIFT = .55;
 let curtains = [];
 function hang() {
@@ -212,9 +242,11 @@ function hang() {
   }
 }
 function curtain(t) {
-  const hung = curtains.find(c => t >= c.from - .1 && t < c.to + LIFT);
+  const hung = curtains.find(c => t >= c.from - (hard(c.from) ? 0 : .1) && t < c.to + (hard(c.to) ? 0 : LIFT));
   if (!hung) return 1;
-  if (t < hung.to - .3) return hung.from === -Infinity ? 0 : 1 - inOut(span(t, hung.from - .1, RISE));
+  if (t < hung.to - .3 || hard(hung.to)) {
+    return hung.from === -Infinity || hard(hung.from) ? 0 : 1 - inOut(span(t, hung.from - .1, RISE));
+  }
   return -inOut(span(t, hung.to - .3, LIFT));
 }
 
@@ -229,7 +261,7 @@ function drawWindow(t, cover) {
   const { x, y, zoom } = sample(T.camera, t);
   // Zoomed in, the point looked at comes towards the middle of the picture.
   const pull = clamp((zoom - 1) * 3);
-  const sx = mix(LEFT + x * S, 960, pull), sy = mix(TOP + y * S, 540, pull);
+  const sx = mix(LEFT + x * S, 960, pull), sy = mix(TOP + y * S, MIDDLE, pull);
   // As a curtain lifts, the window settles from a touch smaller.
   const settle = cover < 0 ? 1 + cover : 0;
   const size = zoom * mix(1, .97, settle);
@@ -250,7 +282,9 @@ function drawPointer(t) {
   el.style.transform = `translate(${(x - 2) * S}px, ${(y - 2) * S}px) scale(${mix(1, .86, press)})`;
   const click = latest(T.clicks, t);
   const ripple = $("ripple");
-  const k = click ? span(t, click.at, .45) : 1;
+  // A ripple does not go on across a hard cut.
+  const cut = click && T.cuts.some(c => c > click.at && c <= t);
+  const k = click && !cut ? span(t, click.at, .45) : 1;
   ripple.style.opacity = k < 1 ? (1 - k) * .8 : 0;
   if (click && k < 1) {
     const size = mix(14, 70, out(k));
@@ -303,24 +337,53 @@ function drawCaption(t, below) {
     });
   }
   const cap = latest(T.keycaps, t);
-  const on = cap && t < cap.until + .2;
+  // A cut's keycap goes with the cut, at once.
+  const on = cap && t < cap.until + (cap.cut ? 0 : .2);
   key.style.display = on ? "block" : "none";
+  // Beside a label, the keycap stands just right of it, on its line.
+  const label = T.scenes.find(s => s.label && t >= s.from - 1e-6 && t < s.to - 1e-6);
+  key.style.position = label && on ? "fixed" : "";
   if (on) {
     const pop = span(t, cap.at, .35);
     key.textContent = cap.keys;
-    // Without a caption, the keycap takes the middle itself.
-    key.style.right = scene ? "" : `${-key.offsetWidth / 2}px`;
-    key.style.opacity = clamp(pop * 4) * (1 - span(t, cap.until, .2));
+    if (label) {
+      const pill = $("label");
+      key.style.right = "auto";
+      key.style.left = `${LEFT + pill.offsetWidth + 28}px`;
+      key.style.bottom = `${parseFloat(pill.style.bottom) + (pill.offsetHeight - key.offsetHeight) / 2}px`;
+    } else {
+      key.style.left = key.style.bottom = "";
+      // Without a caption, the keycap takes the middle itself.
+      key.style.right = scene ? "" : `${-key.offsetWidth / 2}px`;
+    }
+    key.style.opacity = clamp(pop * 4) * (cap.cut ? 1 : 1 - span(t, cap.until, .2));
     key.style.transform = `scale(${back(pop)})`;
   }
 }
 
-// A card's pieces come in a half beat apart, and go together as it ends.
+// A card's pieces come in a half beat apart, and go together as it ends,
+// or all at once at a hard cut. After a hard cut, a card lands on it: its
+// icon and its big line at once, with a punch, the rest a quarter beat
+// apart.
 function drawCard(el, t, from, until) {
   const on = t >= from - .01 && t < until;
   el.style.visibility = on ? "visible" : "hidden";
   if (!on) return;
-  el.style.opacity = until === Infinity ? 1 : going(t, until);
+  el.style.opacity = until === Infinity || hard(until) ? 1 : going(t, until);
+  // A card that cuts hard, in or out, pushes in slowly while it is up, as
+  // a cut's camera does.
+  if (hard(from) || hard(until)) {
+    const end = until === Infinity ? T.duration : until;
+    el.style.transform = `scale(${1 + .04 * span(t, Math.max(0, from), end - Math.max(0, from))})`;
+  }
+  if (hard(from)) {
+    [...el.children].forEach((piece, i) => {
+      const k = out(span(t, from + Math.max(0, i - 1) * T.beat / 4, .25));
+      piece.style.opacity = clamp(k * 4);
+      piece.style.transform = i < 2 ? `scale(${mix(1.08, 1, k)})` : `translateY(${(1 - k) * 30}px)`;
+    });
+    return;
+  }
   [...el.children].forEach((piece, i) => {
     const k = span(t, from + i * T.beat / 2, .55);
     const size = i === 0 ? back(k) : 1;
@@ -334,8 +397,9 @@ function drawCard(el, t, from, until) {
 // and its line comes in a beat later. They go as the slide ends.
 let carded = null;
 function drawSlide(t) {
-  // Of two slides one after the other, the second, once it has begun.
-  const card = T.scenes.filter(s => s.slide && t >= s.from - .1 && t < s.to).pop() || null;
+  // Of two slides one after the other, the second, once it has begun. A
+  // flash card is drawFlash's.
+  const card = T.scenes.filter(s => s.slide && !s.beats && t >= s.from - .1 && t < s.to).pop() || null;
   const el = $("slide");
   if (carded !== card) {
     carded = card;
@@ -360,6 +424,43 @@ function drawSlide(t) {
   el.style.opacity = going(t, card.to);
 }
 
+// A flash card: its phrase, there from its first frame to its last, landing
+// on its beat with a small punch.
+let flashed = null;
+function drawFlash(t) {
+  const card = T.scenes.find(s => s.slide && s.beats && t >= s.from - 1e-6 && t < s.to - 1e-6) || null;
+  const el = $("flash");
+  if (flashed !== card) {
+    flashed = card;
+    $("phrase").textContent = card ? card.slide.title : "";
+  }
+  el.style.visibility = card ? "visible" : "hidden";
+  if (!card) return;
+  const k = out(span(t, card.from, .2));
+  $("phrase").style.transform = `scale(${mix(1.06, 1, k)})`;
+}
+
+// A shot's label: it snaps in on the cut, from a little too big and soft
+// to sharp, and goes with the cut (or, in a scene that is not one, fades).
+let labelled = null;
+function drawLabel(t) {
+  const scene = T.scenes.find(s => s.label && t >= s.from - 1e-6 && t < s.to - 1e-6) || null;
+  const el = $("label");
+  if (labelled !== scene) {
+    labelled = scene;
+    el.textContent = scene ? scene.label : "";
+  }
+  el.style.visibility = scene ? "visible" : "hidden";
+  if (!scene) return;
+  // Over a subtitle the label stands above it, for all of its scene.
+  const high = T.subtitles.some(sub => sub.from < scene.to && sub.to + .2 > scene.from);
+  el.style.bottom = `${high ? 52 + 82 + 24 : 17}px`;
+  const k = span(t, scene.from, .15);
+  el.style.opacity = clamp(k * 3) * (scene.beats ? 1 : 1 - span(t, scene.to - .25, .2));
+  el.style.transform = `scale(${mix(1.12, 1, out(k))})`;
+  el.style.filter = `blur(${(1 - out(k)) * 10}px)`;
+}
+
 async function renderAt(t) {
   const now = latest(T.frames, t, frame => frame[0]);
   const file = frames[now ? now[1] : 0];
@@ -372,10 +473,14 @@ async function renderAt(t) {
   drawWindow(t, cover);
   drawCurtain(cover);
   drawPointer(t);
+  // The label first: a keycap beside it stands by its size.
+  drawLabel(t);
   drawCaption(t, drawSubtitle(t));
   drawSlide(t);
+  drawFlash(t);
   drawCard($("intro"), t, .08, T.intro.to);
-  drawCard($("outro"), t, T.outro + .1, Infinity);
+  // After a hard cut, the outro lands on it.
+  drawCard($("outro"), t, T.outro + (hard(T.outro) ? 0 : .1), Infinity);
 }
 
 // `timeline` is the director's; `files` are the app's frames, in order.
@@ -385,8 +490,12 @@ async function load(timeline, files) {
   document.documentElement.style.setProperty("--s", S);
   const el = $("window");
   el.style.width = `${1200 * S}px`;
+  $("label").style.left = `${LEFT}px`;
   el.style.height = `${750 * S}px`;
-  $("title").textContent = T.title;
+  // The intro's own words, if it has them, make it the hook.
+  $("title").textContent = T.intro.title || T.title;
+  if (T.intro.text) $("tagline").textContent = T.intro.text;
+  $("intro").classList.toggle("hook", Boolean(T.intro.title));
   hang();
   await document.fonts.ready;
   await renderAt(0);

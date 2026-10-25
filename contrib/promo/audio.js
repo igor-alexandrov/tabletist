@@ -12,6 +12,12 @@
   const MUSIC = 0.85;
   // The voice's level, and how far the music goes down under it: 10 dB.
   const VOICE = 0.9;
+  // In a reel, the music carries it, and the voice sits 4 dB lower, so the
+  // hook starts quieter than the hit it builds to.
+  const REEL_VOICE = VOICE * Math.pow(10, -4 / 20);
+  // And the music goes only 5 dB down under it: the hook's line runs on
+  // into the first cut, where the drums come in.
+  const REEL_UNDER = Math.pow(10, -5 / 20);
   const UNDER = Math.pow(10, -10 / 20);
   // D major, bright and plain: D, A, Bm7, G(add9), a bar each, as MIDI
   // notes above middle C, with the bass's root under each; the outro rings
@@ -34,7 +40,8 @@
     bus.ratio.value = 3;
     bus.attack.value = 0.005;
     bus.release.value = 0.2;
-    bus.connect(ctx.destination);
+    if (timeline.reel) bus.connect(limiter(ctx, ctx.destination));
+    else bus.connect(ctx.destination);
     const mix = mixer(ctx, bus);
     const room = ctx.createConvolver();
     room.buffer = impulse(ctx, 2.6, random);
@@ -47,7 +54,8 @@
     const music = ctx.createGain();
     music.gain.value = MUSIC;
     const under = ctx.createGain();
-    music.connect(under);
+    if (timeline.reel) music.connect(lift(ctx, timeline)).connect(under);
+    else music.connect(under);
     under.connect(mix());
     under.connect(room);
     const fx = ctx.createGain();
@@ -63,18 +71,18 @@
       EFFECTS[sound.kind](tools, effect, sound.at, sound.gain);
       duck(music.gain, sound.at, sound.kind);
     }
-    await speak(ctx, mix(), timeline.voices);
-    beneath(under.gain, timeline.voices);
+    await speak(ctx, mix(), timeline.voices, timeline.reel ? REEL_VOICE : VOICE);
+    beneath(under.gain, timeline.voices, timeline.reel ? REEL_UNDER : UNDER);
     return wav(await ctx.startRendering());
   }
 
   // The voice's lines, each its own WAV (render.cjs's, from macOS's say),
   // played at its time, dry: a voice in the room sounds far away. A
   // highpass takes out what is under a voice, and nothing of it is lost.
-  async function speak(ctx, into, voices) {
+  async function speak(ctx, into, voices, loud) {
     if (voices.length === 0) return;
     const level = ctx.createGain();
-    level.gain.value = VOICE;
+    level.gain.value = loud;
     const clean = ctx.createBiquadFilter();
     clean.type = "highpass";
     clean.frequency.value = 90;
@@ -90,10 +98,43 @@
     }
   }
 
+  // In a reel the music carries the cuts, not a voice: from the first cut
+  // it is LIFT louder, rising to LIFT_TOP at the outro's hit, and settles
+  // to LIFT_OUTRO under the end card's line.
+  const LIFT = Math.pow(10, 3 / 20), LIFT_TOP = Math.pow(10, 9 / 20), LIFT_OUTRO = Math.pow(10, 7 / 20);
+  function lift(ctx, timeline) {
+    const node = ctx.createGain();
+    const fixed = timeline.scenes.filter(scene => scene.beats);
+    const from = fixed.length ? fixed[0].from : timeline.intro.to;
+    node.gain.setValueAtTime(1, 0);
+    node.gain.setValueAtTime(1, from - 0.02);
+    node.gain.linearRampToValueAtTime(LIFT, from);
+    node.gain.linearRampToValueAtTime(LIFT_TOP, timeline.outro);
+    node.gain.setValueAtTime(LIFT_TOP, timeline.outro + 0.3);
+    node.gain.linearRampToValueAtTime(LIFT_OUTRO, timeline.outro + 1);
+    return node;
+  }
+
+  // A reel's mix is louder and has a hit: a fast, hard compressor keeps
+  // its peaks under full scale, and the level after it leaves room, for
+  // ffmpeg's loudnorm to set. The input that leads to `into`.
+  function limiter(ctx, into) {
+    const node = ctx.createDynamicsCompressor();
+    node.threshold.value = -8;
+    node.knee.value = 0;
+    node.ratio.value = 20;
+    node.attack.value = 0.001;
+    node.release.value = 0.1;
+    const level = ctx.createGain();
+    level.gain.value = 1;
+    node.connect(level).connect(into);
+    return node;
+  }
+
   // The music goes down UNDER while the voice speaks: from a quarter of a
   // second before a line, back up over half a second after it. Lines less
   // than a second apart keep it down between them.
-  function beneath(gain, voices) {
+  function beneath(gain, voices, depth) {
     const spans = [];
     for (const voice of voices) {
       const from = voice.at - 0.05, to = voice.at + voice.seconds + 0.1;
@@ -104,8 +145,8 @@
     gain.setValueAtTime(1, 0);
     for (const { from, to } of spans) {
       gain.setValueAtTime(1, Math.max(0, from - 0.25));
-      gain.linearRampToValueAtTime(UNDER, from);
-      gain.setValueAtTime(UNDER, to);
+      gain.linearRampToValueAtTime(depth, from);
+      gain.setValueAtTime(depth, to);
       gain.linearRampToValueAtTime(1, to + 0.5);
     }
   }
@@ -146,7 +187,9 @@
   }
 
   // The pad alone under the intro; bass, kick, clap, hats and the plucks
-  // from the first scene; the last chord ringing out over the outro.
+  // from the first scene; the last chord ringing out over the outro. A
+  // reel (a timeline with scenes of fixed length) builds from its first
+  // cut to the outro: the build below.
   function band(tools, into, timeline) {
     const { ctx, random } = tools;
     const { beat, bar, duration, outro } = timeline;
@@ -158,39 +201,134 @@
     bed.gain.setValueAtTime(1, duration - bar);
     bed.gain.linearRampToValueAtTime(0, duration - 0.05);
     // Under a slide the drums and the plucks rest: the pad and the bass
-    // hold it, a breath between two scenes.
-    const slides = timeline.scenes.filter(scene => scene.slide);
+    // hold it, a breath between two scenes. A flash card is no rest.
+    const slides = timeline.scenes.filter(scene => scene.slide && !scene.beats);
     const rests = at => slides.some(card => at >= card.from - 1e-6 && at < card.to - 1e-6);
+    const build = timeline.reel ? rise(timeline) : null;
     // A scene ends on a half bar, so the outro may start in the middle of
     // one: the bar it starts in is cut there, and the last chord takes over.
     for (let at = 0; at < outro - 1e-6; at += bar) {
       const length = Math.min(bar, outro - at);
       const index = Math.round(at / bar) % CHORDS.length;
       const chord = CHORDS[index];
-      pad(ctx, voice, chord, at, length);
+      pad(ctx, voice, chord, at, length, build ? build.open : () => 1);
       if (at < timeline.intro.to - 1e-6) continue;
       for (let k = 0; k * beat < length - 1e-6; k++) {
         const on = at + k * beat, off = on + beat / 2;
         bass(ctx, voice, ROOTS[index], on, beat);
-        if (k % 2 === 0 && !rests(on)) kick(ctx, voice, on);
+        // In a reel's flash cards, the kick is on every beat, and the
+        // hats go in sixteenths.
+        const flashing = build && on >= build.flash - 1e-6;
+        if ((k % 2 === 0 || flashing) && !rests(on)) kick(ctx, voice, on);
         if (k % 2 === 1 && !rests(on)) clap(tools, voice, on);
-        if ((k + 0.5) * beat < length - 1e-6 && !rests(off)) hat(tools, voice, off, random());
+        if (flashing) {
+          for (const q of [0, 0.25, 0.5, 0.75]) {
+            if ((k + q) * beat < length - 1e-6) hat(tools, voice, on + q * beat, random() * (q === 0.5 ? 1 : 0.6));
+          }
+        } else if ((k + 0.5) * beat < length - 1e-6 && !rests(off)) hat(tools, voice, off, random());
       }
       plucks(ctx, voice, chord, at, beat, length, rests);
     }
-    pad(ctx, voice, LAST, outro, duration - outro);
+    if (build) {
+      // A riser under the hook, into the first cut; a roll through the
+      // flash cards, faster and faster; a riser into the outro.
+      riser(tools, voice, Math.min(0.3, timeline.intro.to / 2), build.from, 0.05, 500, 5000);
+      roll(tools, voice, build.flash, outro, beat);
+      riser(tools, voice, Math.max(build.from, outro - 2 * bar), outro, 0.16, 300, 9000);
+    }
+    pad(ctx, voice, LAST, outro, duration - outro, build ? build.open : () => 1);
     bass(ctx, voice, ROOTS[0], outro, Math.min(bar, duration - outro));
+  }
+
+  // A reel's build: from its first cut (`from`) to the outro the pad's
+  // filter opens (`open`, a factor of its frequencies at a time, 1 before
+  // the cut, 2.6 at the outro and on); from the first flash card (`flash`)
+  // the drums go double.
+  function rise(timeline) {
+    const fixed = timeline.scenes.filter(scene => scene.beats);
+    const from = fixed.length ? fixed[0].from : timeline.intro.to;
+    const card = fixed.find(scene => scene.slide);
+    const flash = card ? card.from : timeline.outro;
+    const span = Math.max(timeline.outro - from, 1e-6);
+    const open = at => 1 + 1.6 * Math.min(1, Math.max(0, (at - from) / span)) ** 1.5;
+    return { from, flash, open };
+  }
+
+  // Noise through a band that sweeps up from `low` to `high` Hz, swelling
+  // from `from` to `peak` at `to`, where it stops dead: two of it, a side
+  // each.
+  function riser({ ctx, noise, random }, into, from, to, peak, low, high) {
+    if (to - from < 0.1) return;
+    for (const pan of [-0.5, 0.5]) {
+      const source = ctx.createBufferSource();
+      source.buffer = noise;
+      source.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.Q.value = 1.4;
+      filter.frequency.setValueAtTime(low, from);
+      filter.frequency.exponentialRampToValueAtTime(high, to);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, from);
+      gain.gain.exponentialRampToValueAtTime(peak, to - 0.01);
+      gain.gain.linearRampToValueAtTime(0, to);
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = pan;
+      source.connect(filter).connect(gain).connect(panner).connect(into());
+      source.start(from, random() * 0.9);
+      source.stop(to + 0.01);
+    }
+  }
+
+  // A snare roll from `from` to `to`, louder as it goes: eighths, then
+  // sixteenths in the last three beats, thirty-seconds in the last.
+  function roll(tools, into, from, to, beat) {
+    let at = from;
+    while (at < to - 1e-6) {
+      const left = (to - at) / beat;
+      const step = beat / (left <= 1 + 1e-6 ? 8 : left <= 3 + 1e-6 ? 4 : 2);
+      const k = (at - from) / Math.max(to - from, 1e-6);
+      snare(tools, into, at, 0.3 + 0.7 * k * k);
+      at += step;
+    }
+  }
+
+  // A snare: a bright rattle of noise and a short tone under it.
+  function snare({ ctx, noise, random }, into, at, level) {
+    const source = ctx.createBufferSource();
+    source.buffer = noise;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "highpass";
+    filter.frequency.value = 1400;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.2 * level, at + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.11);
+    source.connect(filter).connect(gain).connect(into());
+    source.start(at, random() * 0.8, 0.13);
+    const body = ctx.createOscillator();
+    body.type = "triangle";
+    body.frequency.setValueAtTime(220, at);
+    body.frequency.exponentialRampToValueAtTime(160, at + 0.05);
+    const thud = ctx.createGain();
+    thud.gain.setValueAtTime(0.0001, at);
+    thud.gain.exponentialRampToValueAtTime(0.12 * level, at + 0.002);
+    thud.gain.exponentialRampToValueAtTime(0.0001, at + 0.07);
+    body.connect(thud).connect(into());
+    body.start(at);
+    body.stop(at + 0.08);
   }
 
   // Detuned saws, open and airy: a lowpass high up that breathes over the
   // bar, and a highpass that leaves the low end to the bass and the voice.
-  function pad(ctx, into, chord, at, length) {
+  // `open` scales the lowpass at a time: a reel's build opens it.
+  function pad(ctx, into, chord, at, length, open) {
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
     filter.Q.value = 0.5;
-    filter.frequency.setValueAtTime(2200, at);
-    filter.frequency.linearRampToValueAtTime(4800, at + length * 0.5);
-    filter.frequency.linearRampToValueAtTime(2800, at + length);
+    filter.frequency.setValueAtTime(2200 * open(at), at);
+    filter.frequency.linearRampToValueAtTime(4800 * open(at + length * 0.5), at + length * 0.5);
+    filter.frequency.linearRampToValueAtTime(2800 * open(at + length), at + length);
     const air = ctx.createBiquadFilter();
     air.type = "highpass";
     air.frequency.value = 280;
@@ -371,6 +509,38 @@
         osc.connect(amp).connect(into());
         osc.start(at);
         osc.stop(at + 0.16);
+      }
+    },
+    // A reel's hit on the outro: a deep kick and a crash of bright noise,
+    // a side each, ringing out.
+    hit({ ctx, noise, random }, into, at, gain) {
+      const osc = ctx.createOscillator();
+      osc.frequency.setValueAtTime(150, at);
+      osc.frequency.exponentialRampToValueAtTime(40, at + 0.3);
+      const amp = ctx.createGain();
+      amp.gain.setValueAtTime(0.0001, at);
+      amp.gain.exponentialRampToValueAtTime(0.9 * gain, at + 0.005);
+      amp.gain.exponentialRampToValueAtTime(0.0001, at + 0.9);
+      osc.connect(amp).connect(into());
+      osc.start(at);
+      osc.stop(at + 0.92);
+      for (const pan of [-0.6, 0.6]) {
+        const source = ctx.createBufferSource();
+        source.buffer = noise;
+        source.loop = true;
+        const filter = ctx.createBiquadFilter();
+        filter.type = "highpass";
+        filter.frequency.value = 3500;
+        const level = ctx.createGain();
+        level.gain.setValueAtTime(0.0001, at);
+        level.gain.exponentialRampToValueAtTime(0.3 * gain, at + 0.003);
+        level.gain.exponentialRampToValueAtTime(0.05 * gain, at + 0.35);
+        level.gain.exponentialRampToValueAtTime(0.0001, at + 2.6);
+        const panner = ctx.createStereoPanner();
+        panner.pan.value = pan;
+        source.connect(filter).connect(level).connect(panner).connect(into());
+        source.start(at, random() * 0.9);
+        source.stop(at + 2.7);
       }
     },
     // An FM bell on D, and its octave below.

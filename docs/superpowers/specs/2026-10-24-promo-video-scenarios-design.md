@@ -27,9 +27,13 @@ Scenarios live in `contrib/promo/scenarios/`:
   filter, an edit and its review, and a query written in a SQL tab.
 - `filtering.toml`, one feature explained: the filter bar's column,
   operator and value picked and typed, and the rows that are left walked.
-- `whats-new.toml`, what is new since 0.2: Quick open, editing and its
-  review, saves, rows added, duplicated and deleted, foreign keys searched,
-  Format, history, agents and Settings.
+- `whats-new.toml`, what is new since 0.2, as a 20 second reel (below):
+  a hook ("More than 50 new features", true of the 0.2.0 to 0.3.0 release
+  notes, which list about 56, fixes aside), seven cuts of the app on the
+  beat (Quick open, editing, its review, rows added, duplicated and
+  deleted, foreign keys searched, Format, history), seven flash cards
+  faster and faster, and a hit into the call to action. Each feature gets
+  a video of its own later.
 - `smoke.toml`, a few seconds (an open, a click, a command and a hold),
   for checking the pipeline.
 
@@ -80,8 +84,10 @@ say = "Tabletist is free. Download it today."
   scenario names another. An empty one is an error.
 - A scene has a `caption` (optional: a scene without one is a move between
   two), a `say` (optional) and its `steps`. The intro and outro cards are
-  not scenes: every video has them. `[intro]` and `[outro]` take only a
-  `say`, the line said over the card.
+  not scenes: every video has them. `[intro]` and `[outro]` take a
+  `say`, the line said over the card, and `beats`; `[intro]` also takes a
+  `title` and a `text`, which replace its card's title and tagline. None
+  of them may be empty.
 - `say`, on a shot, a slide, the intro or the outro, is a line the voice
   says: what you gain, said as a person would, not what the button is
   called. An empty one is an error. A shot that has one shows it as
@@ -102,6 +108,35 @@ say = "Tabletist is free. Download it today."
   for the next scene. Under a slide the drums rest, and a soft bell marks
   it. A slide with a `say` reads best with only its headline: the
   subtitles carry the rest.
+- `beats`, on a shot, a slide, the intro or the outro: its exact length,
+  in beats, a positive multiple of 0.5 (0, a negative number or 0.3 is an
+  error). A shot with `beats` is a cut, a slide with `beats` a flash card.
+- `label`, on a shot only, not empty: the feature it shows, in big type
+  over the cut.
+
+### A reel
+
+The owner's brief for the 0.3 video: promotional, not explaining every
+feature; 20 to 30 seconds; dynamic; "More than X features" first, then
+the features one after another, the speed and the sound rising. A reel is
+a scenario of fixed-length scenes (tempo 128, a beat 0.469 s):
+
+1. The hook, 8 beats: the intro card, its `title` big ("More than 50 new
+   features") and its `text` small ("Tabletist 0.3"); the voice says both,
+   running on a little into the first cut. The pad and a riser.
+2. The cuts, hard on the beat: Quick open and editing 4 beats each, the
+   review, rows, foreign keys, Format and history 2 each. Each is the
+   steps today's video played, in order, so the app's state carries from
+   one to the next, and each has its label. The drums come in.
+3. Flash cards, full blue, a phrase each from the 0.3.0 release notes:
+   "Agents over MCP", "Vim mode", "Rebind any key" a beat each, "Show all
+   rows", "Run without timeout", "AppImage for Linux" and "Notarized for
+   macOS" half a beat each. The roll speeds up.
+4. A hit on the outro's first beat and the end card ("Get it free."), 12
+   beats, the pad ringing out.
+
+That is 20.2 seconds. A scenario without `beats` is not a reel, and its
+pictures and sound are what they were.
 
 The look is macOS, light. The Omarchy look (its window, its vim SQL editor,
 its multi-stroke and `:` keys) is not in this.
@@ -215,8 +250,10 @@ An ignored test behind the `shots` feature:
   (window 1200x750 points, scale 2). At the end it writes
   `target/promo/<name>/events.json`: the scenario's title and tempo, the
   window's size and scale, the captions in `scenes` (a slide's `slide` and
-  `text` there too, with no events: the runner plays nothing for it), and
-  the events.
+  `text` there too, with no events: the runner plays nothing for it; a
+  scene's `label` and `beats`), the intro's and the outro's `say`,
+  `title`, `text` and `beats` where the scenario gives any, and the
+  events.
 
 ```json
 {
@@ -330,13 +367,32 @@ decides time; the picture and the sound both read its output.
 - The pointer travels on a slight arc, eased in and out. It hides from the
   first character typed after its last move, as macOS hides it, and comes
   back with the next move.
+- A scene with `beats` lasts exactly `beats` beats: no half bar, no
+  reading time, no line lengthens it. A cut's events are placed as ever
+  from its start, then their times (and the pointer's trips) are scaled
+  into all but the last 15% (`TAIL`), so the result shows; events that
+  take less keep their pace. An intro with `beats` lasts that, and its
+  line starts at 0.2 s and may run on past it; an outro with `beats` lasts
+  that.
+- Hard cuts (`cuts` in the timeline): wherever a fixed-length intro or
+  scene ends and a fixed-length scene or the outro starts. In a cut the
+  camera is set straight, at its first frame, on the framing of all the
+  cut's events (zoomed 1.18 at most) and pushes in by `PUSH` (6%) over
+  it, so it never passes 1.25 and never springs across the cut.
+- In a cut, typing is heard a key every 0.05 s at most, and a keycap goes
+  with the cut. Flash cards ring no bell. A reel (`reel` in the timeline)
+  has a `hit` on the outro.
 - It is tested with `node --test` (`contrib/promo/director.test.js`):
   beats, bars, reading time, the typing's seed, the pointer, the dead zone,
   the wide shot, the spotlight, the reveal, the typing span, the pause
   after typing, the spring, the keycaps and their sounds, that the same
   input gives the same timeline, the lines' times and the scenes they
-  lengthen or leave alone, the intro's and outro's lines, and the
-  subtitles' pieces and times.
+  lengthen or leave alone, the intro's and outro's lines, the
+  subtitles' pieces and times, and of a reel: exact lengths, a cut's
+  events inside it and in order, a cut never slowed, the camera with no
+  spring across a cut and its push-in, flash cards in a row and the hit,
+  the hook's length and words, a cut's keycap and its thinned keys, and
+  that a scenario without beats is no reel.
 
 ### 3. The composer: `contrib/promo/index.html`, `render.cjs`, `audio.js`
 
@@ -347,9 +403,11 @@ pipes them to ffmpeg, as on the old branch.
 The picture:
 
 - The stage: near-white, with a breath of blue at the top.
-- The window: the app's frame for that moment, 1680 pixels wide in the
-  middle of the picture, with a soft natural shadow and traffic lights,
-  moved by the director's camera.
+- The window: the app's frame for that moment, 1440 by 900 pixels at the
+  top of the picture, above a 156 pixel band kept for the subtitles, so a
+  subtitle never covers the app's bottom bar. It has a soft natural shadow
+  and traffic lights, and is moved by the director's camera; a zoomed-in
+  point comes to the middle of the space above the band.
 - The pointer: a macOS-style cursor, drawn by the composer where the
   director puts it. It presses with a blue ripple.
 - Keycaps: a `command`'s keys spring in with a small overshoot on its
@@ -369,6 +427,16 @@ The picture:
   icon, "Download Tabletist. It's free.", the engines and the platforms
   smaller, and `igor.works/tabletist` in a white pill. Tabletist is
   MIT-licensed and free to download.
+- In a reel: at a hard cut no curtain moves, and nothing (the camera, the
+  pointer) is blended across it, even in `--final`'s subframes. The hook
+  is the intro card in bigger type (172 px), with the intro's `title` and
+  `text`. A label is 76 px bold white in a blue pill at the lower left,
+  under the window (above a subtitle, in a scene that has one, so it hides
+  none of the cut), snapping in from 1.12 and a blur to sharp in 0.15 s; a
+  keycap stands beside it. A flash card is one 176 px phrase on the
+  curtain, landing with a punch from 1.06. The outro lands on the hit: its
+  icon and big line at once, the rest a quarter beat apart. The hook and
+  the end card push in by 4% while they are up.
 - Slides: the curtain rises over the app as for the outro; the headline
   rises word by word through masks, its line a beat later, both balanced
   on their lines; the curtain lifts away for the next scene.
@@ -398,6 +466,18 @@ as WAV:
   camera's moves make no sound. The clicks
   are loud enough to stand out over the music (their taps at 0.8 and 0.45,
   through effects at 0.9 against the music's 0.55).
+- A reel builds from its first cut to the outro: the music grows from 3 to
+  9 dB louder (and stays 7 dB up under the end card), the pad's lowpass
+  opens to 2.6 times, from the first flash card the kick is on every beat
+  and the hats in sixteenths, a snare roll runs through the flash cards
+  (eighths, sixteenths in the last three beats, thirty-seconds in the
+  last), a riser (noise through a band sweeping up) runs under the hook
+  into the first cut and over the last two bars into the outro, stopping
+  dead on it. The outro's hit: a deep kick, a crash of bright noise a side
+  each, and the bell; then the last chord rings out. The voice sits 4 dB
+  lower and the music goes only 5 dB down under it, and a fast, hard
+  compressor keeps the louder mix's peaks under full scale before
+  loudness is set.
 - The music goes down 10 dB under the voice, ramping over a quarter of a
   second before a line and half a second after it, and stays down between
   lines less than a second apart. Before loudness is set, the voice sits
@@ -428,7 +508,8 @@ newest first, as from the file. Clearing and trimming it do nothing.
 ## Testing
 
 - Rust, in the normal suite: the scenario's parsing and its errors (an
-  empty `say` or `voice`, an unknown step, an unknown or unbuilt command id, a `key` that is not one
+  empty `say`, `voice`, `label` or intro `title` or `text`, `beats` that
+  is not a positive multiple of 0.5, a label on a slide, an unknown step, an unknown or unbuilt command id, a `key` that is not one
   of the command's keys, a key that is not one press, a tempo out of
   range, a file's errors naming it); the choice of a label's node; and
   that the app's caret blinks and the harness's does not. The tests spell

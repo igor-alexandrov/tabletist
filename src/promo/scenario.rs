@@ -20,10 +20,27 @@ pub struct Scenario {
     pub tempo: u32,
     /// The voice that says the lines, as macOS `say -v` names it.
     pub voice: String,
-    /// The line said over the intro card, and the one over the outro's.
-    pub intro: Option<String>,
-    pub outro: Option<String>,
+    /// The intro card and the outro card.
+    pub intro: Intro,
+    pub outro: Outro,
     pub scenes: Vec<Scene>,
+}
+
+/// The intro card: the line said over it, the words that replace its
+/// title and its tagline, and how many beats it lasts, if it is fixed.
+#[derive(Debug, Default, PartialEq)]
+pub struct Intro {
+    pub say: Option<String>,
+    pub title: Option<String>,
+    pub text: Option<String>,
+    pub beats: Option<f64>,
+}
+
+/// The outro card: the line said over it, and how many beats it lasts.
+#[derive(Debug, Default, PartialEq)]
+pub struct Outro {
+    pub say: Option<String>,
+    pub beats: Option<f64>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -37,18 +54,23 @@ pub enum Database {
 #[derive(Debug, PartialEq)]
 pub enum Scene {
     /// The app, played: a caption under it, the line the voice says, and
-    /// the steps that move it.
+    /// the steps that move it. With `beats` it is a cut of exactly that
+    /// many beats, and its `label` names the feature over it.
     Shot {
         caption: Option<String>,
         say: Option<String>,
         steps: Vec<Step>,
+        label: Option<String>,
+        beats: Option<f64>,
     },
     /// A feature named on a card of its own, the app away: a headline, a
-    /// line under it, and the line the voice says.
+    /// line under it, and the line the voice says. With `beats` it is a
+    /// flash card of exactly that many beats.
     Slide {
         title: String,
         text: Option<String>,
         say: Option<String>,
+        beats: Option<f64>,
     },
 }
 
@@ -117,13 +139,27 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
     if voice.trim().is_empty() {
         return Err("voice is empty".into());
     }
-    let card = |card: Option<RawCard>, name: &str| match card {
-        Some(RawCard { say }) if say.trim().is_empty() => Err(format!("the {name}'s say is empty")),
-        Some(RawCard { say }) => Ok(Some(say)),
-        None => Ok(None),
+    let intro = match file.intro {
+        None => Intro::default(),
+        Some(RawIntro {
+            say,
+            title,
+            text,
+            beats,
+        }) => Intro {
+            say: words(say, "the intro's say")?,
+            title: words(title, "the intro's title")?,
+            text: words(text, "the intro's text")?,
+            beats: length(beats).map_err(|error| format!("the intro's {error}"))?,
+        },
     };
-    let intro = card(file.intro, "intro")?;
-    let outro = card(file.outro, "outro")?;
+    let outro = match file.outro {
+        None => Outro::default(),
+        Some(RawOutro { say, beats }) => Outro {
+            say: words(say, "the outro's say")?,
+            beats: length(beats).map_err(|error| format!("the outro's {error}"))?,
+        },
+    };
     let database = match file.database.as_deref() {
         None | Some("bookshop") => Database::Bookshop,
         Some(path) => Database::File(dir.join(path)),
@@ -158,17 +194,46 @@ struct File {
     #[serde(default = "tempo")]
     tempo: u32,
     voice: Option<String>,
-    intro: Option<RawCard>,
-    outro: Option<RawCard>,
+    intro: Option<RawIntro>,
+    outro: Option<RawOutro>,
     #[serde(rename = "scene", default)]
     scenes: Vec<RawScene>,
 }
 
-/// The intro or the outro card, which only takes a line to say.
+/// The intro card: a line to say, its words, and its length.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawCard {
-    say: String,
+struct RawIntro {
+    say: Option<String>,
+    title: Option<String>,
+    text: Option<String>,
+    beats: Option<f64>,
+}
+
+/// The outro card: a line to say, and its length.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOutro {
+    say: Option<String>,
+    beats: Option<f64>,
+}
+
+/// `text`, which may be absent but not empty: `what` is named if it is.
+fn words(text: Option<String>, what: &str) -> Result<Option<String>, String> {
+    match text {
+        Some(text) if text.trim().is_empty() => Err(format!("{what} is empty")),
+        text => Ok(text),
+    }
+}
+
+/// A length in beats: above 0, in half beats.
+fn length(beats: Option<f64>) -> Result<Option<f64>, String> {
+    match beats {
+        Some(beats) if !(beats > 0.0 && beats.is_finite() && (beats * 2.0).fract() == 0.0) => {
+            Err(format!("beats {beats} is not a positive multiple of 0.5"))
+        }
+        beats => Ok(beats),
+    }
 }
 
 fn tempo() -> u32 {
@@ -184,6 +249,8 @@ struct RawScene {
     slide: Option<String>,
     text: Option<String>,
     say: Option<String>,
+    label: Option<String>,
+    beats: Option<f64>,
 }
 
 impl RawScene {
@@ -196,11 +263,13 @@ impl RawScene {
             slide,
             text,
             say,
+            label,
+            beats,
         } = self;
-        if say.as_deref().is_some_and(|say| say.trim().is_empty()) {
-            return Err(": say is empty".into());
-        }
+        let say = words(say, ": say")?;
+        let beats = length(beats).map_err(|error| format!(": {error}"))?;
         let Some(title) = slide else {
+            let label = words(label, ": label")?;
             if text.is_some() {
                 return Err(": only a slide has text".into());
             }
@@ -219,8 +288,13 @@ impl RawScene {
                 caption,
                 say,
                 steps,
+                label,
+                beats,
             });
         };
+        if label.is_some() {
+            return Err(": only a shot has a label".into());
+        }
         if !steps.is_empty() || caption.is_some() {
             return Err(": a slide has no steps and no caption".into());
         }
@@ -230,7 +304,12 @@ impl RawScene {
         if text.as_deref().is_some_and(|text| text.trim().is_empty()) {
             return Err(": a slide's text is empty".into());
         }
-        Ok(Scene::Slide { title, text, say })
+        Ok(Scene::Slide {
+            title,
+            text,
+            say,
+            beats,
+        })
     }
 }
 
@@ -368,7 +447,7 @@ fn chord(keys: &str) -> Result<Keys, String> {
 mod tests {
     use std::path::Path;
 
-    use super::{Database, Keys, Scene, Step, load, parse};
+    use super::{Database, Intro, Keys, Outro, Scene, Step, load, parse};
     use crate::keymap::{Command, Mods};
 
     fn read(text: &str) -> Result<super::Scenario, String> {
@@ -608,8 +687,8 @@ say = "Download it today."
         )
         .unwrap();
         assert_eq!(scenario.voice, "Samantha");
-        assert_eq!(scenario.intro.as_deref(), Some("Here is what is new."));
-        assert_eq!(scenario.outro.as_deref(), Some("Download it today."));
+        assert_eq!(scenario.intro.say.as_deref(), Some("Here is what is new."));
+        assert_eq!(scenario.outro.say.as_deref(), Some("Download it today."));
         let Scene::Shot { say, .. } = &scenario.scenes[0] else {
             panic!("not a shot: {:?}", scenario.scenes[0]);
         };
@@ -620,6 +699,7 @@ say = "Download it today."
                 title: "Keyboard first.".into(),
                 text: None,
                 say: Some("Every command has a key.".into()),
+                beats: None,
             }
         );
         let Scene::Shot { say, .. } = &scenario.scenes[2] else {
@@ -632,8 +712,8 @@ say = "Download it today."
     fn the_voice_is_ava_unless_the_scenario_says() {
         let scenario = read("title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n").unwrap();
         assert_eq!(scenario.voice, "Ava (Premium)");
-        assert_eq!(scenario.intro, None);
-        assert_eq!(scenario.outro, None);
+        assert_eq!(scenario.intro, Intro::default());
+        assert_eq!(scenario.outro, Outro::default());
     }
 
     #[test]
@@ -693,6 +773,7 @@ steps = [{ hold = 1 }]
                 title: "Keyboard first.".into(),
                 text: Some("Every command has a key.".into()),
                 say: None,
+                beats: None,
             }
         );
         assert_eq!(
@@ -701,8 +782,141 @@ steps = [{ hold = 1 }]
                 title: "Small.".into(),
                 text: None,
                 say: None,
+                beats: None,
             }
         );
         assert_eq!(shot(&scenario.scenes[2]).1, [Step::Hold(1.0)]);
+    }
+
+    #[test]
+    fn a_scene_may_last_a_number_of_beats_and_a_shot_may_have_a_label() {
+        let scenario = read(
+            r#"
+title = "T"
+
+[[scene]]
+label = "Quick open"
+beats = 4
+steps = [{ hold = 1 }]
+
+[[scene]]
+slide = "Vim mode"
+beats = 0.5
+
+[[scene]]
+steps = [{ hold = 1 }]
+"#,
+        )
+        .unwrap();
+        let Scene::Shot { label, beats, .. } = &scenario.scenes[0] else {
+            panic!("not a shot: {:?}", scenario.scenes[0]);
+        };
+        assert_eq!(label.as_deref(), Some("Quick open"));
+        assert_eq!(*beats, Some(4.0));
+        let Scene::Slide { beats, .. } = &scenario.scenes[1] else {
+            panic!("not a slide: {:?}", scenario.scenes[1]);
+        };
+        assert_eq!(*beats, Some(0.5));
+        let Scene::Shot { label, beats, .. } = &scenario.scenes[2] else {
+            panic!("not a shot: {:?}", scenario.scenes[2]);
+        };
+        assert_eq!((label, beats), (&None, &None));
+    }
+
+    #[test]
+    fn the_intro_may_name_its_card_and_the_cards_may_last_a_number_of_beats() {
+        let scenario = read(
+            r#"
+title = "T"
+
+[intro]
+title = "More than 50 new features"
+text = "Tabletist 0.3"
+beats = 8
+
+[[scene]]
+steps = [{ hold = 1 }]
+
+[outro]
+say = "Get it free."
+beats = 12
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scenario.intro,
+            Intro {
+                say: None,
+                title: Some("More than 50 new features".into()),
+                text: Some("Tabletist 0.3".into()),
+                beats: Some(8.0),
+            }
+        );
+        assert_eq!(
+            scenario.outro,
+            Outro {
+                say: Some("Get it free.".into()),
+                beats: Some(12.0),
+            }
+        );
+    }
+
+    #[test]
+    fn beats_are_a_positive_multiple_of_a_half() {
+        for beats in ["0", "-1", "0.3", "1.25", "nan", "inf"] {
+            let error = read(&format!(
+                "title = \"T\"\n[[scene]]\nbeats = {beats}\nsteps = [{{ hold = 1 }}]\n"
+            ))
+            .unwrap_err();
+            assert!(
+                error.starts_with("scene 1: beats ")
+                    && error.contains("is not a positive multiple of 0.5"),
+                "{beats}: {error}"
+            );
+            let error = read(&format!(
+                "title = \"T\"\n[[scene]]\nslide = \"S\"\nbeats = {beats}\n"
+            ))
+            .unwrap_err();
+            assert!(error.starts_with("scene 1: beats "), "{beats}: {error}");
+            let error = read(&format!(
+                "title = \"T\"\n[intro]\nbeats = {beats}\n[[scene]]\nsteps = [{{ hold = 1 }}]\n"
+            ))
+            .unwrap_err();
+            assert!(error.starts_with("the intro's beats "), "{beats}: {error}");
+            let error = read(&format!(
+                "title = \"T\"\n[[scene]]\nsteps = [{{ hold = 1 }}]\n[outro]\nbeats = {beats}\n"
+            ))
+            .unwrap_err();
+            assert!(error.starts_with("the outro's beats "), "{beats}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_label_is_a_shot_s_and_not_empty_and_the_intro_s_words_are_not_empty() {
+        for (text, said) in [
+            (
+                "title = \"T\"\n[[scene]]\nlabel = \" \"\nsteps = [{ hold = 1 }]\n",
+                "scene 1: label is empty",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nslide = \"S\"\nlabel = \"L\"\n",
+                "scene 1: only a shot has a label",
+            ),
+            (
+                "title = \"T\"\n[intro]\ntitle = \"\"\n[[scene]]\nsteps = [{ hold = 1 }]\n",
+                "the intro's title is empty",
+            ),
+            (
+                "title = \"T\"\n[intro]\ntext = \" \"\n[[scene]]\nsteps = [{ hold = 1 }]\n",
+                "the intro's text is empty",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n[outro]\ntitle = \"x\"\n",
+                "unknown field",
+            ),
+        ] {
+            let error = read(text).unwrap_err();
+            assert!(error.contains(said), "{text}: {error}");
+        }
     }
 }

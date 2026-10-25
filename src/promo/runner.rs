@@ -38,7 +38,8 @@ struct Record {
     tempo: u32,
     /// The voice that says the lines, as `say -v` names it.
     voice: String,
-    /// The lines said over the intro card and over the outro's.
+    /// The intro card and the outro card, where the scenario says
+    /// anything of them.
     #[serde(skip_serializing_if = "Option::is_none")]
     intro: Option<Card>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,12 +61,33 @@ struct SceneRecord {
     /// What the voice says over the scene.
     #[serde(skip_serializing_if = "Option::is_none")]
     say: Option<String>,
+    /// A cut's highlight, over the app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    /// The scene's exact length, in beats.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    beats: Option<f64>,
 }
 
-/// The intro or the outro card: what the voice says over it.
-#[derive(Serialize)]
+/// The intro or the outro card: what the voice says over it, the words
+/// that replace the intro's title and tagline, and its length in beats.
+#[derive(Default, PartialEq, Serialize)]
 struct Card {
-    say: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    say: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    beats: Option<f64>,
+}
+
+impl Card {
+    /// None where the scenario says nothing of the card.
+    fn or_none(self) -> Option<Self> {
+        (self != Self::default()).then_some(self)
+    }
 }
 
 /// One thing that happened, the frame that shows it, and where.
@@ -453,25 +475,51 @@ fn film() {
         title: scenario.title.clone(),
         tempo: scenario.tempo,
         voice: scenario.voice.clone(),
-        intro: scenario.intro.clone().map(|say| Card { say }),
-        outro: scenario.outro.clone().map(|say| Card { say }),
+        intro: Card {
+            say: scenario.intro.say.clone(),
+            title: scenario.intro.title.clone(),
+            text: scenario.intro.text.clone(),
+            beats: scenario.intro.beats,
+        }
+        .or_none(),
+        outro: Card {
+            say: scenario.outro.say.clone(),
+            beats: scenario.outro.beats,
+            ..Card::default()
+        }
+        .or_none(),
         size: [SIZE.x, SIZE.y],
         scale: SCALE,
         scenes: scenario
             .scenes
             .iter()
             .map(|scene| match scene {
-                Scene::Shot { caption, say, .. } => SceneRecord {
+                Scene::Shot {
+                    caption,
+                    say,
+                    label,
+                    beats,
+                    ..
+                } => SceneRecord {
                     caption: caption.clone(),
                     slide: None,
                     text: None,
                     say: say.clone(),
+                    label: label.clone(),
+                    beats: *beats,
                 },
-                Scene::Slide { title, text, say } => SceneRecord {
+                Scene::Slide {
+                    title,
+                    text,
+                    say,
+                    beats,
+                } => SceneRecord {
                     caption: None,
                     slide: Some(title.clone()),
                     text: text.clone(),
                     say: say.clone(),
+                    label: None,
+                    beats: *beats,
                 },
             })
             .collect(),

@@ -377,3 +377,135 @@ test("a long line is split into subtitles of six to nine words, timed by their w
   });
   assert.ok(subs[subs.length - 1].to >= at + 8 - 1e-9);
 });
+
+// A reel: cuts and flash cards of a fixed number of beats. At 120 a beat
+// is half a second.
+const cut = (label, beats) => ({ caption: null, label, beats });
+const flash = (title, beats) => ({ caption: null, slide: title, text: null, beats });
+const corner = [1000, 600, 1100, 640], left = [20, 100, 120, 120];
+
+test("a scene with beats lasts exactly that many, with no rounding and no reading time", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "command", keys: "⌘F", rect },
+    ...typing("select title, price from books where price < 10").map(e => ({ ...e, frame: e.frame + 1 })),
+    { scene: 0, frame: 60, kind: "hold", seconds: 2 },
+    { scene: 2, frame: 61, kind: "click", rect: corner },
+  ];
+  const scenes = [
+    { ...cut("Format SQL", 2.5), caption: "A caption that would take a long time to read, word after word." },
+    { ...flash("Vim mode", 1), ...said("A line far longer than the card.", 4) },
+    cut("Query history", 0.5),
+  ];
+  const placed = place(record(events, scenes));
+  const lengths = placed.scenes.map(s => s.to - s.from);
+  assert.deepEqual(lengths, [2.5 * 0.5, 0.5, 0.25]);
+  assert.equal(placed.scenes[1].from, placed.scenes[0].to);
+  assert.equal(placed.scenes[2].from, placed.scenes[1].to);
+  assert.equal(placed.outro, placed.scenes[2].to);
+});
+
+test("a cut's events keep their order, and are squeezed in with room at its end", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "point", rect: corner },
+    { scene: 0, frame: 2, kind: "click", rect: corner },
+    { scene: 0, frame: 3, kind: "command", keys: "⌘N", rect },
+    ...typing("Paper Moons", 4),
+    { scene: 0, frame: 15, kind: "press", keys: "↩", rect },
+  ];
+  const { scenes, timed } = place(record(events, [cut("Add rows", 2)]));
+  const [scene] = scenes, length = scene.to - scene.from;
+  const times = timed.flatMap(e => (e.kind === "point" ? [e.leaves, e.at] : [e.at]));
+  assert.deepEqual(times, [...times].sort((a, b) => a - b), "the events are out of order");
+  assert.ok(times.every(at => at >= scene.from - 1e-9), "an event is before the cut");
+  // The steps take about 85% of it, so the result shows.
+  const last = timed[timed.length - 1].at;
+  assert.ok(last <= scene.from + 0.86 * length && last >= scene.from + 0.6 * length, `the last step at ${(last - scene.from) / length} of the cut`);
+  // The pointer's trip is squeezed too.
+  const [trip] = timed;
+  assert.ok(trip.at - trip.leaves < 0.2, `the trip takes ${trip.at - trip.leaves} s`);
+  // A hold is squeezed with the rest: the steps end earlier, and it fills
+  // the time up to the room at the end.
+  const held = place(record([...events, { scene: 0, frame: 15, kind: "hold", seconds: 0.8 }], [cut("Add rows", 2)])).timed;
+  assert.ok(held[held.length - 1].at < last, "the hold took no time");
+});
+
+test("a cut is never slowed down to fill its beats", () => {
+  const events = [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }];
+  const { scenes, timed } = place(record(events, [cut("Find", 8)]));
+  assert.ok(timed[0].at - scenes[0].from < 0.1, `the command at ${timed[0].at - scenes[0].from} s into the cut`);
+});
+
+test("the camera cuts straight to a cut's framing, then pushes in slowly", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "click", rect: corner },
+    { scene: 1, frame: 2, kind: "click", rect: left },
+  ];
+  const timeline = schedule(record(events, [cut("One", 4), cut("Two", 4)]));
+  const [one, two] = timeline.scenes;
+  for (const scene of [one, two]) {
+    const first = Math.ceil(scene.from * FPS - 1e-9), last = Math.ceil(scene.to * FPS - 1e-9) - 1;
+    const frames = timeline.camera.slice(first, last + 1);
+    for (let i = 1; i < frames.length; i++) {
+      assert.ok(frames[i].zoom > frames[i - 1].zoom, `the zoom does not push in at frame ${first + i}`);
+      assert.ok(Math.abs(frames[i].x - frames[0].x) < 1e-6 && Math.abs(frames[i].y - frames[0].y) < 1e-6, "the camera wanders in a cut");
+    }
+    const push = frames[frames.length - 1].zoom / frames[0].zoom;
+    assert.ok(push > 1.05 && push < 1.065, `pushed in ${push}`);
+    assert.ok(frames.every(c => c.zoom <= 1.25 + 1e-9), "past the zoom limit");
+  }
+  // No spring across the cut: the frame before it is on the first cut's
+  // corner, the first frame after it on the second's.
+  const at = Math.ceil(two.from * FPS - 1e-9);
+  assert.ok(timeline.camera[at - 1].x > 650, `before the cut x ${timeline.camera[at - 1].x}`);
+  assert.ok(timeline.camera[at].x < 550, `after the cut x ${timeline.camera[at].x}`);
+  assert.ok(timeline.cuts.some(c => Math.abs(c - two.from) < 1e-9), "the cut is not listed");
+});
+
+test("flash cards in a row cut hard on their beats, and the outro hits after them", () => {
+  const events = [{ scene: 0, frame: 1, kind: "click", rect: corner }];
+  const timeline = schedule({
+    ...record(events, [cut("One", 2), flash("Agents over MCP", 1), flash("Vim mode", 1), flash("Show all rows", 0.5), flash("AppImage", 0.5)]),
+    outro: { beats: 4 },
+  });
+  const cards = timeline.scenes.slice(1);
+  cards.forEach((card, i) => {
+    assert.ok(card.slide && card.beats, `card ${i} is not a flash card`);
+    assert.ok(timeline.cuts.some(c => Math.abs(c - card.from) < 1e-9), `card ${i} does not cut in`);
+    assert.ok(Math.abs((card.from - timeline.intro.to) / timeline.beat - Math.round((card.from - timeline.intro.to) / timeline.beat * 2) / 2) < 1e-9, `card ${i} is off the beat`);
+  });
+  assert.ok(timeline.cuts.some(c => Math.abs(c - timeline.outro) < 1e-9), "the outro does not cut in");
+  assert.equal(timeline.duration - timeline.outro, 4 * timeline.beat);
+  assert.ok(!timeline.sounds.some(s => s.kind === "bell" && s.at < timeline.outro), "a flash card rings a bell");
+  assert.ok(timeline.sounds.some(s => s.kind === "hit" && s.at === timeline.outro), "no hit on the outro");
+  assert.equal(timeline.reel, true);
+});
+
+test("an intro with beats lasts exactly that, whatever its line, and names its card", () => {
+  const events = [{ scene: 0, frame: 1, kind: "click", rect: corner }];
+  const timeline = schedule({
+    ...record(events, [cut("One", 2)]),
+    intro: { beats: 8, title: "More than 50 new features", text: "Tabletist 0.3", ...said("Tabletist zero point three. More than fifty new features.", 4.2) },
+  });
+  assert.equal(timeline.intro.to, 8 * timeline.beat);
+  assert.equal(timeline.intro.title, "More than 50 new features");
+  assert.equal(timeline.intro.text, "Tabletist 0.3");
+  assert.ok(timeline.voices[0].at < 0.3, `the hook's line starts at ${timeline.voices[0].at}`);
+  assert.ok(timeline.cuts.some(c => Math.abs(c - timeline.intro.to) < 1e-9), "the first cut is not hard");
+});
+
+test("a keycap in a cut goes with the cut, and typing there is a flurry heard as fewer keys", () => {
+  const events = [{ scene: 0, frame: 1, kind: "command", keys: "⌘P", rect }, ...typing("select title, price from books", 2)];
+  const timeline = schedule(record(events, [cut("Quick open", 2), cut("Next", 2)]));
+  const [scene] = timeline.scenes;
+  assert.ok(timeline.keycaps[0].until <= scene.to + 1e-9, `the keycap stays until ${timeline.keycaps[0].until}`);
+  const keys = timeline.sounds.filter(s => s.kind === "key" && s.at < scene.to);
+  assert.ok(keys.length > 5 && keys.length < 25, `${keys.length} key sounds`);
+  for (let i = 1; i < keys.length; i++) assert.ok(keys[i].at - keys[i - 1].at >= 0.04 - 1e-9, "two key sounds too close");
+});
+
+test("a scenario with no beats is not a reel, and has no cuts", () => {
+  const timeline = schedule(record([{ scene: 0, frame: 1, kind: "click", rect: corner }]));
+  assert.equal(timeline.reel, false);
+  assert.deepEqual(timeline.cuts, []);
+  assert.ok(!timeline.sounds.some(s => s.kind === "hit"));
+});

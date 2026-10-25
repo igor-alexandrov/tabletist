@@ -88,7 +88,8 @@ is also a column header: the menu's item is taken, see Labels).
 - A scene has a `caption` (optional: a scene without one is a move between
   two), a `say` (optional) and its `steps`. The intro and outro cards are
   not scenes: every video has them, and `[intro]` and `[outro]` may each
-  give one a `say`.
+  give one a `say` and `beats` (see A reel). `[intro]` may also give its
+  card a `title` and a `text`.
 - `say` is a line the voice says, first person and casual: what you gain,
   not what the button is called. It starts 0.2 s into its shot, as the
   steps start, and the scene lasts until it is said, with 0.4 s to spare.
@@ -110,6 +111,59 @@ is also a column header: the menu's item is taken, see Labels).
   for the next scene. A slide's `say` starts once the headline is up, and
   a slide that has one reads best with no `text`: the subtitles say it.
   Under a slide the drums rest, and a soft bell marks it.
+
+## A reel
+
+A scene can last a fixed number of beats: `beats = 4`, a positive multiple
+of 0.5. That is its exact length, whatever its steps, its caption or its
+line would take. A scenario made of such scenes is a reel, fast and cut on
+the beat, as `scenarios/whats-new.toml` is:
+
+```toml
+[intro]
+title = "More than 50 new features" # the card's title, instead of the scenario's
+text  = "Tabletist 0.3"             # and its tagline
+say   = "Tabletist zero point three. More than fifty new features."
+beats = 8                           # its line may run on into the first cut
+
+[[scene]]
+label = "Quick open"                # the feature, big, under the app
+beats = 4
+steps = [{ command = "find_object" }, { type = "boo" }, { press = "enter" }]
+
+[[scene]]
+slide = "Vim mode"                  # a flash card
+beats = 1
+
+[outro]
+say   = "Get it free."
+beats = 12
+```
+
+- A shot with `beats` is a cut. Its steps are played as ever, then
+  squeezed into it, leaving the last 15% for the result to show: typing
+  becomes a flurry, and the pointer moves faster. Steps that take less
+  than that keep their pace. A `hold` is squeezed with the rest, so a
+  longer one leaves more of the cut to the result. The camera is on the
+  cut's framing from its first frame, and pushes in slowly (6%).
+- A shot's `label` names the feature in big white words in a blue pill at
+  the lower left, under the window (above a subtitle, in a scene that has
+  one). It snaps in on the cut. A keycap stands beside it.
+- A slide with `beats` is a flash card: one big phrase on the blue,
+  landing with a small punch.
+- Between two scenes of fixed length, and from one to the outro, the
+  picture cuts hard: no curtain moves. An intro with `title` is the hook,
+  in bigger type; with `beats` it cuts hard to the first scene.
+- The sound builds: the drums come in at the first cut, the music grows
+  louder to the outro, the pad's filter opens, the kick goes to every beat
+  and the hats to sixteenths at the first flash card, a snare roll runs
+  through the flash cards (eighths, sixteenths in the last three beats,
+  thirty-seconds in the last), and a noise riser climbs into the outro.
+  The outro lands on a hit: a deep kick, a crash and the bell, and the
+  last chord rings out. The voice sits a little lower, and the music goes
+  only 5 dB down under it.
+
+A scenario with no `beats` sounds and moves as before.
 
 The look is macOS, in the light theme. The Omarchy look is not in this.
 

@@ -1,17 +1,23 @@
-# What is new since 0.2.0, one feature a scene or a slide: the video for
-# the 0.3 release. Features that need a save, a second window or an agent
-# are slides; the rest are filmed. A voice says each line, and the
-# captions are for a render without one.
+# What is new since 0.2.0, as a sizzle reel for the 0.3 release: a hook,
+# hard cuts of the app on the beat, each with a label, flash cards faster
+# and faster, and a hit into the call to action. Every scene lasts a fixed
+# number of beats (at 128, a beat is 0.469 s). The app's state carries from
+# one cut to the next: the runner plays them in order. Each feature gets a
+# video of its own later; this one only names them.
 title = "New in Tabletist 0.3"
 tempo = 128
 
+# The 0.2.0 to 0.3.0 release notes list about 56 features, fixes aside.
 [intro]
-say = "Here's what's new in Tabletist. Let's jump in."
+title = "More than 50 new features"
+text = "Tabletist 0.3"
+say = "Tabletist zero point three. More than fifty new features."
+beats = 8
 
-# 0.3.0: the start screen, and Quick open.
+# 0.3.0: Quick open.
 [[scene]]
-caption = "Jump to any table."
-say = "Hit Command P, type a few letters, and you're in. Getting around has never been faster."
+label = "Quick open"
+beats = 4
 steps = [
   { command = "find_object" },
   { type = "boo" },
@@ -19,31 +25,33 @@ steps = [
   { hold = 0.4 },
 ]
 
-# 0.2.0: editing in the grid, and Review SQL before a save. Review is
-# there before a save, not forced on it: Save writes without it.
+# 0.2.0: editing in the grid.
 [[scene]]
-caption = "Edit in place. Review the SQL."
-say = "Spot a typo? Fix it right in the grid. Nothing is written until you save, and you can read the SQL first."
+label = "Edit in place"
+beats = 4
 steps = [
   { click = "Small Engines" },
   { command = "edit_cell" },
   { type = ", Revised" },
   { press = "enter" },
+]
+
+# 0.2.0: Review SQL before a save. Review is there before a save, not
+# forced on it: Save writes without it.
+[[scene]]
+label = "Review before you save"
+beats = 2
+steps = [
   { command = "review_sql" },
   { hold = 0.8 },
 ]
 
-# 0.2.0: what a save promises.
-[[scene]]
-slide = "Saves you can trust."
-say = "Every save is one transaction. It never overwrites someone else's change, and production always asks first."
-
 # 0.2.2 and 0.3.0: new, duplicated and deleted rows. The row deleted is
 # near the top, so it stays in sight once the new rows push the rest down.
-# The last, added, is left with its title being edited, for the next scene.
+# The last, added, is left with its title being edited, for the next cut.
 [[scene]]
-caption = "Delete, duplicate and add rows."
-say = "Delete a row, duplicate one, or add a new one, each with a single key."
+label = "Add, duplicate, delete rows"
+beats = 2
 steps = [
   { click = "A Field Guide to Fog" },
   { command = "delete_row" },
@@ -56,8 +64,8 @@ steps = [
 # 0.3.0: a foreign key searches the table it points at. The new row gets a
 # title, Tab moves the editor to author_id, and "ara" narrows the authors.
 [[scene]]
-caption = "Foreign keys search as you type."
-say = "Foreign keys are smart now. Start typing, and Tabletist searches the table they point to."
+label = "Foreign key search"
+beats = 2
 steps = [
   { type = "Paper Moons" },
   { command = "commit_next" },
@@ -68,8 +76,8 @@ steps = [
 # 0.3.0: Format, and brackets that close themselves: the subquery's ")" is
 # never typed.
 [[scene]]
-caption = "Write SQL. Format it with one key."
-say = "Prefer SQL? Write it however you like. Brackets close themselves, and one key tidies it all up."
+label = "Format SQL"
+beats = 2
 steps = [
   { command = "new_sql_tab" },
   { type = "select title, price from books where price < (select avg(price) from books" },
@@ -81,8 +89,8 @@ steps = [
 # 0.3.0: query history. History's key is not read while the SQL editor has
 # the keyboard, so Esc leaves it first; the arrow shows the statement whole.
 [[scene]]
-caption = "Every query you ran, kept."
-say = "And every query you run is kept, so you can always find it again."
+label = "Query history"
+beats = 2
 steps = [
   { press = "esc" },
   { command = "history" },
@@ -90,16 +98,35 @@ steps = [
   { hold = 1.0 },
 ]
 
-# 0.3.0: agents over MCP.
+# The rest of 0.3.0, a card each, faster and faster.
 [[scene]]
-slide = "Agents, read-only."
-say = "Coding agents like Claude Code and Cursor can read your databases too. Read-only, and only the ones you allow."
+slide = "Agents over MCP"
+beats = 1
 
-# 0.2.0 and 0.3.0: Settings (its Appearance pane picks the theme, the
-# text and the grids), keys, vim.
 [[scene]]
-slide = "Make it yours."
-say = "Oh, one more. Rebind any key, pick your look, or switch on Vim."
+slide = "Vim mode"
+beats = 1
+
+[[scene]]
+slide = "Rebind any key"
+beats = 1
+
+[[scene]]
+slide = "Show all rows"
+beats = 0.5
+
+[[scene]]
+slide = "Run without timeout"
+beats = 0.5
+
+[[scene]]
+slide = "AppImage for Linux"
+beats = 0.5
+
+[[scene]]
+slide = "Notarized for macOS"
+beats = 0.5
 
 [outro]
-say = "Tabletist is free. Download it today."
+say = "Get it free."
+beats = 12
