@@ -24,6 +24,9 @@ use crate::testing::{self, Harness};
 const SIZE: egui::Vec2 = egui::vec2(1200.0, 750.0);
 const SCALE: f32 = 2.0;
 
+/// The macOS look is filmed in the light theme, as a Mac shows it by default.
+const LIGHT: bool = true;
+
 fn promo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/promo")
 }
@@ -83,7 +86,7 @@ impl Film {
     /// and none of it filmed. `file` is the scenario's, for its errors.
     fn start(file: &Path, database: &Path, name: &str, dir: PathBuf) -> Self {
         let at = format!("{}, the start", file.display());
-        let mut harness = Harness::for_shots(SIZE, SCALE, false, crate::theme::Look::macos());
+        let mut harness = Harness::for_shots(SIZE, SCALE, LIGHT, crate::theme::Look::macos());
         // Measured on a macOS 26 window with a unified compact toolbar.
         harness.app.titlebar = crate::app::TitleBar {
             height: 38.0,

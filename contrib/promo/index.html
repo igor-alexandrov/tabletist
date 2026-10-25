@@ -186,6 +186,8 @@ function drawWindow(t) {
 // The hole is a band across times a band down, each ramping over FEATHER
 // window pixels either side of its edge, taken out of a full layer.
 const FEATHER = 22;
+// How dark the rest gets. The light theme greys at much more than this.
+const DIM = .14;
 function drawSpot(t) {
   const { x0, y0, x1, y1, alpha } = sample(T.spot, t);
   const el = $("spot");
@@ -193,7 +195,7 @@ function drawSpot(t) {
     `linear-gradient(${to}, transparent ${a - FEATHER}px, #000 ${a + FEATHER}px, #000 ${b - FEATHER}px, transparent ${b + FEATHER}px)`;
   el.style.maskImage =
     `linear-gradient(#000, #000), ${band("to bottom", y0 * S, y1 * S)}, ${band("to right", x0 * S, x1 * S)}`;
-  el.style.opacity = (.3 * alpha).toFixed(3);
+  el.style.opacity = (DIM * alpha).toFixed(3);
 }
 
 function drawPointer(t) {

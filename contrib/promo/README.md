@@ -71,7 +71,7 @@ is also a column header: the menu's item is taken, see Labels).
   two) and its `steps`. The intro and outro cards are not scenes: every
   video has them.
 
-The look is macOS, dark. The Omarchy look is not in this.
+The look is macOS, in the light theme. The Omarchy look is not in this.
 
 ## Where a video starts
 

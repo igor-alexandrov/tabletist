@@ -61,7 +61,7 @@ steps = [
   two) and its `steps`. The intro and outro cards are not scenes: every
   video has them.
 
-The look is macOS, dark. The Omarchy look (its window, its vim SQL editor,
+The look is macOS, light. The Omarchy look (its window, its vim SQL editor,
 its multi-stroke and `:` keys) is not in this.
 
 ### Where a video starts
@@ -268,7 +268,7 @@ The picture:
 - The pointer: a macOS-style cursor, drawn by the composer where the
   director puts it. It presses with a ripple.
 - The spotlight: a feathered mask over the window that dims all but the
-  lit area by 30%.
+  lit area by 14%: on the light theme much more reads as grey.
 - Keycaps: a `command`'s keys spring in with a small overshoot on its
   sound, and stay 0.8 s. A keycap hangs off the left of the caption, which
   holds still in the middle; without a caption, the keycap takes the
