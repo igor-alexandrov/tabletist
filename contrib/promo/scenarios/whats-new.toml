@@ -11,7 +11,8 @@ tempo = 128
 [intro]
 title = "More than 50 new features"
 text = "Tabletist 0.3"
-say = "Tabletist zero point three. More than fifty new features."
+# The line ends well before the first cut, so the drop hits at full level.
+say = "More than fifty new features."
 beats = 8
 
 # 0.3.0: Quick open.
@@ -65,7 +66,7 @@ steps = [
 # title, Tab moves the editor to author_id, and "ara" narrows the authors.
 [[scene]]
 label = "Foreign key search"
-beats = 2
+beats = 3
 steps = [
   { type = "Paper Moons" },
   { command = "commit_next" },
@@ -73,14 +74,14 @@ steps = [
   { hold = 0.8 },
 ]
 
-# 0.3.0: Format, and brackets that close themselves: the subquery's ")" is
-# never typed.
+# 0.3.0: Format. A short query, typed slowly enough to read, then laid out
+# by one key. It is run too: the next cut's history lists it.
 [[scene]]
 label = "Format SQL"
-beats = 2
+beats = 6
 steps = [
   { command = "new_sql_tab" },
-  { type = "select title, price from books where price < (select avg(price) from books" },
+  { type = "select title, price from books where in_print" },
   { command = "format" },
   { command = "run_statement" },
   { hold = 0.6 },
@@ -129,4 +130,4 @@ beats = 0.5
 
 [outro]
 say = "Get it free."
-beats = 12
+beats = 8
