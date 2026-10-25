@@ -76,7 +76,8 @@ You can type:
 A day counted from today is stored as the day it is, never as the word:
 the line says it, `Fri 30 Oct 2026 · in 6 days`. Today is the one of the
 zone of [Time zone for timestamptz]({% link _reference/settings-and-files.md %}#the-settings-window),
-for every date column. A month moved past its end stops at the last day:
+except in a MySQL `TIMESTAMP`, which counts its days in its session's
+zone. A month moved past its end stops at the last day:
 31 January and `+1m` is 28 February. A day alone in a timestamp is its
 midnight, and a time alone today's. `now()` and `current_timestamp` are
 still the database's time of the save; `now` alone is the time it is as
