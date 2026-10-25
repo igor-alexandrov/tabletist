@@ -631,20 +631,30 @@ fn special(text: &str, column: &Column) -> Result<Option<Moment>, Refusal> {
 
 /// The moment SQLite's number `text` is, where the column keeps its values
 /// as numbers. `None` for any other text.
+///
+/// A number is of the column's form only within the range that form is
+/// told by ([`Stored::of`]): `9.30` in a column of Julian days is a time,
+/// not the ninth day of 4713 BC, and is read as one.
 fn numbered(text: &str, stored: Stored) -> Option<Result<Timestamp, Refusal>> {
     let moment = match stored {
         Stored::Seconds => Timestamp::from_second(text.parse::<i64>().ok()?),
-        Stored::Millis => Timestamp::from_millisecond(text.parse::<i64>().ok()?),
+        Stored::Millis => {
+            let millis = text.parse::<i64>().ok()?;
+            if millis.abs() < LEAST_MILLIS {
+                return None;
+            }
+            Timestamp::from_millisecond(millis)
+        }
         Stored::Compact => {
             let day = compact_day(text.parse::<i64>().ok()?)?;
             day.to_zoned(TimeZone::UTC).map(|zoned| zoned.timestamp())
         }
         Stored::Days => {
-            let days = text.parse::<f64>().ok().filter(|days| days.is_finite())?;
+            let days = text
+                .parse::<f64>()
+                .ok()
+                .filter(|days| JULIAN_DAYS.contains(days))?;
             let millis = ((days - JULIAN_EPOCH) * MILLIS_A_DAY).round();
-            if millis.abs() > 1e15 {
-                return Some(Err(Refusal::Years));
-            }
             Timestamp::from_millisecond(millis as i64)
         }
         Stored::Fresh | Stored::Text { .. } | Stored::Unknown => return None,
@@ -2297,6 +2307,31 @@ mod tests {
             &[Value::Int(1_792_800_000), Value::Int(1_792_800_000_000)],
         );
         assert_eq!(read_as(&unknown, "25 Oct 2026"), "2026-10-25");
+    }
+
+    #[test]
+    fn a_number_outside_its_columns_form_is_read_as_typed_text() {
+        let lite = Dialect::Sqlite;
+        let column = |type_name: &str, values: &[Value]| {
+            Column::of(lite, type_name, None, values.iter()).unwrap()
+        };
+        let read_as = |column: &Column, typed: &str| read(typed, column, &clock()).unwrap().literal;
+        // A time of Julian days, as `julianday('09:30')` keeps one: `9.30`
+        // is 09:30, not the Julian day 9.3.
+        let times = column("TIME", &[Value::Float(2_451_544.895_833_333)]);
+        assert_eq!(times.stored, Stored::Days);
+        assert_eq!(read_as(&times, "9.30"), read_as(&times, "09:30"));
+        let stamps = column("DATETIME", &[Value::Float(2_461_337.5)]);
+        assert_eq!(
+            read_as(&stamps, "9.30"),
+            read_as(&stamps, "2026-10-24 09:30")
+        );
+        // Nor is a small number a value of milliseconds.
+        let millis = column("DATETIME", &[Value::Int(1_792_800_000_000)]);
+        assert_eq!(
+            read("2026", &millis, &clock()),
+            Err(Refusal::NotRead(Kind::Timestamp))
+        );
     }
 
     #[test]
