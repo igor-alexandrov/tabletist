@@ -2922,6 +2922,11 @@ git commit -m "Keep F10 Windows' and the window's size its own with a menu bar"
 
 ### Task 11: The Windows docs, and the pull request
 
+Two sentences Part 1 wrote for macOS alone widen here: AGENTS.md's
+`unsafe` paragraph names muda's Windows attach (`windows.rs`) beside the
+menu delegate, and `_reference/keyboard-shortcuts.md`'s "The menu bar on
+macOS shows the keys of this page" says macOS and Windows.
+
 - [ ] **Step 1**: `docs/_guide/what-is-tabletist.md` names the platforms
   in one sentence (line 11): no list of features per platform, so it
   stays. `docs/_guide/getting-started.md` names nothing per platform
