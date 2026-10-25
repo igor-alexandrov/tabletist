@@ -444,6 +444,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // An editor that just opened takes the keyboard when its field is
     // first drawn, later in this frame: the keys are its own already, and
     // none of them is the grid's (Space, an arrow). So with the prompt.
+    // The DDL view's text, which cannot be typed into, has the keyboard:
+    // its keys are the field's, but for Reload's letter (below).
+    let in_ddl_text = object.is_some_and(|(tab, id)| {
+        let text = crate::ui::ddl::text_id(tab, id);
+        ctx.memory(|memory| memory.has_focus(text))
+    });
     let editing = ctx.text_edit_focused() || open || field_asked || prompt;
     // What the prompt refused is said until the next key, whatever the key
     // goes on to do. A fresh press: the Enter that ran the line may still
@@ -495,11 +501,19 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|object| object.view == crate::model::ObjectView::Structure)
     });
+    // The DDL view of the table on screen: its text has the arrows while
+    // it has the keyboard, and none goes to the tree from it.
+    let ddl = object.is_some_and(|(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.view == crate::model::ObjectView::Ddl)
+    });
     // The History tab's list is somewhere else: its arrows are its own,
     // unless the person went to the tree.
     let tree_arrows = !editing
         && app.workspace(active).is_some_and(|workspace| {
-            let nowhere_else = !any_grid && structure.is_none() && !workspace.history_in_front();
+            let nowhere_else =
+                !any_grid && structure.is_none() && !ddl && !workspace.history_in_front();
             workspace.pane == crate::model::Pane::Tree || nowhere_else
         });
     // That view has the keys: the tree does not, nor a field, a button or
@@ -1254,6 +1268,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // The keys are a field's: a first key that waited is not the
         // first of what is typed once they are the grid's again.
         forget_pending(ctx);
+        // Nothing is typed into the DDL view's text: Reload's letter
+        // reads it again from there. (Its chord is read in every field.)
+        if in_ddl_text && app.dialog.is_none() {
+            for char in typed_chars(ctx) {
+                if window_letter(app, scopes, char) == Some(Command::Reload) {
+                    take_char(ctx, char);
+                    actions.push(Action::Refresh(active));
+                }
+            }
+        }
     }
     // Ahead of what the key asked for, which may be the prompt again. Put
     // there only now: a letter that edits acts only where nothing else was

@@ -1,6 +1,6 @@
 ---
 title: Browsing Data
-description: The sidebar, the data grid, sorting, filters, the row panel and the Structure view.
+description: The sidebar, the data grid, sorting, filters, the row panel, and the Structure and DDL views.
 nav_order: 3
 ---
 
@@ -87,7 +87,7 @@ A foreign key has a link next to it that opens the row it points to.
 
 ## Structure
 
-Switch a table from **Data** to **Structure** to read its columns, indexes
+Switch a table from **Rows** to **Structure** to read its columns, indexes
 and foreign keys.
 
 {% include shot.html file="macos-structure" alt="The Structure view of a table: its comment, the label for foreign keys, then its columns with their comments and its indexes" %}
@@ -115,6 +115,39 @@ what the label does.
 No cell is edited and nothing is written to the database, so this works on
 a read-only connection. The Omarchy look does the same with `gl` and the
 `:label` lines of [its Structure view]({% link _guide/omarchy.md %}#the-structure-view).
+
+## DDL
+
+**DDL**, the third view of a table, a view or a materialized view, shows
+its definition as text you can select and copy but not change, in the SQL
+editor's colours, with line numbers. Long lines do not wrap: scroll
+sideways to read them. Each tab keeps the view it shows, and a tab the
+window reopens comes back in it.
+
+- On **PostgreSQL**, which has no `SHOW CREATE TABLE`, the text is built
+  from the catalog in the order `pg_dump` writes it: the `CREATE TABLE`
+  with its columns and constraints, then the indexes that back no
+  constraint, the triggers (a disabled one followed by the `ALTER TABLE`
+  that disables it) and the comments. Tables, types and functions are
+  named with their schema, so the text runs whatever the search path. The
+  owner, the grants, the row-level policies and the sequences the table
+  owns are not included, as the footer says. Nor are an identity's
+  sequence options (its start and step), a tablespace or a table's access
+  method. Each table's foreign keys are in its own `CREATE TABLE`, so two
+  tables that point at each other cannot be made from their texts as
+  they are.
+- On **MySQL** it is `SHOW CREATE TABLE` (or `SHOW CREATE VIEW`) exactly
+  as the server returns it, then each trigger's `SHOW CREATE TRIGGER`.
+- On **SQLite** it is the text the file keeps for the table or view, then
+  for its indexes and triggers. Indexes SQLite made by itself keep no
+  text and are left out.
+
+The definition is read once, the first time the view shows, and kept with
+the tab: Reload (Cmd/Ctrl+R, or **Reload** over the text) reads it again,
+with the rows and the structure, as Reload does in the other views.
+Reading it only reads the catalog, and adds nothing to History. Where the
+connection's user may not read it, the view shows the database's error
+and **Try again**, never part of a text; Rows and Structure still work.
 
 ## Copying
 
