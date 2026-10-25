@@ -15,13 +15,15 @@ text = "Tabletist 0.3"
 say = "More than fifty new features."
 beats = 8
 
-# 0.3.0: Quick open.
+# 0.3.0: Quick open. The finder stays up past the cut's middle before
+# Enter opens the table.
 [[scene]]
 label = "Quick open"
 beats = 4
 steps = [
   { command = "find_object" },
   { type = "boo" },
+  { hold = 0.5 },
   { press = "enter" },
   { hold = 0.4 },
 ]

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use egui::accesskit::{Role, TreeUpdate};
 use serde::Serialize;
 
+use super::changed::changed;
 use super::live::Live;
 use super::pick;
 use super::scenario::{self, Database, Keys, Scene, Step};
@@ -107,6 +108,10 @@ struct Event {
     /// x0, y0, x1, y1, in window points.
     #[serde(skip_serializing_if = "Option::is_none")]
     rect: Option<[f32; 4]>,
+    /// Where its frame differs from the one before, in window points: of
+    /// the first event its frame shows, where that frame is new.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed: Option<[f32; 4]>,
 }
 
 /// The harness, the database that answers it, and what has been filmed.
@@ -114,9 +119,11 @@ struct Film {
     harness: Harness,
     live: Live,
     dir: PathBuf,
-    /// How many frames are written, and the last one's pixels.
+    /// How many frames are written, the last one's pixels, and where it
+    /// differs from the one before it, until an event takes that.
     frames: usize,
     last: Vec<u8>,
+    changed: Option<[f32; 4]>,
     scene: Option<usize>,
     events: Vec<Event>,
     /// The step being played, for its errors.
@@ -171,6 +178,7 @@ impl Film {
             dir,
             frames: 0,
             last: Vec::new(),
+            changed: None,
             scene: None,
             events: Vec::new(),
             at,
@@ -187,9 +195,11 @@ impl Film {
         self.harness.settle();
         self.live.pump(&mut self.harness);
         let image = self.harness.render();
+        self.changed = None;
         if *image.as_raw() == self.last {
             return false;
         }
+        self.changed = changed(&self.last, image.as_raw(), image.width() as usize, SCALE);
         let path = self.dir.join(format!("frames/{:04}.png", self.frames));
         image.save(path).unwrap();
         self.last = image.into_raw();
@@ -216,6 +226,7 @@ impl Film {
             keys: None,
             seconds: None,
             rect: None,
+            changed: self.changed.take(),
         });
         self.events.last_mut().unwrap()
     }

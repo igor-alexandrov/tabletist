@@ -81,6 +81,9 @@
   #intro.hook svg { width: 150px; height: 150px; }
   #intro.hook .name { font-size: 172px; letter-spacing: -.045em; line-height: 1; margin-top: 44px; max-width: 1500px; }
   #intro.hook .tag { font-size: 54px; font-weight: 600; margin-top: 36px; }
+  /* The hook's number counts up in figures of one width, centred in the
+     width of the number it lands on. */
+  #count { font-variant-numeric: tabular-nums; text-align: center; }
   /* A flash card: one big phrase, alone on the blue. */
   #flash .phrase { font-size: 176px; font-weight: 700; letter-spacing: -.045em; line-height: 1;
     max-width: 1600px; text-wrap: balance; }
@@ -185,8 +188,9 @@ const escape = text => text.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;",
 
 // The window fills the picture above a band kept for the subtitles, so a
 // subtitle never covers the app's own bottom bar: its pixels to a point of
-// the app, where it rests, and where a zoomed-in point comes to.
-const BAND = 156, MARGIN = 24;
+// the app, where it rests, and where a zoomed-in point comes to. The
+// director frames a reel's cuts by the same picture.
+const { band: BAND, margin: MARGIN } = Director.PICTURE;
 const S = (1080 - BAND - MARGIN) / 750, WIDE = 1200 * S;
 const LEFT = (1920 - WIDE) / 2, TOP = MARGIN, MIDDLE = TOP + 375 * S;
 
@@ -260,7 +264,7 @@ function drawWindow(t, cover) {
   if (hidden) return;
   const { x, y, zoom } = sample(T.camera, t);
   // Zoomed in, the point looked at comes towards the middle of the picture.
-  const pull = clamp((zoom - 1) * 3);
+  const pull = Director.pull(zoom);
   const sx = mix(LEFT + x * S, 960, pull), sy = mix(TOP + y * S, MIDDLE, pull);
   // As a curtain lifts, the window settles from a touch smaller.
   const settle = cover < 0 ? 1 + cover : 0;
@@ -336,27 +340,16 @@ function drawCaption(t, below) {
       word.style.opacity = k > 0 ? 1 : 0;
     });
   }
+  // A reel's cuts have none: the label stands alone.
   const cap = latest(T.keycaps, t);
-  // A cut's keycap goes with the cut, at once.
-  const on = cap && t < cap.until + (cap.cut ? 0 : .2);
+  const on = cap && t < cap.until + .2;
   key.style.display = on ? "block" : "none";
-  // Beside a label, the keycap stands just right of it, on its line.
-  const label = T.scenes.find(s => s.label && t >= s.from - 1e-6 && t < s.to - 1e-6);
-  key.style.position = label && on ? "fixed" : "";
   if (on) {
     const pop = span(t, cap.at, .35);
     key.textContent = cap.keys;
-    if (label) {
-      const pill = $("label");
-      key.style.right = "auto";
-      key.style.left = `${LEFT + pill.offsetWidth + 28}px`;
-      key.style.bottom = `${parseFloat(pill.style.bottom) + (pill.offsetHeight - key.offsetHeight) / 2}px`;
-    } else {
-      key.style.left = key.style.bottom = "";
-      // Without a caption, the keycap takes the middle itself.
-      key.style.right = scene ? "" : `${-key.offsetWidth / 2}px`;
-    }
-    key.style.opacity = clamp(pop * 4) * (cap.cut ? 1 : 1 - span(t, cap.until, .2));
+    // Without a caption, the keycap takes the middle itself.
+    key.style.right = scene ? "" : `${-key.offsetWidth / 2}px`;
+    key.style.opacity = clamp(pop * 4) * (1 - span(t, cap.until, .2));
     key.style.transform = `scale(${back(pop)})`;
   }
 }
@@ -390,6 +383,40 @@ function drawCard(el, t, from, until) {
     piece.style.opacity = clamp(k * 2.5);
     piece.style.transform = `translateY(${(1 - out(k)) * (i ? 50 : 0)}px) scale(${size})`;
   });
+}
+
+// The hook: the intro of a reel, with words of its own. Its icon pops in;
+// its title's words rise through their masks one after another (from
+// T.intro.words), its number counting up from 0 as it rises, landing
+// before the voice says it (T.intro.count); its tagline fades up a beat
+// after the count lands. It pushes in by HOOK_PUSH while it is up.
+const HOOK_PUSH = .08;
+function drawHook(t) {
+  const el = $("intro"), { to, words, count } = T.intro;
+  const on = t < to;
+  el.style.visibility = on ? "visible" : "hidden";
+  if (!on) return;
+  el.style.opacity = 1;
+  el.style.transform = `scale(${1 + HOOK_PUSH * span(t, 0, to)})`;
+  const [icon, title, tag] = el.children;
+  const pop = span(t, .02, .55);
+  icon.style.opacity = clamp(pop * 2.5);
+  icon.style.transform = `scale(${back(pop)})`;
+  [...title.children].forEach((word, i) => {
+    const k = out(span(t, words.start + i * words.word, words.rise));
+    word.firstChild.style.transform = `translateY(${(1 - k) * 105}%)`;
+    word.firstChild.style.filter = `blur(${(1 - k) * 8}px)`;
+    word.style.opacity = k > 0 ? 1 : 0;
+  });
+  if (count) {
+    // Eased out, and never past the number itself.
+    const k = span(t, count.from, count.to - count.from);
+    $("count").textContent = String(Math.min(count.value, Math.round(count.value * (1 - (1 - k) * (1 - k)))));
+  }
+  const landed = count ? count.to : words.start + title.children.length * words.word + words.rise;
+  const k = out(span(t, landed + T.beat, .5));
+  tag.style.opacity = k;
+  tag.style.transform = `translateY(${(1 - k) * 24}px)`;
 }
 
 // A slide's headline rises word by word once the curtain is nearly up
@@ -478,7 +505,8 @@ async function renderAt(t) {
   drawCaption(t, drawSubtitle(t));
   drawSlide(t);
   drawFlash(t);
-  drawCard($("intro"), t, .08, T.intro.to);
+  if (T.intro.words) drawHook(t);
+  else drawCard($("intro"), t, .08, T.intro.to);
   // After a hard cut, the outro lands on it.
   drawCard($("outro"), t, T.outro + (hard(T.outro) ? 0 : .1), Infinity);
 }
@@ -492,12 +520,22 @@ async function load(timeline, files) {
   el.style.width = `${1200 * S}px`;
   $("label").style.left = `${LEFT}px`;
   el.style.height = `${750 * S}px`;
-  // The intro's own words, if it has them, make it the hook.
+  // The intro's own words, if it has them, make it the hook. A hook's
+  // words rise through masks, and its number counts: it is set as wide as
+  // it ends, so the words round it hold still.
   $("title").textContent = T.intro.title || T.title;
+  if (T.intro.words) {
+    const number = T.intro.count && String(T.intro.count.value);
+    $("title").innerHTML = T.intro.title.split(" ").map(word => word === number
+      ? `<span class="word"><span id="count">${escape(word)}</span></span>`
+      : `<span class="word"><span>${escape(word)}</span></span>`).join(" ");
+  }
   if (T.intro.text) $("tagline").textContent = T.intro.text;
   $("intro").classList.toggle("hook", Boolean(T.intro.title));
   hang();
   await document.fonts.ready;
+  const number = $("count");
+  if (number) number.style.width = `${number.offsetWidth}px`;
   await renderAt(0);
 }
 </script>

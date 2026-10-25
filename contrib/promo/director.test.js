@@ -4,7 +4,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { schedule, place, film, FPS } = require("./director.js");
+const { schedule, place, film, FPS, REACH, WIDTH, HEIGHT } = require("./director.js");
 
 // A record as the runner writes one.
 const record = (events, scenes = [{ caption: "Open a table." }], tempo = 120) => ({
@@ -451,7 +451,7 @@ test("the camera cuts straight to a cut's framing, then pushes in slowly", () =>
     }
     const push = frames[frames.length - 1].zoom / frames[0].zoom;
     assert.ok(push > 1.05 && push < 1.065, `pushed in ${push}`);
-    assert.ok(frames.every(c => c.zoom <= 1.25 + 1e-9), "past the zoom limit");
+    assert.ok(frames.every(c => c.zoom <= 1.9 + 1e-9), "past the reel's zoom limit");
   }
   // No spring across the cut: the frame before it is on the first cut's
   // corner, the first frame after it on the second's.
@@ -493,11 +493,13 @@ test("an intro with beats lasts exactly that, whatever its line, and names its c
   assert.ok(timeline.cuts.some(c => Math.abs(c - timeline.intro.to) < 1e-9), "the first cut is not hard");
 });
 
-test("a keycap in a cut goes with the cut, and typing there is a flurry heard as fewer keys", () => {
+test("a cut has no keycap and no tick, and typing there is a flurry heard as fewer keys", () => {
   const events = [{ scene: 0, frame: 1, kind: "command", keys: "⌘P", rect }, ...typing("select title, price from books", 2)];
   const timeline = schedule(record(events, [cut("Quick open", 2), cut("Next", 2)]));
   const [scene] = timeline.scenes;
-  assert.ok(timeline.keycaps[0].until <= scene.to + 1e-9, `the keycap stays until ${timeline.keycaps[0].until}`);
+  assert.deepEqual(timeline.keycaps, []);
+  assert.ok(!timeline.sounds.some(s => s.kind === "tick"), "a tick with no keycap");
+  assert.ok(timeline.sounds.some(s => s.kind === "key" && Math.abs(s.at - scene.from) < 1e-9), "the command's key is not heard");
   const keys = timeline.sounds.filter(s => s.kind === "key" && s.at < scene.to);
   assert.ok(keys.length > 5 && keys.length < 25, `${keys.length} key sounds`);
   for (let i = 1; i < keys.length; i++) assert.ok(keys[i].at - keys[i - 1].at >= 0.04 - 1e-9, "two key sounds too close");
@@ -508,4 +510,111 @@ test("a scenario with no beats is not a reel, and has no cuts", () => {
   assert.equal(timeline.reel, false);
   assert.deepEqual(timeline.cuts, []);
   assert.ok(!timeline.sounds.some(s => s.kind === "hit"));
+});
+
+// The picture a frame of the camera shows, in window points: index.html
+// brings the point looked at to the middle above the band once zoomed in.
+const seen = c => ({
+  x0: c.x - REACH.across / c.zoom, x1: c.x + REACH.across / c.zoom,
+  y0: c.y - REACH.up / c.zoom, y1: c.y + REACH.down / c.zoom,
+});
+
+test("a cut frames what it did last, close, and shows nothing but the window", () => {
+  const cell = [313, 402, 540, 439];
+  const events = [
+    { scene: 0, frame: 1, kind: "point", rect: corner },
+    { scene: 0, frame: 2, kind: "click", rect: corner },
+    { scene: 0, frame: 3, kind: "hold", seconds: 0.6 },
+    { scene: 0, frame: 3, kind: "command", keys: "↩", rect: cell },
+    ...typing(", Revised", 4).map(e => ({ ...e, rect: cell })),
+    { scene: 0, frame: 14, kind: "press", keys: "↩", rect: [313, 439, 540, 476] },
+  ];
+  const timeline = schedule(record(events, [cut("Edit in place", 4)]));
+  const [scene] = timeline.scenes;
+  const first = Math.ceil(scene.from * FPS - 1e-9), last = Math.ceil(scene.to * FPS - 1e-9) - 1;
+  const frames = timeline.camera.slice(first, last + 1);
+  // On the edited cells, not the corner clicked first.
+  for (const c of frames) {
+    assert.ok(Math.abs(c.x - 447) < 30 && c.y > 400 && c.y < 470, `the camera looks at ${c.x}, ${c.y}`);
+    const { x0, x1, y0, y1 } = seen(c);
+    assert.ok(x0 >= -1e-6 && x1 <= WIDTH + 1e-6 && y0 >= -1e-6 && y1 <= HEIGHT + 1e-6, `the picture shows past the window: ${JSON.stringify(seen(c))}`);
+    assert.ok(x0 <= 313 && x1 >= 540 && y0 <= 402 && y1 >= 476, "the cells are not all in the picture");
+  }
+  assert.ok(frames[0].zoom > 1.7, `zoomed ${frames[0].zoom}`);
+  assert.ok(Math.abs(frames[frames.length - 1].zoom - 1.9) < 0.01, `ends at ${frames[frames.length - 1].zoom}`);
+});
+
+test("the zoom's limit is the reel's in a cut, and the narrated one's elsewhere", () => {
+  const small = [500, 300, 540, 316];
+  const events = [{ scene: 0, frame: 1, kind: "click", rect: small }, { scene: 0, frame: 1, kind: "hold", seconds: 1 }];
+  const narrated = schedule(record(events));
+  assert.ok(Math.max(...narrated.camera.map(c => c.zoom)) <= 1.25 + 1e-9, "a narrated video zooms past 1.25");
+  assert.ok(Math.max(...narrated.camera.map(c => c.zoom)) > 1.2, "a narrated video does not zoom in");
+  const reel = schedule(record(events, [cut("One", 4)]));
+  const most = Math.max(...reel.camera.map(c => c.zoom));
+  assert.ok(most > 1.85 && most <= 1.9 + 1e-9, `a reel's cut zooms to ${most}`);
+});
+
+test("a cut whose keys touch nothing focused frames its last change on screen", () => {
+  const panel = [840, 213, 1200, 627];
+  const events = [
+    { scene: 0, frame: 1, kind: "press", keys: "esc", changed: [0, 0, 1200, 750] },
+    { scene: 0, frame: 2, kind: "command", keys: "⌘Y", changed: [250, 40, 1200, 750] },
+    { scene: 0, frame: 3, kind: "command", keys: "↓", changed: panel },
+  ];
+  const timeline = schedule(record(events, [cut("Query history", 2)]));
+  const c = timeline.camera[Math.ceil(timeline.scenes[0].from * FPS - 1e-9)];
+  const { x0, x1, y0, y1 } = seen(c);
+  assert.ok(c.zoom > 1.4, `zoomed ${c.zoom}`);
+  assert.ok(x0 <= 840 && x1 >= 1200 - 1e-6 && y0 <= 213 && y1 >= 627, JSON.stringify(seen(c)));
+  // With nothing to go on, the whole window.
+  const blind = schedule(record(events.map(({ changed, ...e }) => e), [cut("Query history", 2)]));
+  assert.equal(blind.camera[Math.ceil(blind.scenes[0].from * FPS - 1e-9)].zoom, 1);
+});
+
+test("a reel's lines are heard with no subtitles; a narrated video keeps them", () => {
+  const events = [{ scene: 0, frame: 1, kind: "click", rect: corner }];
+  const reel = schedule({
+    ...record(events, [cut("One", 2)]),
+    intro: { beats: 8, title: "More than 50 new features", ...said("More than fifty new features.", 2) },
+    outro: { beats: 8, ...said("Get it free.", 0.8, "file:///voice/02.wav") },
+  });
+  assert.equal(reel.voices.length, 2);
+  assert.deepEqual(reel.subtitles, []);
+  const narrated = schedule(record(events, [{ caption: null, ...said("Open a table.", 1) }]));
+  assert.equal(narrated.subtitles.length, 1);
+});
+
+test("every change of scene in a reel is a hard cut, the hook's and the outro's too", () => {
+  const events = [{ scene: 0, frame: 1, kind: "click", rect: corner }, { scene: 1, frame: 2, kind: "click", rect: left }];
+  const timeline = schedule({
+    ...record(events, [cut("One", 4), cut("Two", 2), flash("Vim mode", 1), flash("Show all rows", 0.5), flash("AppImage", 0.5)]),
+    intro: { beats: 8, title: "More than 50 new features" },
+    outro: { beats: 8 },
+  });
+  const changes = [timeline.intro.to, ...timeline.scenes.map(s => s.to)];
+  assert.equal(changes[changes.length - 1], timeline.outro);
+  for (const at of changes) assert.ok(timeline.cuts.some(c => Math.abs(c - at) < 1e-9), `no cut at ${at}`);
+  assert.equal(timeline.cuts.length, changes.length);
+});
+
+test("the hook's number counts up to land just before the voice says it", () => {
+  const events = [{ scene: 0, frame: 1, kind: "click", rect: corner }];
+  const timeline = schedule({
+    ...record(events, [cut("One", 2)]),
+    intro: { beats: 8, title: "More than 50 new features", text: "Tabletist 0.3", ...said("More than fifty new features.", 2) },
+  });
+  const { count, words } = timeline.intro;
+  assert.equal(count.value, 50);
+  const voice = timeline.voices[0];
+  // Ava says "fifty" from 0.46 s into the line.
+  const fifty = voice.at + 0.46;
+  assert.ok(count.to < fifty && count.to > fifty - 0.1, `lands at ${count.to}, "fifty" at ${fifty}`);
+  assert.ok(count.from >= 0 && count.from < count.to, JSON.stringify(count));
+  assert.ok(words.word > 0 && words.start >= 0);
+  // A hook with no number has no count; a narrated intro has neither.
+  const plain = schedule({ ...record(events, [cut("One", 2)]), intro: { beats: 8, title: "New in 0.3 and more" } });
+  assert.equal(plain.intro.count, null);
+  const narrated = schedule(record(events));
+  assert.ok(!("count" in narrated.intro) && !("words" in narrated.intro));
 });

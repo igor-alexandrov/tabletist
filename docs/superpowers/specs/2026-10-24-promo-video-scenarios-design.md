@@ -122,20 +122,21 @@ the features one after another, the speed and the sound rising. A reel is
 a scenario of fixed-length scenes (tempo 128, a beat 0.469 s):
 
 1. The hook, 8 beats: the intro card, its `title` big ("More than 50 new
-   features") and its `text` small ("Tabletist 0.3"); the voice says both,
-   running on a little into the first cut. The pad and a riser.
-2. The cuts, hard on the beat: Quick open and editing 4 beats each, the
-   review, rows, foreign keys, Format and history 2 each. Each is the
+   features") and its `text` small ("Tabletist 0.3"). Its words rise one
+   after another, the 50 counts up from 0 as the voice says the title,
+   the tagline fades up a beat later. The pad and a riser.
+2. The cuts, hard on the beat: Quick open and editing 4 beats each,
+   foreign keys 3, Format 6, the review, rows and history 2 each. Each is the
    steps today's video played, in order, so the app's state carries from
    one to the next, and each has its label. The drums come in.
 3. Flash cards, full blue, a phrase each from the 0.3.0 release notes:
    "Agents over MCP", "Vim mode", "Rebind any key" a beat each, "Show all
    rows", "Run without timeout", "AppImage for Linux" and "Notarized for
    macOS" half a beat each. The roll speeds up.
-4. A hit on the outro's first beat and the end card ("Get it free."), 12
+4. A hit on the outro's first beat and the end card ("Get it free."), 8
    beats, the pad ringing out.
 
-That is 20.2 seconds. A scenario without `beats` is not a reel, and its
+That is 20.6 seconds. A scenario without `beats` is not a reel, and its
 pictures and sound are what they were.
 
 The look is macOS, light. The Omarchy look (its window, its vim SQL editor,
@@ -284,6 +285,11 @@ An ignored test behind the `shots` feature:
   - otherwise the node with the keyboard focus, from the AccessKit tree;
   - absent when there is none of these.
 
+  An event also has `changed`, where its frame's pixels differ from the
+  frame before it (the box round them, in window points), when it is the
+  first event its frame shows and that frame is new. A reel's cut frames
+  it when none of its steps has a rect (`src/promo/changed.rs`).
+
   The runner says what happened, never when.
 - A step that cannot be played stops the run with the scenario's file,
   scene and step: a label or text that is not on screen, a label several
@@ -375,13 +381,33 @@ decides time; the picture and the sound both read its output.
   line starts at 0.2 s and may run on past it; an outro with `beats` lasts
   that.
 - Hard cuts (`cuts` in the timeline): wherever a fixed-length intro or
-  scene ends and a fixed-length scene or the outro starts. In a cut the
-  camera is set straight, at its first frame, on the framing of all the
-  cut's events (zoomed 1.18 at most) and pushes in by `PUSH` (6%) over
-  it, so it never passes 1.25 and never springs across the cut.
-- In a cut, typing is heard a key every 0.05 s at most, and a keycap goes
-  with the cut. Flash cards ring no bell. A reel (`reel` in the timeline)
-  has a `hit` on the outro.
+  scene ends and a fixed-length scene or the outro starts: the hook into
+  the first cut, cut to cut, cut to card, card to card and the last card
+  into the outro. In a cut the camera is set straight, at its first
+  frame, on the cut's result and pushes in by `PUSH` (6%) over it, so it
+  never springs across the cut.
+- A cut's result (`result`): the union of the rects of the events in its
+  last 60% (`LATE`), a key's in a wide field cut to the field's left 400
+  points as typing's is; else of all its events; else, where no event has
+  a rect, the runner's `changed` of its last event that has one; else the
+  whole window. It fills 90% (`FILL`) of the picture above the band,
+  zoomed between 4/3 (from where the window, zoomed, covers the picture)
+  and 1.9 (`REEL_ZOOM`) at the end of the push, so the end state fills
+  the picture. The point looked at is kept where the picture shows
+  nothing but the window: the director knows the picture's geometry
+  (`PICTURE`, which `index.html` reads too). A narrated video keeps to
+  1.25.
+- In a cut, typing is heard a key every 0.05 s at most, and a command
+  shows no keycap and makes no tick: the label stands alone. Flash cards
+  ring no bell. A reel (`reel` in the timeline) has a `hit` on the outro,
+  and no subtitles: its lines are heard, and its cards say the same.
+- The hook (a fixed-length intro with a `title`) gives `index.html` its
+  words' rise (`intro.words`: from 0, a word every 0.04 s, each rising
+  in 0.35 s) and the count of its number (`intro.count`: from 0 to its
+  value from the first frame, landing 0.03 s before the voice says it).
+  Where a number is said is measured, not guessed: Ava says "fifty" from
+  0.46 s of the 2.0 s of "More than fifty new features.", 23% of the
+  way in (`COUNT.said`), so the count lands at 0.63 s.
 - It is tested with `node --test` (`contrib/promo/director.test.js`):
   beats, bars, reading time, the typing's seed, the pointer, the dead zone,
   the wide shot, the spotlight, the reveal, the typing span, the pause
@@ -391,8 +417,12 @@ decides time; the picture and the sound both read its output.
   subtitles' pieces and times, and of a reel: exact lengths, a cut's
   events inside it and in order, a cut never slowed, the camera with no
   spring across a cut and its push-in, flash cards in a row and the hit,
-  the hook's length and words, a cut's keycap and its thinned keys, and
-  that a scenario without beats is no reel.
+  the hook's length and words, a cut with no keycap or tick and its
+  thinned keys, a cut framed on its late events and inside the window,
+  the reel's zoom limit against the narrated one, a cut framed on its
+  last change on screen, no subtitles in a reel, every change of scene
+  in a reel a cut, the hook's count, and that a scenario without beats
+  is no reel.
 
 ### 3. The composer: `contrib/promo/index.html`, `render.cjs`, `audio.js`
 
@@ -428,27 +458,37 @@ The picture:
   smaller, and `igor.works/tabletist` in a white pill. Tabletist is
   MIT-licensed and free to download.
 - In a reel: at a hard cut no curtain moves, and nothing (the camera, the
-  pointer) is blended across it, even in `--final`'s subframes. The hook
-  is the intro card in bigger type (172 px), with the intro's `title` and
-  `text`. A label is 76 px bold white in a blue pill at the lower left,
-  under the window (above a subtitle, in a scene that has one, so it hides
-  none of the cut), snapping in from 1.12 and a blur to sharp in 0.15 s; a
-  keycap stands beside it. A flash card is one 176 px phrase on the
-  curtain, landing with a punch from 1.06. The outro lands on the hit: its
-  icon and big line at once, the rest a quarter beat apart. The hook and
-  the end card push in by 4% while they are up.
+  pointer) is blended across it, even in `--final`'s subframes (below).
+  The hook is the intro card in bigger type (172 px), with the intro's
+  `title` and `text`: the icon pops in, the title's words rise through
+  masks one after another, its number counting up in figures of one
+  width (eased out, never past its value), and the tagline fades up a
+  beat after the count lands; the card pushes in by 8%. A label is 76 px
+  bold white in a blue pill at the lower left, under the window,
+  snapping in from 1.12 and a blur to sharp in 0.15 s, alone. A flash
+  card is one 176 px phrase on the curtain, landing with a punch from
+  1.06. The outro lands on the hit: its icon and big line at once, the
+  rest a quarter beat apart. The end card pushes in by 4% while it is up.
 - Slides: the curtain rises over the app as for the outro; the headline
   rises word by word through masks, its line a beat later, both balanced
   on their lines; the curtain lifts away for the next scene.
-- Motion blur, with `--final`: every frame is rendered four times, at four
-  times the frame rate, and ffmpeg's `tmix` blends each four into one.
+- Motion blur, with `--final`: every frame is rendered four times, at its
+  time and the three quarter frames after it, and ffmpeg's `tmix` blends
+  each four into one (`select` keeps exactly each frame's four). A frame
+  whose four moments would cross a hard cut takes all four at or after
+  the cut, so no frame shows two shots.
 
 The sound is rendered by `audio.js` in the same Chrome, with an
 `OfflineAudioContext` at 48 kHz, from the director's timeline, and written
 as WAV:
 
-- The voice: each line's WAV, played at its time, dry (not into the room),
-  through a highpass at 90 Hz.
+- The voice: each line's WAV, played at its time, through a highpass at
+  90 Hz, then a light polish: a slow, low-ratio compressor (threshold
+  -24 dB, ratio 2, attack 20 ms, release 300 ms; its makeup gain offset so
+  the voice is as loud as before), a 2 dB lift round 3 kHz, and a short
+  room of its own (0.4 s, about 20 dB under the dry voice, its noise from
+  its own seeded generator so the music's numbers do not move), not the
+  music's, in which a voice sounds far away.
 - The music, in the scenario's tempo, light and upbeat so it sits under a
   voice: I, V, vi, IV in D (D, A, Bm7, G add9) on an airy pad (detuned
   saws through a lowpass that breathes between 2.2 and 4.8 kHz, and a
@@ -474,17 +514,26 @@ as WAV:
   last), a riser (noise through a band sweeping up) runs under the hook
   into the first cut and over the last two bars into the outro, stopping
   dead on it. The outro's hit: a deep kick, a crash of bright noise a side
-  each, and the bell; then the last chord rings out. The voice sits 4 dB
-  lower and the music goes only 5 dB down under it, and a fast, hard
-  compressor keeps the louder mix's peaks under full scale before
-  loudness is set.
+  each, and the bell; then the last chord rings out. The crash dies away
+  30 dB by the time the end card's line starts, 0.6 s after the hit. The
+  music goes 14 dB down under the voice, so the line stands clear of it,
+  and a fast, hard compressor keeps the louder mix's peaks under full
+  scale before loudness is set.
 - The music goes down 10 dB under the voice, ramping over a quarter of a
   second before a line and half a second after it, and stays down between
   lines less than a second apart. Before loudness is set, the voice sits
   about 8 dB over the music, 18 dB over it while ducked.
-- The music ducks under each effect. ffmpeg normalizes the mix to −14 LUFS
-  (`loudnorm`), the level the social platforms play at, and writes it as
-  AAC at 192 kb/s into the MP4.
+- The music ducks under each effect. ffmpeg sets the mix to -14 LUFS, the
+  level the social platforms play at, in two passes: `loudnorm` measures
+  it first, then applies the measured values with `linear=true`, one gain
+  for all of it, so it lands within a few tenths of the target, with true
+  peaks at -1.5 dBTP at most. A gain that would lift the true peaks past
+  that would make loudnorm fall back to its dynamic mode, which misses
+  the target: so where it would, an `alimiter` (its delay compensated)
+  first holds the samples' peaks 1 dB under -1.5 dBTP less the gain, and
+  the first pass measures again with it. A narrated video's mix needs it
+  (about 1.7 dB up, from peaks at -2 dBTP); the reel's does not. ffmpeg
+  writes the sound as AAC at 192 kb/s into the MP4.
 - Its random numbers come from the same seeded generator. No node's input
   takes more than two connections: Chrome sums the connections into one
   input in an order that changes from run to run, and a sum of three or

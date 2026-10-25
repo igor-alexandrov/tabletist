@@ -12,13 +12,12 @@
   const MUSIC = 0.85;
   // The voice's level, and how far the music goes down under it: 10 dB.
   const VOICE = 0.9;
-  // In a reel, the music carries it, and the voice sits 4 dB lower, so the
-  // hook starts quieter than the hit it builds to.
-  const REEL_VOICE = VOICE * Math.pow(10, -4 / 20);
-  // And the music goes only 5 dB down under it: the hook's line runs on
-  // into the first cut, where the drums come in.
-  const REEL_UNDER = Math.pow(10, -5 / 20);
   const UNDER = Math.pow(10, -10 / 20);
+  // In a reel, the music is louder and fuller, and the voice has to cut
+  // through it, the hit's crash and the bell: the voice is at its level,
+  // and the music goes 14 dB down under it.
+  const REEL_VOICE = VOICE;
+  const REEL_UNDER = Math.pow(10, -14 / 20);
   // D major, bright and plain: D, A, Bm7, G(add9), a bar each, as MIDI
   // notes above middle C, with the bass's root under each; the outro rings
   // on D(add9).
@@ -71,22 +70,43 @@
       EFFECTS[sound.kind](tools, effect, sound.at, sound.gain);
       duck(music.gain, sound.at, sound.kind);
     }
-    await speak(ctx, mix(), timeline.voices, timeline.reel ? REEL_VOICE : VOICE);
+    await speak(ctx, mix, timeline.voices, timeline.reel ? REEL_VOICE : VOICE, Director.seeded(`${timeline.title} voice`));
     beneath(under.gain, timeline.voices, timeline.reel ? REEL_UNDER : UNDER);
     return wav(await ctx.startRendering());
   }
 
   // The voice's lines, each its own WAV (render.cjs's, from macOS's say),
-  // played at its time, dry: a voice in the room sounds far away. A
-  // highpass takes out what is under a voice, and nothing of it is lost.
-  async function speak(ctx, into, voices, loud) {
+  // played at its time, into `mix`, the mixer's next inputs. A highpass
+  // takes out what is under a voice, and nothing of it is lost; then the
+  // polish: a slow, gentle compressor evens the words out, a little lift
+  // round 3 kHz brings them forward, and a short, quiet room (not the
+  // music's, in which a voice sounds far away) takes the edge off the
+  // synthesis. The room's noise is `random`'s own, so the music's numbers
+  // are what they were.
+  async function speak(ctx, mix, voices, loud, random) {
     if (voices.length === 0) return;
     const level = ctx.createGain();
-    level.gain.value = loud;
+    level.gain.value = loud * POLISH.level;
     const clean = ctx.createBiquadFilter();
     clean.type = "highpass";
     clean.frequency.value = 90;
-    clean.connect(level).connect(into);
+    const even = ctx.createDynamicsCompressor();
+    even.threshold.value = POLISH.threshold;
+    even.knee.value = 10;
+    even.ratio.value = POLISH.ratio;
+    even.attack.value = 0.02;
+    even.release.value = 0.3;
+    const presence = ctx.createBiquadFilter();
+    presence.type = "peaking";
+    presence.frequency.value = 3000;
+    presence.Q.value = 0.9;
+    presence.gain.value = 2;
+    clean.connect(even).connect(presence).connect(level).connect(mix());
+    const room = ctx.createConvolver();
+    room.buffer = impulse(ctx, POLISH.room, random);
+    const send = ctx.createGain();
+    send.gain.value = POLISH.send;
+    level.connect(send).connect(room).connect(mix());
     const line = mixer(ctx, clean);
     for (const voice of voices) {
       const response = await fetch(voice.file);
@@ -97,6 +117,12 @@
       source.start(voice.at);
     }
   }
+
+  // The voice's polish: the compressor's threshold (dB) and ratio, the
+  // level that keeps the voice as loud as it was before it (the
+  // compressor adds its own makeup gain), and the room's length (s) and
+  // how much of the voice goes into it.
+  const POLISH = { threshold: -24, ratio: 2, level: 0.9, room: 0.4, send: 0.8 };
 
   // In a reel the music carries the cuts, not a voice: from the first cut
   // it is LIFT louder, rising to LIFT_TOP at the outro's hit, and settles
@@ -512,7 +538,8 @@
       }
     },
     // A reel's hit on the outro: a deep kick and a crash of bright noise,
-    // a side each, ringing out.
+    // a side each, ringing out, and 30 dB down by the time the end card's
+    // line starts, 0.6 s on.
     hit({ ctx, noise, random }, into, at, gain) {
       const osc = ctx.createOscillator();
       osc.frequency.setValueAtTime(150, at);
@@ -534,13 +561,13 @@
         const level = ctx.createGain();
         level.gain.setValueAtTime(0.0001, at);
         level.gain.exponentialRampToValueAtTime(0.3 * gain, at + 0.003);
-        level.gain.exponentialRampToValueAtTime(0.05 * gain, at + 0.35);
-        level.gain.exponentialRampToValueAtTime(0.0001, at + 2.6);
+        level.gain.exponentialRampToValueAtTime(0.05 * gain, at + 0.3);
+        level.gain.exponentialRampToValueAtTime(0.0001, at + 1.4);
         const panner = ctx.createStereoPanner();
         panner.pan.value = pan;
         source.connect(filter).connect(level).connect(panner).connect(into());
         source.start(at, random() * 0.9);
-        source.stop(at + 2.7);
+        source.stop(at + 1.5);
       }
     },
     // An FM bell on D, and its octave below.

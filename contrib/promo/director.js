@@ -68,6 +68,33 @@
   const HOOK_VOICE = 0.2;
   // In a cut, typing is a flurry: a key is heard at most this often.
   const KEY_GAP = 0.05;
+  // A cut frames its result, close: what was done in its last LATE share,
+  // filling FILL of the picture above the band, and zoomed up to REEL_ZOOM
+  // by the end of its push. A narrated video keeps to ZOOM.
+  const LATE = 0.6, FILL = 0.9, REEL_ZOOM = 1.9;
+  // The hook's title rises word by word (index.html), from
+  // HOOK_WORDS.start, a word every HOOK_WORDS.word seconds, each taking
+  // HOOK_WORDS.rise. A number in it counts up from 0 to itself, eased
+  // out, from the hook's first frame,
+  // landing COUNT.land before the voice says it: COUNT.said of the way
+  // into the line (Ava says "fifty" from 0.46 s of the 2.0 of "More than
+  // fifty new features."). With no line, it counts for COUNT.length.
+  const HOOK_WORDS = { start: 0, word: 0.04, rise: 0.35 };
+  const COUNT = { said: 0.23, land: 0.03, length: 0.8 };
+
+  // The picture index.html draws, in pixels: the window at rest fills it
+  // above a band kept for the subtitles, MARGIN from its top.
+  const PICTURE = { width: 1920, height: 1080, band: 156, margin: 24 };
+  // The picture's pixels to a point of the window at zoom 1, and where a
+  // zoomed-in point is brought: the middle of the space above the band.
+  const PX = (PICTURE.height - PICTURE.band - PICTURE.margin) / HEIGHT;
+  const MIDDLE = PICTURE.margin + (HEIGHT / 2) * PX;
+  // How much of the point's way to that middle a zoom takes it: all of it
+  // from PULLED on, where the window, zoomed, covers the picture.
+  const PULLED = 4 / 3;
+  const pull = zoom => clamp((zoom - 1) / (PULLED - 1), 0, 1);
+  // How far the picture reaches round that point, in points at zoom 1.
+  const REACH = { across: PICTURE.width / 2 / PX, up: MIDDLE / PX, down: (PICTURE.height - MIDDLE) / PX };
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 
@@ -114,6 +141,16 @@
   // Whether a scene, the intro or the outro lasts a fixed number of beats.
   const fixed = owner => Boolean(owner && owner.beats);
 
+  // The count of the number in a hook's `title` (its first word of
+  // digits), timed to land just before `voice`, at that time, says it; null
+  // where the title has no number.
+  function count(title, voice) {
+    const number = title.split(/\s+/).find(word => /^\d+$/.test(word));
+    if (!number) return null;
+    const to = voice ? voice.at + COUNT.said * voice.seconds - COUNT.land : COUNT.length;
+    return { from: Math.max(0, to - COUNT.length), to, value: Number(number) };
+  }
+
   // When each event happens, scene by scene, and when the scenes are, and
   // the lines the voice says.
   function place(record) {
@@ -135,6 +172,11 @@
     }
     const named = record.intro || {};
     const intro = { from: 0, to: t, title: named.title || null, text: named.text || null };
+    // The hook: its words' rise, and the count of its number.
+    if (fixed(record.intro) && named.title) {
+      intro.words = HOOK_WORDS;
+      intro.count = count(named.title, opening ? voices[0] : null);
+    }
     record.scenes.forEach((scene, index) => {
       const from = t;
       const voice = spoken(scene);
@@ -303,6 +345,53 @@
     };
   }
 
+  // The box round `rects`.
+  function union(rects) {
+    return [
+      Math.min(...rects.map(r => r[0])), Math.min(...rects.map(r => r[1])),
+      Math.max(...rects.map(r => r[2])), Math.max(...rects.map(r => r[3])),
+    ];
+  }
+
+  // What the camera looks at to frame a cut's result: `rects` filling
+  // FILL of the picture above the band, zoomed in at least until the
+  // window covers the picture (PULLED) and at most so that the push ends
+  // on REEL_ZOOM, and kept where the picture shows nothing but the window.
+  function closeup(rects) {
+    const [x0, y0, x1, y1] = union(rects);
+    const fit = FILL * Math.min((2 * REACH.across) / Math.max(x1 - x0, 1), HEIGHT / Math.max(y1 - y0, 1));
+    const zoom = clamp(fit, PULLED, REEL_ZOOM / (1 + PUSH));
+    return {
+      x: clamp((x0 + x1) / 2, REACH.across / zoom, WIDTH - REACH.across / zoom),
+      y: clamp((y0 + y1) / 2, REACH.up / zoom, HEIGHT - REACH.down / zoom),
+      zoom,
+      area: lit(x0, y0, x1, y1),
+    };
+  }
+
+  // What a cut frames of an event: its rect, but of a key in a wide field
+  // (the SQL editor: typing, Format, Run), only the left part, where the
+  // text is.
+  function near(event) {
+    const [x0, y0, x1, y1] = event.rect;
+    return event.kind === "point" || event.kind === "click" ? event.rect : [x0, y0, Math.min(x1, x0 + TYPE_SPAN), y1];
+  }
+
+  // A cut's framing, `events` its own: its result. The rects of what it
+  // did in its last LATE; else of all it did; else, where nothing it did
+  // has one (a key with nothing focused), the box its last change on
+  // screen took (the runner's `changed`); else the whole window.
+  function result(events, scene) {
+    const late = scene.to - LATE * (scene.to - scene.from);
+    const rects = events.filter(e => e.rect);
+    const ending = rects.filter(e => e.at >= late - 1e-9);
+    const changes = events.filter(e => e.changed);
+    if (ending.length) return closeup(ending.map(near));
+    if (rects.length) return closeup(rects.map(near));
+    if (changes.length) return closeup([changes[changes.length - 1].changed]);
+    return WHOLE;
+  }
+
   const WHOLE = {
     x: WIDTH / 2, y: HEIGHT / 2, zoom: 1,
     area: { x0: 0, y0: 0, x1: WIDTH, y1: HEIGHT, alpha: 0 },
@@ -438,7 +527,7 @@
   }
 
   // What is heard when: a key for each character and key, a click, a tick
-  // under a keycap, a soft bell as a slide comes in, a bell on the outro,
+  // under a keycap (none in a cut), a soft bell as a slide comes in, a bell on the outro,
   // and in a reel a hit with it. In a cut, typing is heard a key every
   // KEY_GAP at most. The camera's moves are silent.
   function sounds(timed, outro, slides, random, reel) {
@@ -450,7 +539,9 @@
         key = e.at;
       }
       if (e.kind === "press") all.push({ at: e.at, kind: "key", gain: 0.9 });
-      if (e.kind === "command") all.push({ at: e.at, kind: "key", gain: 1 }, { at: e.at, kind: "tick", gain: 0.8 });
+      if (e.kind === "command") all.push({ at: e.at, kind: "key", gain: 1 });
+      // The tick goes with a keycap, which a cut has none of.
+      if (e.kind === "command" && !e.cut) all.push({ at: e.at, kind: "tick", gain: 0.8 });
       if (e.kind === "press" || e.kind === "command") key = e.at;
       if (e.kind === "click") all.push({ at: e.at, kind: "click", gain: 1 });
     }
@@ -468,12 +559,10 @@
     const { timed, scenes, voices, intro, outro, duration, beat, bar, cuts } = place(record);
     // The camera holds the wide shot while the window rises, and a moment after.
     const slides = scenes.filter(scene => scene.slide);
-    // The cuts, each framed on all its events.
+    // The cuts, each framed on its result.
     const shots = scenes.flatMap((scene, index) => {
       if (!scene.beats || scene.slide) return [];
-      const rects = timed.filter(e => e.scene === index && e.rect).map(aim);
-      const framing = rects.length ? view(rects, ZOOM[1] / (1 + PUSH)) : WHOLE;
-      return [{ from: scene.from, to: scene.to, view: framing }];
+      return [{ from: scene.from, to: scene.to, view: result(timed.filter(e => e.scene === index), scene) }];
     });
     const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2, slides, shots);
     const reel = scenes.some(scene => scene.beats);
@@ -493,20 +582,18 @@
       spot,
       pointer: point(timed, duration),
       clicks: timed.filter(e => e.kind === "click").map(e => ({ at: e.at, x: e.where.x, y: e.where.y })),
-      // A keycap in a cut goes with it.
-      keycaps: timed.filter(e => e.kind === "command").map(e =>
-        e.cut
-          ? { at: e.at, until: Math.min(e.at + KEYCAP, scenes[e.scene].to), keys: e.keys, cut: true }
-          : { at: e.at, until: e.at + KEYCAP, keys: e.keys }),
+      // A cut has no keycap: its label stands alone.
+      keycaps: timed.filter(e => e.kind === "command" && !e.cut).map(e => ({ at: e.at, until: e.at + KEYCAP, keys: e.keys })),
       sounds: sounds(timed, outro, slides.filter(card => !card.beats), seeded(`${record.title} keys`), reel),
       reel,
       cuts,
       voices: voices.map(({ at, file, seconds, text }) => ({ at, file, seconds, text })),
-      subtitles: subtitles(voices),
+      // A reel's lines are heard, not read: its cards say the same.
+      subtitles: reel ? [] : subtitles(voices),
     };
   }
 
-  const api = { schedule, place, film, seeded, FPS };
+  const api = { schedule, place, film, seeded, FPS, PICTURE, pull, REACH, WIDTH, HEIGHT };
   if (typeof module !== "undefined") module.exports = api;
   else globalThis.Director = api;
 })();
