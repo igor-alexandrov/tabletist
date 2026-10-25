@@ -78,6 +78,21 @@ Every task ends with all four passing and one commit. Commits are signed
    there, but `keys::handle` does not run under a dialog: replayed, the
    key would do nothing. Such a choice runs as a click (`menu::handling`,
    Task 6).
+10. **On macOS an item is greyed only while its menu is open.** Task 3's
+    AppKit test showed that NSMenu takes a disabled item's key equivalent
+    and performs nothing, so the key never reaches the window. The crate
+    keeps every item enabled for AppKit and stores the state the app
+    wants; an `NSMenuDelegate` on each menu applies it in `menuWillOpen:`
+    and enables the items again in `menuDidClose:`. Every key then reaches
+    the app (and is replayed), and an open menu greys what does not
+    apply. The delegate class needs `unsafe` (defining an Objective-C
+    class), in one module of `tabletist-menubar` with SAFETY notes.
+    Windows greys as usual: it installs no accelerator table.
+11. **On macOS a chord with Shift and a mark shows no key.** The same
+    test showed AppKit does not match `[` with Shift against the `{` a
+    keyboard sends, so ⇧⌘[ and ⇧⌘] (Previous and Next Tab) get no key
+    equivalent; the keys still work through the keymap. The crate drops
+    such a key when it builds an item.
 
 ## Files
 
