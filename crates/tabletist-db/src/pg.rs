@@ -14,14 +14,15 @@ use tokio_postgres::{SimpleQueryMessage, Socket};
 use crate::adapter::Adapter;
 use crate::agent::{Catalog, ColumnName, Limits, Read, Sources};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Ddl,
+    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
     ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptMode, ScriptOutcome,
     Secrets, Sql, StopFlag, Structure, Value, ValueKind, WriteOutcome, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+mod ddl;
 mod hidden;
 mod script;
 mod write;
@@ -567,6 +568,10 @@ impl Adapter for Conn {
                 })
             })
             .collect()
+    }
+
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        self.read_ddl(object).await
     }
 
     async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
