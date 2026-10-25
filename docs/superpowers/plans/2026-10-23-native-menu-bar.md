@@ -1227,7 +1227,8 @@ pub(crate) fn key_down() -> Option<KeyDown> {
 ```
 
 If any of these calls is `unsafe` in objc2-app-kit 0.3.2, stop: the
-review found them safe, and the crate has no `unsafe` module until Task 9.
+review found them safe, and the crate's only `unsafe` module is the
+delegate of Departure 10 (`src/macos/opening.rs`).
 
 - [ ] **Step 5: Run the AppKit test**
 
@@ -2094,6 +2095,24 @@ fn a_key_under_a_dialog_that_the_keymap_would_not_read_is_a_click() {
     assert_eq!(handling(&harness.app, paste, Via::Click, None), Handling::Click);
     assert!(matches!(handling(&harness.app, copy, Via::Click, copy_key), Handling::Replay(_, Via::Click)));
 }
+
+#[test]
+fn a_greyed_command_chosen_by_a_key_or_a_script_does_nothing() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_fake();
+    harness.app.apply(Action::ShowAbout);
+    harness.settle();
+    let new_sql = Item::Command(Command::NewSqlTab);
+    let key = super::key_of(&harness.app.keymap, harness.app.layout(), new_sql);
+    // Greyed under the dialog, and its key not read there: AppKit still
+    // performs it (the item is enabled outside an open menu), and the app
+    // drops it rather than open a tab behind the dialog.
+    assert!(!harness.app.menu_state(new_sql).enabled);
+    assert_eq!(handling(&harness.app, new_sql, Via::Key, key), Handling::Ignore);
+    // A script's click on the greyed item, likewise.
+    assert_eq!(handling(&harness.app, new_sql, Via::Click, key), Handling::Ignore);
+    let _ = tab;
+}
 ```
 
 Two more, written the same way from the tests they mirror:
@@ -2250,6 +2269,8 @@ pub enum Handling {
     Replay(MenuKey, tabletist_menubar::Via),
     /// A click: `App::choose`, or `Window::logic` for Exit and Paste.
     Click,
+    /// Nothing: a command the app greys, chosen by a key or a script.
+    Ignore,
 }
 
 pub fn handling(
@@ -2270,6 +2291,11 @@ pub fn handling(
             Handling::Replay(key, Via::Key)
         }
         (Item::QuickOpen, Via::Key, Some(key)) => Handling::Replay(key, Via::Key),
+        // On macOS an item stays enabled for AppKit outside an open menu
+        // (Departure 10), so a key the keymap would not read here (⌘T
+        // under a dialog) or a script can choose one the app greys: it
+        // does nothing, as without a menu.
+        _ if !app.menu_state(item).enabled => Handling::Ignore,
         _ => Handling::Click,
     }
 }
@@ -2456,6 +2482,7 @@ impl Bar {
             match handling(app, item, via, key) {
                 Handling::Replay(key, via) => presses.push((key, via)),
                 Handling::Click => self.clicks.push(item),
+                Handling::Ignore => {}
             }
         }
         self.replay.frame(&mut raw.events, &presses);
@@ -2644,7 +2671,8 @@ In "Architecture", the `unsafe` paragraph becomes:
 
 > - The workspace forbids `unsafe`. AppKit and CoreText calls that cannot
 >   be made without it go in `crates/tabletist-appkit`, the menu bar's
->   (muda's Windows attach) in `crates/tabletist-menubar`, and SQLite
+>   (an AppKit menu delegate, muda's Windows attach) in
+>   `crates/tabletist-menubar`, and SQLite
 >   calls in `crates/tabletist-sqlite-ffi`, behind a safe API, each with a
 >   SAFETY note; `src/macos.rs`, `crates/tabletist-db` and everything else
 >   stay free of it.
@@ -2697,14 +2725,11 @@ A second branch from `main` once Part 1 is merged.
 
 - [ ] **Step 1: Write the failing test**
 
-In `crates/tabletist-menubar/src/native.rs`, a test module that runs on
-macOS and Windows (where muda builds):
+In `crates/tabletist-menubar/src/native.rs`'s existing `mod tests`
+(Task 3 made one), a test for Windows only:
 
 ```rust
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-
+    #[cfg(windows)]
     #[test]
     fn a_choice_reaches_the_bar_attached_last() {
         let menus = vec![Menu {
@@ -2714,14 +2739,19 @@ mod tests {
         }];
         // No window: built and routed, not attached.
         let mut bar = Bar::attach(None, menus, || {}).expect("the bar builds");
-        let id = bar.built.items[&7].id().clone();
+        let id = bar.built.items[&7].item.id().clone();
         route(MenuEvent { id });
         assert_eq!(bar.chosen(), [(7, Via::Click)]);
     }
-}
 ```
 
-`MenuEvent`'s `id` field is public in muda 0.21 (`menu_event.rs`).
+Task 3 keeps each item as an `Rc<Slot>` holding the muda `MenuItem`;
+reach its id the way `Built` holds it now. `MenuEvent`'s `id` field is
+public in muda 0.21 (`menu_event.rs`). Also on Windows: `set_enabled`
+applies at once (Task 3's `Slot::want` has the branch), with a test
+that a greyed item reads disabled without any menu opening; and
+`character()`'s `cfg_attr(not(any(test, target_os = "macos")), expect(dead_code, …))`
+gains `windows` (`not(any(test, target_os = "macos", windows))`).
 
 - [ ] **Step 2: Run it to see it fail (on Windows or in CI)**
 
@@ -2733,12 +2763,14 @@ Expected on Windows: compile errors (muda is not built there yet).
 - `Cargo.toml` of the crate: the muda dependency's target becomes
   `cfg(any(target_os = "macos", windows))`, with the comment saying
   Windows adds `windows-sys` features; the lints comment says
-  `unsafe_code` is lowered to `deny` and allowed only in `windows.rs`:
+  `unsafe_code` stays lowered to `deny`, now allowed in `windows.rs` as
+  well as `macos/opening.rs`:
 
   ```toml
-  # muda's Windows attach subclasses the window, which it marks unsafe:
+  # Defining the AppKit menu delegate (`macos/opening.rs`) and muda's
+  # Windows attach (`windows.rs`), which subclasses the window, need unsafe:
   # this crate carries the workspace's lints with `unsafe_code` lowered to
-  # `deny`, allowed only in `windows.rs`, with a SAFETY note.
+  # `deny`, allowed only in those two modules, each use with a SAFETY note.
   [lints.rust]
   unsafe_code = "deny"
 
@@ -2916,6 +2948,16 @@ macOS:
   shows no key and AppKit no longer takes it (the rebuild).
 - A held ⇧⌘↩ runs once; two quick taps run twice.
 - A non-US layout (German): ⇧⌘[ and the letters' chords.
+- Departure 11 rests on synthetic key events, which also failed to match
+  ⇧⌘Z (a key every app's Redo answers). On a real keyboard in the
+  running app, with the filter taken out for the check: does ⇧⌘[ choose
+  Previous Tab, ⇧⌘Z Redo, ⌃⇧⇥ Previous Connection? If ⇧⌘[ works, drop
+  the filter; if ⌃⇧⇥ does not, extend it to Shift with Tab.
+- Departure 10 in the running app: opening a menu greys what does not
+  apply (AppKit calls `menuWillOpen:`), closing it gives every key back,
+  and a greyed item's key still does what it does without a menu.
+- A choice made by a real key equivalent arrives as `Via::Key` (the
+  AppKit test's synthetic events leave `currentEvent` empty).
 - A key equivalent during IME composition (Japanese input in the SQL
   editor): the key comes back released.
 
