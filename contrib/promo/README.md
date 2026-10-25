@@ -20,8 +20,8 @@ It writes `target/promo/filtering.mp4` and keeps its working files in
 (`CHROME` names another one).
 
 The voice is macOS's own: `say` speaks each line into
-`target/promo/<name>/voice/`, so a scenario with lines renders on a Mac
-only. Its voice has to be installed. If it is not, the render stops and
+`target/promo/<name>/voice/`, so only a Mac renders a scenario's lines.
+Elsewhere the video is made without them, as if they were not written. Its voice has to be installed. If it is not, the render stops and
 says so: add it in System Settings > Accessibility > Spoken Content >
 System voice > Manage Voices. `say -v '?'` lists the installed ones.
 
@@ -36,13 +36,15 @@ System voice > Manage Voices. `say -v '?'` lists the installed ones.
   sound only. It never changes what the steps do: to try a changed step,
   run without it.
 
-Renders need a GPU and Chrome, so they run on a Mac, by hand.
+Renders need a GPU and Chrome, and run by hand. On Linux, name the browser:
+`CHROME=/usr/bin/chromium`.
 
 ## The scenario
 
 ```toml
 title    = "Filtering"     # the intro card says it; the video is named after the file
 database = "bookshop"      # the Bookshop fixture, or a path to a SQLite file
+look     = "macos"         # or "omarchy" (see The look)
 tempo    = 128             # the music's beats per minute; a scene ends on a half bar
 voice    = "Ava (Premium)" # the voice that says the lines, as `say -v` names it
 
@@ -181,7 +183,21 @@ beats = 8
 
 A scenario with no `beats` sounds and moves as before.
 
-The look is macOS, in the light theme. The Omarchy look is not in this.
+## The look
+
+`look = "macos"` (the default) films the app in the macOS look, in the
+light theme, under its title bar. `look = "omarchy"` films it in the
+Omarchy look, in Tokyo Night as the site's screenshots show it: no title
+bar, and the window is square, in Hyprland's 2 px border of the accent, on
+a dark desk. `scenarios/whats-new-omarchy.toml` is the What's new reel in
+it.
+
+The steps press the look's keys. On Omarchy many are vim's letters or a
+line of the `:` prompt, and a `command` presses them as they are spelled:
+`delete_row` is `dd`, `review_sql` types `:diff` and Enter. A `press`
+takes the same: `{ press = "==" }` formats the line under the cursor in
+the SQL editor's normal mode. A new SQL tab's editor takes typing at once;
+Esc goes to normal mode (a second Esc where the completions are open).
 
 ## What a video looks and sounds like
 
@@ -222,8 +238,8 @@ never do.
 |---|---|
 | `open = "<object>"` | The pointer goes to the object in the tree and clicks it. |
 | `click = "<text>"` | The pointer goes to the node with that label, or else to the painted text (a grid's cell is not a node), and clicks there. |
-| `command = "<id>"`, `key = "<keys>"`, `times = n` | The command's key goes down, `times` times (1 by default). The id is the one `settings.toml` uses. `key` picks one of the command's keys, spelled as `settings.toml` spells keys; without it, the first. The keycap is shown. |
-| `press = "<keys>"`, `times = n` | A key that no command holds where the keyboard is (Enter in a field, Backspace), spelled as `settings.toml` spells keys. |
+| `command = "<id>"`, `key = "<keys>"`, `times = n` | The command's keys are pressed, `times` times (1 by default): one chord, a few keys one after another (`dd`), or a `:` line and Enter. The id is the one `settings.toml` uses. `key` picks one of the command's keys in the look, spelled as `settings.toml` spells keys; without it, the first. The keycap is shown. |
+| `press = "<keys>"`, `times = n` | Keys that no command holds where the keyboard is (Enter in a field, Backspace, vim's `==`), spelled as `settings.toml` spells keys. |
 | `type = "<text>"` | Typed into what has the keyboard, a character at a time. A newline is Enter. |
 | `hold = <seconds>` | The picture stays, beyond the scene's own time. |
 
