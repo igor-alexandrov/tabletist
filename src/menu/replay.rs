@@ -16,15 +16,21 @@ use crate::keymap::{MenuKey, Mods};
 pub struct Replay {
     /// What winit last said is held.
     real: Modifiers,
-    /// A click held its chord's modifiers: give back `real` next frame.
+    /// A frame held a chord's modifiers (a click, or Copy and Cut however
+    /// chosen): give back `real` next frame.
     restore: bool,
 }
 
 impl Replay {
     /// Adds `presses` to a frame's `events`, which hold what winit sent.
-    pub fn frame(&mut self, events: &mut Vec<Event>, presses: &[(MenuKey, Via)]) {
+    /// Gives whether a restore is pending: then the caller asks for
+    /// another frame (`request_repaint`), so what is really held comes
+    /// back at once rather than with the next input.
+    pub fn frame(&mut self, events: &mut Vec<Event>, presses: &[(MenuKey, Via)]) -> bool {
+        // egui lets everything go when the window loses focus.
         let told = events.iter().rev().find_map(|event| match event {
             Event::ModifiersChanged(held) => Some(*held),
+            Event::WindowFocused(false) => Some(Modifiers::NONE),
             _ => None,
         });
         if let Some(held) = told {
@@ -53,11 +59,18 @@ impl Replay {
                     };
                     match via {
                         // The key is down and winit sends its release:
-                        // the press goes before a release already here.
+                        // the press goes before the frame's first end of
+                        // it (its release, or a focus loss, which lets
+                        // every key go), so egui does not keep it down.
+                        // A second press of the key in one frame goes
+                        // there too and is a repeat: AppKit sends a held
+                        // chord's autorepeats as more choices, which must
+                        // stay repeats, and two taps in one frame are
+                        // rarer than that.
                         Via::Key => {
                             let at = events
                                 .iter()
-                                .position(|event| releases(event, key.key))
+                                .position(|event| ends(event, key.key))
                                 .unwrap_or(events.len());
                             events.insert(at, press);
                         }
@@ -78,6 +91,7 @@ impl Replay {
                 }
             }
         }
+        self.restore
     }
 }
 
@@ -94,8 +108,17 @@ fn clipboard(key: MenuKey) -> Option<Event> {
     }
 }
 
-fn releases(event: &Event, key: egui::Key) -> bool {
-    matches!(event, Event::Key { key: up, pressed: false, .. } if *up == key)
+/// Whether `event` lets `key` go: its release, or the window losing focus.
+fn ends(event: &Event, key: egui::Key) -> bool {
+    match event {
+        Event::Key {
+            key: up,
+            pressed: false,
+            ..
+        } => *up == key,
+        Event::WindowFocused(focused) => !focused,
+        _ => false,
+    }
 }
 
 /// The modifiers egui-winit reports for `mods` on this platform:

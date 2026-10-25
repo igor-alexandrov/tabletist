@@ -352,7 +352,8 @@ fn a_click_s_replay_holds_its_modifiers_for_one_frame_and_releases_its_key() {
     let undo = cmd_key(Key::Z, false);
     let mut replay = Replay::default();
     let mut events = Vec::new();
-    replay.frame(&mut events, &[(undo, Via::Click)]);
+    let pending = replay.frame(&mut events, &[(undo, Via::Click)]);
+    assert!(pending, "a restore waits for the next frame");
     assert_eq!(events.len(), 3, "{events:?}");
     assert_eq!(events[0], Event::ModifiersChanged(held(undo)));
     assert!(matches!(
@@ -373,12 +374,128 @@ fn a_click_s_replay_holds_its_modifiers_for_one_frame_and_releases_its_key() {
     ));
     // The next frame gives back what is really held.
     let mut next = Vec::new();
-    replay.frame(&mut next, &[]);
+    assert!(!replay.frame(&mut next, &[]), "nothing waits after it");
     assert_eq!(next, [Event::ModifiersChanged(Modifiers::NONE)]);
     // And then nothing more.
     let mut after = Vec::new();
     replay.frame(&mut after, &[]);
     assert!(after.is_empty());
+}
+
+#[test]
+fn a_click_s_replay_gives_back_what_winit_said_is_held() {
+    let undo = cmd_key(Key::Z, false);
+    let mut replay = Replay::default();
+    // Shift is down when the item is clicked.
+    let mut events = vec![Event::ModifiersChanged(Modifiers::SHIFT)];
+    replay.frame(&mut events, &[(undo, Via::Click)]);
+    assert_eq!(
+        events.last(),
+        Some(&crate::testing::release(Key::Z, held(undo)))
+    );
+    let mut next = Vec::new();
+    replay.frame(&mut next, &[]);
+    assert_eq!(next, [Event::ModifiersChanged(Modifiers::SHIFT)]);
+}
+
+#[test]
+fn a_frame_that_says_what_is_held_gets_no_restore() {
+    let undo = cmd_key(Key::Z, false);
+    let mut replay = Replay::default();
+    let mut events = Vec::new();
+    replay.frame(&mut events, &[(undo, Via::Click)]);
+    // Winit says what is held itself: that stands, alone.
+    let told = Event::ModifiersChanged(Modifiers::ALT);
+    let mut next = vec![told.clone()];
+    assert!(!replay.frame(&mut next, &[]));
+    assert_eq!(next, [told]);
+    // And it is what a later click gives back.
+    let mut events = Vec::new();
+    replay.frame(&mut events, &[(undo, Via::Click)]);
+    let mut next = Vec::new();
+    replay.frame(&mut next, &[]);
+    assert_eq!(next, [Event::ModifiersChanged(Modifiers::ALT)]);
+}
+
+/// Whether each key press in `events` is a repeat, as egui reads them
+/// from a frame whose keys start up.
+fn repeats(events: Vec<Event>) -> Vec<bool> {
+    let ctx = egui::Context::default();
+    let mut seen = Vec::new();
+    let input = egui::RawInput {
+        events,
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(input, |ui| seen = ui.input(|input| input.events.clone()));
+    output.textures_delta.clear();
+    seen.iter()
+        .filter_map(|event| match event {
+            Event::Key {
+                pressed: true,
+                repeat,
+                ..
+            } => Some(*repeat),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn two_presses_of_one_key_in_one_frame_are_a_press_and_a_repeat() {
+    // AppKit sends each autorepeat of a held chord as one more choice by
+    // key, with nothing to tell it from a tap: those must stay repeats
+    // (Run All may write). So two quick taps in one frame, rarer than a
+    // held chord, are one press and a repeat.
+    let run_all = cmd_key(Key::Enter, true);
+    let mut replay = Replay::default();
+    let up = crate::testing::release(Key::Enter, held(run_all));
+    let mut events = vec![up.clone(), up];
+    let tap = (run_all, Via::Key);
+    replay.frame(&mut events, &[tap, tap]);
+    let pressed: Vec<Option<bool>> = events
+        .iter()
+        .map(|event| match event {
+            Event::Key { pressed, .. } => Some(*pressed),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        pressed,
+        [Some(true), Some(true), Some(false), Some(false)],
+        "{events:?}"
+    );
+    assert_eq!(repeats(events), [false, true]);
+}
+
+#[test]
+fn a_key_s_replay_comes_before_a_focus_loss() {
+    let run_all = cmd_key(Key::Enter, true);
+    let mut replay = Replay::default();
+    replay.frame(&mut vec![Event::ModifiersChanged(Modifiers::SHIFT)], &[]);
+    // The key went down, then the window lost focus before its release:
+    // egui lets every key go there, so the press must come first.
+    let mut events = vec![Event::WindowFocused(false)];
+    replay.frame(&mut events, &[(run_all, Via::Key)]);
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                Event::Key {
+                    key: Key::Enter,
+                    pressed: true,
+                    ..
+                },
+                Event::WindowFocused(false)
+            ]
+        ),
+        "{events:?}"
+    );
+    // Nothing is held after it: a click gives back no Shift.
+    let mut events = Vec::new();
+    replay.frame(&mut events, &[(cmd_key(Key::Z, false), Via::Click)]);
+    let mut next = Vec::new();
+    replay.frame(&mut next, &[]);
+    assert_eq!(next, [Event::ModifiersChanged(Modifiers::NONE)]);
 }
 
 #[test]
@@ -474,6 +591,47 @@ fn run_all_replayed_runs_once_when_held_and_again_for_a_second_tap() {
 }
 
 #[test]
+fn a_held_run_all_s_autorepeats_and_release_in_one_frame_run_nothing_more() {
+    let (mut harness, tab) = sql_editor();
+    {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        let sql = workspace.sql_tab_mut(id).unwrap();
+        sql.text = "select 1".into();
+        sql.cursor = 0;
+    }
+    harness.settle();
+    let key = harness
+        .app
+        .keymap
+        .menu_key(Command::RunAll, harness.app.layout())
+        .expect("Run All has a chord");
+    let mut replay = Replay::default();
+    let before = runs_sent(&harness);
+    // The chord goes down: egui holds the key from here.
+    let mut events = Vec::new();
+    replay.frame(&mut events, &[(key, Via::Key)]);
+    harness.frame(events);
+    assert_eq!(runs_sent(&harness), before + 1);
+    harness.answer_sql(
+        Ok(crate::testing::script_outcome(vec![
+            crate::testing::rows_outcome(1),
+        ])),
+        None,
+    );
+    harness.settle();
+    // A long frame: two autorepeats, then the release.
+    let mut events = vec![crate::testing::release(key.key, held(key))];
+    replay.frame(&mut events, &[(key, Via::Key), (key, Via::Key)]);
+    harness.frame(events);
+    assert_eq!(runs_sent(&harness), before + 1, "the repeats ran nothing");
+    let down = harness
+        .ctx
+        .input(|input| input.keys_down.contains(&key.key));
+    assert!(!down, "the key went back up");
+}
+
+#[test]
 fn a_clicked_copy_copies_the_grid_s_cell() {
     // A cell selected with the grid having the keyboard, as
     // `src/ui/mod.rs` sets it up before `harness.copy`.
@@ -551,18 +709,29 @@ fn a_replayed_cmd_r_on_a_table_s_rows_reloads_the_rows() {
         .keymap
         .menu_key(Command::Reload, harness.app.layout())
         .expect("Reload has a chord");
+    let fetched = |harness: &Harness| {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| matches!(command, crate::backend::Command::FetchRows { .. }))
+            .count()
+    };
+    let schemas = |harness: &Harness| {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| {
+            matches!(
+                command,
+                crate::backend::Command::ListSchemas { .. }
+                    | crate::backend::Command::ListObjects { .. }
+            )
+        })
+        .count()
+    };
+    let (rows, tree) = (fetched(&harness), schemas(&harness));
     let mut replay = Replay::default();
     let mut events = vec![crate::testing::release(reload.key, held(reload))];
     replay.frame(&mut events, &[(reload, Via::Key)]);
     harness.frame(events);
-    assert!(
-        matches!(
-            crate::testing::last_sent(&harness.app),
-            crate::backend::Command::FetchRows { .. }
-        ),
-        "{:?}",
-        crate::testing::last_sent(&harness.app)
-    );
+    assert_eq!(fetched(&harness), rows + 1, "the rows were fetched again");
+    assert_eq!(schemas(&harness), tree, "not the schema");
 }
 
 #[test]
@@ -618,6 +787,27 @@ fn a_greyed_command_chosen_by_a_key_or_a_script_does_nothing() {
     // A script's click on the greyed item, likewise.
     assert_eq!(
         handling(&harness.app, new_sql, Via::Click, key),
+        Handling::Ignore
+    );
+}
+
+#[test]
+fn an_edit_item_without_a_key_is_greyed_but_paste() {
+    let mut harness = Harness::new();
+    let copy = Item::Edit(EditItem::Copy);
+    let paste = Item::Edit(EditItem::Paste);
+    // The standard look's layout has the Edit items' keys.
+    assert!(harness.app.menu_state(copy).enabled);
+    assert!(harness.app.menu_state(paste).enabled);
+    // The Omarchy look's has none: a click would replay nothing. Paste is
+    // the window's, which reads the clipboard.
+    harness.set_look(crate::theme::Look::omarchy());
+    let layout = harness.app.layout();
+    assert_eq!(harness.app.keymap.edit_key(EditItem::Copy, layout), None);
+    assert!(!harness.app.menu_state(copy).enabled);
+    assert!(harness.app.menu_state(paste).enabled);
+    assert_eq!(
+        handling(&harness.app, copy, Via::Click, None),
         Handling::Ignore
     );
 }

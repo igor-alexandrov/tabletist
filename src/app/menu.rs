@@ -1,7 +1,7 @@
 //! The menu bar's items as the app has them now: which are enabled, what
 //! a toggle says, and what a click does.
 
-use crate::keymap::{Command, Scope};
+use crate::keymap::{Command, EditItem, Scope};
 use crate::menu::{Item, title};
 use crate::model::{Action, ConnTabId, RunMode, Tab};
 
@@ -37,9 +37,20 @@ impl App {
                 enabled: self.workspace(self.active_tab_id()).is_some(),
                 title: title(item, false),
             },
+            // The window reads the clipboard, wherever it goes.
+            Item::Edit(EditItem::Paste) => ItemState {
+                enabled: true,
+                title: title(item, false),
+            },
+            // Replayed as its key, so only where the layout has one (the
+            // Omarchy look's has none); egui decides what the key reaches.
+            Item::Edit(edit) => ItemState {
+                enabled: self.keymap.edit_key(edit, self.layout()).is_some(),
+                title: title(item, false),
+            },
             // Their actions decide (the About reducer, the close's
-            // `hold_close`), and egui decides what an Edit item reaches.
-            Item::About | Item::Exit | Item::Edit(_) | Item::Native(_) => ItemState {
+            // `hold_close`).
+            Item::About | Item::Exit | Item::Native(_) => ItemState {
                 enabled: true,
                 title: title(item, false),
             },

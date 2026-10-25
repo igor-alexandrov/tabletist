@@ -267,7 +267,7 @@ pub fn key_of(keymap: &Keymap, layout: Layout, item: Item) -> Option<MenuKey> {
     }
 }
 
-/// What a choice of `item` (made `via`, `key` its menu key) does.
+/// What a menu choice does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handling {
     /// Into the frame's input as the press of `key` (`Replay`).
@@ -278,8 +278,8 @@ pub enum Handling {
     Ignore,
 }
 
-/// What a choice of `item` does, kept apart from muda so it is tested
-/// headlessly.
+/// What a choice of `item` (made `via`, `key` its menu key) does, kept
+/// apart from muda so it is tested headlessly.
 pub fn handling(app: &crate::app::App, item: Item, via: Via, key: Option<MenuKey>) -> Handling {
     match (item, via, key) {
         // The window reads the clipboard: never a replay.
