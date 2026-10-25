@@ -17,7 +17,7 @@
 //
 // The lines the voice says are spoken first, by macOS's `say`, into
 // <work dir>/voice/, and measured, so the director can time the scenes
-// round them.
+// round them. Off a Mac, the video has no voice.
 
 "use strict";
 
@@ -47,8 +47,12 @@ function installed() {
 function speak(record, work) {
   const owners = [record.intro, ...record.scenes, record.outro].filter(owner => owner && owner.say);
   if (owners.length === 0) return;
+  // Off a Mac there is no voice: the video is made without its lines,
+  // timed as if they were never written.
   if (process.platform !== "darwin") {
-    throw new Error("the voice is macOS's say: a scenario with lines to say renders on a Mac");
+    console.warn("no voice: it is macOS's say, so the lines are left out of this render");
+    owners.forEach(owner => delete owner.say);
+    return;
   }
   if (!installed().includes(record.voice)) {
     throw new Error(
