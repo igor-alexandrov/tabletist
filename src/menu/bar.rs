@@ -14,7 +14,7 @@ use tabletist_menubar::{Entry, MenuBar, Shortcut, Via};
 
 use crate::app::{App, ItemState};
 use crate::i18n::gettext;
-use crate::keymap::{Keymap, Layout, MenuKey};
+use crate::keymap::{EditItem, Keymap, Layout, MenuKey};
 
 use super::{Handling, Item, Platform, Replay, bar, handling, key_of, title};
 
@@ -231,10 +231,23 @@ impl Feed {
         again
     }
 
-    /// A pass drew the frame last fed: egui read its events.
-    pub fn drawn(&mut self) {
+    /// A pass drew the frame last fed: egui read its events. Gives
+    /// whether a restore waits, for the caller to ask for a frame: the
+    /// one `input` asked for may have gone to a frame it fed nothing.
+    pub fn drawn(&mut self) -> bool {
         self.fed = false;
+        self.replay.restoring()
     }
+}
+
+/// The clicks of `clicks` that run in the frame `raw` is the input of:
+/// all but a paste where the window takes no keys, which would land in
+/// whatever field has the keyboard when it comes back.
+pub(super) fn admitted(raw: &egui::RawInput, mut clicks: Vec<Item>) -> Vec<Item> {
+    if !takes_keys(raw) {
+        clicks.retain(|item| *item != Item::Edit(EditItem::Paste));
+    }
+    clicks
 }
 
 /// Whether the window reads keys in the frame `raw` is the input of:
@@ -293,10 +306,11 @@ impl Bar {
 
     /// Takes what was chosen since the last frame: what replays goes into
     /// `raw`'s events (`route`, `Feed`); the clicks wait for
-    /// [`Bar::clicks`], whether or not the window takes keys.
+    /// [`Bar::clicks`], whether or not the window takes keys, a paste
+    /// only where it does (`admitted`).
     pub fn input(&mut self, raw: &mut egui::RawInput, app: &App) {
         let (presses, clicks) = route(app, &self.items, &self.keyed.keys, self.menu.chosen());
-        self.clicks.extend(clicks);
+        self.clicks.extend(admitted(raw, clicks));
         if self.feed.input(raw, &presses) {
             // What is really held comes back next frame, not with the
             // next input.
@@ -312,7 +326,11 @@ impl Bar {
     /// Shows the app as it is after the frame, which a pass drew: built
     /// again where an item's key changed, then each item's state.
     pub fn sync(&mut self, app: &App) {
-        self.feed.drawn();
+        if self.feed.drawn() {
+            // What is really held comes back next frame, not with the
+            // next input.
+            self.ctx.request_repaint();
+        }
         // On Windows a rebuild sets the window's menu twice.
         if let Some(keys) = self.keyed.rekey(&self.items, app)
             && let Some(platform) = Platform::current()

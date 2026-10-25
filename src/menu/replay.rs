@@ -26,6 +26,11 @@ impl Replay {
     /// Gives whether a restore is pending: then the caller asks for
     /// another frame (`request_repaint`), so what is really held comes
     /// back at once rather than with the next input.
+    /// Whether a restore waits for the next frame.
+    pub fn restoring(&self) -> bool {
+        self.restore
+    }
+
     pub fn frame(&mut self, events: &mut Vec<Event>, presses: &[(MenuKey, Via)]) -> bool {
         // egui lets everything go when the window loses focus.
         let told = events.iter().rev().find_map(|event| match event {

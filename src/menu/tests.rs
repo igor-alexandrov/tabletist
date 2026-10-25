@@ -11,7 +11,7 @@ use crate::keymap::{Command, EditItem, MenuKey, Mods, Row, Scope, When};
 use crate::model::{Action, ConnTabId, Dialog};
 use crate::testing::Harness;
 
-use super::bar::{Change, Described, Feed, Id, Keyed, changes, describe, keys_of, route};
+use super::bar::{Change, Described, Feed, Id, Keyed, admitted, changes, describe, keys_of, route};
 use super::{Handling, Item, Platform, Replay, bar, handling, key_of, window_command};
 
 fn items(platform: Platform) -> Vec<Item> {
@@ -1133,5 +1133,43 @@ fn about_and_quick_open_clicked_push_their_actions() {
         matches!(harness.app.actions.as_slice(), [Action::OpenQuickOpen]),
         "{:?}",
         harness.app.actions
+    );
+}
+
+#[test]
+fn a_restore_left_for_an_undrawn_frame_asks_for_a_frame_when_drawn() {
+    let undo = cmd_key(Key::Z, false);
+    let mut feed = Feed::default();
+    let mut raw = input(Vec::new(), true, false);
+    assert!(feed.input(&mut raw, &[(undo, Via::Click)]));
+    // The frame it asked for came, undrawn, and fed nothing: drawn, the
+    // restore still waits, so the bar asks for another frame.
+    let mut raw = refed(raw.events, input(Vec::new(), true, false));
+    assert!(!feed.input(&mut raw, &[]));
+    assert!(feed.drawn());
+    let mut raw = input(Vec::new(), true, false);
+    assert!(!feed.input(&mut raw, &[]));
+    assert_eq!(raw.events, [Event::ModifiersChanged(Modifiers::NONE)]);
+    // Nothing waits now.
+    assert!(!feed.drawn());
+}
+
+#[test]
+fn a_paste_chosen_while_the_window_takes_no_keys_is_dropped() {
+    let paste = Item::Edit(EditItem::Paste);
+    let settings = Item::Command(Command::Settings);
+    let clicks = || vec![paste, settings];
+    assert_eq!(
+        admitted(&input(Vec::new(), true, false), clicks()),
+        [paste, settings]
+    );
+    // Not focused, or minimized: the other clicks still run.
+    assert_eq!(
+        admitted(&input(Vec::new(), false, false), clicks()),
+        [settings]
+    );
+    assert_eq!(
+        admitted(&input(Vec::new(), true, true), clicks()),
+        [settings]
     );
 }
