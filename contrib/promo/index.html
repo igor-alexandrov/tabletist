@@ -30,6 +30,19 @@
   #lights i { width: calc(12px * var(--s)); height: calc(12px * var(--s)); border-radius: 50%; display: block;
     box-shadow: inset 0 0 0 .5px rgba(0,0,0,.25); }
 
+  /* Omarchy: a Hyprland window in Tokyo Night, square, in its 2 px
+     border of the accent, on a dark desk with a breath of the accent at
+     the top. No traffic lights: Hyprland draws no title bar. */
+  body.omarchy { background: #13141c; }
+  .omarchy #stage {
+    background:
+      radial-gradient(1500px 700px at 50% -12%, rgba(122,162,247,.20), transparent 70%),
+      linear-gradient(#1a1b26, #0e0e14); }
+  .omarchy #window { border-radius: 0;
+    box-shadow: 0 0 0 calc(2px * var(--s)) #7aa2f7, 0 24px 70px rgba(0,0,0,.45); }
+  .omarchy #lights { display: none; }
+  .omarchy #label { box-shadow: 0 0 0 4px rgba(122,162,247,.9), 0 22px 50px rgba(0,0,0,.45); }
+
   /* Captions and subtitles: white words in a dark, rounded box, over the
      app or a card alike. */
   .box { color: #fff; background: rgba(15,23,42,.80); border-radius: 18px;
@@ -515,6 +528,7 @@ async function renderAt(t) {
 async function load(timeline, files) {
   T = timeline;
   frames = files;
+  document.body.classList.toggle("omarchy", T.look === "omarchy");
   document.documentElement.style.setProperty("--s", S);
   const el = $("window");
   el.style.width = `${1200 * S}px`;

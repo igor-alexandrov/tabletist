@@ -568,6 +568,8 @@
     const reel = scenes.some(scene => scene.beats);
     return {
       title: record.title,
+      // How the window is framed: macOS's, or Omarchy's tiled one.
+      look: record.look || "macos",
       tempo: record.tempo,
       fps: FPS,
       beat,
