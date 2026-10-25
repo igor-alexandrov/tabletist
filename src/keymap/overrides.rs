@@ -261,7 +261,11 @@ fn own_default(layout: Layout, row: Row, spelled: &Spelled) -> bool {
 impl Binding {
     fn bound_mut(&mut self, layout: Layout) -> &mut Bound {
         match layout {
-            Layout::Mac | Layout::Windows => &mut self.mac,
+            Layout::Mac => &mut self.mac,
+            Layout::Windows => match &mut self.windows {
+                Some(windows) => windows,
+                None => &mut self.mac,
+            },
             Layout::Omarchy => &mut self.omarchy,
         }
     }

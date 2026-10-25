@@ -100,6 +100,17 @@ impl Ddl {
     /// over each part after the object's. SQLite's keeps its statements
     /// apart by a blank line, and adds nothing else.
     pub fn text(&self) -> String {
+        self.laid_out().0
+    }
+
+    /// [`Self::text`], and the lines each part takes in it, from nought:
+    /// from its comment (the object's from the first line, its heading's)
+    /// to its last statement's last line, the blank line after it left out.
+    /// What lists the parts and the text are made together, so they never
+    /// disagree.
+    pub fn laid_out(&self) -> (String, Vec<(PartKind, std::ops::Range<usize>)>) {
+        let line = |text: &str| text.matches('\n').count();
+        let mut placed = Vec::with_capacity(self.parts.len());
         let mut text = String::new();
         if let Some(heading) = &self.heading {
             text.push_str("-- ");
@@ -112,12 +123,20 @@ impl Ddl {
         };
         let mut written = false;
         for part in &self.parts {
+            let mut start = None;
             for (index, statement) in part.statements.iter().enumerate() {
                 let first = index == 0;
                 if written {
                     // A part's statements are one under the other.
                     text.push_str(if sections && !first { "\n" } else { "\n\n" });
                 }
+                // The object's part starts at the heading, at the top.
+                let from = if part.kind == PartKind::Object {
+                    0
+                } else {
+                    line(&text)
+                };
+                start.get_or_insert(from);
                 if sections && first && part.kind != PartKind::Object {
                     text.push_str(part.kind.heading());
                     text.push('\n');
@@ -125,8 +144,11 @@ impl Ddl {
                 text.push_str(&terminated(statement));
                 written = true;
             }
+            if let Some(start) = start {
+                placed.push((part.kind, start..line(&text) + 1));
+            }
         }
-        text
+        (text, placed)
     }
 }
 
@@ -193,6 +215,15 @@ mod tests {
         );
         // The empty part is no part.
         assert_eq!(ddl.part(PartKind::Triggers), None);
+        // Each part's lines, from its comment to its last line.
+        assert_eq!(
+            ddl.laid_out().1,
+            [
+                (PartKind::Object, 0..4),
+                (PartKind::Indexes, 5..8),
+                (PartKind::Comments, 9..11),
+            ]
+        );
         assert_eq!(ddl.source(), Source::Catalog);
     }
 
@@ -245,6 +276,15 @@ mod tests {
              CREATE INDEX a ON t (id);\n\
              \n\
              CREATE TRIGGER x AFTER UPDATE ON t BEGIN SELECT 1; END;"
+        );
+        // With no comments, a part starts at its first statement.
+        assert_eq!(
+            ddl.laid_out().1,
+            [
+                (PartKind::Object, 0..1),
+                (PartKind::Indexes, 2..3),
+                (PartKind::Triggers, 4..5),
+            ]
         );
     }
 

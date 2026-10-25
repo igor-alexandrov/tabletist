@@ -25,6 +25,8 @@ pub mod connect_dialog;
 pub mod data_view;
 pub mod ddl;
 #[cfg(test)]
+mod ddl_act_tests;
+#[cfg(test)]
 mod ddl_tests;
 #[cfg(test)]
 mod delete_many_tests;
@@ -1267,7 +1269,7 @@ value_tags   = true
         ];
         let omarchy = [
             ("i, enter", "Edit cell"),
-            ("cc, s", "Edit cell from nothing"),
+            ("cc", "Edit cell from nothing"),
             ("x", "Set NULL"),
             ("u", "Undo one cell"),
             ("ctrl+c", "Cancel cell edit"),
@@ -2847,19 +2849,26 @@ value_tags   = true
             selection(&harness, tab),
             Some(crate::model::CellPos { row: 1, col: 1 })
         );
-        // `s` and `d` showed the Structure and the Data view. They are
-        // letters of the cell and the row now, and the views are clicked.
-        for key in [Key::S, Key::D] {
-            harness.press(key, Modifiers::NONE);
-            let view = harness
-                .app
-                .workspace(tab)
-                .unwrap()
-                .active_object_tab()
-                .unwrap()
-                .view;
-            assert_eq!(view, crate::model::ObjectView::Data, "{key:?}");
-        }
+        // `s`, `S` and `r` show the Structure, the DDL and the rows
+        // again, from any view; `d` begins the row's `dd`.
+        let view = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.active_object_tab().unwrap().view
+        };
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(view(&harness), crate::model::ObjectView::Data);
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::S, "s");
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+        harness.frame(vec![
+            crate::testing::key(Key::S, Modifiers::SHIFT),
+            egui::Event::Text("S".into()),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::S, Modifiers::SHIFT)]);
+        harness.settle();
+        assert_eq!(view(&harness), crate::model::ObjectView::Ddl);
+        type_key(&mut harness, Key::R, "r");
+        assert_eq!(view(&harness), crate::model::ObjectView::Data);
     }
 
     #[test]
@@ -4746,7 +4755,7 @@ value_tags   = true
     }
 
     /// Types `text` into whatever has the keyboard.
-    fn type_text(harness: &mut Harness, text: &str) {
+    pub(super) fn type_text(harness: &mut Harness, text: &str) {
         harness.frame(vec![egui::Event::Text(text.into())]);
         harness.settle();
     }
@@ -15484,15 +15493,18 @@ value_tags   = true
     }
 
     #[test]
-    fn s_replaces_the_cell_as_cc_does_and_shows_no_structure() {
+    fn cc_replaces_the_cell_and_s_shows_the_structure() {
         let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::C, "c");
+        type_key(&mut harness, Key::C, "c");
+        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+        harness.press(Key::Escape, Modifiers::NONE);
         type_key(&mut harness, Key::S, "s");
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(
             workspace.object_tab(id).unwrap().view,
-            crate::model::ObjectView::Data
+            crate::model::ObjectView::Structure
         );
-        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
     }
 
     #[test]
@@ -16422,14 +16434,14 @@ value_tags   = true
             changes.rows[0].set[0].new,
             tabletist_db::NewValue::Text("bob@example.comx".into())
         );
-        // `s` alone is the cell's letter: it saves nothing, and shows no
-        // other view.
+        // `s` alone saves nothing: it shows the Structure view.
         harness.answer_written(Ok(written_row("bob@example.comx")));
         type_key(&mut harness, Key::S, "s");
+        assert_eq!(writes(&harness), 2);
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(
             workspace.object_tab(id).unwrap().view,
-            crate::model::ObjectView::Data
+            crate::model::ObjectView::Structure
         );
         assert_eq!(writes(&harness), 2);
     }
@@ -16574,12 +16586,12 @@ value_tags   = true
         let (mut harness, tab, id) = normal_mode((1, 1));
         let palette = harness.app.palette;
         // Enter is the inspector's key, and `i` edits a cell that can be
-        // edited. The cell is copied with `v y`, and the views have no
-        // letters any more.
+        // edited. The cell is copied with `v y`. The views' letters are
+        // the header's to name, beside their words.
         assert!(painted(&harness, "enter inspect"), "{:?}", harness.painted);
         assert!(painted(&harness, "i edit"));
         assert!(painted(&harness, "v y copy"));
-        for gone in ["space inspect", "i inspector", "y copy", "s structure"] {
+        for gone in ["space inspect", "i inspector", "y copy"] {
             assert!(!painted(&harness, gone), "{gone}");
         }
         // Not on the row's key, which cannot.
@@ -16776,10 +16788,7 @@ value_tags   = true
         // Until the selection moves.
         type_key(&mut harness, Key::J, "j");
         assert!(!painted(&harness, why));
-        // `s` and `cc` ask as `i` does.
-        type_key(&mut harness, Key::S, "s");
-        assert!(painted(&harness, why));
-        type_key(&mut harness, Key::K, "k");
+        // `cc` asks as `i` does.
         type_key(&mut harness, Key::C, "c");
         type_key(&mut harness, Key::C, "c");
         assert!(painted(&harness, why));

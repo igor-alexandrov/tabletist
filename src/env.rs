@@ -896,6 +896,8 @@ mod tests {
         let surfaces = [
             OWNER,
             "src/ui/workspace.rs",
+            // The table's header names production beside the table.
+            "src/ui/data_view.rs",
             "src/ui/picker.rs",
             "src/ui/connect_dialog/mod.rs",
             "src/ui/env_tests.rs",

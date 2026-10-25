@@ -95,8 +95,10 @@ selection of lines.
 
 - Copy and Open in SQL editor stand at the header's end when the text
   shows. The title gives them room; where the header is short of it they
-  drop their keys before the title is cut. The read's spinner gives way
-  to them.
+  drop their keys, then their words (icons only, still named for a screen
+  reader), before the title is cut, and go where even a cut title has no
+  room (the keys still work). They never cover the view switch. The
+  read's spinner gives way to them.
 - On production the table's name has the production badge beside it, in
   every view.
 - The switch's tabs say their keys in a tooltip ("Rows · ⌃⌘1").
@@ -182,5 +184,6 @@ Omarchy: the view words say their letter, dimmed ("r rows · s structure
     engine's links; the outline.
 - The earlier tests that read `s` as Replace cell now read it as the
   Structure view.
-- Not tested: the tooltip's words, and the header's buttons dropping
-  their keys in a short header (looked at by eye).
+  - The header's buttons giving way in a narrow window, clear of the
+    switch.
+- Not tested: the tooltip's words (looked at by eye).

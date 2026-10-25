@@ -45,6 +45,7 @@ Beyond the boards, and changes to what was there:
 - The rows' `v y` copies a cell only where the rows show (before, from Structure too).
 - Counts are not read in the DDL view: `3j` moves one line.
 - Nothing copies, opens or selects a text the view does not show (a failed Reload keeps its old text under the error).
+- In a narrow window the header's Copy and Open in SQL editor drop their keys, then their words, and go where even a cut title has no room (found by eye: before, they covered the view switch).
 
 ## Checks
 
@@ -239,10 +240,10 @@ index cf128f4f..d7dd798b 100644
          assert_eq!(
 diff --git a/src/ui/ddl_act_tests.rs b/src/ui/ddl_act_tests.rs
 new file mode 100644
-index 00000000..ac7896f5
+index 00000000..7cb4ae20
 --- /dev/null
 +++ b/src/ui/ddl_act_tests.rs
-@@ -0,0 +1,774 @@
+@@ -0,0 +1,803 @@
 +//! What the DDL view does with its text, checked against its spec
 +//! (`docs/superpowers/specs/2026-10-25-ddl-view-2-act-design.md`): Copy and
 +//! Open in SQL editor, the links to its parts and the terminal's outline,
@@ -1017,6 +1018,35 @@ index 00000000..ac7896f5
 +    harness.press(Key::Escape, Modifiers::NONE);
 +    harness.settle();
 +}
++
++/// The header's Copy and Open in SQL editor give way as the window narrows:
++/// their keys go, then their words (a screen reader still reads them), and
++/// they never cover the view switch.
++#[test]
++fn the_header_buttons_give_way_in_a_narrow_window() {
++    let (mut harness, _, _) = ddl_view(Look::macos(), Driver::Postgres);
++    let keys = crate::ui::keys::written(
++        &harness.ctx,
++        &Look::macos(),
++        crate::keymap::Command::CopyDdl,
++    );
++    let painted =
++        |harness: &Harness, said: &str| harness.painted.iter().any(|(text, _)| text == said);
++    harness.settle();
++    assert!(painted(&harness, &keys));
++    for width in [1000.0, 820.0, 720.0] {
++        harness.size = egui::vec2(width, 600.0);
++        let tree = harness.settle();
++        let ddl = crate::testing::bounds(&tree, "DDL", Role::Tab).expect("the DDL tab");
++        let copy = crate::testing::bounds(&tree, "Copy", Role::Button).expect("Copy");
++        let open = crate::testing::bounds(&tree, "Open in SQL editor", Role::Button)
++            .expect("Open in SQL editor");
++        assert!(ddl.right() <= copy.left(), "{width}: {ddl:?} {copy:?}");
++        assert!(copy.right() <= open.left(), "{width}");
++    }
++    assert!(!painted(&harness, &keys));
++    assert!(!painted(&harness, "Copy"), "the words go");
++}
 diff --git a/src/ui/ddl_tests.rs b/src/ui/ddl_tests.rs
 index 44bfe37b..1391d1d4 100644
 --- a/src/ui/ddl_tests.rs
@@ -1358,6 +1388,7 @@ error[E0609]: no field `ddl_cursor` on type `&model::ObjectTab`
 error[E0609]: no field `ddl_visual` on type `&model::ObjectTab`
 error[E0599]: no variant, associated function, or constant named `OpenDdl` found for enum `model::Action` in the current scope
 error[E0599]: no method named `laid_out` found for struct `Ddl` in the current scope
+error[E0599]: no variant, associated function, or constant named `CopyDdl` found for enum `keymap::Command` in the current scope
 error[E0599]: no variant, associated function, or constant named `MoveInDdl` found for enum `keymap::Command` in the current scope
 error[E0599]: no variant, associated function, or constant named `SelectDdlLines` found for enum `keymap::Command` in the current scope
 error[E0599]: no variant, associated function, or constant named `CopyDdl` found for enum `keymap::Command` in the current scope
@@ -2038,7 +2069,7 @@ index 01269ec5..009920eb 100644
      /// refresh). Returns the count still running for them, to cancel.
      #[must_use]
 diff --git a/src/ui/data_view.rs b/src/ui/data_view.rs
-index efa4298c..36841e25 100644
+index efa4298c..02042446 100644
 --- a/src/ui/data_view.rs
 +++ b/src/ui/data_view.rs
 @@ -186,8 +186,16 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
@@ -2151,21 +2182,23 @@ index efa4298c..36841e25 100644
                      if selected {
                          let y = center + line(ui, role, &look) / 2.0 + 2.0;
                          ui.painter().rect_filled(
-@@ -362,7 +401,12 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
+@@ -362,7 +401,14 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
              };
              // In the DDL view, what it says while it reads stands where
              // Add row would.
 -            let wait = match view {
 +            // Its Copy and Open in SQL editor stand there once its text
-+            // is, and drop their keys before the title is cut.
-+            let wait = |keyed: bool| match view {
-+                ObjectView::Ddl if ddl_ready => {
-+                    12.0 + super::ddl::header_buttons_width(ui, &look, locale, keyed)
-+                }
++            // is: they drop their keys, then their words, before the title
++            // is cut, and go where even a cut title has no room.
++            use super::ddl::Buttons;
++            let wait = |form: Option<Buttons>| match view {
++                ObjectView::Ddl if ddl_ready => form.map_or(0.0, |form| {
++                    12.0 + super::ddl::header_buttons_width(ui, &look, locale, form)
++                }),
                  ObjectView::Ddl => {
                      let skin = (&look, &palette, locale);
                      let width = super::ddl::header_wait_width(ui, reading, skin);
-@@ -370,11 +414,23 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
+@@ -370,11 +416,27 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                  }
                  ObjectView::Data | ObjectView::Structure => 0.0,
              };
@@ -2180,8 +2213,12 @@ index efa4298c..36841e25 100644
 +            });
 +            let title_width = width(title_role, &name);
 +            let free = right - left - 16.0 - 12.0 - switch - badge;
-+            let keyed = free - wait(true) >= title_width;
-+            let wait = wait(keyed);
++            let cut = width(title_role, "…");
++            let form = Buttons::ALL
++                .into_iter()
++                .find(|form| free - wait(Some(*form)) >= title_width)
++                .or_else(|| (free - wait(Some(Buttons::Icons)) >= cut).then_some(Buttons::Icons));
++            let wait = wait(form);
              let stack = |button: Option<bool>| {
                  let button = button.map_or(0.0, |short| 12.0 + add_row(short).width(ui, &look));
 -                right - left - 16.0 - 12.0 - switch - button - wait
@@ -2191,7 +2228,7 @@ index efa4298c..36841e25 100644
              // The DDL view has no Add row.
              let rows = if view == ObjectView::Ddl {
                  &[None][..]
-@@ -388,7 +444,18 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
+@@ -388,7 +450,18 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                  .flatten();
              let room = stack(button).max(0.0);
              let shown = grid::ellipsize(&name, room, false, |text| width(title_role, text));
@@ -2211,7 +2248,7 @@ index efa4298c..36841e25 100644
              let sub_width = fit_parts(&parts, room, |text| width(sub_role, text))
                  .map_or(0.0, |shown| {
                      paint_named(ui, left, sub_y, sub(&shown, palette.dim), &summary)
-@@ -402,7 +469,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
+@@ -402,7 +475,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
              tab_list(&list, locale);
              let header = &mut *ui;
              let ui = &mut list;
@@ -2222,7 +2259,7 @@ index efa4298c..36841e25 100644
                  let cell = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, 28.0));
                  x += width;
                  let selected = view == *target;
-@@ -419,6 +488,11 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
+@@ -419,6 +494,11 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                      WidgetInfo::selected(WidgetType::Button, true, selected, label.as_ref())
                  });
                  view_tab(ui, &response, selected);
@@ -2234,13 +2271,17 @@ index efa4298c..36841e25 100644
                  let radius = look.radius.saturating_sub(2);
                  focus::hint(ui, &response, cell, focus::Ring::Edge { radius });
                  if selected {
-@@ -462,7 +536,18 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
+@@ -462,7 +542,22 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
              let ui = header;
              if view == ObjectView::Ddl {
                  let skin = (&look, &palette, locale);
 -                super::ddl::header_wait(ui, reading, right, center, skin);
 +                if ddl_ready {
-+                    let asked = super::ddl::show_header_buttons(ui, right, center, keyed, skin);
++                    // None where the header has no room for them: the keys
++                    // still copy and open.
++                    let asked = form
++                        .map(|form| super::ddl::show_header_buttons(ui, right, center, form, skin));
++                    let asked = asked.unwrap_or_default();
 +                    copy_ddl = asked.copy;
 +                    if asked.open {
 +                        actions.push(Action::OpenDdlInEditor {
@@ -2254,7 +2295,7 @@ index efa4298c..36841e25 100644
              } else if let Some(short) = button {
                  let button = add_row(short);
                  let width = button.width(ui, &look);
-@@ -485,6 +570,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
+@@ -485,6 +580,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                  }
              }
          });
@@ -2265,7 +2306,7 @@ index efa4298c..36841e25 100644
  }
  
 diff --git a/src/ui/ddl.rs b/src/ui/ddl.rs
-index c385d5ab..7297421a 100644
+index c385d5ab..a9d19173 100644
 --- a/src/ui/ddl.rs
 +++ b/src/ui/ddl.rs
 @@ -1,14 +1,19 @@
@@ -2293,7 +2334,7 @@ index c385d5ab..7297421a 100644
  
  use crate::app::App;
  use crate::i18n::{Locale, gettext};
-@@ -23,11 +28,173 @@ fn role(look: &Look) -> TextRole {
+@@ -23,11 +28,193 @@ fn role(look: &Look) -> TextRole {
      TextRole::pick(look, TextRole::Code, TextRole::OCode)
  }
  
@@ -2396,23 +2437,43 @@ index c385d5ab..7297421a 100644
 +    pub open: bool,
 +}
 +
++/// How the header's buttons draw: as the header's room runs short they
++/// drop their keys, then their words (a screen reader still reads them),
++/// before its title is cut.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Buttons {
++    Keyed,
++    Words,
++    Icons,
++}
++
++impl Buttons {
++    pub const ALL: [Buttons; 3] = [Buttons::Keyed, Buttons::Words, Buttons::Icons];
++}
++
 +/// The macOS header's two buttons in the DDL view, Copy and Open in SQL
-+/// editor, with their keys where `keyed` (they drop them when the header
-+/// is short of room, before its title is cut).
++/// editor, drawn as `form` says.
 +fn header_buttons<'a>(
 +    words: &'a (String, String),
 +    keys: &'a (crate::keymap::Written, crate::keymap::Written),
-+    keyed: bool,
++    form: Buttons,
 +) -> [widgets::ButtonSpec<'a>; 2] {
-+    let copy = widgets::ButtonSpec::new(&words.0)
++    let shown = |word: &'a String| match form {
++        Buttons::Icons => "",
++        Buttons::Keyed | Buttons::Words => word.as_str(),
++    };
++    let copy = widgets::ButtonSpec::new(shown(&words.0))
++        .label(&words.0)
 +        .icon(Icon::Copy)
 +        .role(TextRole::UiBodyStrong);
-+    let open = widgets::ButtonSpec::new(&words.1)
++    let open = widgets::ButtonSpec::new(shown(&words.1))
++        .label(&words.1)
 +        .icon(Icon::Code)
 +        .primary();
-+    match keyed {
-+        true => [copy.shortcut(&keys.0), open.shortcut(&keys.1)],
-+        false => [copy, open],
++    match form {
++        Buttons::Keyed => [copy.shortcut(&keys.0), open.shortcut(&keys.1)],
++        Buttons::Words => [copy, open],
++        Buttons::Icons => [copy.gap(0.0), open.gap(0.0)],
 +    }
 +}
 +
@@ -2438,9 +2499,9 @@ index c385d5ab..7297421a 100644
 +}
 +
 +/// How wide the header's buttons draw, with the 12 between them.
-+pub fn header_buttons_width(ui: &egui::Ui, look: &Look, locale: Locale, keyed: bool) -> f32 {
++pub fn header_buttons_width(ui: &egui::Ui, look: &Look, locale: Locale, form: Buttons) -> f32 {
 +    let (words, keys) = header_words(ui.ctx(), look, locale);
-+    let [copy, open] = header_buttons(&words, &keys, keyed);
++    let [copy, open] = header_buttons(&words, &keys, form);
 +    copy.width(ui, look) + 12.0 + open.width(ui, look)
 +}
 +
@@ -2449,12 +2510,12 @@ index c385d5ab..7297421a 100644
 +    ui: &mut egui::Ui,
 +    right: f32,
 +    center: f32,
-+    keyed: bool,
++    form: Buttons,
 +    skin: Skin,
 +) -> Asked {
 +    let (look, palette, locale) = skin;
 +    let (words, keys) = header_words(ui.ctx(), look, locale);
-+    let [copy, open] = header_buttons(&words, &keys, keyed);
++    let [copy, open] = header_buttons(&words, &keys, form);
 +    let (copy_width, open_width) = (copy.width(ui, look), open.width(ui, look));
 +    let place = |x: f32, width: f32| Rect::from_min_size(pos2(x, center - 16.0), vec2(width, 32.0));
 +    let open_at = place(right - open_width, open_width);
@@ -2468,7 +2529,7 @@ index c385d5ab..7297421a 100644
  /// Where the text comes from, as the view says it: built from the
  /// catalog, or as the database keeps it.
  fn source_words(source: Source, locale: Locale) -> Cow<'static, str> {
-@@ -178,34 +345,97 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
+@@ -178,34 +365,97 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                  }
              });
      } else if let Some(ddl) = &object.ddl.value {
@@ -2591,7 +2652,7 @@ index c385d5ab..7297421a 100644
          let field = Field {
              id,
              name: &name,
-@@ -258,7 +488,8 @@ fn grey_lines(ui: &egui::Ui, rect: Rect, palette: &Palette) {
+@@ -258,7 +508,8 @@ fn grey_lines(ui: &egui::Ui, rect: Rect, palette: &Palette) {
  }
  
  /// "Read-only · built from the catalog · read 2 s ago · Reload ⌘R" at the
@@ -2601,7 +2662,7 @@ index c385d5ab..7297421a 100644
  fn source_line(
      ui: &mut egui::Ui,
      strip: Rect,
-@@ -266,7 +497,7 @@ fn source_line(
+@@ -266,7 +517,7 @@ fn source_line(
      read: Option<Duration>,
      reload: &crate::keymap::Written,
      (look, palette, locale): Skin,
@@ -2610,7 +2671,7 @@ index c385d5ab..7297421a 100644
      let side = 24.0;
      let center = strip.center().y;
      let role = widgets::secondary(look);
-@@ -296,7 +527,360 @@ fn source_line(
+@@ -296,7 +547,360 @@ fn source_line(
      let left = at.left() - laid.paint_right(ui.painter(), at.left(), center);
      let named = Rect::from_min_max(pos2(left, center - 8.0), pos2(at.left(), center + 8.0));
      widgets::announce(ui, named, &words.join(" · "));
@@ -2972,7 +3033,7 @@ index c385d5ab..7297421a 100644
  }
  
  /// The macOS footer of the DDL view: how many lines and whose, what the
-@@ -533,27 +1117,58 @@ impl Field<'_> {
+@@ -533,27 +1137,58 @@ impl Field<'_> {
          ui.data_mut(|data| data.insert_temp(had, has));
          let font = role.font_id(look.faces);
          let mut layouter = sql_text::layouter(look, palette, self.dialect, self.id, false);
@@ -3455,9 +3516,9 @@ index 89a2de5c..905e503d 100644
 ~/.cargo/bin/cargo test --locked --lib -- keymap ui::
 ```
 
-Expected: all pass, `ui::ddl_act_tests` with 25.
+Expected: all pass, `ui::ddl_act_tests` with 26.
 
-- [ ] **Step 5: Run the checks** (above). Expected: every suite passes, the app's library with 3353 passed and 17 ignored.
+- [ ] **Step 5: Run the checks** (above). Expected: every suite passes, the app's library with 3354 passed and 17 ignored.
 
 - [ ] **Step 6: Look at it** (not a test, nothing committed)
 

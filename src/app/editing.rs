@@ -1855,8 +1855,12 @@ impl App {
         let structure = workspace
             .active_object_tab()
             .is_some_and(|object| object.view == crate::model::ObjectView::Structure);
+        let ddl = workspace
+            .active_object_tab()
+            .is_some_and(|object| object.view == crate::model::ObjectView::Ddl);
         let holds = |when: crate::keymap::When| match when {
             crate::keymap::When::Structure => structure,
+            crate::keymap::When::Ddl => ddl,
             _ => false,
         };
         // The prompt is Omarchy's, in whatever look it is driven.
@@ -1874,6 +1878,9 @@ impl App {
             (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
             (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
             (Typed::Command(Command::ClearHistory), _) => Action::ClearHistory(tab),
+            // From any pane: of what the tree's cursor is on, or the tab in
+            // front.
+            (Typed::Command(Command::OpenDdl), _) => Action::OpenDdl(tab),
             // From any tab of the window, where agents can reach the app.
             (Typed::Command(Command::ShowAgents), _) if crate::endpoint::AVAILABLE => {
                 Action::ShowAgents(tab)

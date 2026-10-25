@@ -181,6 +181,7 @@ keyboard.
 | Cmd+. | Cancel the running query |
 | Cmd+I | Open the row panel, with the keyboard on its fields. Esc goes back to the rows |
 | Cmd+Shift+R | Show or hide the row panel |
+| Ctrl+Cmd+1, 2, 3 | Show the rows, the structure, the DDL |
 
 In its Structure view:
 
@@ -192,6 +193,13 @@ In its Structure view:
 
 The last two work with the keyboard on the view's columns: click a
 column's line, or come to them with Tab or F6.
+
+In its DDL view:
+
+| Keys | Do |
+| --- | --- |
+| Cmd+Shift+C | Copy the DDL: the selected text, or all of it |
+| Option+Return | Open the DDL in a new SQL editor |
 
 ### Editing
 
