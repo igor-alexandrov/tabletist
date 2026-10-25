@@ -32,9 +32,11 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   `tests/engines.rs` finds `==`, `!=` and `matches!`. Nothing finds a `_`
   arm, or a comparison written with `Self::` in the enums' own methods.
 - The workspace forbids `unsafe`. AppKit calls that cannot be made without it
-  go in `crates/tabletist-appkit`, and SQLite calls in
-  `crates/tabletist-sqlite-ffi`, behind a safe API, each with a SAFETY note;
-  `src/macos.rs`, `crates/tabletist-db` and everything else stay free of it.
+  go in `crates/tabletist-appkit`, the menu bar's (the AppKit menu delegate in
+  `src/macos/opening.rs`, muda's Windows attach) in `crates/tabletist-menubar`,
+  and SQLite calls in `crates/tabletist-sqlite-ffi`, behind a safe API, each
+  with a SAFETY note; `src/macos.rs`, `crates/tabletist-db` and everything
+  else stay free of it.
 - Platform code sits behind `cfg`. A fix for one platform keeps Linux, macOS,
   and Windows compiling.
 - Settings and state files stay readable, backward compatible, and atomically
@@ -81,6 +83,10 @@ modes in the SQL editor are typing, as a text field's keys are: their
 letters are the engine's (`src/vim.rs`), and Esc, Enter, the arrows and
 the field's own deleting chords are the field's; vim's chords (`VimRedo`,
 `VimNormal`) are in the keymap.
+
+The menu bar (`src/menu.rs`) shows the keymap's keys and changes none: a key
+AppKit takes for a menu item goes back to egui as the same press
+(`src/menu/replay.rs`), and only a click runs a command as quick open does.
 
 Add a focused regression test for every behaviour change. UI behaviour is
 tested headlessly through `src/testing.rs` (AccessKit tree + events). Do not
