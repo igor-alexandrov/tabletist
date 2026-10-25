@@ -187,7 +187,7 @@ other way round.
 
 1. Bump `version` in `Cargo.toml`, run `cargo update -p tabletist`, commit,
    and get the commit onto `main`.
-2. On that commit: `git tag -s v0.2.2 -m v0.2.2 && git push origin v0.2.2`.
+2. On that commit: `git tag -s v0.3.0 -m v0.3.0 && git push origin v0.3.0`.
 3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz`, and `.AppImage`
    named `tabletist-<version>-<arch>.AppImage`), Windows (x64, arm64 `.zip`
    and `-setup.exe`) and macOS (universal `.dmg`), signs `checksums.txt`
@@ -201,7 +201,9 @@ the `release-signing` environment, which only `v*` tags may use. The
 or with another key, the release stops before anything is published. The
 key is in 1Password. Never commit it, and never replace
 `assets/update-public-key.hex` alone: installed copies trust only the key
-they were built with.
+they were built with. The environment's deployment rule is `v*` of type
+tag, not branch: GitHub matches a branch rule against branch names only,
+so with one every tag is refused and the release stops at `sign`.
 
 Whoever can push a `v*` tag runs `release.yml` as it is at that tag, with
 the key: keep `v*` tags to the owner (a tag ruleset), or give the
@@ -211,11 +213,21 @@ the AUR job failed, use "Re-run failed jobs": "Re-run all jobs" builds,
 signs and uploads everything again, and takes the release back to a
 draft while it does.
 
-Optional secrets (each step skips with a notice without them):
+Required for a tag, the Apple secrets, which sign and notarize the macOS app:
 
 - `APPLE_CERTIFICATE_P12` (base64), `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`: sign the app and DMG with a Developer ID.
 - `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`: notarize and staple.
+
+`packaging/macos/signing-plan.sh` fails a tag without all six, before
+anything is signed: the pages tell people a release opens without Gatekeeper
+asking. A dry run without them builds an ad-hoc signed app, and a dry run
+with them checks the notarized DMG as a release does. The certificate is a
+Developer ID Application one; when it expires, export the new one and
+replace the first three together.
+
+Optional secret (its step skips with a notice without it):
+
 - `AUR_SSH_KEY`: push `tabletist-bin` and `tabletist` to the AUR. The AUR's
   host key is pinned in `release.yml`; update it there if the AUR rotates it.
 

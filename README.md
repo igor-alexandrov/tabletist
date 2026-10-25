@@ -98,10 +98,10 @@ The guide and the reference are on the website:
   AppImage or `.tar.gz` (see Other Linux below).
 - **macOS:** download `tabletist-v<version>-macos-universal.dmg` from the
   [releases](https://github.com/igor-alexandrov/tabletist/releases) and drag
-  Tabletist to Applications. Releases are signed and notarized only when
-  they are built with the Apple signing secrets; macOS blocks an unsigned
-  build on first launch. For an unsigned build only: try to open it once,
-  then click Open Anyway in System Settings → Privacy & Security, or run
+  Tabletist to Applications. Releases are signed with a Developer ID and
+  notarized by Apple. Older releases were not, and macOS blocks them on
+  first launch: try to open one once, then click Open Anyway in System
+  Settings → Privacy & Security, or run
   `xattr -dr com.apple.quarantine /Applications/Tabletist.app`.
 - **Windows:** run `tabletist-v<version>-x86_64-pc-windows-msvc-setup.exe`
   (or the `aarch64` one on ARM). No administrator rights needed.

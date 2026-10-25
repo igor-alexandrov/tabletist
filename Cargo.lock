@@ -5724,7 +5724,7 @@ dependencies = [
 
 [[package]]
 name = "tabletist"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",

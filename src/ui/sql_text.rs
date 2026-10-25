@@ -1150,6 +1150,86 @@ fn indent_script(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     changed
 }
 
+/// The spaces and tabs the line of byte `at` starts with, up to `at`:
+/// what Enter there puts at the new line's start, so that what follows
+/// the cursor keeps its column.
+fn lead_at(text: &str, at: usize) -> &str {
+    let start = text[..at].rfind('\n').map_or(0, |end| end + 1);
+    let before = &text[start..at];
+    &before[..before.len() - before.trim_start_matches([' ', '\t']).len()]
+}
+
+/// Whether `event` is a line break as the field takes it: Enter pressed,
+/// alone or with Shift or Alt, not with Command or Ctrl (egui's return
+/// key, matched logically).
+fn is_line_break(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. }
+            if modifiers.matches_logically(egui::Modifiers::NONE)
+    )
+}
+
+/// Enter keeps the line's indentation: before the field reads the frame,
+/// a line break gets the leading whitespace of the cursor's line up to the
+/// cursor (with a selection, of its start's line, `lead_at`) typed right
+/// after it, which the field puts in after the line break. Only while the
+/// field has the keyboard, and the completion list took the Enter it
+/// accepts with before. The whitespace is read from the script as the
+/// frame starts: a line break after an event of the frame's that may
+/// change the script or the cursor (`edits`) waits, with what follows it,
+/// for the next frame, in the field's stash (`later_id`), before what
+/// vim's keys put there.
+fn keep_indent(ui: &mut Ui, sql_tab: &SqlTab, field: &Field<'_>) {
+    if !ui.memory(|memory| memory.has_focus(field.id)) {
+        return;
+    }
+    let start = egui::TextEdit::load_state(ui.ctx(), field.id)
+        .and_then(|state| state.cursor.char_range())
+        .map_or(sql_tab.cursor, |range| {
+            byte_offset(&sql_tab.text, range.sorted_cursors()[0].index.0)
+        });
+    // The tab's own cursor may be of an older text.
+    let start = sql_tab
+        .text
+        .floor_char_boundary(start.min(sql_tab.text.len()));
+    let lead = lead_at(&sql_tab.text, start).to_owned();
+    let waits = ui.input_mut(|input| {
+        let mut queue = std::mem::take(&mut input.events).into_iter();
+        let (mut kept, mut waits) = (Vec::new(), Vec::new());
+        let mut edited = false;
+        while let Some(event) = queue.next() {
+            if is_line_break(&event) {
+                if edited {
+                    waits.push(event);
+                    waits.extend(queue.by_ref());
+                    break;
+                }
+                kept.push(event);
+                if !lead.is_empty() {
+                    kept.push(egui::Event::Text(lead.clone()));
+                }
+                edited = true;
+                continue;
+            }
+            edited |= edits(&event);
+            kept.push(event);
+        }
+        input.events = kept;
+        waits
+    });
+    if !waits.is_empty() {
+        let later_id = later_id(field);
+        ui.data_mut(|data| {
+            let after: Vec<egui::Event> = data.remove_temp(later_id).unwrap_or_default();
+            let mut all = waits;
+            all.extend(after);
+            data.insert_temp(later_id, all);
+        });
+        ui.ctx().request_repaint();
+    }
+}
+
 /// The closing character of a bracket or a quote that `typed` opens in
 /// `dialect`: a backtick only where it quotes names (MySQL, SQLite).
 fn closer_of(typed: char, dialect: Dialect) -> Option<char> {
@@ -1530,6 +1610,29 @@ fn vim_input(event: &egui::Event, mode: vim::Mode, held: bool, chords: &VimChord
     }
 }
 
+/// Where the field keeps the frame's events that wait for the next one:
+/// vim's keys after an edit of the field's (`vim_keys`), and a line break
+/// after an edit (`keep_indent`).
+fn later_id(field: &Field<'_>) -> Id {
+    field.id.with("later")
+}
+
+/// Puts the events that waited (`later_id`) before this frame's, while the
+/// field has the keyboard; without it they are nobody's.
+fn restore_later(ui: &mut Ui, field: &Field<'_>) {
+    let waited: Vec<egui::Event> = ui
+        .data_mut(|data| data.remove_temp(later_id(field)))
+        .unwrap_or_default();
+    if waited.is_empty() || !ui.memory(|memory| memory.has_focus(field.id)) {
+        return;
+    }
+    ui.input_mut(|input| {
+        let mut events = waited;
+        events.append(&mut input.events);
+        input.events = events;
+    });
+}
+
 /// Whether the field, reading `event`, may change the script or the
 /// cursor.
 fn edits(event: &egui::Event) -> bool {
@@ -1555,10 +1658,10 @@ fn edits(event: &egui::Event) -> bool {
 /// it left. A key of vim's after one the field is to read (typing, or a
 /// chord), or after a format, which Format carries out after this, would
 /// read the script before them: it and what follows wait for the next
-/// frame, where the keymap has read its own already. After Esc out of the
+/// frame, in the field's stash (`later_id`), where the keymap has read its
+/// own already. After Esc out of the
 /// editor or `:`, the frame's keys are nobody's.
 fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool) {
-    let later_id = field.id.with("vim later");
     // A press on the script leaves visual mode, with the keyboard here or
     // coming back with the press: the pointer selects as it does anywhere,
     // and what visual mode selected goes (the press sets its own). A press
@@ -1581,17 +1684,9 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
         egui::TextEdit::store_state(ui.ctx(), field.id, state);
     }
     if !field.vim || !ui.memory(|memory| memory.has_focus(field.id)) {
-        ui.data_mut(|data| data.remove_temp::<Vec<egui::Event>>(later_id));
         return (pressed, false);
     }
-    let waited: Vec<egui::Event> = ui
-        .data_mut(|data| data.remove_temp(later_id))
-        .unwrap_or_default();
-    let events = ui.input_mut(|input| {
-        let mut events = waited;
-        events.append(&mut input.events);
-        events
-    });
+    let events = ui.input_mut(|input| std::mem::take(&mut input.events));
     let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
     let mut changed = pressed;
     if sql_tab.vim.mode == vim::Mode::Normal
@@ -1718,7 +1813,7 @@ fn vim_keys(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> (bool, bool
         ui.data_mut(|data| data.insert_temp(register_id, register));
     }
     if !later.is_empty() {
-        ui.data_mut(|data| data.insert_temp(later_id, later));
+        ui.data_mut(|data| data.insert_temp(later_id(field), later));
         ui.ctx().request_repaint();
     }
     if changed {
@@ -1765,6 +1860,8 @@ fn vim_range(text: &str, step: &vim::Step, mode: vim::Mode) -> CCursorRange {
 
 /// The text field itself: edits the tab's text and reports its cursor.
 fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
+    // What waited from the frame before goes first.
+    restore_later(ui, field);
     let inserted = insert_completion(ui.ctx(), field.id, sql_tab);
     let focus = std::mem::take(&mut sql_tab.focus_editor);
     // Vim's normal and visual modes take the frame's keys before the
@@ -1782,6 +1879,11 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
         ui.memory_mut(|memory| memory.surrender_focus(field.id));
+    }
+    // Enter keeps the line's indentation; the preview's text does not
+    // change.
+    if !field.read_only {
+        keep_indent(ui, sql_tab, field);
     }
     // Before the field is drawn, so this frame shows the formatted text.
     // An indent is an outside edit too: what the field shows, and where
