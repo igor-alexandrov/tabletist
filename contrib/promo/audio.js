@@ -104,6 +104,10 @@
     bed.gain.linearRampToValueAtTime(1, timeline.intro.to * 0.8);
     bed.gain.setValueAtTime(1, duration - bar);
     bed.gain.linearRampToValueAtTime(0, duration - 0.05);
+    // Under a slide the drums and the arpeggio rest: the pad and the bass
+    // hold it, a breath between two scenes.
+    const slides = timeline.scenes.filter(scene => scene.slide);
+    const rests = at => slides.some(card => at >= card.from - 1e-6 && at < card.to - 1e-6);
     // A scene ends on a half bar, so the outro may start in the middle of
     // one: the bar it starts in is cut there, and the last chord takes over.
     for (let at = 0; at < outro - 1e-6; at += bar) {
@@ -112,10 +116,11 @@
       pad(ctx, voice, chord, at, length);
       if (at < timeline.intro.to - 1e-6) continue;
       bass(ctx, voice, chord[0] - 12, at, length);
-      arp(ctx, voice, chord, at, beat, length);
+      arp(ctx, voice, chord, at, beat, length, rests);
       for (let k = 0; k * beat < length - 1e-6; k++) {
-        if (k % 2 === 0) kick(ctx, voice, at + k * beat);
-        if ((k + 0.5) * beat < length - 1e-6) hat(tools, voice, at + k * beat + beat / 2, random());
+        const on = at + k * beat, off = on + beat / 2;
+        if (k % 2 === 0 && !rests(on)) kick(ctx, voice, on);
+        if ((k + 0.5) * beat < length - 1e-6 && !rests(off)) hat(tools, voice, off, random());
       }
     }
     pad(ctx, voice, LAST, outro, duration - outro);
@@ -191,10 +196,10 @@
   }
 
   // Eighths over the chord, an octave up, left and right in turn, for
-  // `length` seconds.
-  function arp(ctx, into, chord, at, beat, length) {
+  // `length` seconds, but none where the music `rests`.
+  function arp(ctx, into, chord, at, beat, length, rests) {
     [0, 1, 2, 3, 1, 2, 3, 2].forEach((n, i) => {
-      if ((i * beat) / 2 < length - 1e-6) {
+      if ((i * beat) / 2 < length - 1e-6 && !rests(at + (i * beat) / 2)) {
         pluck(ctx, into, hz(chord[n] + 12), at + (i * beat) / 2, i % 2 ? 0.35 : -0.35);
       }
     });

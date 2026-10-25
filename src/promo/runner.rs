@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use super::live::Live;
 use super::pick;
-use super::scenario::{self, Database, Keys, Step};
+use super::scenario::{self, Database, Keys, Scene, Step};
 use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Environment;
 use crate::keymap;
@@ -45,6 +45,11 @@ struct Record {
 #[derive(Serialize)]
 struct SceneRecord {
     caption: Option<String>,
+    /// A slide's headline and its line: the app is away for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slide: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
 }
 
 /// One thing that happened, the frame that shows it, and where.
@@ -402,7 +407,11 @@ fn film() {
     let mut film = Film::start(&file, &path, &connection, dir.clone());
     for (index, scene) in scenario.scenes.iter().enumerate() {
         film.scene = Some(index);
-        for (number, step) in scene.steps.iter().enumerate() {
+        // A slide plays nothing: the app waits, away, as it is.
+        let Scene::Shot { steps, .. } = scene else {
+            continue;
+        };
+        for (number, step) in steps.iter().enumerate() {
             film.at = format!(
                 "{}, scene {}, step {}",
                 file.display(),
@@ -420,8 +429,17 @@ fn film() {
         scenes: scenario
             .scenes
             .iter()
-            .map(|scene| SceneRecord {
-                caption: scene.caption.clone(),
+            .map(|scene| match scene {
+                Scene::Shot { caption, .. } => SceneRecord {
+                    caption: caption.clone(),
+                    slide: None,
+                    text: None,
+                },
+                Scene::Slide { title, text } => SceneRecord {
+                    caption: None,
+                    slide: Some(title.clone()),
+                    text: text.clone(),
+                },
             })
             .collect(),
         events: std::mem::take(&mut film.events),

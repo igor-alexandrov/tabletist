@@ -60,6 +60,19 @@ steps = [
 - A scene has a `caption` (optional: a scene without one is a move between
   two) and its `steps`. The intro and outro cards are not scenes: every
   video has them.
+- A scene can be a slide instead: a feature named on a card of its own,
+  with the app away. It has a `slide` (the headline) and may have a `text`
+  (one line under it), and no caption and no steps:
+
+  ```toml
+  [[scene]]
+  slide = "Keyboard first."
+  text = "Every command has a key, and the keys are yours to change."
+  ```
+
+  The window blurs away as for the outro, the headline rises word by word,
+  its line follows a beat later, and the window comes back for the next
+  scene as it left. Under a slide the drums rest, and a soft bell marks it.
 
 The look is macOS, light. The Omarchy look (its window, its vim SQL editor,
 its multi-stroke and `:` keys) is not in this.
@@ -169,7 +182,9 @@ An ignored test behind the `shots` feature:
 - After each visible change it writes `target/promo/<name>/frames/NNNN.png`
   (window 1200x750 points, scale 2). At the end it writes
   `target/promo/<name>/events.json`: the scenario's title and tempo, the
-  window's size and scale, the captions in `scenes`, and the events.
+  window's size and scale, the captions in `scenes` (a slide's `slide` and
+  `text` there too, with no events: the runner plays nothing for it), and
+  the events.
 
 ```json
 {
@@ -229,6 +244,10 @@ decides time; the picture and the sound both read its output.
 - A scene lasts at least as long as its caption takes to read (0.3 s a word,
   1.6 s at least), and is rounded up to the next half bar of the tempo:
   a whole bar left too long a still tail.
+- A slide lasts its words at 0.22 s each (`SLIDE_WORD`: read faster than a
+  caption watched with the app) and 0.9 s for the card to come and go, 2.2 s
+  at least, rounded up to a half bar. The camera shows the whole window
+  through it, so the window comes back as it left.
 - The camera holds the wide shot while the window rises in, until half a
   beat after the intro.
 - Then it frames the union of the rects of the events from 0.4 s ago to
@@ -281,6 +300,9 @@ The picture:
   and the outro (the title, the engines, the platforms,
   `igor.works/tabletist`) build piece by piece on beats. The window rises
   in from the intro and leaves into the outro with a slight blur.
+- Slides: the window leaves as for the outro; the headline rises word by
+  word through masks, its line a beat later, both balanced on their lines;
+  the card leaves as the window comes back.
 - Motion blur, with `--final`: every frame is rendered four times, at four
   times the frame rate, and ffmpeg's `tmix` blends each four into one.
 
@@ -292,10 +314,12 @@ as WAV:
   saws through a slow lowpass), a sine bass, a soft plucked arpeggio, a
   felt kick and light noise hats, through a room and a gentle compressor.
   The pad is alone under the intro, the rest comes in from the first scene,
-  and the last chord rings out over the outro.
+  the drums and the arpeggio rest under a slide, and the last chord rings
+  out over the outro.
 - The effects, on the events: a key click for each character and key, each
   a little different in pitch and level; a mouse click; a low tick under a
-  keycap; a bell on the outro. The camera's moves make no sound. The clicks
+  keycap; a soft bell as a slide comes in; a bell on the outro. The
+  camera's moves make no sound. The clicks
   are loud enough to stand out over the music (their taps at 0.8 and 0.45,
   through effects at 0.9 against the music's 0.55).
 - The music ducks under each effect. ffmpeg normalizes the mix to −14 LUFS

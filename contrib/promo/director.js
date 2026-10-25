@@ -21,6 +21,10 @@
   // The spring's angular frequency: it settles in about half a second.
   const OMEGA = 2 * Math.PI * 1.1;
   const READ_WORD = 0.3, READ_LEAST = 1.6;
+  // A slide's time: its words read, faster than a caption read while the
+  // app moves, and the card's coming and going, but never less than
+  // SLIDE_LEAST.
+  const SLIDE_WORD = 0.22, SLIDE_BUILD = 0.9, SLIDE_LEAST = 2.2;
   // How long a result stays after a scene's last step.
   const SETTLE = 0.4;
   // How long a click, a command or a key holds before the next step.
@@ -79,6 +83,14 @@
     let t = bar;
     record.scenes.forEach((scene, index) => {
       const from = t;
+      // A slide: the app is away, and only the words take time.
+      if (scene.slide) {
+        const words = `${scene.slide} ${scene.text || ""}`.trim().split(/\s+/).length;
+        const to = onGrid(from + Math.max(SLIDE_LEAST, SLIDE_WORD * words + SLIDE_BUILD), bar / 2);
+        scenes.push({ from, to, caption: null, slide: { title: scene.slide, text: scene.text || null } });
+        t = to;
+        return;
+      }
       let now = from + beat / 2;
       for (const event of record.events.filter(e => e.scene === index)) {
         switch (event.kind) {
@@ -122,7 +134,7 @@
       // A scene ends on a half bar: the next starts on the beat, without
       // waiting out a whole bar.
       const to = onGrid(Math.max(now, from + reading), bar / 2);
-      scenes.push({ from, to, caption: scene.caption || null });
+      scenes.push({ from, to, caption: scene.caption || null, slide: null });
       t = to;
     });
     return { timed, scenes, outro: t, beat, bar };
@@ -193,7 +205,7 @@
   // the camera shows the whole window. The spotlight does not wait for the
   // camera: it lights the event of the moment. When the action stops, both
   // let go and show the whole window.
-  function film(timed, outro, duration, hold = 0) {
+  function film(timed, outro, duration, hold = 0, away = []) {
     const framed = timed.filter(e => e.rect);
     const acts = timed.filter(e => e.kind !== "point");
     let target = WHOLE;
@@ -202,7 +214,9 @@
     const camera = [], spots = [], moves = [];
     for (let i = 0, n = Math.round(duration * FPS); i < n; i++) {
       const t = i / FPS;
-      const ending = t >= outro - LEAD;
+      // For the outro and for a slide, the window is away: the camera
+      // shows it whole, so it comes back as it left.
+      const ending = t >= outro - LEAD || away.some(card => t >= card.from - LEAD && t < card.to);
       const since = ending ? null : quiet(acts, t);
       const still = ending || since !== null;
       let want = null;
@@ -266,8 +280,9 @@
   }
 
   // What is heard when: a key for each character and key, a click, a tick
-  // under a keycap, a bell on the outro. The camera's moves are silent.
-  function sounds(timed, outro, random) {
+  // under a keycap, a soft bell as a slide comes in, a bell on the outro.
+  // The camera's moves are silent.
+  function sounds(timed, outro, slides, random) {
     const all = [];
     for (const e of timed) {
       if (e.kind === "type") all.push({ at: e.at, kind: "key", gain: 0.55 + 0.35 * random() });
@@ -275,6 +290,7 @@
       if (e.kind === "command") all.push({ at: e.at, kind: "key", gain: 1 }, { at: e.at, kind: "tick", gain: 0.8 });
       if (e.kind === "click") all.push({ at: e.at, kind: "click", gain: 1 });
     }
+    for (const card of slides) all.push({ at: card.from, kind: "bell", gain: 0.45 });
     all.push({ at: outro, kind: "bell", gain: 1 });
     return all.sort((a, b) => a.at - b.at);
   }
@@ -288,7 +304,8 @@
     const duration = outro + 1.5 * bar;
     // The camera holds the wide shot while the window rises, and a moment after.
     const intro = { from: 0, to: bar };
-    const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2);
+    const slides = scenes.filter(scene => scene.slide);
+    const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2, slides);
     return {
       title: record.title,
       tempo: record.tempo,
@@ -306,7 +323,7 @@
       pointer: point(timed, duration),
       clicks: timed.filter(e => e.kind === "click").map(e => ({ at: e.at, x: e.where.x, y: e.where.y })),
       keycaps: timed.filter(e => e.kind === "command").map(e => ({ at: e.at, until: e.at + KEYCAP, keys: e.keys })),
-      sounds: sounds(timed, outro, seeded(`${record.title} keys`)),
+      sounds: sounds(timed, outro, slides, seeded(`${record.title} keys`)),
     };
   }
 

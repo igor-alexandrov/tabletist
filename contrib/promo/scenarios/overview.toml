@@ -1,4 +1,5 @@
-# What Tabletist is, in four scenes: the video for a release's posts.
+# What Tabletist is, in four scenes and two slides: the video for a
+# release's posts.
 title = "Tabletist"
 tempo = 128
 
@@ -9,6 +10,10 @@ steps = [
   { click = "Lanterns" },
   { command = "move_row", key = "down", times = 3 },
 ]
+
+[[scene]]
+slide = "Keyboard first."
+text = "Every command has a key, and the keys are yours to change."
 
 [[scene]]
 caption = "Filter without writing SQL."
@@ -34,6 +39,10 @@ steps = [
   { command = "review_sql" },
   { hold = 0.8 },
 ]
+
+[[scene]]
+slide = "Safe by default."
+text = "Edits wait for your review. SQL runs read-only until you say so."
 
 [[scene]]
 caption = "Or just write the SQL."

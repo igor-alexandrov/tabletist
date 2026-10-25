@@ -70,6 +70,19 @@ is also a column header: the menu's item is taken, see Labels).
 - A scene has a `caption` (optional: a scene without one is a move between
   two) and its `steps`. The intro and outro cards are not scenes: every
   video has them.
+- A scene can be a slide instead: a feature named on a card of its own,
+  with the app away. It has a `slide` (the headline) and may have a `text`
+  (one line under it), and no caption and no steps:
+
+  ```toml
+  [[scene]]
+  slide = "Keyboard first."
+  text = "Every command has a key, and the keys are yours to change."
+  ```
+
+  The window blurs away as for the outro, the headline rises word by word,
+  its line follows a beat later, and the window comes back for the next
+  scene as it left. Under a slide the drums rest, and a soft bell marks it.
 
 The look is macOS, in the light theme. The Omarchy look is not in this.
 

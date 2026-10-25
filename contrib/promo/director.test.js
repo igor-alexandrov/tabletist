@@ -224,6 +224,36 @@ test("the camera's moves make no sound", () => {
   assert.deepEqual([...kinds].sort(), ["bell", "click"]);
 });
 
+// A slide as the runner writes one: no caption, a headline and its line.
+const slide = (title, text) => ({ caption: null, slide: title, text });
+
+test("a slide lasts long enough to read, ends on a half bar, and plays nothing", () => {
+  const text = "Every command has a key, and the keys are yours.";
+  const { scenes, timed, bar } = place(record(
+    [{ scene: 0, frame: 1, kind: "command", keys: "⌘F", rect }],
+    [{ caption: "Open a table." }, slide("Keyboard first.", text)],
+  ));
+  const card = scenes[1];
+  assert.deepEqual(card.slide, { title: "Keyboard first.", text });
+  assert.equal(card.caption, null);
+  const long = card.to - card.from;
+  assert.ok(long >= 0.22 * 12 + 0.9 && long < 0.22 * 12 + 0.9 + bar / 2, `${long.toFixed(2)} s for 12 words`);
+  assert.equal(card.to % (bar / 2), 0);
+  assert.ok(timed.every(e => e.scene !== 1));
+});
+
+test("the camera shows the whole window for a slide, and a bell marks it", () => {
+  const corner = [1000, 600, 1100, 640];
+  const timeline = schedule(record(
+    [{ scene: 0, frame: 1, kind: "click", rect: corner }, { scene: 2, frame: 2, kind: "click", rect: corner }],
+    [{ caption: null }, slide("Small."), { caption: null }],
+  ));
+  const card = timeline.scenes[1];
+  const mid = timeline.camera[Math.round(((card.from + card.to) / 2) * FPS)];
+  assert.ok(Math.abs(mid.zoom - 1) < 0.02, `zoom ${mid.zoom} in the slide`);
+  assert.ok(timeline.sounds.some(s => s.kind === "bell" && Math.abs(s.at - card.from) < 1e-9));
+});
+
 test("an event the director does not know stops it", () => {
   assert.throws(() => place(record([{ scene: 0, frame: 1, kind: "teleport" }])), /teleport/);
 });

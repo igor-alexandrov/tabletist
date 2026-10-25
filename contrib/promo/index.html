@@ -66,8 +66,12 @@
     transform-origin: 2.3px 2.3px; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
   #ripple { position: absolute; border-radius: 50%; pointer-events: none;
     border: 3px solid rgba(255,255,255,.9); box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
-  #line .word { display: inline-block; overflow: hidden; vertical-align: bottom; padding-bottom: .08em; }
-  #line .word > span { display: inline-block; }
+  .word { display: inline-block; overflow: hidden; vertical-align: bottom; padding-bottom: .08em; }
+  .word > span { display: inline-block; }
+  /* A slide: a headline and the line under it. */
+  .headline { font-size: 124px; font-weight: 700; letter-spacing: -.035em; line-height: 1.08;
+    max-width: 1560px; text-wrap: balance; }
+  #text { max-width: 1320px; margin-top: 40px; font-size: 52px; line-height: 1.3; text-wrap: balance; }
 </style>
 
 <div id="stage">
@@ -89,6 +93,11 @@
     <svg class="icon" viewBox="0 0 1024 1024"><use href="#icon"/></svg>
     <div class="name">Tabletist</div>
     <div class="tag">A small, fast, native database client.</div>
+  </div>
+
+  <div class="card" id="slide">
+    <div class="headline" id="headline"></div>
+    <div class="tag" id="text"></div>
   </div>
 
   <div class="card" id="outro">
@@ -164,10 +173,22 @@ function latest(list, t, at = item => item.at) {
   return found;
 }
 
+// Words, each in a mask it rises through.
+const masked = text =>
+  text.split(" ").map(w => `<span class="word"><span>${escape(w)}</span></span>`).join(" ");
+
+// How far the window is gone for a slide: it leaves as the slide comes in,
+// as it does for the outro, and comes back as the slide goes.
+function away(t) {
+  const card = T.scenes.find(s => s.slide && t >= s.from - .1 && t < s.to + .7);
+  if (!card) return 0;
+  return inOut(span(t, card.from - .1, .5)) * (1 - out(span(t, card.to - .25, .7)));
+}
+
 function drawWindow(t) {
   const el = $("window");
   const rise = out(span(t, T.intro.to - T.beat, .8));
-  const leave = inOut(span(t, T.outro - .1, .6));
+  const leave = Math.max(inOut(span(t, T.outro - .1, .6)), away(t));
   const hidden = rise === 0 || leave === 1;
   el.style.visibility = hidden ? "hidden" : "visible";
   if (hidden) return;
@@ -221,7 +242,7 @@ function drawCaption(t) {
   if (said !== scene) {
     said = scene;
     line.innerHTML = scene
-      ? scene.caption.split(" ").map(w => `<span class="word"><span>${escape(w)}</span></span>`).join(" ")
+      ? masked(scene.caption)
       : "";
   }
   let words = 0;
@@ -266,6 +287,37 @@ function drawCard(el, t, from, to) {
   });
 }
 
+// A slide's headline rises word by word, its line comes in a beat later,
+// and both leave together as the window comes back.
+let carded = null;
+function drawSlide(t) {
+  const card = T.scenes.find(s => s.slide && t >= s.from && t < s.to + .4) || null;
+  const el = $("slide");
+  if (carded !== card) {
+    carded = card;
+    if (card) {
+      $("headline").innerHTML = masked(card.slide.title);
+      $("text").textContent = card.slide.text || "";
+      $("text").hidden = !card.slide.text;
+    }
+  }
+  el.style.visibility = card ? "visible" : "hidden";
+  if (!card) return;
+  const start = card.from + .25;
+  [...$("headline").children].forEach((word, i) => {
+    const k = out(span(t, start + i * .07, .5));
+    word.firstChild.style.transform = `translateY(${(1 - k) * 105}%)`;
+    word.firstChild.style.filter = `blur(${(1 - k) * 8}px)`;
+    word.style.opacity = k > 0 ? 1 : 0;
+  });
+  const k = span(t, start + T.beat, .55);
+  $("text").style.opacity = clamp(k * 2.5);
+  $("text").style.transform = `translateY(${(1 - out(k)) * 40}px)`;
+  const gone = inOut(span(t, card.to - .35, .4));
+  el.style.opacity = 1 - gone;
+  el.style.transform = `translateY(${-gone * 60}px) scale(${mix(1, .96, gone)})`;
+}
+
 async function renderAt(t) {
   const now = latest(T.frames, t, frame => frame[0]);
   const file = frames[now ? now[1] : 0];
@@ -278,6 +330,7 @@ async function renderAt(t) {
   drawSpot(t);
   drawPointer(t);
   drawCaption(t);
+  drawSlide(t);
   // The intro is mostly gone before the window rises through it.
   drawCard($("intro"), t, .08, T.intro.to - T.beat - .15);
   drawCard($("outro"), t, T.outro + .1, null);

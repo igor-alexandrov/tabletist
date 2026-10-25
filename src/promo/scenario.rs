@@ -16,7 +16,7 @@ pub struct Scenario {
     /// What the end card says.
     pub title: String,
     pub database: Database,
-    /// The music's beats per minute; a scene ends on a bar.
+    /// The music's beats per minute; a scene ends on a half bar.
     pub tempo: u32,
     pub scenes: Vec<Scene>,
 }
@@ -29,10 +29,16 @@ pub enum Database {
     File(PathBuf),
 }
 
-#[derive(Debug)]
-pub struct Scene {
-    pub caption: Option<String>,
-    pub steps: Vec<Step>,
+#[derive(Debug, PartialEq)]
+pub enum Scene {
+    /// The app, played: a caption under it, and the steps that move it.
+    Shot {
+        caption: Option<String>,
+        steps: Vec<Step>,
+    },
+    /// A feature named on a card of its own, the app away: a headline and
+    /// a line under it.
+    Slide { title: String, text: Option<String> },
 }
 
 /// One press of a key with what is held, as the keymap spells it.
@@ -101,23 +107,9 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
         .into_iter()
         .enumerate()
         .map(|(index, scene)| {
-            let at = format!("scene {}", index + 1);
-            if scene.steps.is_empty() {
-                return Err(format!("{at}: a scene needs steps"));
-            }
-            let steps = scene
-                .steps
-                .into_iter()
-                .enumerate()
-                .map(|(step, raw)| {
-                    raw.read()
-                        .map_err(|error| format!("{at}, step {}: {error}", step + 1))
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(Scene {
-                caption: scene.caption,
-                steps,
-            })
+            scene
+                .read()
+                .map_err(|error| format!("scene {}{error}", index + 1))
         })
         .collect::<Result<_, String>>()?;
     Ok(Scenario {
@@ -150,6 +142,48 @@ struct RawScene {
     caption: Option<String>,
     #[serde(default)]
     steps: Vec<RawStep>,
+    slide: Option<String>,
+    text: Option<String>,
+}
+
+impl RawScene {
+    /// The scene, or what is wrong with it, the error after its place
+    /// (": ..." for the scene, ", step N: ..." for a step).
+    fn read(self) -> Result<Scene, String> {
+        let RawScene {
+            caption,
+            steps,
+            slide,
+            text,
+        } = self;
+        let Some(title) = slide else {
+            if text.is_some() {
+                return Err(": only a slide has text".into());
+            }
+            if steps.is_empty() {
+                return Err(": a scene needs steps".into());
+            }
+            let steps = steps
+                .into_iter()
+                .enumerate()
+                .map(|(step, raw)| {
+                    raw.read()
+                        .map_err(|error| format!(", step {}: {error}", step + 1))
+                })
+                .collect::<Result<_, _>>()?;
+            return Ok(Scene::Shot { caption, steps });
+        };
+        if !steps.is_empty() || caption.is_some() {
+            return Err(": a slide has no steps and no caption".into());
+        }
+        if title.trim().is_empty() {
+            return Err(": a slide needs a title".into());
+        }
+        if text.as_deref().is_some_and(|text| text.trim().is_empty()) {
+            return Err(": a slide's text is empty".into());
+        }
+        Ok(Scene::Slide { title, text })
+    }
 }
 
 /// A step as the file writes it: one of its names, and what that one takes.
@@ -286,11 +320,19 @@ fn chord(keys: &str) -> Result<Keys, String> {
 mod tests {
     use std::path::Path;
 
-    use super::{Database, Keys, Step, load, parse};
+    use super::{Database, Keys, Scene, Step, load, parse};
     use crate::keymap::{Command, Mods};
 
     fn read(text: &str) -> Result<super::Scenario, String> {
         parse(text, Path::new("/scenarios"))
+    }
+
+    /// A scene of the app played: its caption and its steps.
+    fn shot(scene: &Scene) -> (Option<&str>, &[Step]) {
+        let Scene::Shot { caption, steps } = scene else {
+            panic!("not a shot: {scene:?}");
+        };
+        (caption.as_deref(), steps)
     }
 
     /// The error a scenario with `step` as its one step gives.
@@ -325,8 +367,8 @@ steps = [{ command = "filter_bar" }]
         assert_eq!(scenario.tempo, 100);
         assert_eq!(scenario.database, Database::Bookshop);
         assert_eq!(scenario.scenes.len(), 2);
-        let first = &scenario.scenes[0];
-        assert_eq!(first.caption.as_deref(), Some("Open a table."));
+        let (caption, steps) = shot(&scenario.scenes[0]);
+        assert_eq!(caption, Some("Open a table."));
         let down = Keys {
             spelled: "down",
             key: egui::Key::ArrowDown,
@@ -338,8 +380,8 @@ steps = [{ command = "filter_bar" }]
             mods: Mods::default(),
         };
         assert_eq!(
-            first.steps,
-            vec![
+            steps,
+            [
                 Step::Open("books".into()),
                 Step::Click("Lanterns".into()),
                 Step::Command {
@@ -355,7 +397,7 @@ steps = [{ command = "filter_bar" }]
                 Step::Hold(1.5),
             ]
         );
-        assert_eq!(scenario.scenes[1].caption, None);
+        assert_eq!(shot(&scenario.scenes[1]).0, None);
     }
 
     #[test]
@@ -366,9 +408,9 @@ steps = [{ command = "filter_bar" }]
             command,
             keys,
             times,
-        } = &scenario.scenes[0].steps[0]
+        } = &shot(&scenario.scenes[0]).1[0]
         else {
-            panic!("not a command: {:?}", scenario.scenes[0].steps[0]);
+            panic!("not a command: {:?}", scenario.scenes[0]);
         };
         assert_eq!(*command, Command::FilterBar);
         assert_eq!(*times, 1);
@@ -464,9 +506,64 @@ steps = [{ command = "filter_bar" }]
                 "title = \"T\"\ntempo = 200\n[[scene]]\nsteps = [{ hold = 1 }]\n",
                 "tempo 200 is not between 80 and 160",
             ),
+            (
+                "title = \"T\"\n[[scene]]\nslide = \"S\"\nsteps = [{ hold = 1 }]\n",
+                "scene 1: a slide has no steps and no caption",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nslide = \"S\"\ncaption = \"x\"\n",
+                "scene 1: a slide has no steps and no caption",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\ntext = \"x\"\nsteps = [{ hold = 1 }]\n",
+                "scene 1: only a slide has text",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nslide = \" \"\n",
+                "scene 1: a slide needs a title",
+            ),
+            (
+                "title = \"T\"\n[[scene]]\nslide = \"S\"\ntext = \"\"\n",
+                "scene 1: a slide's text is empty",
+            ),
         ] {
             let error = read(text).unwrap_err();
             assert!(error.contains(said), "{text}: {error}");
         }
+    }
+
+    #[test]
+    fn a_slide_is_a_scene_of_its_own() {
+        let scenario = read(
+            r#"
+title = "T"
+
+[[scene]]
+slide = "Keyboard first."
+text = "Every command has a key."
+
+[[scene]]
+slide = "Small."
+
+[[scene]]
+steps = [{ hold = 1 }]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scenario.scenes[0],
+            Scene::Slide {
+                title: "Keyboard first.".into(),
+                text: Some("Every command has a key.".into()),
+            }
+        );
+        assert_eq!(
+            scenario.scenes[1],
+            Scene::Slide {
+                title: "Small.".into(),
+                text: None,
+            }
+        );
+        assert_eq!(shot(&scenario.scenes[2]).1, [Step::Hold(1.0)]);
     }
 }
