@@ -1580,8 +1580,9 @@ fn sidebar_width_over_time() {
 }
 
 /// The design screens at the mockups' scales, so each PNG lines up pixel
-/// for pixel with its mockup: `target/shots/mock-<screen>.png`.
-mod mock {
+/// for pixel with its mockup: `target/shots/mock-<screen>.png`. The
+/// promotional videos film Omarchy in its [`mock::tokyo_night`].
+pub(crate) mod mock {
     use super::*;
     use crate::theme::{Look, Palette};
 

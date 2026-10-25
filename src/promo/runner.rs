@@ -14,19 +14,16 @@ use serde::Serialize;
 use super::changed::changed;
 use super::live::Live;
 use super::pick;
-use super::scenario::{self, Database, Keys, Scene, Step};
+use super::scenario::{self, Database, Keys, Look, Scene, Step};
 use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Environment;
-use crate::keymap;
+use crate::keymap::{self, Stroke};
 use crate::model::{Action, Pane};
 use crate::testing::{self, Harness};
 
 /// The window, in points, and its pixels to a point.
 const SIZE: egui::Vec2 = egui::vec2(1200.0, 750.0);
 const SCALE: f32 = 2.0;
-
-/// The macOS look is filmed in the light theme, as a Mac shows it by default.
-const LIGHT: bool = true;
 
 fn promo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/promo")
@@ -36,6 +33,8 @@ fn promo() -> PathBuf {
 #[derive(Serialize)]
 struct Record {
     title: String,
+    /// The look it is filmed in: `macos` or `omarchy`.
+    look: &'static str,
     tempo: u32,
     /// The voice that says the lines, as `say -v` names it.
     voice: String,
@@ -117,6 +116,7 @@ struct Event {
 /// The harness, the database that answers it, and what has been filmed.
 struct Film {
     harness: Harness,
+    look: Look,
     live: Live,
     dir: PathBuf,
     /// How many frames are written, the last one's pixels, and where it
@@ -134,13 +134,31 @@ impl Film {
     /// The window as a video opens on it: connected to `database`, its
     /// tree showing, nothing open, the row panel hidden. Set up directly,
     /// and none of it filmed. `file` is the scenario's, for its errors.
-    fn start(file: &Path, database: &Path, name: &str, dir: PathBuf) -> Self {
+    ///
+    /// macOS is filmed in the light theme, as a Mac shows it by default,
+    /// under its title bar; Omarchy in Tokyo Night, its default theme, as
+    /// the site's screenshots show it, with no title bar: Hyprland draws
+    /// none.
+    fn start(file: &Path, look: Look, database: &Path, name: &str, dir: PathBuf) -> Self {
         let at = format!("{}, the start", file.display());
-        let mut harness = Harness::for_shots(SIZE, SCALE, LIGHT, crate::theme::Look::macos());
-        // Measured on a macOS 26 window with a unified compact toolbar.
-        harness.app.titlebar = crate::app::TitleBar {
-            height: 38.0,
-            inset: 80.0,
+        let mut harness = match look {
+            Look::Macos => {
+                let mut harness =
+                    Harness::for_shots(SIZE, SCALE, true, crate::theme::Look::macos());
+                // Measured on a macOS 26 window with a unified compact toolbar.
+                harness.app.titlebar = crate::app::TitleBar {
+                    height: 38.0,
+                    inset: 80.0,
+                };
+                harness
+            }
+            Look::Omarchy => {
+                let mut harness =
+                    Harness::for_shots(SIZE, SCALE, false, crate::theme::Look::omarchy());
+                harness.app.palette = crate::shots::mock::tokyo_night();
+                harness.app.apply_style(&harness.ctx);
+                harness
+            }
         };
         let mut live = Live::open(database)
             .unwrap_or_else(|error| panic!("{at}: {} does not open: {error}", database.display()));
@@ -174,6 +192,7 @@ impl Film {
         }
         let mut film = Self {
             harness,
+            look,
             live,
             dir,
             frames: 0,
@@ -336,24 +355,75 @@ impl Film {
         self.record("click").rect = Some(corners(rect));
     }
 
-    /// The chord, `times` times, as macOS reports what it holds.
+    /// The keys, `times` times, as the look's window sends them: a key
+    /// with what it holds (Cmd on macOS, Ctrl on Linux, which egui takes
+    /// for its command key), a character as its key's press with the
+    /// character. The last stroke is the event `kind`, with the keys
+    /// written; one before it that changes the screen is a "type", so a
+    /// `:` line shows as it is typed. The keys as a whole must change it.
     fn keys(&mut self, kind: &'static str, keys: &Keys, times: u32) {
-        let mods = keys.mods;
-        let modifiers = egui::Modifiers {
-            alt: mods.alt,
-            ctrl: mods.ctrl,
-            shift: mods.shift,
-            mac_cmd: mods.cmd,
-            command: mods.cmd,
-        };
-        let written = keymap::key_written(scenario::LAYOUT, keys.spelled);
+        let written = keymap::key_written(self.look.layout(), keys.spelled);
         for _ in 0..times {
-            self.harness.press(keys.key, modifiers);
-            self.must_take();
-            let rect = self.focus_rect();
-            let event = self.record(kind);
-            event.keys = Some(written.as_str().to_owned());
-            event.rect = rect;
+            let mut changed = false;
+            for (index, stroke) in keys.strokes.iter().enumerate() {
+                self.stroke(*stroke);
+                let last = index + 1 == keys.strokes.len();
+                let new = if last && !changed {
+                    self.must_take();
+                    true
+                } else {
+                    self.take()
+                };
+                if !new && !last {
+                    continue;
+                }
+                changed |= new;
+                let rect = self.focus_rect();
+                let event = if last {
+                    let event = self.record(kind);
+                    event.keys = Some(written.as_str().to_owned());
+                    event
+                } else {
+                    let event = self.record("type");
+                    if let Stroke::Text(character) = stroke {
+                        event.text = Some(character.to_string());
+                    }
+                    event
+                };
+                event.rect = rect;
+            }
+        }
+    }
+
+    fn stroke(&mut self, stroke: Stroke) {
+        match stroke {
+            Stroke::Key { mods, key } => {
+                let command = match self.look {
+                    Look::Macos => mods.cmd,
+                    Look::Omarchy => mods.ctrl,
+                };
+                let modifiers = egui::Modifiers {
+                    alt: mods.alt,
+                    ctrl: mods.ctrl,
+                    shift: mods.shift,
+                    mac_cmd: mods.cmd,
+                    command,
+                };
+                self.harness.press(key, modifiers);
+            }
+            Stroke::Text(character) => {
+                let key = egui::Key::from_name(&character.to_ascii_uppercase().to_string());
+                let shift = if character.is_uppercase() {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                };
+                let mut events = Vec::new();
+                events.extend(key.map(|key| testing::key(key, shift)));
+                events.push(egui::Event::Text(character.into()));
+                events.extend(key.map(|key| testing::release(key, shift)));
+                self.harness.frame(events);
+            }
         }
     }
 
@@ -465,7 +535,7 @@ fn film() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("frames")).unwrap();
     let (path, connection) = database(&file, &scenario.database);
-    let mut film = Film::start(&file, &path, &connection, dir.clone());
+    let mut film = Film::start(&file, scenario.look, &path, &connection, dir.clone());
     for (index, scene) in scenario.scenes.iter().enumerate() {
         film.scene = Some(index);
         // A slide plays nothing: the app waits, away, as it is.
@@ -484,6 +554,7 @@ fn film() {
     }
     let record = Record {
         title: scenario.title.clone(),
+        look: scenario.look.name(),
         tempo: scenario.tempo,
         voice: scenario.voice.clone(),
         intro: Card {

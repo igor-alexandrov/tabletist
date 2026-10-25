@@ -6,16 +6,42 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::keymap::{self, Command, Keymap, Kind, Layout, Mods, Press, Spelled, Stroke};
+use crate::keymap::{self, Command, Keymap, Kind, Layout, Spelled, Stroke};
 
-/// The look a video is drawn in: the macOS one, the only one so far.
-pub const LAYOUT: Layout = Layout::Mac;
+/// The look a video is filmed in, and so the keys its steps press.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Look {
+    /// macOS, in the light theme, with its title bar.
+    #[default]
+    Macos,
+    /// Omarchy, in Tokyo Night: vim's keys and the `:` prompt.
+    Omarchy,
+}
+
+impl Look {
+    /// The keymap's layout for the look.
+    pub fn layout(self) -> Layout {
+        match self {
+            Self::Macos => Layout::Mac,
+            Self::Omarchy => Layout::Omarchy,
+        }
+    }
+
+    /// The look as a scenario names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Macos => "macos",
+            Self::Omarchy => "omarchy",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Scenario {
     /// What the end card says.
     pub title: String,
     pub database: Database,
+    pub look: Look,
     /// The music's beats per minute; a scene ends on a half bar.
     pub tempo: u32,
     /// The voice that says the lines, as macOS `say -v` names it.
@@ -74,12 +100,13 @@ pub enum Scene {
     },
 }
 
-/// One press of a key with what is held, as the keymap spells it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Keys as the keymap spells them, and what they press one after another:
+/// a key with what is held, or a character typed (a vim letter). A line
+/// of the `:` prompt is its colon, its letters and Enter.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Keys {
     pub spelled: &'static str,
-    pub key: egui::Key,
-    pub mods: Mods,
+    pub strokes: Vec<Stroke>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -160,6 +187,11 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
             beats: length(beats).map_err(|error| format!("the outro's {error}"))?,
         },
     };
+    let look = match file.look.as_deref() {
+        None | Some("macos") => Look::Macos,
+        Some("omarchy") => Look::Omarchy,
+        Some(other) => return Err(format!("look {other:?} is not macos or omarchy")),
+    };
     let database = match file.database.as_deref() {
         None | Some("bookshop") => Database::Bookshop,
         Some(path) => Database::File(dir.join(path)),
@@ -170,13 +202,14 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
         .enumerate()
         .map(|(index, scene)| {
             scene
-                .read()
+                .read(look)
                 .map_err(|error| format!("scene {}{error}", index + 1))
         })
         .collect::<Result<_, String>>()?;
     Ok(Scenario {
         title: file.title,
         database,
+        look,
         tempo: file.tempo,
         voice,
         intro,
@@ -191,6 +224,7 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
 struct File {
     title: String,
     database: Option<String>,
+    look: Option<String>,
     #[serde(default = "tempo")]
     tempo: u32,
     voice: Option<String>,
@@ -255,8 +289,9 @@ struct RawScene {
 
 impl RawScene {
     /// The scene, or what is wrong with it, the error after its place
-    /// (": ..." for the scene, ", step N: ..." for a step).
-    fn read(self) -> Result<Scene, String> {
+    /// (": ..." for the scene, ", step N: ..." for a step). Its keys are
+    /// `look`'s.
+    fn read(self, look: Look) -> Result<Scene, String> {
         let RawScene {
             caption,
             steps,
@@ -280,7 +315,7 @@ impl RawScene {
                 .into_iter()
                 .enumerate()
                 .map(|(step, raw)| {
-                    raw.read()
+                    raw.read(look)
                         .map_err(|error| format!(", step {}: {error}", step + 1))
                 })
                 .collect::<Result<_, _>>()?;
@@ -329,7 +364,7 @@ struct RawStep {
 }
 
 impl RawStep {
-    fn read(self) -> Result<Step, String> {
+    fn read(self, look: Look) -> Result<Step, String> {
         let RawStep {
             open,
             click,
@@ -368,11 +403,11 @@ impl RawStep {
             return Ok(Step::Click(text));
         }
         if let Some(id) = command {
-            return command_step(&id, key.as_deref(), times);
+            return command_step(look, &id, key.as_deref(), times);
         }
         if let Some(keys) = press {
             return Ok(Step::Press {
-                keys: chord(&keys)?,
+                keys: strokes(&keys)?,
                 times,
             });
         }
@@ -392,9 +427,9 @@ impl RawStep {
     }
 }
 
-/// The command `id` names, pressed with `key` (one of its own keys on
-/// macOS) or else with its first.
-fn command_step(id: &str, key: Option<&str>, times: u32) -> Result<Step, String> {
+/// The command `id` names, pressed with `key` (one of its own keys in
+/// `look`) or else with its first.
+fn command_step(look: Look, id: &str, key: Option<&str>, times: u32) -> Result<Step, String> {
     let command = Command::from_id(id).ok_or_else(|| format!("no command is called {id:?}"))?;
     if !command.info().built {
         return Err(format!("{id} is not built yet"));
@@ -402,7 +437,7 @@ fn command_step(id: &str, key: Option<&str>, times: u32) -> Result<Step, String>
     let keymap = Keymap::default();
     let own: Vec<&'static str> = keymap
         .of(command)
-        .flat_map(|binding| binding.bound(LAYOUT).chords.iter())
+        .flat_map(|binding| binding.bound(look.layout()).chords.iter())
         .filter(|chord| chord.kind == Kind::Own)
         .map(|chord| chord.keys)
         .collect();
@@ -410,7 +445,7 @@ fn command_step(id: &str, key: Option<&str>, times: u32) -> Result<Step, String>
         None => own
             .first()
             .copied()
-            .ok_or_else(|| format!("{id} has no key on macOS"))?,
+            .ok_or_else(|| format!("{id} has no key on {}", look.name()))?,
         Some(key) => own.iter().copied().find(|own| *own == key).ok_or_else(|| {
             format!(
                 "{key:?} is not a key of {id}: its keys are {}",
@@ -420,35 +455,37 @@ fn command_step(id: &str, key: Option<&str>, times: u32) -> Result<Step, String>
     };
     Ok(Step::Command {
         command,
-        keys: chord(spelled)?,
+        keys: strokes(spelled)?,
         times,
     })
 }
 
-/// `keys`, as `settings.toml` spells a key, read as one press of a key
-/// with what is held: the only kind a video plays.
-fn chord(keys: &str) -> Result<Keys, String> {
+/// `keys`, as `settings.toml` spells them, read as what they press one
+/// after another: one press of a key, a few (`dd`, `yy p`), or a line of
+/// the `:` prompt (`:diff`).
+fn strokes(keys: &str) -> Result<Keys, String> {
     let spelled = keymap::intern(keys);
-    let read = keymap::spell(spelled).map_err(|keymap::Unread(why)| why)?;
-    let Spelled::Strokes(strokes) = &read else {
-        return Err(format!("{spelled} is not one press of a key"));
+    let strokes = match keymap::spell(spelled).map_err(|keymap::Unread(why)| why)? {
+        Spelled::Strokes(strokes) => strokes,
+        Spelled::Ex(line) => std::iter::once(':')
+            .chain(line.chars())
+            .map(Stroke::Text)
+            .chain([Stroke::Key {
+                mods: keymap::Mods::default(),
+                key: egui::Key::Enter,
+            }])
+            .collect(),
+        Spelled::Digits(_) => return Err(format!("{spelled} is nine keys, not one")),
     };
-    match (Press::of(&read), strokes.as_slice()) {
-        (Some(Press::Chord), [Stroke::Key { mods, key }]) => Ok(Keys {
-            spelled,
-            key: *key,
-            mods: *mods,
-        }),
-        _ => Err(format!("{spelled} is not one press of a key")),
-    }
+    Ok(Keys { spelled, strokes })
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{Database, Intro, Keys, Outro, Scene, Step, load, parse};
-    use crate::keymap::{Command, Mods};
+    use super::{Database, Intro, Keys, Look, Outro, Scene, Step, load, parse};
+    use crate::keymap::{Command, Mods, Stroke};
 
     fn read(text: &str) -> Result<super::Scenario, String> {
         parse(text, Path::new("/scenarios"))
@@ -498,13 +535,17 @@ steps = [{ command = "filter_bar" }]
         assert_eq!(caption, Some("Open a table."));
         let down = Keys {
             spelled: "down",
-            key: egui::Key::ArrowDown,
-            mods: Mods::default(),
+            strokes: vec![Stroke::Key {
+                key: egui::Key::ArrowDown,
+                mods: Mods::default(),
+            }],
         };
         let enter = Keys {
             spelled: "enter",
-            key: egui::Key::Enter,
-            mods: Mods::default(),
+            strokes: vec![Stroke::Key {
+                key: egui::Key::Enter,
+                mods: Mods::default(),
+            }],
         };
         assert_eq!(
             steps,
@@ -541,11 +582,75 @@ steps = [{ command = "filter_bar" }]
         };
         assert_eq!(*command, Command::FilterBar);
         assert_eq!(*times, 1);
-        assert!(
-            keys.mods.cmd,
-            "the filter bar's first key on macOS holds Cmd"
+        let [Stroke::Key { mods, key }] = keys.strokes.as_slice() else {
+            panic!("not one press: {keys:?}");
+        };
+        assert!(mods.cmd, "the filter bar's first key on macOS holds Cmd");
+        assert_eq!(*key, egui::Key::F);
+    }
+
+    #[test]
+    fn an_omarchy_scenario_presses_vim_s_keys_and_the_prompt_s_lines() {
+        let scenario = read(
+            r#"
+title = "T"
+look = "omarchy"
+[[scene]]
+steps = [
+  { command = "delete_row" },
+  { command = "review_sql" },
+  { command = "find_object" },
+  { press = "i" },
+]
+"#,
+        )
+        .unwrap();
+        assert_eq!(scenario.look, Look::Omarchy);
+        let typed = |text: &str| text.chars().map(Stroke::Text).collect::<Vec<_>>();
+        let enter = Stroke::Key {
+            key: egui::Key::Enter,
+            mods: Mods::default(),
+        };
+        let pressed: Vec<_> = shot(&scenario.scenes[0])
+            .1
+            .iter()
+            .map(|step| match step {
+                Step::Command { keys, .. } | Step::Press { keys, .. } => {
+                    (keys.spelled, keys.strokes.clone())
+                }
+                other => panic!("not keys: {other:?}"),
+            })
+            .collect();
+        let ctrl = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            pressed,
+            [
+                ("dd", typed("dd")),
+                (":diff", [typed(":diff"), vec![enter]].concat()),
+                (
+                    "ctrl+p",
+                    vec![Stroke::Key {
+                        key: egui::Key::P,
+                        mods: ctrl,
+                    }]
+                ),
+                ("i", typed("i")),
+            ]
         );
-        assert_eq!(keys.key, egui::Key::F);
+        assert_eq!(
+            read("title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n")
+                .unwrap()
+                .look,
+            Look::Macos
+        );
+        assert!(
+            read("title = \"T\"\nlook = \"windows\"\n[[scene]]\nsteps = [{ hold = 1 }]\n")
+                .unwrap_err()
+                .contains("look \"windows\" is not macos or omarchy")
+        );
     }
 
     #[test]
@@ -606,8 +711,8 @@ steps = [{ command = "filter_bar" }]
                 "only a command or a press takes times",
             ),
             ("{ press = \"down\", times = 0 }", "times is at least 1"),
-            ("{ press = \"g g\" }", "is not one press of a key"),
-            ("{ press = \"nonsense\" }", "nonsense"),
+            ("{ press = \"alt+1..9\" }", "is nine keys, not one"),
+            ("{ press = \"ctrl+nonsense\" }", "nonsense"),
             ("{ type = \"\" }", "type needs text"),
             ("{ hold = 0 }", "hold 0 is not above 0"),
             ("{ wait = 1 }", "unknown field"),
