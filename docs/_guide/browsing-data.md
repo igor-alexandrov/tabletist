@@ -136,11 +136,15 @@ window reopens comes back in it.
   method. Each table's foreign keys are in its own `CREATE TABLE`, so two
   tables that point at each other cannot be made from their texts as
   they are.
-- On **MySQL** it is `SHOW CREATE TABLE` (or `SHOW CREATE VIEW`) exactly
-  as the server returns it, then each trigger's `SHOW CREATE TRIGGER`.
+- On **MySQL** it is `SHOW CREATE TABLE` (or `SHOW CREATE VIEW`), then
+  each trigger's `SHOW CREATE TRIGGER` under a `-- Triggers` line.
 - On **SQLite** it is the text the file keeps for the table or view, then
   for its indexes and triggers. Indexes SQLite made by itself keep no
   text and are left out.
+
+On MySQL and SQLite each statement is as the database returns it: the
+view only ends one with `;` where it has none, and sets the statements
+apart.
 
 The definition is read once, the first time the view shows, and kept with
 the tab: Reload (Cmd/Ctrl+R, or **Reload** over the text) reads it again,
