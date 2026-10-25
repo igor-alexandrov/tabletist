@@ -312,6 +312,18 @@ impl Connection {
         }
     }
 
+    /// The zone the server moves a moment it keeps without an offset to
+    /// and from, as the server names it (`UTC`, `+00:00`, `Europe/Berlin`,
+    /// or the system's abbreviation, `CET`): MySQL's `TIMESTAMP`. `None`
+    /// for an engine that keeps no such moment.
+    pub async fn session_zone(&self) -> Result<Option<String>> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.session_zone().await,
+            Inner::Postgres(conn) => conn.session_zone().await,
+            Inner::MySql(conn) => conn.session_zone().await,
+        }
+    }
+
     /// Databases the session can switch to. Empty when switching does not
     /// apply (SQLite, and MySQL where databases are listed as schemas).
     pub async fn list_databases(&self) -> Result<Vec<String>> {

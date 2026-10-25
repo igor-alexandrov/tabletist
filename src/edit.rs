@@ -128,6 +128,9 @@ pub struct Table<'a> {
     /// The zone a moment with an offset is shown and typed in, where the
     /// engine sends one and the zone is known (`Workspace::zone_shown`).
     pub zone: Option<&'a jiff::tz::TimeZone>,
+    /// The zone a MySQL session moves its `TIMESTAMP` values to and from,
+    /// once it is known (`Workspace::session_zone`).
+    pub session_zone: Option<&'a jiff::tz::TimeZone>,
 }
 
 impl<'a> Table<'a> {
@@ -148,6 +151,11 @@ impl<'a> Table<'a> {
             added: &object.edits.added,
             deleted: &object.edits.deleted,
             zone: workspace.zone_shown(),
+            session_zone: workspace
+                .session_zone
+                .value
+                .as_ref()
+                .and_then(Option::as_ref),
         })
     }
 }
@@ -188,7 +196,8 @@ impl Table<'_> {
 
     /// The page's column `col` as an editor reads dates and times for it,
     /// where it keeps them: the zone a PostgreSQL `timestamptz` is shown
-    /// in, and the values SQLite's follow.
+    /// in, the one a MySQL `TIMESTAMP` is kept in, and the values SQLite's
+    /// follow.
     pub fn dates(&self, col: usize) -> Option<crate::dates::Column> {
         let column = self.column(col)?;
         let values = self.page.rows.iter().filter_map(|row| row.get(col));
@@ -197,7 +206,8 @@ impl Table<'_> {
         // offset all the same, which the server reads as it is.
         let zone = match self.dialect {
             Dialect::Postgres => Some(self.zone.unwrap_or(&UTC)),
-            Dialect::MySql | Dialect::Sqlite => None,
+            Dialect::MySql => self.session_zone,
+            Dialect::Sqlite => None,
         };
         crate::dates::Column::of(self.dialect, &column.type_name, zone, values)
     }
@@ -3243,6 +3253,7 @@ mod tests {
             added: &edits.added,
             deleted: &edits.deleted,
             zone: Some(&crate::testing::UTC),
+            session_zone: None,
         }
     }
 
@@ -4874,6 +4885,7 @@ mod tests {
             added: &[],
             deleted: &NONE_DELETED,
             zone: Some(&crate::testing::UTC),
+            session_zone: None,
         }
     }
 

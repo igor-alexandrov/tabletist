@@ -11,6 +11,7 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use tabletist_db::{Driver, NewValue, Value, ValueKind};
 
+use crate::backend::{Command, Event};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, Pane, TabId};
 use crate::settings::{Settings, Zone};
 use crate::testing::{Harness, labels};
@@ -600,4 +601,58 @@ fn a_time_the_clocks_skip_is_a_warning_and_no_day_is_a_fault() {
         .clone()
         .expect("refused");
     assert!(!problem.warns());
+}
+
+#[test]
+fn a_mysql_session_is_asked_its_zone_once_it_is_up_and_no_other_is() {
+    for (driver, asked) in [
+        (Driver::MySql, true),
+        (Driver::Postgres, false),
+        (Driver::Sqlite, false),
+    ] {
+        let (mut harness, tab, _) = covers(driver, "date", "2026-01-15");
+        harness.app.after_connect(tab);
+        let asks = harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .any(|command| matches!(command, Command::SessionZone { .. }));
+        assert_eq!(asks, asked, "{driver:?}");
+    }
+}
+
+#[test]
+fn a_mysql_timestamp_is_read_in_the_zone_the_session_keeps_it_in() {
+    let (mut harness, tab, id) = covers(Driver::MySql, "timestamp", "2026-01-15 09:30:00");
+    let session = harness.app.workspace(tab).unwrap().session;
+    let request = crate::backend::RequestId(9_000);
+    harness
+        .app
+        .workspace_mut(tab)
+        .unwrap()
+        .session_zone
+        .start(request);
+    let berlin = jiff::tz::TimeZone::get("Europe/Berlin").unwrap();
+    harness.app.apply(Action::Backend(Event::SessionZone {
+        session,
+        request,
+        result: Ok(Some(berlin)),
+    }));
+    type_in(&mut harness, tab, id, "2026-03-29 02:30");
+    assert!(says(
+        &mut harness,
+        "02:30 doesn't exist on 29 Mar in Berlin; clocks go forward."
+    ));
+    // Sent as the session's clock writes it, which is what the cell shows.
+    type_in(&mut harness, tab, id, "2026-01-15 10:30");
+    assert!(says(
+        &mut harness,
+        "Thu 15 Jan 2026, 10:30 CET · sent as 2026-01-15 10:30:00"
+    ));
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(
+        pending_text(&harness, tab, id).as_deref(),
+        Some("2026-01-15 10:30:00")
+    );
 }

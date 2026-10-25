@@ -1143,6 +1143,10 @@ pub struct Workspace {
     pub next_query: u32,
     /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
     pub server_version: Fetch<String>,
+    /// The zone a MySQL session moves its `TIMESTAMP` values to and from,
+    /// asked for once the session is up: `Some(None)` where the server
+    /// names one the zone database does not know.
+    pub session_zone: Fetch<Option<jiff::tz::TimeZone>>,
     /// The columns of tables and views, for the SQL editors' completion:
     /// fetched for the tables a statement names, and filled by a table
     /// tab's structure. A fetch that failed stays failed, so it is not
@@ -5376,6 +5380,7 @@ impl Workspace {
             tabs: Vec::new(),
             next_query: 1,
             server_version: Fetch::default(),
+            session_zone: Fetch::default(),
             columns: HashMap::new(),
             catalog_generation: 0,
             active_tab: None,
@@ -5734,6 +5739,7 @@ impl Workspace {
             object.edits.holders.clear();
         }
         self.server_version = Fetch::default();
+        self.session_zone = Fetch::default();
         // Fetches the old session will never answer, and names that may
         // not be the new one's.
         self.columns.clear();

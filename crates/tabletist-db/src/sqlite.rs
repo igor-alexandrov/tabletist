@@ -950,6 +950,11 @@ impl Adapter for Conn {
         .await
     }
 
+    /// None: SQLite keeps a moment as the text or the number it is given.
+    async fn session_zone(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// None: a file is one database.
     async fn list_databases(&self) -> Result<Vec<String>> {
         Ok(Vec::new())

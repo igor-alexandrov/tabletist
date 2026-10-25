@@ -1607,6 +1607,14 @@ async fn one_piece_cannot_hold_two_statements() {
 }
 
 #[tokio::test]
+async fn postgres_sends_its_moments_with_their_offsets_and_names_no_zone() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    assert_eq!(within(connection.session_zone()).await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn the_server_version_has_no_distribution_suffix() {
     let Some(connection) = connect().await else {
         return;

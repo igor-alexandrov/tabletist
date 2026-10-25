@@ -163,6 +163,13 @@ pub enum Command {
         session: SessionId,
         request: RequestId,
     },
+    /// The zone the server moves MySQL's `TIMESTAMP` values to and from,
+    /// for the editor of one: its changes of the clocks, and its limits in
+    /// UTC.
+    SessionZone {
+        session: SessionId,
+        request: RequestId,
+    },
     /// Writes a state file atomically. Saves to one file are written in
     /// order, and a burst of them writes only the newest.
     Save {
@@ -372,6 +379,14 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         result: Result<String, Error>,
+    },
+    /// The session's zone, read from the zone database: `None` where the
+    /// engine has none, or the server names it in a way the database does
+    /// not know (an abbreviation such as `CET`).
+    SessionZone {
+        session: SessionId,
+        request: RequestId,
+        result: Result<Option<jiff::tz::TimeZone>, Error>,
     },
     /// A `Save` was written, or why it was not.
     Saved {
@@ -2113,7 +2128,8 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Write { session, .. }
         | Command::ListDatabases { session, .. }
         | Command::RunSql { session, .. }
-        | Command::ServerVersion { session, .. } => *session,
+        | Command::ServerVersion { session, .. }
+        | Command::SessionZone { session, .. } => *session,
         Command::Test { .. }
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
@@ -2144,7 +2160,8 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::Write { request, .. }
         | Command::ListDatabases { request, .. }
         | Command::RunSql { request, .. }
-        | Command::ServerVersion { request, .. } => Some(*request),
+        | Command::ServerVersion { request, .. }
+        | Command::SessionZone { request, .. } => Some(*request),
         Command::Connect { .. }
         | Command::Test { .. }
         | Command::Close { .. }
@@ -2233,6 +2250,11 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
             cancel: None,
         },
         Command::ServerVersion { session, request } => Event::ServerVersion {
+            session,
+            request,
+            result: Err(error),
+        },
+        Command::SessionZone { session, request } => Event::SessionZone {
             session,
             request,
             result: Err(error),
@@ -2519,6 +2541,18 @@ async fn run_session(
                 let result = connection.server_version().await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::ServerVersion {
+                    session: *session,
+                    request: *request,
+                    result,
+                });
+                lost
+            }
+            Command::SessionZone { session, request } => {
+                let result = connection.session_zone().await;
+                let lost = lost_error(&result);
+                // The zone database is read here, on the backend.
+                let result = result.map(|named| named.as_deref().and_then(crate::zones::session));
+                outbox.emit(Event::SessionZone {
                     session: *session,
                     request: *request,
                     result,

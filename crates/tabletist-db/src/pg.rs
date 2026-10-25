@@ -500,6 +500,12 @@ impl Adapter for Conn {
         })
     }
 
+    /// None: a `timestamptz` comes with its offset, and the app shows it in
+    /// the zone of its own settings.
+    async fn session_zone(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// See [`crate::Connection::server_version`].
     async fn server_version(&self) -> Result<String> {
         let client = self.client.lock().await;

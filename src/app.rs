@@ -3753,6 +3753,7 @@ impl App {
                             .is_some_and(|workspace| std::mem::take(&mut workspace.woken));
                         if woken {
                             self.ask_server_version(tab);
+                            self.ask_session_zone(tab);
                         } else {
                             self.after_connect(tab);
                         }
@@ -4410,6 +4411,17 @@ impl App {
                     && let Some(workspace) = self.workspace_mut(tab)
                 {
                     workspace.server_version.finish(request, result);
+                }
+            }
+            Event::SessionZone {
+                session,
+                request,
+                result,
+            } => {
+                if let Some(tab) = self.tab_for_session(session)
+                    && let Some(workspace) = self.workspace_mut(tab)
+                {
+                    workspace.session_zone.finish(request, result);
                 }
             }
             Event::Written {
@@ -5513,6 +5525,27 @@ impl App {
         }
     }
 
+    /// The zone a MySQL session moves its `TIMESTAMP` values to and from:
+    /// asked for once a session is up, where it is not known. The other
+    /// engines keep no such moment.
+    fn ask_session_zone(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        let asks = match workspace.driver {
+            Driver::MySql => workspace.session_zone.needs_load(),
+            Driver::Postgres | Driver::Sqlite => false,
+        };
+        if asks {
+            let session = workspace.session;
+            let request = RequestId(self.next_id());
+            if let Some(workspace) = self.workspace_mut(tab) {
+                workspace.session_zone.start(request);
+            }
+            self.backend.send(Command::SessionZone { session, request });
+        }
+    }
+
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
@@ -5532,6 +5565,7 @@ impl App {
             }
         }
         self.ask_server_version(tab);
+        self.ask_session_zone(tab);
         self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -7494,6 +7528,7 @@ impl App {
                     // answered, is asked of the next session, and so is
                     // its zone.
                     workspace.server_version.pending = None;
+                    workspace.session_zone.pending = None;
                     due.push(workspace.session);
                 }
             }

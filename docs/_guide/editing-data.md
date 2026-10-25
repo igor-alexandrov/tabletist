@@ -43,14 +43,102 @@ sent: numbers and their ranges, booleans, enum values, the maximum length,
 and the syntax of JSON. A foreign key you type is also looked up in the
 table it points at, as a [warning](#foreign-keys).
 
-### Dates and times with a zone
+### Dates and times
+
+A date, a time or a timestamp is typed, and a line under the editor says
+what will be stored as you type: `Thu 15 Jan 2026, 09:30 EST · sent as
+2026-01-15 09:30:00-05`. What is sent is always written the same way for
+the column's type, whatever you typed. Enter is refused while the text is
+no value of the column, and the line says why: `There is no 30 February.`
+
+| Column | PostgreSQL | MySQL | SQLite (declared type) |
+| --- | --- | --- | --- |
+| Date | `date` | `DATE` | holds `DATE` and not `TIME` |
+| Date and time | `timestamp` | `DATETIME` | `DATETIME`, `TIMESTAMP`, or holds `DATE` and `TIME` |
+| Date and time in a zone | `timestamptz` | `TIMESTAMP` | |
+| Time | `time`, `timetz` | `TIME` | `TIME` |
+
+An `interval`, MySQL's `YEAR` and an array of dates are edited as text.
+
+You can type:
+
+- ISO 8601, with a space or `T`, with or without seconds, a fraction and
+  an offset: `2026-01-15 09:30`, `2026-01-15T09:30:00.25Z`;
+- a day with its month's name: `15 Jan 2026`, `Jan 15 2026`,
+  `January 15, 2026`, or without a year for this year's;
+- a day in numbers, in your system's order: `15/01/2026` or `01/15/2026`,
+  and `2026/01/15` anywhere;
+- a time: `9:30`, `9.30`, `9am`, `9:30 pm`, `21:30:15`;
+- a day counted from today: `today`, `tomorrow`, `yesterday`, `now`,
+  `+7d`, `-2w`, `+1m`, `+1y`, `next fri`, `last mon`, with a time after
+  it: `tomorrow 9am`.
+
+A day counted from today is stored as the day it is, never as the word:
+the line says it, `Fri 30 Oct 2026 · in 6 days`. Today is the one of the
+zone of [Time zone for timestamptz]({% link _reference/settings-and-files.md %}#the-settings-window),
+for every date column. A month moved past its end stops at the last day:
+31 January and `+1m` is 28 February. A day alone in a timestamp is its
+midnight, and a time alone today's. `now()` and `current_timestamp` are
+still the database's time of the save; `now` alone is the time it is as
+you type it.
+
+What a column cannot keep is refused, with why: a time typed into a
+date, a day into a time, an offset into a `timestamp` (SQLite keeps one
+in its text). Words the servers read themselves, such as `epoch` or a
+zone's name after a time, are not read here: write the moment.
+
+#### Zones
 
 A PostgreSQL `timestamptz` is shown, and opens to be edited, in the zone
 of [Time zone for timestamptz]({% link _reference/settings-and-files.md %}#the-settings-window),
-with that zone's offset. A value you type without an offset is sent with
-the zone's, so the server reads it as the time you see; one with an
-offset is sent as you typed it. Typing back the same moment, in any zone,
-changes nothing.
+and is sent with that zone's offset. One typed with another offset is the
+same moment, sent as that zone shows it. Typing back the same moment, in
+any zone, changes nothing.
+
+A MySQL `TIMESTAMP` is shown and typed in the zone of the session, which
+the server moves it to and from, and is sent as that zone's clock writes
+it. A `timestamp` with no zone, and MySQL's `DATETIME`, are stored as
+typed, whatever the zone.
+
+Where the clocks change, the line says so:
+
+- a time the clocks skip, `02:30 doesn't exist on 8 Mar in New York;
+  clocks go forward.`, is refused until you take the time after it with
+  **Use 03:30**;
+- a time the clocks go back over is two moments: summer time is taken
+  unless you choose the other, `01:30 EDT` or `01:30 EST`. A MySQL value
+  is sent with no offset, so there it is the server's to choose.
+
+Until a MySQL session's zone is known, or where the server names it by an
+abbreviation such as `CET`, which names no rules, a `TIMESTAMP` takes only
+a day and a time written out, with no offset: today there is the
+server's. A `timestamptz` whose zone is not read yet is shown as the
+server sent it and typed in UTC.
+
+#### What a type holds
+
+The line says the limits of a type, and refuses what is outside them:
+
+- MySQL `TIMESTAMP` holds 1970-01-01 00:00:01 to 2038-01-19 03:14:07
+  UTC; `DATE` and `DATETIME` hold 1000-01-01 to 9999-12-31;
+- PostgreSQL holds days from 24 November 4714 BC, typed `4714-11-24 BC`.
+  Years after 9999 are not read;
+- PostgreSQL's `infinity` and `-infinity` are typed as they are, and said
+  as `No end date · stored as infinity`;
+- PostgreSQL's and SQLite's `24:00:00` is the end of a day, and a time
+  rounded up past `23:59:59` is it; a MySQL `TIME` past a day or below
+  zero (`100:30:00`, `-12:00`) is a span of time, kept to ±838:59:59;
+- a MySQL zero date, `0000-00-00`, is shown as it is stored and cannot be
+  typed: give a date or set NULL.
+
+SQLite keeps a date as text or as a number. A new value is written the
+way the column's values already are: seconds since 1970 where they are
+whole numbers, a Julian day (as `julianday()` gives it) where they are
+real numbers, and ISO 8601 text otherwise or where there are none
+(`2026-01-15` or `2026-01-15 09:30:00`). A time kept as a number is
+seconds of the day, or the Julian day of its time on 1 January 2000. A
+value kept as a number opens as the day, the time, or both, that it is.
+The values you do not edit keep theirs.
 
 ### Words that are not text
 
@@ -61,7 +149,7 @@ say, not their letters. They are read in any case.
 | --- | --- |
 | `NULL` | NULL, where the column takes it |
 | `DEFAULT` | The column's default, where it has one |
-| `now()`, `now`, `current_timestamp` | The moment of the save by the database's own clock, in a date or time column |
+| `now()`, `current_timestamp` | The moment of the save by the database's own clock, in a date or time column |
 
 The cell shows the word until you save, and what the database stored
 after. Review SQL shows the keyword as it is sent.
