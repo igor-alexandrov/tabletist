@@ -32,7 +32,7 @@ Renders need a GPU and Chrome, so they run on a Mac, by hand.
 ```toml
 title    = "Filtering"     # the end card says it; the video is named after the file
 database = "bookshop"      # the Bookshop fixture, or a path to a SQLite file
-tempo    = 112             # the music's beats per minute; a scene ends on a bar
+tempo    = 128             # the music's beats per minute; a scene ends on a half bar
 
 [[scene]]
 caption = "Open a table. It's just there."

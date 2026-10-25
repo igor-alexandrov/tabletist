@@ -25,7 +25,7 @@ Scenarios live in `contrib/promo/scenarios/`:
 ```toml
 title    = "Filtering"     # the end card says it; the video is named after the file
 database = "bookshop"      # the Bookshop fixture, or a path to a SQLite file
-tempo    = 112             # the music's beats per minute; a scene ends on a bar
+tempo    = 128             # the music's beats per minute; a scene ends on a half bar
 
 [[scene]]
 caption = "Open a table. It's just there."
@@ -173,7 +173,7 @@ An ignored test behind the `shots` feature:
 
 ```json
 {
-  "title": "Filtering", "tempo": 112, "size": [1200, 750], "scale": 2,
+  "title": "Filtering", "tempo": 128, "size": [1200, 750], "scale": 2,
   "scenes": [{ "caption": "Open a table. It's just there." }],
   "events": [
     { "scene": null, "frame": 0, "kind": "start" },
@@ -214,19 +214,21 @@ An ignored test behind the `shots` feature:
 A pure function from the events and the tempo to a timeline. Nothing else
 decides time; the picture and the sound both read its output.
 
-- The intro is a bar. A scene starts on a bar and its first step half a
-  beat later, so a caption's first word lands on a beat. The outro is two
-  bars after the last scene.
-- Typing goes at about 13 characters a second, with a jitter drawn from a
+- The intro is a bar. A scene starts on a half bar and its first step
+  half a beat later, so a caption's first word lands on a beat. The outro
+  is a bar and a half after the last scene, and the music's last chord
+  starts with it, in the middle of a bar if need be.
+- Typing goes at about 18 characters a second, with a jitter drawn from a
   generator seeded by the scenario's title, and a longer gap at a space:
   the same scenario always gives the same video.
-- The pointer takes 0.35 to 0.7 s to reach a point, by distance, and
-  clicks 0.12 s after it arrives. A click, a command and a press each hold
-  0.35 s. A key that follows typing (Enter, Run) waits 0.3 s more, as a
-  hand does that has just typed. A result holds 0.6 s after a scene's last
+- The pointer takes 0.28 to 0.55 s to reach a point, by distance, and
+  clicks 0.1 s after it arrives. A click, a command and a press each hold
+  0.25 s (`STEP`). A key that follows typing (Enter, Run) waits 0.3 s more, as a
+  hand does that has just typed. A result holds 0.4 s after a scene's last
   step.
 - A scene lasts at least as long as its caption takes to read (0.3 s a word,
-  1.6 s at least), and is rounded up to the next bar of the tempo.
+  1.6 s at least), and is rounded up to the next half bar of the tempo:
+  a whole bar left too long a still tail.
 - The camera holds the wide shot while the window rises in, until half a
   beat after the intro.
 - Then it frames the union of the rects of the events from 0.4 s ago to
@@ -240,8 +242,8 @@ decides time; the picture and the sound both read its output.
 - The spotlight does not wait for the camera: on its own spring, it lights
   the latest event with a rect, 0.1 s before it happens, with a little
   room round it.
-- The reveal: once the action has been quiet for `REVEAL` (0.9 s), and the
-  next action is at least `QUIET` (2.4 s) after the last, the camera pulls
+- The reveal: once the action has been quiet for `REVEAL` (0.6 s), and the
+  next action is at least `QUIET` (1.6 s) after the last, the camera pulls
   back to the whole window and the spotlight lets go, so the result is seen
   whole. While it is back, the camera drifts in by `DRIFT` (1.5% a second),
   so a held shot is not a frozen one. From just before the outro, the

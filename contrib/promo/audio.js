@@ -104,21 +104,21 @@
     bed.gain.linearRampToValueAtTime(1, timeline.intro.to * 0.8);
     bed.gain.setValueAtTime(1, duration - bar);
     bed.gain.linearRampToValueAtTime(0, duration - 0.05);
-    for (let at = 0; at < duration - 1e-6; at += bar) {
-      if (at >= outro - 1e-6) {
-        pad(ctx, voice, LAST, at, duration - at);
-        break;
-      }
+    // A scene ends on a half bar, so the outro may start in the middle of
+    // one: the bar it starts in is cut there, and the last chord takes over.
+    for (let at = 0; at < outro - 1e-6; at += bar) {
+      const length = Math.min(bar, outro - at);
       const chord = CHORDS[Math.round(at / bar) % CHORDS.length];
-      pad(ctx, voice, chord, at, bar);
+      pad(ctx, voice, chord, at, length);
       if (at < timeline.intro.to - 1e-6) continue;
-      bass(ctx, voice, chord[0] - 12, at, bar);
-      arp(ctx, voice, chord, at, beat);
-      for (let k = 0; k < 4; k++) {
+      bass(ctx, voice, chord[0] - 12, at, length);
+      arp(ctx, voice, chord, at, beat, length);
+      for (let k = 0; k * beat < length - 1e-6; k++) {
         if (k % 2 === 0) kick(ctx, voice, at + k * beat);
-        hat(tools, voice, at + k * beat + beat / 2, random());
+        if ((k + 0.5) * beat < length - 1e-6) hat(tools, voice, at + k * beat + beat / 2, random());
       }
     }
+    pad(ctx, voice, LAST, outro, duration - outro);
   }
 
   // Detuned saws through a slow lowpass: warm, wide, quiet.
@@ -190,10 +190,14 @@
     source.start(at, random * 0.5, 0.06);
   }
 
-  // Eighths over the chord, an octave up, left and right in turn.
-  function arp(ctx, into, chord, at, beat) {
-    [0, 1, 2, 3, 1, 2, 3, 2].forEach((n, i) =>
-      pluck(ctx, into, hz(chord[n] + 12), at + (i * beat) / 2, i % 2 ? 0.35 : -0.35));
+  // Eighths over the chord, an octave up, left and right in turn, for
+  // `length` seconds.
+  function arp(ctx, into, chord, at, beat, length) {
+    [0, 1, 2, 3, 1, 2, 3, 2].forEach((n, i) => {
+      if ((i * beat) / 2 < length - 1e-6) {
+        pluck(ctx, into, hz(chord[n] + 12), at + (i * beat) / 2, i % 2 ? 0.35 : -0.35);
+      }
+    });
   }
 
   function pluck(ctx, into, freq, at, pan) {

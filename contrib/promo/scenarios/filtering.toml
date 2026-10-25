@@ -1,6 +1,6 @@
 # One feature, explained: filtering a table without SQL.
 title = "Filter without SQL"
-tempo = 104
+tempo = 120
 
 [[scene]]
 caption = "Every table opens ready to filter."

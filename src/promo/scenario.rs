@@ -64,7 +64,7 @@ pub enum Step {
 }
 
 /// The tempo when the scenario names none, and the ones it may name.
-const TEMPO: u32 = 112;
+const TEMPO: u32 = 128;
 const TEMPOS: std::ops::RangeInclusive<u32> = 80..=160;
 
 /// The longest `hold`, in seconds.
@@ -380,9 +380,9 @@ steps = [{ command = "filter_bar" }]
     }
 
     #[test]
-    fn the_tempo_is_112_unless_the_scenario_says() {
+    fn the_tempo_is_128_unless_the_scenario_says() {
         let scenario = read("title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n").unwrap();
-        assert_eq!(scenario.tempo, 112);
+        assert_eq!(scenario.tempo, 128);
     }
 
     #[test]

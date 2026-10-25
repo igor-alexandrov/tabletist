@@ -13,7 +13,7 @@
   // The window, in points: every rect is in them.
   const WIDTH = 1200, HEIGHT = 750;
   // Characters typed a second, on average.
-  const TYPE_RATE = 13;
+  const TYPE_RATE = 18;
   // The camera frames what happens from BEHIND seconds ago to
   // LEAD + AHEAD seconds on, so it is there as the action starts.
   const LEAD = 0.25, AHEAD = 0.6, BEHIND = 0.4;
@@ -22,7 +22,9 @@
   const OMEGA = 2 * Math.PI * 1.1;
   const READ_WORD = 0.3, READ_LEAST = 1.6;
   // How long a result stays after a scene's last step.
-  const SETTLE = 0.6;
+  const SETTLE = 0.4;
+  // How long a click, a command or a key holds before the next step.
+  const STEP = 0.25;
   const KEYCAP = 0.8;
   // The pause between the last typed character and a key (Enter, Run).
   const AFTER_TYPING = 0.3;
@@ -31,7 +33,7 @@
   // Once the action has been quiet this long, and stays quiet for at least
   // QUIET, the camera pulls back and the spotlight lets go: the result is
   // seen whole, as it would be on the screen.
-  const REVEAL = 0.9, QUIET = 2.4;
+  const REVEAL = 0.6, QUIET = 1.6;
   // While it shows the whole window so, the camera drifts in this much a
   // second, so a held shot is not a frozen one.
   const DRIFT = 0.015;
@@ -55,8 +57,8 @@
     };
   }
 
-  // The first bar line at or after `t`.
-  const onBar = (t, bar) => Math.ceil(t / bar - 1e-9) * bar;
+  // The first line of a grid of `step` seconds at or after `t`.
+  const onGrid = (t, step) => Math.ceil(t / step - 1e-9) * step;
 
   const centre = ([x0, y0, x1, y1]) => ({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 });
 
@@ -83,23 +85,23 @@
           case "point": {
             const to = centre(event.rect);
             const far = Math.hypot(to.x - pointer.x, to.y - pointer.y);
-            const travel = clamp(0.35 + far / 1800, 0.35, 0.7);
+            const travel = clamp(0.28 + far / 2200, 0.28, 0.55);
             timed.push({ ...event, at: now + travel, leaves: now, origin: pointer, target: to });
             pointer = to;
             now += travel;
             break;
           }
           case "click":
-            now += 0.12;
+            now += 0.1;
             timed.push({ ...event, at: now, where: pointer });
-            now += 0.35;
+            now += STEP;
             break;
           case "command":
           case "press":
             // A hand that has typed takes a moment before the key that ends it.
             if (timed.length && timed[timed.length - 1].kind === "type") now += AFTER_TYPING;
             timed.push({ ...event, at: now });
-            now += 0.35;
+            now += STEP;
             break;
           case "type": {
             const pause = /\s/.test(event.text) ? 1.4 : 1;
@@ -117,7 +119,9 @@
       now += SETTLE;
       const words = scene.caption ? scene.caption.split(/\s+/).length : 0;
       const reading = scene.caption ? Math.max(READ_LEAST, READ_WORD * words) : 0;
-      const to = onBar(Math.max(now, from + reading), bar);
+      // A scene ends on a half bar: the next starts on the beat, without
+      // waiting out a whole bar.
+      const to = onGrid(Math.max(now, from + reading), bar / 2);
       scenes.push({ from, to, caption: scene.caption || null });
       t = to;
     });
@@ -281,7 +285,7 @@
       throw new Error(`the window is ${record.size.join("x")} points, not ${WIDTH}x${HEIGHT}`);
     }
     const { timed, scenes, outro, beat, bar } = place(record);
-    const duration = outro + 2 * bar;
+    const duration = outro + 1.5 * bar;
     // The camera holds the wide shot while the window rises, and a moment after.
     const intro = { from: 0, to: bar };
     const { camera, spot } = film(timed, outro, duration, intro.to + beat / 2);
