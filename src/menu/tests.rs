@@ -1,9 +1,9 @@
 //! The menu bar's model, which items are enabled, what a click does, and
 //! what a replayed key gives egui. Headless.
 
-use crate::app::RUNNABLE;
+use crate::app::{App, RUNNABLE};
 use crate::keymap::{Command, EditItem};
-use crate::model::{Action, Dialog};
+use crate::model::{Action, ConnTabId, Dialog};
 use crate::testing::Harness;
 
 use super::{Item, Platform, bar};
@@ -119,11 +119,12 @@ fn the_window_s_commands_are_enabled_on_the_connection_picker() {
             "{command:?}"
         );
     }
-    // A connection's commands are not.
+    // A connection's commands are not, nor Quick Open, which searches one.
     assert!(
         !app.menu_state(Item::Command(Command::CloseConnection))
             .enabled
     );
+    assert!(!app.menu_state(Item::QuickOpen).enabled);
 }
 
 #[test]
@@ -214,4 +215,90 @@ fn a_clicked_command_does_what_quick_open_s_row_does() {
     // A command that does not apply pushes nothing.
     harness.app.choose(Item::Command(Command::SaveChanges));
     assert_eq!(harness.app.actions.len(), 1);
+}
+
+#[test]
+fn under_a_dialog_only_the_text_sizes_keys_reach() {
+    let mut harness = Harness::new();
+    assert!(
+        RUNNABLE
+            .into_iter()
+            .all(|command| harness.app.key_reaches(command))
+    );
+    harness.app.apply(Action::ShowAbout);
+    assert!(matches!(harness.app.dialog, Some(Dialog::About)));
+    // Their lines hold in a prompt too. A command that gains such a line
+    // is clickable under every dialog: decide it here.
+    let reach: Vec<Command> = RUNNABLE
+        .into_iter()
+        .filter(|command| harness.app.key_reaches(*command))
+        .collect();
+    assert_eq!(
+        reach,
+        [
+            Command::LargerText,
+            Command::SmallerText,
+            Command::DefaultTextSize
+        ]
+    );
+}
+
+/// What quick open's row for `command` says in `tab`'s window.
+fn quick_name(app: &App, tab: ConnTabId, command: Command) -> &'static str {
+    let mut runnable = app.runnable(tab).into_iter();
+    let row = runnable.find(|runnable| runnable.command == command);
+    row.unwrap_or_else(|| panic!("quick open lists {command:?}"))
+        .name
+}
+
+/// `command`'s item, enabled, with the title quick open's row has (its
+/// words, as a menu writes them); the title.
+fn toggle_title(app: &App, tab: ConnTabId, command: Command) -> &'static str {
+    let state = app.menu_state(Item::Command(command));
+    assert!(state.enabled, "{command:?}");
+    let quick = quick_name(app, tab, command);
+    let same = match command {
+        Command::ToggleSqlMode => {
+            (state.title == "Make Tab Read-Write") == (quick == "Read-write tab")
+        }
+        _ => state.title.eq_ignore_ascii_case(quick),
+    };
+    assert!(same, "{command:?}: {:?} against {quick:?}", state.title);
+    state.title
+}
+
+#[test]
+fn each_toggle_says_what_quick_open_s_row_says_both_ways() {
+    let mut harness = Harness::new();
+    // A writable connection with a table's rows in front: the row panel
+    // has a row to show.
+    let (tab, _) = harness.editable();
+    harness.settle();
+    let walk = |harness: &mut Harness, command: Command, toggle: &dyn Fn() -> Action| {
+        let before = toggle_title(&harness.app, tab, command);
+        harness.app.apply(toggle());
+        harness.settle();
+        let after = toggle_title(&harness.app, tab, command);
+        assert_ne!(before, after, "{command:?}");
+        harness.app.apply(toggle());
+        harness.settle();
+        assert_eq!(toggle_title(&harness.app, tab, command), before);
+    };
+    walk(&mut harness, Command::ToggleSidebar, &|| {
+        Action::ToggleSidebar(tab)
+    });
+    walk(&mut harness, Command::ToggleInspector, &|| {
+        Action::ToggleRowPanel(tab)
+    });
+    // A SQL editor in front, where the connection takes writes.
+    harness.app.apply(Action::NewSqlTab(tab));
+    harness.settle();
+    let sql_tab = harness
+        .app
+        .workspace(tab)
+        .and_then(|workspace| workspace.active_tab);
+    let sql_tab = sql_tab.expect("the editor is in front");
+    walk(&mut harness, Command::ToggleSqlMode, &|| {
+        Action::ToggleSqlMode { tab, sql_tab }
+    });
 }

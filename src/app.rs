@@ -771,6 +771,13 @@ impl App {
         self.active_tab().id
     }
 
+    /// Whether Settings may open now: with no dialog open, or over the
+    /// shortcuts dialog, which offers it and gives way to it. Every way
+    /// in (its key, quick open, a menu item, a pane asked for) holds to it.
+    fn settings_may_open(&self) -> bool {
+        matches!(self.dialog, None | Some(Dialog::Help))
+    }
+
     fn tab_index(&self, id: ConnTabId) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.id == id)
     }
@@ -2296,9 +2303,8 @@ impl App {
                 });
             }
             Action::ShowSettings => {
-                // The shortcuts dialog offers it, and gives way to it. Asked
-                // for while it is open, it stays as it is.
-                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                // Asked for while it is open, it stays as it is.
+                if self.settings_may_open() {
                     self.dialog = Some(Dialog::Settings(Box::default()));
                     self.list_fonts();
                 }
@@ -2306,7 +2312,7 @@ impl App {
             Action::ShowAgentSettings => {
                 // From the Agents tab: there is nothing of agents to show
                 // where they cannot reach the app.
-                if crate::endpoint::AVAILABLE && matches!(self.dialog, None | Some(Dialog::Help)) {
+                if crate::endpoint::AVAILABLE && self.settings_may_open() {
                     self.dialog = Some(Dialog::Settings(Box::new(crate::model::SettingsDialog {
                         pane: crate::model::SettingsPane::Agents,
                         ..Default::default()
@@ -2318,8 +2324,7 @@ impl App {
             Action::ShowSettingsPane(pane) => {
                 // From the window, where Settings is not open (History's
                 // Open Settings › Editor): it opens on the pane.
-                if matches!(self.dialog, None | Some(Dialog::Help))
-                    && crate::model::SettingsPane::listed().contains(&pane)
+                if self.settings_may_open() && crate::model::SettingsPane::listed().contains(&pane)
                 {
                     self.dialog = Some(Dialog::Settings(Box::new(crate::model::SettingsDialog {
                         pane,
@@ -2352,7 +2357,7 @@ impl App {
                 if !crate::model::SettingsPane::listed().contains(&pane) {
                     return;
                 }
-                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                if self.settings_may_open() {
                     self.dialog = Some(Dialog::Settings(Box::default()));
                     self.list_fonts();
                 }

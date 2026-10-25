@@ -1,8 +1,9 @@
-//! The commands quick open runs (macOS, Windows): each a command of the
-//! keymap's, with the name quick open lists it by, what it says of where it
-//! acts, and what running it does. A command lists only where it applies
-//! now: a tab's commands with that tab in front, a save with something to
-//! save. The terminal look's commands stay on `:`.
+//! The commands quick open runs and the menu bar offers (macOS, Windows):
+//! each a command of the keymap's, with the name quick open lists it by,
+//! what it says of where it acts, and what running it does. A command
+//! lists only where it applies now: a tab's commands with that tab in
+//! front, a save with something to save. The terminal look's commands stay
+//! on `:`.
 
 use crate::keymap::Command;
 use crate::model::{Action, ConnTabId, RunMode, Tab};
@@ -276,19 +277,21 @@ impl App {
             // A SQL editor's: a script to run or format, and its runs'
             // mode where the connection allows writes.
             Command::RunAll => {
+                // The cheap checks first: the script is tokenized last.
+                let about = in_front()?;
+                let sql = sql.filter(|sql| !sql.is_writing())?;
                 // A script with a statement in it: comments alone run
                 // nothing.
                 let dialect = workspace.driver.dialect();
-                let statements = |sql: &crate::model::SqlTab| {
-                    !tabletist_db::sql::statements(dialect, &sql.text).is_empty()
-                };
-                let sql = sql.filter(|sql| statements(sql) && !sql.is_writing())?;
+                if tabletist_db::sql::statements(dialect, &sql.text).is_empty() {
+                    return None;
+                }
                 let run = Action::RunSql {
                     tab,
                     sql_tab: sql.id,
                     all: true,
                 };
-                ("Run all", in_front()?, vec![run])
+                ("Run all", about, vec![run])
             }
             Command::Format => {
                 let sql = sql.filter(|sql| !sql.text.trim().is_empty())?;
@@ -330,7 +333,8 @@ impl App {
     }
 
     /// The commands of the window, not of a connection: they apply on the
-    /// connection picker too, which has no workspace.
+    /// connection picker too, which has no workspace. They have no arm in
+    /// `run_of`'s match, which asks here first: None here is None there.
     fn window_run(&self, command: Command) -> Option<(&'static str, About, Vec<Action>)> {
         let stepped = |larger| {
             let terminal = self.look.terminal;

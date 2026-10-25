@@ -3,7 +3,7 @@
 
 use crate::keymap::{Command, Scope};
 use crate::menu::{Item, title};
-use crate::model::{Action, ConnTabId, Dialog, RunMode, Tab};
+use crate::model::{Action, ConnTabId, RunMode, Tab};
 
 use super::App;
 
@@ -22,21 +22,27 @@ impl App {
         match item {
             Item::Command(command) => {
                 let tab = self.active_tab_id();
-                let enabled = self.command_actions(tab, command).is_some() && self.reaches(command);
+                // Under a dialog most are greyed without asking `run_of`.
+                let enabled =
+                    self.clickable_now(command) && self.command_actions(tab, command).is_some();
                 let on = enabled && self.toggled(tab, command);
                 ItemState {
                     enabled,
                     title: title(item, on),
                 }
             }
+            // Quick open searches the window's connection: none on the
+            // picker (`open_quick_open`). Under a dialog its action decides.
+            Item::QuickOpen => ItemState {
+                enabled: self.workspace(self.active_tab_id()).is_some(),
+                title: title(item, false),
+            },
             // Their actions decide (the About reducer, the close's
             // `hold_close`), and egui decides what an Edit item reaches.
-            Item::About | Item::QuickOpen | Item::Exit | Item::Edit(_) | Item::Native(_) => {
-                ItemState {
-                    enabled: true,
-                    title: title(item, false),
-                }
-            }
+            Item::About | Item::Exit | Item::Edit(_) | Item::Native(_) => ItemState {
+                enabled: true,
+                title: title(item, false),
+            },
             Item::Separator => ItemState {
                 enabled: false,
                 title: "",
@@ -44,14 +50,13 @@ impl App {
         }
     }
 
-    /// Whether `command` can be clicked with the dialog open, if one is:
-    /// where its key reaches it (the text sizes), and Settings over the
-    /// shortcuts dialog, which gives way to it (the `ShowSettings`
-    /// reducer). `keys::handle` does not run under a dialog, so a greyed
+    /// Whether a click on `command` may run it with the dialog open, if
+    /// one is: where its key reaches it (the text sizes), and Settings
+    /// where it may open (over the shortcuts dialog, which gives way to
+    /// it). `keys::handle` does not run under a dialog, so a greyed
     /// Settings would lose `⌘,` there.
-    fn reaches(&self, command: Command) -> bool {
-        let over_help = matches!(self.dialog, Some(Dialog::Help));
-        self.key_reaches(command) || (command == Command::Settings && over_help)
+    fn clickable_now(&self, command: Command) -> bool {
+        self.key_reaches(command) || (command == Command::Settings && self.settings_may_open())
     }
 
     /// Whether a press of `command`'s key is read now: always without a
@@ -84,9 +89,11 @@ impl App {
         }
     }
 
-    /// What a click on `item` does. Exit and Paste need the window and
-    /// are `Window::logic`'s; the other Edit items are replayed into the
-    /// frame's input (`menu::Replay`).
+    /// What a click on `item` does. The caller checks
+    /// `menu_state(item).enabled` first (`menu::handling` does): a command
+    /// that applies but is greyed under a dialog would run here. Exit and
+    /// Paste need the window and are `Window::logic`'s; the other Edit
+    /// items are replayed into the frame's input (`menu::Replay`).
     pub fn choose(&mut self, item: Item) {
         match item {
             Item::Command(command) => {
