@@ -263,10 +263,18 @@ impl Column {
             (Stored::Compact, Kind::Timestamp | Kind::Zoned | Kind::Time { .. }) => Stored::Unknown,
             (stored, _) => stored,
         };
+        // SQLite's numbers keep the digits of their form: none in seconds
+        // and a day's digits, a millisecond's in the others.
+        let kept = kept_digits(dialect, type_name);
+        let digits = match stored {
+            Stored::Seconds | Stored::Compact => 0,
+            Stored::Millis | Stored::Days => kept.min(3),
+            Stored::Fresh | Stored::Text { .. } | Stored::Unknown => kept,
+        };
         Some(Self {
             dialect,
             kind,
-            digits: kept_digits(dialect, type_name),
+            digits,
             stored,
             zone: match kind {
                 Kind::Zoned => zone.cloned(),
@@ -1333,12 +1341,6 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
             let time = time.ok_or(UNREAD)?;
             let day = Date::default();
             let at = rounded(day.to_datetime(time), digits);
-            let digits = match column.stored {
-                Stored::Seconds | Stored::Compact => 0,
-                Stored::Millis | Stored::Days => digits.min(3),
-                Stored::Fresh | Stored::Text { .. } | Stored::Unknown => digits,
-            };
-            reading.digits = digits;
             if at.date() != day {
                 // Rounded up past the day's last moment: its end, which
                 // MySQL keeps as a span of a day.
@@ -1384,12 +1386,6 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
                 return Err(Refusal::NoZone);
             }
             let date = date.unwrap_or_else(|| clock.today_in(&clock.zone));
-            let digits = match column.stored {
-                Stored::Seconds | Stored::Compact => 0,
-                Stored::Millis | Stored::Days => digits.min(3),
-                Stored::Fresh | Stored::Text { .. } | Stored::Unknown => digits,
-            };
-            reading.digits = digits;
             let at = rounded(date.to_datetime(time.unwrap_or(Time::midnight())), digits);
             within(column, at, None)?;
             reading.moment = Moment::At {
@@ -2344,6 +2340,40 @@ mod tests {
             Err(Refusal::Years)
         );
         assert_eq!(Stored::of(&[Value::Int(i64::MIN)]), Stored::Unknown);
+    }
+
+    #[test]
+    fn a_sqlite_number_is_rounded_to_the_digits_its_form_keeps() {
+        let lite = Dialect::Sqlite;
+        let column = |type_name: &str, values: &[Value]| {
+            Column::of(lite, type_name, None, values.iter()).unwrap()
+        };
+        // Seconds keep none: 09:30:00.9 is 09:30:01, said and stored.
+        let seconds = column("TIME", &[Value::Int(3_600)]);
+        let reading = read("09:30:00.9", &seconds, &clock()).unwrap();
+        assert_eq!(reading.literal, "34201");
+        assert_eq!(
+            reading.moment,
+            Moment::At {
+                date: None,
+                time: Some(jiff::civil::time(9, 30, 1, 0)),
+                offset: None
+            }
+        );
+        // Milliseconds keep three, rounded as a timestamp's are.
+        let millis = column("TIME", &[Value::Int(1_792_800_000_000)]);
+        assert_eq!(
+            read("09:30:00.9996", &millis, &clock()).unwrap().literal,
+            read("09:30:01", &millis, &clock()).unwrap().literal
+        );
+        let stamps = column("DATETIME", &[Value::Int(1_792_800_000_000)]);
+        assert_eq!(stamps.digits, 3);
+        assert_eq!(
+            read("2026-10-24 08:00:00.0004", &stamps, &clock())
+                .unwrap()
+                .literal,
+            "1792828800000"
+        );
     }
 
     #[test]
