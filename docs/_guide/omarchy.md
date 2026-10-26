@@ -272,7 +272,8 @@ A date or time cell has no key for the time of the save: type `now()`
 into it.
 
 The `:` prompt takes `w`, `e!` and `diff` on a table, the `label` lines in
-its Structure view, `ro` and `rw` in a SQL editor, and nothing else.
+its Structure view, `ddl` from any pane, `ro` and `rw` in a SQL editor, and
+nothing else.
 
 {% include shot.html file="omarchy-edit-review" alt="The :diff panel above the status line, showing the statement a save will run" %}
 

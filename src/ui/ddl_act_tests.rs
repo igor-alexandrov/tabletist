@@ -801,3 +801,45 @@ fn the_header_buttons_give_way_in_a_narrow_window() {
     assert!(!painted(&harness, &keys));
     assert!(!painted(&harness, "Copy"), "the words go");
 }
+
+/// The filter bar, asked for from the DDL view, shows the rows as a switch
+/// of view does: the read on its way stops, and the selection of lines
+/// ends.
+#[test]
+fn the_filter_bar_leaves_the_view_as_a_switch_does() {
+    let (mut harness, tab, id) = covers(Look::omarchy(), Driver::Postgres);
+    set_view(&mut harness, tab, id, ObjectView::Ddl);
+    let request = harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::ReadDdl { request, .. } => Some(*request),
+            _ => None,
+        })
+        .expect("a read was sent");
+    let from = harness.app.backend.sent.len();
+    harness.app.apply(Action::ToggleFilterBar(tab));
+    assert_eq!(view(&harness, tab, id), ObjectView::Data);
+    let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+    assert!(object.filter.open);
+    assert!(!object.ddl.is_loading());
+    assert!(
+        harness.app.backend.sent[from..]
+            .iter()
+            .any(|command| matches!(command, Command::Cancel { request: r, .. } if *r == request))
+    );
+    // Read, lines selected, then the bar again: they are not kept.
+    set_view(&mut harness, tab, id, ObjectView::Ddl);
+    harness.answer_ddl(Ok(book_covers(Driver::Postgres)));
+    harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+    harness.settle();
+    letter(&mut harness, 'V');
+    letter(&mut harness, 'j');
+    assert_eq!(cursor(&harness, tab, id), (1, Some(0)));
+    harness.app.apply(Action::ToggleFilterBar(tab));
+    set_view(&mut harness, tab, id, ObjectView::Ddl);
+    assert_eq!(cursor(&harness, tab, id), (1, None));
+}

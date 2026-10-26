@@ -2544,17 +2544,25 @@ impl App {
                 let Some((tab, id)) = self.active_object().filter(|(t, _)| *t == tab) else {
                     return;
                 };
+                // From the Structure or the DDL view: show the data, with
+                // the bar, leaving the view as a switch of view does (the
+                // DDL's read stops, its lines' selection ends).
+                let from_structure = self
+                    .object_tab_mut(tab, id)
+                    .is_some_and(|object| object.view != ObjectView::Data);
+                if from_structure {
+                    self.apply(Action::SetView {
+                        tab,
+                        object_tab: id,
+                        view: ObjectView::Data,
+                    });
+                }
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     let first = object
                         .page()
                         .and_then(|page| page.columns.first())
                         .map(|column| column.name.clone())
                         .unwrap_or_default();
-                    // From the Structure view: show the data, with the bar.
-                    let from_structure = object.view != ObjectView::Data;
-                    object.view = ObjectView::Data;
-                    // A chooser that was open in that view was the view's.
-                    object.label_chooser = None;
                     let bar = &mut object.filter;
                     bar.open = !bar.open || from_structure;
                     bar.focus = bar.open;

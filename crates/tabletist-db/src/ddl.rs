@@ -131,12 +131,13 @@ impl Ddl {
                     text.push_str(if sections && !first { "\n" } else { "\n\n" });
                 }
                 // The object's part starts at the heading, at the top.
-                let from = if part.kind == PartKind::Object {
-                    0
-                } else {
-                    line(&text)
-                };
-                start.get_or_insert(from);
+                // Counted once, at the part's first statement.
+                if start.is_none() {
+                    start = Some(match part.kind {
+                        PartKind::Object => 0,
+                        PartKind::Indexes | PartKind::Triggers | PartKind::Comments => line(&text),
+                    });
+                }
                 if sections && first && part.kind != PartKind::Object {
                     text.push_str(part.kind.heading());
                     text.push('\n');
