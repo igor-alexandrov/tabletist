@@ -181,6 +181,9 @@ fn put<T>(built: &mut Built<T>, window: Option<RawWindowHandle>) -> Option<()> {
     {
         // Only AppKit gives a menu a role.
         let _ = &built.roles;
+        // muda's accelerator table (`haccel`) stays unused: no message
+        // hook translates keys, so the menu only writes its keys and egui
+        // reads every key as it does without a menu.
         if let Some(window) = window {
             crate::windows::attach(&built.menu, window)?;
         }

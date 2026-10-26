@@ -76,6 +76,12 @@ impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
     /// not read, and to `window` on Windows. `wake` runs, on the main
     /// thread, after each choice. `None` off those platforms, or if muda
     /// refuses an item or the window.
+    ///
+    /// On Windows the bar keeps `window`'s handle, not a borrow, to take
+    /// itself off and put a rebuilt bar on: `window` must outlive the bar.
+    /// eframe's does: it drops the app, and the bar with it, first. (An
+    /// `unsafe fn` would say so to the compiler, but the app forbids
+    /// `unsafe`; eframe lends the window only while the app is created.)
     pub fn attach(
         window: &impl HasWindowHandle,
         menus: Vec<Menu<T>>,

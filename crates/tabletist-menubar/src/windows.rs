@@ -15,8 +15,8 @@ pub(crate) fn attach(menu: &muda::Menu, window: RawWindowHandle) -> Option<()> {
     let hwnd = hwnd(window)?;
     // SAFETY: the handle is the live window eframe created, used on its
     // thread (the creation closure and the frames run on the event
-    // loop's), and eframe drops the app, and with it the bar, before
-    // the window.
+    // loop's), and the window outlives the bar, as `MenuBar::attach`
+    // asks: eframe drops the app, and with it the bar, before the window.
     unsafe { menu.init_for_hwnd(hwnd) }
         .map_err(|error| log::warn!("could not attach the menu bar: {error}"))
         .ok()
