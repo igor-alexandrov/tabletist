@@ -4713,9 +4713,15 @@ mod tests {
         }
     }
 
+    /// How long a test waits for the history's file to answer. Each entry
+    /// is a transaction SQLite syncs to the disk, and a loaded Windows
+    /// runner's disk has taken longer than `WAIT` over the few a test
+    /// writes before it reads. The app waits for none of it.
+    const HISTORY_WAIT: Duration = Duration::from_secs(60);
+
     fn history_loaded(backend: &mut Backend) -> (u64, Result<Vec<crate::history::Entry>, String>) {
         loop {
-            match backend.wait(WAIT) {
+            match backend.wait(HISTORY_WAIT) {
                 Some(Event::History(HistoryEvent::Loaded { asked, result })) => {
                     return (asked, result);
                 }
