@@ -1341,6 +1341,7 @@ impl App {
                     leaves.then(|| {
                         object.ddl.started = None;
                         object.ddl.asked = false;
+                        object.ddl_visual = None;
                         object.ddl.pending.take()
                     })?
                 });
@@ -2574,17 +2575,25 @@ impl App {
                 let Some((tab, id)) = self.active_object().filter(|(t, _)| *t == tab) else {
                     return;
                 };
+                // From the Structure or the DDL view: show the data, with
+                // the bar, leaving the view as a switch of view does (the
+                // DDL's read stops, its lines' selection ends).
+                let from_structure = self
+                    .object_tab_mut(tab, id)
+                    .is_some_and(|object| object.view != ObjectView::Data);
+                if from_structure {
+                    self.apply(Action::SetView {
+                        tab,
+                        object_tab: id,
+                        view: ObjectView::Data,
+                    });
+                }
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     let first = object
                         .page()
                         .and_then(|page| page.columns.first())
                         .map(|column| column.name.clone())
                         .unwrap_or_default();
-                    // From the Structure view: show the data, with the bar.
-                    let from_structure = object.view != ObjectView::Data;
-                    object.view = ObjectView::Data;
-                    // A chooser that was open in that view was the view's.
-                    object.label_chooser = None;
                     let bar = &mut object.filter;
                     bar.open = !bar.open || from_structure;
                     bar.focus = bar.open;
@@ -2679,6 +2688,51 @@ impl App {
                 }
                 self.read_ddl(tab, object_tab);
             }
+            Action::MoveDdlCursor { tab, id, by } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    let last = object.ddl_lines().saturating_sub(1);
+                    object.ddl_cursor = object.ddl_cursor.saturating_add_signed(by).min(last);
+                }
+            }
+            Action::DdlCursorTo { tab, id, line } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.ddl_cursor = line.min(object.ddl_lines().saturating_sub(1));
+                }
+            }
+            Action::DdlSection { tab, id, forward } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    let starts: Vec<usize> = object.ddl_shown().map_or(Vec::new(), |ddl| {
+                        ddl.laid_out()
+                            .1
+                            .iter()
+                            .map(|(_, lines)| lines.start)
+                            .collect()
+                    });
+                    let cursor = object.ddl_cursor;
+                    let to = match forward {
+                        true => starts.into_iter().find(|start| *start > cursor),
+                        false => starts.into_iter().rev().find(|start| *start < cursor),
+                    };
+                    if let Some(to) = to {
+                        object.ddl_cursor = to;
+                    }
+                }
+            }
+            Action::ToggleDdlVisual { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.ddl_visual = match object.ddl_visual {
+                        Some(_) => None,
+                        None => object.ddl_shown().map(|_| object.ddl_cursor),
+                    };
+                }
+            }
+            Action::LeaveDdlVisual { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.ddl_visual = None;
+                }
+            }
+            Action::OpenDdlInEditor { tab, id } => self.open_ddl_in_editor(tab, id),
+            Action::OpenDdl(tab) => self.open_ddl(tab),
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
@@ -4197,6 +4251,11 @@ impl App {
                     if read {
                         object.ddl_read = Some(std::time::Instant::now());
                     }
+                    // A text read again may be shorter: the cursor stays on
+                    // a line of it. What was selected goes with any answer,
+                    // a failed one too.
+                    object.ddl_cursor = object.ddl_cursor.min(object.ddl_lines().saturating_sub(1));
+                    object.ddl_visual = None;
                 }
             }
             Event::SecretLoaded { request, result } => {
@@ -7312,6 +7371,59 @@ impl App {
             request,
             object: target,
         });
+    }
+
+    /// Opens the DDL view's text of the tab `id`, as it shows, in a new
+    /// SQL editor. Nothing is run: the editor's mode is a new tab's
+    /// (Settings › Editor), read-only on production and on a connection
+    /// that cannot write whatever that says.
+    fn open_ddl_in_editor(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(text) = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .and_then(|object| object.ddl_shown())
+            .map(tabletist_db::Ddl::text)
+        else {
+            return;
+        };
+        let Some(sql_id) = self.new_sql_tab(tab) else {
+            return;
+        };
+        if let Some(sql) = self
+            .workspace_mut(tab)
+            .and_then(|workspace| workspace.sql_tab_mut(sql_id))
+        {
+            sql.text = text;
+        }
+    }
+
+    /// The terminal's `:ddl`: the DDL view of the table or view under the
+    /// tree's cursor where the tree has the keys, opened (and kept) if it
+    /// is not, else of the table's tab in front. With neither (a SQL
+    /// editor in front, no tab), nothing: the terminal's line says what a
+    /// table's prompt refused only over a table.
+    fn open_ddl(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        let under = match (&workspace.pane, &workspace.tree.cursor) {
+            (Pane::Tree, Some(TreeNode::Object(object, kind))) => Some((object.clone(), *kind)),
+            _ => None,
+        };
+        if let Some((object, kind)) = under {
+            self.open_object(tab, object, kind, true);
+        }
+        let front = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_object_tab())
+            .map(|object| object.id);
+        if let Some(object_tab) = front {
+            self.apply(Action::SetView {
+                tab,
+                object_tab,
+                view: ObjectView::Ddl,
+            });
+        }
     }
 
     /// Reload's part for the DDL view of the tab `id`: the definition is

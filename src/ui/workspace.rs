@@ -2182,7 +2182,23 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let ddl = workspace
         .active_object_tab()
         .filter(|object| object.view == ObjectView::Ddl);
-    let reload_key = key(Command::Reload);
+    let ddl_keys = [
+        key(Command::MoveInDdl),
+        key(Command::SelectDdlLines),
+        key(Command::CopyDdl),
+        key(Command::OpenDdlInEditor),
+        app.keymap.together(
+            app.layout(),
+            &[Command::NextDdlSection, Command::PreviousDdlSection],
+        ),
+        key(Command::ShowRows),
+        key(Command::ShowStructure),
+        key(Command::LeaveDdlVisual),
+    ];
+    // The DDL view's text shows (not its read, nor its error), and the
+    // terminal look's selection of its lines is on.
+    let ddl_text = ddl.is_some_and(|object| object.ddl_shown().is_some());
+    let ddl_visual = ddl_text && ddl.is_some_and(|object| object.ddl_visual.is_some());
     // The completion list's own key, while it is open with a row to put
     // in. One whose row is about to be inserted is not open any more: the
     // mode line is drawn before the editor inserts it.
@@ -2190,18 +2206,21 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .active_sql_tab()
         .and_then(|sql| sql.completion.as_ref())
         .is_some_and(|list| !list.accept && !list.candidates.is_empty());
+    // "2 lines selected · 10/27": the selection, then the cursor's line of
+    // all of them, in the place of the rows' range.
     let lines = ddl.and_then(|object| {
-        let shown = object
-            .ddl
-            .value
-            .as_ref()
-            .filter(|_| object.ddl.shown_error().is_none());
-        let lines = shown?.text().lines().count();
-        let count = u32::try_from(lines).unwrap_or(u32::MAX);
-        Some(
-            crate::i18n::ngettext(locale, "{n} line", "{n} lines", count)
-                .replace("{n}", &lines.to_string()),
-        )
+        object.ddl_shown()?;
+        let at = format!("{}/{}", object.ddl_cursor + 1, object.ddl_lines());
+        Some(match object.ddl_selected() {
+            Some(selected) => {
+                let count = u32::try_from(selected.len()).unwrap_or(u32::MAX);
+                let said =
+                    crate::i18n::ngettext(locale, "{n} line selected", "{n} lines selected", count)
+                        .replace("{n}", &selected.len().to_string());
+                format!("{said} · {at}")
+            }
+            None => at,
+        })
     });
     let summary = editor
         .or(lines)
@@ -2380,14 +2399,32 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if editing.pending.is_some() || editing.added.is_some() {
                 structure_hints.push((&review_key, &*review, true));
             }
-            // The DDL view's: its text is read again, and the rows' keys
-            // do nothing on it. What is pending is saved and reviewed from
+            // The DDL view's, as the board has them: Copy and Open only
+            // where the text shows, Esc only while lines are selected. What
+            // is pending in the table's rows is saved and reviewed from
             // here too.
-            let ddl_words = ["reload", "tables"].map(|word| gettext(locale, word));
-            let mut ddl_hints: Vec<widgets::Hint<'_>> = vec![
-                (&reload_key, &*ddl_words[0], true),
-                (&sidebar_key, &*ddl_words[1], true),
-            ];
+            let ddl_words = [
+                "line",
+                "select lines",
+                "copy",
+                "open in sql",
+                "section",
+                "rows",
+                "structure",
+                "normal",
+            ]
+            .map(|word| gettext(locale, word));
+            let mut ddl_hints: Vec<widgets::Hint<'_>> = ddl_keys
+                .iter()
+                .zip(&ddl_words)
+                .enumerate()
+                .filter(|(index, _)| match index {
+                    2 | 3 => ddl_text,
+                    7 => ddl_visual,
+                    _ => true,
+                })
+                .map(|(_, (key, word))| (key, &**word, true))
+                .collect();
             if !read_only {
                 ddl_hints.push((&save_key, &*write, true));
             }
@@ -2811,6 +2848,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 return;
             }
+            // The DDL view's selection of lines: its mode stands first, and
+            // the rest of the line is drawn after it.
+            let left = if ddl_visual {
+                let mode = gettext(locale, "-- VISUAL LINE --");
+                let mode = Text::one(&look, TextRole::OModeLine, &mode, palette.accent);
+                left + widgets::paint_label(ui, left, y, mode) + gap
+            } else {
+                left
+            };
             // A read-only connection's tag ends the keys. Without one,
             // neither it nor the gap before it takes room from them.
             let tag = read_only.then(|| {
@@ -2843,15 +2889,16 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 (mark, shown, tail, width)
             });
             let said_room = said.as_ref().map_or(0.0, |said| said.3 + gap);
-            let limit = end - fixed - said_room;
+            let limit = end - fixed - said_room - (left - rect.left() - 12.0);
             // The key that adds a row is here only where the table takes
             // none, and the line that saves only on a connection that
             // cannot write.
             let mut disabled: Vec<String> = Vec::new();
-            if !editing.can_add {
+            // The DDL view's line names no key of the rows, struck or not.
+            if !editing.can_add && ddl.is_none() {
                 disabled.push(format!("{add_key} new row"));
             }
-            if !editing.can_delete {
+            if !editing.can_delete && ddl.is_none() {
                 disabled.push(format!("{delete_key} delete"));
             }
             if read_only {

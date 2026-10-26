@@ -122,6 +122,7 @@ takes what you type (Mod+P opens the same search from anywhere):
 | Mod+Shift+R | Show or hide the row panel |
 | Mod+C | Copy the cell |
 | Mod+Shift+C | Copy the row |
+| Ctrl+Cmd+1, 2, 3 on macOS, Alt+1, 2, 3 on Windows | Show the rows, the structure, the DDL |
 
 In a table's [Structure view]({% link _guide/browsing-data.md %}#structure):
 
@@ -133,6 +134,13 @@ In a table's [Structure view]({% link _guide/browsing-data.md %}#structure):
 
 The last two work with the keyboard on the view's columns: click a
 column's line, or come to them with Tab or F6.
+
+In a table's [DDL view]({% link _guide/browsing-data.md %}#ddl):
+
+| Keys | Do |
+| --- | --- |
+| Mod+Shift+C | Copy the DDL: the selected text, or all of it |
+| Alt+Enter | Open the DDL in a new SQL editor |
 
 ## Editing
 

@@ -253,6 +253,9 @@ pub enum When {
     /// grid's keys that act on a row have nothing to act on, and the
     /// view's own act on the line of a column.
     Structure,
+    /// The DDL view of a table shows, in place of its rows: its own keys
+    /// act on its text, by line in the terminal look.
+    Ddl,
     /// The Agents tab shows its Log view: its keys come before the
     /// activity's.
     AgentsLog,
@@ -561,6 +564,19 @@ commands! {
     LabelAutomatic = "label_automatic",
     LabelKeysOnly = "label_keys_only",
     LabelColumn = "label_column",
+    ShowRows = "show_rows",
+    ShowStructure = "show_structure",
+    ShowDdl = "show_ddl",
+    OpenDdl = "open_ddl",
+    CopyDdl = "copy_ddl",
+    OpenDdlInEditor = "open_ddl_in_editor",
+    MoveInDdl = "move_in_ddl",
+    DdlTop = "ddl_top",
+    DdlBottom = "ddl_bottom",
+    NextDdlSection = "next_ddl_section",
+    PreviousDdlSection = "previous_ddl_section",
+    SelectDdlLines = "select_ddl_lines",
+    LeaveDdlVisual = "leave_ddl_visual",
     ReviewSql = "review_sql",
     NextChange = "next_change",
     CopyReviewSql = "copy_review_sql",
@@ -924,6 +940,19 @@ impl Command {
             C::LabelAutomatic => info("Label foreign keys automatically", "", Editing),
             C::LabelKeysOnly => info("Label foreign keys by their keys alone", "", Editing),
             C::LabelColumn => info("Label foreign keys by a column", "", Editing),
+            C::ShowRows => info("Show the rows", "", Navigation),
+            C::ShowStructure => info("Show the structure", "", Navigation),
+            C::ShowDdl => info("Show the DDL", "", Navigation),
+            C::OpenDdl => info("Open the DDL view", "", Navigation),
+            C::CopyDdl => info("Copy the DDL", "", Editing),
+            C::OpenDdlInEditor => info("Open the DDL in the SQL editor", "", Sql),
+            C::MoveInDdl => info("Move by line in the DDL", "", Navigation),
+            C::DdlTop => info("Top of the DDL", "", Navigation),
+            C::DdlBottom => info("Bottom of the DDL", "", Navigation),
+            C::NextDdlSection => info("Next section of the DDL", "", Navigation),
+            C::PreviousDdlSection => info("Previous section of the DDL", "", Navigation),
+            C::SelectDdlLines => info("Select lines of the DDL", "", Navigation),
+            C::LeaveDdlVisual => info("Leave the selection of lines", "", Navigation),
             C::ReviewSql => info("Review pending SQL", "Review pending SQL", Editing),
             C::NextChange => info("Next change", "Review pending SQL", Editing).reserved(),
             C::CopyReviewSql => info("Copy the pending SQL", "", Editing),
@@ -1072,14 +1101,25 @@ pub struct Binding {
     pub when: When,
     pub mac: Bound,
     pub omarchy: Bound,
+    /// Windows' own keys, where the Mac's with Ctrl for Cmd would not do.
+    pub windows: Option<Bound>,
 }
 
 impl Binding {
     pub fn bound(&self, layout: Layout) -> &Bound {
         match layout {
-            Layout::Mac | Layout::Windows => &self.mac,
+            Layout::Mac => &self.mac,
+            Layout::Windows => self.windows.as_ref().unwrap_or(&self.mac),
             Layout::Omarchy => &self.omarchy,
         }
+    }
+
+    /// Every look's keys of the line: the Mac's, Omarchy's, and Windows'
+    /// where it has its own.
+    pub fn every_bound(&self) -> impl Iterator<Item = &Bound> {
+        [Some(&self.mac), Some(&self.omarchy), self.windows.as_ref()]
+            .into_iter()
+            .flatten()
     }
 }
 
@@ -1127,12 +1167,21 @@ const fn bind(command: Command, scopes: &'static [Scope], mac: Bound, omarchy: B
         when: When::Always,
         mac,
         omarchy,
+        windows: None,
     }
 }
 
 impl Binding {
     const fn when(self, when: When) -> Self {
         Self { when, ..self }
+    }
+
+    /// Windows' own keys for the line.
+    const fn windows(self, windows: Bound) -> Self {
+        Self {
+            windows: Some(windows),
+            ..self
+        }
     }
 }
 
@@ -1558,7 +1607,8 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("enter"), k("f2")]),
             keys(&[k("enter"), k("i")]),
         ),
-        bind(C::ReplaceCell, CELLS, NONE, keys(&[k("cc"), k("s")])),
+        // Vim's `s` is the Structure view's: `cc` does the same.
+        bind(C::ReplaceCell, CELLS, NONE, keys(&[k("cc")])),
         bind(
             C::CommitDown,
             CELL_EDITOR,
@@ -1763,6 +1813,63 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k(":label {column}")]),
         )
         .when(When::Structure),
+        // A table's views, from any of them. Windows has one Ctrl for the
+        // Mac's Control and Command, and Ctrl with a digit goes to a
+        // connection's window there: its keys are Alt's.
+        bind(
+            C::ShowRows,
+            GRID,
+            keys(&[k("ctrl+cmd+1")]).any(),
+            keys(&[k("r")]),
+        )
+        .windows(keys(&[k("alt+1")]).any()),
+        bind(
+            C::ShowStructure,
+            GRID,
+            keys(&[k("ctrl+cmd+2")]).any(),
+            keys(&[k("s")]),
+        )
+        .windows(keys(&[k("alt+2")]).any()),
+        bind(
+            C::ShowDdl,
+            GRID,
+            keys(&[k("ctrl+cmd+3")]).any(),
+            keys(&[k("S")]),
+        )
+        .windows(keys(&[k("alt+3")]).any()),
+        // The DDL view of what is under the tree's cursor, or of the tab
+        // in front, from any pane.
+        bind(C::OpenDdl, GLOBAL, NONE, keys(&[k(":ddl")])),
+        // The DDL view's own. Its text is a field in the looks with a
+        // pointer, where the chords are read in it too; the terminal look
+        // moves in it by line, and selects whole lines.
+        bind(
+            C::CopyDdl,
+            GRID,
+            keys(&[k("cmd+shift+c")]).any(),
+            keys(&[k("y")]),
+        )
+        .when(When::Ddl),
+        bind(
+            C::OpenDdlInEditor,
+            GRID,
+            keys(&[k("alt+enter")]).any(),
+            keys(&[k("e")]),
+        )
+        .when(When::Ddl),
+        bind(
+            C::MoveInDdl,
+            GRID,
+            NONE,
+            keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
+        )
+        .when(When::Ddl),
+        bind(C::DdlTop, GRID, NONE, keys(&[k("gg")])).when(When::Ddl),
+        bind(C::DdlBottom, GRID, NONE, keys(&[k("G")])).when(When::Ddl),
+        bind(C::NextDdlSection, GRID, NONE, keys(&[k("]]")])).when(When::Ddl),
+        bind(C::PreviousDdlSection, GRID, NONE, keys(&[k("[[")])).when(When::Ddl),
+        bind(C::SelectDdlLines, GRID, NONE, keys(&[k("V")])).when(When::Ddl),
+        bind(C::LeaveDdlVisual, GRID, NONE, keys(&[k("esc")])).when(When::Ddl),
         bind(
             C::ReviewSql,
             GRID,
@@ -4126,7 +4233,7 @@ mod tests {
     #[test]
     fn every_spelling_reads() {
         for binding in BINDINGS {
-            for bound in [&binding.mac, &binding.omarchy] {
+            for bound in binding.every_bound() {
                 for chord in bound.chords {
                     assert!(spell(chord.keys).is_ok(), "{:?}", spell(chord.keys));
                 }
@@ -4200,7 +4307,7 @@ mod tests {
             assert!(!command.info().name.is_empty(), "{command:?}");
             for line in lines {
                 assert!(!line.scopes.is_empty(), "{command:?}");
-                for bound in [&line.mac, &line.omarchy] {
+                for bound in line.every_bound() {
                     // Keys, or what does it in their place, never both.
                     assert!(
                         bound.chords.is_empty() || bound.control.is_empty(),
@@ -4323,7 +4430,8 @@ mod tests {
         }
         // The Mac's layout names no Omarchy letters' modifier by mistake.
         for binding in BINDINGS {
-            for chord in binding.mac.chords {
+            let windows = binding.windows.iter().flat_map(|bound| bound.chords);
+            for chord in binding.mac.chords.iter().chain(windows) {
                 assert!(!chord.keys.contains("super"), "{}", chord.keys);
             }
         }
@@ -4481,7 +4589,28 @@ mod tests {
         assert_eq!(mac(Command::GoToConnectionWindow), "⌘1…9");
         assert_eq!(omarchy(Command::GoToConnectionWindow), "ctrl+shift+1..9");
         assert_eq!(omarchy(Command::EditCell), "i, enter");
-        assert_eq!(omarchy(Command::ReplaceCell), "cc, s");
+        assert_eq!(omarchy(Command::ReplaceCell), "cc");
+        // A table's views and the DDL view's own keys. Windows' Ctrl with a
+        // digit goes to a connection's window: its views' keys are Alt's.
+        let windows = |command| keymap.label(Layout::Windows, command);
+        for (command, chord, alt, letter) in [
+            (Command::ShowRows, "⌃⌘1", "Alt+1", "r"),
+            (Command::ShowStructure, "⌃⌘2", "Alt+2", "s"),
+            (Command::ShowDdl, "⌃⌘3", "Alt+3", "S"),
+        ] {
+            assert_eq!(mac(command), chord);
+            assert_eq!(windows(command), alt);
+            assert_eq!(omarchy(command), letter);
+        }
+        assert_eq!(windows(Command::GoToConnectionWindow), "Ctrl+1…9");
+        assert_eq!(mac(Command::CopyDdl), "⇧⌘C");
+        assert_eq!(windows(Command::CopyDdl), "Ctrl+Shift+C");
+        assert_eq!(omarchy(Command::CopyDdl), "y");
+        assert_eq!(mac(Command::OpenDdlInEditor), "⌥↩");
+        assert_eq!(omarchy(Command::OpenDdlInEditor), "e");
+        assert_eq!(omarchy(Command::OpenDdl), ":ddl");
+        assert_eq!(omarchy(Command::NextDdlSection), "]]");
+        assert_eq!(omarchy(Command::PreviousDdlSection), "[[");
         assert_eq!(omarchy(Command::PasteNewRows), "\"+p, ctrl+shift+v");
         assert_eq!(omarchy(Command::DuplicateConnection), "yy p");
         assert_eq!(omarchy(Command::DuplicateRow), "yy p");
@@ -4532,7 +4661,11 @@ mod tests {
         assert_eq!(omarchy(Scope::Grid, "d"), Waiting);
         assert_eq!(omarchy(Scope::Grid, "dd"), command(Command::DeleteRow));
         assert_eq!(omarchy(Scope::Grid, "i"), command(Command::EditCell));
-        assert_eq!(omarchy(Scope::Grid, "s"), command(Command::ReplaceCell));
+        // `s` is the Structure view's, from any view; `r` and `S` the
+        // rows' and the DDL's.
+        assert_eq!(omarchy(Scope::Grid, "s"), command(Command::ShowStructure));
+        assert_eq!(omarchy(Scope::Grid, "r"), command(Command::ShowRows));
+        assert_eq!(omarchy(Scope::Grid, "S"), command(Command::ShowDdl));
         assert_eq!(omarchy(Scope::Grid, "cc"), command(Command::ReplaceCell));
         assert_eq!(omarchy(Scope::Grid, "x"), command(Command::SetNull));
         assert_eq!(

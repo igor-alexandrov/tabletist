@@ -154,9 +154,10 @@ With the search open, the matches replace the start lists:
 | `v` then `y` | Copy the cell |
 | `R` | Reload |
 | Ctrl+C | Cancel the running query |
+| `r`, `s`, `S` | Show the rows, the structure or the DDL, from any of them |
+| `:ddl` | The DDL view of the table under the sidebar's cursor (with the keyboard in the sidebar), or else of the table in front |
 
-The `rows`, `structure` and `ddl` views are clicked: switching between
-them has no key yet. Nor has copying a whole row.
+Copying a whole row has no key.
 
 ### The Agents tab
 
@@ -200,11 +201,25 @@ says why.
 
 ### The DDL view
 
-`ddl` in a table's header shows its definition as text, as
+`S` (or `ddl` in a table's header) shows its definition as text, as
 [Browsing Data]({% link _guide/browsing-data.md %}#ddl) says: read-only,
 with line numbers. The header says where it comes from and from which
-server. `R` reads it again, with the keyboard in the text too, and after
-an error tries again.
+server, and the outline beside the text lists its parts with how much each
+holds, the part the cursor is in marked. Click a part to go to it.
+
+| Keys | Do |
+| --- | --- |
+| `j` `k`, Up, Down | Move by line |
+| `gg` `G` | The first line and the last |
+| `]]` `[[` | The next part and the one before |
+| `V` | Select whole lines from the cursor's, or end the selection |
+| `y` | Copy the selected lines, or all of the text with none selected |
+| `e` | Open the text in a new SQL editor, which runs nothing |
+| Esc | End the selection (with none, Esc does what it does elsewhere: it closes Review SQL) |
+| `R` | Read it again; after an error, try again |
+
+The status line says how many lines are selected and which line the
+cursor is on.
 
 ### The row panel
 
@@ -225,7 +240,7 @@ an error tries again.
 | Keys | Do |
 | --- | --- |
 | `i` | Edit the cell |
-| `cc`, `s` | Edit the cell from nothing |
+| `cc` | Edit the cell from nothing |
 | `o`, `O` | Add a row below the cursor's row, or above it |
 | `yy` | Yank the cursor's row, and put it on the clipboard |
 | `p`, `P` | Put a copy of the yanked row below the cursor's row, or above it |
@@ -257,7 +272,8 @@ A date or time cell has no key for the time of the save: type `now()`
 into it.
 
 The `:` prompt takes `w`, `e!` and `diff` on a table, the `label` lines in
-its Structure view, `ro` and `rw` in a SQL editor, and nothing else.
+its Structure view, `ddl` from any pane, `ro` and `rw` in a SQL editor, and
+nothing else.
 
 {% include shot.html file="omarchy-edit-review" alt="The :diff panel above the status line, showing the statement a save will run" %}
 

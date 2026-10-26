@@ -186,8 +186,16 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let added = object.edits.added.len();
     // The terminal's DDL view says what its text is, in the place of the
     // counts.
-    // How long the DDL view's read has gone on, while it goes on.
+    // How long the DDL view's read has gone on, while it goes on, and
+    // whether its text is there to copy and to open.
     let reading = object.ddl.running_for();
+    let ddl_ready = view == ObjectView::Ddl && object.ddl_shown().is_some();
+    // Production is named beside the table's name, in the looks with a
+    // pointer: the terminal's bar says it in its own tag.
+    let production = app
+        .workspace(tab)
+        .map(|workspace| workspace.environment)
+        .filter(|env| env.is_production() && !look.terminal);
     let parts = match (look.terminal, view) {
         (true, ObjectView::Ddl) => super::ddl::subtitle(object, locale),
         _ => subtitle(object, &look, locale),
@@ -203,6 +211,16 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         lock.map(|lock| cell_editor::lock_text(lock, &name, locale))
     });
     let mut actions = Vec::new();
+    // The DDL view's Copy was clicked: copied once the header is drawn.
+    let mut copy_ddl = false;
+    // Each view's key, for the switch: beside its word in the terminal,
+    // in its tooltip elsewhere.
+    let view_keys = [
+        crate::keymap::Command::ShowRows,
+        crate::keymap::Command::ShowStructure,
+        crate::keymap::Command::ShowDdl,
+    ]
+    .map(|command| crate::ui::keys::written(ui.ctx(), &look, command));
     // macOS: 14 above and 12 below the title and its line, 2 apart.
     // Terminal: 12 above and 10 below a line holding a 2 pt underline.
     let title_role = TextRole::pick(&look, TextRole::TableTitle, TextRole::OTableTitle);
@@ -244,22 +262,37 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             if look.terminal {
                 let center = rect.top() + (rect.height() - 1.0 + 2.0) / 2.0;
                 let role = TextRole::OBody;
-                let widths: Vec<f32> = views
-                    .iter()
-                    .map(|(_, label, _)| width(role, &label.to_lowercase()))
-                    .collect();
+                // `r rows`: the key, then the word.
+                let words = |keyed: bool| -> Vec<String> {
+                    views
+                        .iter()
+                        .zip(&view_keys)
+                        .map(|((_, label, _), key)| match keyed && !key.is_empty() {
+                            true => format!("{} {}", &**key, label.to_lowercase()),
+                            false => label.to_lowercase(),
+                        })
+                        .collect()
+                };
                 // The views keep their place at the right, 16 clear of
                 // their 4 pt hit margin; the summary gives way, then the
-                // title is cut.
+                // views' keys, and only then is the title cut.
                 // `+1`, before the views: the summary gives way to it too.
                 let added = (added > 0).then(|| format!("+{added}"));
                 let added_room = added.as_ref().map_or(0.0, |text| width(role, text) + 14.0);
-                let room = right
-                    - (widths.iter().sum::<f32>() + 14.0 * (widths.len() - 1) as f32)
-                    - 4.0
-                    - 16.0
-                    - added_room
-                    - left;
+                let room_of = |widths: &[f32]| {
+                    right
+                        - (widths.iter().sum::<f32>() + 14.0 * (widths.len() - 1) as f32)
+                        - 4.0
+                        - 16.0
+                        - added_room
+                        - left
+                };
+                let widths_of = |keyed| -> Vec<f32> {
+                    words(keyed).iter().map(|word| width(role, word)).collect()
+                };
+                let keyed = room_of(&widths_of(true)) >= width(title_role, &name);
+                let widths = widths_of(keyed);
+                let room = room_of(&widths);
                 let shown =
                     grid::ellipsize(&name, room.max(0.0), false, |text| width(title_role, text));
                 let x =
@@ -281,7 +314,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 tab_list(&list, locale);
                 let ui = &list;
                 let mut x = start;
-                for ((target, label, salt), width) in views.iter().zip(widths) {
+                for (((target, label, salt), width), key) in
+                    views.iter().zip(widths).zip(&view_keys)
+                {
                     let label = label.to_lowercase();
                     let hit = Rect::from_min_size(
                         pos2(x - 4.0, rect.top()),
@@ -306,8 +341,12 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     } else {
                         palette.dim
                     };
-                    // The word takes the state's colour.
-                    widgets::paint_text(ui, x, center, Text::new(&look).add(role, &label, color));
+                    // The key muted, the word in the state's colour.
+                    let mut said = Text::new(&look);
+                    if keyed && !key.is_empty() {
+                        said = said.add(role, key, palette.dim).space(role, " ");
+                    }
+                    widgets::paint_text(ui, x, center, said.add(role, &label, color));
                     if selected {
                         let y = center + line(ui, role, &look) / 2.0 + 2.0;
                         ui.painter().rect_filled(
@@ -362,7 +401,14 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             };
             // In the DDL view, what it says while it reads stands where
             // Add row would.
-            let wait = match view {
+            // Its Copy and Open in SQL editor stand there once its text
+            // is: they drop their keys, then their words, before the title
+            // is cut, and go where even a cut title has no room.
+            use super::ddl::Buttons;
+            let wait = |form: Option<Buttons>| match view {
+                ObjectView::Ddl if ddl_ready => form.map_or(0.0, |form| {
+                    12.0 + super::ddl::header_buttons_width(ui, &look, locale, form)
+                }),
                 ObjectView::Ddl => {
                     let skin = (&look, &palette, locale);
                     let width = super::ddl::header_wait_width(ui, reading, skin);
@@ -370,11 +416,27 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 }
                 ObjectView::Data | ObjectView::Structure => 0.0,
             };
+            // The production badge 8 after the title, on its line.
+            let badge = production.map_or(0.0, |env| {
+                8.0 + super::workspace::env_badge_width(
+                    ui,
+                    env,
+                    super::workspace::Badge::Mac,
+                    &look,
+                )
+            });
+            let title_width = width(title_role, &name);
+            let free = right - left - 16.0 - 12.0 - switch - badge;
+            let cut = width(title_role, "…");
+            let form = Buttons::ALL
+                .into_iter()
+                .find(|form| free - wait(Some(*form)) >= title_width)
+                .or_else(|| (free - wait(Some(Buttons::Icons)) >= cut).then_some(Buttons::Icons));
+            let wait = wait(form);
             let stack = |button: Option<bool>| {
                 let button = button.map_or(0.0, |short| 12.0 + add_row(short).width(ui, &look));
-                right - left - 16.0 - 12.0 - switch - button - wait
+                free - button - wait
             };
-            let title_width = width(title_role, &name);
             // The DDL view has no Add row.
             let rows = if view == ObjectView::Ddl {
                 &[None][..]
@@ -388,7 +450,18 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 .flatten();
             let room = stack(button).max(0.0);
             let shown = grid::ellipsize(&name, room, false, |text| width(title_role, text));
-            let title_width = paint_named(ui, left, title_y, title(&shown, palette.text), &name);
+            let mut title_width =
+                paint_named(ui, left, title_y, title(&shown, palette.text), &name);
+            if let Some(env) = production {
+                let platform = crate::env::Platform::of(&look);
+                let colors = crate::env::env_colors(env, platform, &palette);
+                let x = left + title_width + 8.0;
+                let badge = super::workspace::Badge::Mac;
+                let width = super::workspace::env_badge(ui, x, title_y, env, &colors, badge, &look);
+                let named = Rect::from_min_size(pos2(x, title_y - 8.0), vec2(width, 16.0));
+                widgets::announce(ui, named, env.label(platform));
+                title_width += 8.0 + width;
+            }
             let sub_width = fit_parts(&parts, room, |text| width(sub_role, text))
                 .map_or(0.0, |shown| {
                     paint_named(ui, left, sub_y, sub(&shown, palette.dim), &summary)
@@ -402,7 +475,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             tab_list(&list, locale);
             let header = &mut *ui;
             let ui = &mut list;
-            for (index, ((target, label, _), width)) in views.iter().zip(widths).enumerate() {
+            for (index, (((target, label, _), width), key)) in
+                views.iter().zip(widths).zip(&view_keys).enumerate()
+            {
                 let cell = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, 28.0));
                 x += width;
                 let selected = view == *target;
@@ -419,6 +494,11 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     WidgetInfo::selected(WidgetType::Button, true, selected, label.as_ref())
                 });
                 view_tab(ui, &response, selected);
+                // "Rows · ⌃⌘1" under the pointer.
+                let response = match key.is_empty() {
+                    true => response,
+                    false => response.on_hover_text(format!("{label} · {}", &**key)),
+                };
                 let radius = look.radius.saturating_sub(2);
                 focus::hint(ui, &response, cell, focus::Ring::Edge { radius });
                 if selected {
@@ -462,7 +542,22 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             let ui = header;
             if view == ObjectView::Ddl {
                 let skin = (&look, &palette, locale);
-                super::ddl::header_wait(ui, reading, right, center, skin);
+                if ddl_ready {
+                    // None where the header has no room for them: the keys
+                    // still copy and open.
+                    let asked = form
+                        .map(|form| super::ddl::show_header_buttons(ui, right, center, form, skin));
+                    let asked = asked.unwrap_or_default();
+                    copy_ddl = asked.copy;
+                    if asked.open {
+                        actions.push(Action::OpenDdlInEditor {
+                            tab,
+                            id: object_tab,
+                        });
+                    }
+                } else {
+                    super::ddl::header_wait(ui, reading, right, center, skin);
+                }
             } else if let Some(short) = button {
                 let button = add_row(short);
                 let width = button.width(ui, &look);
@@ -485,6 +580,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 }
             }
         });
+    if copy_ddl {
+        super::ddl::copy(app, ui.ctx(), tab, object_tab);
+    }
     app.actions.extend(actions);
 }
 

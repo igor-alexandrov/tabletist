@@ -1104,6 +1104,43 @@ pub enum Action {
         tab: ConnTabId,
         object_tab: TabId,
     },
+    /// Move the cursor of the terminal look's DDL text `by` lines.
+    MoveDdlCursor {
+        tab: ConnTabId,
+        id: TabId,
+        by: isize,
+    },
+    /// Put that cursor on `line` (the last one where it has fewer).
+    DdlCursorTo {
+        tab: ConnTabId,
+        id: TabId,
+        line: usize,
+    },
+    /// Move it to the start of the next part of the text, or of the one
+    /// before (`]]`, `[[`).
+    DdlSection {
+        tab: ConnTabId,
+        id: TabId,
+        forward: bool,
+    },
+    /// Start the selection of lines at the cursor, or end it (`V`).
+    ToggleDdlVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// End the selection of lines.
+    LeaveDdlVisual {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Open the DDL view's text in a new SQL editor, which runs nothing.
+    OpenDdlInEditor {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// The terminal's `:ddl`: the DDL view of the table under the tree's
+    /// cursor, or of the tab in front.
+    OpenDdl(ConnTabId),
     /// The connection dialog's driver switch.
     SetDriver(Driver),
     /// Drop the connection dialog's saved database password: saved with
@@ -3701,6 +3738,12 @@ pub struct ObjectTab {
     /// When the definition the tab holds arrived: the view says how long
     /// ago it was read.
     pub ddl_read: Option<std::time::Instant>,
+    /// The terminal look's cursor in the DDL view's text: a line, from
+    /// nought. Held inside the text's lines.
+    pub ddl_cursor: usize,
+    /// Where the terminal look's selection of lines (`V`) started, while
+    /// it is on: it runs from there to the cursor's line.
+    pub ddl_visual: Option<usize>,
     pub selection: Option<CellPos>,
     /// The rows selected with the cursor's, where there are several.
     /// Written with the cursor, by [`ObjectTab::set_cursor`].
@@ -3950,6 +3993,8 @@ impl ObjectTab {
             structure: Fetch::default(),
             ddl: Fetch::default(),
             ddl_read: None,
+            ddl_cursor: 0,
+            ddl_visual: None,
             selection: None,
             range: None,
             estimated_rows,
@@ -3964,6 +4009,30 @@ impl ObjectTab {
             reopened: false,
             history_load: None,
         }
+    }
+
+    /// The DDL view's text as the view shows it: none while it is first
+    /// read, nor where its read failed (a failed Reload keeps the text it
+    /// had, under the error).
+    pub fn ddl_shown(&self) -> Option<&tabletist_db::Ddl> {
+        self.ddl
+            .value
+            .as_ref()
+            .filter(|_| self.ddl.shown_error().is_none())
+    }
+
+    /// How many lines the DDL view's text has, as it shows: none before it
+    /// is read.
+    pub fn ddl_lines(&self) -> usize {
+        self.ddl_shown().map_or(0, |ddl| ddl.text().lines().count())
+    }
+
+    /// The lines the terminal look's selection takes, while it is on: from
+    /// its start to the cursor's line, whichever comes first.
+    pub fn ddl_selected(&self) -> Option<std::ops::Range<usize>> {
+        let anchor = self.ddl_visual?;
+        let (from, to) = (anchor.min(self.ddl_cursor), anchor.max(self.ddl_cursor));
+        Some(from..to + 1)
     }
 
     /// Forgets the exact count: the rows it counted changed (filters,

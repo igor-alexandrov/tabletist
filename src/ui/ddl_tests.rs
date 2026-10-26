@@ -18,7 +18,7 @@ use crate::theme::Look;
 /// The Bookshop's `book_covers` as `driver` writes it: a table, two
 /// indexes, two triggers (PostgreSQL's built from its catalog, with
 /// comments).
-fn book_covers(driver: Driver) -> Ddl {
+pub(super) fn book_covers(driver: Driver) -> Ddl {
     let part = |kind, statements: &[&str]| Part {
         kind,
         statements: statements.iter().map(|s| s.to_string()).collect(),
@@ -80,7 +80,7 @@ fn book_covers(driver: Driver) -> Ddl {
 }
 
 /// The Bookshop's covers on `driver`, in `look`, their rows read.
-fn covers(look: Look, driver: Driver) -> (Harness, ConnTabId, TabId) {
+pub(super) fn covers(look: Look, driver: Driver) -> (Harness, ConnTabId, TabId) {
     let mut harness = Harness::new();
     harness.set_look(look);
     let tab = harness.connect_fake();
@@ -98,7 +98,7 @@ fn covers(look: Look, driver: Driver) -> (Harness, ConnTabId, TabId) {
     (harness, tab, id)
 }
 
-fn set_view(harness: &mut Harness, tab: ConnTabId, id: TabId, view: ObjectView) {
+pub(super) fn set_view(harness: &mut Harness, tab: ConnTabId, id: TabId, view: ObjectView) {
     harness.app.apply(Action::SetView {
         tab,
         object_tab: id,
@@ -108,7 +108,7 @@ fn set_view(harness: &mut Harness, tab: ConnTabId, id: TabId, view: ObjectView) 
 }
 
 /// The `ReadDdl`s sent since `from`, with what each asked for.
-fn reads(harness: &Harness, from: usize) -> Vec<ObjectRef> {
+pub(super) fn reads(harness: &Harness, from: usize) -> Vec<ObjectRef> {
     harness.app.backend.sent[from..]
         .iter()
         .filter_map(|command| match command {
@@ -119,7 +119,7 @@ fn reads(harness: &Harness, from: usize) -> Vec<ObjectRef> {
 }
 
 /// The covers' DDL view on `driver` in `look`, its definition read.
-fn ddl_view(look: Look, driver: Driver) -> (Harness, ConnTabId, TabId) {
+pub(super) fn ddl_view(look: Look, driver: Driver) -> (Harness, ConnTabId, TabId) {
     let (mut harness, tab, id) = covers(look, driver);
     set_view(&mut harness, tab, id, ObjectView::Ddl);
     harness.answer_ddl(Ok(book_covers(driver)));
@@ -488,7 +488,7 @@ fn the_age_is_said_in_its_largest_unit() {
 }
 
 /// The keys of `c` typed, as a window sends them: its key, then its text.
-fn letter(harness: &mut Harness, c: char) {
+pub(super) fn letter(harness: &mut Harness, c: char) {
     let key = Key::from_name(&c.to_ascii_uppercase().to_string()).expect("a letter's key");
     let shift = if c.is_uppercase() {
         Modifiers::SHIFT
@@ -504,7 +504,7 @@ fn letter(harness: &mut Harness, c: char) {
 }
 
 /// Gives the text the keyboard, as F6 does.
-fn focus_text(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+pub(super) fn focus_text(harness: &mut Harness, tab: ConnTabId, id: TabId) {
     let field = super::ddl::text_id(tab, id);
     harness.ctx.memory_mut(|memory| memory.request_focus(field));
     harness.settle();
@@ -636,23 +636,28 @@ fn the_ddl_view_has_no_add_row() {
     assert!(harness.has("Select text to copy part of it"));
 }
 
-/// The terminal's line names the view's keys, not the rows', and how many
-/// lines the text has.
+/// The terminal's line names the view's keys, not the rows', and where
+/// its cursor is of how many lines.
 #[test]
 fn the_terminal_line_names_the_views_keys_and_its_lines() {
     let (harness, _, _) = ddl_view(Look::omarchy(), Driver::Postgres);
     let lines = book_covers(Driver::Postgres).text().lines().count();
     let painted = |said: &str| harness.painted.iter().any(|(text, _)| text == said);
-    assert!(painted(&format!("{lines} lines")));
+    assert!(painted(&format!("1/{lines}")));
     // Each key with its word, as the line paints a hint.
     let key = |command| crate::ui::keys::written(&harness.ctx, &Look::omarchy(), command);
-    let (reload, tables) = (
-        key(crate::keymap::Command::Reload),
-        key(crate::keymap::Command::ToggleSidebar),
-    );
-    assert!(painted(&format!("{} reload", &*reload)));
-    assert!(painted(&format!("{} tables", &*tables)));
-    let rows = key(crate::keymap::Command::MoveRow);
+    use crate::keymap::Command;
+    for (command, word) in [
+        (Command::MoveInDdl, "line"),
+        (Command::SelectDdlLines, "select lines"),
+        (Command::CopyDdl, "copy"),
+        (Command::OpenDdlInEditor, "open in sql"),
+        (Command::ShowRows, "rows"),
+        (Command::ShowStructure, "structure"),
+    ] {
+        assert!(painted(&format!("{} {word}", &*key(command))), "{word}");
+    }
+    let rows = key(Command::MoveRow);
     assert!(
         !painted(&format!("{} row", &*rows)),
         "the rows' keys are not named"
@@ -731,10 +736,10 @@ fn reload_reads_again_from_the_text() {
 }
 
 /// The keyboard selects in the text as in any: Shift with an arrow from
-/// where it came in, at the top.
+/// where it came in, at the top. (The terminal look selects by line.)
 #[test]
 fn shift_with_an_arrow_selects_from_the_top() {
-    for look in Look::ALL {
+    for look in [Look::macos(), Look::standard()] {
         let (mut harness, tab, id) = ddl_view(look, Driver::Postgres);
         focus_text(&mut harness, tab, id);
         harness.press(Key::ArrowDown, Modifiers::SHIFT);

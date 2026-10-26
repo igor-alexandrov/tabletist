@@ -118,6 +118,9 @@ a read-only connection. The Omarchy look does the same with `gl` and the
 
 ## DDL
 
+Ctrl+Cmd+1, 2 and 3 show a table's rows, its structure and its DDL on
+macOS, and Alt+1, 2 and 3 on Windows.
+
 **DDL**, the third view of a table, a view or a materialized view, shows
 its definition as text you can select and copy but not change, in the SQL
 editor's colours, with line numbers. Long lines do not wrap: scroll
@@ -152,6 +155,16 @@ with the rows and the structure, as Reload does in the other views.
 Reading it only reads the catalog, and adds nothing to History. Where the
 connection's user may not read it, the view shows the database's error
 and **Try again**, never part of a text; Rows and Structure still work.
+
+Over the text, **Table**, **Indexes**, **Triggers** and **Comments** go to
+that part, with how many statements each holds; a part with nothing is not
+listed, and the one at the top of the text is marked. A part near the end
+cannot come to the top: its link stays marked until you scroll. **Copy** (Cmd/Ctrl+Shift+C) copies the selected text, or all of it
+with nothing selected. **Open in SQL editor** (Alt+Enter, Option+Return on macOS) puts
+the text in a new SQL editor that runs nothing until you run it. It opens
+read-only or not as Settings › Editor says for a new tab, and always
+read-only on production or on a connection that cannot write. On
+production, the table's name has the production badge beside it.
 
 ## Copying
 

@@ -78,7 +78,12 @@ pub fn show(app: &App, ctx: &egui::Context) {
                     color: palette.shadow,
                 })
                 .show(ui, |ui| {
-                    widgets::label(ui, widgets::body(look), &text, palette.window, look);
+                    let said = widgets::label(ui, widgets::body(look), &text, palette.window, look);
+                    // Read out as it appears, without taking the user's
+                    // place.
+                    ui.ctx().accesskit_node_builder(said.id, |node| {
+                        node.set_live(egui::accesskit::Live::Polite);
+                    });
                 });
         });
 }

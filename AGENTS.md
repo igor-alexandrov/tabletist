@@ -70,7 +70,8 @@ tree, a grid) marks where its arrows are by itself: its cursor, its cell.
 A key is spelled in `src/keymap.rs` (and `src/keymap/overrides.rs`, which
 lays the person's keys from `settings.toml` over it) and nowhere else: each
 command with the scopes it holds in and its keys for macOS and for Omarchy
-(Windows has the Mac's, with Ctrl for Cmd). `src/ui/keys.rs` and the
+(Windows has the Mac's, with Ctrl for Cmd, unless a line gives it keys of
+its own: `Binding::windows`). `src/ui/keys.rs` and the
 dialogs ask the keymap whether a command's key went down, and name no key
 themselves. What paints a key beside a word (a hint, a button's shortcut)
 takes a `keymap::Written`, which only the keymap makes; `tests/keys.rs`
