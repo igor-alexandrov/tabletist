@@ -779,18 +779,88 @@ fn a_greyed_command_chosen_by_a_key_or_a_script_does_nothing() {
     harness.settle();
     let new_sql = Item::Command(Command::NewSqlTab);
     let key = super::key_of(&harness.app.keymap, harness.app.layout(), new_sql);
-    // Greyed under the dialog, and its key not read there: AppKit still
-    // performs it (the item is enabled outside an open menu), and the app
-    // drops it rather than open a tab behind the dialog.
+    // Greyed under the dialog. AppKit still performs its key (the item is
+    // enabled outside an open menu): the press goes back to egui, where the
+    // window's keys do not run under a dialog, so no tab opens behind it.
     assert!(!harness.app.menu_state(new_sql).enabled);
-    assert_eq!(
+    assert!(matches!(
         handling(&harness.app, new_sql, Via::Key, key),
-        Handling::Ignore
-    );
-    // A script's click on the greyed item, likewise.
+        Handling::Replay(_, Via::Key)
+    ));
+    // A script's click on the greyed item does nothing.
     assert_eq!(
         handling(&harness.app, new_sql, Via::Click, key),
         Handling::Ignore
+    );
+    // Replayed, the press opens nothing behind the About dialog.
+    let tabs = |harness: &Harness| {
+        harness
+            .app
+            .workspace(harness.app.active_tab_id())
+            .map(|w| w.tabs.len())
+    };
+    let before = tabs(&harness);
+    let mut replay = Replay::default();
+    let mut events = Vec::new();
+    replay.frame(
+        &mut events,
+        &[(key.expect("New SQL Query has a chord"), Via::Key)],
+    );
+    harness.frame(events);
+    harness.settle();
+    assert_eq!(tabs(&harness), before);
+    assert!(matches!(harness.app.dialog, Some(Dialog::About)));
+}
+
+#[test]
+fn a_dialog_reads_the_key_of_a_menu_item_it_greys() {
+    // The connection form's Test and Save share their chords with New SQL
+    // Query and Save Changes, which the form greys. AppKit takes the press
+    // for the menu item; given back to egui, the form reads it.
+    let mut harness = Harness::new();
+    harness.app.apply(Action::NewConnection);
+    harness.settle();
+    harness.click("PostgreSQL");
+    if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+        form.name = "Shop".into();
+        form.user = "me".into();
+    }
+    harness.settle();
+    let layout = harness.app.layout();
+    let mut replay = Replay::default();
+    let mut press = |harness: &mut Harness, command: Command| {
+        let item = Item::Command(command);
+        assert!(!harness.app.menu_state(item).enabled, "{command:?}");
+        let key = super::key_of(&harness.app.keymap, layout, item);
+        let Handling::Replay(key, via) = handling(&harness.app, item, Via::Key, key) else {
+            panic!("{command:?}: not replayed");
+        };
+        let mut events = Vec::new();
+        replay.frame(&mut events, &[(key, via)]);
+        events.push(crate::testing::release(
+            key.key,
+            super::replay::modifiers(key.mods),
+        ));
+        harness.frame(events);
+        harness.settle();
+    };
+    // ⌘T tests the connection.
+    press(&mut harness, Command::NewSqlTab);
+    assert!(
+        matches!(
+            &harness.app.dialog,
+            Some(Dialog::Connection(form)) if matches!(form.test, crate::model::TestState::Running(_))
+        ),
+        "the form's Test ran"
+    );
+    // ⌘S saves it, and the form closes.
+    let saved = harness.app.connections.connections.len();
+    press(&mut harness, Command::SaveChanges);
+    assert!(harness.app.dialog.is_none(), "the form closed");
+    assert_eq!(
+        harness.app.connections.connections.len(),
+        saved + 1,
+        "the form saved"
     );
 }
 

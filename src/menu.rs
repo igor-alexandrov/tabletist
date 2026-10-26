@@ -291,7 +291,7 @@ pub enum Handling {
     Replay(MenuKey, Via),
     /// A click: `App::choose`, or `Window::logic` for Exit and Paste.
     Click,
-    /// Nothing: a command the app greys, chosen by a key or a script.
+    /// Nothing: an item the app greys, clicked by a script.
     Ignore,
 }
 
@@ -312,9 +312,15 @@ pub fn handling(app: &crate::app::App, item: Item, via: Via, key: Option<MenuKey
         // the typed text), so it needs no dialog rule.
         (Item::QuickOpen, Via::Key, Some(key)) => Handling::Replay(key, Via::Key),
         // On macOS an item stays enabled for AppKit outside an open menu
-        // (the crate's `NSMenuDelegate`), so a key the keymap would not
-        // read here (⌘T under a dialog) or a script can choose one the app
-        // greys: it does nothing, as without a menu.
+        // (the crate's `NSMenuDelegate`), so AppKit takes the key of a
+        // command the app greys (⌘T under a dialog). It goes back as the
+        // press all the same: the dialog may read it (the connection
+        // form's Test), and the window's keys do not run under a dialog,
+        // so otherwise nothing does, as without a menu.
+        (Item::Command(_), Via::Key, Some(key)) if !app.menu_state(item).enabled => {
+            Handling::Replay(key, Via::Key)
+        }
+        // A script's click on a greyed item does nothing.
         _ if !app.menu_state(item).enabled => Handling::Ignore,
         _ => Handling::Click,
     }
