@@ -698,6 +698,7 @@ fn reapply_filter_opens_the_table_with_its_filter_and_sort() {
             ..Default::default()
         },
         pinned: true,
+        view: String::new(),
         rest: Default::default(),
     });
     shown_with(&mut harness, tab, vec![filter]);

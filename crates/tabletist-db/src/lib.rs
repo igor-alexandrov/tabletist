@@ -15,6 +15,7 @@ mod catalog;
 mod check;
 mod class;
 pub mod complete;
+pub mod ddl;
 mod dialect;
 mod error;
 pub mod fixtures;
@@ -42,6 +43,7 @@ pub use catalog::{
     ReferencingKey, Structure,
 };
 pub use class::{ColumnClass, Temporal, column_class, temporal};
+pub use ddl::Ddl;
 pub use dialect::{
     DeleteParts, Dialect, InsertParts, InsertStatement, RowDeletion, RowUpdate, Sql, UpdateParts,
     escape_like, quote_literal,
@@ -357,6 +359,20 @@ impl Connection {
             Inner::Sqlite(conn) => conn.describe(object).await,
             Inner::Postgres(conn) => conn.describe(object).await,
             Inner::MySql(conn) => conn.describe(object).await,
+        }
+    }
+
+    /// The definition of the table or view `object` as text, by its parts
+    /// (see [`Ddl`]): built from PostgreSQL's catalog, and as MySQL's
+    /// `SHOW CREATE` and SQLite's `sqlite_master` return it. It only
+    /// reads the catalog: in a read-only transaction on PostgreSQL and
+    /// MySQL, under `query_only` on SQLite. All of it or an error, never a
+    /// part.
+    pub async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.ddl(object).await,
+            Inner::Postgres(conn) => conn.ddl(object).await,
+            Inner::MySql(conn) => conn.ddl(object).await,
         }
     }
 

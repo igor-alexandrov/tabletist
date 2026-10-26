@@ -1320,6 +1320,23 @@ impl App {
                 if changes {
                     self.close_editor(tab, object_tab, true);
                 }
+                // Leaving the DDL view stops its read: the view reads it
+                // again when it is shown next. A definition it already
+                // had stays.
+                let left = self.object_tab_mut(tab, object_tab).and_then(|object| {
+                    let leaves = object.view == ObjectView::Ddl && view != ObjectView::Ddl;
+                    leaves.then(|| {
+                        object.ddl.started = None;
+                        object.ddl.asked = false;
+                        object.ddl.pending.take()
+                    })?
+                });
+                if let Some(session) = self.workspace(tab).map(|workspace| workspace.session) {
+                    self.cancel(session, left);
+                }
+                let read = self
+                    .object_tab_mut(tab, object_tab)
+                    .is_some_and(|object| view == ObjectView::Ddl && object.ddl.needs_load());
                 let describe = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     object.view = view;
                     // A visual selection is of the rows on screen: another
@@ -1335,6 +1352,9 @@ impl App {
                 });
                 if describe {
                     self.describe(tab, object_tab);
+                }
+                if read {
+                    self.read_ddl(tab, object_tab);
                 }
                 self.forget_refusal(tab);
             }
@@ -1980,6 +2000,7 @@ impl App {
                     });
                 match active {
                     Some((id, described)) => {
+                        self.reload_ddl(tab, id);
                         self.reset_count(tab, id);
                         // Over an error box a refresh is a retry: what the
                         // error replaced is not what comes back if it is
@@ -2640,6 +2661,12 @@ impl App {
                     object.structure.value = None;
                 }
                 self.describe(tab, object_tab);
+            }
+            Action::RetryDdl { tab, object_tab } => {
+                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                    object.ddl.value = None;
+                }
+                self.read_ddl(tab, object_tab);
             }
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
@@ -4140,6 +4167,27 @@ impl App {
                 // A picker that waited for these columns learns them.
                 self.picker_columns(tab);
             }
+            Event::Ddl {
+                session,
+                request,
+                result,
+            } => {
+                let Some(tab) = self.tab_for_session(session) else {
+                    return;
+                };
+                let waiting = self.workspace_mut(tab).and_then(|workspace| {
+                    workspace
+                        .object_tabs_mut()
+                        .find(|object| object.ddl.pending == Some(request))
+                });
+                if let Some(object) = waiting {
+                    let read = result.is_ok();
+                    object.ddl.finish(request, result);
+                    if read {
+                        object.ddl_read = Some(std::time::Instant::now());
+                    }
+                }
+            }
             Event::SecretLoaded { request, result } => {
                 match self.pending_secrets.remove(&request) {
                     Some(SecretPurpose::Connect {
@@ -5583,6 +5631,22 @@ impl App {
                 object.count.asked = asked;
             }
         }
+        // The definition the tab in front shows in its DDL view is read
+        // on the new session; one that was on its way, or was lost, on a
+        // tab behind is forgotten, for its view to read when shown. A
+        // reopened tab reads it with its rows.
+        let mut ddl = Vec::new();
+        for object in workspace.object_tabs_mut() {
+            let is_active = Some(object.id) == active;
+            if object.reopened {
+                continue;
+            }
+            if is_active && object.view == ObjectView::Ddl {
+                ddl.push(object.id);
+            } else if object.ddl.is_loading() || lost(&object.ddl) || object.ddl.asked {
+                object.ddl = Fetch::default();
+            }
+        }
         let stale: Vec<(TabId, bool, bool, bool)> = workspace
             .object_tabs()
             .map(|object| {
@@ -5631,6 +5695,9 @@ impl App {
                 self.count_rows(tab, id);
             }
         }
+        for id in ddl {
+            self.read_ddl(tab, id);
+        }
         if let Some((object, kind)) = pending {
             self.open_object(tab, object, kind, true);
         }
@@ -5663,6 +5730,12 @@ impl App {
                 )
             })
             .collect();
+        // A definition asked for meanwhile, whatever the tab holds.
+        let ddl: Vec<TabId> = workspace
+            .object_tabs()
+            .filter(|object| object.ddl.asked && !object.reopened)
+            .map(|object| object.id)
+            .collect();
         for (id, rows, structure) in waited {
             if rows {
                 self.fetch_rows(tab, id);
@@ -5670,6 +5743,9 @@ impl App {
             if structure {
                 self.describe(tab, id);
             }
+        }
+        for id in ddl {
+            self.read_ddl(tab, id);
         }
     }
 }
@@ -6988,6 +7064,14 @@ impl App {
         // brings it.
         if reopened {
             self.describe(tab, id);
+            // And the definition, where it was reopened in the DDL view.
+            let ddl = self
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id))
+                .is_some_and(|object| object.view == ObjectView::Ddl);
+            if ddl {
+                self.read_ddl(tab, id);
+            }
         }
         self.fetch_page(tab, id, size);
     }
@@ -7190,6 +7274,57 @@ impl App {
             request,
             object: target,
         });
+    }
+
+    /// Asks for the definition the DDL view of the tab `id` shows,
+    /// replacing a read still on its way.
+    pub fn read_ddl(&mut self, tab: ConnTabId, id: TabId) {
+        let reads = self.wake_to_read(tab);
+        let request = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let Some(object) = workspace.object_tab_mut(id) else {
+            return;
+        };
+        if !reads {
+            object.ddl.asked = true;
+            return;
+        }
+        let superseded = object.ddl.pending;
+        object.ddl.start(request);
+        let target = object.object.clone();
+        self.cancel(session, superseded);
+        self.backend.send(Command::ReadDdl {
+            session,
+            request,
+            object: target,
+        });
+    }
+
+    /// Reload's part for the DDL view of the tab `id`: the definition is
+    /// read again where the view shows, and forgotten where it does not,
+    /// for the view to read when it is shown next. One under an error
+    /// goes, as a retry's does.
+    fn reload_ddl(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let Some(object) = workspace.object_tab_mut(id) else {
+            return;
+        };
+        if object.view == ObjectView::Ddl {
+            if object.ddl.shown_error().is_some() {
+                object.ddl.value = None;
+            }
+            self.read_ddl(tab, id);
+        } else {
+            let pending = std::mem::take(&mut object.ddl).pending;
+            object.ddl_read = None;
+            self.cancel(session, pending);
+        }
     }
 
     /// Text for the clipboard: the selected cell, or its whole row as TSV.

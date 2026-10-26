@@ -26,6 +26,9 @@ pub mod data_view;
 pub mod date_line;
 #[cfg(test)]
 mod date_tests;
+pub mod ddl;
+#[cfg(test)]
+mod ddl_tests;
 #[cfg(test)]
 mod delete_many_tests;
 #[cfg(test)]
@@ -6544,7 +6547,7 @@ value_tags   = true
         harness.click("Row 1");
         assert!(harness.has("user1@example.com"));
         harness.click("Structure");
-        harness.click("Data");
+        harness.click("Rows");
         assert!(harness.has("user1@example.com"));
     }
 
@@ -6795,7 +6798,7 @@ value_tags   = true
         focus_grid(&mut harness, tab);
         harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
         assert!(!harness.app.workspace(tab).unwrap().row_panel);
-        focus(&mut harness, "Structure", egui::accesskit::Role::Button);
+        focus(&mut harness, "Structure", egui::accesskit::Role::Tab);
         assert_eq!(focused_name(&harness.settle()), "Structure");
         harness.press(Key::Enter, Modifiers::NONE);
         let workspace = harness.app.workspace(tab).unwrap();
@@ -12058,17 +12061,25 @@ value_tags   = true
             harness.set_look(look);
             harness.click("orders");
             harness.answer_rows(crate::testing::page(3, true));
-            let tab_to = |harness: &mut Harness, name: &str| {
+            // The stop named `name`, of `role` where one is given: the
+            // switch's Rows tab comes before the rows.
+            let tab_to = |harness: &mut Harness,
+                          name: &str,
+                          role: Option<egui::accesskit::Role>| {
                 for _ in 0..60 {
                     harness.press(Key::Tab, Modifiers::NONE);
-                    if focused_name(&harness.settle()) == name {
+                    let tree = harness.settle();
+                    let focused = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+                    let of_role = role
+                        .is_none_or(|role| focused.is_some_and(|(_, node)| node.role() == role));
+                    if focused_name(&tree) == name && of_role {
                         return;
                     }
                 }
                 panic!("{name} is no Tab stop in {}", look.name);
             };
             // Onto the tree: its cursor is on the open table, and moves.
-            tab_to(&mut harness, "Objects");
+            tab_to(&mut harness, "Objects", None);
             let workspace = harness.app.workspace(tab).unwrap();
             assert_eq!(workspace.pane, Pane::Tree, "{}", look.name);
             let before = workspace.tree.cursor.clone();
@@ -12078,7 +12089,7 @@ value_tags   = true
             assert_ne!(workspace.tree.cursor, before, "{}", look.name);
             assert_eq!(focused_name(&harness.settle()), "Objects", "{}", look.name);
             // Onto the grid: its first cell, and the arrows are its own.
-            tab_to(&mut harness, "Rows");
+            tab_to(&mut harness, "Rows", Some(egui::accesskit::Role::Group));
             let selection = |harness: &Harness| {
                 let workspace = harness.app.workspace(tab).unwrap();
                 workspace.active_object_tab().unwrap().selection
@@ -12119,13 +12130,17 @@ value_tags   = true
             let workspace = harness.app.workspace(tab).unwrap();
             workspace.active_object_tab().unwrap().view
         };
-        focus(&mut harness, "Data", egui::accesskit::Role::Button);
+        focus(&mut harness, "Rows", egui::accesskit::Role::Tab);
         harness.press(Key::ArrowRight, Modifiers::NONE);
         assert_eq!(view(&harness), crate::model::ObjectView::Structure);
         assert_eq!(focused_name(&harness.settle()), "Structure");
+        harness.press(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(view(&harness), crate::model::ObjectView::Ddl);
+        assert_eq!(focused_name(&harness.settle()), "DDL");
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
         harness.press(Key::ArrowLeft, Modifiers::NONE);
         assert_eq!(view(&harness), crate::model::ObjectView::Data);
-        assert_eq!(focused_name(&harness.settle()), "Data");
+        assert_eq!(focused_name(&harness.settle()), "Rows");
         // Tab passes the choice not made.
         let mut stops = std::collections::HashSet::new();
         for _ in 0..60 {
@@ -12133,7 +12148,7 @@ value_tags   = true
             stops.insert(focused_name(&harness.settle()));
         }
         assert!(
-            stops.contains("Data") && !stops.contains("Structure"),
+            stops.contains("Rows") && !stops.contains("Structure") && !stops.contains("DDL"),
             "{stops:?}"
         );
     }
@@ -12162,9 +12177,10 @@ value_tags   = true
             };
             assert_eq!(
                 forward,
+                // The switch's Rows tab, then the rows.
                 [
                     "orders tab",
-                    "Data",
+                    "Rows",
                     "Rows",
                     "Connections",
                     field,

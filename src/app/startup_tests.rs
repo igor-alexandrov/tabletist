@@ -576,6 +576,39 @@ fn a_connection_opened_again_reopens_its_tables_and_reads_the_one_in_front() {
     assert!(fetched(&app, before).is_empty());
 }
 
+/// A table closed in its DDL view comes back in it, and its definition is
+/// read with its rows once the connect is up, and only once.
+#[test]
+fn a_table_closed_in_its_ddl_view_reopens_in_it_and_reads_its_definition() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let conn = bookshop(&mut app, "Bookshop");
+    let tab = open_window(&mut app, &conn);
+    connected(&mut app);
+    let titles = books(&mut app, tab, "books");
+    app.apply(Action::SetView {
+        tab,
+        object_tab: titles,
+        view: crate::model::ObjectView::Ddl,
+    });
+    app.apply(Action::CloseConnTab(tab));
+    let tab = open_window(&mut app, &conn);
+    app.apply_actions();
+    let front = app.workspace(tab).unwrap().active_object_tab().unwrap();
+    assert_eq!(front.view, crate::model::ObjectView::Ddl);
+    let before = app.backend.sent.len();
+    connected(&mut app);
+    app.apply_actions();
+    let read: Vec<ObjectRef> = app.backend.sent[before..]
+        .iter()
+        .filter_map(|command| match command {
+            Command::ReadDdl { object, .. } => Some(object.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(read, [ObjectRef::new("main", "books")]);
+}
+
 #[test]
 fn a_reopened_table_read_by_following_a_key_gets_its_structure_once() {
     let dir = tempfile::tempdir().unwrap();

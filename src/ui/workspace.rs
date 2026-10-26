@@ -111,7 +111,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         super::data_view::toolbar(app, ui, tab, object_tab);
                     }
                     if !look.terminal {
-                        super::data_view::footer(app, ui, tab, object_tab);
+                        match view {
+                            Some(ObjectView::Ddl) => super::ddl::footer(app, ui, tab, object_tab),
+                            _ => super::data_view::footer(app, ui, tab, object_tab),
+                        }
                         // Bottom panels stack upwards: the bar of pending
                         // changes stands on the footer.
                         super::pending_bar::show(app, ui, tab, object_tab);
@@ -125,6 +128,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             Some(ObjectView::Structure) => {
                                 super::structure::show(app, ui, tab, object_tab)
                             }
+                            Some(ObjectView::Ddl) => super::ddl::show(app, ui, tab, object_tab),
                             _ => {
                                 if super::filter_bar::is_open(app, tab, object_tab) {
                                     let palette = app.palette;
@@ -2173,6 +2177,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (column_key, use_key) = (key(Command::MoveInStructure), key(Command::UseAsLabel));
     let (chooser_key, automatic_key) =
         (key(Command::OpenLabelChooser), key(Command::LabelAutomatic));
+    // The DDL view of the table in front: its line names that view's keys,
+    // and says how long the text is in the place of the rows' range.
+    let ddl = workspace
+        .active_object_tab()
+        .filter(|object| object.view == ObjectView::Ddl);
+    let reload_key = key(Command::Reload);
     // The completion list's own key, while it is open with a row to put
     // in. One whose row is about to be inserted is not open any more: the
     // mode line is drawn before the editor inserts it.
@@ -2180,7 +2190,21 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .active_sql_tab()
         .and_then(|sql| sql.completion.as_ref())
         .is_some_and(|list| !list.accept && !list.candidates.is_empty());
+    let lines = ddl.and_then(|object| {
+        let shown = object
+            .ddl
+            .value
+            .as_ref()
+            .filter(|_| object.ddl.shown_error().is_none());
+        let lines = shown?.text().lines().count();
+        let count = u32::try_from(lines).unwrap_or(u32::MAX);
+        Some(
+            crate::i18n::ngettext(locale, "{n} line", "{n} lines", count)
+                .replace("{n}", &lines.to_string()),
+        )
+    });
     let summary = editor
+        .or(lines)
         .or_else(|| {
             let object = workspace.active_object_tab()?;
             let page = object.page()?;
@@ -2356,6 +2380,20 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             if editing.pending.is_some() || editing.added.is_some() {
                 structure_hints.push((&review_key, &*review, true));
             }
+            // The DDL view's: its text is read again, and the rows' keys
+            // do nothing on it. What is pending is saved and reviewed from
+            // here too.
+            let ddl_words = ["reload", "tables"].map(|word| gettext(locale, word));
+            let mut ddl_hints: Vec<widgets::Hint<'_>> = vec![
+                (&reload_key, &*ddl_words[0], true),
+                (&sidebar_key, &*ddl_words[1], true),
+            ];
+            if !read_only {
+                ddl_hints.push((&save_key, &*write, true));
+            }
+            if editing.pending.is_some() || editing.added.is_some() {
+                ddl_hints.push((&review_key, &*review, true));
+            }
             let (copy_word, on_word) = (gettext(locale, "copy"), gettext(locale, "turn on"));
             let allow_word = gettext(locale, "allow agents");
             let settings_word = gettext(locale, "settings");
@@ -2496,6 +2534,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 &editor_hints
             } else if structure.is_some() {
                 &structure_hints
+            } else if ddl.is_some() {
+                &ddl_hints
             } else {
                 &table_hints
             };

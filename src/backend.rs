@@ -99,6 +99,14 @@ pub enum Command {
         request: RequestId,
         object: ObjectRef,
     },
+    /// Read the definition of a table or view for the DDL view (see
+    /// `Connection::ddl`): the app's own read of the catalog, never a run
+    /// of the SQL editor's, and kept in no history.
+    ReadDdl {
+        session: SessionId,
+        request: RequestId,
+        object: ObjectRef,
+    },
     FetchRows {
         session: SessionId,
         request: RequestId,
@@ -316,6 +324,11 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         result: Result<Structure, Error>,
+    },
+    Ddl {
+        session: SessionId,
+        request: RequestId,
+        result: Result<tabletist_db::Ddl, Error>,
     },
     Rows {
         session: SessionId,
@@ -2122,6 +2135,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ListSchemas { session, .. }
         | Command::ListObjects { session, .. }
         | Command::Describe { session, .. }
+        | Command::ReadDdl { session, .. }
         | Command::FetchRows { session, .. }
         | Command::CountRows { session, .. }
         | Command::Lookup { session, .. }
@@ -2154,6 +2168,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         Command::ListSchemas { request, .. }
         | Command::ListObjects { request, .. }
         | Command::Describe { request, .. }
+        | Command::ReadDdl { request, .. }
         | Command::FetchRows { request, .. }
         | Command::CountRows { request, .. }
         | Command::Lookup { request, .. }
@@ -2204,6 +2219,13 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         Command::Describe {
             session, request, ..
         } => Event::Structure {
+            session,
+            request,
+            result: Err(error),
+        },
+        Command::ReadDdl {
+            session, request, ..
+        } => Event::Ddl {
             session,
             request,
             result: Err(error),
@@ -2415,6 +2437,20 @@ async fn run_session(
                 let result = connection.describe(object).await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Structure {
+                    session: *session,
+                    request: *request,
+                    result,
+                });
+                lost
+            }
+            Command::ReadDdl {
+                session,
+                request,
+                object,
+            } => {
+                let result = connection.ddl(object).await;
+                let lost = lost_error(&result);
+                outbox.emit(Event::Ddl {
                     session: *session,
                     request: *request,
                     result,

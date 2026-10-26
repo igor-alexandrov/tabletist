@@ -1,2 +1,5 @@
 # Signed bytes: a checkout must not change line endings (tests/update_release.rs).
 tests/fixtures/update/** -text
+
+# Expected texts the DDL tests compare byte for byte: LF on every checkout.
+crates/tabletist-db/tests/ddl/*.sql text eol=lf

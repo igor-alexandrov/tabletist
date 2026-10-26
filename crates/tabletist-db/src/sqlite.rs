@@ -19,8 +19,8 @@ use crate::agent::{
 };
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
-    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Dialect,
-    Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnClass, ColumnInfo, ColumnMeta, Ddl,
+    Dialect, Error, ForeignKeyInfo, IndexInfo, Lookup, LookupPage, MAX_LISTED, Named, ObjectInfo,
     ObjectKind, ObjectRef, ReferencingKey, Result, RowPage, RowQuery, ScriptEnd, ScriptMode,
     ScriptOutcome, StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind,
     WriteOutcome, column_class,
@@ -1027,6 +1027,75 @@ impl Adapter for Conn {
                 referenced_by: referencing_keys(connection, &object)?,
                 comment: None,
             })
+        })
+        .await
+    }
+
+    /// The text `sqlite_master` keeps of the table or view, then of its
+    /// indexes and its triggers, each by name. A trigger keeps the table's
+    /// name as it was written in it, in any case. An index SQLite made itself
+    /// (for a key or a `UNIQUE`) keeps none, and is left out.
+    async fn ddl(&self, object: &ObjectRef) -> Result<Ddl> {
+        use crate::ddl::{Part, PartKind};
+        let master = format!(
+            "{}.sqlite_master",
+            Dialect::Sqlite.quote_ident(&object.schema)
+        );
+        let object = object.clone();
+        self.run(move |connection| {
+            let own: Option<Option<String>> = connection
+                .query_row(
+                    &format!(
+                        "SELECT sql FROM {master} WHERE name = ?1 AND type IN ('table', 'view')"
+                    ),
+                    [&object.name],
+                    |row| optional_text(row, 0),
+                )
+                .optional()
+                .map_err(map_error)?;
+            let Some(Some(own)) = own else {
+                return Err(Error::query(format!(
+                    "no such table or view: {}",
+                    object.name
+                )));
+            };
+            let of_kind = |kind: &str| -> Result<Vec<String>> {
+                let mut statement = connection
+                    .prepare(&format!(
+                        "SELECT sql FROM {master} \
+                         WHERE tbl_name = ?1 COLLATE NOCASE AND type = ?2 AND sql IS NOT NULL \
+                         ORDER BY name"
+                    ))
+                    .map_err(map_error)?;
+                statement
+                    .query_map([object.name.as_str(), kind], |row| text(row, 0))
+                    .map_err(map_error)?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(map_error)
+            };
+            let parts = vec![
+                Part {
+                    kind: PartKind::Object,
+                    statements: vec![own],
+                },
+                Part {
+                    kind: PartKind::Indexes,
+                    statements: of_kind("index")?,
+                },
+                Part {
+                    kind: PartKind::Triggers,
+                    statements: of_kind("trigger")?,
+                },
+            ];
+            let version: String = connection
+                .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+                .map_err(map_error)?;
+            Ok(Ddl::new(
+                crate::Driver::Sqlite,
+                format!("SQLite {version}"),
+                None,
+                parts,
+            ))
         })
         .await
     }

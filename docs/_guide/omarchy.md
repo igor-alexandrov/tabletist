@@ -155,8 +155,8 @@ With the search open, the matches replace the start lists:
 | `R` | Reload |
 | Ctrl+C | Cancel the running query |
 
-The Structure and Data views are clicked: switching between them has no
-key. Nor has copying a whole row.
+The `rows`, `structure` and `ddl` views are clicked: switching between
+them has no key yet. Nor has copying a whole row.
 
 ### The Agents tab
 
@@ -197,6 +197,14 @@ foreign key that points at it:
 [Editing Data]({% link _guide/editing-data.md %}#the-label-column) says
 what it does. A key or a column of bytes is not taken, and the status line
 says why.
+
+### The DDL view
+
+`ddl` in a table's header shows its definition as text, as
+[Browsing Data]({% link _guide/browsing-data.md %}#ddl) says: read-only,
+with line numbers. The header says where it comes from and from which
+server. `R` reads it again, with the keyboard in the text too, and after
+an error tries again.
 
 ### The row panel
 
