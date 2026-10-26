@@ -571,7 +571,7 @@ fn reading(typed: &str, column: &Column, clock: &Clock) -> Result<Reading, Refus
             Moment::Infinity => "infinity".to_owned(),
             Moment::MinusInfinity => "-infinity".to_owned(),
             Moment::Span(written) => written.clone(),
-            Moment::EndOfDay => "24:00:00".to_owned(),
+            Moment::EndOfDay => day_end(column.stored),
             // SQLite's seconds: the day and time they are, written as the
             // column keeps them.
             Moment::At { date, time, .. } => {
@@ -633,6 +633,10 @@ fn special(text: &str, column: &Column) -> Result<Option<Moment>, Refusal> {
                 return Ok(None);
             };
             let at = moment?.to_zoned(TimeZone::UTC).datetime();
+            // The next day's midnight is the end of a time's day.
+            if !column.kind.has_date() && at == day_end_at(column.stored) {
+                return Ok(Some(Moment::EndOfDay));
+            }
             Ok(Some(Moment::At {
                 date: column.kind.has_date().then(|| at.date()),
                 time: column.kind.has_time().then(|| at.time()),
@@ -1348,7 +1352,10 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
                     Dialect::MySql => Moment::Span("24:00:00".to_owned()),
                     Dialect::Postgres | Dialect::Sqlite => Moment::EndOfDay,
                 };
-                reading.literal = "24:00:00".to_owned();
+                reading.literal = match column.dialect {
+                    Dialect::MySql => "24:00:00".to_owned(),
+                    Dialect::Postgres | Dialect::Sqlite => day_end(column.stored),
+                };
             } else {
                 let time = at.time();
                 reading.moment = Moment::At {
@@ -1360,11 +1367,7 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
                     // Seconds of the day; a Julian day of 1 January 2000,
                     // the day SQLite's `julianday('09:30')` gives a time.
                     Stored::Seconds | Stored::Millis | Stored::Days => {
-                        let year = match column.stored {
-                            Stored::Days => 2000,
-                            _ => 1970,
-                        };
-                        let epoch = Date::new(year, 1, 1).unwrap_or_default();
+                        let epoch = time_epoch(column.stored);
                         number_of(epoch.to_datetime(time), None, column.stored)
                     }
                     Stored::Fresh | Stored::Text { .. } | Stored::Compact | Stored::Unknown => {
@@ -1425,6 +1428,45 @@ fn resolve(parts: Parts, column: &Column, clock: &Clock) -> Result<Reading, Refu
 /// `written` with ` BC` after it where its year is before 1 AD.
 fn era((written, bc): (String, bool)) -> String {
     if bc { format!("{written} BC") } else { written }
+}
+
+/// The day a time kept as one of SQLite's numbers counts from: 1 January
+/// 2000 for a Julian day, as `julianday('09:30')` gives one, and 1970 for
+/// seconds and milliseconds.
+fn time_epoch(stored: Stored) -> Date {
+    let year = match stored {
+        Stored::Days => 2000,
+        Stored::Seconds
+        | Stored::Millis
+        | Stored::Compact
+        | Stored::Fresh
+        | Stored::Text { .. }
+        | Stored::Unknown => 1970,
+    };
+    Date::new(year, 1, 1).unwrap_or_default()
+}
+
+/// The end of a time's day as one of SQLite's numbers keeps it: the
+/// midnight after [`time_epoch`].
+fn day_end_at(stored: Stored) -> DateTime {
+    let epoch = time_epoch(stored);
+    epoch
+        .tomorrow()
+        .unwrap_or(epoch)
+        .to_datetime(Time::midnight())
+}
+
+/// `24:00:00` as a column kept as `stored` writes it: the next day's
+/// midnight where it keeps numbers, the text elsewhere.
+fn day_end(stored: Stored) -> String {
+    match stored {
+        Stored::Seconds | Stored::Millis | Stored::Days => {
+            number_of(day_end_at(stored), None, stored)
+        }
+        Stored::Fresh | Stored::Text { .. } | Stored::Compact | Stored::Unknown => {
+            "24:00:00".to_owned()
+        }
+    }
 }
 
 /// The furthest offset PostgreSQL's `timetz` keeps, in seconds: 15:59:59.
@@ -1581,7 +1623,12 @@ pub fn opened(value: &Value, column: &Column) -> Option<String> {
         .to_zoned(TimeZone::UTC)
         .datetime();
     let (day, _) = written_date(at.date(), column.dialect);
-    let time = written_time(at.time(), fraction_digits(at.time()));
+    let time = match column.kind {
+        Kind::Time { .. } if at == day_end_at(column.stored) => "24:00:00".to_owned(),
+        Kind::Date | Kind::Timestamp | Kind::Zoned | Kind::Time { .. } => {
+            written_time(at.time(), fraction_digits(at.time()))
+        }
+    };
     Some(match column.kind {
         Kind::Date => day,
         Kind::Time { .. } => time,
@@ -2374,6 +2421,38 @@ mod tests {
                 .literal,
             "1792828800000"
         );
+    }
+
+    #[test]
+    fn a_sqlite_time_kept_as_a_number_ends_its_day_with_the_next_midnight() {
+        let lite = Dialect::Sqlite;
+        let column = |values: &[Value]| Column::of(lite, "TIME", None, values.iter()).unwrap();
+        let read_as = |column: &Column, typed: &str| read(typed, column, &clock()).unwrap();
+        let seconds = column(&[Value::Int(3_600)]);
+        // Rounded up past the day's end, and typed as it: the next midnight.
+        assert_eq!(read_as(&seconds, "23:59:59.7").literal, "86400");
+        assert_eq!(read_as(&seconds, "24:00").literal, "86400");
+        // Read back, and opened, as the end of the day.
+        assert_eq!(read_as(&seconds, "86400").moment, Moment::EndOfDay);
+        assert_eq!(
+            opened(&Value::Int(86_400), &seconds).as_deref(),
+            Some("24:00:00")
+        );
+        assert_eq!(
+            opened(&Value::Int(0), &seconds).as_deref(),
+            Some("00:00:00")
+        );
+        let millis = column(&[Value::Int(1_792_800_000_000)]);
+        assert_eq!(read_as(&millis, "24:00:00").literal, "86400000");
+        let days = column(&[Value::Float(2_451_544.895_833_333)]);
+        assert_eq!(read_as(&days, "24:00:00").literal, "2451545.5");
+        assert_eq!(
+            opened(&Value::Float(2_451_545.5), &days).as_deref(),
+            Some("24:00:00")
+        );
+        // A text column keeps the words.
+        let text = column(&[Value::Text("09:30:00".into())]);
+        assert_eq!(read_as(&text, "24:00").literal, "24:00:00");
     }
 
     #[test]
