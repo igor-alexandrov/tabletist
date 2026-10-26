@@ -1,9 +1,40 @@
 //! Compiles the gettext catalogs in assets/i18n into Rust modules and, for a
-//! Windows program built on Windows, embeds its icon and version details.
+//! Windows program built on Windows, embeds its icon and version details;
+//! a macOS program gets the name its menu bar shows.
 
 fn main() {
     fastframe_i18n::build::compile_catalogs("assets/i18n");
     embed_windows_resources();
+    embed_macos_name();
+}
+
+/// The bold name in the macOS menu bar is the app's own, not a menu title:
+/// `CFBundleName` from Tabletist.app's Info.plist, or for a binary run on
+/// its own (`cargo run`) the executable's name, `tabletist` in lower case.
+/// An Info.plist in the executable's `__TEXT,__info_plist` section is what
+/// macOS reads for a binary outside a bundle; inside Tabletist.app the
+/// bundle's Info.plist is read instead. It names the app and nothing else:
+/// a bundle identifier would move the binary's defaults and keychain items.
+fn embed_macos_name() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
+    let plist = out.join("Info.plist");
+    let text = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Tabletist</string>
+    <key>CFBundleDisplayName</key><string>Tabletist</string>
+</dict>
+</plist>
+"#;
+    std::fs::write(&plist, text).expect("could not write the embedded Info.plist");
+    println!(
+        "cargo:rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        plist.display()
+    );
 }
 
 /// Explorer, the shortcuts the installer creates and the Apps list all read

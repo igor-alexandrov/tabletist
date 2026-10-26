@@ -53,6 +53,21 @@ fn a_release_build_on_windows_is_a_gui_program() {
     assert_eq!(subsystem, 2);
 }
 
+/// A binary run outside Tabletist.app (`cargo run`) names itself in the
+/// menu bar from the Info.plist in its `__TEXT,__info_plist` section
+/// (`build.rs`), or macOS shows the executable's name, `tabletist`.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_macos_binary_carries_the_name_its_menu_bar_shows() {
+    let exe = std::fs::read(env!("CARGO_BIN_EXE_tabletist")).unwrap();
+    let has = |bytes: &[u8]| exe.windows(bytes.len()).any(|window| window == bytes);
+    // The section's name, in its load command.
+    assert!(has(b"__info_plist"), "no __info_plist section");
+    assert!(has(b"<key>CFBundleName</key><string>Tabletist</string>"));
+    // Nothing that would move the binary's defaults and keychain items.
+    assert!(!has(b"<key>CFBundleIdentifier</key>"));
+}
+
 /// `tabletist mcp`, the relay an agent starts, against the app's backend
 /// serving agents in a folder of the test's own: through a socket on Linux
 /// and macOS, a named pipe on Windows.
