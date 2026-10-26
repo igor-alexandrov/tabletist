@@ -14,7 +14,7 @@ use serde::Serialize;
 use super::changed::changed;
 use super::live::Live;
 use super::pick;
-use super::scenario::{self, Database, Keys, Look, Scene, Step};
+use super::scenario::{self, Database, Keys, Look, Scenario, Scene, Step};
 use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Environment;
 use crate::keymap::{self, Stroke};
@@ -132,15 +132,18 @@ struct Film {
 
 impl Film {
     /// The window as a video opens on it: connected to `database`, its
-    /// tree showing, nothing open, the row panel hidden. Set up directly,
-    /// and none of it filmed. `file` is the scenario's, for its errors.
+    /// tree showing, nothing open, the row panel hidden, the scenario's
+    /// other connections saved, and what changed meanwhile on a copy of
+    /// the file in `dir`. Set up directly, and none of it filmed. `file`
+    /// is the scenario's, for its errors.
     ///
     /// macOS is filmed in the light theme, as a Mac shows it by default,
     /// under its title bar; Omarchy in Tokyo Night, its default theme, as
     /// the site's screenshots show it, with no title bar: Hyprland draws
     /// none.
-    fn start(file: &Path, look: Look, database: &Path, name: &str, dir: PathBuf) -> Self {
+    fn start(file: &Path, scenario: &Scenario, database: &Path, name: &str, dir: PathBuf) -> Self {
         let at = format!("{}, the start", file.display());
+        let look = scenario.look;
         let mut harness = match look {
             Look::Macos => {
                 let mut harness =
@@ -162,6 +165,24 @@ impl Film {
         };
         let mut live = Live::open(database)
             .unwrap_or_else(|error| panic!("{at}: {} does not open: {error}", database.display()));
+        if let Some(sql) = &scenario.meanwhile {
+            live.meanwhile(database, &dir.join("server.sqlite"), sql)
+                .unwrap_or_else(|error| panic!("{at}: {error}"));
+        }
+        // Opened writable, each: Open read-only unticked, production's too,
+        // or nothing could be saved there.
+        for other in &scenario.connections {
+            harness.app.connections.upsert(SavedConnection {
+                id: ConnectionId::new(),
+                name: other.name.clone(),
+                environment: other.environment,
+                read_only: Some(false),
+                password: PasswordMode::None,
+                ssh_secret: PasswordMode::None,
+                spec: tabletist_db::ConnectSpec::sqlite(database),
+                agents: Default::default(),
+            });
+        }
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: name.into(),
@@ -176,7 +197,8 @@ impl Film {
         harness.app.connections.upsert(saved);
         let tab = harness.app.active_tab_id();
         harness.app.apply(Action::Connect { tab, conn });
-        live.pump(&mut harness);
+        live.pump(&mut harness)
+            .unwrap_or_else(|error| panic!("{at}: {error}"));
         assert_eq!(
             live.access(),
             tabletist_db::Access::ReadOnly,
@@ -210,9 +232,9 @@ impl Film {
     /// Answers what the app asked, draws, and writes the frame unless it
     /// is the last one again. Whether it was new.
     fn take(&mut self) -> bool {
-        self.live.pump(&mut self.harness);
+        self.pump();
         self.harness.settle();
-        self.live.pump(&mut self.harness);
+        self.pump();
         let image = self.harness.render();
         self.changed = None;
         if *image.as_raw() == self.last {
@@ -224,6 +246,13 @@ impl Film {
         self.last = image.into_raw();
         self.frames += 1;
         true
+    }
+
+    /// Answers what the app asked, or stops at the step that asked it.
+    fn pump(&mut self) {
+        if let Err(error) = self.live.pump(&mut self.harness) {
+            panic!("{}: {error}", self.at);
+        }
     }
 
     /// [`Self::take`] after a step that must change what is on screen.
@@ -271,7 +300,12 @@ impl Film {
                     event.rect = rect;
                 }
             }
-            Step::Hold(seconds) => self.record("hold").seconds = Some(*seconds),
+            Step::Hold(seconds) => {
+                // The app's own clock waits as the picture does: a
+                // question takes no answer in its first moment.
+                std::thread::sleep(std::time::Duration::from_secs_f64(*seconds));
+                self.record("hold").seconds = Some(*seconds);
+            }
         }
     }
 
@@ -535,7 +569,7 @@ fn film() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("frames")).unwrap();
     let (path, connection) = database(&file, &scenario.database);
-    let mut film = Film::start(&file, scenario.look, &path, &connection, dir.clone());
+    let mut film = Film::start(&file, &scenario, &path, &connection, dir.clone());
     for (index, scene) in scenario.scenes.iter().enumerate() {
         film.scene = Some(index);
         // A slide plays nothing: the app waits, away, as it is.

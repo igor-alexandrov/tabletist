@@ -7,6 +7,7 @@ mod changed;
 mod history;
 mod pick;
 mod scenario;
+mod server;
 
 #[cfg(feature = "shots")]
 mod live;

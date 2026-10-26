@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::env::Environment;
 use crate::keymap::{self, Command, Keymap, Kind, Layout, Spelled, Stroke};
 
 /// The look a video is filmed in, and so the keys its steps press.
@@ -49,7 +50,22 @@ pub struct Scenario {
     /// The intro card and the outro card.
     pub intro: Intro,
     pub outro: Outro,
+    /// The other saved connections to the database, none of them
+    /// connected at the start.
+    pub connections: Vec<Saved>,
+    /// SQL that someone else ran on the server once the video's rows were
+    /// loaded: a save finds what it changed.
+    pub meanwhile: Option<String>,
     pub scenes: Vec<Scene>,
+}
+
+/// Another saved connection to the scenario's database, for a scene to
+/// switch to: its name and its environment. It opens writable.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Saved {
+    pub name: String,
+    pub environment: Environment,
 }
 
 /// The intro card: the line said over it, the words that replace its
@@ -196,6 +212,18 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
         None | Some("bookshop") => Database::Bookshop,
         Some(path) => Database::File(dir.join(path)),
     };
+    for (index, saved) in file.connections.iter().enumerate() {
+        if saved.name.trim().is_empty() {
+            return Err(format!("connection {} has no name", index + 1));
+        }
+        if file.connections[..index]
+            .iter()
+            .any(|earlier| earlier.name == saved.name)
+        {
+            return Err(format!("two connections are called {:?}", saved.name));
+        }
+    }
+    let meanwhile = words(file.meanwhile, "meanwhile")?;
     let scenes = file
         .scenes
         .into_iter()
@@ -214,6 +242,8 @@ pub fn parse(text: &str, dir: &Path) -> Result<Scenario, String> {
         voice,
         intro,
         outro,
+        connections: file.connections,
+        meanwhile,
         scenes,
     })
 }
@@ -230,6 +260,9 @@ struct File {
     voice: Option<String>,
     intro: Option<RawIntro>,
     outro: Option<RawOutro>,
+    #[serde(rename = "connection", default)]
+    connections: Vec<Saved>,
+    meanwhile: Option<String>,
     #[serde(rename = "scene", default)]
     scenes: Vec<RawScene>,
 }
@@ -484,7 +517,8 @@ fn strokes(keys: &str) -> Result<Keys, String> {
 mod tests {
     use std::path::Path;
 
-    use super::{Database, Intro, Keys, Look, Outro, Scene, Step, load, parse};
+    use super::{Database, Intro, Keys, Look, Outro, Saved, Scene, Step, load, parse};
+    use crate::env::Environment;
     use crate::keymap::{Command, Mods, Stroke};
 
     fn read(text: &str) -> Result<super::Scenario, String> {
@@ -651,6 +685,63 @@ steps = [
                 .unwrap_err()
                 .contains("look \"windows\" is not macos or omarchy")
         );
+    }
+
+    #[test]
+    fn a_scenario_may_save_other_connections_and_say_what_changed_meanwhile() {
+        let scenario = read(
+            r#"
+title = "T"
+meanwhile = "UPDATE books SET price = 17 WHERE id = 1"
+
+[[connection]]
+name = "Bookshop production"
+environment = "production"
+
+[[scene]]
+steps = [{ hold = 1 }]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scenario.connections,
+            [Saved {
+                name: "Bookshop production".into(),
+                environment: Environment::Production,
+            }]
+        );
+        assert_eq!(
+            scenario.meanwhile.as_deref(),
+            Some("UPDATE books SET price = 17 WHERE id = 1")
+        );
+        let plain = read("title = \"T\"\n[[scene]]\nsteps = [{ hold = 1 }]\n").unwrap();
+        assert!(plain.connections.is_empty());
+        assert_eq!(plain.meanwhile, None);
+        let scene = "[[scene]]\nsteps = [{ hold = 1 }]\n";
+        let connection = |name: &str, environment: &str| {
+            format!("[[connection]]\nname = \"{name}\"\nenvironment = \"{environment}\"\n")
+        };
+        for (head, said) in [
+            (
+                connection(" ", "dev"),
+                "connection 1 has no name".to_owned(),
+            ),
+            (
+                connection("Shop", "dev") + &connection("Shop", "staging"),
+                "two connections are called \"Shop\"".to_owned(),
+            ),
+            (
+                connection("Shop", "moon"),
+                "unknown variant `moon`".to_owned(),
+            ),
+            (
+                "meanwhile = \" \"\n".to_owned(),
+                "meanwhile is empty".to_owned(),
+            ),
+        ] {
+            let error = read(&format!("title = \"T\"\n{head}{scene}")).unwrap_err();
+            assert!(error.contains(&said), "{error}");
+        }
     }
 
     #[test]
