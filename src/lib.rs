@@ -21,6 +21,7 @@ pub mod labels;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod managed;
+pub mod menu;
 pub mod model;
 pub mod paths;
 pub mod recents;

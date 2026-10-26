@@ -2770,6 +2770,64 @@ impl Default for Keymap {
     }
 }
 
+/// An item of the Edit menu: the text editing every field reads, whose
+/// keys the system keeps (`reserved`), so no command has them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EditItem {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditItem {
+    pub const ALL: [EditItem; 6] = [
+        Self::Undo,
+        Self::Redo,
+        Self::Cut,
+        Self::Copy,
+        Self::Paste,
+        Self::SelectAll,
+    ];
+
+    /// Its chord, one of `reserved`'s.
+    fn keys(self) -> &'static str {
+        match self {
+            Self::Undo => "cmd+z",
+            Self::Redo => "cmd+shift+z",
+            Self::Cut => "cmd+x",
+            Self::Copy => "cmd+c",
+            Self::Paste => "cmd+v",
+            Self::SelectAll => "cmd+a",
+        }
+    }
+}
+
+/// One chord as a menu shows it beside an item. It is spelled as the Mac
+/// column spells it: on Windows the keymap's Cmd is Ctrl, so a caller folds
+/// Cmd into Ctrl itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MenuKey {
+    pub mods: Mods,
+    pub key: Key,
+}
+
+/// `keys` as one press, if it is one.
+fn one_press(keys: &'static str) -> Option<MenuKey> {
+    let Ok(Spelled::Strokes(strokes)) = spell(keys) else {
+        return None;
+    };
+    let [Stroke::Key { mods, key }] = strokes.as_slice() else {
+        return None;
+    };
+    Some(MenuKey {
+        mods: *mods,
+        key: *key,
+    })
+}
+
 impl Keymap {
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
@@ -2780,6 +2838,44 @@ impl Keymap {
         self.bindings
             .iter()
             .filter(move |binding| binding.command == command)
+    }
+
+    /// The chord a menu shows for `command` in `layout`: the one its own
+    /// keys share. None where it has no key, more than one, a key that is
+    /// no single press (a sequence, a count, a line of the prompt, a typed
+    /// character), or a press with neither Cmd nor Ctrl held: AppKit would
+    /// take that from every text field, and a key it gives back carries no
+    /// text. Spellings are compared as written, so on Windows `cmd+t` and
+    /// `ctrl+t` count as two chords and show none.
+    pub fn menu_key(&self, command: Command, layout: Layout) -> Option<MenuKey> {
+        if !command.info().built {
+            return None;
+        }
+        let mut found: Option<MenuKey> = None;
+        for binding in self.of(command) {
+            for chord in binding.bound(layout).chords {
+                if chord.kind != Kind::Own {
+                    continue;
+                }
+                let key = one_press(chord.keys)?;
+                match found {
+                    Some(seen) if seen != key => return None,
+                    _ => found = Some(key),
+                }
+            }
+        }
+        found.filter(|key| key.mods.cmd || key.mods.ctrl)
+    }
+
+    /// The chord of an Edit item in `layout`, where the system keeps one.
+    /// It takes `&self` though it reads only `reserved`: the Edit keys are
+    /// the keymap's, and a later override of them would land here.
+    pub fn edit_key(&self, item: EditItem, layout: Layout) -> Option<MenuKey> {
+        let keys = item.keys();
+        reserved(layout)
+            .contains(&keys)
+            .then(|| one_press(keys))
+            .flatten()
     }
 
     /// The spellings that answer `command` in `scope`: its own keys, and
@@ -4866,5 +4962,101 @@ mod tests {
         assert_eq!(digit(Layout::Omarchy, 2), "ctrl+shift+2");
         assert_eq!(digit(Layout::Omarchy, 10), "");
         assert_eq!(keymap.digit_label(Layout::Mac, Command::Settings, 2), "");
+    }
+
+    #[test]
+    fn a_menu_shows_a_command_s_one_chord() {
+        let keymap = Keymap::default();
+        let held = |cmd, shift| Mods {
+            cmd,
+            shift,
+            ..Mods::default()
+        };
+        // One line, one chord.
+        assert_eq!(
+            keymap.menu_key(Command::History, Layout::Mac),
+            Some(MenuKey {
+                mods: held(true, false),
+                key: Key::Y
+            })
+        );
+        // Two lines with the same chord are one chord.
+        assert_eq!(
+            keymap.menu_key(Command::Format, Layout::Mac),
+            Some(MenuKey {
+                mods: held(true, true),
+                key: Key::F
+            })
+        );
+        // Not built yet: Explain has a chord on the Mac and shows none.
+        assert!(!Command::Explain.info().built);
+        assert!(
+            keymap
+                .of(Command::Explain)
+                .any(|binding| !binding.mac.chords.is_empty())
+        );
+        assert_eq!(keymap.menu_key(Command::Explain, Layout::Mac), None);
+        // No key on the Mac.
+        assert_eq!(keymap.menu_key(Command::SwitchDatabase, Layout::Mac), None);
+        // A typed character, not a chord.
+        assert_eq!(keymap.menu_key(Command::Help, Layout::Mac), None);
+    }
+
+    #[test]
+    fn a_menu_key_holds_cmd_or_ctrl_and_is_one_press() {
+        let keymap = Keymap::default();
+        for layout in [Layout::Mac, Layout::Windows] {
+            for command in crate::app::RUNNABLE {
+                if let Some(key) = keymap.menu_key(command, layout) {
+                    assert!(key.mods.cmd || key.mods.ctrl, "{command:?}: {key:?}");
+                    // It is one of the command's own chords, spelled as one
+                    // press.
+                    let own = keymap
+                        .of(command)
+                        .flat_map(|binding| binding.bound(layout).chords.iter())
+                        .filter(|chord| chord.kind == Kind::Own)
+                        .any(|chord| {
+                            spell(chord.keys).is_ok_and(|spelled| {
+                                spelled
+                                    == Spelled::Strokes(vec![Stroke::Key {
+                                        mods: key.mods,
+                                        key: key.key,
+                                    }])
+                            })
+                        });
+                    assert!(own, "{command:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_edit_items_keys_are_the_ones_the_system_keeps() {
+        let keymap = Keymap::default();
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            keymap.edit_key(EditItem::Copy, Layout::Mac),
+            Some(MenuKey {
+                mods: cmd,
+                key: Key::C
+            })
+        );
+        assert_eq!(
+            keymap.edit_key(EditItem::Redo, Layout::Windows),
+            Some(MenuKey {
+                mods: Mods { shift: true, ..cmd },
+                key: Key::Z
+            })
+        );
+        for item in EditItem::ALL {
+            for layout in [Layout::Mac, Layout::Windows] {
+                assert!(keymap.edit_key(item, layout).is_some(), "{item:?}");
+            }
+            // Omarchy keeps none: Super is Hyprland's.
+            assert_eq!(keymap.edit_key(item, Layout::Omarchy), None);
+        }
     }
 }
