@@ -78,10 +78,9 @@ impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
     /// refuses an item or the window.
     ///
     /// On Windows the bar keeps `window`'s handle, not a borrow, to take
-    /// itself off and put a rebuilt bar on: `window` must outlive the bar.
-    /// eframe's does: it drops the app, and the bar with it, first. (An
-    /// `unsafe fn` would say so to the compiler, but the app forbids
-    /// `unsafe`; eframe lends the window only while the app is created.)
+    /// itself off and put a rebuilt bar on. A rebuild after the window is
+    /// destroyed attaches nothing: muda forgets a window as it goes, and
+    /// the bar then forgets the handle.
     pub fn attach(
         window: &impl HasWindowHandle,
         menus: Vec<Menu<T>>,

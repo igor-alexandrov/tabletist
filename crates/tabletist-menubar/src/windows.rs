@@ -13,21 +13,29 @@ fn hwnd(window: RawWindowHandle) -> Option<isize> {
 
 pub(crate) fn attach(menu: &muda::Menu, window: RawWindowHandle) -> Option<()> {
     let hwnd = hwnd(window)?;
-    // SAFETY: the handle is the live window eframe created, used on its
-    // thread (the creation closure and the frames run on the event
-    // loop's), and the window outlives the bar, as `MenuBar::attach`
-    // asks: eframe drops the app, and with it the bar, before the window.
+    // SAFETY: the handle names a live window, used on its thread (the
+    // creation closure and the frames run on the event loop's): the
+    // window eframe lends `MenuBar::attach`, or at a rebuild one that
+    // `detach` just took the old bar off, which muda would have
+    // forgotten had it been destroyed.
     unsafe { menu.init_for_hwnd(hwnd) }
         .map_err(|error| log::warn!("could not attach the menu bar: {error}"))
         .ok()
 }
 
-pub(crate) fn detach(menu: &muda::Menu, window: RawWindowHandle) {
+/// Takes `menu` off `window`. False if muda does not have it there: muda
+/// forgets a window as it is destroyed, and then makes no call with it.
+pub(crate) fn detach(menu: &muda::Menu, window: RawWindowHandle) -> bool {
     let Some(hwnd) = hwnd(window) else {
-        return;
+        return false;
     };
-    // SAFETY: as `attach`'s; this menu was attached to this window.
-    if let Err(error) = unsafe { menu.remove_for_hwnd(hwnd) } {
-        log::warn!("could not take the menu bar off: {error}");
+    // SAFETY: as `attach`'s. muda looks the window up first, and calls
+    // Windows with it only if it still has it, alive.
+    match unsafe { menu.remove_for_hwnd(hwnd) } {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("could not take the menu bar off: {error}");
+            false
+        }
     }
 }

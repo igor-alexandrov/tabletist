@@ -238,10 +238,14 @@ impl<T: Copy + Eq + Hash + 'static> Bar<T> {
             return false;
         };
         // A window holds one menu; and muda, dropping the old bar, would
-        // take the new one's subclass off the window with its own.
+        // take the new one's subclass off the window with its own. If muda
+        // has forgotten the window, it was destroyed (`WM_NCDESTROY`): the
+        // handle may name another window by now, so it goes unused.
         #[cfg(windows)]
-        if let Some(window) = self.window {
-            crate::windows::detach(&self.built.menu, window);
+        if let Some(window) = self.window
+            && !crate::windows::detach(&self.built.menu, window)
+        {
+            self.window = None;
         }
         if put(&mut built, self.window).is_none() {
             // The old bar goes back where it was.
@@ -467,6 +471,23 @@ mod tests {
         assert!(!slot.item.is_enabled());
         slot.want(true);
         assert!(slot.item.is_enabled());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_rebuild_forgets_a_window_muda_has_not_got() {
+        // muda forgets a window as it is destroyed (`WM_NCDESTROY`), as it
+        // never knew this one: its handle is never used again.
+        let hwnd = std::num::NonZeroIsize::new(1).expect("not zero");
+        let window = RawWindowHandle::Win32(raw_window_handle::Win32WindowHandle::new(hwnd));
+        // Not `Bar::attach`: the route belongs to the choice test.
+        let mut bar = Bar {
+            built: build(file()).expect("the bar builds"),
+            window: Some(window),
+            chosen: mpsc::channel().1,
+        };
+        assert!(bar.rebuild(file()));
+        assert_eq!(bar.window, None);
     }
 
     #[cfg(target_os = "macos")]
