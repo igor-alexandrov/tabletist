@@ -60,12 +60,50 @@ fn a_release_build_on_windows_is_a_gui_program() {
 #[test]
 fn a_macos_binary_carries_the_name_its_menu_bar_shows() {
     let exe = std::fs::read(env!("CARGO_BIN_EXE_tabletist")).unwrap();
-    let has = |bytes: &[u8]| exe.windows(bytes.len()).any(|window| window == bytes);
-    // The section's name, in its load command.
-    assert!(has(b"__info_plist"), "no __info_plist section");
+    let plist =
+        macho_section(&exe, b"__TEXT", b"__info_plist").expect("no __TEXT,__info_plist section");
+    let has = |bytes: &[u8]| plist.windows(bytes.len()).any(|window| window == bytes);
     assert!(has(b"<key>CFBundleName</key><string>Tabletist</string>"));
     // Nothing that would move the binary's defaults and keychain items.
     assert!(!has(b"<key>CFBundleIdentifier</key>"));
+}
+
+/// The bytes of section `sect` of segment `seg` in a thin 64-bit Mach-O
+/// executable, as `cargo test` builds it for the host: its load commands'
+/// `LC_SEGMENT_64`s and their sections, read by `<mach-o/loader.h>`'s
+/// layout.
+#[cfg(target_os = "macos")]
+fn macho_section<'a>(exe: &'a [u8], seg: &[u8], sect: &[u8]) -> Option<&'a [u8]> {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_SEGMENT_64: u32 = 0x19;
+    let u32_at = |at: usize| Some(u32::from_le_bytes(exe.get(at..at + 4)?.try_into().ok()?));
+    let u64_at = |at: usize| Some(u64::from_le_bytes(exe.get(at..at + 8)?.try_into().ok()?));
+    // A 16-byte name, padded with zeros.
+    let name_is = |at: usize, name: &[u8]| {
+        exe.get(at..at + 16)
+            .is_some_and(|field| field.split(|byte| *byte == 0).next() == Some(name))
+    };
+    assert_eq!(u32_at(0)?, MH_MAGIC_64, "not a thin 64-bit Mach-O");
+    let commands = u32_at(16)?;
+    // The 64-bit header is 32 bytes; the load commands follow it.
+    let mut at = 32;
+    for _ in 0..commands {
+        let (cmd, size) = (u32_at(at)?, u32_at(at + 4)? as usize);
+        if cmd == LC_SEGMENT_64 && name_is(at + 8, seg) {
+            // segment_command_64 is 72 bytes, each section_64 80.
+            let sections = u32_at(at + 64)? as usize;
+            for index in 0..sections {
+                let section = at + 72 + index * 80;
+                if name_is(section, sect) && name_is(section + 16, seg) {
+                    let size = u64_at(section + 40)? as usize;
+                    let offset = u32_at(section + 48)? as usize;
+                    return exe.get(offset..offset + size);
+                }
+            }
+        }
+        at += size;
+    }
+    None
 }
 
 /// `tabletist mcp`, the relay an agent starts, against the app's backend
