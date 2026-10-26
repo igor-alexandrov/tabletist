@@ -96,7 +96,7 @@ async fn every_call_is_an_entry_with_what_was_asked_and_what_came_of_it() {
         Entry {
             connection_id: on_dev.clone(),
             connection: Some(DEV.into()),
-            rows: Some(9),
+            rows: Some(10),
             ..entry("describe_schema", "ok")
         },
         Entry {

@@ -1098,6 +1098,12 @@ pub enum Action {
         tab: ConnTabId,
         object_tab: TabId,
     },
+    /// Read the DDL view's definition again: its Try again, and the view
+    /// that holds none and waits for none.
+    RetryDdl {
+        tab: ConnTabId,
+        object_tab: TabId,
+    },
     /// The connection dialog's driver switch.
     SetDriver(Driver),
     /// Drop the connection dialog's saved database password: saved with
@@ -3579,9 +3585,12 @@ impl StartRecent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjectView {
+    /// The rows, which the switch calls Rows.
     #[default]
     Data,
     Structure,
+    /// The definition as text (`tabletist_db::Ddl`).
+    Ddl,
 }
 
 /// A cell of an object tab's page or of a SQL result: its row there, and
@@ -3681,6 +3690,13 @@ pub struct ObjectTab {
     pub page_size: u32,
     pub rows: Fetch<RowPage>,
     pub structure: Fetch<Structure>,
+    /// The definition the DDL view shows, read when the view is first
+    /// shown and kept with the tab, as its structure is: a refresh reads
+    /// it again. A read the view was left during is dropped.
+    pub ddl: Fetch<tabletist_db::Ddl>,
+    /// When the definition the tab holds arrived: the view says how long
+    /// ago it was read.
+    pub ddl_read: Option<std::time::Instant>,
     pub selection: Option<CellPos>,
     /// The rows selected with the cursor's, where there are several.
     /// Written with the cursor, by [`ObjectTab::set_cursor`].
@@ -3928,6 +3944,8 @@ impl ObjectTab {
             view: ObjectView::Data,
             rows: Fetch::default(),
             structure: Fetch::default(),
+            ddl: Fetch::default(),
+            ddl_read: None,
             selection: None,
             range: None,
             estimated_rows,
@@ -3957,6 +3975,7 @@ impl ObjectTab {
         [
             self.rows.pending,
             self.structure.pending,
+            self.ddl.pending,
             self.count.pending,
             self.edits.saving.as_ref().map(|saving| saving.request),
         ]

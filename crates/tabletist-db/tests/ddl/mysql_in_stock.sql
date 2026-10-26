@@ -1,0 +1,1 @@
+CREATE ALGORITHM=UNDEFINED DEFINER=? SQL SECURITY DEFINER VIEW `in_stock` AS select `b`.`id` AS `book_id`,`b`.`title` AS `title`,`p`.`name` AS `publisher` from (`books` `b` join `publishers` `p` on((`p`.`id` = `b`.`publisher_id`))) where (0 <> `b`.`in_print`);

@@ -247,6 +247,7 @@ impl Harness {
     pub fn click(&mut self, label: &str) {
         let tree = self.settle();
         let target = node(&tree, label, Role::Button)
+            .or_else(|| node(&tree, label, Role::Tab))
             .or_else(|| {
                 tree.nodes
                     .iter()
@@ -1340,6 +1341,28 @@ impl Harness {
             session,
             request,
             result: Ok(structure),
+        }));
+    }
+
+    /// Answers the newest `ReadDdl` sent with `result`.
+    pub fn answer_ddl(&mut self, result: Result<tabletist_db::Ddl, tabletist_db::Error>) {
+        let (session, request) = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::ReadDdl {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a ReadDdl was sent");
+        self.app.apply(Action::Backend(Event::Ddl {
+            session,
+            request,
+            result,
         }));
     }
 

@@ -76,7 +76,7 @@ impl App {
 
     /// The chooser of the tab `id`, where it has a place for one: its
     /// Structure view's, on the tab itself, while that view shows, and
-    /// else the one of its editor's picker.
+    /// else the one of its editor's picker. The DDL view has none.
     fn chooser_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut Option<Chooser>> {
         let object = self.object_tab_mut(tab, id)?;
         match object.view {
@@ -85,6 +85,7 @@ impl App {
                 let picker = object.edits.editor.as_mut()?.picker.as_mut()?;
                 Some(&mut picker.chooser)
             }
+            ObjectView::Ddl => None,
         }
     }
 
@@ -112,6 +113,7 @@ impl App {
                 let lines = workspace.label_lines(&picker.target, &[&picker.key]);
                 Some((picker.target.clone(), lines))
             }
+            ObjectView::Ddl => None,
         }
     }
 
@@ -187,6 +189,8 @@ impl App {
                         }
                     })
                 }
+                // Nothing there chooses a label.
+                ObjectView::Ddl => None,
             }
         });
         let Some(asked) = asked else {

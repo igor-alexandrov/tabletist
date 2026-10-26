@@ -153,3 +153,21 @@ INSERT INTO order_items (id, order_id, book_id, quantity, price) VALUES
 CREATE VIEW recent_orders AS
     SELECT id, email, placed_at, total FROM orders WHERE placed_at >= '2026-01-01';
 CREATE VIEW customer_names AS SELECT id, name FROM customers;
+
+-- What the DDL view is tested on: a table with indexes and triggers, and a
+-- view. The triggers are made in the order their names are not: the text
+-- lists them by name.
+CREATE INDEX book_covers_book_id ON book_covers (book_id);
+CREATE UNIQUE INDEX book_covers_book_id_kind ON book_covers (book_id, kind);
+CREATE TRIGGER book_covers_lower_kind AFTER INSERT ON book_covers
+BEGIN
+    UPDATE book_covers SET kind = lower(NEW.kind) WHERE id = NEW.id;
+END;
+CREATE TRIGGER book_covers_keep_kind AFTER UPDATE OF kind ON book_covers
+BEGIN
+    UPDATE book_covers SET kind = lower(NEW.kind) WHERE id = NEW.id;
+END;
+CREATE VIEW in_stock AS
+    SELECT b.id AS book_id, b.title, p.name AS publisher
+    FROM books b JOIN publishers p ON p.id = b.publisher_id
+    WHERE b.in_print;

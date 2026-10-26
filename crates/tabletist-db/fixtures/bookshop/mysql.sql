@@ -4,7 +4,7 @@
 -- Loaded into a database of its own, `bookshop` (compose/mysql-init.sql).
 -- One statement for each `;` at the end of a line.
 
-DROP VIEW IF EXISTS recent_orders, customer_names, shop_greeting;
+DROP VIEW IF EXISTS recent_orders, customer_names, shop_greeting, in_stock;
 DROP TABLE IF EXISTS order_items, orders, customers, book_covers, books, authors, publishers;
 
 CREATE TABLE publishers (
@@ -169,3 +169,13 @@ CREATE VIEW customer_names AS SELECT id, name FROM customers;
 -- as it lists nothing to a user without SHOW VIEW: here alone, as that is
 -- MySQL's.
 CREATE VIEW shop_greeting AS SELECT 'Welcome' AS greeting;
+
+-- What the DDL view is tested on: a table with indexes, and a view. Its
+-- tests give the table its triggers: with its binary log on, the server
+-- lets the tests' user make one only where compose.yaml has it trust them.
+CREATE INDEX book_covers_book_id ON book_covers (book_id);
+CREATE UNIQUE INDEX book_covers_book_id_kind ON book_covers (book_id, kind);
+CREATE VIEW in_stock AS
+    SELECT b.id AS book_id, b.title, p.name AS publisher
+    FROM books b JOIN publishers p ON p.id = b.publisher_id
+    WHERE b.in_print;

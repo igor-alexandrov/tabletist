@@ -497,6 +497,7 @@ async fn describe_schema_lists_the_tables_and_views() {
             ("books", "table"),
             ("customer_names", "view"),
             ("customers", "table"),
+            ("in_stock", "view"),
             ("order_items", "table"),
             ("orders", "table"),
             ("publishers", "table"),

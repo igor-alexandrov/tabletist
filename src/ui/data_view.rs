@@ -153,7 +153,26 @@ pub fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32
     width
 }
 
-/// The object's name and counts, the Data/Structure switch, and Add row.
+/// Makes `ui`'s node the switch of views, named "View": the views are its
+/// tabs.
+fn tab_list(ui: &egui::Ui, locale: crate::i18n::Locale) {
+    let name = gettext(locale, "View");
+    ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+        node.set_role(egui::accesskit::Role::TabList);
+        node.set_label(name.as_ref());
+    });
+}
+
+/// Makes `response`'s node a tab of the switch, chosen or not.
+fn view_tab(ui: &egui::Ui, response: &egui::Response, selected: bool) {
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Tab);
+        node.set_selected(selected);
+    });
+}
+
+/// The object's name and counts, the Rows · Structure · DDL switch, and
+/// Add row (none in the DDL view).
 pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
@@ -165,7 +184,14 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let view = object.view;
     // The rows to add: the terminal's header counts them at its right.
     let added = object.edits.added.len();
-    let parts = subtitle(object, &look, locale);
+    // The terminal's DDL view says what its text is, in the place of the
+    // counts.
+    // How long the DDL view's read has gone on, while it goes on.
+    let reading = object.ddl.running_for();
+    let parts = match (look.terminal, view) {
+        (true, ObjectView::Ddl) => super::ddl::subtitle(object, locale),
+        _ => subtitle(object, &look, locale),
+    };
     let summary = parts.join(" · ");
     // Why Add row cannot be pressed, where it cannot: the table takes no
     // row, or its page is not there yet.
@@ -205,14 +231,14 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, divider);
             let left = rect.left() + side(&look);
             let right = rect.right() - side(&look);
-            // The views have no key: `d` and `s` are the rows' letters.
             let views = [
-                (ObjectView::Data, gettext(locale, "Data"), "data"),
+                (ObjectView::Data, gettext(locale, "Rows"), "rows"),
                 (
                     ObjectView::Structure,
                     gettext(locale, "Structure"),
                     "structure",
                 ),
+                (ObjectView::Ddl, gettext(locale, "DDL"), "ddl"),
             ];
             let width = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
             if look.terminal {
@@ -243,12 +269,22 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 {
                     paint_named(ui, x, center, sub(&shown, palette.dim), &summary);
                 }
-                // `data  structure`, the active one underlined.
-                let mut x = right;
-                for ((target, label, salt), width) in views.iter().zip(widths).rev() {
+                // `rows  structure  ddl`, the active one underlined, in
+                // their order from where they start.
+                let all = widths.iter().sum::<f32>() + 14.0 * (widths.len() - 1) as f32;
+                let start = right - all;
+                let list = Rect::from_min_max(
+                    pos2(start - 4.0, rect.top()),
+                    pos2(right + 4.0, rect.bottom()),
+                );
+                let list = ui.new_child(egui::UiBuilder::new().id_salt("views").max_rect(list));
+                tab_list(&list, locale);
+                let ui = &list;
+                let mut x = start;
+                for ((target, label, salt), width) in views.iter().zip(widths) {
                     let label = label.to_lowercase();
                     let hit = Rect::from_min_size(
-                        pos2(x - width - 4.0, rect.top()),
+                        pos2(x - 4.0, rect.top()),
                         vec2(width + 8.0, rect.height()),
                     );
                     let response = ui.interact(hit, ui.id().with(("view", *salt)), Sense::click());
@@ -264,22 +300,18 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     response.widget_info(|| {
                         WidgetInfo::selected(WidgetType::Button, true, selected, &name)
                     });
+                    view_tab(ui, &response, selected);
                     let color = if selected {
                         palette.accent
                     } else {
                         palette.dim
                     };
                     // The word takes the state's colour.
-                    widgets::paint_text(
-                        ui,
-                        x - width,
-                        center,
-                        Text::new(&look).add(role, &label, color),
-                    );
+                    widgets::paint_text(ui, x, center, Text::new(&look).add(role, &label, color));
                     if selected {
                         let y = center + line(ui, role, &look) / 2.0 + 2.0;
                         ui.painter().rect_filled(
-                            Rect::from_min_max(pos2(x - width, y), pos2(x, y + 2.0)),
+                            Rect::from_min_max(pos2(x, y), pos2(x + width, y + 2.0)),
                             CornerRadius::ZERO,
                             palette.accent,
                         );
@@ -291,13 +323,12 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                             view: *target,
                         });
                     }
-                    x -= width + 14.0;
+                    x += width + 14.0;
                 }
-                // In the green of a new row, 14 before the first view:
-                // the loop left `x` there.
+                // In the green of a new row, 14 before the first view.
                 if let Some(text) = &added {
                     let text = Text::one(&look, role, text, palette.success);
-                    widgets::paint_text_right(ui, x, center, text);
+                    widgets::paint_text_right(ui, start - 14.0, center, text);
                 }
                 return;
             }
@@ -329,13 +360,30 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 };
                 if short { button.gap(0.0) } else { button }
             };
+            // In the DDL view, what it says while it reads stands where
+            // Add row would.
+            let wait = match view {
+                ObjectView::Ddl => {
+                    let skin = (&look, &palette, locale);
+                    let width = super::ddl::header_wait_width(ui, reading, skin);
+                    if width > 0.0 { width + 12.0 } else { 0.0 }
+                }
+                ObjectView::Data | ObjectView::Structure => 0.0,
+            };
             let stack = |button: Option<bool>| {
                 let button = button.map_or(0.0, |short| 12.0 + add_row(short).width(ui, &look));
-                right - left - 16.0 - 12.0 - switch - button
+                right - left - 16.0 - 12.0 - switch - button - wait
             };
             let title_width = width(title_role, &name);
-            let button = [Some(false), Some(true), None]
-                .into_iter()
+            // The DDL view has no Add row.
+            let rows = if view == ObjectView::Ddl {
+                &[None][..]
+            } else {
+                &[Some(false), Some(true), None][..]
+            };
+            let button = rows
+                .iter()
+                .copied()
                 .find(|button| stack(*button) >= title_width)
                 .flatten();
             let room = stack(button).max(0.0);
@@ -350,6 +398,10 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             ui.painter()
                 .rect_filled(track, CornerRadius::same(look.radius), palette.surface);
             x += 3.0;
+            let mut list = ui.new_child(egui::UiBuilder::new().id_salt("views").max_rect(track));
+            tab_list(&list, locale);
+            let header = &mut *ui;
+            let ui = &mut list;
             for (index, ((target, label, _), width)) in views.iter().zip(widths).enumerate() {
                 let cell = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, 28.0));
                 x += width;
@@ -366,6 +418,7 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 response.widget_info(|| {
                     WidgetInfo::selected(WidgetType::Button, true, selected, label.as_ref())
                 });
+                view_tab(ui, &response, selected);
                 let radius = look.radius.saturating_sub(2);
                 focus::hint(ui, &response, cell, focus::Ring::Edge { radius });
                 if selected {
@@ -406,7 +459,11 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     });
                 }
             }
-            if let Some(short) = button {
+            let ui = header;
+            if view == ObjectView::Ddl {
+                let skin = (&look, &palette, locale);
+                super::ddl::header_wait(ui, reading, right, center, skin);
+            } else if let Some(short) = button {
                 let button = add_row(short);
                 let width = button.width(ui, &look);
                 let place =
@@ -2860,8 +2917,9 @@ mod tests {
             } else {
                 "13 rows · 6 columns · public"
             };
-            let mut parts = vec![("Data", bounds(&tree, "Data", Role::Button))];
-            parts.push(("Structure", bounds(&tree, "Structure", Role::Button)));
+            let mut parts = vec![("Rows", bounds(&tree, "Rows", Role::Tab))];
+            parts.push(("Structure", bounds(&tree, "Structure", Role::Tab)));
+            parts.push(("DDL", bounds(&tree, "DDL", Role::Tab)));
             assert!(
                 parts.iter().all(|(_, rect)| rect.is_some()),
                 "the switch is missing in {}",

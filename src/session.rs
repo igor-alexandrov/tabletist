@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tabletist_db::{FilterOp, ObjectKind, ObjectRef, Sort, SortDir};
 
 use crate::connections::ConnectionId;
-use crate::model::{FilterBar, FilterRow, ObjectTab, TabId, Workspace};
+use crate::model::{FilterBar, FilterRow, ObjectTab, ObjectView, TabId, Workspace};
 
 /// The version this one writes.
 const VERSION: u32 = 1;
@@ -92,6 +92,10 @@ pub struct KeptTab {
     /// A preview tab is not pinned: the next single click replaces it.
     #[serde(default = "on", skip_serializing_if = "is_on")]
     pub pinned: bool,
+    /// The view it shows: `structure` or `ddl`. None for the rows, and
+    /// for a word this version does not know.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub view: String,
     /// What a newer version wrote of the tab that this one does not know.
     #[serde(flatten)]
     pub rest: BTreeMap<String, serde_json::Value>,
@@ -314,6 +318,7 @@ impl KeptTab {
                 ..KeptFilter::default()
             },
             pinned: object.pinned,
+            view: view_name(object.view).to_owned(),
             rest: BTreeMap::new(),
         }
     }
@@ -329,6 +334,7 @@ impl KeptTab {
         tab.query.sort = self.sorts();
         tab.filter = self.bar();
         (tab.query.filters, tab.query.raw_where) = tab.filter.to_query();
+        tab.view = view_of(&self.view);
         tab.reopened = true;
         Some(tab)
     }
@@ -375,6 +381,22 @@ impl KeptTab {
             raw_text: filter.raw_text.clone(),
             ..FilterBar::default()
         }
+    }
+}
+
+fn view_name(view: ObjectView) -> &'static str {
+    match view {
+        ObjectView::Data => "",
+        ObjectView::Structure => "structure",
+        ObjectView::Ddl => "ddl",
+    }
+}
+
+fn view_of(name: &str) -> ObjectView {
+    match name {
+        "structure" => ObjectView::Structure,
+        "ddl" => ObjectView::Ddl,
+        _ => ObjectView::Data,
     }
 }
 
@@ -449,6 +471,7 @@ mod tests {
                 ..KeptFilter::default()
             },
             pinned: true,
+            view: "ddl".into(),
             rest: BTreeMap::new(),
         }
     }
@@ -714,6 +737,25 @@ mod tests {
         assert!(tab.rows.needs_load());
         // Kept again, it is what it was.
         assert_eq!(KeptTab::of(&tab), books());
+    }
+
+    /// The view is kept by its word, and the rows by none; a word this
+    /// version does not know reads as the rows.
+    #[test]
+    fn a_tab_reopens_in_the_view_it_was_kept_in() {
+        let tab = books().reopen(TabId(7), 1_000).unwrap();
+        assert_eq!(tab.view, ObjectView::Ddl);
+        let mut kept = books();
+        kept.view = "structure".into();
+        let tab = kept.reopen(TabId(7), 1_000).unwrap();
+        assert_eq!(tab.view, ObjectView::Structure);
+        assert_eq!(KeptTab::of(&tab).view, "structure");
+        kept.view = "outline".into();
+        let mut tab = kept.reopen(TabId(7), 1_000).unwrap();
+        assert_eq!(tab.view, ObjectView::Data);
+        tab.view = ObjectView::Data;
+        let written = serde_json::to_value(KeptTab::of(&tab)).unwrap();
+        assert!(written.get("view").is_none(), "{written}");
     }
 
     #[test]
