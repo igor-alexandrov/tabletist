@@ -8,8 +8,8 @@ Press `?` in the app for a shorter version of this list, with the keys of
 the look you are using. It leaves out the keys of the dialogs and of the
 lists that open in an editor, which are here.
 
-The menu bar on macOS shows the keys of this page, and your own from
-**Settings › Keyboard**.
+The menu bar on macOS and Windows shows the keys of this page, and your
+own from **Settings › Keyboard**.
 
 In this page, **Mod** is Cmd on macOS and Ctrl on Windows and Linux. Keys
 written with Ctrl are Ctrl on every system.

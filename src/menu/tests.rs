@@ -1243,3 +1243,48 @@ fn a_paste_chosen_while_the_window_takes_no_keys_is_dropped() {
         [settings]
     );
 }
+
+/// Every key the Windows look binds, one press at a time.
+fn windows_strokes() -> Vec<(Command, Mods, Key)> {
+    let keymap = crate::keymap::Keymap::default();
+    let mut strokes = Vec::new();
+    for binding in keymap.bindings() {
+        for chord in binding.bound(crate::keymap::Layout::Windows).chords {
+            if let Ok(crate::keymap::Spelled::Strokes(pressed)) = crate::keymap::spell(chord.keys) {
+                for stroke in pressed {
+                    if let crate::keymap::Stroke::Key { mods, key } = stroke {
+                        strokes.push((binding.command, mods, key));
+                    }
+                }
+            }
+        }
+    }
+    strokes
+}
+
+#[test]
+fn no_windows_key_is_f10() {
+    // With a menu, Windows opens it on F10 (and on a lone Alt, which the
+    // keymap cannot spell).
+    for (command, _, key) in windows_strokes() {
+        assert_ne!(key, Key::F10, "{command:?}");
+    }
+}
+
+#[test]
+fn no_windows_key_is_a_menu_s_access_key() {
+    // Alt and a menu's first letter open that menu (`describe` gives each
+    // title its `&`), so a command there would run with the menu opening.
+    let access: Vec<Key> = bar(Platform::Windows)
+        .iter()
+        .filter_map(|menu| Key::from_name(&menu.title.get(..1)?.to_uppercase()))
+        .collect();
+    assert!(access.contains(&Key::F), "File's access key is F");
+    for (command, mods, key) in windows_strokes() {
+        let alt_alone = mods.alt && !mods.cmd && !mods.ctrl;
+        assert!(
+            !(alt_alone && access.contains(&key)),
+            "{command:?}: {key:?} with Alt opens a menu"
+        );
+    }
+}
