@@ -1,0 +1,98 @@
+# Editing in the grid, and what keeps it safe, as 0.2.0's release notes
+# say it: a value checked against its column's type, changes pending until
+# a save, Review SQL, one transaction, no overwrites, and production asking
+# first. A voice says each line, and the captions are for a render without
+# one.
+title = "Edit data safely"
+tempo = 128
+
+# Someone else lowers The Salt Road's price once the video has loaded it.
+# The save in the fifth scene is answered by the real save, run on a copy
+# of the file with this change in it: it finds the row changed and writes
+# nothing. The file is never written.
+meanwhile = "UPDATE books SET price = 17.00 WHERE id = 1"
+
+# The same Bookshop, saved as a production connection for the last scene.
+[[connection]]
+name = "Bookshop production"
+environment = "production"
+
+[intro]
+say = "Here's how to change your data in Tabletist, without the worry."
+
+# A word where a price goes is refused: Enter keeps the
+# editor open, and it says what the column expects.
+[[scene]]
+caption = "Edit right in the grid."
+say = "Select a cell and just start typing. What you type is checked against the column's type."
+steps = [
+  { open = "books" },
+  { click = "18.5" },
+  { type = "eighteen" },
+  { press = "enter" },
+  { hold = 0.6 },
+  { press = "backspace", times = 8 },
+  { type = "16.50" },
+  { press = "enter" },
+]
+
+# Enter opens the editor too. The bar under the grid comes up with Save,
+# Review SQL and Discard all.
+[[scene]]
+caption = "Nothing is written until you save."
+say = "Your changes wait right under the grid, until you save them, or throw them away."
+steps = [
+  { click = "Notes on Bread" },
+  { command = "edit_cell" },
+  { type = " and Butter" },
+  { press = "enter" },
+  { hold = 0.6 },
+]
+
+# The statements, each with the value it expects to find, under "Runs in
+# one transaction".
+[[scene]]
+caption = "See the exact SQL."
+say = "Review SQL shows you every statement a save will run, before anything is sent."
+steps = [
+  { command = "review_sql" },
+  { hold = 1.0 },
+]
+
+[[scene]]
+slide = "All or nothing."
+say = "And a save is one transaction. Every change goes in, or none of them do."
+
+# The question about the row: loaded, now on the server, yours. Using the
+# server's values takes 17 into the grid and keeps the other change.
+[[scene]]
+caption = "Never overwrite someone else's change."
+say = "Did someone change that price while you were working? Nothing gets overwritten. You see what you loaded, what the server has now, and your value, and you choose."
+steps = [
+  { click = "Save" },
+  # Up while the line says what it shows, answered as it ends.
+  { hold = 7.4 },
+  { click = "Use server values" },
+  { hold = 0.6 },
+]
+
+# The production connection opens in a tab of its own, in red. Its save
+# shows the statement and waits: nothing is confirmed here.
+[[scene]]
+caption = "Production asks first."
+say = "Saving to production? Tabletist shows you every statement first, and waits for your yes."
+steps = [
+  { command = "connections" },
+  { click = "Bookshop production" },
+  { press = "enter" },
+  { open = "books" },
+  { click = "The Quiet Ledger" },
+  { command = "edit_cell" },
+  { type = " (2nd ed.)" },
+  { press = "enter" },
+  { command = "save_changes" },
+  { hold = 2.5 },
+]
+
+[outro]
+say = "Tabletist is free. Download it today."
