@@ -54,7 +54,8 @@ impl Slot {
         }
         // AppKit takes a disabled item's key equivalent and performs
         // nothing; enabled, the key reaches the app. `MenuItems` greys the
-        // item when its menu opens.
+        // item when its menu opens. Windows takes no key for the menu, so
+        // it greys the item now.
         #[cfg(target_os = "macos")]
         if !self.open.get() {
             return;
@@ -174,11 +175,16 @@ fn build<T: Copy + Eq + Hash>(menus: Vec<Menu<T>>) -> Option<Built<T>> {
 
 /// Puts `built` on the platform: NSApp's main menu on macOS (which
 /// replaces the one before), with its Window and Help menus and a
-/// delegate on each menu.
+/// delegate on each menu; on Windows, `window`'s menu, if there is one.
 fn put<T>(built: &mut Built<T>, window: Option<RawWindowHandle>) -> Option<()> {
-    // Only AppKit gives a menu a role; Windows reads none (Task 9).
-    #[cfg(not(target_os = "macos"))]
-    let _ = &built.roles;
+    #[cfg(windows)]
+    {
+        // Only AppKit gives a menu a role.
+        let _ = &built.roles;
+        if let Some(window) = window {
+            crate::windows::attach(&built.menu, window)?;
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         let _ = window;
@@ -228,7 +234,15 @@ impl<T: Copy + Eq + Hash + 'static> Bar<T> {
         let Some(mut built) = build(menus) else {
             return false;
         };
+        // A window holds one menu; and muda, dropping the old bar, would
+        // take the new one's subclass off the window with its own.
+        #[cfg(windows)]
+        if let Some(window) = self.window {
+            crate::windows::detach(&self.built.menu, window);
+        }
         if put(&mut built, self.window).is_none() {
+            // The old bar goes back where it was.
+            let _ = put(&mut self.built, self.window);
             return false;
         }
         // A choice of an old item still waiting maps to nothing: dropped.
@@ -415,6 +429,41 @@ mod tests {
         assert!(!shifted_mark(shifted(egui::Key::Tab)));
         assert!(!shifted_mark(shifted(egui::Key::Space)));
         assert!(!shifted_mark(shifted(egui::Key::ArrowUp)));
+    }
+
+    #[cfg(windows)]
+    fn file() -> Vec<Menu<u8>> {
+        vec![Menu {
+            title: "&File".to_owned(),
+            role: Role::Plain,
+            entries: vec![Entry::Item {
+                id: 7_u8,
+                title: "Exit".to_owned(),
+                key: None,
+            }],
+        }]
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_choice_reaches_the_bar_attached_last() {
+        // No window: built and routed, not attached.
+        let mut bar = Bar::attach(None, file(), || {}).expect("the bar builds");
+        let id = bar.built.items[&7].item.id().clone();
+        route(MenuEvent { id });
+        assert_eq!(bar.chosen(), [(7, Via::Click)]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_item_is_greyed_at_once_on_windows() {
+        // Built, not attached: the route belongs to the test above.
+        let built = build(file()).expect("the bar builds");
+        let slot = &built.items[&7];
+        slot.want(false);
+        assert!(!slot.item.is_enabled());
+        slot.want(true);
+        assert!(slot.item.is_enabled());
     }
 
     #[cfg(target_os = "macos")]

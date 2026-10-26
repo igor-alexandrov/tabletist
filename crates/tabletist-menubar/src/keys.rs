@@ -64,10 +64,13 @@ pub fn via_of(down: Option<&KeyDown>, key: Option<Shortcut>) -> Via {
 /// `charactersIgnoringModifiers`: a letter in lower case, a digit or a
 /// mark as a US keyboard types it, and AppKit's own for the named keys
 /// (`NSUpArrowFunctionKey` and its kin are U+F700 on).
-// Only muda's accelerators read it, and muda is built on macOS alone.
+// Only muda's accelerators read it, and muda is built on macOS and Windows.
 #[cfg_attr(
-    not(any(test, target_os = "macos")),
-    expect(dead_code, reason = "muda's accelerators read it, on macOS only")
+    not(any(test, target_os = "macos", windows)),
+    expect(
+        dead_code,
+        reason = "muda's accelerators read it, on macOS and Windows only"
+    )
 )]
 pub(crate) fn character(key: egui::Key) -> Option<String> {
     use egui::Key as K;

@@ -9,9 +9,11 @@ publish = false
 # The workspace forbids unsafe code. AppKit takes a disabled item's key
 # equivalent and performs nothing, so on macOS an item is greyed only while
 # its menu is open, which takes a delegate for NSMenu: an Objective-C class
-# the crate defines, with methods the compiler cannot check. So this crate
-# carries the workspace's lints with `unsafe_code` lowered to `deny`,
-# allowed only in `src/macos/opening.rs`, each use with a SAFETY note.
+# the crate defines, with methods the compiler cannot check. On Windows
+# muda attaches the bar by subclassing the window, a call it marks unsafe.
+# So this crate carries the workspace's lints with `unsafe_code` lowered to
+# `deny`, allowed only in `src/macos/opening.rs` and `src/windows.rs`, each
+# use with a SAFETY note.
 [lints.rust]
 unsafe_code = "deny"
 
@@ -28,13 +30,16 @@ raw-window-handle = "0.6"
 # Warns when muda refuses an item's key or the bar cannot attach.
 log = "0.4"
 
-# The menu bar itself, on macOS (and Windows, from Task 9). Its GTK crates
-# are optional and Linux-only: with default features off, Linux builds
-# neither muda nor GTK. It adds keyboard-types, crossbeam-channel and
-# dpi from crates.io (winit's fork carries its own); its objc2 crates are
-# the ones winit builds.
-[target.'cfg(target_os = "macos")'.dependencies]
+# The menu bar itself, on macOS and Windows. Its GTK crates are optional
+# and Linux-only: with default features off, Linux builds neither muda nor
+# GTK. It adds keyboard-types, crossbeam-channel and dpi from crates.io
+# (winit's fork carries its own); its objc2 crates are the ones winit
+# builds, and on Windows its windows-sys is the one eframe and tokio build,
+# with the menu, GDI and shell features added.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
 muda = { version = "0.21", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
 # The event AppKit was handling when an item was chosen (`macos.rs`), and
 # the delegate that greys a menu's items while it is open
 # (`macos/opening.rs`): the versions winit and tabletist-appkit build.

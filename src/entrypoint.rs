@@ -146,10 +146,7 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
             // The menu bar is up by now: winit builds its own before the
             // window, and this one takes its place.
             let menu = crate::menu::Bar::attach(cc, &app, &cc.egui_ctx);
-            // macOS only for now: tabletist-menubar does not attach on
-            // Windows yet, and a warning at every launch there would say
-            // nothing. Windows joins once it attaches.
-            if menu.is_none() && cfg!(target_os = "macos") {
+            if menu.is_none() && crate::menu::Platform::current().is_some() {
                 log::warn!("the menu bar could not be attached");
             }
             Ok(Box::new(Window {

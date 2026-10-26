@@ -9,8 +9,10 @@ pub use keys::{KeyDown, Shortcut, Via, via_of};
 
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod native;
+#[cfg(windows)]
+mod windows;
 
 use std::hash::Hash;
 
@@ -61,29 +63,34 @@ pub struct Menu<T> {
 /// The menu bar, attached. Dropped, its items are gone with it: on macOS
 /// NSApp is left with no main menu, not even winit's.
 pub struct MenuBar<T> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     bar: native::Bar<T>,
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     never: std::convert::Infallible,
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     _ids: std::marker::PhantomData<T>,
 }
 
 impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
     /// Builds the bar and attaches it: to NSApp on macOS, where `window` is
-    /// not read. `wake` runs, on the main thread, after each choice.
-    /// `None` off macOS, or if muda refuses an item.
+    /// not read, and to `window` on Windows. `wake` runs, on the main
+    /// thread, after each choice. `None` off those platforms, or if muda
+    /// refuses an item or the window.
     pub fn attach(
         window: &impl HasWindowHandle,
         menus: Vec<Menu<T>>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Option<Self> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             let window = window.window_handle().ok().map(|handle| handle.as_raw());
+            // An app's bar is always on a window; only the crate's own
+            // tests build one with none.
+            #[cfg(windows)]
+            let window = Some(window?);
             native::Bar::attach(window, menus, wake).map(|bar| Self { bar })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = (window, menus, wake);
             None
@@ -96,11 +103,11 @@ impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
     /// nothing there), so a key that goes away needs a new item. False if
     /// muda refused it; the old bar stays.
     pub fn rebuild(&mut self, menus: Vec<Menu<T>>) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.bar.rebuild(menus)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = menus;
             match self.never {}
@@ -110,10 +117,11 @@ impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
     /// Greys an item or enables it. On macOS it is greyed only while its
     /// menu is open: AppKit takes a disabled item's key equivalent and
     /// performs nothing, so outside an open menu its key reaches the app.
+    /// On Windows it is greyed at once: the menu takes no keys there.
     pub fn set_enabled(&mut self, id: T, enabled: bool) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.bar.set_enabled(id, enabled);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = (id, enabled);
             match self.never {}
@@ -121,9 +129,9 @@ impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
     }
 
     pub fn set_title(&mut self, id: T, title: &str) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.bar.set_title(id, title);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = (id, title);
             match self.never {}
@@ -132,11 +140,11 @@ impl<T: Copy + Eq + Hash + 'static> MenuBar<T> {
 
     /// The items chosen since the last call, oldest first, each with how.
     pub fn chosen(&mut self) -> Vec<(T, Via)> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.bar.chosen()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         match self.never {}
     }
 }
