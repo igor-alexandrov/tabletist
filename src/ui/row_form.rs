@@ -264,6 +264,14 @@ impl<'a> Form<'a> {
                 self.ending.push(asked.action(tab, id));
             }
         }
+        // A date or time field's line, under the field while it is in
+        // sight.
+        if !editor.large
+            && let Some(anchor) = outcome.rect
+            && let Some(anchor) = crate::ui::key_picker::hung_from(anchor, ui.clip_rect())
+        {
+            crate::ui::date_line::under(ui, anchor, editor, target, &mut outcome, skin);
+        }
         // The text is noted as typed before anything ends the edit, as for
         // a cell's field.
         if outcome.changed {

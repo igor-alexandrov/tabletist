@@ -51,9 +51,51 @@ impl Zones {
     }
 }
 
+/// The zone a database server names `name` (MySQL's session zone):
+/// `UTC`, an offset such as `+00:00` or `-05:30`, or a zone of the
+/// database by its name. `None` for anything else, an abbreviation such
+/// as `CET` or `EST` above all: it names no rules of the clocks, and the
+/// zone of the database by that name is not the server's. Disk work, for
+/// the backend.
+pub fn session(name: &str) -> Option<TimeZone> {
+    let name = name.trim();
+    if name.eq_ignore_ascii_case("utc") || name.eq_ignore_ascii_case("gmt") {
+        return Some(TimeZone::UTC);
+    }
+    if let Some(sign) = name.strip_prefix(['+', '-']).map(|_| &name[..1]) {
+        let (hours, minutes) = name[1..].split_once(':')?;
+        let (hours, minutes) = (hours.parse::<i32>().ok()?, minutes.parse::<i32>().ok()?);
+        let seconds = (hours * 60 + minutes) * 60 * if sign == "-" { -1 } else { 1 };
+        return Some(TimeZone::fixed(
+            jiff::tz::Offset::from_seconds(seconds).ok()?,
+        ));
+    }
+    if !name.contains('/') {
+        return None;
+    }
+    jiff::tz::db().get(name).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_servers_zone_is_read_where_it_names_rules_or_an_offset() {
+        assert_eq!(session("UTC"), Some(TimeZone::UTC));
+        let berlin = session("Europe/Berlin").expect("a zone");
+        assert_eq!(berlin.iana_name(), Some("Europe/Berlin"));
+        let offset = |seconds| {
+            Some(TimeZone::fixed(
+                jiff::tz::Offset::from_seconds(seconds).unwrap(),
+            ))
+        };
+        assert_eq!(session("+00:00"), offset(0));
+        assert_eq!(session("-05:30"), offset(-19_800));
+        assert_eq!(session("CET"), None);
+        assert_eq!(session("EST"), None);
+        assert_eq!(session("Mars/Olympus"), None);
+    }
 
     #[test]
     fn the_database_is_read_whole_and_found_in_any_case() {

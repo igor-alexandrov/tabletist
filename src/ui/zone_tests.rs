@@ -291,12 +291,13 @@ fn a_moment_typed_without_an_offset_is_sent_with_the_zones() {
         pending(&harness, tab, id).as_deref(),
         Some("2026-01-12 06:00:00-05")
     );
-    // One typed with an offset is sent as typed.
+    // One typed with another offset is the same moment, sent as the zone
+    // shows it.
     open_editor(&mut harness, tab, id);
     commit(&mut harness, tab, id, "2026-01-12 06:00:00+01");
     assert_eq!(
         pending(&harness, tab, id).as_deref(),
-        Some("2026-01-12 06:00:00+01")
+        Some("2026-01-12 00:00:00-05")
     );
 }
 

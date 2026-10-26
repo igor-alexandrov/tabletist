@@ -1364,6 +1364,7 @@ mod tests {
                     added: &edits.added,
                     deleted: &edits.deleted,
                     zone: Some(&crate::testing::UTC),
+                    session_zone: None,
                 },
                 &own,
                 edits,
@@ -1461,6 +1462,7 @@ mod tests {
             added: &edits.added,
             deleted: &edits.deleted,
             zone: Some(&crate::testing::UTC),
+            session_zone: None,
         };
         assert!(unmatched(&table, &own, &edits).is_empty());
         // Another table's key of the same number is no row of this one.

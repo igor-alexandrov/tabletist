@@ -19,6 +19,8 @@ pub(crate) trait Adapter {
 
     async fn server_version(&self) -> Result<String>;
 
+    async fn session_zone(&self) -> Result<Option<String>>;
+
     async fn list_databases(&self) -> Result<Vec<String>>;
 
     async fn list_schemas(&self) -> Result<Vec<String>>;

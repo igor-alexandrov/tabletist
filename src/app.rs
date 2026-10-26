@@ -100,6 +100,12 @@ pub struct App {
     /// The computer's time zone as the app found it at its start: what the
     /// System zone of the settings is.
     pub system_zone: jiff::tz::TimeZone,
+    /// The order the person writes a day's numbers in (`15/01/2026`), by
+    /// the region of the system's locale, as the app found it at its start.
+    pub date_order: crate::dates::Order,
+    /// A time the clock is stopped at, for a test: `None` reads the
+    /// system's clock. What `today` and `now` typed into a date are.
+    pub stopped_clock: Option<jiff::Timestamp>,
     /// The time zone database, once the backend has read it
     /// (`Command::LoadZones`): the zone menu's names, and each zone.
     pub zones: Option<std::sync::Arc<crate::zones::Zones>>,
@@ -322,6 +328,8 @@ impl App {
             settings,
             settings_file,
             system_zone: system_zone(),
+            date_order: date_order(),
+            stopped_clock: None,
             named_zone,
             zones: None,
             locale: Locale::default(),
@@ -699,6 +707,17 @@ impl App {
         self.settings
             .tz
             .resolve(&self.system_zone, self.zones.as_deref())
+    }
+
+    /// What a date typed into an editor is read at: the time it is, the
+    /// zone of the settings (the system's until a named one is read), and
+    /// the order the person writes a day's numbers in.
+    pub fn date_clock(&self) -> crate::dates::Clock {
+        crate::dates::Clock {
+            now: self.stopped_clock.unwrap_or_else(jiff::Timestamp::now),
+            zone: self.zone().unwrap_or_else(|| self.system_zone.clone()),
+            order: self.date_order,
+        }
     }
 
     /// Gives every workspace the zone of the settings, and has the row
@@ -1606,10 +1625,11 @@ impl App {
                 }
             }
             Action::EditorTyped { tab, id } => {
-                let problem = self.editor_problem(tab, id);
+                let (problem, moment) = self.editor_problem(tab, id);
                 let delay = self.lookup_delay;
                 if let Some(editor) = self.editor_mut(tab, id) {
                     editor.problem = problem;
+                    editor.moment = moment;
                     editor.touched = true;
                     // The row panel's field wraps, and Enter commits it: a
                     // line break can only be pasted into it. Its text is
@@ -3760,6 +3780,7 @@ impl App {
                             .is_some_and(|workspace| std::mem::take(&mut workspace.woken));
                         if woken {
                             self.ask_server_version(tab);
+                            self.ask_session_zone(tab);
                         } else {
                             self.after_connect(tab);
                         }
@@ -4438,6 +4459,17 @@ impl App {
                     && let Some(workspace) = self.workspace_mut(tab)
                 {
                     workspace.server_version.finish(request, result);
+                }
+            }
+            Event::SessionZone {
+                session,
+                request,
+                result,
+            } => {
+                if let Some(tab) = self.tab_for_session(session)
+                    && let Some(workspace) = self.workspace_mut(tab)
+                {
+                    workspace.session_zone.finish(request, result);
                 }
             }
             Event::Written {
@@ -5541,6 +5573,27 @@ impl App {
         }
     }
 
+    /// The zone a MySQL session moves its `TIMESTAMP` values to and from:
+    /// asked for once a session is up, where it is not known. The other
+    /// engines keep no such moment.
+    fn ask_session_zone(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace(tab) else {
+            return;
+        };
+        let asks = match workspace.driver {
+            Driver::MySql => workspace.session_zone.needs_load(),
+            Driver::Postgres | Driver::Sqlite => false,
+        };
+        if asks {
+            let session = workspace.session;
+            let request = RequestId(self.next_id());
+            if let Some(workspace) = self.workspace_mut(tab) {
+                workspace.session_zone.start(request);
+            }
+            self.backend.send(Command::SessionZone { session, request });
+        }
+    }
+
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
@@ -5560,6 +5613,7 @@ impl App {
             }
         }
         self.ask_server_version(tab);
+        self.ask_session_zone(tab);
         self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -5694,6 +5748,21 @@ impl App {
             self.read_ddl(tab, id);
         }
     }
+}
+
+/// The order the system's locale writes a day's numbers in
+/// ([`crate::dates::Order::of_locale`]). Day first in a test, whatever the
+/// machine's.
+fn date_order() -> crate::dates::Order {
+    if cfg!(test) {
+        return crate::dates::Order::DayMonth;
+    }
+    let variable = |name: &str| std::env::var(name).ok();
+    crate::dates::Order::of_locale(
+        variable("LC_ALL").as_deref(),
+        variable("LC_TIME").as_deref(),
+        fastframe_i18n::system_languages(),
+    )
 }
 
 /// The computer's time zone, or UTC where it cannot be found. Tests have
@@ -7588,8 +7657,10 @@ impl App {
                 None => {
                     workspace.status = SessionStatus::Idle;
                     // The version it was asked for, where it had not
-                    // answered, is asked of the next session.
+                    // answered, is asked of the next session, and so is
+                    // its zone.
                     workspace.server_version.pending = None;
+                    workspace.session_zone.pending = None;
                     due.push(workspace.session);
                 }
             }
@@ -19110,8 +19181,10 @@ masked = ["orders.email"]
             type_into(&mut harness, tab, id, at(row, 4), "DEFAULT");
             let edits = &object(&harness, tab, id).edits;
             assert!(!edits.cells.contains_key(&(row, 4)));
-            // The time of the save goes out in the row's INSERT.
-            type_into(&mut harness, tab, id, at(row, 4), "now");
+            // The time of the save goes out in the row's INSERT. `now`
+            // alone is the time by the clock, as the line under the editor
+            // says: the database's is `now()`.
+            type_into(&mut harness, tab, id, at(row, 4), "now()");
             type_into(&mut harness, tab, id, at(row, 1), "9100000000000000004");
             let before = harness.app.backend.sent.len();
             harness.app.apply(Action::WriteEdits { tab, id });
@@ -21298,6 +21371,7 @@ masked = ["orders.email"]
                         top: false,
                         touched: true,
                         problem: None,
+                        moment: None,
                         picker: None,
                         select: false,
                     });

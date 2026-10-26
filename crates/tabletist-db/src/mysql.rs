@@ -204,6 +204,19 @@ impl Adapter for Conn {
         Ok(version_name(&self.version))
     }
 
+    /// See [`crate::Connection::session_zone`]: the session's zone, or the
+    /// server's own where the session follows it (`SYSTEM`).
+    async fn session_zone(&self) -> Result<Option<String>> {
+        let zones: Vec<String> = self
+            .catalog(
+                "SELECT IF(@@session.time_zone = 'SYSTEM', @@global.system_time_zone, \
+                 @@session.time_zone)",
+                (),
+            )
+            .await?;
+        Ok(zones.into_iter().next())
+    }
+
     /// None: MySQL's databases are listed as its schemas.
     async fn list_databases(&self) -> Result<Vec<String>> {
         Ok(Vec::new())

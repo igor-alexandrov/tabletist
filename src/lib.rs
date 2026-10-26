@@ -6,6 +6,7 @@ pub mod backend;
 pub mod clock;
 pub mod completion;
 pub mod connections;
+pub mod dates;
 pub mod desktop_theme;
 pub mod edit;
 pub mod endpoint;

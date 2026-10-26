@@ -1485,6 +1485,12 @@ async fn a_dropped_run_stops_its_remaining_statements() {
 }
 
 #[tokio::test]
+async fn sqlite_keeps_no_zone_for_its_moments() {
+    let (connection, _dir) = fixture().await;
+    assert_eq!(within(connection.session_zone()).await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn the_server_version_names_sqlite() {
     let (connection, _dir) = fixture().await;
     let version = within(connection.server_version()).await.unwrap();
