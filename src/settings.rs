@@ -912,6 +912,8 @@ pub enum OptionId {
     Tz,
     GroupDigits,
     ValueTags,
+    /// The calendar under a date's editor: `data.date_picker`.
+    DatePicker,
     /// Where a new production connection's read-only switch starts:
     /// `safety.production_read_only`.
     ProductionReadOnly,
@@ -967,7 +969,7 @@ pub enum OptionId {
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's, the Editor
     /// pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 37] = [
+    pub const ALL: [OptionId; 38] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -975,6 +977,7 @@ impl OptionId {
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::DatePicker,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
@@ -1007,7 +1010,7 @@ impl OptionId {
         Self::AgentsNotify,
     ];
     /// The General pane's, in the order it has them.
-    pub const GENERAL: [OptionId; 10] = [
+    pub const GENERAL: [OptionId; 11] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1015,18 +1018,20 @@ impl OptionId {
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::DatePicker,
         Self::ProductionReadOnly,
         Self::ConfirmCloseEdits,
         Self::IdleDisconnect,
     ];
     /// The General pane's sections, in order: Startup, Data and Safety.
     pub const STARTUP: [OptionId; 2] = [Self::OnLaunch, Self::RestoreTabs];
-    pub const DATA: [OptionId; 5] = [
+    pub const DATA: [OptionId; 6] = [
         Self::PageSize,
         Self::Timestamps,
         Self::Tz,
         Self::GroupDigits,
         Self::ValueTags,
+        Self::DatePicker,
     ];
     pub const SAFETY: [OptionId; 3] = [
         Self::ProductionReadOnly,
@@ -1125,6 +1130,7 @@ impl OptionId {
             Self::Tz => Key::Tz,
             Self::GroupDigits => Key::GroupDigits,
             Self::ValueTags => Key::ValueTags,
+            Self::DatePicker => Key::DatePicker,
             Self::ProductionReadOnly => Key::ProductionReadOnly,
             Self::ConfirmCloseEdits => Key::ConfirmCloseEdits,
             Self::IdleDisconnect => Key::IdleDisconnect,
@@ -1175,6 +1181,7 @@ pub enum OptionValue {
     /// `None` is the look's default.
     GroupDigits(Option<bool>),
     ValueTags(bool),
+    DatePicker(bool),
     ProductionReadOnly(bool),
     ConfirmCloseEdits(bool),
     IdleDisconnect(Idle),
@@ -1251,6 +1258,7 @@ impl OptionValue {
             Self::Tz(_) => OptionId::Tz,
             Self::GroupDigits(_) => OptionId::GroupDigits,
             Self::ValueTags(_) => OptionId::ValueTags,
+            Self::DatePicker(_) => OptionId::DatePicker,
             Self::ProductionReadOnly(_) => OptionId::ProductionReadOnly,
             Self::ConfirmCloseEdits(_) => OptionId::ConfirmCloseEdits,
             Self::IdleDisconnect(_) => OptionId::IdleDisconnect,
@@ -1294,6 +1302,7 @@ impl OptionValue {
             Self::Tz(zone) => settings.tz = zone,
             Self::GroupDigits(on) => settings.group_digits = on,
             Self::ValueTags(on) => settings.value_tags = on,
+            Self::DatePicker(on) => settings.date_picker = on,
             Self::ProductionReadOnly(on) => settings.production_read_only = on,
             Self::ConfirmCloseEdits(on) => settings.confirm_close_edits = on,
             Self::IdleDisconnect(choice) => settings.idle_disconnect = choice,
@@ -1959,6 +1968,7 @@ impl Settings {
             OptionId::Tz => OptionValue::Tz(self.tz.clone()),
             OptionId::GroupDigits => OptionValue::GroupDigits(self.group_digits),
             OptionId::ValueTags => OptionValue::ValueTags(self.value_tags),
+            OptionId::DatePicker => OptionValue::DatePicker(self.date_picker),
             OptionId::ProductionReadOnly => {
                 OptionValue::ProductionReadOnly(self.production_read_only)
             }
@@ -2044,6 +2054,7 @@ impl Settings {
             // Grouped is the left of the two.
             OptionId::GroupDigits => OptionValue::GroupDigits(Some(!forward)),
             OptionId::ValueTags => OptionValue::ValueTags(forward),
+            OptionId::DatePicker => OptionValue::DatePicker(forward),
             OptionId::ProductionReadOnly => OptionValue::ProductionReadOnly(forward),
             OptionId::ConfirmCloseEdits => OptionValue::ConfirmCloseEdits(forward),
             OptionId::RestoreTabs => OptionValue::RestoreTabs(forward),
@@ -2298,6 +2309,7 @@ impl Settings {
                 !self.group_digits.unwrap_or_default(),
             ))),
             OptionId::ValueTags => Some(OptionValue::ValueTags(!self.value_tags)),
+            OptionId::DatePicker => Some(OptionValue::DatePicker(!self.date_picker)),
             OptionId::ProductionReadOnly => {
                 Some(OptionValue::ProductionReadOnly(!self.production_read_only))
             }
@@ -4581,6 +4593,7 @@ bar = \"label\"  # tint | label
                 Key::Tz,
                 Key::GroupDigits,
                 Key::ValueTags,
+                Key::DatePicker,
                 Key::ProductionReadOnly,
                 Key::ConfirmCloseEdits,
                 Key::IdleDisconnect,

@@ -111,8 +111,9 @@ would: what the line says is still what is stored.
 
 The Omarchy look draws the month, and a timestamp's time, under its
 line, which says the day before the edit too (`was 15 jan`); they take no
-click, and their keys come later. Turn the calendar off with
-`date_picker = false` under `[data]` in `settings.toml`: the line stays.
+click, and their keys come later. Turn the calendar off with **Show a
+calendar when editing dates** in Settings › General, or `:set
+nocalendar` in the Omarchy look: the line stays.
 
 #### Zones
 

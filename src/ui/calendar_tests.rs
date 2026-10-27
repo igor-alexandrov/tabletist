@@ -52,6 +52,43 @@ fn selected(harness: &mut Harness) -> Vec<String> {
         .collect()
 }
 
+/// What the settings file was last saved as.
+/// How many times the settings file has been sent to be saved.
+fn saves(harness: &Harness) -> usize {
+    harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                crate::backend::Command::Save {
+                    file: crate::backend::StateFile::Settings(_),
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+fn saved(harness: &Harness) -> String {
+    harness
+        .app
+        .backend
+        .sent
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            crate::backend::Command::Save {
+                file: crate::backend::StateFile::Settings(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// `created_at` takes NULL.
 fn nullable(harness: &mut Harness, tab: crate::model::ConnTabId, id: crate::model::TabId) {
     let workspace = harness.app.workspace_mut(tab).unwrap();
@@ -325,7 +362,7 @@ fn null_and_default_are_offered_only_where_the_column_takes_them() {
 }
 
 #[test]
-fn the_setting_shows_the_line_alone_and_reloads_live() {
+fn the_setting_and_its_lines_show_the_line_alone_and_reload_live() {
     let (mut harness, tab, id) = covers(Driver::Postgres, "date", "2026-01-15");
     open(&mut harness, tab, id);
     assert_eq!(month(&mut harness).as_deref(), Some("January 2026"));
@@ -339,6 +376,28 @@ fn the_setting_shows_the_line_alone_and_reloads_live() {
     assert!(says(&mut harness, "Thu 15 Jan 2026"));
     // The database's now is back beside the field.
     assert!(node(&mut harness, "now", Role::Button).is_some());
+    harness.press(Key::Escape, Modifiers::NONE);
+    // The terminal's prompt sets it, and saves it as Settings does.
+    let run = |harness: &mut Harness, line: &str| {
+        harness.app.workspace_mut(tab).unwrap().command = Some(line.into());
+        harness.app.apply(Action::RunCommand(tab));
+    };
+    let before = saves(&harness);
+    run(&mut harness, "set calendar");
+    assert!(harness.app.settings.date_picker);
+    // It was saved, once. On, the default, the file does not name it.
+    assert_eq!(saves(&harness), before + 1);
+    assert!(!saved(&harness).contains("date_picker"));
+    open(&mut harness, tab, id);
+    assert_eq!(month(&mut harness).as_deref(), Some("January 2026"));
+    harness.press(Key::Escape, Modifiers::NONE);
+    run(&mut harness, "set nocalendar");
+    assert!(!harness.app.settings.date_picker);
+    open(&mut harness, tab, id);
+    assert_eq!(month(&mut harness), None);
+    assert!(says(&mut harness, "Thu 15 Jan 2026"));
+    let written = saved(&harness);
+    assert!(written.contains("date_picker = false"), "{written}");
 }
 
 #[test]

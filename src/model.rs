@@ -3126,6 +3126,7 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::Tz),
                 SettingsRow::Option(OptionId::GroupDigits),
                 SettingsRow::Option(OptionId::ValueTags),
+                SettingsRow::Option(OptionId::DatePicker),
                 SettingsRow::Option(OptionId::ProductionReadOnly),
                 SettingsRow::Option(OptionId::ConfirmCloseEdits),
                 SettingsRow::Option(OptionId::IdleDisconnect),

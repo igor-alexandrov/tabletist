@@ -1905,7 +1905,7 @@ value_tags   = true
             let lead = harness.painted_rect(lead).expect("the tab's lead");
             assert!(control.top() > lead.bottom(), "{control:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..7 {
+            for _ in 0..8 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();

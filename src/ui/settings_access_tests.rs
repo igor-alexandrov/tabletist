@@ -296,6 +296,11 @@ fn the_terminal_generals_rows_are_described_by_their_hints() {
             (OptionId::GroupDigits, Some("grouping off")),
             // Two tags, as the grid shows them.
             (OptionId::ValueTags, Some("print  ebook")),
+            // The prompt's lines that set it.
+            (
+                OptionId::DatePicker,
+                Some(":set calendar · :set nocalendar"),
+            ),
             (
                 OptionId::ProductionReadOnly,
                 Some("default for new connections"),

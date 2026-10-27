@@ -1942,6 +1942,14 @@ impl App {
             // sheet where the person says. Neither touches the settings.
             (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
             (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
+            // The calendar under a date's editor, saved as its switch in
+            // Settings saves it.
+            (Typed::Command(Command::ShowCalendar), _) => {
+                Action::SetOption(crate::settings::OptionValue::DatePicker(true))
+            }
+            (Typed::Command(Command::HideCalendar), _) => {
+                Action::SetOption(crate::settings::OptionValue::DatePicker(false))
+            }
             (Typed::Command(Command::ClearHistory), _) => Action::ClearHistory(tab),
             // From any pane: of what the tree's cursor is on, or the tab in
             // front.

@@ -41,6 +41,7 @@ pub(crate) fn label(option: OptionId) -> &'static str {
         OptionId::Tz => "Time zone for timestamptz",
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
+        OptionId::DatePicker => "Show a calendar when editing dates",
         OptionId::ProductionReadOnly => "New production connections open read-only",
         OptionId::ConfirmCloseEdits => "Ask before closing with unsaved edits",
         OptionId::IdleDisconnect => "Disconnect when idle",
@@ -106,6 +107,7 @@ pub(super) fn terminal_label(option: OptionId) -> &'static str {
         OptionId::Tz => "timestamptz zone",
         OptionId::ProductionReadOnly => "production opens read-only",
         OptionId::ConfirmCloseEdits => "confirm close with edits",
+        OptionId::DatePicker => "calendar for dates",
         OptionId::RowHeight => "Row height",
         OptionId::Zebra => "Alternate rows",
         OptionId::ColumnTypes => "Column types",
@@ -154,6 +156,7 @@ pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
         OptionId::OnLaunch => Some("Or: show Connections · open a chosen connection"),
         OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
         OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
+        OptionId::DatePicker => Some("Under date and time fields; typing always works"),
         OptionId::LogDays => Some("Every call and its SQL, never the rows. On this computer only"),
         OptionId::Tz => Some("Values are shown in this zone and sent with their offset"),
         OptionId::ProductionReadOnly => Some("Default for the switch in each connection"),
@@ -297,6 +300,7 @@ pub(super) fn is_on(value: &OptionValue) -> bool {
         value,
         OptionValue::RestoreTabs(true)
             | OptionValue::ValueTags(true)
+            | OptionValue::DatePicker(true)
             | OptionValue::ProductionReadOnly(true)
             | OptionValue::ConfirmCloseEdits(true)
             | OptionValue::AgentsOn(true)
@@ -433,6 +437,10 @@ pub(super) fn choices(
         OptionId::ValueTags => vec![
             (Word("off"), OptionValue::ValueTags(false)),
             (Word("on"), OptionValue::ValueTags(true)),
+        ],
+        OptionId::DatePicker => vec![
+            (Word("off"), OptionValue::DatePicker(false)),
+            (Word("on"), OptionValue::DatePicker(true)),
         ],
         OptionId::ProductionReadOnly => vec![
             (Word("off"), OptionValue::ProductionReadOnly(false)),

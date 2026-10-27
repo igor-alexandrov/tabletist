@@ -509,6 +509,8 @@ commands! {
     Help = "help",
     KeysDefault = "keys_default",
     KeysCheatsheet = "keys_cheatsheet",
+    ShowCalendar = "show_calendar",
+    HideCalendar = "hide_calendar",
     // Grid and editing.
     MoveRow = "move_row",
     MoveColumn = "move_column",
@@ -865,6 +867,8 @@ impl Command {
             C::Help => info("Help, all keys", "Help, all keys", Navigation),
             C::KeysDefault => info("Write the full list of keys", "", Navigation),
             C::KeysCheatsheet => info("Write a cheat sheet of the keys", "", Navigation),
+            C::ShowCalendar => info("Show a calendar when editing dates", "", Navigation),
+            C::HideCalendar => info("Edit dates without the calendar", "", Navigation),
             C::MoveRow => info("Move by row", "", Editing),
             C::MoveColumn => info("Move by column", "", Editing),
             C::MovePage => info("Move by page", "", Editing),
@@ -1536,6 +1540,10 @@ pub const BINDINGS: &[Binding] = {
             NONE,
             keys(&[k(":keys cheatsheet")]),
         ),
+        // The setting of the calendar under a date's editor, as Settings
+        // has it.
+        bind(C::ShowCalendar, GLOBAL, NONE, keys(&[k(":set calendar")])),
+        bind(C::HideCalendar, GLOBAL, NONE, keys(&[k(":set nocalendar")])),
         // Grid and editing.
         bind(
             C::MoveRow,
@@ -4834,6 +4842,14 @@ mod tests {
         assert_eq!(
             ex(Scope::SqlEditor, "keys cheatsheet"),
             command(Command::KeysCheatsheet)
+        );
+        assert_eq!(
+            ex(Scope::Grid, "set calendar"),
+            command(Command::ShowCalendar)
+        );
+        assert_eq!(
+            ex(Scope::SqlEditor, "set nocalendar"),
+            command(Command::HideCalendar)
         );
         // Each in its own scope only, and `:w` never anything but a save.
         assert_eq!(ex(Scope::Grid, "rw"), Nothing);
