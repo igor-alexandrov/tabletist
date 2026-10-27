@@ -448,6 +448,18 @@ fn the_terminal_look_paints_its_month_for_the_eye_and_says_the_value_before_on_i
 }
 
 #[test]
+fn the_value_before_is_said_with_its_year_where_the_new_one_has_no_day() {
+    let (mut harness, tab, id) = covers(Driver::Postgres, "date", "2026-01-15");
+    harness.set_look(crate::theme::Look::omarchy());
+    type_in(&mut harness, tab, id, "infinity");
+    // No day to share a year with: the year is said.
+    assert!(says(
+        &mut harness,
+        "no end date · stored as infinity · was 15 jan 2026"
+    ));
+}
+
+#[test]
 fn the_row_panel_has_the_calendar_under_its_field() {
     let (mut harness, tab, id) = covers(Driver::Postgres, "date", "2026-01-15");
     harness.app.workspace_mut(tab).unwrap().row_panel = true;

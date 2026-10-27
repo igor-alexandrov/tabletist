@@ -324,7 +324,7 @@ pub fn line(
                 }
             };
             if let Some(was) = was.filter(|was| Some(*was) != day) {
-                let same_year = day.is_none_or(|day| day.year() == was.year());
+                let same_year = day.is_some_and(|day| day.year() == was.year());
                 let said = if same_year {
                     short_day(was, locale)
                 } else {
