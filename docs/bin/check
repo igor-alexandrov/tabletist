@@ -21,16 +21,19 @@ for stray in superpowers bin; do
 done
 
 # Every page loads Simple Analytics once (_includes/jekyll_vitepress), and
-# counts a visit without JavaScript once.
-for page in $(find _site -name '*.html'); do
-  for tag in 'src="https://scripts.simpleanalyticscdn.com/latest.js"' \
-             'src="https://queue.simpleanalyticscdn.com/noscript.gif"'; do
-    if [ $(($(grep -oF "$tag" "$page" | wc -l))) -ne 1 ]; then
-      echo "check: $page does not have $tag exactly once" >&2
-      exit 1
-    fi
-  done
-done
+# counts a visit without JavaScript once. The pages are parsed, so a tag
+# left in an HTML comment does not count.
+bundle exec ruby -rnokogiri -e '
+  script = %q(script[src="https://scripts.simpleanalyticscdn.com/latest.js"])
+  image = %q(noscript img[src="https://queue.simpleanalyticscdn.com/noscript.gif"])
+  Dir["_site/**/*.html"].sort.each do |page|
+    html = Nokogiri::HTML(File.read(page))
+    { script => "head", image => "body" }.each do |tag, part|
+      next if html.css(tag).size == 1 && html.css("#{part} #{tag}").size == 1
+      abort "check: #{page} does not have #{tag} in its #{part} exactly once"
+    end
+  end
+'
 
 # The site is served under /tabletist (baseurl in _config.yml).
 bundle exec htmlproofer _site --disable-external --swap-urls '^/tabletist:'
