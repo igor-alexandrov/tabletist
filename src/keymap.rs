@@ -1591,7 +1591,7 @@ pub const BINDINGS: &[Binding] = {
             C::MoveField,
             INSPECTOR,
             keys(&[k("up"), k("down")]),
-            keys(&[k("j"), k("k")]).shown("j/k"),
+            keys(&[k("j"), k("k"), k("up"), k("down")]).shown("j/k"),
         ),
         bind(
             C::PreviousRow,

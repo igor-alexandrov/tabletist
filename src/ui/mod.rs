@@ -23790,7 +23790,8 @@ value_tags   = true
 
     #[test]
     fn up_and_down_step_the_fields_and_escape_gives_the_keys_to_the_grid() {
-        for look in desktop_looks() {
+        // The terminal look's arrows too, beside its `j` and `k`.
+        for look in Look::ALL {
             let (mut harness, tab, id) = form_row(look, 1);
             focus_field(&mut harness, tab, id, 1);
             harness.press(Key::ArrowDown, Modifiers::NONE);
@@ -23818,7 +23819,11 @@ value_tags   = true
             assert_eq!(selected(&harness, tab, id), Some((1, 1)), "{}", look.name);
             harness.press(Key::ArrowDown, Modifiers::NONE);
             assert_eq!(selected(&harness, tab, id), Some((2, 1)), "{}", look.name);
-            // And Enter edits the cell in the grid.
+            // And Enter edits the cell in the grid. The terminal look's
+            // Enter opens the panel there instead.
+            if look.terminal {
+                continue;
+            }
             harness.press(Key::Enter, Modifiers::NONE);
             assert_eq!(
                 form_editor(&harness, tab, id),
