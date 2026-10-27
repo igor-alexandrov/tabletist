@@ -108,13 +108,18 @@ pub fn kind(dialect: Dialect, type_name: &str) -> Option<Kind> {
     }
 }
 
+/// The digits of a second's fraction a type states: `timestamp(3)`'s.
+fn stated_digits(type_name: &str) -> Option<u8> {
+    type_name
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split(')').next())
+        .and_then(|digits| digits.trim().parse::<u8>().ok())
+}
+
 /// The digits of a second's fraction a column keeps: those its type
 /// states, else the engine's own. SQLite keeps what it is given.
 fn kept_digits(dialect: Dialect, type_name: &str) -> u8 {
-    let stated = type_name
-        .split_once('(')
-        .and_then(|(_, rest)| rest.split(')').next())
-        .and_then(|digits| digits.trim().parse::<u8>().ok());
+    let stated = stated_digits(type_name);
     match (dialect, stated) {
         (Dialect::Postgres | Dialect::MySql, Some(digits)) => digits.min(6),
         (Dialect::Postgres, None) => 6,
@@ -234,6 +239,9 @@ pub struct Column {
     pub kind: Kind,
     /// The digits of a second's fraction it keeps.
     pub digits: u8,
+    /// Its type states a fraction of a second (`timestamp(3)`): a
+    /// calendar's time fields show one whatever the value.
+    pub fraction: bool,
     /// How SQLite's values of it are kept ([`Stored::Fresh`] elsewhere).
     pub stored: Stored,
     /// The zone a [`Kind::Zoned`] value is shown and typed in: the
@@ -275,6 +283,7 @@ impl Column {
             dialect,
             kind,
             digits,
+            fraction: stated_digits(type_name).is_some_and(|stated| stated > 0),
             stored,
             zone: match kind {
                 Kind::Zoned => zone.cloned(),
@@ -303,17 +312,7 @@ impl Order {
     /// `LC_TIME`; else the first of the system's `languages` that names a
     /// region.
     pub fn of_locale(all: Option<&str>, time: Option<&str>, languages: &[String]) -> Self {
-        let region = |tag: &str| fastframe_i18n::LanguageTag::parse(tag).and_then(|tag| tag.region);
-        let (all, time) = (
-            all.filter(|all| !all.is_empty()),
-            time.filter(|time| !time.is_empty()),
-        );
-        let found = match (all, time) {
-            (Some(all), _) => region(all),
-            (None, Some(time)) => region(time),
-            (None, None) => languages.iter().find_map(|tag| region(tag)),
-        };
-        Self::of_region(found.as_deref())
+        Self::of_region(locale_region(all, time, languages).as_deref())
     }
 
     /// The order of the region `region` (`us`, `de`, `jp`: lower case, as
@@ -328,6 +327,44 @@ impl Order {
             | "ca" => Self::YearMonth,
             _ => Self::DayMonth,
         }
+    }
+}
+
+/// The region of the locale for times, as POSIX decides it: `LC_ALL`
+/// where it is set, whatever region it names or none (`C`); else
+/// `LC_TIME`; else the first of the system's `languages` that names a
+/// region. Lower case, as `fastframe_i18n::LanguageTag` gives it.
+pub fn locale_region(
+    all: Option<&str>,
+    time: Option<&str>,
+    languages: &[String],
+) -> Option<String> {
+    let region = |tag: &str| fastframe_i18n::LanguageTag::parse(tag).and_then(|tag| tag.region);
+    let (all, time) = (
+        all.filter(|all| !all.is_empty()),
+        time.filter(|time| !time.is_empty()),
+    );
+    match (all, time) {
+        (Some(all), _) => region(all),
+        (None, Some(time)) => region(time),
+        (None, None) => languages.iter().find_map(|tag| region(tag)),
+    }
+}
+
+/// The day the weeks of the region `region` start on (lower case, as
+/// [`locale_region`] gives it), by CLDR's `weekData`. Monday where it is
+/// not known, as the boards draw it.
+pub fn first_weekday(region: Option<&str>) -> Weekday {
+    match region.unwrap_or_default() {
+        "ag" | "as" | "bd" | "br" | "bs" | "bt" | "bw" | "bz" | "ca" | "cn" | "co" | "dm"
+        | "do" | "et" | "gt" | "gu" | "hk" | "hn" | "id" | "il" | "in" | "jm" | "jp" | "ke"
+        | "kh" | "kr" | "la" | "mh" | "mm" | "mo" | "mt" | "mx" | "mz" | "ni" | "np" | "pa"
+        | "pe" | "ph" | "pk" | "pr" | "pt" | "py" | "sa" | "sg" | "sv" | "th" | "tt" | "tw"
+        | "um" | "us" | "ve" | "vi" | "ws" | "ye" | "za" | "zw" => Weekday::Sunday,
+        "ae" | "af" | "bh" | "dj" | "dz" | "eg" | "iq" | "ir" | "jo" | "kw" | "ly" | "om"
+        | "qa" | "sd" | "sy" => Weekday::Saturday,
+        "mv" => Weekday::Friday,
+        _ => Weekday::Monday,
     }
 }
 
@@ -1636,6 +1673,173 @@ pub fn opened(value: &Value, column: &Column) -> Option<String> {
     })
 }
 
+/// The days a calendar shows for the month `month` is in: six weeks, each
+/// beginning on `first`, from the week of the month's first day. A day
+/// before or past what a date holds is `None`, in its place.
+pub fn month_days(month: Date, first: Weekday) -> Vec<Option<Date>> {
+    let start = month.first_of_month();
+    let back = i64::from(start.weekday().since(first));
+    (0..42)
+        .map(|at| start.checked_add(jiff::Span::new().days(at - back)).ok())
+        .collect()
+}
+
+/// What a text that does not read names so far: the month (its first
+/// day) and the time typed, where it has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoFar {
+    pub month: Date,
+    pub time: Option<Time>,
+}
+
+/// `2026-02` (a day may follow its `-`).
+fn iso_month(text: &str) -> Option<(i64, i64)> {
+    let (year, rest) = digits(text);
+    let (month, rest) = digits(rest.strip_prefix('-')?);
+    let formed = year.len() >= 4 && (1..=2).contains(&month.len()) && matches!(rest, "" | "-");
+    formed.then_some((year.parse().ok()?, month.parse().ok()?))
+}
+
+/// `jan`, `january 2026`: this year's where no year follows, and whether
+/// one did.
+fn named_month(text: &str, this_year: i64) -> Option<(i64, i64, bool)> {
+    let (word, rest) = letters(text);
+    let number = month(word)?;
+    if rest.trim().is_empty() {
+        return Some((this_year, number, false));
+    }
+    let (year, rest) = year(rest)?;
+    rest.trim().is_empty().then_some((year, number, true))
+}
+
+/// The month a text names so far, whether it reads or not, for a column
+/// that keeps a day: `2026-02-30 09:30` is February 2026 at 09:30,
+/// `2026-02` February, `15 jan` this year's January. `None` where it
+/// names none: a year past 9999, PostgreSQL's year 0, an era with no year
+/// typed, a month that is none. A month the engine does not hold is named
+/// all the same: [`holds`] disables its days.
+pub fn so_far(typed: &str, column: &Column, clock: &Clock) -> Option<SoFar> {
+    if !column.kind.has_date() {
+        return None;
+    }
+    let text = typed.trim().to_ascii_lowercase();
+    let (text, bc) = match text.strip_suffix(" bc") {
+        Some(before) if eras(column.dialect) => (before.trim_end(), true),
+        _ => (text.as_str(), false),
+    };
+    let zone = column.zone.as_ref().unwrap_or(&clock.zone);
+    let this_year = i64::from(clock.today_in(zone).year());
+    let day = iso_day(text)
+        .or_else(|| numeric_day(text, clock.order))
+        .or_else(|| {
+            named_day(text, this_year)
+                .filter(|(_, _, typed)| *typed || !bc)
+                .map(|(day, rest, _)| (day, rest))
+        });
+    let (year, month, time) = match day {
+        Some((Day::Numbers { year, month, .. }, rest)) => {
+            let time = time_of_day(separator(rest))
+                .ok()
+                .flatten()
+                .map(|(time, _, _)| time);
+            (year, month, time)
+        }
+        Some((Day::Known(_) | Day::Now, _)) => return None,
+        None => {
+            let (year, month) = iso_month(text).or_else(|| {
+                named_month(text, this_year)
+                    .filter(|(_, _, typed)| *typed || !bc)
+                    .map(|(year, month, _)| (year, month))
+            })?;
+            (year, month, None)
+        }
+    };
+    let month = checked_day(column, year, month, 1, bc).ok()?;
+    Some(SoFar { month, time })
+}
+
+/// The text a day picked in a calendar puts in the field, as it would be
+/// typed: the day, and for a kind with a time of day `time` (midnight
+/// where there is none), written as [`rewritten`] writes one. A time of
+/// day alone is the time alone, as typed, with `offset` where it keeps
+/// one. `offset` is the one the text had, kept where a SQLite timestamp
+/// keeps any, or the time is one the clocks go back over and it is one of
+/// the two: the same of the two moments.
+pub fn picked(date: Date, time: Option<Time>, offset: Option<Offset>, column: &Column) -> String {
+    let at = date.to_datetime(time.unwrap_or(Time::midnight()));
+    match column.kind {
+        Kind::Date => era(written_date(date, column.dialect)),
+        Kind::Timestamp => rewritten(at, offset, column),
+        Kind::Time { offset: keeps } => {
+            let time = at.time();
+            let mut written = written_time(time, fraction_digits(time));
+            if let Some(offset) = offset.filter(|_| keeps) {
+                written.push_str(&written_offset(offset));
+            }
+            written
+        }
+        Kind::Zoned => rewritten(at, folded(at, offset, column), column),
+    }
+}
+
+/// `offset`, where `at` is a time the column's zone's clocks go back over
+/// and the offset is one of its two moments' (on an engine that is sent
+/// one: a MySQL value has none to choose by).
+fn folded(at: DateTime, offset: Option<Offset>, column: &Column) -> Option<Offset> {
+    let offset = offset?;
+    let two = column.zone.as_ref().and_then(|zone| fold(zone, at))?;
+    let sent = match column.dialect {
+        Dialect::Postgres | Dialect::Sqlite => true,
+        Dialect::MySql => false,
+    };
+    (sent && (two.earlier.0 == offset || two.later.0 == offset)).then_some(offset)
+}
+
+/// The text **Now** puts in the field: the time it is, to the second, in
+/// the zone the column's values are typed in, as it would be typed (today
+/// for a date, and a `timetz` with the zone's offset). `None` for a MySQL
+/// `TIMESTAMP` whose session's zone is not known: the time there is the
+/// server's to say.
+pub fn now_text(column: &Column, clock: &Clock) -> Option<String> {
+    let zone = match (&column.zone, column.kind) {
+        (Some(zone), _) => zone,
+        (None, Kind::Zoned) => return None,
+        (None, Kind::Date | Kind::Timestamp | Kind::Time { .. }) => &clock.zone,
+    };
+    let at = clock.now_in(zone);
+    let offset = zone.to_offset(clock.now);
+    Some(match column.kind {
+        Kind::Date => picked(at.date(), None, None, column),
+        Kind::Timestamp => rewritten(at, None, column),
+        // The second of a repeated hour is written with its offset.
+        Kind::Zoned => rewritten(at, folded(at, Some(offset), column), column),
+        Kind::Time { offset: keeps } => {
+            let mut text = written_time(at.time(), 0);
+            if keeps {
+                text.push_str(&written_offset(offset));
+            }
+            text
+        }
+    })
+}
+
+/// Whether the column takes the day `date` at `time` (midnight where
+/// there is none), as a pick would write it, with the `offset` it keeps
+/// (see [`picked`]): a calendar offers no day it does not. A time the
+/// clocks skip is a day all the same: the line offers the time after it.
+pub fn holds(
+    date: Date,
+    time: Option<Time>,
+    offset: Option<Offset>,
+    column: &Column,
+    clock: &Clock,
+) -> bool {
+    matches!(
+        read(&picked(date, time, offset, column), column, clock),
+        Ok(_) | Err(Refusal::Gap { .. })
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2509,6 +2713,234 @@ mod tests {
         assert_eq!(
             written_offset(Offset::from_seconds(19_800).unwrap()),
             "+05:30"
+        );
+    }
+
+    #[test]
+    fn a_week_starts_on_the_day_its_region_starts_it() {
+        assert_eq!(first_weekday(Some("gb")), Weekday::Monday);
+        assert_eq!(first_weekday(Some("us")), Weekday::Sunday);
+        assert_eq!(first_weekday(Some("eg")), Weekday::Saturday);
+        assert_eq!(first_weekday(Some("mv")), Weekday::Friday);
+        assert_eq!(first_weekday(None), Weekday::Monday);
+        let languages = ["en-US".to_owned()];
+        let region = |time| locale_region(None, time, &languages);
+        assert_eq!(first_weekday(region(None).as_deref()), Weekday::Sunday);
+        assert_eq!(
+            first_weekday(region(Some("de_DE.UTF-8")).as_deref()),
+            Weekday::Monday
+        );
+    }
+
+    #[test]
+    fn a_month_is_six_weeks_from_the_week_of_its_first_day() {
+        let january = month_days(date(2026, 1, 15), Weekday::Monday);
+        assert_eq!(january.len(), 42);
+        assert_eq!(january[0], Some(date(2025, 12, 29)));
+        assert_eq!(january[3], Some(date(2026, 1, 1)));
+        assert_eq!(january[41], Some(date(2026, 2, 8)));
+        let sunday = month_days(date(2026, 1, 15), Weekday::Sunday);
+        assert_eq!(sunday[0], Some(date(2025, 12, 28)));
+        // March 2026 begins on a Sunday: its last day is in the sixth week.
+        let march = month_days(date(2026, 3, 1), Weekday::Monday);
+        assert_eq!(march[6], Some(date(2026, 3, 1)));
+        assert_eq!(march[36], Some(date(2026, 3, 31)));
+        // Past the last day a date holds, the weeks keep their places.
+        let last = month_days(date(9999, 12, 1), Weekday::Monday);
+        assert_eq!(last.iter().flatten().last(), Some(&date(9999, 12, 31)));
+        assert_eq!(last[41], None);
+    }
+
+    #[test]
+    fn a_text_that_does_not_read_names_the_month_typed_so_far() {
+        let at = |type_name, typed| so_far(typed, &column(Dialect::Postgres, type_name), &clock());
+        let february = date(2026, 2, 1);
+        assert_eq!(
+            at("timestamptz", "2026-02-30 09:30"),
+            Some(SoFar {
+                month: february,
+                time: Some(Time::constant(9, 30, 0, 0))
+            })
+        );
+        let month = |type_name, typed| at(type_name, typed).map(|sofar| sofar.month);
+        assert_eq!(month("date", "2026-02"), Some(february));
+        assert_eq!(month("date", "30 feb"), Some(february));
+        assert_eq!(month("date", "feb 2027"), Some(date(2027, 2, 1)));
+        assert_eq!(month("date", "0044-02-30 BC"), Some(date(-43, 2, 1)));
+        assert_eq!(month("date", "2026-13-01"), None);
+        assert_eq!(month("date", "soon"), None);
+        assert_eq!(month("time", "25:00"), None);
+        assert_eq!(month("time", "2026-02"), None);
+        // The time typed after a day that is no day reads no further than
+        // its own refusal: February, at no time.
+        assert_eq!(
+            at("timestamptz", "2026-02-30 25:00"),
+            Some(SoFar {
+                month: february,
+                time: None
+            })
+        );
+        // An era needs the year typed with it.
+        assert_eq!(month("date", "jan 0044 bc"), Some(date(-43, 1, 1)));
+        assert_eq!(month("date", "15 jan bc"), None);
+        assert_eq!(month("date", "jan bc"), None);
+    }
+
+    #[test]
+    fn a_pick_writes_its_day_and_keeps_the_time() {
+        let pg = Dialect::Postgres;
+        let half_past = Some(Time::constant(9, 30, 0, 0));
+        let day = date(2026, 1, 20);
+        assert_eq!(
+            picked(day, half_past, None, &column(pg, "timestamptz")),
+            "2026-01-20 09:30"
+        );
+        assert_eq!(
+            picked(day, None, None, &column(pg, "timestamp")),
+            "2026-01-20 00:00"
+        );
+        assert_eq!(
+            picked(day, half_past, None, &column(pg, "date")),
+            "2026-01-20"
+        );
+        assert_eq!(
+            picked(date(-43, 3, 15), None, None, &column(pg, "date")),
+            "0044-03-15 BC"
+        );
+        let fraction = Some(Time::constant(9, 30, 12, 250_000_000));
+        assert_eq!(
+            picked(day, fraction, None, &column(pg, "timestamp(6)")),
+            "2026-01-20 09:30:12.25"
+        );
+        let clock = clock();
+        let now = |type_name| now_text(&column(pg, type_name), &clock);
+        assert_eq!(now("timestamptz").as_deref(), Some("2026-10-24 10:00"));
+        assert_eq!(now("date").as_deref(), Some("2026-10-24"));
+        assert_eq!(now("timetz").as_deref(), Some("10:00:00-04"));
+        let unknown = Column::of(Dialect::MySql, "timestamp", None, []).unwrap();
+        assert_eq!(now_text(&unknown, &clock), None);
+        // The second 01:30 of 1 November keeps its offset, picked or now;
+        // another day's 01:30 has no second to keep it for.
+        let zoned = column(pg, "timestamptz");
+        let est = Offset::from_hours(-5).ok();
+        let fold = date(2026, 11, 1);
+        assert_eq!(
+            picked(fold, Some(Time::constant(1, 30, 0, 0)), est, &zoned),
+            "2026-11-01 01:30-05"
+        );
+        assert_eq!(
+            picked(day, Some(Time::constant(1, 30, 0, 0)), est, &zoned),
+            "2026-01-20 01:30"
+        );
+        // MySQL is sent no offset: a value there has none to choose by.
+        assert_eq!(
+            picked(
+                fold,
+                Some(Time::constant(1, 30, 0, 0)),
+                est,
+                &column(Dialect::MySql, "timestamp")
+            ),
+            "2026-11-01 01:30"
+        );
+        let second = Clock {
+            now: "2026-11-01T06:30:00Z".parse().unwrap(),
+            ..clock.clone()
+        };
+        assert_eq!(
+            now_text(&zoned, &second).as_deref(),
+            Some("2026-11-01 01:30-05")
+        );
+    }
+
+    #[test]
+    fn a_pick_keeps_the_offset_a_sqlite_timestamp_has() {
+        let clock = clock();
+        let lite = column(Dialect::Sqlite, "DATETIME");
+        let day = date(2026, 1, 20);
+        let plus_two = Offset::from_hours(2).ok();
+        let written = picked(day, Some(Time::constant(9, 30, 0, 0)), plus_two, &lite);
+        assert_eq!(written, "2026-01-20 09:30+02");
+        match read(&written, &lite, &clock).unwrap().moment {
+            Moment::At { offset, .. } => assert_eq!(offset, plus_two),
+            moment => panic!("{moment:?}"),
+        }
+        // PostgreSQL and MySQL refuse one on a timestamp: there is none.
+        let stamp = column(Dialect::Postgres, "timestamp");
+        assert_eq!(
+            picked(day, Some(Time::constant(9, 30, 0, 0)), None, &stamp),
+            "2026-01-20 09:30"
+        );
+    }
+
+    #[test]
+    fn a_pick_on_a_time_writes_the_time_alone() {
+        let clock = clock();
+        let half_past = Some(Time::constant(9, 30, 0, 0));
+        let day = date(2026, 1, 20);
+        let est = Offset::from_hours(-5).ok();
+        let time = column(Dialect::Postgres, "time");
+        assert_eq!(picked(day, half_past, est, &time), "09:30:00");
+        assert_eq!(picked(day, None, None, &time), "00:00:00");
+        let fraction = Some(Time::constant(9, 30, 12, 250_000_000));
+        assert_eq!(picked(day, fraction, None, &time), "09:30:12.25");
+        let zoned = column(Dialect::Postgres, "timetz");
+        assert_eq!(picked(day, half_past, est, &zoned), "09:30:00-05");
+        assert_eq!(picked(day, half_past, None, &zoned), "09:30:00");
+        for column in [&time, &zoned, &column(Dialect::MySql, "time")] {
+            let written = picked(day, fraction, None, column);
+            assert!(read(&written, column, &clock).is_ok(), "{written:?}");
+        }
+    }
+
+    #[test]
+    fn a_type_that_states_a_fraction_of_a_second_says_so() {
+        let pg = Dialect::Postgres;
+        assert!(column(pg, "timestamp(3)").fraction);
+        assert!(!column(pg, "timestamp").fraction);
+        assert!(!column(pg, "timestamp(0)").fraction);
+        assert!(column(Dialect::MySql, "datetime(6)").fraction);
+    }
+
+    #[test]
+    fn a_calendar_offers_only_the_days_the_type_holds() {
+        let clock = clock();
+        let mysql = |type_name| column(Dialect::MySql, type_name);
+        assert!(!holds(
+            date(999, 12, 31),
+            None,
+            None,
+            &mysql("date"),
+            &clock
+        ));
+        assert!(holds(date(1000, 1, 1), None, None, &mysql("date"), &clock));
+        // TIMESTAMP's first second is 00:00:01 UTC, 19:00:01 the evening
+        // before in New York.
+        let stamps = mysql("timestamp");
+        assert!(holds(date(1970, 1, 1), None, None, &stamps, &clock));
+        assert!(!holds(date(1969, 12, 31), None, None, &stamps, &clock));
+        let evening = Some(Time::constant(20, 0, 0, 0));
+        assert!(holds(date(1969, 12, 31), evening, None, &stamps, &clock));
+        assert!(!holds(date(2038, 1, 20), None, None, &stamps, &clock));
+        // SQLite's years run from 0000.
+        let sqlite = column(Dialect::Sqlite, "DATE");
+        assert!(holds(date(0, 1, 1), None, None, &sqlite, &clock));
+        assert!(!holds(date(-1, 12, 31), None, None, &sqlite, &clock));
+        let days = column(Dialect::Postgres, "date");
+        assert!(holds(date(-4713, 11, 24), None, None, &days, &clock));
+        assert!(!holds(date(-4713, 11, 23), None, None, &days, &clock));
+        // A time the clocks skip is no limit of the type: the line offers
+        // the time after it.
+        let skipped = Some(Time::constant(2, 30, 0, 0));
+        let zoned = column(Dialect::Postgres, "timestamptz");
+        assert!(holds(date(2026, 3, 8), skipped, None, &zoned, &clock));
+        // The day is checked as the text written: with the offset it keeps
+        // for the second 01:30 of a repeated hour.
+        let second = Some(Time::constant(1, 30, 0, 0));
+        let later = Some(Offset::constant(-5));
+        assert!(holds(date(2026, 11, 1), second, later, &zoned, &clock));
+        assert_eq!(
+            picked(date(2026, 11, 1), second, later, &zoned),
+            "2026-11-01 01:30-05"
         );
     }
 }
