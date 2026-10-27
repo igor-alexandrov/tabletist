@@ -20,5 +20,17 @@ for stray in superpowers bin; do
   fi
 done
 
+# Every page loads Simple Analytics once (_includes/jekyll_vitepress), and
+# counts a visit without JavaScript once.
+for page in $(find _site -name '*.html'); do
+  for tag in 'src="https://scripts.simpleanalyticscdn.com/latest.js"' \
+             'src="https://queue.simpleanalyticscdn.com/noscript.gif"'; do
+    if [ $(($(grep -oF "$tag" "$page" | wc -l))) -ne 1 ]; then
+      echo "check: $page does not have $tag exactly once" >&2
+      exit 1
+    fi
+  done
+done
+
 # The site is served under /tabletist (baseurl in _config.yml).
 bundle exec htmlproofer _site --disable-external --swap-urls '^/tabletist:'
