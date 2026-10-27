@@ -42,9 +42,10 @@ extract it and open `tabletist.exe`.
 ### Arch Linux and Omarchy
 
 The AUR packages (`tabletist-bin` and `tabletist`) are not published yet.
-Until they are, use the AppImage or the release archive below.
+Until they are, use the AppImage to try Tabletist, and the release archive
+to install it with an entry in the app launcher.
 
-### Other distributions
+### Try it: the AppImage
 
 Download `tabletist-<version>-x86_64.AppImage`, or the
 `aarch64` one. It is one file that runs without installing anything. Make it
@@ -58,9 +59,28 @@ chmod +x tabletist-<version>-x86_64.AppImage
 An AppImage needs FUSE, which most desktops have. Without it, run it with
 `--appimage-extract-and-run`.
 
-To install Tabletist yourself instead, download
-`tabletist-v<version>-x86_64-unknown-linux-gnu.tar.gz`, or the `aarch64`
-one. It holds the `tabletist` binary, a `.desktop` file and the icon.
+The AppImage adds nothing to the app launcher. To start Tabletist from
+there, install it from the release archive instead.
+
+### Install it: the release archive
+
+Download `tabletist-v<version>-x86_64-unknown-linux-gnu.tar.gz`, or the
+`aarch64` one. It holds the `tabletist` binary, a `.desktop` file and the
+icon. Unpack it and put the three where your desktop looks for them:
+
+```sh
+tar xzf tabletist-v<version>-x86_64-unknown-linux-gnu.tar.gz
+cd tabletist-v<version>-x86_64-unknown-linux-gnu
+install -Dm755 tabletist ~/.local/bin/tabletist
+install -Dm644 packaging/linux/dev.tabletist.Tabletist.desktop -t ~/.local/share/applications
+install -Dm644 packaging/linux/dev.tabletist.Tabletist.svg -t ~/.local/share/icons/hicolor/scalable/apps
+```
+
+Tabletist is then in the app launcher (Super+Space on Omarchy), with its
+icon. The launcher entry runs `tabletist` from your `PATH`, which on Omarchy
+holds `~/.local/bin`. On a desktop whose launcher does not look there, put
+the binary in `/usr/local/bin` instead. To update, install the new binary
+the same way. To remove Tabletist, delete the three files.
 
 The Linux binaries are built on Ubuntu 24.04 and need glibc 2.39 or newer
 (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system,
