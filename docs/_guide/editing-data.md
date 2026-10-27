@@ -88,6 +88,33 @@ date, a day into a time, an offset into a `timestamp` (SQLite keeps one
 in its text). Words the servers read themselves, such as `epoch` or a
 zone's name after a time, are not read here: write the moment.
 
+#### The calendar
+
+Under the line of a date or a timestamp, a calendar shows the month the
+text is in: the day it reads as filled, the day the cell showed before
+the edit marked with a dot, and today outlined. The weeks start on the
+first day of the week of your locale's region. While the text reads as
+no day the month is dimmed, on the month typed so far. A click on a day,
+of the month or of the weeks it shares, writes it into the field and
+keeps the time typed (midnight where there is none); a day the column's
+type does not hold cannot be picked. ‹ and › show the month before and
+after, and **Today** today's, without changing the value.
+
+A timestamp has its hour, minute and second under the month, and a time
+has them alone, with a fraction where the type states one
+(`timestamp(3)`) or the value has one. Then the zone (`no zone` for a
+`timestamp`, the offset for a `timetz`) and **Now**, which writes the time
+it is. The foot offers **NULL** where the column takes it and **DEFAULT**
+where it has one, which apply at once, and on PostgreSQL **−∞** and **∞**
+for a date or a timestamp. A pick rewrites the field's text, as typing
+would: what the line says is still what is stored.
+
+The Omarchy look draws the month, and a timestamp's time, under its
+line, which says the day before the edit too (`was 15 jan`); they take no
+click, and their keys come later. Turn the calendar off with **Show a
+calendar when editing dates** in Settings › General, or `:set
+nocalendar` in the Omarchy look: the line stays.
+
 #### Zones
 
 A PostgreSQL `timestamptz` is shown, and opens to be edited, in the zone
@@ -170,9 +197,12 @@ after. Review SQL shows the keyword as it is sent.
   default, `now()` outside date and time columns.
 - A date column gets the date and a time column the time of day. On
   SQLite the time is UTC, to the second.
-- While a date or time value is being edited, the **now** button beside
-  it sets the same thing. The Omarchy look has no button: type `now()`
-  there.
+- While a date or time value is being edited with the calendar off, the
+  **now** button beside it sets the same thing. So does a MySQL
+  `TIMESTAMP`'s while its session's zone is not known, as the calendar
+  has no **Now** there. The calendar's **Now** is the time it is as you
+  click it. The Omarchy look has no button: type
+  `now()` there.
 - In a new row, a cell you leave alone is its default already, so
   `DEFAULT` there takes the value out again.
 

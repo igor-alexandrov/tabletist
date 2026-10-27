@@ -1519,6 +1519,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // An editor that is open has the keyboard, unless a dialog has it.
     let hold = app.dialog.is_none();
     let editor_keys = cell_editor::Keys::of(&app.keymap, app.layout());
+    let calendar = app.calendar();
     if look.terminal {
         error_line(app, ui, tab, object_tab);
     }
@@ -1547,8 +1548,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         .and_then(|key| key.into_iter().min());
     let (unset, lacking) = new_row_columns(workspace, object);
     let target = object.edits.editor.as_ref().and_then(|editor| {
-        let how = (hold, &editor_keys);
-        editor_target(workspace, object, tab, editor.cell, how)
+        let how = (hold, &editor_keys, calendar.as_ref());
+        editor_target(workspace, object, tab, editor, how)
     });
     // The cells whose foreign key names no row, with what each says.
     let doubts = key_picker::doubts(workspace, object, &look, locale);
@@ -2108,15 +2109,17 @@ fn computed_columns(workspace: &crate::model::Workspace, object: &ObjectTab) -> 
         .collect()
 }
 
-/// The cell `cell` an editor of the tab is open on, as its field needs it:
-/// the grid's on the cell, or the row panel's in the place of a value.
+/// The cell `editor` is open on, as its field needs it: the grid's on the
+/// cell, or the row panel's in the place of a value. The panel's editor is
+/// out of the tab while the panel draws, so it is the one in hand.
 pub(super) fn editor_target(
     workspace: &crate::model::Workspace,
     object: &ObjectTab,
     tab: ConnTabId,
-    cell: CellPos,
-    (hold, keys): (bool, &cell_editor::Keys),
+    editor: &crate::edit::Editor,
+    (hold, keys, calendar): (bool, &cell_editor::Keys, Option<&cell_editor::Calendar>),
 ) -> Option<cell_editor::Target> {
+    let cell = editor.cell;
     let table = Table::of(workspace, object)?;
     let column = table.page.columns.get(cell.col)?;
     let class = table.class(cell.col);
@@ -2126,6 +2129,24 @@ pub(super) fn editor_target(
     };
     // The type as the header names it, not as the structure does.
     let type_name = format::type_label(&column.type_name, column.kind);
+    let dates = table.dates(cell.col);
+    let info = table.column(cell.col);
+    // A foreign key cell's list is the field's: its line is the picker's
+    // to hang a list under, and has no calendar.
+    let search = search_of(workspace, object, editor);
+    // The calendar under a date's line, where the settings show one: its
+    // Now is the clock's, and takes the place of the database's now
+    // beside the field. Where it has none (a MySQL `TIMESTAMP` whose
+    // session's zone is not known), the database's stays.
+    let calendar = calendar
+        .filter(|_| dates.is_some() && search.is_none())
+        .cloned();
+    let calendar_now = calendar
+        .as_ref()
+        .zip(dates.as_ref())
+        .is_some_and(|(calendar, column)| {
+            crate::dates::now_text(column, &calendar.clock).is_some()
+        });
     Some(cell_editor::Target {
         id: cell_editor::field_id(tab, object.id),
         name: column.name.clone(),
@@ -2133,17 +2154,14 @@ pub(super) fn editor_target(
         max_chars,
         json: class == Some(tabletist_db::ColumnClass::Json),
         hold,
-        now: table
-            .column(cell.col)
-            .is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
-        dates: table.dates(cell.col),
+        now: !calendar_now
+            && info.is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
+        dates,
+        nullable: info.is_some_and(|column| column.nullable),
+        default: info.is_some_and(|column| column.default.is_some()),
+        calendar,
         keys: keys.clone(),
-        search: object
-            .edits
-            .editor
-            .as_ref()
-            .filter(|editor| editor.cell == cell)
-            .and_then(|editor| search_of(workspace, object, editor)),
+        search,
     })
 }
 

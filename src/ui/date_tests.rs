@@ -17,7 +17,7 @@ use crate::settings::{Settings, Zone};
 use crate::testing::{Harness, labels};
 
 /// `created_at`, by its place in the page.
-const MADE: usize = 4;
+pub(super) const MADE: usize = 4;
 
 /// Saturday 24 October 2026, 10:00 in New York.
 fn saturday() -> jiff::Timestamp {
@@ -40,7 +40,11 @@ fn in_zone(harness: &mut Harness, name: &str) {
 /// The covers' tab on `driver`, `created_at` of the type `type_name` and
 /// holding `values` (the first row's first), shown in New York, with the
 /// cursor on the first row's `created_at`.
-fn covers_with(driver: Driver, type_name: &str, values: &[Value]) -> (Harness, ConnTabId, TabId) {
+pub(super) fn covers_with(
+    driver: Driver,
+    type_name: &str,
+    values: &[Value],
+) -> (Harness, ConnTabId, TabId) {
     let mut harness = Harness::new();
     harness.app.stopped_clock = Some(saturday());
     let tab = harness.connect_fake_as(false);
@@ -75,7 +79,11 @@ fn covers_with(driver: Driver, type_name: &str, values: &[Value]) -> (Harness, C
 
 /// [`covers_with`], `created_at` a foreign key to the Bookshop's
 /// `orders.placed_at`.
-fn keyed_covers(driver: Driver, type_name: &str, value: &str) -> (Harness, ConnTabId, TabId) {
+pub(super) fn keyed_covers(
+    driver: Driver,
+    type_name: &str,
+    value: &str,
+) -> (Harness, ConnTabId, TabId) {
     let (mut harness, tab, id) = covers(driver, type_name, value);
     let object = harness
         .app
@@ -95,11 +103,11 @@ fn keyed_covers(driver: Driver, type_name: &str, value: &str) -> (Harness, ConnT
     (harness, tab, id)
 }
 
-fn covers(driver: Driver, type_name: &str, value: &str) -> (Harness, ConnTabId, TabId) {
+pub(super) fn covers(driver: Driver, type_name: &str, value: &str) -> (Harness, ConnTabId, TabId) {
     covers_with(driver, type_name, &[Value::Text(value.into())])
 }
 
-fn open(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+pub(super) fn open(harness: &mut Harness, tab: ConnTabId, id: TabId) {
     harness.app.apply(Action::EditCell {
         tab,
         id,
@@ -110,7 +118,7 @@ fn open(harness: &mut Harness, tab: ConnTabId, id: TabId) {
 }
 
 /// Opens the editor and types `text` in the place of its own.
-fn type_in(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str) {
+pub(super) fn type_in(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str) {
     open(harness, tab, id);
     editor_mut(harness, tab, id).text = text.to_owned();
     harness.app.apply(Action::EditorTyped { tab, id });
@@ -123,25 +131,25 @@ fn editor_mut(harness: &mut Harness, tab: ConnTabId, id: TabId) -> &mut crate::e
     object.edits.editor.as_mut().expect("an editor")
 }
 
-fn editor_text(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<String> {
+pub(super) fn editor_text(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<String> {
     let object = harness.app.workspace(tab)?.object_tab(id)?;
     Some(object.edits.editor.as_ref()?.text.clone())
 }
 
 /// The cell's pending value, where it has one.
-fn pending(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<NewValue> {
+pub(super) fn pending(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<NewValue> {
     let object = harness.app.workspace(tab)?.object_tab(id)?;
     Some(object.edits.cells.get(&(0, MADE))?.new.clone())
 }
 
-fn pending_text(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<String> {
+pub(super) fn pending_text(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<String> {
     match pending(harness, tab, id)? {
         NewValue::Text(text) => Some(text),
         other => panic!("not a text: {other:?}"),
     }
 }
 
-fn says(harness: &mut Harness, words: &str) -> bool {
+pub(super) fn says(harness: &mut Harness, words: &str) -> bool {
     harness.has(words)
 }
 

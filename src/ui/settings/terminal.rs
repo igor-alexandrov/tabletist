@@ -1111,6 +1111,7 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         }
         OptionId::RestoreTabs
         | OptionId::ValueTags
+        | OptionId::DatePicker
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -1393,6 +1394,7 @@ fn option_row(
         }
         OptionId::RestoreTabs
         | OptionId::ValueTags
+        | OptionId::DatePicker
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -1569,6 +1571,11 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .space(role, "  ")
                 .add(role, "ebook", second)
         }
+        // The prompt's lines that set it, from the keymap.
+        OptionId::DatePicker => Text::new(look)
+            .add(role, &key(ui, look, Command::ShowCalendar), palette.accent)
+            .add(role, " · ", palette.dim)
+            .add(role, &key(ui, look, Command::HideCalendar), palette.accent),
         OptionId::RestoreTabs => dim(&skin.say("per connection")),
         OptionId::OnLaunch => dim(&skin.say("or connections · a chosen connection")),
         OptionId::ProductionReadOnly => dim(&skin.say("default for new connections")),

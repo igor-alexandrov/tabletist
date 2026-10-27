@@ -1505,6 +1505,10 @@ pub struct Editor {
     /// what the line under the editor says, and, read once, what a commit
     /// stores. Kept up to date with `problem`.
     pub moment: Option<Result<crate::dates::Reading, crate::dates::Refusal>>,
+    /// The value the cell showed before this edit (its pending one, where
+    /// it has one), where its column keeps dates or times and it reads as
+    /// one: what the calendar marks.
+    pub was: Option<crate::dates::Moment>,
     /// The search of the table a foreign key cell points at, while the
     /// editor is the small field of such a cell.
     pub picker: Option<crate::key_picker::Picker>,
@@ -4348,6 +4352,7 @@ mod tests {
             touched: false,
             problem: None,
             moment: None,
+            was: None,
             picker: None,
             select: false,
         });
@@ -5740,6 +5745,7 @@ mod tests {
             touched: true,
             problem: None,
             moment: None,
+            was: None,
             picker: None,
             select: false,
         });

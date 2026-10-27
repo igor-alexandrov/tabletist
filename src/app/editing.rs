@@ -215,6 +215,31 @@ fn typed(table: &Table<'_>, object: &ObjectTab, clock: &crate::dates::Clock) -> 
     })
 }
 
+/// The text an editor opens on for the value the page's cell `cell`
+/// loaded, of the class `class`: `None` for a new row's cell, which loaded
+/// nothing. A moment with an offset as the cell shows it: in the zone, and
+/// edited there, where the engine sends one. SQLite's seconds since 1970
+/// as the day they are.
+fn opened_text(table: &Table<'_>, cell: CellPos, class: ColumnClass) -> Option<String> {
+    let loaded = table.loaded(cell)?;
+    let seconds = table
+        .dates(cell.col)
+        .and_then(|dates| crate::dates::opened(loaded, &dates));
+    if let Some(day) = seconds {
+        return Some(day);
+    }
+    let start = start_text(loaded, class);
+    let temporal = table.page.columns.get(cell.col).map(|column| column.kind)
+        == Some(tabletist_db::ValueKind::Temporal);
+    Some(
+        temporal
+            .then_some(table.zone)
+            .flatten()
+            .and_then(|zone| crate::ui::format::in_zone(&start, zone))
+            .unwrap_or(start),
+    )
+}
+
 impl App {
     /// What editing may know of a table tab: `None` while it has no page.
     pub(super) fn table<T>(
@@ -889,43 +914,22 @@ impl App {
             // holds: its check holds for it, empty or not, and Enter does
             // not close on it while its column refuses it.
             let mut kept = false;
+            // What the cell shows before this edit, as text: its pending
+            // text, or the value it loaded (none for a new row's cell).
+            let pending = object.edits.cells.get(&(cell.row, cell.col));
+            let before = match pending.map(|pending| &pending.new) {
+                Some(NewValue::Text(text)) => Some(text.clone()),
+                Some(NewValue::Null | NewValue::Default { .. } | NewValue::Now) => None,
+                None => opened_text(table, cell, class),
+            };
             let text = match start {
                 EditStart::Replace(text) | EditStart::Typed(text) => text,
-                EditStart::Value => match object.edits.cells.get(&(cell.row, cell.col)) {
-                    Some(pending) => match &pending.new {
-                        NewValue::Text(text) => {
-                            kept = true;
-                            text.clone()
-                        }
-                        // As a pending NULL: nothing of it is text
-                        // to go on from.
-                        NewValue::Null | NewValue::Default { .. } | NewValue::Now => String::new(),
-                    },
-                    // A new row's cell starts from nothing.
-                    // A moment with an offset as the cell shows it: in
-                    // the zone, and edited there, where the engine sends
-                    // one. SQLite's seconds since 1970 as the day they are.
-                    None => table
-                        .loaded(cell)
-                        .map(|loaded| {
-                            let seconds = table
-                                .dates(cell.col)
-                                .and_then(|dates| crate::dates::opened(loaded, &dates));
-                            if let Some(day) = seconds {
-                                return day;
-                            }
-                            let start = start_text(loaded, class);
-                            let temporal =
-                                table.page.columns.get(cell.col).map(|column| column.kind)
-                                    == Some(tabletist_db::ValueKind::Temporal);
-                            temporal
-                                .then_some(table.zone)
-                                .flatten()
-                                .and_then(|zone| crate::ui::format::in_zone(&start, zone))
-                                .unwrap_or(start)
-                        })
-                        .unwrap_or_default(),
-                },
+                // As a pending NULL: nothing of it is text to go on from.
+                // A new row's cell starts from nothing.
+                EditStart::Value => {
+                    kept = matches!(pending.map(|pending| &pending.new), Some(NewValue::Text(_)));
+                    before.clone().unwrap_or_default()
+                }
             };
             // A value of several lines, a long one or a document is edited
             // in the large editor, where its edit was asked for: a popover
@@ -938,6 +942,12 @@ impl App {
             // one nobody typed.
             let typed = kept || !text.is_empty();
             let moment = crate::edit::moment(table, cell.col, &text, &clock);
+            // The value the cell shows before this edit, where it reads
+            // as a moment: what the calendar marks.
+            let was = before
+                .and_then(|text| crate::edit::moment(table, cell.col, &text, &clock))
+                .and_then(Result::ok)
+                .map(|reading| reading.moment);
             let problem = match &moment {
                 // MySQL's zero date, as the cell holds it: said, and
                 // refused only once it is typed.
@@ -961,6 +971,7 @@ impl App {
                 touched: touched || kept,
                 problem,
                 moment,
+                was,
                 picker: None,
                 select: false,
             })
@@ -1931,6 +1942,14 @@ impl App {
             // sheet where the person says. Neither touches the settings.
             (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
             (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
+            // The calendar under a date's editor, saved as its switch in
+            // Settings saves it.
+            (Typed::Command(Command::ShowCalendar), _) => {
+                Action::SetOption(crate::settings::OptionValue::DatePicker(true))
+            }
+            (Typed::Command(Command::HideCalendar), _) => {
+                Action::SetOption(crate::settings::OptionValue::DatePicker(false))
+            }
             (Typed::Command(Command::ClearHistory), _) => Action::ClearHistory(tab),
             // From any pane: of what the tree's cursor is on, or the tab in
             // front.

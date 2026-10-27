@@ -48,6 +48,7 @@ second Esc gives the keyboard back.
 | `:history clear` | Clear this connection's history, once you answer `y` |
 | `:keys default` | Open every key in force in your editor, as `settings.toml` spells them, commented: a file to copy lines from, written again each time and never read |
 | `:keys cheatsheet` | Save the keys in force as a Markdown cheat sheet, where you say |
+| `:set calendar`, `:set nocalendar` | Show or hide the [calendar]({% link _guide/editing-data.md %}#the-calendar) under a date's editor, saved as its switch in Settings is |
 | `?` | The list of keys |
 
 Ctrl+P opens quick open from any pane: a picker at the top of the

@@ -852,6 +852,7 @@ fn control_height(option: OptionId, look: &Look) -> f32 {
         | OptionId::Wrap => SWITCH,
         OptionId::RestoreTabs
         | OptionId::ValueTags
+        | OptionId::DatePicker
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -1150,6 +1151,7 @@ fn control(
         }
         OptionId::RestoreTabs
         | OptionId::ValueTags
+        | OptionId::DatePicker
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
         | OptionId::AgentsOn
@@ -1512,6 +1514,7 @@ fn hint(ui: &Ui, at: egui::Pos2, right: f32, option: OptionId, settings: &Settin
         | OptionId::RestoreTabs
         | OptionId::ProductionReadOnly
         | OptionId::ConfirmCloseEdits
+        | OptionId::DatePicker
         | OptionId::IdleDisconnect
         | OptionId::AgentsOn
         | OptionId::LogDays

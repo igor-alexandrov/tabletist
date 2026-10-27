@@ -105,6 +105,9 @@ pub struct App {
     /// The order the person writes a day's numbers in (`15/01/2026`), by
     /// the region of the system's locale, as the app found it at its start.
     pub date_order: crate::dates::Order,
+    /// The day the system's locale starts its weeks on, as the app found
+    /// it at its start: the first column of the calendar.
+    pub week_start: jiff::civil::Weekday,
     /// A time the clock is stopped at, for a test: `None` reads the
     /// system's clock. What `today` and `now` typed into a date are.
     pub stopped_clock: Option<jiff::Timestamp>,
@@ -339,6 +342,7 @@ impl App {
             settings_file,
             system_zone: system_zone(),
             date_order: date_order(),
+            week_start: week_start(),
             stopped_clock: None,
             named_zone,
             zones: None,
@@ -719,6 +723,17 @@ impl App {
         self.settings
             .tz
             .resolve(&self.system_zone, self.zones.as_deref())
+    }
+
+    /// The calendar under the editor of a date, where the settings show
+    /// one: its days read at [`App::date_clock`], its weeks the locale's.
+    pub fn calendar(&self) -> Option<crate::ui::cell_editor::Calendar> {
+        self.settings
+            .date_picker
+            .then(|| crate::ui::cell_editor::Calendar {
+                clock: self.date_clock(),
+                week: self.week_start,
+            })
     }
 
     /// What a date typed into an editor is read at: the time it is, the
@@ -5931,6 +5946,22 @@ fn date_order() -> crate::dates::Order {
         variable("LC_TIME").as_deref(),
         fastframe_i18n::system_languages(),
     )
+}
+
+/// The day the system's locale starts its weeks on
+/// ([`crate::dates::first_weekday`]). Monday in a test, whatever the
+/// machine's.
+fn week_start() -> jiff::civil::Weekday {
+    if cfg!(test) {
+        return jiff::civil::Weekday::Monday;
+    }
+    let variable = |name: &str| std::env::var(name).ok();
+    let region = crate::dates::locale_region(
+        variable("LC_ALL").as_deref(),
+        variable("LC_TIME").as_deref(),
+        fastframe_i18n::system_languages(),
+    );
+    crate::dates::first_weekday(region.as_deref())
 }
 
 /// The computer's time zone, or UTC where it cannot be found. Tests have
@@ -21623,6 +21654,7 @@ masked = ["orders.email"]
                         touched: true,
                         problem: None,
                         moment: None,
+                        was: None,
                         picker: None,
                         select: false,
                     });

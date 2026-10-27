@@ -15,6 +15,9 @@ mod agents_tests;
 mod agent_settings_tests;
 #[cfg(test)]
 mod appearance_settings_tests;
+pub mod calendar;
+#[cfg(test)]
+mod calendar_tests;
 pub mod cell_editor;
 #[cfg(test)]
 mod comment_tests;
@@ -1902,7 +1905,7 @@ value_tags   = true
             let lead = harness.painted_rect(lead).expect("the tab's lead");
             assert!(control.top() > lead.bottom(), "{control:?} {lead:?}");
             // And back up with it: the first row's menu.
-            for _ in 0..7 {
+            for _ in 0..8 {
                 harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
             }
             let tree = harness.settle();
@@ -13938,6 +13941,9 @@ value_tags   = true
         use egui::accesskit::Role;
         for look in desktop_looks() {
             let (mut harness, tab, id) = stamped_in(look);
+            // The database's now, where no calendar is under the field:
+            // a calendar's Now is the clock's (`date_tests`).
+            harness.app.settings.date_picker = false;
             // In the grid, and in the row panel's field.
             for panel in [false, true] {
                 harness.app.workspace_mut(tab).unwrap().row_panel = panel;
