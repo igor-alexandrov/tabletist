@@ -98,8 +98,11 @@ fn report_startup_error(error: &anyhow::Error) {
 }
 
 pub fn main(cli: Cli) -> anyhow::Result<()> {
-    // Demo runs use a throwaway profile: nothing touches the user's files.
-    // It lives until the window closes and is removed when `main` returns.
+    // Demo runs use a throwaway profile: their settings, connections and
+    // secrets are never the user's. Like any start they take the desktop's
+    // theme and font (and, installed from a package, set up its Omarchy
+    // theme as a first start does). The profile lives until the window
+    // closes and is removed when `main` returns.
     let demo_root = if cli.demo {
         Some(demo_profile()?)
     } else {
@@ -124,6 +127,7 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
 
     let settings = Settings::load(&dirs);
     let demo = cli.demo;
+    let follow_desktop = follows_desktop(&cli);
     let shot = cli.demo_shot.clone().map(Shot::new);
     eframe::run_native(
         "Tabletist",
@@ -135,7 +139,7 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
                 keyring_for(demo),
             );
             let mut app = App::new(dirs, settings, backend);
-            app.attach(&cc.egui_ctx, !demo);
+            app.attach(&cc.egui_ctx, follow_desktop);
             // Not for a demo: its profile and its keyring are throwaway.
             if !demo {
                 app.serve_agents();
@@ -160,6 +164,13 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
         }),
     )
     .map_err(|error| anyhow::anyhow!("could not open the window: {error}"))
+}
+
+/// Whether the window takes the desktop's theme and font: a demo does, to
+/// show the app as it looks there, but a demo's screenshot does not, so the
+/// picture is the same on every desktop it is taken on.
+fn follows_desktop(cli: &Cli) -> bool {
+    cli.demo_shot.is_none()
 }
 
 /// The keyring for saved passwords. Demo runs keep secrets in memory, so a
@@ -483,6 +494,17 @@ mod tests {
     fn demo_mode_never_uses_the_os_keyring() {
         assert!(!keyring_for(true).is_native());
         assert!(keyring_for(false).is_native());
+    }
+
+    #[test]
+    fn the_demo_follows_the_desktop_and_its_screenshot_does_not() {
+        let follows = |args: &[&str]| {
+            follows_desktop(&Cli::try_parse_from([&["tabletist"], args].concat()).unwrap())
+        };
+        assert!(follows(&[]));
+        assert!(follows(&["--demo"]));
+        assert!(follows(&["--demo", "--demo-size", "1200x750"]));
+        assert!(!follows(&["--demo", "--demo-shot", "demo.png"]));
     }
 
     #[test]

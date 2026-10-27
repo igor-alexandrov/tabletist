@@ -16,7 +16,9 @@ tabletist --demo
 It opens a small SQLite database with a few tables, a view, and one table
 of 100,000 rows for trying paging, sorting and cancel. The demo keeps
 everything in a throwaway folder that is removed when you quit, and it
-never touches your saved connections or your keyring.
+never touches your saved connections or your keyring. It takes your
+desktop's theme and font as Tabletist always does: on Omarchy, the theme
+of the moment.
 
 ## Add a connection
 

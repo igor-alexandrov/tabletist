@@ -634,4 +634,6 @@ policy.
 | `mcp` | Connects an agent to the running Tabletist, over its stdin and stdout. An agent starts it. When Tabletist is not running, or agents are off in it, it says so to the agent and ends |
 
 `--help` also lists `--demo-shot`, which saves a picture of the demo's
-window to a file, and `--demo-size`, which sets that window's size.
+window to a file, and `--demo-size`, which sets that window's size. The
+picture is drawn in the look's own colours and font, not the desktop's, so
+it is the same on every desktop.
