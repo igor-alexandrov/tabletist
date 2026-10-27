@@ -198,8 +198,10 @@ after. Review SQL shows the keyword as it is sent.
 - A date column gets the date and a time column the time of day. On
   SQLite the time is UTC, to the second.
 - While a date or time value is being edited with the calendar off, the
-  **now** button beside it sets the same thing. The calendar's **Now** is
-  the time it is as you click it. The Omarchy look has no button: type
+  **now** button beside it sets the same thing. So does a MySQL
+  `TIMESTAMP`'s while its session's zone is not known, as the calendar
+  has no **Now** there. The calendar's **Now** is the time it is as you
+  click it. The Omarchy look has no button: type
   `now()` there.
 - In a new row, a cell you leave alone is its default already, so
   `DEFAULT` there takes the value out again.

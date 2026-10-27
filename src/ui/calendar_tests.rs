@@ -329,6 +329,8 @@ fn the_time_fields_are_spin_buttons_with_their_range() {
     open(&mut harness, tab, id);
     assert!(harness.has("the server's zone"));
     assert!(node(&mut harness, "Now", Role::Button).is_none());
+    // The database's now stays beside the field: there, it is the server's.
+    assert!(node(&mut harness, "now", Role::Button).is_some());
 }
 
 #[test]

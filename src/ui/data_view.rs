@@ -2136,10 +2136,17 @@ pub(super) fn editor_target(
     let search = search_of(workspace, object, editor);
     // The calendar under a date's line, where the settings show one: its
     // Now is the clock's, and takes the place of the database's now
-    // beside the field.
+    // beside the field. Where it has none (a MySQL `TIMESTAMP` whose
+    // session's zone is not known), the database's stays.
     let calendar = calendar
         .filter(|_| dates.is_some() && search.is_none())
         .cloned();
+    let calendar_now = calendar
+        .as_ref()
+        .zip(dates.as_ref())
+        .is_some_and(|(calendar, column)| {
+            crate::dates::now_text(column, &calendar.clock).is_some()
+        });
     Some(cell_editor::Target {
         id: cell_editor::field_id(tab, object.id),
         name: column.name.clone(),
@@ -2147,7 +2154,7 @@ pub(super) fn editor_target(
         max_chars,
         json: class == Some(tabletist_db::ColumnClass::Json),
         hold,
-        now: calendar.is_none()
+        now: !calendar_now
             && info.is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
         dates,
         nullable: info.is_some_and(|column| column.nullable),
