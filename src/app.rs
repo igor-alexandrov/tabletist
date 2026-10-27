@@ -935,6 +935,12 @@ impl App {
                 self.active = (self.active as isize + step).rem_euclid(len) as usize;
             }
             Action::Connect { tab, conn } => {
+                // While the picker asks whether to delete a connection,
+                // nothing connects from it: a row's menu or a double-click
+                // would take the question away, and the form it holds.
+                if self.picker_asks() == Some(tab) {
+                    return;
+                }
                 if let Some(saved) = self.connections.get(&conn).cloned() {
                     self.connect_tab(tab, saved, Secrets::default());
                 }
@@ -977,8 +983,73 @@ impl App {
                 }
             }
             Action::SelectConnection { tab, conn } => {
+                // A click on another row leaves the question, and keeps the
+                // connection.
+                let asked = self
+                    .picker_mut(tab)
+                    .and_then(|picker| picker.deleting.clone());
+                if asked.is_some() && asked != conn {
+                    self.apply(Action::AnswerDeleteConnection { tab, delete: false });
+                }
                 if let Some(picker) = self.picker_mut(tab) {
                     picker.selected = conn;
+                }
+            }
+            Action::AskDeleteConnection(conn) => {
+                // One question at a time: asked again, the first stands, with
+                // the form it holds.
+                if self.connections.get(&conn).is_none() || self.picker_asks().is_some() {
+                    return;
+                }
+                // Asked from the connection's form: the form goes, and is
+                // kept as it was for a Keep.
+                let form = match self.dialog.take() {
+                    Some(Dialog::Connection(mut form)) if form.editing.as_ref() == Some(&conn) => {
+                        form.set_aside();
+                        Some(form)
+                    }
+                    other => {
+                        self.dialog = other;
+                        None
+                    }
+                };
+                self.apply(Action::ShowConnections);
+                let tab = self.active_tab_id();
+                // The row it asks about shows: a search that hides it is
+                // cleared, and its group unfolded.
+                let search = self
+                    .picker_mut(tab)
+                    .map(|picker| picker.search.clone())
+                    .unwrap_or_default();
+                let shown = crate::ui::picker::visible(self, &search).contains(&conn);
+                let search = if shown { search } else { String::new() };
+                let found = self.connections.search(&search);
+                let group = crate::ui::picker::groups(&found)
+                    .into_iter()
+                    .find(|group| group.connections.iter().any(|saved| saved.id == conn))
+                    .map(|group| group.title);
+                if let Some(picker) = self.picker_mut(tab) {
+                    picker.search = search;
+                    picker.folded.retain(|title| Some(title) != group.as_ref());
+                    picker.selected = Some(conn.clone());
+                    picker.deleting = Some(conn);
+                    picker.form = form;
+                }
+            }
+            Action::AnswerDeleteConnection { tab, delete } => {
+                let Some(picker) = self.picker_mut(tab) else {
+                    return;
+                };
+                let (asked, form) = (picker.deleting.take(), picker.form.take());
+                match (asked, delete) {
+                    (Some(conn), true) => self.apply(Action::DeleteConnection(conn)),
+                    // Kept: the form it was asked from opens again as it was.
+                    (Some(_), false) if self.dialog.is_none() => {
+                        self.dialog = form.map(Dialog::Connection);
+                        // What it waited for was dropped while it was held.
+                        self.list_ssh_hosts();
+                    }
+                    _ => {}
                 }
             }
             Action::MovePickerSelection { tab, step } => {
@@ -2828,6 +2899,10 @@ impl App {
                 self.reconnect(tab);
             }
             Action::Backend(event) => self.apply_event(event),
+            // Not over a question about deleting a connection: a form opened
+            // there would take the form the question holds.
+            Action::NewConnection | Action::EditConnection(_)
+                if self.picker_asks() == Some(self.active_tab_id()) => {}
             Action::NewConnection => {
                 self.dialog = Some(Dialog::Connection(Box::new(ConnectionForm {
                     production_read_only: self.settings.production_read_only,
@@ -4636,6 +4711,23 @@ impl App {
             }),
             _ => None,
         }
+    }
+
+    /// The picker's tab, while it asks whether to delete a connection that
+    /// is still saved. Nothing may take that question away meanwhile, nor
+    /// the connection's form it holds.
+    fn picker_asks(&self) -> Option<ConnTabId> {
+        self.tabs.iter().find_map(|open| match &open.content {
+            ConnTabContent::Picker(picker)
+                if picker
+                    .deleting
+                    .as_ref()
+                    .is_some_and(|asked| self.connections.get(asked).is_some()) =>
+            {
+                Some(open.id)
+            }
+            ConnTabContent::Picker(_) | ConnTabContent::Workspace(_) => None,
+        })
     }
 
     /// Asks the backend for ~/.ssh/config's Host aliases for the open

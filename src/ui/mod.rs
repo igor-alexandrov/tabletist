@@ -2920,15 +2920,34 @@ value_tags   = true
     }
 
     #[test]
-    fn the_terminal_picker_deletes_only_on_dd() {
+    fn the_terminal_picker_asks_on_dd_and_deletes_on_y() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
         add_saved(&mut harness, "Alpha");
         harness.press(Key::J, Modifiers::NONE);
         harness.press(Key::D, Modifiers::NONE);
-        assert_eq!(harness.app.connections.connections.len(), 1, "one d waits");
+        assert!(!asks_to_delete(&harness), "one d waits");
         harness.press(Key::D, Modifiers::NONE);
+        assert!(asks_to_delete(&harness));
+        assert_eq!(harness.app.connections.connections.len(), 1, "dd only asks");
+        // `n` keeps it.
+        harness.press(Key::N, Modifiers::NONE);
+        assert!(!asks_to_delete(&harness));
+        assert_eq!(harness.app.connections.connections.len(), 1);
+        // And `y` deletes it.
+        harness.press(Key::D, Modifiers::NONE);
+        harness.press(Key::D, Modifiers::NONE);
+        harness.press(Key::Y, Modifiers::NONE);
+        assert!(!asks_to_delete(&harness));
         assert!(harness.app.connections.connections.is_empty());
+    }
+
+    /// Whether the picker asks whether to delete a connection.
+    fn asks_to_delete(harness: &Harness) -> bool {
+        matches!(
+            &harness.app.active_tab().content,
+            crate::model::ConnTabContent::Picker(picker) if picker.deleting.is_some()
+        )
     }
 
     #[test]
@@ -3212,28 +3231,326 @@ value_tags   = true
         assert_eq!(saved(&harness), 2);
         // A bare key press, as a test may send a letter, is read too.
         harness.press(Key::D, Modifiers::NONE);
-        assert_eq!(saved(&harness), 2, "one d waits");
+        assert!(!asks_to_delete(&harness), "one d waits");
         harness.press(Key::D, Modifiers::NONE);
+        assert!(asks_to_delete(&harness));
+        type_key(&mut harness, Key::Y, "y");
         assert_eq!(saved(&harness), 1);
     }
 
     #[test]
-    fn the_other_looks_delete_a_connection_with_backspace_alone() {
+    fn the_other_looks_ask_to_delete_a_connection_with_mod_backspace() {
         for look in desktop_looks() {
             let mut harness = picker_with_one(look);
-            harness.press(Key::Backspace, Modifiers::COMMAND);
-            assert_eq!(saved(&harness), 1, "{}: not with the chord", look.name);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            assert!(
+                !asks_to_delete(&harness),
+                "{}: not with Backspace alone",
+                look.name
+            );
             harness.press(Key::D, Modifiers::COMMAND);
             assert_eq!(saved(&harness), 2, "{}: duplicated", look.name);
-            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            assert_eq!(saved(&harness), 2, "{}: the chord only asks", look.name);
+            // While it asks, its answers are the only keys: Enter connects
+            // nothing.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(on_picker(&harness), "{}", look.name);
+            // Esc keeps it.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!asks_to_delete(&harness), "{}", look.name);
+            assert_eq!(saved(&harness), 2, "{}: kept", look.name);
+            // Delete deletes it.
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            harness.click("Delete");
+            assert!(!asks_to_delete(&harness), "{}", look.name);
             assert_eq!(saved(&harness), 1, "{}", look.name);
             // The letters are Omarchy's.
-            for (key, text) in [(Key::D, "d"), (Key::D, "d"), (Key::N, "n")] {
+            for (key, text) in [(Key::D, "d"), (Key::D, "d"), (Key::Y, "y")] {
                 type_key(&mut harness, key, text);
             }
             assert_eq!(saved(&harness), 1, "{}", look.name);
+            assert!(!asks_to_delete(&harness), "{}", look.name);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn a_rows_menu_and_the_connection_form_ask_before_deleting() {
+        for look in desktop_looks() {
+            // The row's menu.
+            let mut harness = picker_with_one(look);
+            harness.click("More actions for Bookshop");
+            harness.click("Delete");
+            assert!(asks_to_delete(&harness), "{}: the menu", look.name);
+            assert_eq!(saved(&harness), 1, "{}: the menu", look.name);
+            // The form's Delete closes the form, and the picker asks.
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn));
+            harness.click("Delete Bookshop");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(asks_to_delete(&harness), "{}: the form", look.name);
+            assert_eq!(saved(&harness), 1, "{}: the form", look.name);
+        }
+    }
+
+    #[test]
+    fn a_question_about_a_connection_gone_meanwhile_keeps_no_keys() {
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let bookshop = harness.app.connections.connections[0].id.clone();
+            let other = add_saved(&mut harness, "Other");
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            // Gone some other way, as connections.toml read again may take it.
+            harness.app.connections.remove(&bookshop);
+            harness.settle();
+            // The list's own keys work again: the arrows, and its delete.
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content
+            else {
+                unreachable!()
+            };
+            assert_eq!(picker.deleting.as_ref(), Some(&other), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_question_names_the_connection_as_it_was_typed() {
+        let mut harness = picker_with_one(Look::omarchy());
+        type_key(&mut harness, Key::D, "d");
+        type_key(&mut harness, Key::D, "d");
+        assert!(asks_to_delete(&harness));
+        assert!(harness.has("delete Bookshop? this can't be undone."));
+    }
+
+    #[test]
+    fn a_long_question_grows_the_footer_and_covers_no_row() {
+        let name = "Bookshop reporting replica in the second region, read by the nightly jobs";
+        for look in Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let conn = add_saved(&mut harness, name);
+            harness.app.apply(Action::AskDeleteConnection(conn));
+            let tree = harness.settle();
+            let row = crate::testing::bounds(&tree, name, egui::accesskit::Role::Button)
+                .unwrap_or_else(|| panic!("{}: no row", look.name));
+            let (_, question) = harness
+                .text_rects
+                .iter()
+                .find(|(text, _)| text.contains(name) && text.contains("undone"))
+                .unwrap_or_else(|| panic!("{}: no question", look.name));
+            assert!(question.height() > 20.0, "{}: wraps", look.name);
+            assert!(
+                question.top() >= row.bottom(),
+                "{}: over its row",
+                look.name
+            );
+            assert!(question.bottom() <= 480.0, "{}: off the window", look.name);
+        }
+    }
+
+    #[test]
+    fn the_question_names_each_secret_that_goes_with_the_connection() {
+        use crate::connections::PasswordMode::{Keyring, None as NoSecret};
+        use tabletist_db::SshAuth;
+        let key = SshAuth::KeyFile {
+            path: "/home/me/.ssh/id_ed25519".into(),
+        };
+        for (password, ssh, said) in [
+            (NoSecret, None, "Delete Bookshop? This can't be undone."),
+            (
+                Keyring,
+                None,
+                "Delete Bookshop and its saved password? This can't be undone.",
+            ),
+            (
+                NoSecret,
+                Some(key),
+                "Delete Bookshop and its saved key's passphrase? This can't be undone.",
+            ),
+            (
+                Keyring,
+                Some(SshAuth::Password),
+                "Delete Bookshop and its saved password and SSH password? This can't be undone.",
+            ),
+        ] {
+            let mut harness = picker_with_one(Look::macos());
+            let mut saved = harness.app.connections.connections[0].clone();
+            saved.password = password;
+            saved.ssh_secret = if ssh.is_some() { Keyring } else { NoSecret };
+            saved.spec.ssh = ssh.map(|auth| tabletist_db::SshSpec {
+                host: "bastion".into(),
+                port: None,
+                user: "ops".into(),
+                auth,
+            });
+            let conn = saved.id.clone();
+            harness.app.connections.upsert(saved);
+            harness.app.apply(Action::AskDeleteConnection(conn));
+            assert!(harness.has(said), "{said}");
+        }
+    }
+
+    #[test]
+    fn keeping_a_connection_gives_its_form_back_as_it_was() {
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn));
+            harness.settle();
+            let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog else {
+                panic!("{}: no form", look.name);
+            };
+            form.name = "Edited".into();
+            harness.click("Delete Edited");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            let Some(crate::model::Dialog::Connection(form)) = &harness.app.dialog else {
+                panic!("{}: the form did not come back", look.name);
+            };
+            assert_eq!(form.name, "Edited", "{}: as it was", look.name);
+            assert_eq!(saved(&harness), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_held_form_waits_for_nothing_and_comes_back_idle() {
+        use crate::model::{Dialog, TestState};
+        let mut harness = picker_with_one(Look::macos());
+        let conn = harness.app.connections.connections[0].id.clone();
+        harness.app.apply(Action::EditConnection(conn.clone()));
+        harness.app.apply(Action::TestConnection);
+        let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+            panic!("no form");
+        };
+        let TestState::Running(request) = form.test else {
+            panic!("{:?}", form.test);
+        };
+        harness.app.apply(Action::AskDeleteConnection(conn));
+        // The test's answer comes while the form is held: nobody takes it.
+        harness
+            .app
+            .apply(Action::Backend(crate::backend::Event::Tested {
+                request,
+                result: Ok(()),
+            }));
+        let tab = harness.app.active_tab_id();
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+            panic!("the form did not come back");
+        };
+        assert_eq!(form.test, TestState::Idle, "no Test left running");
+        assert!(form.pick_request.is_none());
+    }
+
+    #[test]
+    fn a_held_form_outlasts_whatever_else_the_picker_is_asked() {
+        use crate::model::Dialog;
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn.clone()));
+            harness.settle();
+            let Some(Dialog::Connection(form)) = &mut harness.app.dialog else {
+                panic!("{}: no form", look.name);
+            };
+            form.name = "Edited".into();
+            harness.click("Delete Edited");
+            // Asked again (a row's menu), and New connection (its button):
+            // neither takes the question, nor the form it holds.
+            harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+            harness.app.apply(Action::NewConnection);
+            harness.app.apply(Action::EditConnection(conn));
+            assert!(
+                harness.app.dialog.is_none(),
+                "{}: no form over it",
+                look.name
+            );
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+                panic!("{}: the form did not come back", look.name);
+            };
+            assert_eq!(form.name, "Edited", "{}: as it was", look.name);
+            assert!(
+                form.ssh_hosts_request.is_some(),
+                "{}: asks for the SSH hosts again",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_connects_while_the_picker_asks() {
+        let mut harness = picker_with_one(Look::macos());
+        let tab = harness.app.active_tab_id();
+        let conn = harness.app.connections.connections[0].id.clone();
+        harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+        // A row's menu, a double-click: both connect by this action.
+        harness.app.apply(Action::Connect { tab, conn });
+        assert!(on_picker(&harness));
+        assert!(asks_to_delete(&harness));
+    }
+
+    #[test]
+    fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
+        let mut harness = Harness::new();
+        let tab = harness.app.active_tab_id();
+        let shop = add_saved(&mut harness, "Shop");
+        add_saved(&mut harness, "Shop");
+        let alpha = add_saved(&mut harness, "Alpha");
+        // A search that hides the row is cleared.
+        harness.app.picker_mut(tab).unwrap().search = "alp".into();
+        harness.app.apply(Action::AskDeleteConnection(shop.clone()));
+        let shown = harness.app.picker_mut(tab).unwrap();
+        assert_eq!(shown.search, "");
+        assert_eq!(shown.deleting.as_ref(), Some(&shop));
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        // One that shows it stays.
+        harness.app.picker_mut(tab).unwrap().search = "alp".into();
+        harness
+            .app
+            .apply(Action::AskDeleteConnection(alpha.clone()));
+        assert_eq!(harness.app.picker_mut(tab).unwrap().search, "alp");
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        // Its folded group opens, and only its own.
+        harness.app.picker_mut(tab).unwrap().search.clear();
+        harness.app.picker_mut(tab).unwrap().folded = vec!["Shop".into(), "Local".into()];
+        harness.app.apply(Action::AskDeleteConnection(shop.clone()));
+        assert_eq!(
+            harness.app.picker_mut(tab).unwrap().folded,
+            vec!["Local".to_owned()]
+        );
+    }
+
+    #[test]
+    fn deleting_a_connection_from_its_window_asks_in_the_picker() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+        harness.settle();
+        assert!(on_picker(&harness));
+        assert!(asks_to_delete(&harness));
+        let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content else {
+            unreachable!()
+        };
+        assert_eq!(
+            picker.selected.as_ref(),
+            Some(&conn),
+            "on the row it asks about"
+        );
     }
 
     #[test]
@@ -3252,8 +3569,9 @@ value_tags   = true
                 type_key(&mut harness, Key::D, "d");
                 type_key(&mut harness, Key::D, "d");
             } else {
-                harness.press(Key::Backspace, Modifiers::NONE);
+                harness.press(Key::Backspace, Modifiers::COMMAND);
             }
+            assert!(!asks_to_delete(&harness), "{}: from a button", look.name);
             assert_eq!(saved(&harness), 1, "{}: from a button", look.name);
             // In the search field it is the text's.
             let mut harness = picker_with_one(look);
@@ -3262,11 +3580,12 @@ value_tags   = true
             harness.settle();
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             harness.frame(vec![egui::Event::Text("boo".into())]);
-            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
             if look.terminal {
                 harness.frame(vec![egui::Event::Text("dd".into())]);
             }
             harness.settle();
+            assert!(!asks_to_delete(&harness), "{}: from the search", look.name);
             assert_eq!(saved(&harness), 1, "{}: from the search", look.name);
         }
     }
@@ -3293,11 +3612,11 @@ value_tags   = true
             );
         }
         let mac = painted(Look::macos());
-        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌫ delete"] {
+        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌘⌫ delete"] {
             assert!(mac.iter().any(|text| text == hint), "{hint}: {mac:?}");
         }
         let standard = painted(Look::standard());
-        for hint in ["Enter connect", "Ctrl+E edit", "Backspace delete"] {
+        for hint in ["Enter connect", "Ctrl+E edit", "Ctrl+Backspace delete"] {
             assert!(
                 standard.iter().any(|text| text == hint),
                 "{hint}: {standard:?}"
@@ -8858,6 +9177,8 @@ value_tags   = true
         assert!(harness.has("Edit connection"));
         harness.click("Delete Shop");
         assert!(harness.app.dialog.is_none());
+        assert!(harness.app.connections.get(&id).is_some(), "it asks first");
+        harness.click("Delete");
         assert!(harness.app.connections.get(&id).is_none());
         new_connection(&mut harness);
         let tree = harness.settle();

@@ -151,7 +151,7 @@ keyboard.
 | Cmd+N | New connection |
 | Cmd+E | Edit |
 | Cmd+D | Duplicate |
-| Backspace | Delete |
+| Cmd+Backspace | Delete, once you say so. Esc keeps the connection |
 | Esc | Cancel connecting |
 
 ### The connection dialog
