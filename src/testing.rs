@@ -1665,6 +1665,9 @@ impl Harness {
         // A search is sent on the frame after the keystroke, not 150 ms
         // later: no test waits.
         app.lookup_delay = std::time::Duration::ZERO;
+        // The caret stays: a frame shows what the steps did, not where the
+        // clock is in a blink.
+        app.caret_blinks = false;
         app.attach(&ctx, false);
         // The zone database, as the backend answers the attach's
         // `LoadZones`.
@@ -1720,7 +1723,7 @@ impl Harness {
         self.app.look = look;
         let read = self.app.desktop_font.faces.as_ref();
         self.app.fonts = crate::theme::install_with(&self.ctx, false, &look, read);
-        crate::theme::apply(&self.ctx, &self.app.palette, &look);
+        self.app.apply_style(&self.ctx);
     }
 }
 
@@ -1742,18 +1745,22 @@ impl Harness {
         harness
     }
 
-    /// Settles, renders the last frame, and writes it to `path` as PNG.
-    pub fn shot(&mut self, path: &std::path::Path) {
+    /// Settles and renders the last frame.
+    pub fn render(&mut self) -> image::RgbaImage {
         use egui_kittest::TestRenderer as _;
         self.settle();
         self.settle();
         let output = self.last.take().expect("a frame ran");
-        let image = self
-            .renderer
+        self.renderer
             .as_mut()
             .expect("made with for_shots")
             .render(&self.ctx, &output)
-            .expect("rendered");
+            .expect("rendered")
+    }
+
+    /// Settles, renders the last frame, and writes it to `path` as PNG.
+    pub fn shot(&mut self, path: &std::path::Path) {
+        let image = self.render();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("shots directory");
         }

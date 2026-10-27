@@ -24,6 +24,8 @@ pub mod managed;
 pub mod menu;
 pub mod model;
 pub mod paths;
+#[cfg(test)]
+mod promo;
 pub mod recents;
 pub mod relay;
 pub mod review;

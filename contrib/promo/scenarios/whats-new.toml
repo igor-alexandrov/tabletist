@@ -1,0 +1,135 @@
+# What is new since 0.2.0, as a sizzle reel for the 0.3 release: a hook,
+# hard cuts of the app on the beat, each with a label, flash cards faster
+# and faster, and a hit into the call to action. Every scene lasts a fixed
+# number of beats (at 128, a beat is 0.469 s). The app's state carries from
+# one cut to the next: the runner plays them in order. Each feature gets a
+# video of its own later; this one only names them.
+title = "New in Tabletist 0.3"
+tempo = 128
+
+# The 0.2.0 to 0.3.0 release notes list about 56 features, fixes aside.
+[intro]
+title = "More than 50 new features"
+text = "Tabletist 0.3"
+# The line ends well before the first cut, so the drop hits at full level.
+say = "More than fifty new features."
+beats = 8
+
+# 0.3.0: Quick open. The finder stays up past the cut's middle before
+# Enter opens the table.
+[[scene]]
+label = "Quick open"
+beats = 4
+steps = [
+  { command = "find_object" },
+  { type = "boo" },
+  { hold = 0.5 },
+  { press = "enter" },
+  { hold = 0.4 },
+]
+
+# 0.2.0: editing in the grid.
+[[scene]]
+label = "Edit in place"
+beats = 4
+steps = [
+  { click = "Small Engines" },
+  { command = "edit_cell" },
+  { type = ", Revised" },
+  { press = "enter" },
+]
+
+# 0.2.0: Review SQL before a save. Review is there before a save, not
+# forced on it: Save writes without it.
+[[scene]]
+label = "Review before you save"
+beats = 2
+steps = [
+  { command = "review_sql" },
+  { hold = 0.8 },
+]
+
+# 0.2.2 and 0.3.0: new, duplicated and deleted rows. The row deleted is
+# near the top, so it stays in sight once the new rows push the rest down.
+# The last, added, is left with its title being edited, for the next cut.
+[[scene]]
+label = "Add, duplicate, delete rows"
+beats = 2
+steps = [
+  { click = "A Field Guide to Fog" },
+  { command = "delete_row" },
+  { click = "Lanterns" },
+  { command = "duplicate_row" },
+  { command = "add_row" },
+  { hold = 0.4 },
+]
+
+# 0.3.0: a foreign key searches the table it points at. The new row gets a
+# title, Tab moves the editor to author_id, and "ara" narrows the authors.
+[[scene]]
+label = "Foreign key search"
+beats = 3
+steps = [
+  { type = "Paper Moons" },
+  { command = "commit_next" },
+  { type = "ara" },
+  { hold = 0.8 },
+]
+
+# 0.3.0: Format. A short query, typed slowly enough to read, then laid out
+# by one key. It is run too: the next cut's history lists it.
+[[scene]]
+label = "Format SQL"
+beats = 6
+steps = [
+  { command = "new_sql_tab" },
+  { type = "select title, price from books where in_print" },
+  { command = "format" },
+  { command = "run_statement" },
+  { hold = 0.6 },
+]
+
+# 0.3.0: query history. History's key is not read while the SQL editor has
+# the keyboard, so Esc leaves it first; the arrow shows the statement whole.
+[[scene]]
+label = "Query history"
+beats = 2
+steps = [
+  { press = "esc" },
+  { command = "history" },
+  { command = "move_in_history", key = "down" },
+  { hold = 1.0 },
+]
+
+# The rest of 0.3.0, a card each, faster and faster.
+[[scene]]
+slide = "Agents over MCP"
+beats = 1
+
+[[scene]]
+slide = "Vim mode"
+beats = 1
+
+[[scene]]
+slide = "Rebind any key"
+beats = 1
+
+[[scene]]
+slide = "Show all rows"
+beats = 0.5
+
+[[scene]]
+slide = "Run without timeout"
+beats = 0.5
+
+[[scene]]
+slide = "AppImage for Linux"
+beats = 0.5
+
+[[scene]]
+slide = "Notarized for macOS"
+beats = 0.5
+
+[outro]
+say = "Get it free."
+beats = 8

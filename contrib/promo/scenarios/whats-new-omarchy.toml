@@ -1,0 +1,126 @@
+# whats-new.toml in the Omarchy look: Tokyo Night, vim's keys and the `:`
+# prompt. The same cuts, labels, cards and lengths; only the keys differ.
+title = "New in Tabletist 0.3"
+tempo = 128
+look = "omarchy"
+
+[intro]
+title = "More than 50 new features"
+text = "Tabletist 0.3"
+say = "More than fifty new features."
+beats = 8
+
+[[scene]]
+label = "Quick open"
+beats = 4
+steps = [
+  { command = "find_object" },
+  { type = "boo" },
+  { hold = 0.5 },
+  { press = "enter" },
+  { hold = 0.4 },
+]
+
+# i edits the cell, Enter keeps it.
+[[scene]]
+label = "Edit in place"
+beats = 4
+steps = [
+  { click = "Small Engines" },
+  { command = "edit_cell" },
+  { type = ", Revised" },
+  { press = "enter" },
+]
+
+# :diff opens the statements above the status line.
+[[scene]]
+label = "Review before you save"
+beats = 2
+steps = [
+  { command = "review_sql" },
+  { hold = 0.8 },
+]
+
+# dd deletes, yy and p put a copy, o adds a row with its title being
+# edited, for the next cut.
+[[scene]]
+label = "Add, duplicate, delete rows"
+beats = 2
+steps = [
+  { click = "A Field Guide to Fog" },
+  { command = "delete_row" },
+  { click = "Lanterns" },
+  { command = "yank_row" },
+  { command = "put_row" },
+  { command = "add_row" },
+  { hold = 0.4 },
+]
+
+# Tab keeps the title and goes to author_id, and i opens its search.
+[[scene]]
+label = "Foreign key search"
+beats = 3
+steps = [
+  { type = "Paper Moons" },
+  { command = "commit_next" },
+  { command = "edit_cell" },
+  { type = "ara" },
+  { hold = 0.8 },
+]
+
+# A new tab's editor takes typing at once. The first Esc closes the
+# completions, the second goes to vim's normal mode, where = is the format
+# operator: == formats the line.
+[[scene]]
+label = "Format SQL"
+beats = 6
+steps = [
+  { command = "new_sql_tab" },
+  { type = "select title, price from books where in_print" },
+  { press = "esc", times = 2 },
+  { press = "==" },
+  { command = "run_statement" },
+  { hold = 0.6 },
+]
+
+# :history from the editor's normal mode, j to the statement.
+[[scene]]
+label = "Query history"
+beats = 2
+steps = [
+  { command = "history" },
+  { command = "move_in_history", key = "j" },
+  { hold = 1.0 },
+]
+
+[[scene]]
+slide = "Agents over MCP"
+beats = 1
+
+[[scene]]
+slide = "Vim mode"
+beats = 1
+
+[[scene]]
+slide = "Rebind any key"
+beats = 1
+
+[[scene]]
+slide = "Show all rows"
+beats = 0.5
+
+[[scene]]
+slide = "Run without timeout"
+beats = 0.5
+
+[[scene]]
+slide = "AppImage for Linux"
+beats = 0.5
+
+[[scene]]
+slide = "Notarized for macOS"
+beats = 0.5
+
+[outro]
+say = "Get it free."
+beats = 8

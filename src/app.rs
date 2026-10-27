@@ -237,6 +237,10 @@ pub struct App {
     /// How long after the last keystroke a foreign key picker's search is
     /// sent. `key_picker::DELAY`; nothing in the tests.
     pub lookup_delay: std::time::Duration,
+    /// A text field's caret blinks, as egui's does. Not in the tests: on
+    /// the harness's clock it would show in one frame and not the next,
+    /// with nothing else changed.
+    pub caret_blinks: bool,
     /// The lookups in flight, and the pickers they were sent for. The
     /// matches' read of one whose picker is gone is cancelled
     /// (`send_due_lookups`): an editor goes in many ways.
@@ -392,6 +396,7 @@ impl App {
             window_asks: Vec::new(),
             closed_editors: Vec::new(),
             lookup_delay: crate::key_picker::DELAY,
+            caret_blinks: true,
             lookups: Vec::new(),
             closing: false,
             serves_agents: false,
@@ -7568,6 +7573,15 @@ impl App {
         })
     }
 
+    /// The palette and the look, applied to egui's style, with the caret
+    /// as [`Self::caret_blinks`] says.
+    pub fn apply_style(&self, ctx: &egui::Context) {
+        theme::apply(ctx, &self.palette, &self.look);
+        if !self.caret_blinks {
+            ctx.all_styles_mut(|style| style.visuals.text_cursor.blink = false);
+        }
+    }
+
     /// Called once the window exists. `follow_desktop` is false in tests and
     /// for a demo's screenshot, which must not scan the user's themes or
     /// Omarchy: what they draw is the same on every desktop.
@@ -7600,7 +7614,7 @@ impl App {
         }
         self.system_theme = ctx.system_theme();
         self.palette = self.resolve_palette();
-        theme::apply(ctx, &self.palette, &self.look);
+        self.apply_style(ctx);
         // In tests and the demo too: the zones are a database, not the
         // person's files.
         self.backend.send(Command::LoadZones);
@@ -7797,7 +7811,7 @@ impl App {
             let palette = self.resolve_palette();
             if palette != self.palette {
                 self.palette = palette;
-                theme::apply(ctx, &palette, &self.look);
+                self.apply_style(ctx);
             }
         }
         self.tell_missing_pin(ctx);
@@ -7814,7 +7828,7 @@ impl App {
             }
         }
         if std::mem::take(&mut self.restyle) {
-            theme::apply(ctx, &self.palette, &self.look);
+            self.apply_style(ctx);
         }
         let zoom = self.zoom_factor();
         if self.zoom != Some(zoom) {
@@ -8639,6 +8653,26 @@ mod tests {
             vec![(crate::settings::Key::PageSize, 2)]
         );
         assert!(!app.settings_file.live);
+    }
+
+    /// The app's caret blinks. The harness's stays, through each restyle:
+    /// on its clock a blink would change a frame nothing else changed.
+    #[test]
+    fn the_caret_blinks_but_not_in_the_harness() {
+        let (app, _dir) = app();
+        assert!(app.caret_blinks);
+        let ctx = egui::Context::default();
+        app.apply_style(&ctx);
+        assert!(ctx.global_style().visuals.text_cursor.blink);
+
+        let blinks = |harness: &Harness| harness.ctx.global_style().visuals.text_cursor.blink;
+        let mut harness = Harness::new();
+        assert!(!blinks(&harness));
+        harness.app.restyle = true;
+        harness.app.logic(&harness.ctx.clone());
+        assert!(!blinks(&harness));
+        harness.set_look(crate::theme::Look::macos());
+        assert!(!blinks(&harness));
     }
 
     #[test]
