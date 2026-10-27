@@ -16,6 +16,8 @@ unsafe_code = "deny"
 
 [lints.clippy]
 unwrap_used = "warn"
+# An `unsafe` block or impl without a SAFETY note above it fails the build.
+undocumented_unsafe_blocks = "deny"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The autorelease pool the font queries run in (`fonts.rs`): the version the
