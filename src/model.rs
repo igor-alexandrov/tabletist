@@ -2066,6 +2066,22 @@ impl Default for ConnectionForm {
 }
 
 impl ConnectionForm {
+    /// Set aside while the Connections list asks whether to delete its
+    /// connection: an answer to what it waits for would find no form to
+    /// fill, so it waits for nothing. A running Test stops, as if never
+    /// pressed, and comes back idle.
+    pub fn set_aside(&mut self) {
+        if let TestState::Running(_) = self.test {
+            self.test = TestState::Idle;
+            self.test_started = None;
+            self.test_spec = None;
+            self.test_secrets = tabletist_db::Secrets::default();
+            self.test_waiting = 0;
+        }
+        self.pick_request = None;
+        self.ssh_hosts_request = None;
+    }
+
     /// The config's Host whose alias is the typed SSH host, compared as
     /// OpenSSH compares Host names (ignoring case).
     pub fn ssh_config_host(&self) -> Option<&ConfigHost> {

@@ -996,7 +996,8 @@ impl App {
                 // Asked from the connection's form: the form goes, and is
                 // kept as it was for a Keep.
                 let form = match self.dialog.take() {
-                    Some(Dialog::Connection(form)) if form.editing.as_ref() == Some(&conn) => {
+                    Some(Dialog::Connection(mut form)) if form.editing.as_ref() == Some(&conn) => {
+                        form.set_aside();
                         Some(form)
                     }
                     other => {

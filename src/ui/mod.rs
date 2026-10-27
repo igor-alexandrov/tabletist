@@ -3419,6 +3419,38 @@ value_tags   = true
     }
 
     #[test]
+    fn a_held_form_waits_for_nothing_and_comes_back_idle() {
+        use crate::model::{Dialog, TestState};
+        let mut harness = picker_with_one(Look::macos());
+        let conn = harness.app.connections.connections[0].id.clone();
+        harness.app.apply(Action::EditConnection(conn.clone()));
+        harness.app.apply(Action::TestConnection);
+        let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+            panic!("no form");
+        };
+        let TestState::Running(request) = form.test else {
+            panic!("{:?}", form.test);
+        };
+        harness.app.apply(Action::AskDeleteConnection(conn));
+        // The test's answer comes while the form is held: nobody takes it.
+        harness
+            .app
+            .apply(Action::Backend(crate::backend::Event::Tested {
+                request,
+                result: Ok(()),
+            }));
+        let tab = harness.app.active_tab_id();
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+            panic!("the form did not come back");
+        };
+        assert_eq!(form.test, TestState::Idle, "no Test left running");
+        assert!(form.pick_request.is_none());
+    }
+
+    #[test]
     fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
         let mut harness = Harness::new();
         let tab = harness.app.active_tab_id();
