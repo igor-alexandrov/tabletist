@@ -54,9 +54,5 @@ label = "Catppuccin Latte"
 beats = 2
 steps = [{ omarchy = "Catppuccin Latte" }, { command = "move_row", key = "j" }]
 
-[[scene]]
-slide = "No restart."
-beats = 2
-
 [outro]
 beats = 6
