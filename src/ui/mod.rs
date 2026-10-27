@@ -3328,6 +3328,51 @@ value_tags   = true
     }
 
     #[test]
+    fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
+        let mut harness = Harness::new();
+        let tab = harness.app.active_tab_id();
+        let shop = add_saved(&mut harness, "Shop");
+        add_saved(&mut harness, "Shop");
+        let alpha = add_saved(&mut harness, "Alpha");
+        let picker = |harness: &mut Harness| -> crate::model::PickerState {
+            let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content
+            else {
+                unreachable!()
+            };
+            crate::model::PickerState {
+                search: picker.search.clone(),
+                selected: picker.selected.clone(),
+                folded: picker.folded.clone(),
+                focus_search: false,
+                deleting: picker.deleting.clone(),
+            }
+        };
+        // A search that hides the row is cleared.
+        harness.app.picker_mut(tab).unwrap().search = "alp".into();
+        harness.app.apply(Action::AskDeleteConnection(shop.clone()));
+        let shown = picker(&mut harness);
+        assert_eq!(shown.search, "");
+        assert_eq!(shown.deleting.as_ref(), Some(&shop));
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        // One that shows it stays.
+        harness.app.picker_mut(tab).unwrap().search = "alp".into();
+        harness
+            .app
+            .apply(Action::AskDeleteConnection(alpha.clone()));
+        assert_eq!(picker(&mut harness).search, "alp");
+        harness
+            .app
+            .apply(Action::AnswerDeleteConnection { tab, delete: false });
+        // Its folded group opens, and only its own.
+        harness.app.picker_mut(tab).unwrap().search.clear();
+        harness.app.picker_mut(tab).unwrap().folded = vec!["Shop".into(), "Local".into()];
+        harness.app.apply(Action::AskDeleteConnection(shop.clone()));
+        assert_eq!(picker(&mut harness).folded, vec!["Local".to_owned()]);
+    }
+
+    #[test]
     fn deleting_a_connection_from_its_window_asks_in_the_picker() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();

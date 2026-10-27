@@ -991,7 +991,22 @@ impl App {
                 }
                 self.apply(Action::ShowConnections);
                 let tab = self.active_tab_id();
+                // The row it asks about shows: a search that hides it is
+                // cleared, and its group unfolded.
+                let search = self
+                    .picker_mut(tab)
+                    .map(|picker| picker.search.clone())
+                    .unwrap_or_default();
+                let shown = crate::ui::picker::visible(self, &search).contains(&conn);
+                let search = if shown { search } else { String::new() };
+                let found = self.connections.search(&search);
+                let group = crate::ui::picker::groups(&found)
+                    .into_iter()
+                    .find(|group| group.connections.iter().any(|saved| saved.id == conn))
+                    .map(|group| group.title);
                 if let Some(picker) = self.picker_mut(tab) {
+                    picker.search = search;
+                    picker.folded.retain(|title| Some(title) != group.as_ref());
                     picker.selected = Some(conn.clone());
                     picker.deleting = Some(conn);
                 }
