@@ -182,7 +182,8 @@ pub struct App {
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
-    /// Whether the desktop's themes are followed (not in tests or the demo).
+    /// Whether the desktop's themes are followed (not in tests or a demo's
+    /// screenshot).
     pub(crate) follow_desktop: bool,
     /// The settings named another theme since the last `logic`.
     theme_changed: bool,
@@ -202,12 +203,12 @@ pub struct App {
     /// once.
     pin_told: Option<String>,
     /// What fontconfig gave the terminal look for the font the settings
-    /// name, or CoreText macOS's data: nothing in tests, the demo and
-    /// Windows.
+    /// name, or CoreText macOS's data: nothing in tests, a demo's screenshot
+    /// and Windows.
     pub desktop_font: crate::typography::desktop_font::Read,
     /// The installed monospace families macOS's data font menu lists after
     /// the bundled faces: read each time Settings opens, none in tests and
-    /// the demo.
+    /// a demo's screenshot.
     pub installed_fonts: Vec<String>,
     /// The number of the last font read asked for, and of the newest one
     /// taken, as for the theme's.
@@ -7567,8 +7568,9 @@ impl App {
         })
     }
 
-    /// Called once the window exists. `follow_desktop` is false in demo mode
-    /// and tests, which must not scan the user's themes or Omarchy.
+    /// Called once the window exists. `follow_desktop` is false in tests and
+    /// for a demo's screenshot, which must not scan the user's themes or
+    /// Omarchy: what they draw is the same on every desktop.
     pub fn attach(&mut self, ctx: &egui::Context, follow_desktop: bool) {
         self.follow_desktop = follow_desktop;
         // The font size keys are the keymap's: they change the setting,
@@ -7592,8 +7594,8 @@ impl App {
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
             self.read_desktop_theme();
-            // Not in tests or the demo, which must not watch the user's
-            // directories any more than they scan them.
+            // Not in tests or a demo's screenshot, which must not watch the
+            // user's directories any more than they scan them.
             self.watch_settings();
         }
         self.system_theme = ctx.system_theme();
@@ -7632,7 +7634,7 @@ impl App {
     /// Whether the font the settings name is read from the system: the
     /// terminal look's, and on macOS an installed one for the data (no
     /// bundled face's name), where the desktop's fonts are read (not in
-    /// tests or the demo).
+    /// tests or a demo's screenshot).
     fn reads_font(&self) -> bool {
         let installed = self.look.faces.typeface == crate::theme::Typeface::Plex
             && crate::theme::DataFace::of(self.settings.font.as_deref()).is_err();
@@ -7670,7 +7672,7 @@ impl App {
 
     /// Asks the backend for the installed monospace families the data
     /// font's menu lists, where macOS draws data in a face of its own and
-    /// the desktop's fonts are read (not in tests or the demo).
+    /// the desktop's fonts are read (not in tests or a demo's screenshot).
     fn list_fonts(&mut self) {
         if self.follow_desktop && self.look.faces.typeface == crate::theme::Typeface::Plex {
             self.backend.send(Command::ListFonts);
@@ -7745,7 +7747,7 @@ impl App {
             return Some(PinState::Drawn(pinned));
         }
         // A file waits for the themes folder, a name or a path for the
-        // backend: in tests and the demo they are never read.
+        // backend: in tests and a demo's screenshot they are never read.
         let read = match theme::PinFrom::of(pin) {
             theme::PinFrom::File(_) => !self.themes.loading(),
             theme::PinFrom::Name(_) | theme::PinFrom::Path(_) => {
@@ -8928,7 +8930,7 @@ mod tests {
             .app
             .change_settings(|settings| settings.page_size = 500);
         assert_eq!(fonts_asked(&mut harness), vec![]);
-        // Not in tests and the demo.
+        // Not in tests and a demo's screenshot.
         harness.app.follow_desktop = false;
         font(&mut harness, Some("Iosevka"));
         assert_eq!(fonts_asked(&mut harness), vec![]);
@@ -8975,8 +8977,8 @@ mod tests {
             .app
             .apply(Action::Backend(Event::Fonts(vec!["Menlo".into()])));
         assert_eq!(harness.app.installed_fonts, ["Menlo"]);
-        // Not in tests and the demo, nor in the looks that draw no data
-        // in a face of their own.
+        // Not in tests and a demo's screenshot, nor in the looks that draw
+        // no data in a face of their own.
         for (look, follow) in [
             (crate::theme::Look::macos(), false),
             (crate::theme::Look::omarchy(), true),
@@ -11689,7 +11691,7 @@ masked = ["orders.email"]
 
     #[test]
     fn a_start_that_does_not_follow_the_desktop_does_not_watch_the_users_directories() {
-        // The harness attaches as the demo does.
+        // The harness attaches as a demo's screenshot does.
         let harness = crate::testing::Harness::new();
         assert!(
             !harness
