@@ -88,6 +88,24 @@ is also a column header: the menu's item is taken, see Labels).
   another SQLite file. Every SQLite session is read-only: nothing is written
   to it.
 - `tempo`: 80 to 160.
+- `[[connection]]`: another saved connection to the same database, with a
+  `name` and an `environment` (`local`, `dev`, `staging`, `production` or
+  `none`), for a scene to switch to. It is not connected at the start, and
+  it opens writable, production too: its Open read-only is unticked. Its
+  session is the database's read-only one all the same.
+- `meanwhile`: SQL that someone else ran on the server once the video's
+  rows were loaded. A save is then answered by the real save, run on a copy
+  of the file with that SQL in it (`target/promo/<name>/server.sqlite`): it
+  finds the rows the SQL changed, and the conflict question comes up. Only
+  that answer is given: a save that would write stops the run, since the
+  file itself is never written. Each of its statements has to change a row.
+  Without `meanwhile`, a save is not answered.
+
+  ```toml
+  meanwhile = "UPDATE books SET price = 17.00 WHERE id = 1"
+  ```
+
+  `scenarios/edit-safely.toml` uses both.
 - `voice`: `Ava (Premium)` unless the scenario names another.
 - A scene has a `caption` (optional: a scene without one is a move between
   two), a `say` (optional) and its `steps`. The intro and outro cards are
@@ -230,8 +248,9 @@ Esc goes to normal mode (a second Esc where the completions are open).
 
 Before the first step, the runner sets the scene up, and none of it is
 filmed: a saved connection named after the database (`Bookshop`, or the
-file's stem), Dev environment, connected; the tree showing the main schema;
-nothing open; the row panel hidden, so the grid has the window's width. The
+file's stem), Dev environment, connected; the scenario's other connections
+saved; the tree showing the main schema; nothing open; the row panel
+hidden, so the grid has the window's width. The
 window is 1200x750 points at scale 2. The setup may apply actions; the steps
 never do.
 
@@ -244,7 +263,7 @@ never do.
 | `command = "<id>"`, `key = "<keys>"`, `times = n` | The command's keys are pressed, `times` times (1 by default): one chord, a few keys one after another (`dd`), or a `:` line and Enter. The id is the one `settings.toml` uses. `key` picks one of the command's keys in the look, spelled as `settings.toml` spells keys; without it, the first. The keycap is shown. |
 | `press = "<keys>"`, `times = n` | Keys that no command holds where the keyboard is (Enter in a field, Backspace, vim's `==`), spelled as `settings.toml` spells keys. |
 | `type = "<text>"` | Typed into what has the keyboard, a character at a time. A newline is Enter. |
-| `hold = <seconds>` | The picture stays, beyond the scene's own time. |
+| `hold = <seconds>` | The picture stays, beyond the scene's own time. The app's clock waits as long: a question takes no answer in its first half second. |
 
 A scenario has no times in it. The director decides them.
 

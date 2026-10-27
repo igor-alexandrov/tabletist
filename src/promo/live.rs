@@ -1,6 +1,10 @@
 //! The app's backend, answered by a real SQLite session reading the
 //! scenario's file. Every SQLite session is `query_only`: nothing is
 //! written, saved or stored. The query history is kept in memory.
+//!
+//! A save is answered only where the scenario says what someone else
+//! changed meanwhile, by [`Server`]: with the rows the change touched,
+//! changed on the server. The file itself is never written.
 
 #![allow(clippy::unwrap_used)]
 
@@ -8,18 +12,24 @@ use std::path::Path;
 
 use tabletist_db::{Access, ConnectSpec, Connection, Secrets, StopFlag};
 
+use super::server::Server;
+
 use crate::backend::{Command, Event, HistoryCommand, HistoryEvent};
 use crate::history::Entry;
 use crate::model::Action;
 use crate::testing::Harness;
 
-/// The file's connection, how many of the app's commands it answered, and
-/// the statements the history was given, oldest first.
+/// The file's connection, how many of the app's commands it answered, the
+/// statements the history was given, oldest first, and the server a save
+/// is answered from.
 pub struct Live {
     runtime: tokio::runtime::Runtime,
     connection: Connection,
     answered: usize,
     history: Vec<Entry>,
+    /// The copy of the file with what changed meanwhile: None where the
+    /// scenario says nothing changed, and no save is answered.
+    server: Option<Server>,
 }
 
 impl Live {
@@ -37,7 +47,15 @@ impl Live {
             connection,
             answered: 0,
             history: Vec::new(),
+            server: None,
         })
+    }
+
+    /// Answers each save from a copy of the file at `path`, written to
+    /// `copy`, with `sql` run on it: see [`Server::stage`].
+    pub fn meanwhile(&mut self, path: &Path, copy: &Path, sql: &str) -> Result<(), String> {
+        self.server = Some(Server::stage(&self.runtime, path, copy, sql)?);
+        Ok(())
     }
 
     pub fn access(&self) -> Access {
@@ -45,13 +63,15 @@ impl Live {
     }
 
     /// Answers every command the app sent since the last call, and those
-    /// the answers make it send.
-    pub fn pump(&mut self, harness: &mut Harness) {
+    /// the answers make it send. A save that the server would not answer
+    /// with a conflict stops it: what it would answer, the runner cannot.
+    pub fn pump(&mut self, harness: &mut Harness) -> Result<(), String> {
         while let Some(command) = harness.app.backend.sent.get(self.answered) {
             self.answered += 1;
             let connection = &self.connection;
             let run = &self.runtime;
             let history = &mut self.history;
+            let server = &self.server;
             let event = match command {
                 Command::Connect {
                     session,
@@ -161,6 +181,18 @@ impl Live {
                     )),
                     cancel: None,
                 }),
+                Command::Write {
+                    session,
+                    request,
+                    changes,
+                } => match server {
+                    None => None,
+                    Some(server) => Some(Event::Written {
+                        session: *session,
+                        request: *request,
+                        result: Ok(server.answer(run, changes)?),
+                    }),
+                },
                 Command::History(HistoryCommand::Append { entry, .. }) => {
                     history.push(entry.as_ref().clone());
                     None
@@ -175,8 +207,7 @@ impl Live {
                     result: Ok(super::history::newest(history, connection, *keep)),
                 })),
                 // Nothing is written, saved, stored, watched or closed here.
-                Command::Write { .. }
-                | Command::Test { .. }
+                Command::Test { .. }
                 | Command::Close { .. }
                 | Command::Cancel { .. }
                 | Command::LoadSecret { .. }
@@ -202,5 +233,6 @@ impl Live {
                 harness.app.apply(Action::Backend(event));
             }
         }
+        Ok(())
     }
 }
