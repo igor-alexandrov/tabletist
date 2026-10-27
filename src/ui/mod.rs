@@ -3319,6 +3319,15 @@ value_tags   = true
     }
 
     #[test]
+    fn the_terminal_question_names_the_connection_as_it_was_typed() {
+        let mut harness = picker_with_one(Look::omarchy());
+        type_key(&mut harness, Key::D, "d");
+        type_key(&mut harness, Key::D, "d");
+        assert!(asks_to_delete(&harness));
+        assert!(harness.has("delete Bookshop? this can't be undone."));
+    }
+
+    #[test]
     fn deleting_a_connection_from_its_window_asks_in_the_picker() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();

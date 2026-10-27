@@ -773,7 +773,11 @@ fn delete_question(
         true => "Delete {connection} and its saved password? This can't be undone.",
         false => "Delete {connection}? This can't be undone.",
     };
-    let question = look.label(&gettext(locale, words).replace("{connection}", &connection.name));
+    // The terminal look writes its words in lower case, and the name as it
+    // was typed: two names apart only in case stay apart.
+    let question = look
+        .label(&gettext(locale, words))
+        .replace("{connection}", &connection.name);
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let body = widgets::body(look);
     let left = footer.left() + side;
