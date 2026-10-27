@@ -116,6 +116,23 @@ impl Live {
                     request: *request,
                     result: run.block_on(connection.lookup(lookup)),
                 }),
+                Command::ReadDdl {
+                    session,
+                    request,
+                    object,
+                } => Some(Event::Ddl {
+                    session: *session,
+                    request: *request,
+                    result: run.block_on(connection.ddl(object)),
+                }),
+                // The zone database is read here, as the backend does.
+                Command::SessionZone { session, request } => Some(Event::SessionZone {
+                    session: *session,
+                    request: *request,
+                    result: run
+                        .block_on(connection.session_zone())
+                        .map(|named| named.as_deref().and_then(crate::zones::session)),
+                }),
                 Command::ListDatabases { session, request } => Some(Event::Databases {
                     session: *session,
                     request: *request,
