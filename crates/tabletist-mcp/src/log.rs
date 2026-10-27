@@ -2,14 +2,19 @@
 //! in a SQLite file of the person's own. It holds what was asked and what
 //! came of it, and never a row's value.
 //!
-//! The file is opened once and written from the runtime's blocking pool.
+//! The file is opened once and written from the runtime's blocking pool,
+//! by one task at a time, which writes together the entries that wait.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, params};
+use rusqlite::{
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
+    params,
+};
+use tokio::sync::oneshot;
 
 /// The schema's version, in `PRAGMA user_version`.
 const VERSION: i64 = 1;
@@ -216,6 +221,119 @@ impl LogFilter {
 #[derive(Debug, Clone)]
 pub struct Log {
     connection: Arc<Mutex<Connection>>,
+    queue: Arc<Mutex<Queue>>,
+}
+
+/// The entries waiting to be written, each with who waits for its place.
+#[derive(Debug, Default)]
+struct Queue {
+    entries: Vec<(Entry, oneshot::Sender<Result<i64, LogError>>)>,
+    /// Whether a task of the blocking pool is writing them.
+    writing: bool,
+}
+
+/// The task that writes what waits in the queue, until nothing does.
+struct Writer {
+    connection: Arc<Mutex<Connection>>,
+    queue: Arc<Mutex<Queue>>,
+    /// Whether it left an empty queue to the next entry's task.
+    finished: bool,
+}
+
+impl Writer {
+    fn write(mut self) {
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let waiting = {
+                let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+                if queue.entries.is_empty() {
+                    queue.writing = false;
+                    self.finished = true;
+                    return;
+                }
+                std::mem::take(&mut queue.entries)
+            };
+            let (entries, written): (Vec<_>, Vec<_>) = waiting.into_iter().unzip();
+            for (place, written) in insert_all(&connection, &entries).into_iter().zip(written) {
+                // Whoever waited may have stopped waiting.
+                let _ = written.send(place);
+            }
+        }
+    }
+}
+
+impl Drop for Writer {
+    /// A task that ended half way, or never ran, leaves the queue to the
+    /// next entry's: those that waited are told it failed.
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        queue.writing = false;
+        queue.entries.clear();
+    }
+}
+
+/// Writes `entries` in one transaction, and says the place of each. Where
+/// that fails, each is written alone, and says what came of it.
+fn insert_all(connection: &Connection, entries: &[Entry]) -> Vec<Result<i64, LogError>> {
+    let together = || -> Result<Vec<i64>, rusqlite::Error> {
+        let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+        let places = entries
+            .iter()
+            .map(|entry| insert(&transaction, entry))
+            .collect::<Result<_, _>>()?;
+        transaction.commit()?;
+        Ok(places)
+    };
+    if entries.len() > 1
+        && let Ok(places) = together()
+    {
+        return places.into_iter().map(Ok).collect();
+    }
+    entries
+        .iter()
+        .map(|entry| Ok(insert(connection, entry)?))
+        .collect()
+}
+
+/// Writes `entry`, and says its place.
+fn insert(connection: &Connection, entry: &Entry) -> Result<i64, rusqlite::Error> {
+    connection.execute(
+        "INSERT INTO calls (at_ms, session, agent, project, transport, connection_id, \
+         connection, tool, sql, params, request, result, code, message, ran_as, rows, \
+         matched, columns, bytes, masked, took_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+         ?16, ?17, ?18, ?19, ?20, ?21)",
+        params![
+            entry.at_ms,
+            entry.session,
+            entry.agent,
+            entry.project,
+            entry.transport,
+            entry.connection_id,
+            entry.connection,
+            entry.tool,
+            entry.sql,
+            entry.params,
+            entry.request,
+            entry.result,
+            entry.code,
+            entry.message,
+            entry.ran_as,
+            entry.rows,
+            entry.matched,
+            entry.columns,
+            entry.bytes,
+            entry.masked,
+            entry.took_ms,
+        ],
+    )?;
+    Ok(connection.last_insert_rowid())
 }
 
 /// Why a file was not opened as a log.
@@ -320,45 +438,34 @@ impl Log {
         }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            queue: Arc::default(),
         })
     }
 
     /// Writes `entry`, and says its place in the log ([`Logged::id`]).
+    ///
+    /// Entries that come while another is being written wait for it, and
+    /// are then written together, in one transaction: a disk that takes
+    /// long over each one takes it once for all that came at once, as the
+    /// calls of a session that was stopped do.
     pub async fn record(&self, entry: Entry) -> Result<i64, LogError> {
-        self.blocking(move |connection| {
-            connection.execute(
-                "INSERT INTO calls (at_ms, session, agent, project, transport, connection_id, \
-                 connection, tool, sql, params, request, result, code, message, ran_as, rows, \
-                 matched, columns, bytes, masked, took_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                 ?16, ?17, ?18, ?19, ?20, ?21)",
-                params![
-                    entry.at_ms,
-                    entry.session,
-                    entry.agent,
-                    entry.project,
-                    entry.transport,
-                    entry.connection_id,
-                    entry.connection,
-                    entry.tool,
-                    entry.sql,
-                    entry.params,
-                    entry.request,
-                    entry.result,
-                    entry.code,
-                    entry.message,
-                    entry.ran_as,
-                    entry.rows,
-                    entry.matched,
-                    entry.columns,
-                    entry.bytes,
-                    entry.masked,
-                    entry.took_ms,
-                ],
-            )?;
-            Ok(connection.last_insert_rowid())
-        })
-        .await
+        let (written, recorded) = oneshot::channel();
+        let start = {
+            let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+            queue.entries.push((entry, written));
+            !std::mem::replace(&mut queue.writing, true)
+        };
+        if start {
+            let writer = Writer {
+                connection: self.connection.clone(),
+                queue: self.queue.clone(),
+                finished: false,
+            };
+            tokio::task::spawn_blocking(move || writer.write());
+        }
+        recorded
+            .await
+            .map_err(|_| LogError("the log's task did not end".to_owned()))?
     }
 
     /// Which of `calls` the log still holds, each named by its place and
@@ -415,6 +522,7 @@ impl Log {
             (0, 0) => Ok(None),
             (VERSION, _) => Ok(Some(Self {
                 connection: Arc::new(Mutex::new(connection)),
+                queue: Arc::default(),
             })),
             (other, _) => Err(LogError(format!(
                 "the log is of version {other}, and this Tabletist reads version {VERSION}"
@@ -943,6 +1051,108 @@ mod tests {
             log.holds(vec![(old, 1_000), (new, 9_000)]).await.unwrap(),
             [(new, agent())]
         );
+    }
+
+    /// Holds the log's connection, as a write that takes long does, until
+    /// the sender is dropped.
+    fn hold(log: &Log) -> std::sync::mpsc::Sender<()> {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (held, holding) = std::sync::mpsc::channel();
+        let connection = log.connection.clone();
+        std::thread::spawn(move || {
+            let _connection = connection.lock().unwrap();
+            held.send(()).unwrap();
+            let _ = released.recv();
+        });
+        holding.recv().unwrap();
+        release
+    }
+
+    /// Records `entries` while the connection is held, so that each waits
+    /// for the one before, and gives what came of each.
+    async fn record_at_once(log: &Log, entries: Vec<Entry>) -> Vec<Result<i64, LogError>> {
+        let release = hold(log);
+        let count = entries.len();
+        let records: Vec<_> = entries
+            .into_iter()
+            .map(|entry| {
+                let log = log.clone();
+                tokio::spawn(async move { log.record(entry).await })
+            })
+            .collect();
+        while log.queue.lock().unwrap().entries.len() < count {
+            tokio::task::yield_now().await;
+        }
+        drop(release);
+        let mut recorded = Vec::new();
+        for record in records {
+            recorded.push(record.await.unwrap());
+        }
+        recorded
+    }
+
+    /// How many times the file was written to: SQLite counts each
+    /// transaction in the file's header.
+    fn changes(path: &Path) -> u32 {
+        let header = std::fs::read(path).unwrap();
+        u32::from_be_bytes(header[24..28].try_into().unwrap())
+    }
+
+    #[tokio::test]
+    async fn calls_that_come_at_once_are_written_in_one_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sqlite3");
+        let log = open(&path);
+        let before = changes(&path);
+        let entries = (0..16).map(|at| entry(at, "run_query")).collect();
+        let places: Vec<i64> = record_at_once(&log, entries)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(changes(&path), before + 1);
+        // Each is told its own place, in the order they came.
+        let mut sorted = places.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, places);
+        let written = log.latest(100).await.unwrap();
+        assert_eq!(written.len(), 16);
+        assert!(log.queue.lock().unwrap().entries.is_empty());
+        // The next is written by a task of its own.
+        log.record(entry(16, "run_query")).await.unwrap();
+        assert_eq!(changes(&path), before + 2);
+    }
+
+    #[tokio::test]
+    async fn an_entry_that_cannot_be_written_leaves_those_that_came_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = open(&dir.path().join("agents.sqlite3"));
+        log.connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER refused BEFORE INSERT ON calls WHEN NEW.tool = 'refused' \
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let entries = vec![
+            entry(1, "run_query"),
+            entry(2, "refused"),
+            entry(3, "describe_table"),
+        ];
+        let recorded = record_at_once(&log, entries).await;
+        assert!(recorded[0].is_ok());
+        assert!(recorded[1].is_err());
+        assert!(recorded[2].is_ok());
+        let tools: Vec<String> = log
+            .latest(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.tool)
+            .collect();
+        assert_eq!(tools, ["describe_table", "run_query"]);
     }
 
     #[tokio::test]
