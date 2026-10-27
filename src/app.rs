@@ -4713,8 +4713,6 @@ impl App {
         }
     }
 
-    /// Asks the backend for ~/.ssh/config's Host aliases for the open
-    /// connection dialog.
     /// The picker's tab, while it asks whether to delete a connection that
     /// is still saved. Nothing may take that question away meanwhile, nor
     /// the connection's form it holds.
@@ -4732,6 +4730,8 @@ impl App {
         })
     }
 
+    /// Asks the backend for ~/.ssh/config's Host aliases for the open
+    /// connection dialog.
     fn list_ssh_hosts(&mut self) {
         let request = RequestId(self.next_id());
         if let Some(Dialog::Connection(form)) = &mut self.dialog {
