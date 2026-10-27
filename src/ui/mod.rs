@@ -3297,6 +3297,28 @@ value_tags   = true
     }
 
     #[test]
+    fn a_question_about_a_connection_gone_meanwhile_keeps_no_keys() {
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let bookshop = harness.app.connections.connections[0].id.clone();
+            let other = add_saved(&mut harness, "Other");
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            // Gone some other way, as connections.toml read again may take it.
+            harness.app.connections.remove(&bookshop);
+            harness.settle();
+            // The list's own keys work again: the arrows, and its delete.
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content
+            else {
+                unreachable!()
+            };
+            assert_eq!(picker.deleting.as_ref(), Some(&other), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn deleting_a_connection_from_its_window_asks_in_the_picker() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();

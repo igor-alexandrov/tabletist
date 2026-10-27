@@ -2397,7 +2397,10 @@ fn letters(
         };
         // While the list asks whether to delete a connection, its answers
         // are the only keys: nothing connects, moves or deletes meanwhile.
-        if picker.deleting.is_some() {
+        // A connection gone some other way (connections.toml read again)
+        // leaves no question on screen, and keeps no keys.
+        let asking = picker.deleting.as_ref();
+        if asking.is_some_and(|conn| app.connections.get(conn).is_some()) {
             let answer = |delete: bool| Action::AnswerDeleteConnection { tab, delete };
             if on(Command::KeepConnection).fresh {
                 actions.push(answer(false));
