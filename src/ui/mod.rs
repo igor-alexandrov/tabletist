@@ -3451,6 +3451,43 @@ value_tags   = true
     }
 
     #[test]
+    fn a_held_form_outlasts_whatever_else_the_picker_is_asked() {
+        use crate::model::Dialog;
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn.clone()));
+            harness.settle();
+            let Some(Dialog::Connection(form)) = &mut harness.app.dialog else {
+                panic!("{}: no form", look.name);
+            };
+            form.name = "Edited".into();
+            harness.click("Delete Edited");
+            // Asked again (a row's menu), and New connection (its button):
+            // neither takes the question, nor the form it holds.
+            harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+            harness.app.apply(Action::NewConnection);
+            harness.app.apply(Action::EditConnection(conn));
+            assert!(
+                harness.app.dialog.is_none(),
+                "{}: no form over it",
+                look.name
+            );
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            let Some(Dialog::Connection(form)) = &harness.app.dialog else {
+                panic!("{}: the form did not come back", look.name);
+            };
+            assert_eq!(form.name, "Edited", "{}: as it was", look.name);
+            assert!(
+                form.ssh_hosts_request.is_some(),
+                "{}: asks for the SSH hosts again",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn nothing_connects_while_the_picker_asks() {
         let mut harness = picker_with_one(Look::macos());
         let tab = harness.app.active_tab_id();
