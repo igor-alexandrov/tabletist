@@ -3396,6 +3396,29 @@ value_tags   = true
     }
 
     #[test]
+    fn keeping_a_connection_gives_its_form_back_as_it_was() {
+        for look in desktop_looks() {
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn));
+            harness.settle();
+            let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog else {
+                panic!("{}: no form", look.name);
+            };
+            form.name = "Edited".into();
+            harness.click("Delete Edited");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            let Some(crate::model::Dialog::Connection(form)) = &harness.app.dialog else {
+                panic!("{}: the form did not come back", look.name);
+            };
+            assert_eq!(form.name, "Edited", "{}: as it was", look.name);
+            assert_eq!(saved(&harness), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
     fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
         let mut harness = Harness::new();
         let tab = harness.app.active_tab_id();

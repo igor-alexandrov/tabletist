@@ -23,7 +23,8 @@ already open, and Shift+Enter opens it again.
 Cmd/Ctrl+Backspace (`dd` in the Omarchy look), **Delete** in a row's menu,
 or **Delete** in the connection's form asks at the bottom of the picker
 before it deletes the connection, and names the saved password,
-passphrase or SSH password that goes with it. Deleting cannot
+passphrase or SSH password that goes with it. Keeping a connection asked
+about from its form opens the form again, edits and all. Deleting cannot
 be undone: the
 connection goes with its saved password and SSH secret, its labels, and
 what was last open on it.

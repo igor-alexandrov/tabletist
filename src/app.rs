@@ -977,11 +977,15 @@ impl App {
                 }
             }
             Action::SelectConnection { tab, conn } => {
+                // A click on another row leaves the question, and keeps the
+                // connection.
+                let asked = self
+                    .picker_mut(tab)
+                    .and_then(|picker| picker.deleting.clone());
+                if asked.is_some() && asked != conn {
+                    self.apply(Action::AnswerDeleteConnection { tab, delete: false });
+                }
                 if let Some(picker) = self.picker_mut(tab) {
-                    // A click on another row leaves the question.
-                    if picker.deleting.is_some() && picker.deleting != conn {
-                        picker.deleting = None;
-                    }
                     picker.selected = conn;
                 }
             }
@@ -989,6 +993,17 @@ impl App {
                 if self.connections.get(&conn).is_none() {
                     return;
                 }
+                // Asked from the connection's form: the form goes, and is
+                // kept as it was for a Keep.
+                let form = match self.dialog.take() {
+                    Some(Dialog::Connection(form)) if form.editing.as_ref() == Some(&conn) => {
+                        Some(form)
+                    }
+                    other => {
+                        self.dialog = other;
+                        None
+                    }
+                };
                 self.apply(Action::ShowConnections);
                 let tab = self.active_tab_id();
                 // The row it asks about shows: a search that hides it is
@@ -1009,14 +1024,21 @@ impl App {
                     picker.folded.retain(|title| Some(title) != group.as_ref());
                     picker.selected = Some(conn.clone());
                     picker.deleting = Some(conn);
+                    picker.form = form;
                 }
             }
             Action::AnswerDeleteConnection { tab, delete } => {
-                let asked = self
-                    .picker_mut(tab)
-                    .and_then(|picker| picker.deleting.take());
-                if let Some(conn) = asked.filter(|_| delete) {
-                    self.apply(Action::DeleteConnection(conn));
+                let Some(picker) = self.picker_mut(tab) else {
+                    return;
+                };
+                let (asked, form) = (picker.deleting.take(), picker.form.take());
+                match (asked, delete) {
+                    (Some(conn), true) => self.apply(Action::DeleteConnection(conn)),
+                    // Kept: the form it was asked from opens again as it was.
+                    (Some(_), false) if self.dialog.is_none() => {
+                        self.dialog = form.map(Dialog::Connection);
+                    }
+                    _ => {}
                 }
             }
             Action::MovePickerSelection { tab, step } => {

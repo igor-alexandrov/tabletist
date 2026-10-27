@@ -42,6 +42,9 @@ pub struct PickerState {
     /// Delete was asked for this connection: the footer asks whether to,
     /// and its answer is the only key until it is given.
     pub deleting: Option<ConnectionId>,
+    /// The connection's form the question was asked from, as it was:
+    /// keeping the connection opens it again, edits and all.
+    pub form: Option<Box<ConnectionForm>>,
 }
 
 /// Everything that changes application state. Views push these; `App::apply`
