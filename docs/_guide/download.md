@@ -76,6 +76,9 @@ install -Dm644 packaging/linux/dev.tabletist.Tabletist.desktop -t ~/.local/share
 install -Dm644 packaging/linux/dev.tabletist.Tabletist.svg -t ~/.local/share/icons/hicolor/scalable/apps
 ```
 
+With the `aarch64` archive, write `aarch64` for `x86_64` in the first two
+lines.
+
 Tabletist is then in the app launcher (Super+Space on Omarchy), with its
 icon. The launcher entry runs `tabletist` from your `PATH`, which on Omarchy
 holds `~/.local/bin`. On a desktop whose launcher does not look there, put
