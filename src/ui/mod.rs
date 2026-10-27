@@ -3328,6 +3328,32 @@ value_tags   = true
     }
 
     #[test]
+    fn a_long_question_grows_the_footer_and_covers_no_row() {
+        let name = "Bookshop reporting replica in the second region, read by the nightly jobs";
+        for look in Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let conn = add_saved(&mut harness, name);
+            harness.app.apply(Action::AskDeleteConnection(conn));
+            let tree = harness.settle();
+            let row = crate::testing::bounds(&tree, name, egui::accesskit::Role::Button)
+                .unwrap_or_else(|| panic!("{}: no row", look.name));
+            let (_, question) = harness
+                .text_rects
+                .iter()
+                .find(|(text, _)| text.contains(name) && text.contains("undone"))
+                .unwrap_or_else(|| panic!("{}: no question", look.name));
+            assert!(question.height() > 20.0, "{}: wraps", look.name);
+            assert!(
+                question.top() >= row.bottom(),
+                "{}: over its row",
+                look.name
+            );
+            assert!(question.bottom() <= 480.0, "{}: off the window", look.name);
+        }
+    }
+
+    #[test]
     fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
         let mut harness = Harness::new();
         let tab = harness.app.active_tab_id();

@@ -334,23 +334,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ConnTabContent::Workspace(_) => (String::new(), None, Vec::new(), None),
     };
 
-    // Footer.
-    let footer = Rect::from_min_max(
-        pos2(full.left(), full.bottom() - footer_height(&look)),
-        full.max,
-    );
+    // Footer. While the list asks whether to delete a connection, the
+    // question stands in place of the keys, and the footer grows to hold
+    // all of it: a long name wraps it.
+    let footer_side = if look.terminal { 12.0 } else { side };
+    let skin = (&look, &palette, locale);
+    let question = deleting
+        .as_ref()
+        .and_then(|conn| app.connections.get(conn))
+        .map(|connection| {
+            let width = full.width() - 2.0 * footer_side;
+            DeleteQuestion::lay(ui, connection, &answers, skin, width)
+        });
+    // Each line past the first adds its height; one line keeps the
+    // footer's own.
+    let height = footer_height(&look) + question.as_ref().map_or(0.0, DeleteQuestion::below);
+    let footer = Rect::from_min_max(pos2(full.left(), full.bottom() - height), full.max);
     ui.painter()
         .rect_filled(footer, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, footer.x_range(), footer.top() + 0.5, palette.outline);
     let footer_y = footer.top() + 1.0 + (footer.height() - 1.0) / 2.0;
-    let footer_side = if look.terminal { 12.0 } else { side };
-    // While the list asks whether to delete a connection, the question
-    // stands in place of the keys.
-    let asking = deleting.as_ref().and_then(|conn| app.connections.get(conn));
-    if let Some(connection) = asking {
-        let place = (footer, footer_side, footer_y);
-        let skin = (&look, &palette, locale);
-        delete_question(ui, place, tab, connection, &answers, skin, &mut actions);
+    if let Some(question) = question {
+        question.show(ui, (footer, footer_side, footer_y), tab, skin, &mut actions);
     } else {
         let small = widgets::secondary(&look);
         if look.terminal {
@@ -756,65 +761,110 @@ fn row_response(
 
 /// The footer's question before a connection is deleted, in place of its
 /// keys: what goes, then Cancel and Delete on macOS and Windows, and the
-/// letters that answer in the terminal look.
-fn delete_question(
-    ui: &mut egui::Ui,
-    (footer, side, y): (Rect, f32, f32),
-    tab: crate::model::ConnTabId,
-    connection: &SavedConnection,
-    (yes, no): &(crate::keymap::Written, crate::keymap::Written),
-    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
-    actions: &mut Vec<Action>,
-) {
-    use crate::connections::PasswordMode;
-    let secrets = connection.password == PasswordMode::Keyring
-        || connection.ssh_secret == PasswordMode::Keyring;
-    let words = match secrets {
-        true => "Delete {connection} and its saved password? This can't be undone.",
-        false => "Delete {connection}? This can't be undone.",
-    };
-    // The terminal look writes its words in lower case, and the name as it
-    // was typed: two names apart only in case stay apart.
-    let question = look
-        .label(&gettext(locale, words))
-        .replace("{connection}", &connection.name);
-    let say = |text: &'static str| look.label(&gettext(locale, text));
-    let body = widgets::body(look);
-    let left = footer.left() + side;
-    widgets::announce(ui, footer, &question);
-    if look.terminal {
-        let text = Text::new(look)
-            .add(body, &question, palette.warning)
-            .space(body, "  ")
-            .add(body, yes.as_str(), palette.accent)
-            .add(body, &format!(" {}", say("yes")), palette.secondary)
-            .space(body, "  ")
-            .add(body, no.as_str(), palette.accent)
-            .add(body, &format!(" {}", say("no")), palette.secondary);
-        widgets::paint_text(ui, left, y, text);
-        return;
-    }
-    let mut right = footer.right() - side;
-    let (cancel, delete) = (say("Cancel"), say("Delete"));
-    for (label, deletes) in [(&cancel, false), (&delete, true)] {
-        let mut button = states::button(label, look).salt("delete-connection-question");
-        if deletes {
-            button = button.danger();
+/// letters that answer in the terminal look. Laid out before the footer,
+/// whose height it sets.
+struct DeleteQuestion {
+    /// What it says, for screen readers.
+    said: String,
+    /// What it paints: the question, and in the terminal look its letters,
+    /// wrapped to the footer's room.
+    laid: crate::typography::Laid,
+    /// macOS and Windows: Cancel and Delete, from the right.
+    buttons: Vec<(String, bool)>,
+}
+
+impl DeleteQuestion {
+    fn lay(
+        ui: &egui::Ui,
+        connection: &SavedConnection,
+        (yes, no): &(crate::keymap::Written, crate::keymap::Written),
+        (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+        width: f32,
+    ) -> Self {
+        use crate::connections::PasswordMode;
+        let secrets = connection.password == PasswordMode::Keyring
+            || connection.ssh_secret == PasswordMode::Keyring;
+        let words = match secrets {
+            true => "Delete {connection} and its saved password? This can't be undone.",
+            false => "Delete {connection}? This can't be undone.",
+        };
+        // The terminal look writes its words in lower case, and the name as
+        // it was typed: two names apart only in case stay apart.
+        let said = look
+            .label(&gettext(locale, words))
+            .replace("{connection}", &connection.name);
+        let say = |text: &'static str| look.label(&gettext(locale, text));
+        let body = widgets::body(look);
+        if look.terminal {
+            let text = Text::new(look)
+                .add(body, &said, palette.warning)
+                .space(body, "  ")
+                .add(body, yes.as_str(), palette.accent)
+                .add(body, &format!(" {}", say("yes")), palette.secondary)
+                .space(body, "  ")
+                .add(body, no.as_str(), palette.accent)
+                .add(body, &format!(" {}", say("no")), palette.secondary);
+            let laid = text.wrap(width.max(40.0)).layout(ui.ctx());
+            let buttons = Vec::new();
+            return Self {
+                said,
+                laid,
+                buttons,
+            };
         }
-        let width = button.width(ui, look);
-        let at = Rect::from_center_size(pos2(right - width / 2.0, y), vec2(width, 28.0));
-        if button.show_at(ui, at, look, palette).clicked() {
-            actions.push(Action::AnswerDeleteConnection {
-                tab,
-                delete: deletes,
-            });
+        let buttons = vec![(say("Cancel"), false), (say("Delete"), true)];
+        let taken: f32 = buttons
+            .iter()
+            .map(|(label, deletes)| question_button(label, *deletes, look).width(ui, look) + 8.0)
+            .sum();
+        let room = (width - taken - 16.0).max(40.0);
+        let laid = Text::one(look, body, &said, palette.text)
+            .wrap(room)
+            .layout(ui.ctx());
+        Self {
+            said,
+            laid,
+            buttons,
         }
-        right = at.left() - 8.0;
     }
-    Text::one(look, body, &question, palette.text)
-        .wrap((right - left - 16.0).max(40.0))
-        .layout(ui.ctx())
-        .paint_left(ui.painter(), left, y);
+
+    /// How much taller than its first line the question is: what its
+    /// other lines add to the footer.
+    fn below(&self) -> f32 {
+        let first = self.laid.galley.rows.first().map_or(0.0, |row| row.size.y);
+        (self.laid.height() - first).max(0.0)
+    }
+
+    fn show(
+        &self,
+        ui: &mut egui::Ui,
+        (footer, side, y): (Rect, f32, f32),
+        tab: crate::model::ConnTabId,
+        (look, palette, _): (&Look, &Palette, crate::i18n::Locale),
+        actions: &mut Vec<Action>,
+    ) {
+        widgets::announce(ui, footer, &self.said);
+        let mut right = footer.right() - side;
+        for (label, deletes) in &self.buttons {
+            let button = question_button(label, *deletes, look);
+            let width = button.width(ui, look);
+            let at = Rect::from_center_size(pos2(right - width / 2.0, y), vec2(width, 28.0));
+            if button.show_at(ui, at, look, palette).clicked() {
+                actions.push(Action::AnswerDeleteConnection {
+                    tab,
+                    delete: *deletes,
+                });
+            }
+            right = at.left() - 8.0;
+        }
+        self.laid.paint_left(ui.painter(), footer.left() + side, y);
+    }
+}
+
+/// One of the question's buttons: Delete in the danger color.
+fn question_button<'a>(label: &'a str, deletes: bool, look: &Look) -> ButtonSpec<'a> {
+    let button = states::button(label, look).salt("delete-connection-question");
+    if deletes { button.danger() } else { button }
 }
 
 /// The Agents part of a row's menus: what agents may do on it, the
