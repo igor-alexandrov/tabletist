@@ -398,6 +398,7 @@ fn draw(
     // An editor that is open has the keyboard, unless a dialog has it.
     let hold = app.dialog.is_none();
     let editor_keys = crate::ui::cell_editor::Keys::of(&app.keymap, app.layout());
+    let calendar = app.calendar();
     // `za` asked to fold the documents.
     let fold = app.workspace_mut(tab).is_some_and(|workspace| {
         let asked = workspace.fold_documents == Some(id);
@@ -502,7 +503,7 @@ fn draw(
             focus::region(ui, Region::Panel, full);
             let mut form = match object {
                 Some(object) => {
-                    let how = (hold, look.terminal, &editor_keys);
+                    let how = (hold, look.terminal, &editor_keys, calendar.as_ref());
                     Form::of(workspace, object, tab, cell.row, editor, how)
                 }
                 None => Form::none(),

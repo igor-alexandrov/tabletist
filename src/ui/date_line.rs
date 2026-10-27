@@ -15,7 +15,7 @@ use crate::typography::{Text, TextRole};
 use crate::ui::{sql_complete, widgets};
 
 /// `text` in the person's language.
-fn tr(locale: Locale, text: &'static str) -> String {
+pub(super) fn tr(locale: Locale, text: &'static str) -> String {
     gettext(locale, text).into_owned()
 }
 
@@ -100,8 +100,14 @@ fn month_name(month: i8, locale: Locale) -> String {
     tr(locale, MONTHS[at % 12])
 }
 
+/// "January".
+pub(super) fn full_month_name(month: i8, locale: Locale) -> String {
+    let at = usize::try_from(month - 1).unwrap_or_default();
+    tr(locale, FULL_MONTHS[at % 12])
+}
+
 /// The year as a person reads it: `2026`, and `44 BC` before 1 AD.
-fn year_words(year: i16, locale: Locale) -> String {
+pub(super) fn year_words(year: i16, locale: Locale) -> String {
     if year < 1 {
         format!("{} {}", 1 - i32::from(year), tr(locale, "BC"))
     } else {
@@ -175,12 +181,9 @@ pub fn refusal_text(refusal: &Refusal, type_name: &str, locale: Locale) -> Strin
         Refusal::NoMonth(month) => {
             say("There is no month {month}.").replace("{month}", &month.to_string())
         }
-        Refusal::NoDay { day, month } => {
-            let at = usize::try_from(month - 1).unwrap_or_default();
-            say("There is no {day} {month}.")
-                .replace("{day}", &day.to_string())
-                .replace("{month}", &tr(locale, FULL_MONTHS[at % 12]))
-        }
+        Refusal::NoDay { day, month } => say("There is no {day} {month}.")
+            .replace("{day}", &day.to_string())
+            .replace("{month}", &full_month_name(*month, locale)),
         Refusal::NoTime(typed) => say("{time} is not a time of day.").replace("{time}", typed),
         Refusal::Range(range) => match range {
             Range::PgDate => say("PostgreSQL date holds 4714-11-24 BC to 5874897 AD."),
@@ -285,11 +288,13 @@ fn reading_words(reading: &Reading, column: &Column, locale: Locale) -> String {
 
 /// The line for the text `typed`, which reads as `moment`, in a column
 /// `column` of the type `type_name` (as the grid's header names it).
+/// `was` is the day the cell had before the edit, where the line names it
+/// (the terminal look's, under its calendar): said where the text reads
+/// as another.
 pub fn line(
     typed: &str,
     moment: &Result<Reading, Refusal>,
-    column: &Column,
-    type_name: &str,
+    (column, type_name, was): (&Column, &str, Option<Date>),
     (look, locale): (&Look, Locale),
 ) -> Line {
     let plain = |tone: Tone, words: String| Line {
@@ -311,7 +316,29 @@ pub fn line(
     }
     match moment {
         Ok(reading) => {
-            let words = reading_words(reading, column, locale);
+            let mut words = reading_words(reading, column, locale);
+            let day = match &reading.moment {
+                Moment::At { date, .. } => *date,
+                Moment::Infinity | Moment::MinusInfinity | Moment::Span(_) | Moment::EndOfDay => {
+                    None
+                }
+            };
+            if let Some(was) = was.filter(|was| Some(*was) != day) {
+                let same_year = day.is_none_or(|day| day.year() == was.year());
+                let said = if same_year {
+                    short_day(was, locale)
+                } else {
+                    format!(
+                        "{} {}",
+                        short_day(was, locale),
+                        year_words(was.year(), locale)
+                    )
+                };
+                words.push_str(&format!(
+                    " · {}",
+                    tr(locale, "was {day}").replace("{day}", &said)
+                ));
+            }
             let sent = (reading.literal != typed.trim()).then(|| reading.literal.clone());
             let Some(fold) = &reading.fold else {
                 return Line {
@@ -395,6 +422,8 @@ pub struct Shown {
     pub pressed: bool,
     /// The text an offer rewrites the field to, once clicked.
     pub picked: Option<String>,
+    /// The pick ends the edit: the calendar's NULL or DEFAULT.
+    pub commit: bool,
 }
 
 /// The widths of the macOS popover and of the terminal's float.
@@ -404,6 +433,15 @@ const TERMINAL_WIDTH: f32 = 420.0;
 const PAD: egui::Vec2 = vec2(10.0, 8.0);
 /// The gap between the cell and the line.
 const GAP: f32 = 4.0;
+
+/// The calendar under the line, and what it is read at.
+pub struct Sheet<'a> {
+    pub model: &'a crate::ui::calendar::Model,
+    /// What its month is kept by: the field and the cell it edits.
+    pub memory: Id,
+    pub column: &'a Column,
+    pub clock: &'a crate::dates::Clock,
+}
 
 /// The float's head in the terminal look: the column and its type, and the
 /// zone a zoned value is in.
@@ -421,13 +459,18 @@ pub fn show(
     anchor: Rect,
     field: Id,
     (line, head, kind): (&Line, &Head<'_>, Kind),
+    sheet: Option<Sheet<'_>>,
     (look, palette, locale): (&Look, &Palette, Locale),
 ) -> Shown {
     let mut shown = Shown::default();
     let screen = ui.ctx().content_rect();
-    let width = (if look.terminal { TERMINAL_WIDTH } else { WIDTH })
-        .max(anchor.width().min(WIDTH * 1.5))
-        .min(screen.width() - 16.0);
+    // The macOS calendar is as wide as its board draws it.
+    let width = match (&sheet, look.terminal) {
+        (Some(_), false) => WIDTH,
+        (_, true) => TERMINAL_WIDTH.max(anchor.width().min(WIDTH * 1.5)),
+        (None, false) => WIDTH.max(anchor.width().min(WIDTH * 1.5)),
+    }
+    .min(screen.width() - 16.0);
     let inner = width - 2.0 * PAD.x;
     let small = widgets::secondary(look);
     let color = match line.tone {
@@ -464,7 +507,10 @@ pub fn show(
     } else {
         look.control_height + PAD.y
     };
-    let height = head_height + laid.height() + 2.0 * PAD.y + offers_height;
+    let calendar_height = sheet
+        .as_ref()
+        .map_or(0.0, |sheet| crate::ui::calendar::height(sheet.model, look));
+    let height = head_height + laid.height() + 2.0 * PAD.y + offers_height + calendar_height;
     let below = anchor.bottom() + GAP;
     let top = if below + height > screen.bottom() && anchor.top() - GAP - height >= screen.top() {
         anchor.top() - GAP - height
@@ -550,6 +596,21 @@ pub fn show(
                 shown.pressed |= response.is_pointer_button_down_on() || response.clicked();
                 x = button.right() + 6.0;
             }
+            if let Some(sheet) = &sheet {
+                let top = pos2(rect.left(), rect.bottom() - calendar_height);
+                let asked = crate::ui::calendar::show(
+                    ui,
+                    (top, rect.width()),
+                    sheet.memory,
+                    (sheet.model, sheet.column, sheet.clock),
+                    (look, palette, locale),
+                );
+                shown.pressed |= asked.pressed;
+                if let Some(text) = asked.text {
+                    shown.picked = Some(text);
+                    shown.commit = asked.commit;
+                }
+            }
             ui.painter().add(border);
         });
     shown
@@ -572,11 +633,21 @@ pub fn under(
         return;
     };
     let (look, _, locale) = skin;
+    let model = target.calendar.as_ref().map(|calendar| {
+        let offers = (target.nullable, target.default);
+        let was = editor.was.as_ref();
+        crate::ui::calendar::model((&editor.text, moment, was), column, calendar, offers)
+    });
+    // The terminal look names the day before the edit on its line, where
+    // macOS marks it in the month.
+    let was = model
+        .as_ref()
+        .filter(|_| look.terminal)
+        .and_then(|model| model.was);
     let said = line(
         &editor.text,
         moment,
-        column,
-        &target.type_name,
+        (column, &target.type_name, was),
         (look, locale),
     );
     let zone = column
@@ -588,7 +659,23 @@ pub fn under(
         type_name: &target.type_name,
         zone,
     };
-    let shown = show(ui, anchor, target.id, (&said, &head, column.kind), skin);
+    let sheet = model
+        .as_ref()
+        .zip(target.calendar.as_ref())
+        .map(|(model, calendar)| Sheet {
+            model,
+            memory: target.id.with((editor.cell.row, editor.cell.col)),
+            column,
+            clock: &calendar.clock,
+        });
+    let shown = show(
+        ui,
+        anchor,
+        target.id,
+        (&said, &head, column.kind),
+        sheet,
+        skin,
+    );
     if shown.pressed {
         ui.memory_mut(|memory| memory.request_focus(target.id));
         outcome.left = false;
@@ -597,6 +684,9 @@ pub fn under(
     if let Some(text) = shown.picked {
         editor.text = text;
         outcome.changed = true;
+        if shown.commit {
+            outcome.commit = Some(crate::model::Advance::Stay);
+        }
     }
 }
 
@@ -628,7 +718,12 @@ mod tests {
     fn line_of(dialect: Dialect, type_name: &str, typed: &str, look: &Look) -> Line {
         let column = Column::of(dialect, type_name, Some(&new_york()), []).unwrap();
         let moment = read(typed, &column, &clock());
-        line(typed, &moment, &column, type_name, (look, Locale::English))
+        line(
+            typed,
+            &moment,
+            (&column, type_name, None),
+            (look, Locale::English),
+        )
     }
 
     fn said(dialect: Dialect, type_name: &str, typed: &str) -> String {

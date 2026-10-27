@@ -120,6 +120,7 @@ page_size = 1000
 timestamps = "second"
 tz = "system"
 value_tags = true
+date_picker = true
 
 [safety]
 production_read_only = true
@@ -175,6 +176,7 @@ bar = "tint"
 | `data.tz` | `"system"`, `"utc"` or a zone such as `"America/New_York"`. A name the zone database does not know is a line that cannot be read. A PostgreSQL `timestamptz` value is shown and edited in this zone, a copy gives it as the server sent it, and one you type without an offset is sent with this zone's | `"system"` |
 | `data.group_digits` | `true` or `false` | Not set: grouped on macOS and Windows, not in the Omarchy look |
 | `data.value_tags` | `true` or `false` | `true` |
+| `data.date_picker` | `true` or `false`. The calendar (the month and the time fields) under the editor of a date, a time or a timestamp; the line that says what is stored shows either way | `true` |
 | `safety.production_read_only` | `true` or `false`. Where the **Open read-only** box of a new production connection starts; the connection is saved with its box set, so a change here changes no saved connection | `true` |
 | `safety.confirm_close_edits` | `true` asks before pending changes are dropped; `false` discards them without asking. While a save runs, what would drop them does nothing until it ends, and closing the window asks either way | `true` |
 | `safety.idle_disconnect` | `"never"`, `"5m"`, `"15m"`, `"30m"`, `"1h"` or `"4h"`. A connection left unused that long has its server session closed; its tabs stay as they were, and it connects again when you next refresh, page, open a table, run or save. Never while changes are pending or something is still loading, running or saving | `"30m"` |

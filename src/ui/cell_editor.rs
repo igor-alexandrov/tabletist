@@ -67,12 +67,20 @@ pub struct Target {
     pub json: bool,
     /// No dialog is up: an editor that is open has the keyboard.
     pub hold: bool,
-    /// The column keeps a date or a time: the editor offers now.
+    /// The column keeps a date or a time and the calendar is not shown:
+    /// the editor offers the database's now.
     pub now: bool,
     /// The column as its dates and times are read, where it keeps them:
     /// the line under the editor says what the text is stored as, and
     /// says what it fails in the place of the note under the field.
     pub dates: Option<crate::dates::Column>,
+    /// The column takes NULL, and it has a default: what the calendar's
+    /// footer offers.
+    pub nullable: bool,
+    pub default: bool,
+    /// The calendar under the line of a date's editor, where the settings
+    /// show one.
+    pub calendar: Option<Calendar>,
     /// The keys that end the edit, as the keymap has them.
     pub keys: Keys,
     /// The cell is a foreign key's, and its editor searches the table the
@@ -93,6 +101,17 @@ impl Target {
             None => format!("{} {}", gettext(locale, "Edit"), display_safe(&self.name)),
         }
     }
+}
+
+/// What the calendar under a date's editor reads its days at, where the
+/// settings show one.
+#[derive(Clone, Debug)]
+pub struct Calendar {
+    /// The time it is, the zone a day is counted in, and how a day's
+    /// numbers are written.
+    pub clock: crate::dates::Clock,
+    /// The day the locale's weeks start on.
+    pub week: jiff::civil::Weekday,
 }
 
 /// What a foreign key cell's field says of its search.
@@ -1818,6 +1837,7 @@ mod tests {
             touched: true,
             problem: None,
             moment: None,
+            was: None,
             picker: None,
             select: false,
         };
@@ -1830,6 +1850,9 @@ mod tests {
             hold: true,
             now: false,
             dates: None,
+            nullable: false,
+            default: false,
+            calendar: None,
             keys: Keys::of(&Keymap::default(), Layout::of(look)),
             search: search.map(|(count, refused)| Search {
                 table: "publishers".into(),
