@@ -271,6 +271,15 @@ test("a theme switch holds a moment, framed whole, and edges the window in its a
   assert.ok(Math.abs(shown.zoom - 1) < 0.02, `zoom ${shown.zoom} on the switch`);
 });
 
+test("a theme switch that starts a cut lands on the cut", () => {
+  const events = [
+    { scene: 0, frame: 1, kind: "theme", text: "Nord", rect: [0, 0, WIDTH, HEIGHT], accent: "#81a1c1" },
+    { scene: 0, frame: 2, kind: "command", keys: "j", rect },
+  ];
+  const { scenes, timed } = place(record(events, [{ label: "Nord", beats: 2 }]));
+  assert.equal(timed[0].at, scenes[0].from);
+});
+
 test("an event the director does not know stops it", () => {
   assert.throws(() => place(record([{ scene: 0, frame: 1, kind: "teleport" }])), /teleport/);
 });

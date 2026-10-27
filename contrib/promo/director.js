@@ -236,8 +236,9 @@
             own.push({ ...event, at: now });
             break;
           }
+          // A switch is no key: it lands at once, on its cut where it
+          // starts one.
           case "theme":
-            now += STEP;
             own.push({ ...event, at: now });
             now += THEME;
             break;
