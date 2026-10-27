@@ -3451,6 +3451,18 @@ value_tags   = true
     }
 
     #[test]
+    fn nothing_connects_while_the_picker_asks() {
+        let mut harness = picker_with_one(Look::macos());
+        let tab = harness.app.active_tab_id();
+        let conn = harness.app.connections.connections[0].id.clone();
+        harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+        // A row's menu, a double-click: both connect by this action.
+        harness.app.apply(Action::Connect { tab, conn });
+        assert!(on_picker(&harness));
+        assert!(asks_to_delete(&harness));
+    }
+
+    #[test]
     fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
         let mut harness = Harness::new();
         let tab = harness.app.active_tab_id();

@@ -935,6 +935,17 @@ impl App {
                 self.active = (self.active as isize + step).rem_euclid(len) as usize;
             }
             Action::Connect { tab, conn } => {
+                // While the picker asks whether to delete a connection,
+                // nothing connects from it: a row's menu or a double-click
+                // would take the question away, and the form it holds.
+                let asking = self.tabs.iter().any(|open| {
+                    open.id == tab
+                        && matches!(&open.content, ConnTabContent::Picker(picker)
+                            if picker.deleting.as_ref().is_some_and(|asked| self.connections.get(asked).is_some()))
+                });
+                if asking {
+                    return;
+                }
                 if let Some(saved) = self.connections.get(&conn).cloned() {
                     self.connect_tab(tab, saved, Secrets::default());
                 }
