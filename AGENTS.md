@@ -36,10 +36,10 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   (its menu delegate in `src/macos/opening.rs`, and muda's Windows attach,
   which subclasses the window, in `src/windows.rs`), and SQLite calls in
   `crates/tabletist-sqlite-ffi`, behind a safe API. Each `unsafe` block and
-  impl has a `// SAFETY:` note right above it: those three crates deny
-  `clippy::undocumented_unsafe_blocks`, and CI runs clippy on macOS and
-  Windows for their code too. `src/macos.rs`, `crates/tabletist-db` and
-  everything else stay free of `unsafe`.
+  impl has a `// SAFETY:` note above it, or above the statement that holds
+  it: those three crates deny `clippy::undocumented_unsafe_blocks`, and CI
+  runs clippy on macOS and Windows for their code too. `src/macos.rs`,
+  `crates/tabletist-db` and everything else stay free of `unsafe`.
 - Platform code sits behind `cfg`. A fix for one platform keeps Linux, macOS,
   and Windows compiling.
 - Settings and state files stay readable, backward compatible, and atomically
