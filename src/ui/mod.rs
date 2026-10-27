@@ -3410,6 +3410,7 @@ value_tags   = true
                 harness.press(Key::Backspace, Modifiers::COMMAND);
             }
             assert!(!asks_to_delete(&harness), "{}: from a button", look.name);
+            assert_eq!(saved(&harness), 1, "{}: from a button", look.name);
             // In the search field it is the text's.
             let mut harness = picker_with_one(look);
             let tab = harness.app.active_tab_id();
@@ -3423,6 +3424,7 @@ value_tags   = true
             }
             harness.settle();
             assert!(!asks_to_delete(&harness), "{}: from the search", look.name);
+            assert_eq!(saved(&harness), 1, "{}: from the search", look.name);
         }
     }
 
