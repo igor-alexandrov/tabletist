@@ -19,6 +19,8 @@ unsafe_code = "deny"
 
 [lints.clippy]
 unwrap_used = "warn"
+# An `unsafe` block or impl without a SAFETY note above it fails the build.
+undocumented_unsafe_blocks = "deny"
 
 [dependencies]
 # `egui::Key`, the key a `Shortcut` names: the app's keymap reads keys as

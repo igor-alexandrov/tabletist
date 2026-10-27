@@ -51,6 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: GUI build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -58,6 +60,12 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --workspace --all-targets
+      # The quality job's clippy runs on Linux, which compiles none of the
+      # macOS and Windows `unsafe` (`fonts.rs`, `macos/opening.rs`,
+      # `windows.rs`): this holds their SAFETY notes.
+      - name: SAFETY notes in this platform's unsafe code
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        run: cargo clippy --locked -p tabletist-appkit -p tabletist-menubar -p tabletist-sqlite-ffi --all-targets -- -D warnings
       # The relay is the app's own program, which a release build on
       # Windows makes a GUI program: an agent must reach the app through
       # that one too.
