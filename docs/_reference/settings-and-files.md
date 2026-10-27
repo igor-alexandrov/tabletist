@@ -635,5 +635,5 @@ policy.
 
 `--help` also lists `--demo-shot`, which saves a picture of the demo's
 window to a file, and `--demo-size`, which sets that window's size. The
-picture is drawn in the look's own colours and font, not the desktop's, so
-it is the same on every desktop.
+picture does not take the desktop's theme or font, only the system's light
+or dark.

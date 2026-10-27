@@ -168,7 +168,8 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
 
 /// Whether the window takes the desktop's theme and font: a demo does, to
 /// show the app as it looks there, but a demo's screenshot does not, so the
-/// picture is the same on every desktop it is taken on.
+/// picture does not change with them. It still takes the system's light or
+/// dark, as every start does.
 fn follows_desktop(cli: &Cli) -> bool {
     cli.demo_shot.is_none()
 }

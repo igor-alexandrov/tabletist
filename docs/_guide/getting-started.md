@@ -14,11 +14,13 @@ tabletist --demo
 ```
 
 It opens a small SQLite database with a few tables, a view, and one table
-of 100,000 rows for trying paging, sorting and cancel. The demo keeps
-everything in a throwaway folder that is removed when you quit, and it
-never touches your saved connections or your keyring. It takes your
-desktop's theme and font as Tabletist always does: on Omarchy, the theme
-of the moment.
+of 100,000 rows for trying paging, sorting and cancel. The demo keeps its
+settings and its database in a throwaway folder that is removed when you
+quit, and it never touches your saved connections or your keyring. It
+takes your desktop's theme and font as Tabletist always does: on Omarchy,
+the theme of the moment. Where a package installed Tabletist on Omarchy,
+the demo also sets up the theme template and hook the package ships, as a
+first start does.
 
 ## Add a connection
 
