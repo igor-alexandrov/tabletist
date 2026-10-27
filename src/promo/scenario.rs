@@ -143,6 +143,9 @@ pub enum Step {
     Type(String),
     /// The picture stays this many seconds more.
     Hold(f64),
+    /// Omarchy switches to the theme of this name, as Omarchy shows it
+    /// (`Retro 82`): the app recolours as it follows the desktop.
+    Omarchy(String),
 }
 
 /// The tempo when the scenario names none, and the ones it may name.
@@ -394,7 +397,11 @@ struct RawStep {
     #[serde(rename = "type")]
     typed: Option<String>,
     hold: Option<f64>,
+    omarchy: Option<String>,
 }
+
+/// What a step that names none, or more than one, is told.
+const ONE_STEP: &str = "a step is one of open, click, command, press, type, hold or omarchy";
 
 impl RawStep {
     fn read(self, look: Look) -> Result<Step, String> {
@@ -407,6 +414,7 @@ impl RawStep {
             times,
             typed,
             hold,
+            omarchy,
         } = self;
         let names = [
             open.is_some(),
@@ -415,9 +423,10 @@ impl RawStep {
             press.is_some(),
             typed.is_some(),
             hold.is_some(),
+            omarchy.is_some(),
         ];
         if names.iter().filter(|named| **named).count() != 1 {
-            return Err("a step is one of open, click, command, press, type or hold".into());
+            return Err(ONE_STEP.into());
         }
         if key.is_some() && command.is_none() {
             return Err("only a command takes a key".into());
@@ -450,12 +459,21 @@ impl RawStep {
             }
             return Ok(Step::Type(text));
         }
+        if let Some(theme) = omarchy {
+            if look != Look::Omarchy {
+                return Err("only the omarchy look switches Omarchy's theme".into());
+            }
+            if theme.trim().is_empty() {
+                return Err("omarchy needs a theme's name".into());
+            }
+            return Ok(Step::Omarchy(theme));
+        }
         match hold {
             Some(seconds) if seconds > 0.0 && seconds <= LONGEST_HOLD => Ok(Step::Hold(seconds)),
             Some(seconds) => Err(format!(
                 "hold {seconds} is not above 0 and up to {LONGEST_HOLD}"
             )),
-            None => Err("a step is one of open, click, command, press, type or hold".into()),
+            None => Err(ONE_STEP.into()),
         }
     }
 }
@@ -688,6 +706,23 @@ steps = [
     }
 
     #[test]
+    fn an_omarchy_scenario_may_switch_omarchy_s_theme() {
+        let scenario = read(
+            "title = \"T\"\nlook = \"omarchy\"\n[[scene]]\nsteps = [{ omarchy = \"Retro 82\" }]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            shot(&scenario.scenes[0]).1,
+            [Step::Omarchy("Retro 82".into())]
+        );
+        assert!(
+            read("title = \"T\"\nlook = \"omarchy\"\n[[scene]]\nsteps = [{ omarchy = \" \" }]\n")
+                .unwrap_err()
+                .contains("omarchy needs a theme's name")
+        );
+    }
+
+    #[test]
     fn a_scenario_may_save_other_connections_and_say_what_changed_meanwhile() {
         let scenario = read(
             r#"
@@ -806,6 +841,10 @@ steps = [{ hold = 1 }]
             ("{ press = \"ctrl+nonsense\" }", "nonsense"),
             ("{ type = \"\" }", "type needs text"),
             ("{ hold = 0 }", "hold 0 is not above 0"),
+            (
+                "{ omarchy = \"Nord\" }",
+                "only the omarchy look switches Omarchy's theme",
+            ),
             ("{ wait = 1 }", "unknown field"),
         ] {
             let error = refused(step);
