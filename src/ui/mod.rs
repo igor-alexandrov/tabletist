@@ -3354,29 +3354,58 @@ value_tags   = true
     }
 
     #[test]
+    fn the_question_names_each_secret_that_goes_with_the_connection() {
+        use crate::connections::PasswordMode::{Keyring, None as NoSecret};
+        use tabletist_db::SshAuth;
+        let key = SshAuth::KeyFile {
+            path: "/home/me/.ssh/id_ed25519".into(),
+        };
+        for (password, ssh, said) in [
+            (NoSecret, None, "Delete Bookshop? This can't be undone."),
+            (
+                Keyring,
+                None,
+                "Delete Bookshop and its saved password? This can't be undone.",
+            ),
+            (
+                NoSecret,
+                Some(key),
+                "Delete Bookshop and its saved key's passphrase? This can't be undone.",
+            ),
+            (
+                Keyring,
+                Some(SshAuth::Password),
+                "Delete Bookshop and its saved password and SSH password? This can't be undone.",
+            ),
+        ] {
+            let mut harness = picker_with_one(Look::macos());
+            let mut saved = harness.app.connections.connections[0].clone();
+            saved.password = password;
+            saved.ssh_secret = if ssh.is_some() { Keyring } else { NoSecret };
+            saved.spec.ssh = ssh.map(|auth| tabletist_db::SshSpec {
+                host: "bastion".into(),
+                port: None,
+                user: "ops".into(),
+                auth,
+            });
+            let conn = saved.id.clone();
+            harness.app.connections.upsert(saved);
+            harness.app.apply(Action::AskDeleteConnection(conn));
+            assert!(harness.has(said), "{said}");
+        }
+    }
+
+    #[test]
     fn asking_shows_a_row_a_search_or_a_folded_group_hid() {
         let mut harness = Harness::new();
         let tab = harness.app.active_tab_id();
         let shop = add_saved(&mut harness, "Shop");
         add_saved(&mut harness, "Shop");
         let alpha = add_saved(&mut harness, "Alpha");
-        let picker = |harness: &mut Harness| -> crate::model::PickerState {
-            let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content
-            else {
-                unreachable!()
-            };
-            crate::model::PickerState {
-                search: picker.search.clone(),
-                selected: picker.selected.clone(),
-                folded: picker.folded.clone(),
-                focus_search: false,
-                deleting: picker.deleting.clone(),
-            }
-        };
         // A search that hides the row is cleared.
         harness.app.picker_mut(tab).unwrap().search = "alp".into();
         harness.app.apply(Action::AskDeleteConnection(shop.clone()));
-        let shown = picker(&mut harness);
+        let shown = harness.app.picker_mut(tab).unwrap();
         assert_eq!(shown.search, "");
         assert_eq!(shown.deleting.as_ref(), Some(&shop));
         harness
@@ -3387,7 +3416,7 @@ value_tags   = true
         harness
             .app
             .apply(Action::AskDeleteConnection(alpha.clone()));
-        assert_eq!(picker(&mut harness).search, "alp");
+        assert_eq!(harness.app.picker_mut(tab).unwrap().search, "alp");
         harness
             .app
             .apply(Action::AnswerDeleteConnection { tab, delete: false });
@@ -3395,7 +3424,10 @@ value_tags   = true
         harness.app.picker_mut(tab).unwrap().search.clear();
         harness.app.picker_mut(tab).unwrap().folded = vec!["Shop".into(), "Local".into()];
         harness.app.apply(Action::AskDeleteConnection(shop.clone()));
-        assert_eq!(picker(&mut harness).folded, vec!["Local".to_owned()]);
+        assert_eq!(
+            harness.app.picker_mut(tab).unwrap().folded,
+            vec!["Local".to_owned()]
+        );
     }
 
     #[test]

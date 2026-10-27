@@ -781,19 +781,17 @@ impl DeleteQuestion {
         (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
         width: f32,
     ) -> Self {
-        use crate::connections::PasswordMode;
-        let secrets = connection.password == PasswordMode::Keyring
-            || connection.ssh_secret == PasswordMode::Keyring;
-        let words = match secrets {
-            true => "Delete {connection} and its saved password? This can't be undone.",
-            false => "Delete {connection}? This can't be undone.",
+        let say = |text: &'static str| look.label(&gettext(locale, text));
+        let words = match saved_secrets(connection, say) {
+            Some(secrets) => {
+                say("Delete {connection} and its saved {secrets}? This can't be undone.")
+                    .replace("{secrets}", &secrets)
+            }
+            None => say("Delete {connection}? This can't be undone."),
         };
         // The terminal look writes its words in lower case, and the name as
         // it was typed: two names apart only in case stay apart.
-        let said = look
-            .label(&gettext(locale, words))
-            .replace("{connection}", &connection.name);
-        let say = |text: &'static str| look.label(&gettext(locale, text));
+        let said = words.replace("{connection}", &connection.name);
         let body = widgets::body(look);
         if look.terminal {
             let text = Text::new(look)
@@ -858,6 +856,30 @@ impl DeleteQuestion {
             right = at.left() - 8.0;
         }
         self.laid.paint_left(ui.painter(), footer.left() + side, y);
+    }
+}
+
+/// What of `connection` the keyring holds, which goes with it: "password",
+/// "key's passphrase", "password and SSH password". `None` when nothing.
+fn saved_secrets(
+    connection: &SavedConnection,
+    say: impl Fn(&'static str) -> String,
+) -> Option<String> {
+    use crate::connections::PasswordMode;
+    use tabletist_db::SshAuth;
+    let password = connection.password == PasswordMode::Keyring;
+    let ssh = (connection.ssh_secret == PasswordMode::Keyring).then(|| {
+        match connection.spec.ssh.as_ref().map(|ssh| &ssh.auth) {
+            Some(SshAuth::Password) => say("SSH password"),
+            Some(SshAuth::KeyFile { .. }) => say("key's passphrase"),
+            Some(SshAuth::Agent) | None => say("SSH secret"),
+        }
+    });
+    match (password, ssh) {
+        (false, None) => None,
+        (true, None) => Some(say("password")),
+        (false, Some(ssh)) => Some(ssh),
+        (true, Some(ssh)) => Some(format!("{} {} {ssh}", say("password"), say("and"))),
     }
 }
 
