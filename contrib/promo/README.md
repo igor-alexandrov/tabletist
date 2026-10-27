@@ -274,9 +274,10 @@ shipped one) through `omarchy-theme-color` and Tabletist's template. The
 app is then told what a switch on the desktop tells it: the live palette
 the theme folder's scan finds, and the theme's name. The desktop's own
 theme is never changed, but its themes are read, so a scenario with the
-step renders only on Omarchy. The switch holds a second, the whole window
-in view, and Hyprland's border takes the new theme's accent.
-`scenarios/theme-switch.toml` switches three times.
+step renders only on Omarchy. A switch lands at once (on its cut, in a
+reel) and holds a second, with the whole window in view in a narrated
+video, and Hyprland's border takes the new theme's accent.
+`scenarios/theme-switch.toml` is a reel of six switches.
 
 A `press` that the keymap holds where the keyboard is does what the app does
 with it, with no keycap. If you want the keycap, write a `command`.
