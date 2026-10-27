@@ -242,6 +242,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         key(Command::FilterConnections),
     );
     let agent_access = key(Command::ChangeAgentAccess);
+    let answers = (
+        key(Command::ConfirmDeleteConnection),
+        key(Command::KeepConnection),
+    );
     let new = if look.terminal {
         ButtonSpec::new(&new_label)
             .primary()
@@ -320,13 +324,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             response.request_focus();
         }
     }
-    let (search, selected, folded) = match &app.tabs[index].content {
+    let (search, selected, folded, deleting) = match &app.tabs[index].content {
         ConnTabContent::Picker(picker) => (
             picker.search.clone(),
             picker.selected.clone(),
             picker.folded.clone(),
+            picker.deleting.clone(),
         ),
-        ConnTabContent::Workspace(_) => (String::new(), None, Vec::new()),
+        ConnTabContent::Workspace(_) => (String::new(), None, Vec::new(), None),
     };
 
     // Footer.
@@ -339,69 +344,79 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     widgets::hline(ui, footer.x_range(), footer.top() + 0.5, palette.outline);
     let footer_y = footer.top() + 1.0 + (footer.height() - 1.0) / 2.0;
     let footer_side = if look.terminal { 12.0 } else { side };
-    let small = widgets::secondary(&look);
-    if look.terminal {
-        let mut hints = vec![
-            (&moves, "move", true),
-            (&connect, "connect / show", true),
-            (&edit, "edit", true),
-            (&new_key, "new", true),
-            (&duplicate, "duplicate", true),
-            (&delete, "delete", true),
-            (&filter, "filter", true),
-        ];
-        // Where agents can reach the app.
-        if crate::endpoint::AVAILABLE {
-            hints.push((&agent_access, "agent access", true));
+    // While the list asks whether to delete a connection, the question
+    // stands in place of the keys.
+    let asking = deleting.as_ref().and_then(|conn| app.connections.get(conn));
+    if let Some(connection) = asking {
+        let place = (footer, footer_side, footer_y);
+        let skin = (&look, &palette, locale);
+        delete_question(ui, place, tab, connection, &answers, skin, &mut actions);
+    } else {
+        let small = widgets::secondary(&look);
+        if look.terminal {
+            let mut hints = vec![
+                (&moves, "move", true),
+                (&connect, "connect / show", true),
+                (&edit, "edit", true),
+                (&new_key, "new", true),
+                (&duplicate, "duplicate", true),
+                (&delete, "delete", true),
+                (&filter, "filter", true),
+            ];
+            // Where agents can reach the app.
+            if crate::endpoint::AVAILABLE {
+                hints.push((&agent_access, "agent access", true));
+            }
+            // What does not fit beside the keyring's note gives way, from the
+            // end: the window may be as narrow as 720.
+            let note = widgets::measure(ui, Text::one(&look, small, TERMINAL_SECRETS, palette.dim));
+            let room = footer.width() - 2.0 * footer_side - note - 24.0;
+            while hints.len() > 1
+                && widgets::key_hints_width(ui, &hints, 16.0, &look, &palette) > room
+            {
+                hints.pop();
+            }
+            widgets::key_hints(
+                ui,
+                (footer.left() + footer_side, footer_y),
+                &hints,
+                16.0,
+                &look,
+                &palette,
+            );
+        } else {
+            let hints = [
+                format!("{connect} connect"),
+                format!("{edit} edit"),
+                format!("{duplicate} duplicate"),
+                format!("{delete} delete"),
+            ];
+            let status = palette.secondary.lerp_to_gamma(palette.dim, 0.5);
+            let mut x = footer.left() + footer_side;
+            for hint in hints {
+                x += widgets::paint_text(ui, x, footer_y, Text::one(&look, small, &hint, status))
+                    + 18.0;
+            }
         }
-        // What does not fit beside the keyring's note gives way, from the
-        // end: the window may be as narrow as 720.
-        let note = widgets::measure(ui, Text::one(&look, small, TERMINAL_SECRETS, palette.dim));
-        let room = footer.width() - 2.0 * footer_side - note - 24.0;
-        while hints.len() > 1 && widgets::key_hints_width(ui, &hints, 16.0, &look, &palette) > room
-        {
-            hints.pop();
-        }
-        widgets::key_hints(
+        let secrets = if look.terminal {
+            TERMINAL_SECRETS.to_owned()
+        } else if look.faces.typeface == theme::Typeface::Plex {
+            gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
+        } else {
+            gettext(locale, "Passwords are stored in the system keyring").into_owned()
+        };
+        let color = if look.terminal {
+            palette.dim
+        } else {
+            palette.secondary.lerp_to_gamma(palette.dim, 0.5)
+        };
+        widgets::paint_text_right(
             ui,
-            (footer.left() + footer_side, footer_y),
-            &hints,
-            16.0,
-            &look,
-            &palette,
+            footer.right() - footer_side,
+            footer_y,
+            Text::one(&look, small, &secrets, color),
         );
-    } else {
-        let hints = [
-            format!("{connect} connect"),
-            format!("{edit} edit"),
-            format!("{duplicate} duplicate"),
-            format!("{delete} delete"),
-        ];
-        let status = palette.secondary.lerp_to_gamma(palette.dim, 0.5);
-        let mut x = footer.left() + footer_side;
-        for hint in hints {
-            x +=
-                widgets::paint_text(ui, x, footer_y, Text::one(&look, small, &hint, status)) + 18.0;
-        }
     }
-    let secrets = if look.terminal {
-        TERMINAL_SECRETS.to_owned()
-    } else if look.faces.typeface == theme::Typeface::Plex {
-        gettext(locale, "Passwords are stored in the macOS Keychain").into_owned()
-    } else {
-        gettext(locale, "Passwords are stored in the system keyring").into_owned()
-    };
-    let color = if look.terminal {
-        palette.dim
-    } else {
-        palette.secondary.lerp_to_gamma(palette.dim, 0.5)
-    };
-    widgets::paint_text_right(
-        ui,
-        footer.right() - footer_side,
-        footer_y,
-        Text::one(&look, small, &secrets, color),
-    );
 
     // The list.
     let top = if look.terminal {
@@ -730,13 +745,72 @@ fn row_response(
             actions.push(Action::DuplicateConnection(id.clone()));
         }
         if item(ui, "Delete") {
-            actions.push(Action::DeleteConnection(id.clone()));
+            actions.push(Action::AskDeleteConnection(id.clone()));
         }
         if let Some(access) = opening.agents {
             agents_part(ui, &id, access, (look, palette, locale), actions);
         }
     });
     response
+}
+
+/// The footer's question before a connection is deleted, in place of its
+/// keys: what goes, then Cancel and Delete on macOS and Windows, and the
+/// letters that answer in the terminal look.
+fn delete_question(
+    ui: &mut egui::Ui,
+    (footer, side, y): (Rect, f32, f32),
+    tab: crate::model::ConnTabId,
+    connection: &SavedConnection,
+    (yes, no): &(crate::keymap::Written, crate::keymap::Written),
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    actions: &mut Vec<Action>,
+) {
+    use crate::connections::PasswordMode;
+    let secrets = connection.password == PasswordMode::Keyring
+        || connection.ssh_secret == PasswordMode::Keyring;
+    let words = match secrets {
+        true => "Delete {connection} and its saved password? This can't be undone.",
+        false => "Delete {connection}? This can't be undone.",
+    };
+    let question = look.label(&gettext(locale, words).replace("{connection}", &connection.name));
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let body = widgets::body(look);
+    let left = footer.left() + side;
+    widgets::announce(ui, footer, &question);
+    if look.terminal {
+        let text = Text::new(look)
+            .add(body, &question, palette.warning)
+            .space(body, "  ")
+            .add(body, yes.as_str(), palette.accent)
+            .add(body, &format!(" {}", say("yes")), palette.secondary)
+            .space(body, "  ")
+            .add(body, no.as_str(), palette.accent)
+            .add(body, &format!(" {}", say("no")), palette.secondary);
+        widgets::paint_text(ui, left, y, text);
+        return;
+    }
+    let mut right = footer.right() - side;
+    let (cancel, delete) = (say("Cancel"), say("Delete"));
+    for (label, deletes) in [(&cancel, false), (&delete, true)] {
+        let mut button = states::button(label, look).salt("delete-connection-question");
+        if deletes {
+            button = button.danger();
+        }
+        let width = button.width(ui, look);
+        let at = Rect::from_center_size(pos2(right - width / 2.0, y), vec2(width, 28.0));
+        if button.show_at(ui, at, look, palette).clicked() {
+            actions.push(Action::AnswerDeleteConnection {
+                tab,
+                delete: deletes,
+            });
+        }
+        right = at.left() - 8.0;
+    }
+    Text::one(look, body, &question, palette.text)
+        .wrap((right - left - 16.0).max(40.0))
+        .layout(ui.ctx())
+        .paint_left(ui.painter(), left, y);
 }
 
 /// The Agents part of a row's menus: what agents may do on it, the
@@ -1105,7 +1179,7 @@ fn mac_row(
             .on_hover_text(&delete)
             .clicked()
         {
-            actions.push(Action::DeleteConnection(id.clone()));
+            actions.push(Action::AskDeleteConnection(id.clone()));
         }
         if let Some(access) = opening.agents {
             agents_part(ui, &id, access, (look, palette, locale), actions);

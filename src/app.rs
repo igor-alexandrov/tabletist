@@ -978,7 +978,30 @@ impl App {
             }
             Action::SelectConnection { tab, conn } => {
                 if let Some(picker) = self.picker_mut(tab) {
+                    // A click on another row leaves the question.
+                    if picker.deleting.is_some() && picker.deleting != conn {
+                        picker.deleting = None;
+                    }
                     picker.selected = conn;
+                }
+            }
+            Action::AskDeleteConnection(conn) => {
+                if self.connections.get(&conn).is_none() {
+                    return;
+                }
+                self.apply(Action::ShowConnections);
+                let tab = self.active_tab_id();
+                if let Some(picker) = self.picker_mut(tab) {
+                    picker.selected = Some(conn.clone());
+                    picker.deleting = Some(conn);
+                }
+            }
+            Action::AnswerDeleteConnection { tab, delete } => {
+                let asked = self
+                    .picker_mut(tab)
+                    .and_then(|picker| picker.deleting.take());
+                if let Some(conn) = asked.filter(|_| delete) {
+                    self.apply(Action::DeleteConnection(conn));
                 }
             }
             Action::MovePickerSelection { tab, step } => {

@@ -261,6 +261,8 @@ pub enum When {
     AgentsLog,
     /// The History tab asks whether to clear the connection's history.
     ClearingHistory,
+    /// The Connections list asks whether to delete a connection.
+    DeletingConnection,
     /// The start screen's search is on: its field has the keyboard. The
     /// keys that move among the matches, open one and clear the search are
     /// read then, and only then.
@@ -449,6 +451,8 @@ commands! {
     EditConnection = "edit_connection",
     DuplicateConnection = "duplicate_connection",
     DeleteConnection = "delete_connection",
+    ConfirmDeleteConnection = "confirm_delete_connection",
+    KeepConnection = "keep_connection",
     Connect = "connect",
     ConnectAgain = "connect_again",
     MoveInConnections = "move_in_connections",
@@ -761,6 +765,8 @@ impl Command {
             C::EditConnection => info("Edit connection", "Edit connection", Window),
             C::DuplicateConnection => info("Duplicate connection", "Duplicate connection", Window),
             C::DeleteConnection => info("Delete connection", "Delete connection", Window),
+            C::ConfirmDeleteConnection => info("Delete the connection, as asked", "", Prompts),
+            C::KeepConnection => info("Keep the connection, as asked", "", Prompts),
             C::Connect => info("Connect / go to window", "Connect / go to window", Window),
             C::ConnectAgain => info("Open the connection again", "", Window),
             C::MoveInConnections => info("Move in the connections", "", Window),
@@ -1288,12 +1294,30 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("cmd+d")]),
             keys(&[k("yy p")]),
         ),
+        // A connection goes with its secrets and cannot be had back, so
+        // the key only asks: Finder's chord, which no stray Backspace is.
         bind(
             C::DeleteConnection,
             CONNECTIONS,
-            keys(&[k("backspace")]),
+            keys(&[k("cmd+backspace")]),
             keys(&[k("dd")]),
         ),
+        // The question's Delete is its button on macOS and Windows, which
+        // Enter presses when it has the keyboard.
+        bind(
+            C::ConfirmDeleteConnection,
+            CONNECTIONS,
+            NONE,
+            keys(&[k("y")]),
+        )
+        .when(When::DeletingConnection),
+        bind(
+            C::KeepConnection,
+            CONNECTIONS,
+            keys(&[k("esc")]),
+            keys(&[k("n"), k("esc")]).shown("n"),
+        )
+        .when(When::DeletingConnection),
         bind(
             C::Connect,
             CONNECTIONS,
@@ -1748,6 +1772,9 @@ pub const BINDINGS: &[Binding] = {
         bind(C::YankRow, CELLS, NONE, keys(&[k("yy")])),
         bind(C::PutRow, CELLS, NONE, keys(&[k("p")])),
         bind(C::PutRowAbove, CELLS, NONE, keys(&[k("P")])),
+        // Backspace alone, where a connection takes Cmd+Backspace: a
+        // deleted row is only marked until Save writes it, and the same key
+        // brings it back, while Cmd+Backspace is Set NULL here.
         bind(
             C::DeleteRow,
             GRID,

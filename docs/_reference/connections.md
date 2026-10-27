@@ -20,6 +20,12 @@ suits one database in several environments. The rest are listed under
 A connection can be open more than once. Enter shows a connection that is
 already open, and Shift+Enter opens it again.
 
+Cmd/Ctrl+Backspace (`dd` in the Omarchy look), **Delete** in a row's menu,
+or **Delete** in the connection's form asks at the bottom of the picker
+before it deletes the connection. Deleting cannot be undone: the
+connection goes with its saved password and SSH secret, its labels, and
+what was last open on it.
+
 ## Fields
 
 | Field | Notes |

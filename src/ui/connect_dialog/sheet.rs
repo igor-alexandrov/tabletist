@@ -755,9 +755,10 @@ pub(super) fn footer(ui: &mut Ui, form: &ConnectionForm, skin: &Skin, actions: &
             ui.painter()
                 .hline(place.x_range(), under, Stroke::new(1.0, palette.danger));
         }
+        // The form goes, and the Connections list asks.
         if response.clicked() {
-            actions.push(Action::DeleteConnection(id.clone()));
             actions.push(Action::CloseDialog);
+            actions.push(Action::AskDeleteConnection(id.clone()));
         }
     }
     paint_status(ui, form, StatusAt::Right(buttons - 10.0), y, skin);

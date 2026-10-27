@@ -39,6 +39,9 @@ pub struct PickerState {
     pub folded: Vec<String>,
     /// Focus the search on the next frame.
     pub focus_search: bool,
+    /// Delete was asked for this connection: the footer asks whether to,
+    /// and its answer is the only key until it is given.
+    pub deleting: Option<ConnectionId>,
 }
 
 /// Everything that changes application state. Views push these; `App::apply`
@@ -76,6 +79,16 @@ pub enum Action {
     NewConnection,
     EditConnection(ConnectionId),
     DuplicateConnection(ConnectionId),
+    /// The picker's key, its rows' Delete and the connection form's: show
+    /// the picker on the connection, and ask there whether to delete it.
+    AskDeleteConnection(ConnectionId),
+    /// The answer to that question: delete it, or keep it.
+    AnswerDeleteConnection {
+        tab: ConnTabId,
+        delete: bool,
+    },
+    /// Delete a saved connection with its secrets, at once: what the
+    /// question's Delete does.
     DeleteConnection(ConnectionId),
     CloseDialog,
     /// Hide the notice above the window's content.

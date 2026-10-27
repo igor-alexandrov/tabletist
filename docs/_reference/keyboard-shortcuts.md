@@ -68,7 +68,7 @@ In the picker:
 | Mod+N | New connection |
 | Mod+E | Edit |
 | Mod+D | Duplicate |
-| Backspace | Delete |
+| Mod+Backspace | Delete, once you say so. Esc keeps the connection |
 
 In the connection dialog:
 

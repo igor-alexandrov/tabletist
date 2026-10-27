@@ -75,7 +75,7 @@ numbered; once you type, it lists what matches. Its commands stay on `:`.
 | `n` | New connection |
 | `e` | Edit |
 | `yy` then `p` | Duplicate |
-| `dd` | Delete |
+| `dd` | Delete, once you say so: `y` deletes it, `n` or Esc keeps it |
 | `/` | Filter the list |
 | `a` | What agents may do on the connection: `j` `k`, Enter to set it, `t` for its Agents tab, Esc |
 | Esc | Cancel connecting |

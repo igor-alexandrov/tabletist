@@ -2395,6 +2395,29 @@ fn letters(
         let on = |command: Command| {
             ctx.input_mut(|input| asked(input, &app.keymap, layout, command, scope, true))
         };
+        // While the list asks whether to delete a connection, its answers
+        // are the only keys: nothing connects, moves or deletes meanwhile.
+        if picker.deleting.is_some() {
+            let answer = |delete: bool| Action::AnswerDeleteConnection { tab, delete };
+            if on(Command::KeepConnection).fresh {
+                actions.push(answer(false));
+            }
+            let deleting =
+                |when: crate::keymap::When| when == crate::keymap::When::DeletingConnection;
+            for char in typed_chars(ctx) {
+                take_char(ctx, char);
+                match app
+                    .keymap
+                    .typed(layout, scope, &deleting, &char.to_string())
+                {
+                    Typed::Command(Command::ConfirmDeleteConnection) => actions.push(answer(true)),
+                    Typed::Command(Command::KeepConnection) => actions.push(answer(false)),
+                    _ => {}
+                }
+            }
+            ctx.data_mut(|data| data.insert_temp(typed_id(), String::new()));
+            return;
+        }
         // The list's arrows. Its letters are read with the letters, below.
         for keys in app
             .keymap
@@ -2427,9 +2450,8 @@ fn letters(
         };
         // With the keyboard on a control of the picker (a button, its
         // search field) the keys that connect are the control's, and so is
-        // the one that deletes: a connection goes at once, with its
-        // secrets, and a Backspace meant for something else must not be
-        // the one that takes it.
+        // the one that deletes: in the search field Cmd+Backspace deletes
+        // the text before the cursor, not the connection.
         let on_list = !crate::ui::focus::on_control(ctx);
         if let Some(conn) = &selected {
             if on_list {
@@ -2447,7 +2469,7 @@ fn letters(
                 actions.push(Action::DuplicateConnection(conn.clone()));
             }
             if on_list && on(Command::DeleteConnection).count > 0 {
-                actions.push(Action::DeleteConnection(conn.clone()));
+                actions.push(Action::AskDeleteConnection(conn.clone()));
             }
         }
         // The letters, with the wait the keymap needs for a key of
@@ -2490,7 +2512,7 @@ fn letters(
                     actions.push(Action::DuplicateConnection(conn.clone()));
                 }
                 (Some(Command::DeleteConnection), Some(conn)) if on_list => {
-                    actions.push(Action::DeleteConnection(conn.clone()));
+                    actions.push(Action::AskDeleteConnection(conn.clone()));
                 }
                 (Some(Command::ChangeAgentAccess), Some(conn)) if crate::endpoint::AVAILABLE => {
                     actions.push(Action::OpenAgentAccess(conn.clone()));

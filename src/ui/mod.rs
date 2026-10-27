@@ -2920,15 +2920,34 @@ value_tags   = true
     }
 
     #[test]
-    fn the_terminal_picker_deletes_only_on_dd() {
+    fn the_terminal_picker_asks_on_dd_and_deletes_on_y() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
         add_saved(&mut harness, "Alpha");
         harness.press(Key::J, Modifiers::NONE);
         harness.press(Key::D, Modifiers::NONE);
-        assert_eq!(harness.app.connections.connections.len(), 1, "one d waits");
+        assert!(!asks_to_delete(&harness), "one d waits");
         harness.press(Key::D, Modifiers::NONE);
+        assert!(asks_to_delete(&harness));
+        assert_eq!(harness.app.connections.connections.len(), 1, "dd only asks");
+        // `n` keeps it.
+        harness.press(Key::N, Modifiers::NONE);
+        assert!(!asks_to_delete(&harness));
+        assert_eq!(harness.app.connections.connections.len(), 1);
+        // And `y` deletes it.
+        harness.press(Key::D, Modifiers::NONE);
+        harness.press(Key::D, Modifiers::NONE);
+        harness.press(Key::Y, Modifiers::NONE);
+        assert!(!asks_to_delete(&harness));
         assert!(harness.app.connections.connections.is_empty());
+    }
+
+    /// Whether the picker asks whether to delete a connection.
+    fn asks_to_delete(harness: &Harness) -> bool {
+        matches!(
+            &harness.app.active_tab().content,
+            crate::model::ConnTabContent::Picker(picker) if picker.deleting.is_some()
+        )
     }
 
     #[test]
@@ -3212,28 +3231,88 @@ value_tags   = true
         assert_eq!(saved(&harness), 2);
         // A bare key press, as a test may send a letter, is read too.
         harness.press(Key::D, Modifiers::NONE);
-        assert_eq!(saved(&harness), 2, "one d waits");
+        assert!(!asks_to_delete(&harness), "one d waits");
         harness.press(Key::D, Modifiers::NONE);
+        assert!(asks_to_delete(&harness));
+        type_key(&mut harness, Key::Y, "y");
         assert_eq!(saved(&harness), 1);
     }
 
     #[test]
-    fn the_other_looks_delete_a_connection_with_backspace_alone() {
+    fn the_other_looks_ask_to_delete_a_connection_with_mod_backspace() {
         for look in desktop_looks() {
             let mut harness = picker_with_one(look);
-            harness.press(Key::Backspace, Modifiers::COMMAND);
-            assert_eq!(saved(&harness), 1, "{}: not with the chord", look.name);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            assert!(
+                !asks_to_delete(&harness),
+                "{}: not with Backspace alone",
+                look.name
+            );
             harness.press(Key::D, Modifiers::COMMAND);
             assert_eq!(saved(&harness), 2, "{}: duplicated", look.name);
-            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert!(asks_to_delete(&harness), "{}", look.name);
+            assert_eq!(saved(&harness), 2, "{}: the chord only asks", look.name);
+            // While it asks, its answers are the only keys: Enter connects
+            // nothing.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(on_picker(&harness), "{}", look.name);
+            // Esc keeps it.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!asks_to_delete(&harness), "{}", look.name);
+            assert_eq!(saved(&harness), 2, "{}: kept", look.name);
+            // Delete deletes it.
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            harness.click("Delete");
+            assert!(!asks_to_delete(&harness), "{}", look.name);
             assert_eq!(saved(&harness), 1, "{}", look.name);
             // The letters are Omarchy's.
-            for (key, text) in [(Key::D, "d"), (Key::D, "d"), (Key::N, "n")] {
+            for (key, text) in [(Key::D, "d"), (Key::D, "d"), (Key::Y, "y")] {
                 type_key(&mut harness, key, text);
             }
             assert_eq!(saved(&harness), 1, "{}", look.name);
+            assert!(!asks_to_delete(&harness), "{}", look.name);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn a_rows_menu_and_the_connection_form_ask_before_deleting() {
+        for look in desktop_looks() {
+            // The row's menu.
+            let mut harness = picker_with_one(look);
+            harness.click("More actions for Bookshop");
+            harness.click("Delete");
+            assert!(asks_to_delete(&harness), "{}: the menu", look.name);
+            assert_eq!(saved(&harness), 1, "{}: the menu", look.name);
+            // The form's Delete closes the form, and the picker asks.
+            let mut harness = picker_with_one(look);
+            let conn = harness.app.connections.connections[0].id.clone();
+            harness.app.apply(Action::EditConnection(conn));
+            harness.click("Delete Bookshop");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(asks_to_delete(&harness), "{}: the form", look.name);
+            assert_eq!(saved(&harness), 1, "{}: the form", look.name);
+        }
+    }
+
+    #[test]
+    fn deleting_a_connection_from_its_window_asks_in_the_picker() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        harness.app.apply(Action::AskDeleteConnection(conn.clone()));
+        harness.settle();
+        assert!(on_picker(&harness));
+        assert!(asks_to_delete(&harness));
+        let crate::model::ConnTabContent::Picker(picker) = &harness.app.active_tab().content else {
+            unreachable!()
+        };
+        assert_eq!(
+            picker.selected.as_ref(),
+            Some(&conn),
+            "on the row it asks about"
+        );
     }
 
     #[test]
@@ -3252,9 +3331,9 @@ value_tags   = true
                 type_key(&mut harness, Key::D, "d");
                 type_key(&mut harness, Key::D, "d");
             } else {
-                harness.press(Key::Backspace, Modifiers::NONE);
+                harness.press(Key::Backspace, Modifiers::COMMAND);
             }
-            assert_eq!(saved(&harness), 1, "{}: from a button", look.name);
+            assert!(!asks_to_delete(&harness), "{}: from a button", look.name);
             // In the search field it is the text's.
             let mut harness = picker_with_one(look);
             let tab = harness.app.active_tab_id();
@@ -3262,12 +3341,12 @@ value_tags   = true
             harness.settle();
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             harness.frame(vec![egui::Event::Text("boo".into())]);
-            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
             if look.terminal {
                 harness.frame(vec![egui::Event::Text("dd".into())]);
             }
             harness.settle();
-            assert_eq!(saved(&harness), 1, "{}: from the search", look.name);
+            assert!(!asks_to_delete(&harness), "{}: from the search", look.name);
         }
     }
 
@@ -3293,11 +3372,11 @@ value_tags   = true
             );
         }
         let mac = painted(Look::macos());
-        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌫ delete"] {
+        for hint in ["↩ connect", "⌘E edit", "⌘D duplicate", "⌘⌫ delete"] {
             assert!(mac.iter().any(|text| text == hint), "{hint}: {mac:?}");
         }
         let standard = painted(Look::standard());
-        for hint in ["Enter connect", "Ctrl+E edit", "Backspace delete"] {
+        for hint in ["Enter connect", "Ctrl+E edit", "Ctrl+Backspace delete"] {
             assert!(
                 standard.iter().any(|text| text == hint),
                 "{hint}: {standard:?}"
@@ -8858,6 +8937,8 @@ value_tags   = true
         assert!(harness.has("Edit connection"));
         harness.click("Delete Shop");
         assert!(harness.app.dialog.is_none());
+        assert!(harness.app.connections.get(&id).is_some(), "it asks first");
+        harness.click("Delete");
         assert!(harness.app.connections.get(&id).is_none());
         new_connection(&mut harness);
         let tree = harness.settle();
