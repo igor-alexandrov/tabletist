@@ -149,6 +149,26 @@ fn a_time_past_the_clock_does_not_stop_the_pane() {
     }
 }
 
+/// The Omarchy row's button says the value it steps, as the other
+/// stepped rows' do: a screen reader hears "check for updates, daily".
+#[test]
+fn the_terminal_row_says_how_often_it_checks() {
+    let mut harness = harness(Look::omarchy());
+    on_the_pane(&mut harness);
+    let tree = harness.settle();
+    let (_, row) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.role() == Role::Button
+                && node
+                    .label()
+                    .is_some_and(|label| label.eq_ignore_ascii_case("check for updates"))
+        })
+        .unwrap_or_else(|| panic!("{:?}", crate::testing::labels(&tree)));
+    assert_eq!(row.value(), Some("daily"));
+}
+
 #[test]
 fn settings_lists_an_updates_pane_last() {
     for look in looks() {

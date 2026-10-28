@@ -1366,6 +1366,7 @@ pub(super) fn option_row(
                 | OptionId::Timeout
                 | OptionId::Indent
                 | OptionId::HistoryKeep
+                | OptionId::UpdatesCheck
         )
     {
         let name = super::said(ui.ctx(), skin.look, locale, terminal_label(option));
