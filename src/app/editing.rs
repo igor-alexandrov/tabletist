@@ -1941,6 +1941,8 @@ impl App {
             // The keys in force: the full list in the editor, or a cheat
             // sheet where the person says. Neither touches the settings.
             (Typed::Command(Command::KeysDefault), _) => Action::KeysDefault,
+            // Settings › Updates, checking.
+            (Typed::Command(Command::CheckForUpdates), _) => Action::ShowUpdates,
             (Typed::Command(Command::KeysCheatsheet), _) => Action::ExportCheatSheet,
             // The calendar under a date's editor, saved as its switch in
             // Settings saves it.

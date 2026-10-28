@@ -990,6 +990,20 @@ pub enum Action {
     SettingShown,
     /// Show how this agent is connected, in Settings › Agents.
     ChooseAgentSetup(crate::endpoint::Agent),
+    /// Ask GitHub for a newer release now: Check now, Try again, the
+    /// menu's Check for Updates…, `c`, `:update`. A version the settings
+    /// skip is offered by a check asked for.
+    CheckForUpdates,
+    /// Show Settings › Updates and check there now: the menu's Check for
+    /// Updates…, quick open's, `:update`.
+    ShowUpdates,
+    /// Drop the check under way: what it brings is not read.
+    CancelUpdateCheck,
+    /// Stop offering the version offered: `updates.skip`.
+    SkipUpdate,
+    /// Show the notes of the version offered in `$PAGER`, in a terminal;
+    /// where there is none to start, open its page.
+    ShowReleaseNotes,
     /// Close Settings and show the Agents tab on this view: the window's in
     /// front, or with Connections in front the last window's.
     ShowAgentsFromSettings(AgentsView),
@@ -3001,6 +3015,8 @@ pub enum SettingsPane {
     Keyboard,
     /// How agents reach the app. Listed where they can.
     Agents,
+    /// Whether a newer version is out, and how often to ask.
+    Updates,
 }
 
 impl SettingsPane {
@@ -3013,6 +3029,7 @@ impl SettingsPane {
                 Self::Editor,
                 Self::Keyboard,
                 Self::Agents,
+                Self::Updates,
             ]
         } else {
             &[
@@ -3020,6 +3037,7 @@ impl SettingsPane {
                 Self::Appearance,
                 Self::Editor,
                 Self::Keyboard,
+                Self::Updates,
             ]
         }
     }
@@ -3032,15 +3050,22 @@ impl SettingsPane {
             Self::Editor => "Editor",
             Self::Keyboard => "Keyboard",
             Self::Agents => "Agents",
+            Self::Updates => "Updates",
         }
     }
 
     /// The pane whose rows hold `option`.
     pub fn of(option: crate::settings::OptionId) -> Self {
-        [Self::General, Self::Appearance, Self::Editor, Self::Agents]
-            .into_iter()
-            .find(|pane| pane.options().contains(&option))
-            .unwrap_or_default()
+        [
+            Self::General,
+            Self::Appearance,
+            Self::Editor,
+            Self::Agents,
+            Self::Updates,
+        ]
+        .into_iter()
+        .find(|pane| pane.options().contains(&option))
+        .unwrap_or_default()
     }
 
     /// The sections the sheet (macOS, Windows) shows the pane's options
@@ -3068,7 +3093,7 @@ impl SettingsPane {
                 ("Format · {format}", &OptionId::FORMAT),
                 ("History", &OptionId::HISTORY),
             ],
-            Self::Keyboard | Self::Agents => &[],
+            Self::Keyboard | Self::Agents | Self::Updates => &[],
         }
     }
 
@@ -3078,6 +3103,7 @@ impl SettingsPane {
     pub fn sheet_options(self) -> Vec<crate::settings::OptionId> {
         match self {
             Self::Agents => crate::settings::OptionId::AGENTS.to_vec(),
+            Self::Updates => crate::settings::OptionId::UPDATES.to_vec(),
             Self::Keyboard => Vec::new(),
             Self::General | Self::Appearance | Self::Editor => self
                 .sections()
@@ -3095,6 +3121,7 @@ impl SettingsPane {
             Self::Editor => &crate::settings::OptionId::EDITOR,
             Self::Keyboard => &[],
             Self::Agents => &crate::settings::OptionId::AGENTS,
+            Self::Updates => &crate::settings::OptionId::UPDATES,
         }
     }
 
@@ -3111,6 +3138,7 @@ impl SettingsPane {
             // Reset all… of its own, which asks first.
             Self::Keyboard => &[],
             Self::Agents => &[OptionId::LogDays, OptionId::AgentsNotify],
+            Self::Updates => &OptionId::UPDATES,
         }
     }
 
@@ -3167,6 +3195,8 @@ impl SettingsPane {
                 SettingsRow::Option(OptionId::LogDays),
                 SettingsRow::Option(OptionId::AgentsNotify),
             ],
+            // The status over it is no row: its keys are the pane's.
+            Self::Updates => &[SettingsRow::Option(OptionId::UpdatesCheck)],
         }
     }
 }

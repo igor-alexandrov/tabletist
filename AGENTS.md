@@ -242,3 +242,32 @@ source AUR package, and builds and runs the AppImage, whenever `packaging/`
 changes. `packaging/linux/appimage.sh` pins appimagetool and the AppImage
 runtime by version and SHA-256; move them together. Locally,
 `packaging/arch/render.sh` fills a PKGBUILD from a release's checksums.
+
+## Updates
+
+`src/update.rs` holds the check Settings › Updates shows and configures
+fastframe-update, which installs an update. The check is one GET of
+`releases/latest` that sends `Tabletist/<version> (<system>; <chip>)` and
+no other header of the person's: `src/update/check.rs` tests what goes on
+the wire. Tests never reach GitHub; they serve fixture JSON from a local
+port (`tests/fixtures/update/latest.json`). A test harness never checks on
+its own: only `App::watch_updates`, which the window calls outside a demo,
+turns the schedule on.
+
+The version that installs an update is the old one, and its helper runs
+the new one, so these hold for every release, and a change to any of them
+needs a release that accepts both ways first:
+
+- `tabletist --version` prints `tabletist <version>`, and
+  `--update-receipt <job>`, `--update-error <message>` and
+  `--apply-update <job>` are handled by `fastframe_update::intercept` before
+  clap reads the command line (`tests/cli.rs`).
+- The receipt is confirmed once the first frame is painted, on the second
+  (`entrypoint.rs`): eframe paints a frame after its `ui` returns.
+- The release's file names, the markers (`packaging/tabletist-portable.txt`
+  in the archives, `packaging/windows/tabletist-installer.txt` installed
+  beside the app) and `checksums.txt.sig` stay as `release.yml` makes them
+  (`tests/update_release.rs`).
+- `assets/update-public-key.hex` changes only through
+  `additional_publisher_keys`: ship the next key there, keep signing with
+  the old one, and switch once installed copies trust the next.

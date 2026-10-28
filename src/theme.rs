@@ -960,6 +960,7 @@ fastframe_icons::icons! {
         ChevronsUpDown => "chevrons-up-down",
         Code => "code",
         Database => "database",
+        Download => "download",
         Funnel => "funnel",
         Image => "image",
         KeyRound => "key-round",

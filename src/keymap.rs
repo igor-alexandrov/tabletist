@@ -227,6 +227,9 @@ pub enum When {
     ConnectionForm,
     /// The Settings screen.
     SettingsScreen,
+    /// The Settings screen shows its Updates pane, where the history's
+    /// question never stands: its keys are that pane's.
+    UpdatesPane,
     /// Quick open.
     QuickOpen,
     /// The question before a save to production.
@@ -440,6 +443,7 @@ commands! {
     GoToConnectionWindow = "go_to_connection_window",
     SwitchDatabase = "switch_database",
     Settings = "settings",
+    CheckForUpdates = "check_for_updates",
     LargerText = "larger_text",
     SmallerText = "smaller_text",
     DefaultTextSize = "default_text_size",
@@ -676,6 +680,10 @@ commands! {
     SettingsCopyCommand = "settings_copy_command",
     SettingsDeleteHistory = "settings_delete_history",
     SettingsKeepHistory = "settings_keep_history",
+    SettingsCheckNow = "settings_check_now",
+    SettingsReleaseNotes = "settings_release_notes",
+    SettingsSkipVersion = "settings_skip_version",
+    SettingsInstallUpdate = "settings_install_update",
     SettingsUnbind = "settings_unbind",
     SettingsFilter = "settings_filter",
     SettingsFindKey = "settings_find_key",
@@ -756,6 +764,7 @@ impl Command {
             }
             C::SwitchDatabase => info("Switch database", "Switch database", Window),
             C::Settings => info("Settings", "Settings", Window),
+            C::CheckForUpdates => info("Check for Updates…", "", Window),
             C::LargerText => info("Larger text", "", Window),
             C::SmallerText => info("Smaller text", "", Window),
             C::DefaultTextSize => info("Default text size", "", Window),
@@ -1067,11 +1076,27 @@ impl Command {
                 Prompts,
             ),
             C::SettingsOpenRow => info("Open what the settings' row shows", "", Prompts),
-            C::SettingsCopyCommand => agents(info(
-                "Copy the command that connects an agent, in the settings",
+            C::SettingsCopyCommand => info(
+                "Copy the command the settings show: an agent's, or the update's",
                 "",
                 Prompts,
-            )),
+            ),
+            C::SettingsCheckNow => info("Check for updates now, in the settings", "", Prompts),
+            C::SettingsReleaseNotes => info(
+                "Read the release notes of the version offered, in the settings",
+                "",
+                Prompts,
+            ),
+            C::SettingsSkipVersion => {
+                info("Skip the version offered, in the settings", "", Prompts)
+            }
+            // Downloading and installing come in the next run.
+            C::SettingsInstallUpdate => info(
+                "Download and install the version offered, in the settings",
+                "",
+                Prompts,
+            )
+            .reserved(),
             C::SettingsDeleteHistory => info(
                 "Delete the query history kept, as the settings ask",
                 "",
@@ -1234,6 +1259,8 @@ pub const BINDINGS: &[Binding] = {
             keys(&[k("ctrl+shift+1..9")]),
         ),
         bind(C::SwitchDatabase, GLOBAL, NONE, keys(&[k("ctrl+shift+d")])),
+        // macOS's Tabletist menu has it; Omarchy's prompt.
+        bind(C::CheckForUpdates, GLOBAL, NONE, keys(&[k(":update")])),
         bind(
             C::Settings,
             GLOBAL,
@@ -2342,6 +2369,11 @@ pub const BINDINGS: &[Binding] = {
         bind(C::SettingsCopyCommand, PROMPT, NONE, keys(&[k("y")])).when(When::SettingsScreen),
         bind(C::SettingsDeleteHistory, PROMPT, NONE, keys(&[k("D")])).when(When::SettingsScreen),
         bind(C::SettingsKeepHistory, PROMPT, NONE, keys(&[k("n")])).when(When::SettingsScreen),
+        // The Updates pane's own.
+        bind(C::SettingsCheckNow, PROMPT, NONE, keys(&[k("c")])).when(When::UpdatesPane),
+        bind(C::SettingsReleaseNotes, PROMPT, NONE, keys(&[k("n")])).when(When::UpdatesPane),
+        bind(C::SettingsSkipVersion, PROMPT, NONE, keys(&[k("S")])).when(When::UpdatesPane),
+        bind(C::SettingsInstallUpdate, PROMPT, NONE, keys(&[k("U")])).when(When::UpdatesPane),
         // The Keyboard pane's own: Enter records the row (the screen's
         // Enter), `R` resets it, and the arrows' letters move as on any
         // pane.

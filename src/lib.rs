@@ -40,6 +40,7 @@ pub mod testing;
 pub mod theme;
 pub mod typography;
 pub mod ui;
+pub mod update;
 pub mod util;
 pub mod vim;
 pub mod zones;

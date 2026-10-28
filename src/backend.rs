@@ -20,11 +20,13 @@ use crate::secrets::{Keyring, SecretString};
 
 mod agents;
 mod history;
+mod updates;
 
 pub use agents::{
     Agentable, AgentsCommand, AgentsEvent, AppGateway, LOG_PAGE, agent_names, agentable,
 };
 pub use history::{HistoryCommand, HistoryEvent};
+pub use updates::{UpdatesCommand, UpdatesEvent};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
 #[derive(Clone)]
@@ -241,6 +243,8 @@ pub enum Command {
     Agents(AgentsCommand),
     /// The query history's file.
     History(HistoryCommand),
+    /// The check for updates.
+    Updates(UpdatesCommand),
 }
 
 /// The contents of a state file the backend saves.
@@ -264,6 +268,8 @@ pub enum StateFile {
     Session(crate::session::Session),
     /// What was opened lately on each connection.
     Recents(crate::recents::Recents),
+    /// What the checks for updates found.
+    Updates(crate::update::Seen),
 }
 
 impl StateFile {
@@ -281,6 +287,7 @@ impl StateFile {
             Self::TableLists(lists) => crate::util::save_json(path, lists),
             Self::Session(session) => session.save(path),
             Self::Recents(recents) => recents.save(path),
+            Self::Updates(seen) => crate::util::save_json(path, seen),
         }
     }
 }
@@ -441,6 +448,8 @@ pub enum Event {
     Agents(AgentsEvent),
     /// What came of a [`HistoryCommand`].
     History(HistoryEvent),
+    /// What came of an [`UpdatesCommand`].
+    Updates(UpdatesEvent),
 }
 
 /// What the settings file was handed to.
@@ -2103,6 +2112,7 @@ impl Worker {
             }
             Command::Agents(command) => self.agents.handle(command, &self.outbox),
             Command::History(command) => self.history.handle(command, &self.outbox),
+            Command::Updates(command) => updates::handle(command, &self.outbox),
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {
@@ -2158,7 +2168,8 @@ fn session_of(command: &Command) -> SessionId {
         | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_)
-        | Command::History(_) => SessionId(0),
+        | Command::History(_)
+        | Command::Updates(_) => SessionId(0),
     }
 }
 
@@ -2194,7 +2205,8 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_)
-        | Command::History(_) => None,
+        | Command::History(_)
+        | Command::Updates(_) => None,
     }
 }
 
@@ -2298,7 +2310,8 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::ListFonts
         | Command::Flush { .. }
         | Command::Agents(_)
-        | Command::History(_) => return,
+        | Command::History(_)
+        | Command::Updates(_) => return,
     };
     outbox.emit(event);
 }
@@ -2612,7 +2625,8 @@ async fn run_session(
             | Command::ListFonts
             | Command::Flush { .. }
             | Command::Agents(_)
-            | Command::History(_) => None,
+            | Command::History(_)
+            | Command::Updates(_) => None,
         };
         end.command = None;
         {

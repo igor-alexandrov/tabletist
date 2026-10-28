@@ -59,13 +59,18 @@ pub const APP_ID: &str = "dev.tabletist.Tabletist";
 /// build on Windows has no console, and an app launched from a menu has no
 /// terminal, so stderr alone would be a silent exit.
 pub fn run() -> std::process::ExitCode {
-    let cli = Cli::parse();
+    // First of all: `--apply-update <job>` makes this process an update's
+    // helper, which installs it and exits. Otherwise the receipt or the
+    // error an update's relaunch carries is taken out of the arguments
+    // before clap reads them (src/update.rs).
+    let launch = fastframe_update::intercept(&crate::update::CONFIG);
+    let cli = Cli::parse_from(&launch.arguments);
     // Before the logger, the settings and the window: the relay writes
     // nothing but the protocol to stdout and shows no dialog.
     if let Some(Sub::Mcp { endpoint }) = cli.command {
         return crate::relay::main(endpoint);
     }
-    match main(cli) {
+    match main(cli, launch) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             report_startup_error(&error);
@@ -97,7 +102,7 @@ fn report_startup_error(error: &anyhow::Error) {
         .show();
 }
 
-pub fn main(cli: Cli) -> anyhow::Result<()> {
+pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
     // Demo runs use a throwaway profile: their settings, connections and
     // secrets are never the user's. Like any start they take the desktop's
     // theme and font (and, installed from a package, set up its Omarchy
@@ -124,6 +129,12 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
         logging = logging.file(dirs.log_file()).panic_log(dirs.panic_log());
     }
     logging.init()?;
+    // The helper put the previous version back: this one. The next run
+    // shows it in the window; until then the log has it.
+    if let Some(message) = &launch.error {
+        log::error!("{message}");
+    }
+    let update_receipt = launch.receipt;
 
     let settings = Settings::load(&dirs);
     let demo = cli.demo;
@@ -146,6 +157,9 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
             }
             if demo {
                 demo_setup(&mut app);
+            } else {
+                // Not for a demo either: it checks only when asked.
+                app.watch_updates();
             }
             // The menu bar is up by now: winit builds its own before the
             // window, and this one takes its place.
@@ -157,6 +171,7 @@ pub fn main(cli: Cli) -> anyhow::Result<()> {
                 app,
                 shot,
                 demo,
+                update_receipt,
                 #[cfg(target_os = "macos")]
                 title_bar: None,
                 menu,
@@ -293,6 +308,10 @@ struct Window {
     app: App,
     shot: Option<Shot>,
     demo: bool,
+    /// Set when an update's helper started this version. Confirmed once
+    /// the first frame is painted: until then the helper stands ready to
+    /// put the previous version back.
+    update_receipt: Option<fastframe_update::Receipt>,
     /// macOS: the window whose unified title bar the tabs share, once it
     /// exists.
     #[cfg(target_os = "macos")]
@@ -389,6 +408,18 @@ impl eframe::App for Window {
             }
         }
         self.app.frame_ui(ui);
+        // The first frame is painted, and the window shown, before the
+        // second runs: then tell the update's helper this version started,
+        // so it keeps it. Off the interface thread, as the receipt asks.
+        if self.update_receipt.is_some() && ui.ctx().cumulative_frame_nr() == 0 {
+            ui.ctx().request_repaint();
+        } else if let Some(receipt) = self.update_receipt.take() {
+            std::thread::spawn(move || {
+                if let Err(error) = receipt.acknowledge() {
+                    log::error!("could not confirm the update: {error:#}");
+                }
+            });
+        }
         #[cfg(target_os = "macos")]
         if let Some(title_bar) = &self.title_bar {
             let zoom = ui.ctx().zoom_factor();

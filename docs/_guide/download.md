@@ -88,8 +88,10 @@ the binary in `/usr/local/bin` instead, which needs root:
 sudo install -Dm755 tabletist /usr/local/bin/tabletist
 ```
 
-To update, install the new binary the same way. To remove Tabletist, delete
-the three files.
+To update, install the new binary the same way: **Settings › Updates**
+(`:update` in the Omarchy look) checks GitHub for a newer version, every
+day unless you choose every week or only when you ask, and says when
+there is one. To remove Tabletist, delete the three files.
 
 The Linux binaries are built on Ubuntu 24.04 and need glibc 2.39 or newer
 (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system,

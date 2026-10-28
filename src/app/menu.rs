@@ -3,7 +3,7 @@
 
 use crate::keymap::{Command, EditItem, Scope};
 use crate::menu::{Item, title};
-use crate::model::{Action, ConnTabId, RunMode, Tab};
+use crate::model::{Action, ConnTabId, Dialog, RunMode, Tab};
 
 use super::App;
 
@@ -65,9 +65,17 @@ impl App {
     /// one is: where its key reaches it (the text sizes), and Settings
     /// where it may open (over the shortcuts dialog, which gives way to
     /// it). `keys::handle` does not run under a dialog, so a greyed
-    /// Settings would lose `⌘,` there.
+    /// Settings would lose `⌘,` there. Check for Updates… also stays
+    /// with Settings open, where it shows the Updates pane.
     fn clickable_now(&self, command: Command) -> bool {
-        self.key_reaches(command) || (command == Command::Settings && self.settings_may_open())
+        let opens = match command {
+            Command::Settings => self.settings_may_open(),
+            Command::CheckForUpdates => {
+                self.settings_may_open() || matches!(self.dialog, Some(Dialog::Settings(_)))
+            }
+            _ => false,
+        };
+        self.key_reaches(command) || opens
     }
 
     /// Whether a press of `command`'s key is read now: always without a

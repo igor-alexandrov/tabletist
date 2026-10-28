@@ -31,7 +31,7 @@ const NOTICE_SIDE: f32 = 14.0;
 const NAV: f32 = 220.0;
 /// An option's row, and how far its words stand in from its sides.
 const ROW: f32 = 30.0;
-const ROW_SIDE: f32 = 16.0;
+pub(super) const ROW_SIDE: f32 = 16.0;
 /// The label's column and the value's at their widest; the hint has what
 /// is left.
 const LABEL: f32 = 280.0;
@@ -66,6 +66,9 @@ pub(super) struct Skin<'a> {
     pub(super) desktop: Desktop<'a>,
     /// What the font's row says of the font drawn.
     pub(super) font: FontShown<'a>,
+    /// When the last check for updates that worked ran, as the Updates
+    /// pane's row says it: `last checked 09:12`.
+    pub(super) checked: Option<&'a str>,
 }
 
 /// What fontconfig gave for the font the settings name, which the font's
@@ -160,6 +163,7 @@ pub(super) fn show(
     let (pane, row) = (dialog.pane, dialog.row);
     let settings = super::shown(app);
     let launches = super::launch_choices(&app.connections.connections);
+    let checked = super::updates::checked_text(app, true);
     let skin = Skin {
         look: &app.look,
         palette: &app.palette,
@@ -171,6 +175,7 @@ pub(super) fn show(
         launches: &launches,
         desktop: Desktop::of(app),
         font: FontShown::of(app),
+        checked: checked.as_deref(),
     };
     let screen = ctx.content_rect();
     let id = egui::Id::new("settings");
@@ -197,7 +202,8 @@ pub(super) fn show(
             let (body, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
             let (side, place) = body.split_left_right_at_x((body.left() + NAV).min(body.right()));
-            nav(ui, side, pane, &skin, actions);
+            let offered = super::updates::offered(app);
+            nav(ui, (side, offered), pane, &skin, actions);
             // The rows scroll when the window is short, so the header and
             // the footer stay on screen. They start past the nav's rule.
             let place = place.with_min_x((place.left() + 1.0).min(place.right()));
@@ -226,6 +232,9 @@ pub(super) fn show(
                         super::keyboard_terminal::rows(ui, app, &dialog.keyboard, &skin, actions);
                     }
                     SettingsPane::Agents => agent_rows(ui, app, &settings, row, &skin, actions),
+                    SettingsPane::Updates => {
+                        super::updates_terminal::rows(ui, app, &settings, row, &skin, actions);
+                    }
                 });
             if let Some(beside) = beside {
                 let shown = match pane {
@@ -380,8 +389,15 @@ fn mark(ui: &Ui, rect: Rect, palette: &Palette) {
 }
 
 /// The panes, down the left, the one shown marked: a click shows another.
-/// Under them, where there are two, the key that switches.
-fn nav(ui: &mut Ui, rect: Rect, shown: SettingsPane, skin: &Skin, actions: &mut Vec<Action>) {
+/// Under them, where there are two, the key that switches. Updates has a
+/// `●` while a newer version is `offered`.
+fn nav(
+    ui: &mut Ui,
+    (rect, offered): (Rect, bool),
+    shown: SettingsPane,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
     let Skin {
         look,
         palette,
@@ -411,12 +427,20 @@ fn nav(ui: &mut Ui, rect: Rect, shown: SettingsPane, skin: &Skin, actions: &mut 
         } else {
             palette.dim
         };
-        widgets::paint_label(
+        let width = widgets::paint_label(
             ui,
             item.left() + 14.0,
             item.center().y,
             Text::one(look, TextRole::OBody, &skin.say(pane.name()), color),
         );
+        if pane == SettingsPane::Updates && offered {
+            let at = item.left() + 14.0 + width;
+            let dot = Text::one(look, TextRole::OBody, " ●", palette.accent).layout(ui.ctx());
+            dot.paint_left(ui.painter(), at, item.center().y);
+            let place =
+                Rect::from_center_size(pos2(at + dot.width() / 2.0, item.center().y), dot.size());
+            widgets::announce(ui, place, &gettext(locale, "Update available"));
+        }
     }
     if listed.len() > 1 {
         let switch = key(ui, look, Command::SettingsPane);
@@ -430,7 +454,7 @@ fn nav(ui: &mut Ui, rect: Rect, shown: SettingsPane, skin: &Skin, actions: &mut 
 /// A group's heading over its rows: 12 over it and 4 under, after `top`
 /// at the pane's top or between two groups. A whole number of points, so
 /// the rows' fills start on a pixel.
-fn heading(ui: &mut Ui, text: &'static str, top: f32, skin: &Skin) {
+pub(super) fn heading(ui: &mut Ui, text: &'static str, top: f32, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::OCaption;
     let line = role.row_height(ui.ctx(), look.faces);
@@ -1016,7 +1040,12 @@ fn note(ui: &mut Ui, skin: &Skin) {
 /// The widest label, value and hint `options` have: the hints of every
 /// value, not only the ones shown, so that the columns stay where they are
 /// when a value changes.
-fn widths(ui: &Ui, options: &[OptionId], settings: &Settings, skin: &Skin) -> (f32, f32, f32) {
+pub(super) fn widths(
+    ui: &Ui,
+    options: &[OptionId],
+    settings: &Settings,
+    skin: &Skin,
+) -> (f32, f32, f32) {
     let role = TextRole::OBody;
     let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
     let labels = options
@@ -1051,7 +1080,7 @@ fn widths(ui: &Ui, options: &[OptionId], settings: &Settings, skin: &Skin) -> (f
 /// `LABEL` and `VALUE` where the widest hint has room after them. Rows with
 /// less (the file is beside them) take from the space each column has past
 /// its widest words, from both alike, before a hint is left out.
-fn columns(
+pub(super) fn columns(
     ui: &Ui,
     room: f32,
     (labels, values, hints): (f32, f32, f32),
@@ -1088,7 +1117,8 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
         | OptionId::RowLimit
         | OptionId::Timeout
         | OptionId::Indent
-        | OptionId::HistoryKeep => width(&format!("‹ {} ›", stepped_text(option, settings, skin))),
+        | OptionId::HistoryKeep
+        | OptionId::UpdatesCheck => width(&format!("‹ {} ›", stepped_text(option, settings, skin))),
         OptionId::Font => width(&font_value(settings, skin)),
         OptionId::Timestamps
         | OptionId::GroupDigits
@@ -1164,6 +1194,8 @@ fn stepped_text(option: OptionId, settings: &Settings, skin: &Skin) -> String {
                 .say("{n} per connection")
                 .replace("{n}", &keep.to_string()),
         },
+        // As the file writes it: `daily`.
+        OptionId::UpdatesCheck => settings.update_check.name().to_owned(),
         // A connection by its name as it is saved, and where it points:
         // three of one name are told apart.
         OptionId::OnLaunch => {
@@ -1293,7 +1325,7 @@ fn text_row(
 
 /// One option's row: its label, its value where a click sets it, and the
 /// hint that shows what the value does.
-fn option_row(
+pub(super) fn option_row(
     ui: &mut Ui,
     (index, option): (usize, OptionId),
     on_cursor: bool,
@@ -1334,6 +1366,7 @@ fn option_row(
                 | OptionId::Timeout
                 | OptionId::Indent
                 | OptionId::HistoryKeep
+                | OptionId::UpdatesCheck
         )
     {
         let name = super::said(ui.ctx(), skin.look, locale, terminal_label(option));
@@ -1365,7 +1398,8 @@ fn option_row(
         | OptionId::RowLimit
         | OptionId::Timeout
         | OptionId::Indent
-        | OptionId::HistoryKeep => stepper(ui, cell, option, settings, skin, actions),
+        | OptionId::HistoryKeep
+        | OptionId::UpdatesCheck => stepper(ui, cell, option, settings, skin, actions),
         // Nothing to step to: a name is set in the file.
         OptionId::Font => {
             let value = Text::one(
@@ -1648,6 +1682,22 @@ fn hint(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> Text {
         OptionId::Autocomplete => dim(&skin.say("schema objects")),
         OptionId::HistoryKeep => {
             dim(&skin.say("per connection · sql, saves, filters, agents · never results"))
+        }
+        // When the last check ran, and the key that checks. Not the
+        // board's "or weekly · never" before them: beside the file the
+        // hint has no room for all of it, and the chevrons say there are
+        // other values.
+        OptionId::UpdatesCheck => {
+            let mut text = Text::new(look);
+            if let Some(checked) = skin.checked {
+                text = text.add(role, &format!("{checked} · "), palette.dim);
+            }
+            text.add(
+                role,
+                &key(ui, look, Command::SettingsCheckNow),
+                palette.accent,
+            )
+            .add(role, &format!(" {}", skin.say("check now")), palette.dim)
         }
         OptionId::Timeout
         | OptionId::Indent
@@ -2049,6 +2099,6 @@ fn segments(
 }
 
 /// A key of the screen, as the keymap writes it for the look.
-fn key(ui: &Ui, look: &Look, command: Command) -> crate::keymap::Written {
+pub(super) fn key(ui: &Ui, look: &Look, command: Command) -> crate::keymap::Written {
     crate::ui::keys::written(ui.ctx(), look, command)
 }

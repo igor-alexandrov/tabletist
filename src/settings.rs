@@ -444,6 +444,44 @@ impl From<Option<String>> for Theme {
     }
 }
 
+/// How often Tabletist asks GitHub for a newer release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UpdateCheck {
+    #[default]
+    Daily,
+    Weekly,
+    /// Only when the person asks: Check now, the menu's Check for
+    /// Updates…, `c` or `:update`.
+    Never,
+}
+
+impl UpdateCheck {
+    /// Every choice, as the menu lists them.
+    pub const ALL: [Self; 3] = [Self::Daily, Self::Weekly, Self::Never];
+
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Never => "never",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.name() == name)
+    }
+}
+
+/// Whether `text` is a release's version: three numbers, `0.4.0`.
+fn is_version(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 /// How long a connection may go unused before its session is closed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 pub enum Idle {
@@ -696,6 +734,13 @@ pub struct Settings {
     pub table_list: TableList,
     /// How the connection bar shows a connection's environment.
     pub env_bar: EnvBar,
+    /// How often a check for a newer release runs on its own.
+    #[serde(skip)]
+    pub update_check: UpdateCheck,
+    /// A version the person said to skip: no check offers it, but one they
+    /// ask for. A later version is offered.
+    #[serde(skip)]
+    pub update_skip: Option<String>,
     /// The person's changes to the keymap: `[keys.<scope>]` and
     /// `[keys.unbind]`. As the file says them: whether the keymap can take
     /// each is the look's to say ([`crate::keymap::Keymap::with`]).
@@ -751,13 +796,15 @@ pub enum Key {
     ColumnTypes,
     TableList,
     EnvBar,
+    UpdatesCheck,
+    UpdatesSkip,
 }
 
 impl Key {
     /// In the order the file has them: a table's keys together.
     /// An old key comes before the one that took its place: the new one
     /// is read over it.
-    pub const ALL: [Key; 41] = [
+    pub const ALL: [Key; 43] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -799,6 +846,8 @@ impl Key {
         Self::ColumnTypes,
         Self::TableList,
         Self::EnvBar,
+        Self::UpdatesCheck,
+        Self::UpdatesSkip,
     ];
 
     /// The key's table and its name there.
@@ -845,6 +894,8 @@ impl Key {
             Self::ColumnTypes => ("appearance.grid", "column_types"),
             Self::TableList => ("appearance.grid", "table_list"),
             Self::EnvBar => ("appearance.env", "bar"),
+            Self::UpdatesCheck => ("updates", "check"),
+            Self::UpdatesSkip => ("updates", "skip"),
         }
     }
 
@@ -880,6 +931,8 @@ impl Key {
             Self::RowHeight => Some("compact | regular | roomy"),
             Self::TableList => Some("tree | flat"),
             Self::EnvBar => Some("tint | label"),
+            Self::UpdatesCheck => Some("daily | weekly | never"),
+            Self::UpdatesSkip => Some("a version to stop offering"),
             Self::InterfaceSize => Some("small | default | large"),
             // The fonts of the look the platform draws, as the theme's.
             // Windows draws its data in Inter, whatever the key says.
@@ -964,12 +1017,14 @@ pub enum OptionId {
     Commas,
     /// Queries the history keeps: `editor.history.keep`.
     HistoryKeep,
+    /// How often a check for a newer release runs: `updates.check`.
+    UpdatesCheck,
 }
 
 impl OptionId {
     /// Every option, the General pane's, the Appearance pane's, the Editor
-    /// pane's and then the Agents pane's.
-    pub const ALL: [OptionId; 38] = [
+    /// pane's, the Agents pane's and then the Updates pane's.
+    pub const ALL: [OptionId; 39] = [
         Self::OnLaunch,
         Self::RestoreTabs,
         Self::PageSize,
@@ -1008,6 +1063,7 @@ impl OptionId {
         Self::AgentsOn,
         Self::LogDays,
         Self::AgentsNotify,
+        Self::UpdatesCheck,
     ];
     /// The General pane's, in the order it has them.
     pub const GENERAL: [OptionId; 11] = [
@@ -1119,6 +1175,9 @@ impl OptionId {
     pub const HISTORY: [OptionId; 1] = [Self::HistoryKeep];
     /// The Agents pane's, in the order it has them.
     pub const AGENTS: [OptionId; 3] = [Self::AgentsOn, Self::LogDays, Self::AgentsNotify];
+    /// The Updates pane's. The version to skip has no row: its card's
+    /// Skip this version sets it.
+    pub const UPDATES: [OptionId; 1] = [Self::UpdatesCheck];
 
     /// The key of the file the option is stored under.
     pub fn key(self) -> Key {
@@ -1161,6 +1220,7 @@ impl OptionId {
             Self::Keywords => Key::Keywords,
             Self::Commas => Key::Commas,
             Self::HistoryKeep => Key::HistoryKeep,
+            Self::UpdatesCheck => Key::UpdatesCheck,
         }
     }
 
@@ -1221,6 +1281,7 @@ pub enum OptionValue {
     Commas(Commas),
     /// 0 keeps none.
     HistoryKeep(u32),
+    UpdatesCheck(UpdateCheck),
 }
 
 impl OptionValue {
@@ -1289,6 +1350,7 @@ impl OptionValue {
             Self::Keywords(_) => OptionId::Keywords,
             Self::Commas(_) => OptionId::Commas,
             Self::HistoryKeep(_) => OptionId::HistoryKeep,
+            Self::UpdatesCheck(_) => OptionId::UpdatesCheck,
         }
     }
 
@@ -1344,6 +1406,7 @@ impl OptionValue {
             Self::Keywords(case) => settings.keywords = case,
             Self::Commas(commas) => settings.commas = commas,
             Self::HistoryKeep(keep) => settings.history_keep = keep.min(Settings::MAX_HISTORY),
+            Self::UpdatesCheck(check) => settings.update_check = check,
         }
     }
 }
@@ -2003,6 +2066,7 @@ impl Settings {
             OptionId::Keywords => OptionValue::Keywords(self.keywords),
             OptionId::Commas => OptionValue::Commas(self.commas),
             OptionId::HistoryKeep => OptionValue::HistoryKeep(self.history_keep),
+            OptionId::UpdatesCheck => OptionValue::UpdatesCheck(self.update_check),
         }
     }
 
@@ -2211,6 +2275,11 @@ impl Settings {
                 },
                 forward,
             )),
+            OptionId::UpdatesCheck => OptionValue::UpdatesCheck(stepped_among(
+                &UpdateCheck::ALL,
+                self.update_check,
+                forward,
+            )),
         }
     }
 
@@ -2370,7 +2439,8 @@ impl Settings {
             | OptionId::Autocomplete
             | OptionId::LineNumbers
             | OptionId::Keywords
-            | OptionId::HistoryKeep => None,
+            | OptionId::HistoryKeep
+            | OptionId::UpdatesCheck => None,
         }
     }
 
@@ -2419,6 +2489,8 @@ impl Settings {
             Key::ColumnTypes => self.column_types.to_string(),
             Key::TableList => toml_string(self.table_list.name()),
             Key::EnvBar => toml_string(self.env_bar.name()),
+            Key::UpdatesCheck => toml_string(self.update_check.name()),
+            Key::UpdatesSkip => toml_string(self.update_skip.as_deref()?),
         })
     }
 
@@ -2769,6 +2841,16 @@ impl Settings {
             Key::EnvBar => text
                 .and_then(EnvBar::from_name)
                 .map(|bar| self.env_bar = bar),
+            Key::UpdatesCheck => text
+                .and_then(UpdateCheck::from_name)
+                .map(|check| self.update_check = check),
+            // A version, with its `v` or without; an empty one skips none.
+            Key::UpdatesSkip => text
+                .map(|text| crate::update::release::version_of(text.trim()))
+                .filter(|version| version.is_empty() || is_version(version))
+                .map(|version| {
+                    self.update_skip = (!version.is_empty()).then(|| version.to_owned());
+                }),
         }
         .is_some()
     }
@@ -2939,6 +3021,8 @@ impl Settings {
             Key::ColumnTypes => self.column_types = other.column_types,
             Key::TableList => self.table_list = other.table_list,
             Key::EnvBar => self.env_bar = other.env_bar,
+            Key::UpdatesCheck => self.update_check = other.update_check,
+            Key::UpdatesSkip => self.update_skip = other.update_skip.clone(),
         }
     }
 
@@ -3023,6 +3107,8 @@ impl Default for Settings {
             column_types: true,
             table_list: TableList::Tree,
             env_bar: EnvBar::Tint,
+            update_check: UpdateCheck::Daily,
+            update_skip: None,
             keys: crate::keymap::Overrides::default(),
         }
     }
@@ -3320,6 +3406,8 @@ mod tests {
             column_types: false,
             table_list: TableList::Flat,
             env_bar: EnvBar::Label,
+            update_check: UpdateCheck::Weekly,
+            update_skip: Some("0.4.0".into()),
             keys: crate::keymap::Overrides::default(),
         }
     }
@@ -3399,6 +3487,10 @@ table_list = \"flat\"  # tree | flat
 
 [appearance.env]
 bar = \"label\"  # tint | label
+
+[updates]
+check = \"weekly\"  # daily | weekly | never
+skip = \"0.4.0\"  # a version to stop offering
 "
             )
         );
@@ -3499,6 +3591,8 @@ bar = \"label\"  # tint | label
                 (Key::ColumnTypes, 59),
                 (Key::TableList, 60),
                 (Key::EnvBar, 63),
+                (Key::UpdatesCheck, 66),
+                (Key::UpdatesSkip, 67),
             ]
         );
     }
@@ -4624,6 +4718,7 @@ bar = \"label\"  # tint | label
                 Key::McpEnabled,
                 Key::McpLogDays,
                 Key::McpNotify,
+                Key::UpdatesCheck,
             ]
         );
         // Each pane has its own, and every one is on a pane.
@@ -4632,6 +4727,7 @@ bar = \"label\"  # tint | label
             &OptionId::APPEARANCE[..],
             &OptionId::EDITOR[..],
             &OptionId::AGENTS[..],
+            &OptionId::UPDATES[..],
         ]
         .concat();
         // The sections of the General and Appearance panes hold their

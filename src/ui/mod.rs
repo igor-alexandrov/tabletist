@@ -117,6 +117,8 @@ mod theme_settings_tests;
 pub mod toast;
 #[cfg(test)]
 mod typing_settings_tests;
+#[cfg(test)]
+mod update_settings_tests;
 pub mod value_tags;
 #[cfg(test)]
 mod vim_tests;
@@ -6937,7 +6939,7 @@ value_tags   = true
     }
 
     /// A key that `keys::letters` reads as the character it types.
-    pub(super) fn type_key(harness: &mut Harness, key: Key, text: &str) {
+    pub(crate) fn type_key(harness: &mut Harness, key: Key, text: &str) {
         harness.settle();
         harness.frame(vec![
             crate::testing::key(key, Modifiers::NONE),
