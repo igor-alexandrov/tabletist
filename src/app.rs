@@ -39,6 +39,7 @@ mod menu;
 mod quick_open;
 #[cfg(test)]
 mod startup_tests;
+mod updates;
 
 pub use commands::{About, RUNNABLE, Runnable, TabName};
 pub use keyboard::{CHEAT_SHEET, cheat_sheet, keys_list};
@@ -267,6 +268,19 @@ pub struct App {
     /// which nothing in the person's files lifts. It is applied where the
     /// app tells the backend what to do, never written into those files.
     pub managed: crate::managed::Managed,
+    /// What the checks for updates found, and where the one under way
+    /// stands.
+    pub updates: crate::update::Updates,
+    /// Whether checks run on their own ([`App::watch_updates`]): not in
+    /// tests, nor in the demo.
+    pub updates_scheduled: bool,
+    /// Where a check asks: GitHub, or a test's server.
+    pub updates_url: String,
+    /// A version the status line is to tell of, by the next frame.
+    pub update_announcement: Option<String>,
+    /// A page the next frame opens in the browser: a release's, where its
+    /// notes could not be shown in a terminal.
+    pub url_to_open: Option<String>,
     next_id: u64,
 }
 
@@ -333,6 +347,10 @@ impl App {
         let (table_lists, table_lists_unread) = load_table_lists(&dirs.table_lists_file());
         let session = crate::session::Session::load(&dirs.session_file());
         let recents = crate::recents::Recents::load(&dirs.recents_file());
+        let updates = crate::update::Updates {
+            seen: crate::update::Seen::load(&dirs.updates_file()),
+            ..Default::default()
+        };
         let writes_session = loaded_connections.problem.is_none();
         // An installed data font is read once the window exists (`attach`).
         let look = crate::theme::Look::for_platform().with_text(&settings, false);
@@ -408,6 +426,11 @@ impl App {
             agents_shown,
             agents_held: Vec::new(),
             managed,
+            updates,
+            updates_scheduled: false,
+            updates_url: crate::update::check::LATEST.to_owned(),
+            update_announcement: None,
+            url_to_open: None,
             next_id: 1,
         };
         app.refresh_keymap();
@@ -2520,6 +2543,10 @@ impl App {
                     dialog.reveal = false;
                 }
             }
+            Action::CheckForUpdates
+            | Action::CancelUpdateCheck
+            | Action::SkipUpdate
+            | Action::ShowReleaseNotes => self.update_action(action),
             Action::ChooseAgentSetup(agent) => {
                 if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
                     dialog.agent = agent;
@@ -4644,6 +4671,7 @@ impl App {
                 result,
             } => self.written(session, request, result),
             Event::History(event) => self.history_event(event),
+            Event::Updates(event) => self.updates_event(event),
             Event::SqlRan {
                 session,
                 request,
@@ -7889,6 +7917,10 @@ impl App {
         if let Some(wait) = self.close_idle(std::time::Instant::now()) {
             ctx.request_repaint_after(wait);
         }
+        if let Some(wait) = self.tick_updates() {
+            ctx.request_repaint_after(wait);
+        }
+        self.say_updates(ctx);
     }
 
     /// Closes the session of each connection left unused for longer than

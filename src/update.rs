@@ -25,6 +25,8 @@ pub use installed::{Installed, Managed};
 pub use release::{Found, Offer};
 pub use seen::Seen;
 
+use crate::settings::UpdateCheck;
+
 /// The version that runs.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
@@ -107,6 +109,85 @@ impl Transport for UreqTransport {
     }
 }
 
+/// How long `check` waits between scheduled checks; None where checks
+/// are only asked for.
+pub fn interval(check: UpdateCheck) -> Option<u64> {
+    match check {
+        UpdateCheck::Daily => Some(24 * 60 * 60),
+        UpdateCheck::Weekly => Some(7 * 24 * 60 * 60),
+        UpdateCheck::Never => None,
+    }
+}
+
+/// How long from `now` until the next scheduled check, in seconds: 0
+/// when it is due. An interval from the last check that worked, or from
+/// the last that failed where that came later. None with `"never"`. A
+/// time after `now` (a clock that was ahead) is left out: with no other,
+/// the check is due, and its answer writes the time it ran.
+pub fn due(check: UpdateCheck, seen: &Seen, tried: Option<u64>, now: u64) -> Option<u64> {
+    let every = interval(check)?;
+    let since = [seen.last_checked, tried]
+        .into_iter()
+        .flatten()
+        .filter(|since| *since <= now)
+        .max();
+    Some(since.map_or(0, |since| (since + every).saturating_sub(now)))
+}
+
+/// Where the check stands while the app runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Phase {
+    /// Nothing asked.
+    #[default]
+    Idle,
+    /// Asked, and not answered yet: answers to any other ask are dropped.
+    Checking {
+        asked: u64,
+        /// Whether the person asked for it, which offers a version they
+        /// said to skip.
+        asked_for: bool,
+    },
+    /// The last check found nothing, for this reason. One the person
+    /// asked for is shown over a version found before.
+    Failed { failed: Failed, asked_for: bool },
+}
+
+/// What Settings › Updates and the signals elsewhere know.
+#[derive(Clone, Debug, Default)]
+pub struct Updates {
+    /// The state file's.
+    pub seen: Seen,
+    pub phase: Phase,
+    /// How this copy was installed, once the backend has looked.
+    pub installed: Option<Installed>,
+    /// When the last scheduled check that failed ran: the next waits an
+    /// interval from it.
+    pub tried: Option<u64>,
+    /// A version found by a check the person asked for, though they had
+    /// said to skip it: offered until the next check.
+    pub asked_offer: Option<Offer>,
+}
+
+impl Updates {
+    /// The release to offer now, if any: newer than this version, and not
+    /// the one the settings skip unless a check that was asked for found
+    /// it.
+    pub fn offer(&self, skip: Option<&str>) -> Option<&Offer> {
+        self.asked_offer
+            .as_ref()
+            .or_else(|| {
+                self.seen
+                    .offered(CURRENT)
+                    .filter(|offer| skip != Some(offer.version.as_str()))
+            })
+            .filter(|offer| fastframe_update::is_newer(&offer.version, CURRENT))
+    }
+
+    pub fn checking(&self) -> bool {
+        matches!(self.phase, Phase::Checking { .. })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +210,110 @@ mod tests {
     #[test]
     fn appimages_update_themselves() {
         const { assert!(CONFIG.appimage) };
+    }
+
+    const DAY: u64 = 24 * 60 * 60;
+
+    #[test]
+    fn a_daily_or_weekly_check_is_due_an_interval_after_the_last() {
+        let checked = |at| Seen {
+            last_checked: Some(at),
+            ..Seen::default()
+        };
+        let now = 100 * DAY;
+        // Never checked: due at once.
+        assert_eq!(
+            due(UpdateCheck::Daily, &Seen::default(), None, now),
+            Some(0)
+        );
+        assert_eq!(
+            due(UpdateCheck::Daily, &checked(now - 2 * DAY), None, now),
+            Some(0)
+        );
+        assert_eq!(
+            due(UpdateCheck::Daily, &checked(now - 3_600), None, now),
+            Some(DAY - 3_600)
+        );
+        assert_eq!(
+            due(UpdateCheck::Weekly, &checked(now - 2 * DAY), None, now),
+            Some(5 * DAY)
+        );
+        assert_eq!(
+            due(UpdateCheck::Weekly, &checked(now - 8 * DAY), None, now),
+            Some(0)
+        );
+        // Only when asked.
+        assert_eq!(due(UpdateCheck::Never, &Seen::default(), None, now), None);
+    }
+
+    /// A failed check is no check: the next scheduled one waits an
+    /// interval from the failure, and the last check that worked stays.
+    #[test]
+    fn a_check_that_failed_retries_at_the_next_interval() {
+        let seen = Seen {
+            last_checked: Some(0),
+            ..Seen::default()
+        };
+        let now = 10 * DAY;
+        assert_eq!(
+            due(UpdateCheck::Daily, &seen, Some(now - 60), now),
+            Some(DAY - 60)
+        );
+    }
+
+    fn offered(version: &str) -> Seen {
+        Seen {
+            offer: Some(Offer {
+                version: version.into(),
+                ..Offer::default()
+            }),
+            ..Seen::default()
+        }
+    }
+
+    #[test]
+    fn the_skipped_version_is_offered_only_after_a_check_that_was_asked_for() {
+        let updates = Updates {
+            seen: offered("99.0.0"),
+            ..Updates::default()
+        };
+        assert!(updates.offer(None).is_some());
+        assert!(updates.offer(Some("99.0.0")).is_none());
+        assert!(updates.offer(Some("98.0.0")).is_some());
+        let asked = Updates {
+            asked_offer: updates.seen.offer.clone(),
+            ..updates
+        };
+        assert!(asked.offer(Some("99.0.0")).is_some());
+        // Nothing older than this version, ever.
+        let old = Updates {
+            seen: offered("0.0.1"),
+            ..Updates::default()
+        };
+        assert!(old.offer(None).is_none());
+    }
+
+    /// A clock that was ahead once (a dead RTC battery, a VM) leaves the
+    /// last check "in the future": it is left out, and the check is due,
+    /// on this tick and the next.
+    #[test]
+    fn a_last_check_in_the_future_does_not_hold_checks_back() {
+        let now = 100 * DAY;
+        let ahead = now + 365 * DAY;
+        let seen = Seen {
+            last_checked: Some(ahead),
+            ..Seen::default()
+        };
+        assert_eq!(due(UpdateCheck::Daily, &seen, None, now), Some(0));
+        assert_eq!(due(UpdateCheck::Daily, &seen, None, now + DAY + 1), Some(0));
+        assert_eq!(
+            due(UpdateCheck::Daily, &Seen::default(), Some(ahead), now),
+            Some(0)
+        );
+        // A failure since still holds the next check back.
+        assert_eq!(
+            due(UpdateCheck::Daily, &seen, Some(now - 60), now),
+            Some(DAY - 60)
+        );
     }
 }

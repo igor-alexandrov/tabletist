@@ -114,6 +114,8 @@ A second reviewer read this plan against its diffs and the prompt. Besides the c
 
 Task 1's review in the run found one more: `Window::ui` runs before eframe paints the frame and shows the window, so the receipt was confirmed before anything was on screen, and a version whose first paint fails would be kept. The receipt is now confirmed on the second frame, as fastframe-update's `acknowledge` asks ("after the first frame is drawn"), in a commit of its own after Task 1's.
 
+Task 2's review found two more, fixed in its commit. A failed check now holds the schedule an interval whoever asked: a Check now that joined a scheduled check and failed left the schedule due, so a second check replaced the error at once (`a_failed_check_holds_the_schedule_whoever_asked`). And a time after now is left out rather than taken as now: taken as each tick's now, it kept the next check an interval away for as long as the clock had been ahead (`a_last_check_in_the_future_does_not_hold_checks_back`, at two instants).
+
 ## Files
 
 | File | Task | What |

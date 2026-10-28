@@ -223,6 +223,7 @@ impl Live {
                 | Command::ListFonts
                 | Command::Flush { .. }
                 | Command::Agents(_)
+                | Command::Updates(_)
                 | Command::History(
                     HistoryCommand::Clear { .. }
                     | HistoryCommand::Trim { .. }

@@ -157,6 +157,9 @@ pub fn main(cli: Cli, launch: fastframe_update::Launch) -> anyhow::Result<()> {
             }
             if demo {
                 demo_setup(&mut app);
+            } else {
+                // Not for a demo either: it checks only when asked.
+                app.watch_updates();
             }
             // The menu bar is up by now: winit builds its own before the
             // window, and this one takes its place.

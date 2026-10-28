@@ -245,12 +245,14 @@ runtime by version and SHA-256; move them together. Locally,
 
 ## Updates
 
-`src/update.rs` configures fastframe-update, which installs an update, and
-holds the check: one GET of `releases/latest` that sends
-`Tabletist/<version> (<system>; <chip>)` and no other header of the
-person's (`src/update/check.rs` tests what goes on the wire). Tests never
-reach GitHub; they serve fixture JSON from a local port
-(`tests/fixtures/update/latest.json`).
+`src/update.rs` holds the check Settings › Updates shows and configures
+fastframe-update, which installs an update. The check is one GET of
+`releases/latest` that sends `Tabletist/<version> (<system>; <chip>)` and
+no other header of the person's: `src/update/check.rs` tests what goes on
+the wire. Tests never reach GitHub; they serve fixture JSON from a local
+port (`tests/fixtures/update/latest.json`). A test harness never checks on
+its own: only `App::watch_updates`, which the window calls outside a demo,
+turns the schedule on.
 
 The version that installs an update is the old one, and its helper runs
 the new one, so these hold for every release, and a change to any of them

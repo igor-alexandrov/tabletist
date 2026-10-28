@@ -990,6 +990,17 @@ pub enum Action {
     SettingShown,
     /// Show how this agent is connected, in Settings › Agents.
     ChooseAgentSetup(crate::endpoint::Agent),
+    /// Ask GitHub for a newer release now: Check now, Try again, the
+    /// menu's Check for Updates…, `c`, `:update`. A version the settings
+    /// skip is offered by a check asked for.
+    CheckForUpdates,
+    /// Drop the check under way: what it brings is not read.
+    CancelUpdateCheck,
+    /// Stop offering the version offered: `updates.skip`.
+    SkipUpdate,
+    /// Show the notes of the version offered in `$PAGER`, in a terminal;
+    /// where there is none to start, open its page.
+    ShowReleaseNotes,
     /// Close Settings and show the Agents tab on this view: the window's in
     /// front, or with Connections in front the last window's.
     ShowAgentsFromSettings(AgentsView),
