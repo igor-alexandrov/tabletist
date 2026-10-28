@@ -3,6 +3,7 @@
 //! disk and the package manager, which a frame never waits for.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::update::check::Failed;
 use crate::update::release::Latest;
@@ -15,7 +16,7 @@ pub enum UpdatesCommand {
     Check {
         asked: u64,
         url: String,
-        timeout: std::time::Duration,
+        timeout: Duration,
     },
     /// Works out how this copy was installed. Answered with
     /// [`UpdatesEvent::Detected`].
@@ -88,7 +89,8 @@ pub fn handle(command: UpdatesCommand, outbox: &super::Outbox) {
 }
 
 /// Starts `$PAGER` (else `less`) on `path` in a terminal of the desktop's:
-/// `xdg-terminal-exec`, which Omarchy sets up. Fails where there is none.
+/// `xdg-terminal-exec`, which Omarchy sets up. Fails where there is none,
+/// or where it finds no terminal to start.
 fn start_pager(path: &std::path::Path) -> std::io::Result<()> {
     let pager = std::env::var("PAGER")
         .ok()
@@ -102,5 +104,69 @@ fn start_pager(path: &std::path::Path) -> std::io::Result<()> {
         .arg(format!("{pager} \"$1\""))
         .arg("sh")
         .arg(path);
-    super::start("xdg-terminal-exec".to_owned(), command)
+    launched(command, LAUNCH_FAILS_WITHIN)
+}
+
+/// How long a launcher has to fail before its terminal counts as shown.
+/// `xdg-terminal-exec` ends at once, with a failure, where it finds no
+/// terminal, and otherwise runs as long as the terminal it started.
+const LAUNCH_FAILS_WITHIN: Duration = Duration::from_secs(2);
+
+/// Starts `command`, a launcher, and waits `within` for it to fail. One
+/// still running then, or ended well, has shown its terminal: a thread of
+/// its own waits for it from there, so it leaves no zombie.
+fn launched(mut command: std::process::Command, within: Duration) -> std::io::Result<()> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = std::time::Instant::now() + within;
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            return match status.success() {
+                true => Ok(()),
+                false => Err(std::io::Error::other(format!(
+                    "the terminal's launcher ended with {status}"
+                ))),
+            };
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn sh(script: &str) -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(script);
+        command
+    }
+
+    #[test]
+    fn a_launcher_that_finds_no_terminal_has_shown_nothing() {
+        assert!(launched(sh("exit 1"), LAUNCH_FAILS_WITHIN).is_err());
+    }
+
+    #[test]
+    fn a_launcher_that_ends_well_or_runs_on_has_shown_its_terminal() {
+        assert!(launched(sh("exit 0"), LAUNCH_FAILS_WITHIN).is_ok());
+        // A terminal open past the wait, failing later or not, was shown.
+        let started = std::time::Instant::now();
+        assert!(launched(sh("sleep 1; exit 1"), Duration::from_millis(200)).is_ok());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_launcher_missing_has_shown_nothing() {
+        let command = std::process::Command::new("tabletist-no-such-launcher");
+        assert!(launched(command, LAUNCH_FAILS_WITHIN).is_err());
+    }
 }
