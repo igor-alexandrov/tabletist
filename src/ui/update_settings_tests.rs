@@ -74,6 +74,36 @@ fn capital(harness: &mut Harness, key: Key) {
     harness.settle();
 }
 
+/// The items of the notes' list a screen reader hears. Between them and
+/// the list is the node egui makes for the `Ui` they are drawn in: a
+/// generic container, which AccessKit leaves out of what is told, so the
+/// items are the list's there.
+fn list_items(tree: &egui::accesskit::TreeUpdate) -> usize {
+    let node_of = |wanted: egui::accesskit::NodeId| {
+        tree.nodes
+            .iter()
+            .find(|(id, _)| *id == wanted)
+            .map(|(_, node)| node)
+            .expect("a node of the tree")
+    };
+    let list = node_of(node(tree, "What's new", Role::List).expect("the notes"));
+    let [between] = list.children() else {
+        panic!("{:?}", list.children());
+    };
+    let between = node_of(*between);
+    assert_eq!(between.role(), Role::GenericContainer);
+    let roles: Vec<Role> = between
+        .children()
+        .iter()
+        .map(|child| node_of(*child).role())
+        .collect();
+    assert!(
+        roles.iter().all(|role| *role == Role::ListItem),
+        "{roles:?}"
+    );
+    roles.len()
+}
+
 fn checks(harness: &Harness) -> usize {
     harness
         .app
@@ -82,6 +112,25 @@ fn checks(harness: &Harness) -> usize {
         .iter()
         .filter(|sent| matches!(sent, Command::Updates(UpdatesCommand::Check { .. })))
         .count()
+}
+
+/// Check for Updates… stays enabled with Settings open on another pane,
+/// and a click there shows Updates and checks once.
+#[test]
+fn check_for_updates_in_the_menu_works_with_settings_open() {
+    use crate::keymap::Command as Keyed;
+    use crate::menu::Item;
+    let mut harness = harness(Look::macos());
+    harness
+        .app
+        .apply(Action::ShowSettingsPane(SettingsPane::General));
+    harness.settle();
+    let item = Item::Command(Keyed::CheckForUpdates);
+    assert!(harness.app.menu_state(item).enabled);
+    harness.app.choose(item);
+    harness.settle();
+    assert_eq!(pane(&harness), Some(SettingsPane::Updates));
+    assert_eq!(checks(&harness), 1);
 }
 
 #[test]
@@ -188,14 +237,7 @@ fn an_update_available_shows_its_notes_and_a_dot_on_updates() {
             assert!(!harness.has("- settings › updates"));
         } else {
             let tree = harness.settle();
-            let list = node(&tree, "What's new", Role::List).expect("the notes");
-            let items = tree
-                .nodes
-                .iter()
-                .filter(|(_, node)| node.role() == Role::ListItem)
-                .count();
-            assert_eq!(items, 4);
-            let _ = list;
+            assert_eq!(list_items(&tree), 4);
             assert!(harness.has("Date and time picker, DDL view and query history"));
         }
         // You have this version, the day it came out, and the download's
@@ -468,12 +510,7 @@ fn two_notes_alike_are_two_items() {
     harness.app.updates.seen.offer = Some(offer);
     on_the_pane(&mut harness);
     let tree = harness.settle();
-    let items = tree
-        .nodes
-        .iter()
-        .filter(|(_, node)| node.role() == Role::ListItem)
-        .count();
-    assert_eq!(items, 4, "{:?}", crate::testing::labels(&tree));
+    assert_eq!(list_items(&tree), 4, "{:?}", crate::testing::labels(&tree));
 }
 
 /// While a check runs, the version found before is still available: the

@@ -116,6 +116,8 @@ Task 1's review in the run found one more: `Window::ui` runs before eframe paint
 
 Task 2's review found two more, fixed in its commit. A failed check now holds the schedule an interval whoever asked: a Check now that joined a scheduled check and failed left the schedule due, so a second check replaced the error at once (`a_failed_check_holds_the_schedule_whoever_asked`). And a time after now is left out rather than taken as now: taken as each tick's now, it kept the next check an interval away for as long as the clock had been ahead (`a_last_check_in_the_future_does_not_hold_checks_back`, at two instants).
 
+Task 3's review found two more, fixed in a commit of their own after Task 3's. The notes' items were the card's children in the accessibility tree, beside an empty What's new list; they are now drawn in a `Ui` whose parent is the list, and the two list tests check the list's own children. And Check for Updates… was greyed while Settings was open, the Updates pane's footer that points to it included; it now stays enabled there and shows the pane (`check_for_updates_in_the_menu_works_with_settings_open`).
+
 ## Files
 
 | File | Task | What |

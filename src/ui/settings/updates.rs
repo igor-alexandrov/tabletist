@@ -372,11 +372,17 @@ fn card(ui: &mut Ui, app: &App, skin: &Skin, actions: &mut Vec<Action>) {
         ui.ctx().accesskit_node_builder(list_id, |node| {
             node.set_role(Role::List);
         });
+        // The items are the list's children, not the card's.
+        let items = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(list_rect)
+                .accessibility_parent(list_id),
+        );
         for (index, laid) in notes.iter().enumerate() {
             let dot = pos2(left + 6.0, y + laid.height().min(line) / 2.0);
             ui.painter().circle_filled(dot, 2.0, palette.secondary);
             laid.paint(ui.painter(), pos2(left + 18.0, y));
-            let item = ui.interact(
+            let item = items.interact(
                 Rect::from_min_size(pos2(left + 18.0, y), laid.size()),
                 list_id.with(index),
                 Sense::hover(),
